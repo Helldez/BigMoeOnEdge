@@ -10,6 +10,7 @@ struct BigMoeOnEdgeApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var engine: Engine
     @StateObject private var chat: ChatModel
+    @StateObject private var nav = Navigator()
 
     init() {
         let engine = Engine()
@@ -24,6 +25,7 @@ struct BigMoeOnEdgeApp: App {
                 .environmentObject(engine)
                 .environmentObject(engine.preferences)
                 .environmentObject(chat)
+                .environmentObject(nav)
                 .task { engine.start() }
         }
     }

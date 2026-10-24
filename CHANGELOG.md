@@ -42,9 +42,8 @@ Semantic Versioning.
   number or the parameter. The RAM a larger context costs is said, not priced: it depends on the
   model's attention layout and only a placement fit at that context measures it; the plan's
   `kv-budget` note still says what the loaded context takes. The planner's own context choice is
-  unchanged; the Android app shows the warning too (below), the iOS app does not yet. Docs:
-  `docs/server-api.md` (sizing the context for a client), `docs/screens.md`, the Android and iOS
-  READMEs.
+  unchanged; the Android and iOS apps show the warning too (below). Docs: `docs/server-api.md`
+  (sizing the context for a client), `docs/screens.md`, the Android and iOS READMEs.
 - **Desktop Models screen: one list, a guided flow, downloads in the status line (#355).** The web
   UI's Models screen had five blocks, a model in the catalog and on disk shown twice, and five
   generic buttons spread over three of them. It is now one list, "Your models", where local files and
@@ -188,6 +187,43 @@ Semantic Versioning.
   line beside its title. The Android and iOS apps sort their settings groups by `group_order` too
   (falling back to table order for a server that does not send it), so Prefill sits after Expert
   streaming there as well. Docs: `docs/screens.md`, `docs/server-api.md`, `docs/settings.md`.
+- **The iOS app's screens match the web UI's of this release.** The same `docs/screens.md`, in
+  SwiftUI, with the logic in BmoeKit under `swift test` and nothing in Swift that names an engine
+  parameter:
+  - **Models is one list.** The files the server lists and the catalog's entries are merged by file
+    (`Library.rows`), each row in one state with one primary action (Download; progress and Cancel;
+    Resume or Delete partial; Load; Reload, Unload and Go to Chat), Delete asked twice and sent to
+    the server (`DELETE /api/models/local/<name>`, so a split set goes whole or not at all), Forget
+    for an added entry, companion files apart, suggestions at the bottom and the folders behind
+    "Where models live". With nothing on the device the screen is the three steps, with the Hugging
+    Face card inline, the suggestions as one-tap downloads and a link field, and a first launch with
+    nothing on the device opens on Models. The Hugging Face card is Find, Pick, Check, Download,
+    the verdict's headline coloured by `verdict.fit`, and the new row scrolls into view and carries
+    the progress. A direct https link becomes an entry through `POST /api/models/url`, and its
+    files download in the app like any other entry's; the bridge now answers the server's `HEAD`
+    for a link's size on `URLSession`, so those files have a size to be whole at, and a file whose
+    host gives none counts as whole once it is there. A running download shows in the status line
+    on every screen.
+  - **The context warning.** Beside the loaded model's name when `ctx_advice.short`: the context,
+    the recommendation, that a larger context takes memory from the expert cache, and a button
+    named from the parameter table that lands on that setting. A chat's `context_full` error says
+    the context's size and offers the same button beside New chat.
+  - **Plan opens on its verdict.** The sentence, the machine, the lanes in one line and four
+    figures (decode expected and measured with the difference, the cache hit rate credited and
+    measured, memory held against the host pool, the worst case in ms per token), Apply and
+    Measure again together, Apply listing what it changed with each row a link to its setting,
+    Measure again beside an error, each decision linking to its own row, and Copy diagnostic in
+    place of the planner's account shown in full.
+  - **Settings is one card per group** (`group_order`, `group_label`, `group_help`; the read-only
+    model group shown without a control), its deeper rows folded inside by level with what each
+    level means, a level filter with counts remembered on the device, a search over every level,
+    one chip per row (default, from the plan, set by you), "Use plan value" or "Let the plan set
+    it", "per message", "needs reload" from `reload_keys` with a Reload banner, and "Reset all my
+    values" (less `launch_keys` and the read-only group, after a confirmation). A link from Plan,
+    the status line or Apply widens the filter, opens the card and fold, scrolls to the row and
+    focuses its field.
+
+  Checked with `swift test` and a simulator build; not yet run on an iPhone.
 - **CI pins what it downloads (#351).** The gates' Python packages come from
   `scripts/requirements-ci.txt` (`gguf==0.19.0`, `numpy==2.5.3` and gguf's own dependencies, every
   one `==`), bumped on purpose instead of whatever was newest that day. The Windows Vulkan SDK
@@ -263,8 +299,17 @@ not changed.
   (only a plain-http mirror named with `--hf-endpoint` may use http), and `--` before the URL, so
   no URL is read as an option. New server checks: the name and URL rules, the digest of known
   vectors and of a file longer than one read, the LFS oid on an added entry; Android unit tests for
-  the name rule and the digest field, and a BmoeKit test for the name rule. The iOS app does not
-  check the digest yet: it ignores `sha256`.
+  the name rule and the digest field, and a BmoeKit test for the name rule.
+- **The iOS app checks its downloads against the SHA-256 too.** A finished transfer moves to
+  `<name>.part` and is read back in 4 MiB chunks with CryptoKit, off the transfers' queue so the
+  other shards keep coming; it becomes the model only when its digest matches the catalog's, and a
+  mismatch deletes it and says so, naming both digests. The row reads "Checking" meanwhile; a
+  cancel stops the check and keeps the file, and a whole `.part` left by an app that ended during
+  its check is checked on the next start instead of fetched again. The app now also drops a catalog
+  entry whose URL is not https or whose digest is malformed, beside the name rule it already held,
+  and a task tagged by an earlier build (no digest) still resumes. BmoeKit tests: the digest of the
+  standard vectors and of a file read in chunks that divide nothing evenly, a cancel, a matching
+  file landed, a mismatch deleted with the model that was there kept, the catalog rules.
 
 ## [0.34.1] - 2026-10-23
 

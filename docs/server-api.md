@@ -545,8 +545,8 @@ all); `""` when the header could not be read. A UI lists anything but `model` an
 the models, as files that are not loaded on their own. Catalog `status`: `on_disk`, `downloading`, `available`. `files` is every file of the
 entry with its URL, in order, for a client that downloads for itself (a phone, where the server
 has no `curl`), and its `sha256` when the catalog names one (64 lowercase hex digits; absent
-otherwise), which the Android app checks its download against as the server does (the iOS app
-does not yet); `file` and `bytes` are the first file's name and the whole entry's size. A catalog row is held to what its fields
+otherwise), which the Android app checks its download against as the server does, and the iOS
+app too; `file` and `bytes` are the first file's name and the whole entry's size. A catalog row is held to what its fields
 become: `name` a bare file name (no separator, no `.` or `..`, no drive colon), `url` an https
 URL (plain http only under an http mirror named with `--hf-endpoint`), `sha256` a digest when present. An entry with a file that fails this is not listed, and the
 reason is in the server's start-up log; the Android and iOS apps drop such an entry too.

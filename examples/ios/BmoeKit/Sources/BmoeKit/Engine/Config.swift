@@ -62,6 +62,11 @@ public struct ConfigState: Equatable, Sendable {
     public let valid: Bool
     public let error: String
     public let reloadRequired: Bool
+    /// The parameters whose value differs from the loaded session's, in table order: the rows
+    /// marked "needs reload". Empty with no session.
+    public let reloadKeys: [String]
+    /// The person's keys the server was launched with, which "Reset all my values" leaves alone.
+    public let launchKeys: Set<String>
     /// The last applied plan's decisions, or nil when none was applied.
     public let plan: [PlanDecision]?
     public let autoPlan: Bool
@@ -75,6 +80,8 @@ public struct ConfigState: Equatable, Sendable {
         valid = j["valid"].bool(or: true)
         error = j["error"].string(or: "")
         reloadRequired = j["reload_required"].bool(or: false)
+        reloadKeys = j["reload_keys"].strings
+        launchKeys = Set(j["launch_keys"].strings)
         plan = j["plan"].isNull ? nil : PlanDecision.list(j["plan"])
         autoPlan = j["auto_plan"].bool(or: false)
         rejected = (j["rejected"].object ?? [:]).mapValues { $0.display }
@@ -100,8 +107,12 @@ public struct PlanResult: Equatable, Sendable {
         public let sPerToken: Double
         public let cacheHitPct: Double
         public let tokens: Int
+        /// The same token with nothing held in memory and every byte read again (predicted only; 0
+        /// when absent): a bound beside the prediction.
+        public let sPerTokenWorst: Double
 
         init(_ j: JSON) {
+            sPerTokenWorst = j["s_per_token_worst"].double(or: 0)
             sPerToken = j["s_per_token"].double(or: 0)
             cacheHitPct = j["cache_hit_pct"].double(or: -1)
             tokens = j["tokens"].int(or: 0)
@@ -231,6 +242,78 @@ public struct PlanResult: Equatable, Sendable {
         let m = measured.flatMap { $0.sPerToken > 0 ? 1 / $0.sPerToken : nil }
         guard let p, let m else { return (p, m, nil) }
         return (p, m, 100 * (m / p - 1))
+    }
+
+    /// The four figures under the plan's sentence (docs/screens.md, "Plan"), each nil when the
+    /// plan does not have it.
+    public struct Figures: Equatable, Sendable {
+        /// Decode in tokens per second, expected and measured, and the measured one's difference.
+        public let expectedTokS: Double?
+        public let measuredTokS: Double?
+        public let deltaPct: Double?
+        /// The cache hit rate the cost model credited, and the one the last turn measured.
+        public let creditedHitPct: Double?
+        public let measuredHitPct: Double?
+        /// What the host pool holds for the run, against what the process may hold.
+        public let heldBytes: Int64?
+        public let capBytes: Int64?
+        /// Milliseconds per token with nothing held in memory, and the expected one beside it.
+        public let worstMs: Double?
+        public let expectedMs: Double?
+    }
+
+    public var figures: Figures {
+        let s = speedCheck
+        let host = pools.first { $0.name == "host" } ?? pools.first
+        let worst = predicted.map(\.sPerTokenWorst).flatMap { $0 > 0 ? $0 * 1000 : nil }
+        return Figures(
+            expectedTokS: s.expected, measuredTokS: s.measured, deltaPct: s.deltaPct,
+            creditedHitPct: predicted.map(\.cacheHitPct).flatMap { $0 >= 0 ? $0 : nil },
+            measuredHitPct: measured.map(\.cacheHitPct).flatMap { $0 >= 0 ? $0 : nil },
+            heldBytes: host.flatMap { $0.capBytes > 0 ? $0.heldBytes : nil },
+            capBytes: host.flatMap { $0.capBytes > 0 ? $0.capBytes : nil },
+            worstMs: worst, expectedMs: s.expected.map { 1000 / $0 })
+    }
+
+    /// What "Copy diagnostic" puts on the clipboard, for a bug report: the command that reproduces
+    /// the plan and the planner's whole account, which the screen itself does not show.
+    public var diagnostic: String {
+        let cmd = args.isEmpty ? "(no arguments: the plan declines streaming)" : reproduceLine
+        let account = explain.trimmingCharacters(in: .whitespacesAndNewlines)
+        return account.isEmpty ? cmd + "\n" : "\(cmd)\n\n\(account)\n"
+    }
+}
+
+/// One setting a plan's Apply changed, worded from the parameter table, for the list under Apply.
+public struct AppliedChange: Equatable, Sendable, Identifiable {
+    public let key: String
+    /// The row's settings label; the key where the table has no row for it.
+    public let label: String
+    public let from: String
+    public let to: String
+    public var id: String { key }
+
+    /// What applying a plan changed, row by row in table order, then any key the table lacks.
+    public static func between(_ before: [String: JSON], _ after: [String: JSON], params: [ParamSpec]) -> [AppliedChange] {
+        let known = Set(params.map(\.key))
+        let keys = params.map(\.key) + after.keys.filter { !known.contains($0) }.sorted()
+        return keys.compactMap { key in
+            guard let to = after[key] else { return nil }
+            let from = before[key] ?? .null
+            if from.sameValue(as: to) { return nil }
+            let spec = params.first { $0.key == key }
+            return AppliedChange(key: key, label: spec.map(\.label) ?? key, from: shown(spec, from), to: shown(spec, to))
+        }
+    }
+
+    /// A value as the settings form shows it: a special value or a choice by its name, a number
+    /// with its unit.
+    static func shown(_ spec: ParamSpec?, _ v: JSON) -> String {
+        if v.isNull { return "" }
+        if let named = spec?.specialLabel(v) { return named }
+        if let choice = spec?.choices.first(where: { $0.value == v.display }) { return choice.label }
+        if let unit = spec?.unit, v.double != nil { return "\(v.display) \(unit)" }
+        return v.display
     }
 }
 

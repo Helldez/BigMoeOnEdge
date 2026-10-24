@@ -22,27 +22,44 @@ corrected. It is experimental: two turns of chat are not a pressure-stability gu
 ```
 app/
   Bridge/       EngineBridge.mm: run() on a thread, stop(), and the server's network for
-                Hugging Face on URLSession (the desktop runs curl). The only Objective-C++.
+                Hugging Face and a link's size on URLSession (the desktop runs curl). The only
+                Objective-C++.
   Sources/
-    App/        the entry point, the five tabs, the status line
+    App/        the entry point, the five tabs and the links between them, the status line
     Engine/     the server's life in the app: paths, launch, key, the state the screens observe
     Chat/       conversations, the turn in flight, Markdown, choose-from-options
-    Models/     on the device, the catalog and its downloads, Hugging Face, import a file
-    Plan/       the planner's measurements and decisions
-    Settings/   every engine parameter, rendered from GET /api/params, and the app's own
+    Models/     one list of what is here and what the catalog offers, Hugging Face, a link, a file
+    Plan/       the verdict and its four figures, the planner's measurements and decisions
+    Settings/   every engine parameter, one card per group of GET /api/params, and the app's own
     Metrics/    the live card, the recorded runs, the engine's log
     Design/     the visual language (docs/design.md): palette, type, boxes, the logo
   Resources/    the app icon, rendered from the logo by make-icon.swift
 BmoeKit/        the client side with no UI: the API client, the event stream, the chat protocol,
-                the decide request, conversations, downloads, metrics files. `swift test` runs it.
+                the decide request, conversations, downloads and their check, the models list,
+                the settings cards, the plan's figures, metrics files. `swift test` runs it.
 ```
+
+The screens follow [docs/screens.md](../../docs/screens.md) as the web UI does: Models is one list
+where the files the server lists and the catalog's entries are merged by file, each row with one
+state and one primary action, and with nothing on the device a first visit opens there on three
+steps; Hugging Face is Find, Pick, Check, Download with the server's verdict as the headline; a
+direct https link becomes a catalog entry on the server (`POST /api/models/url`, its sizes from a
+`HEAD` the bridge asks) and its files download here like any other entry's. Delete goes through the
+server (`DELETE /api/models/local/<name>`), which removes a split set whole. The status line shows
+the running downloads and, when the context is below what a client of the server sends, a warning
+with a link that lands on that setting. Plan opens on its verdict and four figures with Apply and
+Measure again; Settings is one card per group with a remembered level filter, a search, a chip per
+row for where its value came from, and links from Plan land on a row.
 
 What the app does itself, and why: it holds the conversations (the server keeps none), downloads
 the catalog's files with the system's background transfers (they go on while the app is away;
 the server has no `curl` here and only lists what lands; a stopped one keeps the system's resume
-data, so its row reads Resume (X of Y GB) beside Delete partial download), writes a metrics CSV per loaded model
-from the event stream, and keeps the network key in the keychain. Nothing in it names an engine
-parameter: the settings are rendered from the parameter table, the plan from the planner.
+data, so its row reads Resume (X of Y GB) beside Delete partial download), checks a finished file
+against its catalog `sha256` before it becomes the model (read back in chunks, off the transfers'
+queue; the file waits as `<name>.part` meanwhile, and a mismatch deletes it and says so), writes a
+metrics CSV per loaded model from the event stream, and keeps the network key in the keychain.
+Nothing in it names an engine parameter: the settings are rendered from the parameter table, the
+plan from the planner.
 
 Where things live: models and metrics files in the app's documents folder, which the Files app
 and the Finder show (copy a `.gguf` in, a CSV out; it is kept out of the device backup); the

@@ -98,10 +98,10 @@ final class ServerFactsTests: XCTestCase {
         XCTAssertEqual(specs[2].typicalText, "usually 0.6 to 1")
         XCTAssertEqual(specs[2].specialLabel(.double(0)), "greedy")
         XCTAssertNil(specs[3].typical) // a range upside down is no guide
-        // The Advanced fold holds only what the basic groups do not, in the table's group order.
-        let advanced = ParamSpec.advanced(specs)
-        XCTAssertEqual(advanced.map(\.label), ["Streaming", "Sampling"])
-        XCTAssertEqual(advanced.flatMap { $0.rows.map(\.key) }, ["io-threads", "ctx"])
+        // Each group's deeper rows fold inside its own card, in the table's group order.
+        let cards = SettingsForm.cards(specs, upTo: .debug)
+        XCTAssertEqual(cards.map(\.label), ["Streaming", "Sampling"])
+        XCTAssertEqual(cards.flatMap { $0.more.flatMap { $0.rows.map(\.key) } }, ["io-threads", "ctx"])
     }
 
     func testHelpSplitsAtTheFirstSentenceThatStandsAlone() throws {

@@ -11,15 +11,40 @@ public struct DownloadProgress: Equatable, Sendable {
     public let received: Int64
     public let total: Int64
     public let state: State
+    /// A file of it has come whole and is being read back against its catalog digest.
+    public let checking: Bool
+
+    public init(entryID: String, received: Int64, total: Int64, state: State, checking: Bool = false) {
+        self.entryID = entryID
+        self.received = received
+        self.total = total
+        self.state = state
+        self.checking = checking
+    }
 
     public var fraction: Double { total > 0 ? min(1, Double(received) / Double(total)) : 0 }
 }
 
 /// Which files of an entry still have to come: a file is there when it has its exact size, so a
-/// shard cut short by a crash is fetched again rather than handed to the engine.
+/// shard cut short by a crash is fetched again rather than handed to the engine. A file whose size
+/// the catalog does not know (0: a link whose host said none) is there once it is there at all.
 public enum DownloadPlan {
     public static func remaining(_ files: [CatalogFile], in dir: URL) -> [CatalogFile] {
-        files.filter { size(of: dir.appendingPathComponent($0.name)) != $0.bytes }
+        files.filter { !isWhole($0, in: dir) }
+    }
+
+    static func isWhole(_ f: CatalogFile, in dir: URL) -> Bool {
+        guard let got = size(of: dir.appendingPathComponent(f.name)) else { return false }
+        return f.bytes > 0 ? got == f.bytes : got > 0
+    }
+
+    /// Where a file waits, whole, for its digest to be checked: the name the server reports as a
+    /// partial download, so a check cut off by the app's end is found again and offered to resume.
+    public static func partURL(_ name: String, in dir: URL) -> URL { dir.appendingPathComponent(name + ".part") }
+
+    /// A file that came whole and was not checked yet: the next start checks it instead of fetching it again.
+    static func uncheckedPart(_ f: CatalogFile, in dir: URL) -> Bool {
+        f.bytes > 0 && size(of: partURL(f.name, in: dir)) == f.bytes
     }
 
     static func size(of url: URL) -> Int64? {
@@ -33,7 +58,10 @@ public enum DownloadPlan {
         var got: Int64 = 0
         var resumable = false
         for f in files {
-            if size(of: dir.appendingPathComponent(f.name)) == f.bytes {
+            if isWhole(f, in: dir) {
+                got += f.bytes
+            } else if uncheckedPart(f, in: dir) {
+                resumable = true
                 got += f.bytes
             } else if let data = try? Data(contentsOf: resumeURL(f.name, in: resumeDir)) {
                 resumable = true
@@ -96,6 +124,10 @@ public final class ModelDownloader: NSObject, @unchecked Sendable {
     private var received: [String: Int64] = [:] // per file name, for the files in flight
     private var failures: [String: String] = [:] // per entry
     private var cancelling: Set<String> = []
+    private var checking: Set<String> = [] // file names read back against their digest
+    // Off the session's delegate queue: reading tens of gigabytes back must not hold up the
+    // progress of the other shards still coming.
+    private let checkQueue = DispatchQueue(label: "io.bigmoeonedge.app.downloads.check", qos: .utility)
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.background(withIdentifier: identifier)
         // A model is gigabytes: the system picks the moment, on Wi-Fi and power when it can.
@@ -135,12 +167,22 @@ public final class ModelDownloader: NSObject, @unchecked Sendable {
         failures[entry.id] = nil
         cancelling.remove(entry.id)
         // In flight from now: the first progress report can take a while to come.
-        for file in todo where received[file.name] == nil { received[file.name] = 0 }
+        for file in todo where received[file.name] == nil && !checking.contains(file.name) { received[file.name] = 0 }
         lock.unlock()
         for file in todo {
             guard let url = URL(string: file.url), url.scheme == "https" else {
                 fail(entry.id, "the catalog gives no https URL for \(file.name)")
                 return
+            }
+            if isChecking(file.name) { continue }
+            // Came whole before and was never checked (the app ended during the check): checked
+            // now, not fetched again.
+            if DownloadPlan.uncheckedPart(file, in: modelsDir) {
+                lock.lock()
+                received[file.name] = nil
+                lock.unlock()
+                check(entry: entry.id, file: file, part: DownloadPlan.partURL(file.name, in: modelsDir))
+                continue
             }
             let resume = DownloadPlan.resumeURL(file.name, in: resumeDir)
             let task: URLSessionDownloadTask
@@ -214,7 +256,43 @@ public final class ModelDownloader: NSObject, @unchecked Sendable {
     // MARK: state
 
     private func hasTasks(_ entryID: String) -> Bool {
-        entries[entryID]?.contains { received[$0.name] != nil } ?? false
+        entries[entryID]?.contains { received[$0.name] != nil || checking.contains($0.name) } ?? false
+    }
+
+    private func isChecking(_ file: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return checking.contains(file)
+    }
+
+    /// Reads a whole file back against its digest, then renames it into place; a mismatch deletes
+    /// it and the entry reports why. The row reads Checking meanwhile, and a cancel stops the check
+    /// with the file kept, so the next start checks it again rather than fetching it.
+    private func check(entry entryID: String, file: CatalogFile, part: URL) {
+        lock.lock()
+        checking.insert(file.name)
+        lock.unlock()
+        publish()
+        let dest = modelsDir.appendingPathComponent(file.name)
+        checkQueue.async {
+            do {
+                try Checksum.land(part, at: dest, file: file.name, sha256: file.sha256) { [weak self] in
+                    guard let self else { return true }
+                    self.lock.lock()
+                    defer { self.lock.unlock() }
+                    return self.cancelling.contains(entryID)
+                }
+            } catch is CancellationError {
+                // Kept: checked on the next start.
+            } catch {
+                self.fail(entryID, error.localizedDescription)
+            }
+            self.lock.lock()
+            self.checking.remove(file.name)
+            self.lock.unlock()
+            self.publish()
+            self.onLanded?()
+        }
     }
 
     private func keep(_ resumeData: Data, for file: String) {
@@ -238,14 +316,15 @@ public final class ModelDownloader: NSObject, @unchecked Sendable {
             for f in files {
                 if let r = received[f.name] {
                     got += r
-                } else if DownloadPlan.size(of: modelsDir.appendingPathComponent(f.name)) == f.bytes {
+                } else if checking.contains(f.name) || DownloadPlan.isWhole(f, in: modelsDir) {
                     got += f.bytes
                 }
             }
+            let checks = files.contains { checking.contains($0.name) }
             if let why = failures[id] {
                 out[id] = DownloadProgress(entryID: id, received: got, total: total, state: .failed(why))
             } else if hasTasks(id) {
-                out[id] = DownloadProgress(entryID: id, received: got, total: total, state: .running)
+                out[id] = DownloadProgress(entryID: id, received: got, total: total, state: .running, checking: checks)
             }
         }
         // An entry with nothing in flight and nothing to report is done: it leaves the list.
@@ -273,15 +352,19 @@ extension ModelDownloader: URLSessionDownloadDelegate {
             fail(tag.entry, "\(tag.file): the server answered HTTP \(status)")
             return
         }
-        // The file has to move before this returns: the system deletes `location` right after.
-        let dest = modelsDir.appendingPathComponent(tag.file)
+        // The file has to move before this returns: the system deletes `location` right after. It
+        // moves under its partial name, and becomes the model only once checked.
+        let file = tag.files.first { $0.name == tag.file } ?? CatalogFile(name: tag.file, bytes: 0, url: "")
+        let part = DownloadPlan.partURL(tag.file, in: modelsDir)
         do {
             try FileManager.default.createDirectory(at: modelsDir, withIntermediateDirectories: true)
-            if FileManager.default.fileExists(atPath: dest.path) { try FileManager.default.removeItem(at: dest) }
-            try FileManager.default.moveItem(at: location, to: dest)
+            if FileManager.default.fileExists(atPath: part.path) { try FileManager.default.removeItem(at: part) }
+            try FileManager.default.moveItem(at: location, to: part)
         } catch {
             fail(tag.entry, "\(tag.file): \(error.localizedDescription)")
+            return
         }
+        check(entry: tag.entry, file: file, part: part)
     }
 
     public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {

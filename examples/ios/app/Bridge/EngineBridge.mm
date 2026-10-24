@@ -72,8 +72,49 @@ public:
         }
     }
 
+    // A link's size from a HEAD that follows redirects (http_fetch.h), for a model added from a
+    // direct link: the app downloads it itself and needs each shard's size to know when it is whole.
+    // As on curl, a host that answers nothing leaves the size unknown; an HTTP error refuses the link.
+    bool size(const std::string & url, uint64_t & bytes, std::string & error) override {
+        bytes = 0;
+        @autoreleasepool {
+            NSURL * u = [NSURL URLWithString:[NSString stringWithUTF8String:url.c_str()]];
+            // https only, as the curl adapter has it; the app's transport security holds the redirects to it.
+            if (!u || ![u.scheme.lowercaseString isEqualToString:@"https"]) {
+                error = "not an https URL";
+                return false;
+            }
+            NSMutableURLRequest * r = [NSMutableURLRequest requestWithURL:u];
+            r.HTTPMethod = @"HEAD";
+            r.timeoutInterval = kHeadTimeoutSeconds;
+            __block NSInteger status = 0;
+            __block long long length = -1;
+            __block bool answered = false;
+            dispatch_semaphore_t done = dispatch_semaphore_create(0);
+            NSURLSessionDataTask * task =
+                [session_ dataTaskWithRequest:r
+                            completionHandler:^(NSData *, NSURLResponse * response, NSError * e) {
+                                if (!e && [response isKindOfClass:NSHTTPURLResponse.class]) {
+                                    answered = true;
+                                    status = ((NSHTTPURLResponse *) response).statusCode;
+                                    length = response.expectedContentLength;
+                                }
+                                dispatch_semaphore_signal(done);
+                            }];
+            [task resume];
+            dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+            if (answered && status >= 400) {
+                error = "the link answered HTTP " + std::to_string((long) status);
+                return false;
+            }
+            if (answered && status >= 200 && status < 300 && length > 0) bytes = (uint64_t) length;
+            return true;
+        }
+    }
+
 private:
     static constexpr NSTimeInterval kTimeoutSeconds = 180; // what the curl adapter allows a request
+    static constexpr NSTimeInterval kHeadTimeoutSeconds = 60; // and a HEAD (curl_fetch.cpp: --max-time 60)
     NSURLSession * session_;
 };
 

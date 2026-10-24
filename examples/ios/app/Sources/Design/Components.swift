@@ -200,6 +200,59 @@ struct Figure: View {
     }
 }
 
+/// A card that opens on a tap: a title, a line on what it holds, and its rows. Open or shut on its
+/// own, or by `isOpen` where a link has to open it.
+struct Fold<Content: View>: View {
+    let title: String
+    var hint = ""
+    var open = false
+    var isOpen: Binding<Bool>?
+    var boxed = true
+    @ViewBuilder var content: Content
+    @State private var shown: Bool?
+
+    var body: some View {
+        let opened = isOpen?.wrappedValue ?? shown ?? open
+        let column = VStack(alignment: .leading, spacing: Grid.s) {
+            Button {
+                if let isOpen { isOpen.wrappedValue = !opened } else { shown = !opened }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: opened ? "chevron.down" : "chevron.right").font(.caption.bold())
+                        .foregroundStyle(Palette.muted).frame(width: 14)
+                    Text(title).font(.pixel(16, bold: true)).foregroundStyle(Palette.text).multilineTextAlignment(.leading)
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if !hint.isEmpty { Text(hint).font(.caption).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true) }
+            if opened { content }
+        }
+        if boxed { column.card() } else { column.frame(maxWidth: .infinity, alignment: .leading) }
+    }
+}
+
+/// The steps of a guided flow in one line, the current one marked, the ones behind it done.
+struct Steps: View {
+    let labels: [String]
+    let current: Int
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(labels.indices, id: \.self) { i in
+                Text("\(i + 1) \(labels[i])")
+                    .font(.pixel(13, bold: i == current))
+                    .foregroundStyle(i == current ? Palette.accentText : i < current ? Palette.ok : Palette.muted)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(i == current ? Palette.accent : .clear)
+                    .overlay(Rectangle().strokeBorder(i < current ? Palette.ok : Palette.border, lineWidth: 1))
+                    .accessibilityAddTraits(i == current ? .isSelected : [])
+            }
+        }
+    }
+}
+
 /// A screen's body: the page colour and the grid's gutters, scrolled.
 struct Page<Content: View>: View {
     @ViewBuilder var content: Content

@@ -65,16 +65,49 @@ public enum FileRole {
     }
 }
 
-/// One file of a catalog entry, with the URL it is fetched from. Sizes are exact.
+/// One file of a catalog entry, with the URL it is fetched from. Sizes are exact; 0 is a size the
+/// host did not say (an entry made from a link whose `HEAD` answered none).
 public struct CatalogFile: Equatable, Sendable, Codable, Hashable {
     public let name: String
     public let bytes: Int64
     public let url: String
+    /// The digest a finished download must have, 64 lowercase hex digits; "" when the catalog names
+    /// none, and the file is then taken as it came.
+    public let sha256: String
 
-    public init(name: String, bytes: Int64, url: String) {
+    public init(name: String, bytes: Int64, url: String, sha256: String = "") {
         self.name = name
         self.bytes = bytes
         self.url = url
+        self.sha256 = sha256
+    }
+
+    // A task in flight carries its entry's files (ModelDownloader's tag): one started by a build
+    // from before the digest carries none, and still decodes.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        bytes = try c.decode(Int64.self, forKey: .bytes)
+        url = try c.decode(String.self, forKey: .url)
+        sha256 = try c.decodeIfPresent(String.self, forKey: .sha256) ?? ""
+    }
+
+    /// 64 lowercase hex digits: a SHA-256 as the catalog spells it.
+    public static func isSha256Hex(_ text: String) -> Bool {
+        text.utf8.count == 64 && text.utf8.allSatisfy { (0x30...0x39).contains($0) || (0x61...0x66).contains($0) }
+    }
+
+    /// The app fetches a file itself, and only over https: the server allows plain http under an
+    /// operator's mirror, which an app's transfers do not take.
+    public static func isHTTPS(_ url: String) -> Bool {
+        guard let u = URL(string: url), let host = u.host, !host.isEmpty else { return false }
+        return u.scheme?.lowercased() == "https"
+    }
+
+    /// What the app writes, fetches and checks holds: a bare name, an https URL, a digest where
+    /// there is one.
+    public var isUsable: Bool {
+        Self.isPlainName(name) && Self.isHTTPS(url) && (sha256.isEmpty || Self.isSha256Hex(sha256))
     }
 
     /// A catalog file name is a bare name: it is joined onto the models directory, so a separator,
@@ -96,7 +129,12 @@ public struct CatalogEntry: Equatable, Sendable, Identifiable {
     /// The server's view of its own models directory: `on_disk`, `downloading`, `available`.
     public let serverStatus: String
     public let files: [CatalogFile]
-    /// Added from a repository (`POST /api/hf/add`): it can be removed; its files stay.
+    /// The first file's name: the one a model on the device is listed by.
+    public var file: String { files[0].name }
+    /// The catalog's line on the entry, where it has one.
+    public let note: String
+    /// Added from a repository or a link (`POST /api/hf/add`, `POST /api/models/url`): it can be
+    /// forgotten; its files stay.
     public let added: Bool
     /// Bytes of it in the server's models directory, complete files and `.part` files alike, and
     /// whether a `.part` is there. Here the app downloads for itself and keeps what a stopped
@@ -107,16 +145,18 @@ public struct CatalogEntry: Equatable, Sendable, Identifiable {
 
     public init?(_ j: JSON) {
         let files = (j["files"].array ?? []).map {
-            CatalogFile(name: $0["name"].string(or: ""), bytes: $0["bytes"].int64(or: 0), url: $0["url"].string(or: ""))
+            CatalogFile(name: $0["name"].string(or: ""), bytes: $0["bytes"].int64(or: 0), url: $0["url"].string(or: ""),
+                        sha256: $0["sha256"].string(or: "").lowercased())
         }
-        guard let id = j["id"].string, !files.isEmpty, files.allSatisfy({ CatalogFile.isPlainName($0.name) }) else {
-            return nil
-        }
+        // One file this app may not write, fetch or check drops the whole entry: half a split set
+        // is no model.
+        guard let id = j["id"].string, !files.isEmpty, files.allSatisfy(\.isUsable) else { return nil }
         self.id = id
         self.files = files
         title = j["title"].string(or: id)
         quant = j["quant"].string(or: "")
         blurb = j["blurb"].string(or: "")
+        note = j["note"].string(or: "")
         bytes = j["bytes"].int64 ?? files.reduce(0) { $0 + $1.bytes }
         serverStatus = j["status"].string(or: "available")
         added = j["added"].bool(or: false)

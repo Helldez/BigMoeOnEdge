@@ -20,6 +20,8 @@ final class Engine: ObservableObject {
     @Published private(set) var params: [ParamSpec] = []
     @Published private(set) var config: ConfigState?
     @Published private(set) var models = ModelsList.empty
+    /// The server has listed the models once: until then an empty list says nothing.
+    @Published private(set) var modelsListed = false
     @Published private(set) var downloads: [String: DownloadProgress] = [:]
     /// Per catalog entry, what a stopped download of it already has on the device: the row offers
     /// Resume with it, and Delete partial download.
@@ -59,6 +61,13 @@ final class Engine: ObservableObject {
     var ready: Bool { serverUp && info?.ready == true }
     var generating: Bool { info?.generating == true }
     var loading: Bool { info?.busyLoading == true }
+
+    /// The loaded session's context against what a client of the server sends, worded with the
+    /// parameter table's label for the setting that raises it.
+    var contextAdvice: ContextAdvice? { ContextAdvice(model: info?.model, params: params) }
+
+    /// The catalog entries whose transfers run.
+    var downloading: Set<String> { Set(downloads.filter { $0.value.state == .running }.keys) }
 
     /// The key the server is shared on the network with: made once, kept in the keychain.
     var networkKey: String {
@@ -160,7 +169,10 @@ final class Engine: ObservableObject {
     }
 
     func refreshModels() async {
-        if let m = try? await api.models() { models = m }
+        if let m = try? await api.models() {
+            models = m
+            modelsListed = true
+        }
         // The app downloads for itself here, so what a stopped transfer kept is its own to report.
         var p: [String: Int64] = [:]
         for e in models.catalog { if let got = downloader.partial(e) { p[e.id] = got } }
@@ -261,10 +273,17 @@ final class Engine: ObservableObject {
         downloader.reattach()
     }
 
-    /// Deletes every file the server listed for the model (a split set as a unit). Never the
-    /// loaded one: the screen does not offer it, and the engine has it mapped.
-    func delete(_ model: LocalModel) async throws {
-        for f in model.files { try FileManager.default.removeItem(atPath: f) }
+    /// Deletes a model of the models folder, named as the listing names it (`Library.deleteName`):
+    /// the server removes every file it groups under it, a split set whole or not at all, and
+    /// refuses the model loaded or loading. The screen offers no delete during the app's own
+    /// download of it, which the server does not see.
+    func delete(name: String) async throws {
+        do {
+            try await api.deleteModel(name: name)
+        } catch {
+            await refreshModels()
+            throw error
+        }
         await refreshModels()
     }
 
@@ -304,11 +323,29 @@ final class Engine: ObservableObject {
         try await api.hfInspect(repo: repo, name: name, token: token)
     }
 
-    /// Adds the model to the catalog and starts its download, as the other entries download.
-    func hfAdd(_ repo: String, name: String, token: String) async throws {
-        let id = try await api.hfAdd(repo: repo, name: name, token: token)
+    /// Adds the model to the catalog and starts its download, as the other entries download;
+    /// answers the entry's id, whose row the screen scrolls to.
+    @discardableResult
+    func hfAdd(_ repo: String, name: String, token: String) async throws -> String {
+        try await startAdded(try await api.hfAdd(repo: repo, name: name, token: token))
+    }
+
+    /// A direct https link to a gguf, made a catalog entry by the server (which checks the link
+    /// and asks each shard's size), then downloaded here like any other entry from its `files`.
+    @discardableResult
+    func addURL(_ url: String) async throws -> String {
+        try await startAdded(try await api.addURL(url))
+    }
+
+    private func startAdded(_ id: String) async throws -> String {
         await refreshModels()
-        if let entry = models.catalog.first(where: { $0.id == id }) { downloader.start(entry) }
+        // An entry the app may not fetch (not https, a file name or a digest it refuses) is not
+        // listed, so it is said rather than left waiting.
+        guard let entry = models.catalog.first(where: { $0.id == id }) else {
+            throw APIError(status: 0, message: "The server added the model, but its files are not ones this app can download.")
+        }
+        downloader.start(entry)
+        return id
     }
 
     func removeAdded(_ id: String) async throws {

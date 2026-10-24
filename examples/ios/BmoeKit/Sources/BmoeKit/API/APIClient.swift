@@ -128,6 +128,22 @@ public final class APIClient: @unchecked Sendable {
             .string(or: "")
     }
 
+    /// Makes a direct https link to a gguf a catalog entry (`POST /api/models/url`); answers its id.
+    /// The server checks the link and asks the sizes; the app then downloads the entry's files.
+    public func addURL(_ url: String) async throws -> String {
+        let body: JSON = ["url": .string(url.trimmingCharacters(in: .whitespacesAndNewlines))]
+        return try await send("POST", "/api/models/url", body, timeout: Self.slow)["id"].string(or: "")
+    }
+
+    /// Deletes a model of the models directory, named as the listing names it (`folder/name`),
+    /// never a path: the server removes every file it groups under that name, a split set whole.
+    public func deleteModel(name: String) async throws {
+        let escaped = name.split(separator: "/", omittingEmptySubsequences: false)
+            .map { $0.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? String($0) }
+            .joined(separator: "/")
+        _ = try await send("DELETE", "/api/models/local/" + escaped, nil, timeout: Self.slow)
+    }
+
     public func removeAdded(id: String) async throws {
         let escaped = id.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? id
         _ = try await send("DELETE", "/api/hf/entry/" + escaped, nil, timeout: Self.quick)
