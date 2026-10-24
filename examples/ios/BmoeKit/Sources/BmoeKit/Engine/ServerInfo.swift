@@ -20,11 +20,15 @@ public struct ModelInfo: Equatable, Sendable {
     public let ctxAdvice: CtxAdvice?
 
     /// `ctx_advice`: what a coding agent's first request needs, whether the context is short of
-    /// it, and the parameter that raises it. The app names neither the number nor the key.
+    /// it, the parameter that raises it, whether a request was refused for it since the load, and
+    /// whether to warn (short, and served on the network or refused). The app names neither the
+    /// number nor the key.
     public struct CtxAdvice: Equatable, Sendable {
         public let recommended: Int
         public let short: Bool
         public let param: String
+        public let warn: Bool
+        public let refused: Bool
     }
 
     public init?(_ j: JSON) {
@@ -41,7 +45,8 @@ public struct ModelInfo: Equatable, Sendable {
         busyThreads = j["busy_threads"].int(or: 0)
         let a = j["ctx_advice"]
         if let rec = a["recommended"].int, let param = a["param"].string, !param.isEmpty {
-            ctxAdvice = CtxAdvice(recommended: rec, short: a["short"].bool(or: false), param: param)
+            ctxAdvice = CtxAdvice(recommended: rec, short: a["short"].bool(or: false), param: param,
+                                  warn: a["warn"].bool(or: false), refused: a["refused"].bool(or: false))
         } else {
             ctxAdvice = nil
         }
@@ -58,6 +63,13 @@ public struct ContextAdvice: Equatable, Sendable {
     public let recommended: Int
     /// The context is below the recommendation: a client like that is refused.
     public let short: Bool
+    /// A request was refused for the context since the load: the warning says so.
+    public let refused: Bool
+    /// Short, and the server serves the network or has refused a request: the status line warns.
+    public let warn: Bool
+    /// Which warning a dismissal is for: another model, another context or a first refusal brings
+    /// it back.
+    public let dismissKey: String
     /// The parameter that raises it, for a link to its row in Settings.
     public let key: String
     /// That parameter as the table labels it.
@@ -69,14 +81,19 @@ public struct ContextAdvice: Equatable, Sendable {
         nCtx = model.nCtx
         recommended = a.recommended
         short = a.short
+        refused = a.refused
+        warn = a.warn
+        dismissKey = "\(model.path)\n\(model.nCtx)" + (a.refused ? "\nrefused" : "")
         key = a.param
         label = params.first { $0.key == a.param }?.label ?? a.param
     }
 
-    /// The warning beside the model's name.
+    /// The warning: what happened or what will, then the figures (the web UI's words).
     public var warning: String {
-        "Context \(nCtx) tokens, under the \(recommended) a coding agent's first request needs; a larger context "
-            + "takes memory from the expert cache."
+        let cost = "Raising it takes memory from the expert cache."
+        return refused
+            ? "A request was refused: it did not fit the context of \(nCtx) tokens. Coding agents need \(recommended). \(cost)"
+            : "Coding agents need a larger context: \(recommended) tokens, this model has \(nCtx). \(cost)"
     }
 
     /// What a chat says when the conversation filled the context.

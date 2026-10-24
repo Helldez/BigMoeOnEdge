@@ -201,10 +201,25 @@ final class ScreensTests: XCTestCase {
     func testTheContextWarningIsTheServersAdvice() throws {
         let params = ParamSpec.parse(try JSON(parsing: #"[{"key":"ctx-size","label":"Context"}]"#))
         let info = ServerInfo(try JSON(parsing: #"""
-            {"state":"ready","model":{"name":"m","n_ctx":4096,"ctx_advice":{"recommended":16384,"short":true,"param":"ctx-size"}}}
+            {"state":"ready","model":{"name":"m","path":"/m/m.gguf","n_ctx":4096,"ctx_advice":{"recommended":16384,"short":true,"param":"ctx-size","warn":true}}}
             """#))
         let a = try XCTUnwrap(ContextAdvice(model: info.model, params: params))
         XCTAssertTrue(a.short)
+        XCTAssertTrue(a.warn)
+        XCTAssertEqual(a.dismissKey, "/m/m.gguf\n4096")
+        // Short on a server only this device reaches (or one that does not say) is no warning.
+        let local = ServerInfo(try JSON(parsing: #"""
+            {"state":"ready","model":{"name":"m","n_ctx":4096,"ctx_advice":{"recommended":16384,"short":true,"param":"ctx-size"}}}
+            """#))
+        XCTAssertFalse(try XCTUnwrap(ContextAdvice(model: local.model, params: params)).warn)
+        // A refusal is another warning: it comes back after a dismissal and says what happened.
+        let refused = ServerInfo(try JSON(parsing: #"""
+            {"state":"ready","model":{"name":"m","path":"/m/m.gguf","n_ctx":4096,"ctx_advice":{"recommended":16384,"short":true,"param":"ctx-size","warn":true,"refused":true}}}
+            """#))
+        let r = try XCTUnwrap(ContextAdvice(model: refused.model, params: params))
+        XCTAssertTrue(r.refused)
+        XCTAssertNotEqual(r.dismissKey, a.dismissKey)
+        XCTAssertTrue(r.warning.hasPrefix("A request was refused"))
         XCTAssertEqual(a.label, "Context")
         XCTAssertEqual(a.key, "ctx-size")
         XCTAssertTrue(a.warning.contains("4096") && a.warning.contains("16384") && a.warning.contains("expert cache"))

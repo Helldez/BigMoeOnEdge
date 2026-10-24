@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { contextAdvice } from './context';
+import { contextAdvice, dismissContextWarning, dismissedContextWarning, warningText } from './context';
 import { parseHash, parseTarget, settingHref } from './route';
 import type { ModelInfo, ParamSpec } from './types';
 
@@ -22,8 +22,42 @@ const params = [{ key: 'some-knob', label: 'Window' } as ParamSpec];
 
 describe('context advice', () => {
   it('reads the recommendation, the shortfall and the setting from the server', () => {
-    const a = contextAdvice(model(4096, { recommended: 16384, short: true, param: 'some-knob' }), params);
-    expect(a).toEqual({ nCtx: 4096, recommended: 16384, short: true, label: 'Window', href: '#/settings/some-knob' });
+    const a = contextAdvice(model(4096, { recommended: 16384, short: true, param: 'some-knob', warn: true }), params);
+    expect(a).toEqual({
+      nCtx: 4096,
+      recommended: 16384,
+      short: true,
+      refused: false,
+      warn: true,
+      dismissKey: 'm.gguf\n4096',
+      label: 'Window',
+      href: '#/settings/some-knob',
+    });
+  });
+
+  it('warns only when the server asks: short on a server only this device reaches is not a warning', () => {
+    expect(contextAdvice(model(4096, { recommended: 16384, short: true, param: 'some-knob', warn: false }), params)?.warn).toBe(false);
+    expect(contextAdvice(model(4096, { recommended: 16384, short: true, param: 'some-knob' }), params)?.warn).toBe(false);
+  });
+
+  it('comes back after a refusal, and says so', () => {
+    const before = contextAdvice(model(4096, { recommended: 16384, short: true, param: 'some-knob', warn: true }), params)!;
+    const after = contextAdvice(model(4096, { recommended: 16384, short: true, param: 'some-knob', refused: true, warn: true }), params)!;
+    expect(after.dismissKey).not.toBe(before.dismissKey);
+    expect(warningText(after)).toMatch(/^A request was refused/);
+    expect(warningText(before)).toContain('16384');
+    expect(warningText(before)).toContain('4096');
+  });
+
+  it('remembers one dismissed load, and survives storage that refuses', () => {
+    const m = new Map<string, string>();
+    const storage = { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v) };
+    expect(dismissedContextWarning(storage)).toBe('');
+    dismissContextWarning('m.gguf\n4096', storage);
+    expect(dismissedContextWarning(storage)).toBe('m.gguf\n4096');
+    const refusing = { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); } };
+    expect(dismissedContextWarning(refusing)).toBe('');
+    expect(() => dismissContextWarning('k', refusing)).not.toThrow();
   });
 
   it('is not short when the server says the context fits', () => {

@@ -1,6 +1,8 @@
 package io.bigmoeonedge.app.ui
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -11,20 +13,23 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.bigmoeonedge.app.data.AppPrefs
 import io.bigmoeonedge.app.data.ModelDownloader
 import io.bigmoeonedge.app.data.downloadSummary
 import io.bigmoeonedge.app.data.runningTransfers
 import io.bigmoeonedge.app.engine.Engine
 import io.bigmoeonedge.app.engine.contextWarning
 import io.bigmoeonedge.app.engine.openAppSettings
+import io.bigmoeonedge.app.engine.text
 import kotlinx.coroutines.flow.filterIsInstance
 
 /**
  * The status line every screen carries (docs/screens.md, "The status line"): what the engine is
  * doing, with the way out when there is one (Models when it has nothing, the app's settings when the
  * system denies it the network), the app's running downloads leading to Models, and, for a loaded
- * model whose context is below what a client of the server sends, a second line saying so with the
- * setting that raises it (all of it the server's: `model.ctx_advice`).
+ * model whose context is below what a client of the server sends, while it serves the network, a
+ * second line saying so with the setting that raises it (all of it the server's: `model.ctx_advice`),
+ * until it is dismissed for that model and context.
  */
 @Composable
 fun EngineStatusLine(onOpenModels: () -> Unit, onOpenSetting: (String) -> Unit) {
@@ -65,17 +70,18 @@ fun EngineStatusLine(onOpenModels: () -> Unit, onOpenSetting: (String) -> Unit) 
         }
     }
     val ctx = contextWarning(info?.model.takeIf { engine.serverUp && info?.ready == true }, engine.params)
-    if (ctx?.short == true) {
+    var dismissed by remember { mutableStateOf(AppPrefs.ctxWarningDismissed(context)) }
+    if (ctx?.warn == true && ctx.dismissKey != dismissed) {
         Surface(color = warnColor().copy(alpha = 0.15f), modifier = Modifier.fillMaxWidth()) {
             Row(Modifier.padding(horizontal = 16.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "Context ${ctx.nCtx} tokens, under the ${ctx.recommended} a coding agent's first request needs; " +
-                        "a larger context takes memory from the expert cache.",
-                    fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
-                )
+                Text(ctx.text(), fontSize = 12.sp, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                 TextButton(shape = RectangleShape, onClick = { onOpenSetting(ctx.key) }, contentPadding = PaddingValues(horizontal = 8.dp)) {
                     Text("Raise ${ctx.label}", fontSize = 12.sp)
                 }
+                IconButton(onClick = {
+                    AppPrefs.setCtxWarningDismissed(context, ctx.dismissKey)
+                    dismissed = ctx.dismissKey
+                }) { Icon(Icons.Filled.Close, contentDescription = "Dismiss the context warning") }
             }
         }
     }

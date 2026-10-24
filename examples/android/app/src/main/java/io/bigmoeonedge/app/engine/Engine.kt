@@ -65,14 +65,22 @@ data class ModelInfo(
 
 /**
  * `model.ctx_advice` (docs/server-api.md): the context a client of the server needs, whether the
- * session's is below it, and the parameter that raises it. The app shows these and names neither
- * the number nor the key (engine/ContextAdvice.kt).
+ * session's is below it, the parameter that raises it, whether a request was refused for it since
+ * the load, and whether to warn (short, and served on the network or refused). The app shows these
+ * and names neither the number nor the key (engine/ContextAdvice.kt).
  */
-data class CtxAdvice(val recommended: Int, val short: Boolean, val param: String) {
+data class CtxAdvice(
+    val recommended: Int,
+    val short: Boolean,
+    val param: String,
+    val warn: Boolean = false,
+    val refused: Boolean = false,
+) {
     companion object {
         fun of(o: JSONObject?): CtxAdvice? {
             if (o == null || !o.has("recommended") || o.optString("param").isEmpty()) return null
-            return CtxAdvice(o.optInt("recommended"), o.optBoolean("short", false), o.optString("param"))
+            return CtxAdvice(o.optInt("recommended"), o.optBoolean("short", false), o.optString("param"),
+                o.optBoolean("warn", false), o.optBoolean("refused", false))
         }
     }
 }

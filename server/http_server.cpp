@@ -1124,6 +1124,7 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     app.store.set_launch_values(o.launch);
     app.host.set_host_info(platform::host_info);
     app.host.set_planner_available(planner_available());
+    app.host.set_serves_network(!is_loopback_host(o.host));
 
     httplib::Server svr;
     // A worker is held for a request's whole life, and a connection past the queue is closed at

@@ -543,6 +543,8 @@ static void context_tests() {
         check(advice.value("recommended", 0) == RunConfig::ctx_for_clients && advice.value("short", false) &&
                   find_param(advice.value("param", "")) != nullptr,
               "a short context is flagged in the ready state, with the recommendation and the parameter");
+        check(!advice.value("warn", true) && !advice.value("refused", true),
+              "but a server only this device reaches does not ask a UI to warn before a refusal");
         const std::string warn = log_with(*q, "under the " + recommended);
         check(warn.find("\"level\":\"warn\"") != std::string::npos &&
                   warn.find(flag_spelling(advice.value("param", ""), recommended)) != std::string::npos,
@@ -554,7 +556,21 @@ static void context_tests() {
         check(refused.find("\"level\":\"warn\"") != std::string::npos &&
                   refused.find(flag_spelling(advice.value("param", ""))) != std::string::npos,
               "and the refusal is logged with the way to raise the context");
+        const json after = host.info()["model"].value("ctx_advice", json::object());
+        check(after.value("refused", false) && after.value("warn", false),
+              "and a refusal asks a UI to warn, on a server only this device reaches too");
         bus.unsubscribe(q);
+    }
+    {
+        EventBus bus;
+        Script script;
+        EngineHost host(bus, opener(script));
+        host.set_serves_network(true);
+        host.load(config(), config());
+        wait_state(host, "ready");
+        const json advice = host.info()["model"].value("ctx_advice", json::object());
+        check(advice.value("short", false) && advice.value("warn", false),
+              "served on the network, a short context asks a UI to warn");
     }
     {
         EventBus bus;
@@ -562,11 +578,13 @@ static void context_tests() {
         Script script;
         script.n_ctx = RunConfig::ctx_for_clients;
         EngineHost host(bus, opener(script));
+        host.set_serves_network(true);
         host.load(config(), config());
         wait_state(host, "ready");
         const json advice = host.info()["model"].value("ctx_advice", json::object());
-        check(advice.value("recommended", 0) == RunConfig::ctx_for_clients && !advice.value("short", true),
-              "a context at the recommendation is not short");
+        check(advice.value("recommended", 0) == RunConfig::ctx_for_clients && !advice.value("short", true) &&
+                  !advice.value("warn", true),
+              "a context at the recommendation is not short, served on the network or not");
         check(log_with(*q, "under the ").empty(), "and draws no warning");
         bus.unsubscribe(q);
     }

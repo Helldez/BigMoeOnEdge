@@ -123,6 +123,8 @@ struct RootView: View {
 struct StatusLine: View {
     @EnvironmentObject private var engine: Engine
     @EnvironmentObject private var nav: Navigator
+    /// The load whose context warning was dismissed on this device; one at a time is enough.
+    @AppStorage("ctxWarningDismissed") private var ctxDismissed = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: Grid.s) {
@@ -136,14 +138,20 @@ struct StatusLine: View {
                 downloads
                 action
             }
-            // A context below what a client of the server sends: said beside the model, with the
-            // way to the setting that raises it (docs/screens.md, "The status line").
-            if engine.ready, let ctx = engine.contextAdvice, ctx.short {
-                HStack(alignment: .firstTextBaseline, spacing: Grid.s) {
+            // A context below what a client of the server sends, while it serves the network: said
+            // beside the model, with the way to the setting that raises it, until dismissed for
+            // that model and context (docs/screens.md, "The status line").
+            if engine.ready, let ctx = engine.contextAdvice, ctx.warn, ctx.dismissKey != ctxDismissed {
+                HStack(alignment: .center, spacing: Grid.s) {
                     Text(ctx.warning).font(.caption).foregroundStyle(Palette.warn).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                     Button("Raise \(ctx.label)") { nav.openSetting(ctx.key) }
                         .font(.pixel(13, bold: true)).foregroundStyle(Palette.accent).buttonStyle(.borderless)
+                    Button { ctxDismissed = ctx.dismissKey } label: {
+                        Image(systemName: "xmark").frame(minWidth: 44, minHeight: 44)
+                    }
+                    .foregroundStyle(Palette.muted).buttonStyle(.borderless)
+                    .accessibilityLabel("Dismiss the context warning")
                 }
             }
         }

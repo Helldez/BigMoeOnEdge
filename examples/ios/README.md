@@ -46,8 +46,10 @@ steps; Hugging Face is Find, Pick, Check, Download with the server's verdict as 
 direct https link becomes a catalog entry on the server (`POST /api/models/url`, its sizes from a
 `HEAD` the bridge asks) and its files download here like any other entry's. Delete goes through the
 server (`DELETE /api/models/local/<name>`), which removes a split set whole. The status line shows
-the running downloads and, when the context is below what a client of the server sends, a warning
-with a link that lands on that setting. Plan opens on its verdict and four figures with Apply and
+the running downloads and, when the context is below what a client of the server sends and the
+server serves the network or has refused a request, a warning with a link that lands on that
+setting and a ✕ that dismisses it for that model and context (a refusal brings it back); the same
+line stays under "Serve on the network". Plan opens on its verdict and four figures with Apply and
 Measure again; Settings is one card per group with a remembered level filter, a search, a chip per
 row for where its value came from, and links from Plan land on a row.
 

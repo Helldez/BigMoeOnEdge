@@ -31,6 +31,9 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.bigmoeonedge.app.data.AppPrefs
 import io.bigmoeonedge.app.engine.ConfigState
+import io.bigmoeonedge.app.engine.ContextWarning
+import io.bigmoeonedge.app.engine.contextWarning
+import io.bigmoeonedge.app.engine.text
 import io.bigmoeonedge.app.engine.Engine
 import io.bigmoeonedge.app.engine.ParamSpec
 import io.bigmoeonedge.app.engine.LanAddress
@@ -81,6 +84,9 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
     var closedCards by remember { mutableStateOf(mapOf<String, Boolean>()) }
     var openFolds by remember { mutableStateOf(mapOf<String, Boolean>()) }
     var landedOn by remember { mutableStateOf("") }
+    // A link from inside this screen (the context line under "Serve on the network") lands the same way.
+    var jump by remember { mutableStateOf("") }
+    val landing = target.ifEmpty { jump }
     var confirmReset by remember { mutableStateOf(false) }
 
     fun set(key: String, value: Any?) = scope.launch {
@@ -98,10 +104,11 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
     // A link to one setting lands on it: the filter widened to its level, the search cleared, its card
     // and fold opened; the row itself scrolls into view. Once per link, so editing another field
     // afterwards does not jump back.
-    LaunchedEffect(target, settable, cfg != null) {
-        if (target.isEmpty() || settable == null || cfg == null) return@LaunchedEffect
-        val spec = settable.firstOrNull { it.key == target }
+    LaunchedEffect(landing, settable, cfg != null) {
+        if (landing.isEmpty() || settable == null || cfg == null) return@LaunchedEffect
+        val spec = settable.firstOrNull { it.key == landing }
         onLanded()
+        jump = ""
         if (spec == null) return@LaunchedEffect
         query = ""
         if (ParamSpec.levelRank(spec.level) > ParamSpec.levelRank(upTo)) upTo = spec.level
@@ -208,7 +215,8 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
             }
 
             HorizontalDivider()
-            AppSettings(engine.serverUp)
+            val ctx = contextWarning(engine.info?.model.takeIf { engine.serverUp && engine.info?.ready == true }, params)
+            AppSettings(engine.serverUp, ctx) { jump = it }
             engine.info?.let { Text("Engine ${it.version}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             Spacer(Modifier.height(24.dp))
         }
@@ -263,7 +271,7 @@ private fun GroupCard(
 
 /** The settings that are this app's own, never an engine parameter. */
 @Composable
-private fun AppSettings(serverUp: Boolean) {
+private fun AppSettings(serverUp: Boolean, ctx: ContextWarning?, onRaise: (String) -> Unit) {
     val context = LocalContext.current
     Text("This app", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
     var share by remember { mutableStateOf(AppPrefs.shareOnNetwork(context)) }
@@ -298,6 +306,14 @@ private fun AppSettings(serverUp: Boolean) {
                     Text(url, fontFamily = FontFamily.Monospace, fontSize = 13.sp, modifier = Modifier.weight(1f))
                     TextButton(shape = RectangleShape, onClick = { clipboard.setText(AnnotatedString(url)) }) { Text("Copy") }
                 }
+            }
+        }
+        // Where the clients are switched on, what they need: said here whether or not the status
+        // line's warning was dismissed.
+        if (ctx?.short == true) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(ctx.text(), fontSize = 12.sp, color = warnColor(), modifier = Modifier.weight(1f))
+                TextButton(shape = RectangleShape, onClick = { onRaise(ctx.key) }) { Text("Raise ${ctx.label}") }
             }
         }
         Text("Key:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)

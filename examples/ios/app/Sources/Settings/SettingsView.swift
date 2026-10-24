@@ -422,6 +422,7 @@ struct ParamRow: View {
 /// the metrics files, starting and stopping the engine. Never an engine parameter.
 struct AppSettingsSection: View {
     @EnvironmentObject private var engine: Engine
+    @EnvironmentObject private var nav: Navigator
     @EnvironmentObject private var preferences: Preferences
     @State private var copied = false
 
@@ -441,7 +442,20 @@ struct AppSettingsSection: View {
                     }
                 }
                 .tint(Palette.accent)
-                if engine.shared { endpoint }
+                if engine.shared {
+                    endpoint
+                    // Where the clients are switched on, what they need: said here whether or not
+                    // the status line's warning was dismissed.
+                    if engine.ready, let ctx = engine.contextAdvice, ctx.short {
+                        HStack(alignment: .center, spacing: Grid.s) {
+                            Text(ctx.warning).font(.caption).foregroundStyle(Palette.warn)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 0)
+                            Button("Raise \(ctx.label)") { nav.openSetting(ctx.key) }
+                                .font(.pixel(13, bold: true)).foregroundStyle(Palette.accent).buttonStyle(.borderless)
+                        }
+                    }
+                }
                 Toggle(isOn: $preferences.metricsCSV) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Metrics CSV").foregroundStyle(Palette.text)
