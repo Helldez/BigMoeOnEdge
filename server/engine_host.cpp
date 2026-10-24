@@ -55,10 +55,13 @@ private:
 
 } // namespace
 
-json context_advice(int n_ctx) {
+json context_advice(int n_ctx, bool serves_network, bool refused) {
+    const bool short_of = n_ctx < RunConfig::ctx_for_clients;
     return json{{"recommended", RunConfig::ctx_for_clients},
-                {"short", n_ctx < RunConfig::ctx_for_clients},
-                {"param", k_ctx_param}};
+                {"short", short_of},
+                {"param", k_ctx_param},
+                {"refused", refused},
+                {"warn", short_of && (serves_network || refused)}};
 }
 
 // A client that hides the server's message (an agent showing "unknown error") leaves the person at
@@ -163,7 +166,7 @@ std::string EngineHost::load(const RunConfig & effective, const RunConfig & requ
                               {"busy_threads",
                                effective.n_threads +
                                    (effective.moe.enabled && effective.moe.overlap ? effective.moe.io_threads : 0)},
-                              {"ctx_advice", context_advice(s->n_ctx())}};
+                              {"ctx_advice", context_advice(s->n_ctx(), serves_network_.load())}};
             }
         }
         publish_state();
@@ -253,6 +256,12 @@ json EngineHost::info() const {
                 {"generating", generating_.load()}};
 }
 
+void EngineHost::note_context_full(int n_ctx) {
+    log_context_full(n_ctx);
+    std::lock_guard<std::mutex> lk(m_);
+    if (model_.is_object()) model_["ctx_advice"] = context_advice(n_ctx, serves_network_.load(), true);
+}
+
 void EngineHost::publish_state() const {
     state_cv_.notify_all();
     bus_.publish("state", info());
@@ -335,7 +344,7 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
     if (!r) {
         out.error = r.error;
         out.code = run_error_name(r.error_kind);
-        if (r.error_kind == RunError::ContextFull) log_context_full(s->n_ctx());
+        if (r.error_kind == RunError::ContextFull) note_context_full(s->n_ctx());
         if (run_error_recoverable(r.error_kind)) {
             // Bad generated output is a server error, but its rolled-back turn leaves the
             // loaded model usable. A client should not have to reload it to retry a request.
@@ -409,7 +418,7 @@ DecideOutcome EngineHost::decide(const DecideRequest & req, const std::function<
     if (!r.ok && !r.cancelled) {
         out.error = r.error;
         out.code = run_error_name(r.error_kind);
-        if (r.error_kind == RunError::ContextFull) log_context_full(s->n_ctx());
+        if (r.error_kind == RunError::ContextFull) note_context_full(s->n_ctx());
         if (!r.fatal) {
             out.status = 400;
         } else {

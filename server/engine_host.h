@@ -57,9 +57,11 @@ struct DecideOutcome {
 inline constexpr size_t k_max_waiting_turns = 16;
 
 // What /api/info says about a session's context against what a client of the server sends
-// (RunConfig::ctx_for_clients): the recommendation, whether `n_ctx` is short of it, and the parameter
-// that raises it, so a front-end names neither the number nor the key.
-json context_advice(int n_ctx);
+// (RunConfig::ctx_for_clients): the recommendation, whether `n_ctx` is short of it, the parameter
+// that raises it, so a front-end names neither the number nor the key, whether a request was refused
+// for the context since the load, and whether a UI should warn: when the context is short and either
+// other devices reach the server (its clients are there) or a client has already been refused.
+json context_advice(int n_ctx, bool serves_network, bool refused = false);
 
 class EngineHost {
 public:
@@ -72,6 +74,8 @@ public:
     // What /api/info adds about the machine; called on every state publish.
     void set_host_info(std::function<json()> provider);
     void set_planner_available(bool available) { planner_available_ = available; }
+    // Bound beyond loopback: the clients a short context refuses are there to be warned about.
+    void set_serves_network(bool on) { serves_network_ = on; }
 
     // A load in auto mode measures the machine before it loads, for tens of seconds on a phone,
     // with nothing loaded meanwhile: `state` reads "planning" between these two calls, so a UI can
@@ -133,11 +137,15 @@ private:
     std::unique_lock<std::mutex> take_turn();
 
     static void log_to_bus(LogLevel level, const char * message, void * self);
+    // A request refused with context_full: logged, and marked in the advice so a UI warns even
+    // after the warning was dismissed (the client itself may show the refusal as an unknown error).
+    void note_context_full(int n_ctx);
 
     EventBus & bus_;
     const SessionOpener open_;
     std::function<json()> host_info_;
     std::atomic<bool> planner_available_{false};
+    std::atomic<bool> serves_network_{false};
     std::atomic<bool> planning_{false};
 
     // Held across load() and unload(), so the loader thread is joined and replaced by one caller

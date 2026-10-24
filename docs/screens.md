@@ -30,11 +30,18 @@ one line, from `GET /api/info` and the `state` events.
 A model that loaded with streaming off (a dense model, or a plan that declined) is marked as such
 wherever the model's name is shown: the live metrics then have no flash column, and the UI says why.
 
-A loaded model whose context is below what a client of the server sends (`model.ctx_advice.short`)
-gets a warning beside its name: the context, the recommendation (`ctx_advice.recommended`, what a
-coding agent's first request needs) and a link to the setting `ctx_advice.param` names, labelled
-from the parameter table; a larger context takes memory from the expert cache, and the warning says
-so. Every UI does this.
+A loaded model whose context is below what a client of the server sends gets a warning beside its
+name when the server says to (`model.ctx_advice.warn`): while the server serves the network, where
+such clients are, and on any server once a request has been refused for the context
+(`ctx_advice.refused`), since the client may show that refusal only as an unknown error. A server
+only its own device reaches, with nothing refused, warns of nothing. The warning says what happened
+or what will ("A request was refused: it did not fit the context of 4096 tokens" / "Coding agents
+need a larger context: 16384 tokens, this model has 4096"), that a larger context takes memory from
+the expert cache, and links the setting `ctx_advice.param` names, labelled from the parameter
+table. A ✕ (a full-size touch target on a phone) dismisses it, remembered on the device for that
+model and context; another model, another context or a first refusal brings it back. In the apps,
+the same line stays under "Serve on the network", where the clients are switched on, dismissed or
+not. Every UI does this.
 
 ## Chat
 

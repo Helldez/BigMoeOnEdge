@@ -45,6 +45,10 @@ object AppPrefs {
         prefs(ctx).getString("settings_level", null)?.takeIf { it in known } ?: defaultLevel
     fun setSettingsLevel(ctx: Context, level: String) = prefs(ctx).edit().putString("settings_level", level).apply()
 
+    /** The load whose context warning was dismissed on this phone, or "": one at a time is enough. */
+    fun ctxWarningDismissed(ctx: Context): String = prefs(ctx).getString("ctx_warning_dismissed", null) ?: ""
+    fun setCtxWarningDismissed(ctx: Context, key: String) = prefs(ctx).edit().putString("ctx_warning_dismissed", key).apply()
+
     /** Free the model after this long with no generation; the next message reloads it. */
     const val IDLE_UNLOAD_MINUTES = 10
 

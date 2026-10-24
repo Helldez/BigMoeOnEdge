@@ -7,9 +7,11 @@ import io.bigmoeonedge.app.engine.appliedChanges
 import io.bigmoeonedge.app.engine.contextWarning
 import io.bigmoeonedge.app.engine.diagnosticText
 import io.bigmoeonedge.app.engine.planFigures
+import io.bigmoeonedge.app.engine.text
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -80,11 +82,23 @@ class PlanAndContextTest {
 
     @Test
     fun theContextWarningIsTheServersAdviceLabelledFromTheTable() {
-        val m = ModelInfo.of(JSONObject("""{"name":"m","n_ctx":4096,"ctx_advice":{"recommended":16384,"short":true,"param":"ctx"}}"""))
+        val m = ModelInfo.of(JSONObject("""{"name":"m","path":"/m/m.gguf","n_ctx":4096,"ctx_advice":{"recommended":16384,"short":true,"param":"ctx","warn":true}}"""))
         val w = contextWarning(m, table)!!
         assertEquals(4096, w.nCtx)
         assertEquals(16384, w.recommended)
         assertTrue(w.short)
+        assertTrue(w.warn)
+        assertEquals("/m/m.gguf\n4096", w.dismissKey)
+        // Short on a server only this phone reaches (or one that does not say) is no warning.
+        val local = ModelInfo.of(JSONObject("""{"name":"m","n_ctx":4096,"ctx_advice":{"recommended":16384,"short":true,"param":"ctx"}}"""))
+        assertFalse(contextWarning(local, table)!!.warn)
+        // A refusal is another warning: it comes back after a dismissal and says what happened.
+        val refused = ModelInfo.of(JSONObject("""{"name":"m","path":"/m/m.gguf","n_ctx":4096,"ctx_advice":{"recommended":16384,"short":true,"param":"ctx","warn":true,"refused":true}}"""))
+        val r = contextWarning(refused, table)!!
+        assertTrue(r.refused)
+        assertTrue(r.dismissKey != w.dismissKey)
+        assertTrue(r.text().startsWith("A request was refused"))
+        assertTrue(w.text().contains("16384") && w.text().contains("4096"))
         assertEquals("Context", w.label)
         assertEquals("ctx", w.key)
         // A parameter the table does not have is named by its key; no advice is no warning.

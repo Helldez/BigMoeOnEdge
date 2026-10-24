@@ -68,8 +68,10 @@ export interface ModelInfo {
   /** What a CPU figure is read against: compute threads, and every thread busy in a decode. */
   compute_threads: number;
   busy_threads: number;
-  /** The context against what a client of the server sends; absent from an older server. */
-  ctx_advice?: { recommended: number; short: boolean; param: string };
+  /** The context against what a client of the server sends; absent from an older server. `refused`:
+   * a request did not fit since the load; `warn`: short, and served on the network or refused
+   * (both absent before 0.35.1). */
+  ctx_advice?: { recommended: number; short: boolean; param: string; refused?: boolean; warn?: boolean };
 }
 
 export interface Info {

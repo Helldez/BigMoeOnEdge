@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.35.1] - 2026-10-24
+
+### Changed
+- **The context warning is for a server with clients, and can be dismissed.**
+  `model.ctx_advice` gains `refused` (a request was refused with `context_full` since the load) and
+  `warn`: the context is short and the server is bound beyond loopback (`--host`, the apps' "Serve
+  on the network") or has refused a request. The web UI and both apps show the warning only when
+  `warn` is true, so a chat on the device itself is no longer told about clients it does not have,
+  while an agent on the same machine that gets refused is still noticed. The text says what
+  happened or what will, a ✕ (44 pt / 48 dp on a phone) dismisses it for that model and context, and
+  a first refusal brings it back. The apps also keep the line under "Serve on the network". The
+  load-time log line and the chat's `context_full` banner are unchanged.
+
 ## [0.35.0] - 2026-10-24
 
 ### Added

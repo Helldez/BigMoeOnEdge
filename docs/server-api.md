@@ -164,7 +164,8 @@ other software, or other people, on that machine or on a network it was told to 
   "model": {"path": "C:/models/Qwen3-30B-A3B-Q4_K_M.gguf", "name": "Qwen3-30B-A3B-Q4_K_M.gguf",
             "arch": "qwen3moe", "n_ctx": 4096, "n_expert_used": 8, "think_ctl": "template",
             "load_s": 12.4, "streaming": true, "compute_threads": 8, "busy_threads": 12,
-            "ctx_advice": {"recommended": 16384, "short": true, "param": "ctx-size"}},
+            "ctx_advice": {"recommended": 16384, "short": true, "param": "ctx-size", "refused": false,
+                           "warn": false}},
   "generating": false
 }
 ```
@@ -182,8 +183,11 @@ threads reads these, never the parameters.
 `ctx_advice` compares the session's context with what a client of the server sends: `recommended`
 is the engine's `RunConfig::ctx_for_clients` (16384 tokens: a coding agent's first request, its
 system prompt and tool schemas alone, measured at 9911 tokens for opencode, plus room for the
-answer), `short` is whether `n_ctx` is below it, and `param` is the parameter that raises it. A UI
-shows the warning and links the setting from these, and names neither the number nor the key. When
+answer), `short` is whether `n_ctx` is below it, `param` is the parameter that raises it, `refused`
+is whether a request has been refused with `context_full` since the load, and `warn` is `short`
+on a server bound beyond loopback (`--host`, whose clients are other devices) or after a refusal:
+a UI shows the warning only when `warn` is true, links the setting from these, and names neither
+the number nor the key. A refusal publishes a `state` event, so an open UI learns of it at once. When
 the context is short, the server also logs a `warn` line at load (on stderr and as a `log` event)
 naming the flag that raises it, and a `warn` line every time a request is refused with
 `context_full`, so the person at the server learns why even when the client hides the error.

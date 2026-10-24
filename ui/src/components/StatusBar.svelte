@@ -1,6 +1,6 @@
 <script lang="ts">
   import StreamingBadge from './StreamingBadge.svelte';
-  import { contextAdvice } from '../lib/context';
+  import { contextAdvice, dismissContextWarning, dismissedContextWarning, warningText } from '../lib/context';
   import { downloadSummary } from '../lib/library';
   import { href } from '../lib/route';
   import { server } from '../stores/server.svelte';
@@ -9,6 +9,11 @@
   const stateText: Record<string, string> = { planning: 'Measuring the machine, then loading' };
   let info = $derived(server.info);
   let ctx = $derived(contextAdvice(info?.model, server.params));
+  let dismissed = $state(dismissedContextWarning());
+  function dismiss(key: string) {
+    dismissContextWarning(key);
+    dismissed = key;
+  }
   let downloads = $derived(downloadSummary(server.downloads));
 </script>
 
@@ -25,10 +30,11 @@
       <span class="model" title={info.model.path}>{info.model.name}</span>
       <span class="muted">{info.model.arch}</span>
       <StreamingBadge streaming={info.model.streaming} />
-      {#if ctx?.short}
-        <span class="badge warn ctx" title="A coding agent's first request (system prompt and tools) needs about {ctx.recommended} tokens; a request that does not fit is refused. A larger context takes memory from the expert cache.">
-          Context {ctx.nCtx} tokens, under the {ctx.recommended} an agent needs.
+      {#if ctx?.warn && ctx.dismissKey !== dismissed}
+        <span class="badge warn ctx" title="A coding agent's first request (system prompt and tools) needs about {ctx.recommended} tokens; a request that does not fit is refused.">
+          {warningText(ctx)}
           <a href={ctx.href}>Raise {ctx.label}</a>
+          <button type="button" class="dismiss" aria-label="Dismiss the context warning" title="Dismiss" onclick={() => ctx && dismiss(ctx.dismissKey)}>×</button>
         </span>
       {/if}
     {:else if info.state === 'empty'}
@@ -65,6 +71,14 @@
   }
   .ctx {
     white-space: normal;
+  }
+  .dismiss {
+    margin-left: 0.4rem;
+    min-width: 1.75rem;
+    min-height: 1.75rem;
+    padding: 0;
+    font-size: 1rem;
+    line-height: 1;
   }
   .error-text {
     color: var(--err);

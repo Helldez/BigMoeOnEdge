@@ -177,10 +177,12 @@ measured, it shows the decisions the settings carry from the last applied plan. 
 idle minutes to give the phone its memory back; the next message reloads it.
 
 The status line above the navigation bar, on every screen, says what the engine is doing and shows
-the running downloads ("Downloading 42%", or "2 downloads 42%"), which lead to Models. A loaded
-model whose context is below what a coding agent's first request needs gets a warning under it: the
-context, the server's recommendation, that a larger context
-takes memory from the expert cache, and a link to the setting that raises it. A chat refused for a
+the running downloads ("Downloading 42%", or "2 downloads 42%"), which lead to Models. With "Serve
+on the network" on, or once a request was refused for the context, a loaded model whose context is
+below what a coding agent's first request needs gets a warning under it: the context, the server's
+recommendation, that a larger context takes memory from the expert cache, a link to the setting
+that raises it, and a ✕ that dismisses it for that model and context (a refusal brings it back).
+The same line stays under "Serve on the network" in Settings. A chat refused for a
 full context offers the same link beside New chat. The number and the setting come from the
 server (`model.ctx_advice`).
 
