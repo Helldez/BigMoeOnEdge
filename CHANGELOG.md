@@ -23,6 +23,14 @@ Semantic Versioning.
   is why the model itself is timed: `docs/hardware-planning.md` has the measurements. Models that
   stream, machines with no device or with a device of its own, and pinned `--gpu-layers`,
   `--devices` or `--device-split` plan as before.
+- **Experimental: streamed experts computed on a device, `--device-cache-mb N`.** With the layers on
+  a device (`--gpu-layers`) and their experts kept on the host (`--tensor-overrides`), llama.cpp's
+  device-side expert cache (`moe_cache_size`) keeps `N` MiB of hot experts in the device's memory
+  and computes them there, uploading the others from the host memory the streamer fills. Not armed
+  by the planner. On a 16 GB unified-memory laptop it is slower than the cores (19 against 27 tok/s
+  on a 6 GB model, 7 against 15 on Qwen3.6-35B-A3B), because the cache synchronizes the device once
+  per layer; it is there to be measured on a device with memory of its own. `docs/backends.md` has
+  the measurements and the known costs.
 
 ## [0.35.1] - 2026-10-24
 

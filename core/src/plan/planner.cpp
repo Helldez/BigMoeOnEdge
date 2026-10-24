@@ -1220,6 +1220,16 @@ Allocation plan_prefill(Planning & s, AllocationInputs & ai) {
                "set by the caller; the planner leaves it alone");
         return alloc;
     }
+    // A prefill device loads as the model's only device and moves layer weights onto it for a wide
+    // graph; computing the experts from a device cache needs the layers on their device for good.
+    // The session refuses the pair, so the plan does not arm one beside the other.
+    if (p.config.moe.device_cache_mb > 0) {
+        s.note("prefill-device", "off", Source::Derived,
+               "Prompts are not given a device of their own: the experts are computed on the layers' device.",
+               "a device expert cache is set, which keeps the layers on their device and computes the experts "
+               "there; a prefill device is not combined with it");
+        return alloc;
+    }
 
     const PrefillSurvey v = survey_prefill(hw);
     const auto prefill_note = [&](std::string value, Source src, std::string brief, std::string reason) {

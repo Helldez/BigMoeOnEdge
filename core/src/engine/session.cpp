@@ -426,6 +426,8 @@ struct Session::Impl {
     bool init_speculation(Opening & o);
     bool bind_streaming(Opening & o);
     bool capture_warmup(Opening & o);
+    bool arm_device_cache(Opening & o);
+    bool device_cache_armed = false;
     bool bind_expert_offsets(Opening & o, const GgufOffsets & offs, std::vector<LayerExperts> & layers, int & n_expert);
     void hand_over_dense_weights(const SessionConfig & cfg,
                                  const GgufOffsets & offs,
@@ -1035,6 +1037,10 @@ bool Session::Impl::create_contexts(Opening & o) {
     // snapshots the rewind is a cheap restore; without them llama.cpp has to fall back to replaying
     // the sequence, which would hand back exactly the decode the speculation just saved.
     if (cfg.spec.enabled()) cparams.n_rs_seq = (uint32_t) cfg.spec.draft_max;
+    // The device-side expert cache is armed only on the second creation (see open()): with it on,
+    // the expert matmuls read its slots rather than the host tensors, so the capture warm-up, which
+    // finds those tensors by the nodes that read them, runs on a context without it.
+    if (device_cache_armed) cparams.moe_cache_size = (size_t) cfg.moe.device_cache_mb << 20;
 
     llama_context * c = llama_init_from_model(model.get(), cparams);
     if (!c) return o.fail("failed to create context");
@@ -1357,6 +1363,25 @@ void Session::Impl::arm_route_trace(Opening & o, int n_expert, std::vector<uint6
     for (int il = 0; il < o.n_layer_streamed; ++il)
         st.expert_bytes_per_layer[(size_t) il] = source.expert_bytes(il);
     o.route_trace->on_static(st);
+}
+
+// The streamed experts computed on the layers' device: the context is made again with llama.cpp's
+// device-side expert cache, which uploads each routed expert from the host tensor the streamer has
+// just filled. The tensors and the streamer are the model's and outlive the first context; the
+// warm-up's KV went with it. Serial streaming only: the overlap hook waits inside the CPU's matmul,
+// which no longer runs the experts.
+bool Session::Impl::arm_device_cache(Opening & o) {
+    const SessionConfig & cfg = o.cfg;
+    if (cfg.moe.overlap)
+        return o.fail("--device-cache-mb computes the experts on the device; --overlap waits for them on the CPU");
+    if (cfg.spec.enabled() || prefill)
+        return o.fail("--device-cache-mb is not combined with speculation or a prefill device yet");
+    if (cfg.n_gpu_layers == 0) return o.fail("--device-cache-mb needs the layers on a device (--gpu-layers)");
+    ctx.reset();
+    device_cache_armed = true;
+    if (!create_contexts(o)) return false;
+    install_abort_callback();
+    return true;
 }
 
 // Everything streaming adds to a loaded model: capture the expert tensors, place them in the file,
@@ -1720,6 +1745,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     im.install_abort_callback();
     if (!im.init_speculation(o)) return nullptr;
     if (cfg.moe.enabled && !im.bind_streaming(o)) return nullptr;
+    if (cfg.moe.device_cache_mb > 0 && !im.arm_device_cache(o)) return nullptr;
     if (im.prefill && !im.open_prefill_device(o)) return nullptr;
     if (im.prefill && cfg.prefill.verify && !im.confirm_prefill_device(o)) return nullptr;
     im.arm_decode_traces(o);

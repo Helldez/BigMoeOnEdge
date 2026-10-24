@@ -354,6 +354,17 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("device-cache-mb", "Device expert cache", G::Cache, L::Experimental,
+                          "EXPERIMENTAL: Compute the streamed experts on the device the layers are on, from a cache "
+                          "of this many MiB in its memory. 0 is off. Needs the layers on that device and the experts "
+                          "kept on the host.");
+        d.value_hint = "N";
+        at_least(d, 0, "MiB");
+        special(d, "0", "off");
+        bind_int(d, [](RunConfig & c) -> int & { return c.moe.device_cache_mb; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("io-threads", "Read lanes", G::Streaming, L::Advanced,
                           "Parallel expert-read lanes, including the calling thread. 1 is the serial baseline.");
         d.value_hint = "N";
