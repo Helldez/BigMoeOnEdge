@@ -589,6 +589,97 @@ void note_regime(Planning & s) {
                    "at a time, so the experts stream instead. Run without the planner to keep plain residency");
 }
 
+// ── a resident model on a device that shares this memory ─────────────────────────
+// The capacity fitter's answer was set aside here because its arithmetic counts one pool twice.
+// That settles capacity, and capacity is not the question on such a machine: the model is already
+// in this pool either way, and computing it on the device moves no byte. What is left is which
+// engine decodes it faster, and that is asked of the model itself (ComputeDevice::decode_tps): no
+// probe of a part of it predicted the whole, in either direction.
+//
+// The whole model or none of it: a partial placement crosses the boundary twice per split layer,
+// and that is the shape measured slower on a phone. One device, named, so llama.cpp does not
+// divide the layers between two backends that drive the same silicon. Its compute buffer is
+// charged to the same pool before anything moves or is measured, and a device whose buffer was
+// never projected is not moved to, since then nothing has priced it.
+void place_on_shared_device(Planning & s) {
+    if (s.placement.fitted || !s.devices_share_host_memory) return;
+    if (s.req.is_pinned("gpu-layers") || s.req.is_pinned("devices") || s.req.is_pinned("device-split")) return;
+    const HardwareProfile & hw = s.hw;
+    const uint64_t air_needed = (uint64_t) ((double) s.host_all * (double) s.pol.fits_air_ratio);
+    const bool cheap = reclaim_is_cheap(hw.anon_overflow);
+
+    std::vector<const ComputeDevice *> candidates;
+    std::string refused;
+    for (const ComputeDevice & d : hw.devices) {
+        // Computing the model where its weights lie, in the mapping, is what was verified, not a
+        // property read off the device type: the probe handed it our memory and checked the answer.
+        // A device that must convert weights into a buffer of its own never passes it, and
+        // `needs_repack` is the streamer's question, about a buffer this load does not use.
+        if (d.is_cpu || d.usable == Tri::No || d.identity_ok != Tri::Yes || d.host_ptr_verified != Tri::Yes) continue;
+        if (d.runs_expert_op != Tri::Yes) continue;
+        const uint64_t compute = s.placement.device_compute_of(d.name);
+        const bool fits =
+            compute > 0 && s.host_all + compute <= s.usable && !(cheap && s.usable - s.host_all - compute < air_needed);
+        if (fits) {
+            candidates.push_back(&d);
+        } else {
+            refused += (refused.empty() ? "" : "; ") + d.name +
+                       (compute == 0 ? ": the compute buffer it would reserve was never projected"
+                                     : ": its compute buffer of " + u64s(mib(compute)) + " MiB beside the " +
+                                           u64s(mib(s.host_all)) + " MiB the model holds leaves too little of the " +
+                                           u64s(mib(s.usable)) + " MiB usable");
+        }
+    }
+    if (candidates.empty()) {
+        if (!refused.empty())
+            s.note("shared-device", "cpu", Source::Derived, "The model stays on the CPU: no device has room to run it.",
+                   "a device shares this memory and could run the whole model at no cost in capacity, but " + refused);
+        return;
+    }
+
+    bool measured = hw.host_decode_tps > 0.0;
+    for (const ComputeDevice * d : candidates)
+        measured = measured && d->decode_tps > 0.0;
+    if (!measured) {
+        std::string names;
+        for (const ComputeDevice * d : candidates) {
+            s.p.decode_probe_devices.push_back(d->name);
+            names += (names.empty() ? "" : ", ") + d->name;
+        }
+        s.note("shared-device", "cpu", Source::Unprobed, "The model stays on the CPU until its decode is measured.",
+               names + " shares this memory and could run the whole model at no cost in capacity; which engine "
+                       "decodes it faster is a measurement of the model itself on each, and it has not been made");
+        return;
+    }
+
+    const ComputeDevice * best = candidates.front();
+    for (const ComputeDevice * d : candidates)
+        if (d->decode_tps > best->decode_tps) best = d;
+    char rates[96];
+    std::snprintf(rates, sizeof(rates), "%.1f against %.1f tok/s", best->decode_tps, hw.host_decode_tps);
+    if (best->decode_tps <= hw.host_decode_tps * (1.0 + (double) s.pol.min_backend_win)) {
+        s.note("shared-device", "cpu", Source::Measured,
+               "The model stays on the CPU: " + best->name + " decodes no faster.",
+               "every layer could move to " + best->name +
+                   " at no cost in capacity, since it reads this memory, "
+                   "and decoding this model there measured " +
+                   std::string(rates) + " on the host: not past the margin a move has to clear");
+        return;
+    }
+    const uint64_t compute = s.placement.device_compute_of(best->name);
+    const int layers = (int) s.model.n_layer + 1; // every block and the output head
+    s.p.config.n_gpu_layers = layers;
+    s.p.config.device_split.clear();
+    s.p.config.device_split.emplace_back(best->name, layers);
+    s.note("shared-device", best->name, Source::Measured,
+           "Every layer runs on " + best->name + ", which shares this memory and decodes faster.",
+           "the whole model moves to " + best->name +
+               ": it reads this host's own memory, so no byte moves and "
+               "the fitter's capacity answer does not apply, and decoding this model there measured " +
+               std::string(rates) + " on the host. Its compute buffer, " + u64s(mib(compute)) +
+               " MiB, is charged to the same pool and fits");
+}
+
 // The two outcomes of the first stage that leave the streamer nothing to do. True when the plan
 // has declined and is complete.
 bool declines_residency(Planning & s) {
@@ -606,6 +697,7 @@ bool declines_residency(Planning & s) {
         s.note("moe-stream", "off", Source::Derived, "Not streamed: the whole model fits in memory.",
                s.placement.fitted ? "the host residual fits: llama.cpp's placement is the whole plan"
                                   : "the model fits: hand the placement to llama.cpp instead");
+        place_on_shared_device(s);
         return true;
     }
     return false;

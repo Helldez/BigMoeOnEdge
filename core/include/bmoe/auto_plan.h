@@ -49,6 +49,11 @@ struct AutoPlanOptions {
     std::function<std::vector<std::string>(const std::string & device)> isolated_probe_args;
     double isolated_probe_seconds = k_isolated_probe_seconds;
 
+    // The same for the child that times this model's decode on one device (probe_decode_child), in
+    // the front-end's spelling. Asked for only when the plan needs it (Plan::decode_probe_devices).
+    // Empty: the device is timed in this process.
+    std::function<std::vector<std::string>(const std::string & device)> decode_probe_args;
+
     // Called as each stage of the sequence starts, with its key (k_plan_steps), its position and
     // the number of stages, so a front-end can say which probe is running instead of a blind wait.
     // Called on the planning thread; empty, nothing is reported.

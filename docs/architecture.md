@@ -100,8 +100,10 @@ core/
     plan/       the hardware planner (hardware-planning.md). Two halves that must not mix:
                 planner, allocate, plan - pure rules over the profiles; no I/O, no platform names
                 hardware_probe, model_probe, storage_probe, headroom_probe, bandwidth_probe, gate_probe,
-                  device_probe, placement_probe, isolated_probe (a device asked in a second
-                  process, so a driver that ends it ends only that) - the adapters that measure a
+                  device_probe, placement_probe, decode_probe (the model's own decode, timed on an
+                  engine, for a resident model on a device that shares this memory), isolated_probe
+                  (a device asked in a second process, so a driver that ends it ends only that) -
+                  the adapters that measure a
                   machine and read a gguf; the only place in the planner where a platform or
                   llama.cpp may appear
                 auto_plan - the composition of the two: the probes in the order a plan is

@@ -6,6 +6,7 @@
 
 #if defined(BMOE_HAVE_PLANNER)
 #include "bmoe/auto_plan.h"
+#include "bmoe/probe.h"
 
 #include <cstdio>
 #endif
@@ -31,6 +32,23 @@ int run_device_probe_child(const std::string & model_path, const std::string & d
     std::string line;
     if (!probe_device_child(model_path.c_str(), device, line)) {
         std::fprintf(stderr, "bmoe-server: no such device to probe: %s\n", device.c_str());
+        return 3;
+    }
+    std::printf("%s\n", line.c_str());
+    std::fflush(stdout);
+    return 0;
+#endif
+}
+
+int run_decode_probe_child(const std::string & model_path, const std::string & device) {
+#if !defined(BMOE_HAVE_PLANNER)
+    (void) model_path;
+    (void) device;
+    return 3;
+#else
+    std::string line;
+    if (!probe_decode_child(model_path.c_str(), device, 0, line)) {
+        std::fprintf(stderr, "bmoe-server: could not time a decode on: %s\n", device.c_str());
         return 3;
     }
     std::printf("%s\n", line.c_str());
@@ -71,6 +89,9 @@ PlanOutcome make_plan(const RunConfig & cfg,
         const std::string model = cfg.model_path;
         opt.isolated_probe_args = [model](const std::string & dev) {
             return std::vector<std::string>{"--probe-device", dev, "-m", model};
+        };
+        opt.decode_probe_args = [model](const std::string & dev) {
+            return std::vector<std::string>{"--probe-decode", dev, "-m", model};
         };
     }
     if (on_step)

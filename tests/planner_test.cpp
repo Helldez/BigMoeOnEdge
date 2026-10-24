@@ -1655,6 +1655,93 @@ int main() {
         }
     }
 
+    // ── a resident model on a device that shares this memory: decided by the model's own decode ─
+    // The fitter's placement on such a device is set aside (one pool, counted twice), so the only
+    // question left is which engine decodes the model faster - measured on the model, asked for by
+    // the plan, and answered by a second plan.
+    {
+        HardwareProfile roomy = unified();
+        roomy.residency_budget = 64 * GiB;
+        roomy.memory_total = 64 * GiB;
+        for (ComputeDevice & d : roomy.devices) {
+            if (d.is_cpu) continue;
+            d.identity_ok = Tri::Yes;
+            d.runs_expert_op = Tri::Yes;
+            d.host_ptr_verified = Tri::Yes;
+        }
+        Placement shared;
+        shared.shared_memory_placement = true;
+        shared.device_bytes = 20 * GiB;
+        shared.device_compute_bytes = 400 * MiB;
+        shared.projected_devices = {"accel"};
+        shared.projected_compute_bytes = {400 * MiB};
+        const auto plan_on = [&](const HardwareProfile & h, const Placement & pl, const PlanRequest & r) {
+            return plan_run(base_cfg(), h, model, pl, r, PlannerPolicy::defaults());
+        };
+        const auto rates = [&](double host, double dev) {
+            HardwareProfile h = roomy;
+            h.host_decode_tps = host;
+            for (ComputeDevice & d : h.devices)
+                if (!d.is_cpu) d.decode_tps = dev;
+            return h;
+        };
+
+        const Plan asked = plan_on(roomy, shared, PlanRequest{});
+        check(asked.regime == Regime::Fits, "shared device: the model is resident");
+        check(asked.decode_probe_devices == std::vector<std::string>{"accel"},
+              "shared device, unmeasured: the plan asks for the decode to be measured");
+        check(asked.config.n_gpu_layers == 0, "shared device, unmeasured: nothing moves yet");
+
+        const Plan faster = plan_on(rates(40.0, 54.0), shared, PlanRequest{});
+        check(faster.decode_probe_devices.empty(), "shared device, measured: nothing more is asked");
+        check(faster.config.n_gpu_layers == (int) model.n_layer + 1, "shared device, faster: every layer moves",
+              std::to_string(faster.config.n_gpu_layers));
+        check(faster.config.device_split.size() == 1 && faster.config.device_split[0].first == "accel",
+              "shared device, faster: the one device is named, so no second backend shares the layers");
+        const Decision * d = find(faster, "shared-device");
+        check(d && d->source == Source::Measured && d->value == "accel",
+              "shared device, faster: a measured decision naming the device");
+        check(validate(faster.config).ok, "shared device, faster: the plan is a valid config",
+              validate(faster.config).error);
+
+        const Plan level = plan_on(rates(40.0, 41.0), shared, PlanRequest{});
+        check(level.config.n_gpu_layers == 0 && level.config.device_split.empty(),
+              "shared device, level: the model stays on the CPU (inside the margin)");
+
+        HardwareProfile copies = rates(40.0, 54.0);
+        for (ComputeDevice & dv : copies.devices)
+            if (!dv.is_cpu) dv.host_ptr_verified = Tri::No;
+        const Plan np = plan_on(copies, shared, PlanRequest{});
+        check(np.config.n_gpu_layers == 0 && np.decode_probe_devices.empty(),
+              "shared device that cannot compute on our memory in place: never a candidate");
+
+        Placement unpriced = shared;
+        unpriced.projected_devices.clear();
+        unpriced.projected_compute_bytes.clear();
+        const Plan up = plan_on(roomy, unpriced, PlanRequest{});
+        check(up.decode_probe_devices.empty() && up.config.n_gpu_layers == 0,
+              "shared device with no projected compute buffer: not measured, not moved");
+
+        PlanRequest pinned;
+        pinned.pinned = {"devices"};
+        const Plan pd = plan_on(rates(40.0, 54.0), shared, pinned);
+        check(pd.config.n_gpu_layers == 0 && !find(pd, "shared-device"), "shared device, devices pinned: left alone");
+
+        // Elsewhere nothing changes: a device with memory of its own goes through the fitter, and a
+        // machine with no device has nothing to ask.
+        HardwareProfile big = desktop();
+        big.residency_budget = 64 * GiB;
+        big.memory_total = 64 * GiB;
+        check(plan_run(base_cfg(), big, model, PlanRequest{}).decode_probe_devices.empty(),
+              "discrete device: no decode measurement asked");
+        HardwareProfile bare = hard_capped();
+        bare.residency_budget = 64 * GiB;
+        bare.memory_total = 64 * GiB;
+        bare.anon_overflow = Overflow::Swap;
+        check(plan_run(base_cfg(), bare, model, PlanRequest{}).decode_probe_devices.empty(),
+              "no device: no decode measurement asked");
+    }
+
     // Informational: the rationale as a user would read it. Printed rather than asserted, because
     // its wording is meant to change as the rules learn; what is asserted is that it exists, names
     // the regime, and tags every decision with where its authority came from.
