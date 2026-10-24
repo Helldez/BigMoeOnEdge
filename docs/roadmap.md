@@ -54,9 +54,11 @@ switch to serve the network with a key under the same security statement the des
 Owed: a run on a phone before it is released, and the decide endpoint (#245) that brings Choose
 from options back to every UI.
 
-**Desktop and Windows at parity.** An installer per OS, signed, that updates itself, in place of an
-archive. In the engine, what Windows lacks: the device probes in a process of their own, the cache
-lock, the byte-identity gates in its CI job, and one documented planner run.
+**Desktop and Windows at parity.** A package per OS now ships beside the archives: `BigMoeOnEdge.app`
+in a `.dmg`, a per-user Windows installer and an AppImage (#385). Owed: the `.dmg` notarised and the
+installer signed, and an app that updates itself. In the engine, what Windows lacks: the device
+probes in a process of their own, the cache lock, the byte-identity gates in its CI job, and one
+documented planner run.
 
 **iOS, with the community.** The app is on the framework: `bmoe_server` runs on a thread inside it
 and the five SwiftUI screens speak to it on loopback, as the other UIs do (`examples/ios`); it

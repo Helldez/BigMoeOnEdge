@@ -89,13 +89,28 @@ Configurazioni e metodo: [docs/benchmarks.md](docs/benchmarks.md). Per aggiunger
 
 ## Avvio rapido
 
-**Android.** Installa l'APK dall'[ultima release](https://github.com/Helldez/BigMoeOnEdge/releases/latest)
-e scegli un modello in **Models**. **Settings → Serve on the network** lo condivide, con una chiave.
+Tutto quanto segue viene dall'[ultima release](https://github.com/Helldez/BigMoeOnEdge/releases/latest).
+Ogni pacchetto avvia il motore e apre l'app nel browser su `http://127.0.0.1:8765/`; scegli un
+modello in **Models**.
+
+- **macOS** (Apple silicon): apri `BigMoeOnEdge-<versione>-macos-arm64.dmg` e trascina l'app in
+  Applicazioni. Mentre è in esecuzione resta nel Dock e nella barra dei menu; **Stop and Quit** la ferma.
+  Non ancora notarizzata: il primo avvio richiede il passo descritto nel README.txt del dmg.
+- **Windows**: esegui `BigMoeOnEdge-<versione>-windows-x86_64-setup.exe` (o `-windows-arm64-setup.exe`).
+  Senza diritti di amministratore; avvia BigMoeOnEdge dal menu Start e chiudi la sua finestra per fermarlo.
+- **Linux**: `chmod +x BigMoeOnEdge-<versione>-linux-x86_64.AppImage` (o `-linux-aarch64`) ed eseguilo.
+  Avviato da un file manager si apre in una finestra di terminale; chiudila per fermarlo.
+- **Android**: aggiungi l'app a [Obtainium][obtainium], che installa ogni release come aggiornamento,
+  oppure installa `app-dev-release.apk` a mano. **Settings → Serve on the network** condivide il motore
+  del telefono, con una chiave.
 
 **iOS.** Compila l'app con Xcode da [examples/ios](examples/ios/README.md). Sperimentale.
 
-**Desktop (macOS, Windows, Linux).** Scarica l'archivio `bmoe-desktop` dalla stessa release ed esegui
-`bmoe-server --open`; l'app si apre su `http://127.0.0.1:8765/`.
+**Archivi.** L'archivio `bmoe-desktop` contiene la stessa app come cartella, per le installazioni da
+script: estrailo ed esegui `bmoe-server --open`. L'archivio `bmoe-cli` contiene il motore da riga di
+comando.
+
+[obtainium]: https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22io.bigmoeonedge.example.dev%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FHelldez%2FBigMoeOnEdge%22%2C%22author%22%3A%22Helldez%22%2C%22name%22%3A%22BigMoeOnEdge%22%2C%22additionalSettings%22%3A%22%7B%5C%22apkFilterRegEx%5C%22%3A%5C%22-release%5C%5C%5C%5C.apk%24%5C%22%7D%22%7D
 
 **Riga di comando.**
 

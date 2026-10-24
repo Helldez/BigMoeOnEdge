@@ -32,6 +32,9 @@ server/         bmoe-server: the application framework every UI speaks to (docs/
                 run(); the whole is the bmoe_server library, main.cpp the process around it
 ui/             the web UI (Svelte + TypeScript); settings rendered from the parameter table
 catalog/        models.json: the curated model catalog, as data
+packaging/      the desktop packages release-host builds from the staged bmoe-desktop folder:
+                macos/ BigMoeOnEdge.app (a launcher that starts and stops bmoe-server) and its .dmg,
+                windows/ the Inno Setup script of the per-user installer, linux/ the AppImage
 core/
   include/bmoe/ ports (interfaces) + config, pure policy, no llama.cpp dependency
     config.h        RunConfig + validate()

@@ -76,13 +76,28 @@ Mixture-of-Experts モデルは、各トークンでエキスパートのうち�
 
 ## クイックスタート
 
-**Android。** [最新リリース](https://github.com/Helldez/BigMoeOnEdge/releases/latest)から APK をインストールし、
-**Models** でモデルを選択します。**Settings → Serve on the network** で、キー付きでモデルを共有できます。
+以下はすべて[最新リリース](https://github.com/Helldez/BigMoeOnEdge/releases/latest)から入手できます。
+各パッケージはエンジンを起動し、ブラウザで `http://127.0.0.1:8765/` のアプリを開きます。
+**Models** でモデルを選択します。
+
+- **macOS**（Apple silicon）：`BigMoeOnEdge-<バージョン>-macos-arm64.dmg` を開き、アプリを
+  アプリケーションにドラッグします。実行中は Dock とメニューバーに表示され、**Stop and Quit** で停止します。
+  まだ公証されていないため、初回起動には dmg 内の README.txt の手順が必要です。
+- **Windows**：`BigMoeOnEdge-<バージョン>-windows-x86_64-setup.exe`（または `-windows-arm64-setup.exe`）
+  を実行します。管理者権限は不要です。スタートメニューから BigMoeOnEdge を起動し、ウィンドウを閉じると停止します。
+- **Linux**：`chmod +x BigMoeOnEdge-<バージョン>-linux-x86_64.AppImage`（または `-linux-aarch64`）
+  して実行します。ファイルマネージャーから起動するとターミナルウィンドウで開き、閉じると停止します。
+- **Android**：アプリを [Obtainium][obtainium] に追加すると、各リリースが更新としてインストールされます。
+  `app-dev-release.apk` を手動でインストールすることもできます。**Settings → Serve on the network** で、
+  キー付きでスマートフォンのエンジンを共有できます。
 
 **iOS。** [examples/ios](examples/ios/README.md) から Xcode でアプリをビルドします。実験的な対応です。
 
-**デスクトップ（macOS、Windows、Linux）。** 同じリリースから `bmoe-desktop` アーカイブをダウンロードし、
-`bmoe-server --open` を実行します。アプリが `http://127.0.0.1:8765/` で開きます。
+**アーカイブ。** `bmoe-desktop` アーカイブには同じアプリがフォルダーとして入っており、スクリプトによる
+インストール向けです。展開して `bmoe-server --open` を実行します。`bmoe-cli` アーカイブには
+コマンドライン版のエンジンが入っています。
+
+[obtainium]: https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22io.bigmoeonedge.example.dev%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FHelldez%2FBigMoeOnEdge%22%2C%22author%22%3A%22Helldez%22%2C%22name%22%3A%22BigMoeOnEdge%22%2C%22additionalSettings%22%3A%22%7B%5C%22apkFilterRegEx%5C%22%3A%5C%22-release%5C%5C%5C%5C.apk%24%5C%22%7D%22%7D
 
 **コマンドライン。**
 
