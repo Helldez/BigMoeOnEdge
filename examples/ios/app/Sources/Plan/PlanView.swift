@@ -20,15 +20,16 @@ struct PlanView: View {
     static let planningDoc = URL(string: "https://github.com/Helldez/BigMoeOnEdge/blob/main/docs/hardware-planning.md")!
 
     private var planner: Bool { engine.info?.plannerAvailable ?? true }
-    private var model: String { engine.config?["model"].string ?? "" }
+    /// A model chosen or loaded: there is something to plan for.
+    private var chosen: Bool { SettingsForm.loadTargetChosen(engine.params, config: engine.config, info: engine.info) }
     private var canMeasure: Bool {
-        planner && !model.isEmpty && !measuring && engine.serverUp && !engine.generating && !engine.loading
+        planner && chosen && !measuring && engine.serverUp && !engine.generating && !engine.loading
     }
 
     var body: some View {
         Page {
             if !planner { Banner(text: "This build does not include the hardware planner.", color: Palette.err) }
-            if model.isEmpty {
+            if !chosen, !engine.params.isEmpty {
                 Text("Choose a model from Models: a plan is for one model on this device.")
                     .font(.subheadline).foregroundStyle(Palette.muted)
             }

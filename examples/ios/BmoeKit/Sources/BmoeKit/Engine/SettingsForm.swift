@@ -102,6 +102,15 @@ public enum SettingsForm {
         return (known + rest).filter { !config.launchKeys.contains($0) && !readOnly.contains($0) }
     }
 
+    /// Whether there is something to plan or load for, without naming the parameter that holds it:
+    /// a row of a read-only group (one a client sets with a control of its own, the model from
+    /// Models) holds a value, or a model is loaded. The Android app's `loadTargetChosen`.
+    public static func loadTargetChosen(_ params: [ParamSpec], config: ConfigState?, info: ServerInfo?) -> Bool {
+        if info?.model != nil { return true }
+        guard let config else { return false }
+        return params.contains { $0.groupReadOnly && !config[$0.key].display.isEmpty }
+    }
+
     /// The rows shown whatever the filter: a value the person set, one a plan decided, one off its default.
     public static func pinned(_ params: [ParamSpec], config: ConfigState?) -> Set<String> {
         guard let config else { return [] }

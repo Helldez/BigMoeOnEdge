@@ -56,7 +56,8 @@ the catalog's files with the system's background transfers (they go on while the
 the server has no `curl` here and only lists what lands; a stopped one keeps the system's resume
 data, so its row reads Resume (X of Y GB) beside Delete partial download), checks a finished file
 against its catalog `sha256` before it becomes the model (read back in chunks, off the transfers'
-queue; the file waits as `<name>.part` meanwhile, and a mismatch deletes it and says so), writes a
+queue; the file waits under a name of its check's own meanwhile, and a mismatch deletes it and
+says so; a start is refused when the entry does not fit in the free space), writes a
 metrics CSV per loaded model from the event stream, and keeps the network key in the keychain.
 Nothing in it names an engine parameter: the settings are rendered from the parameter table, the
 plan from the planner.

@@ -183,19 +183,13 @@ public struct ModelsList: Equatable, Sendable {
 
     public static let empty = ModelsList(.object([:]))
 
-    /// The name of every model file the server sees, shards included: what "on the device" means.
-    public var fileNames: Set<String> {
-        Set(local.flatMap { $0.files.map { ($0 as NSString).lastPathComponent } })
-    }
-
-    /// The on-device rule for a catalog entry. The server answers for its own models directory;
-    /// the app adds what only it knows, the transfers in flight. A set is on the device only when
-    /// every file is: the first shard alone lands seconds into a download of hours.
+    /// The on-device rule for a catalog entry, as the web UI reads it: the server answers for its
+    /// own models directory (`on_disk` once every file of the entry is there, where its download
+    /// puts them); the app adds what only it knows, the transfers in flight. A file of the same
+    /// name elsewhere (a folder inside, a scan directory) is that file's own row, not the entry's.
     public func status(of e: CatalogEntry, downloading: Set<String>) -> CatalogStatus {
         if downloading.contains(e.id) { return .downloading }
-        let present = fileNames
-        if e.serverStatus == "on_disk" || e.files.allSatisfy({ present.contains($0.name) }) { return .onDevice }
-        return .available
+        return e.serverStatus == "on_disk" ? .onDevice : .available
     }
 }
 

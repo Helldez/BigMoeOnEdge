@@ -216,8 +216,9 @@ Semantic Versioning.
     the progress. A direct https link becomes an entry through `POST /api/models/url`, and its
     files download in the app like any other entry's; the bridge now answers the server's `HEAD`
     for a link's size on `URLSession`, so those files have a size to be whole at, and a file whose
-    host gives none counts as whole once it is there. A running download shows in the status line
-    on every screen.
+    host gives none counts as whole once it is there. An entry is on the device when the server
+    says so (`status`), not because a file of the same name sits in a folder or a scan directory,
+    which is that file's own row. A running download shows in the status line on every screen.
   - **The context warning.** Beside the loaded model's name when `ctx_advice.short`: the context,
     the recommendation, that a larger context takes memory from the expert cache, and a button
     named from the parameter table that lands on that setting. A chat's `context_full` error says
@@ -227,7 +228,8 @@ Semantic Versioning.
     measured, memory held against the host pool, the worst case in ms per token), Apply and
     Measure again together, Apply listing what it changed with each row a link to its setting,
     Measure again beside an error, each decision linking to its own row, and Copy diagnostic in
-    place of the planner's account shown in full.
+    place of the planner's account shown in full. Whether there is a model to plan for is read
+    from the read-only group of the parameter table or the loaded model, never by the key.
   - **Settings is one card per group** (`group_order`, `group_label`, `group_help`; the read-only
     model group shown without a control), its deeper rows folded inside by level with what each
     level means, a level filter with counts remembered on the device, a search over every level,
@@ -235,7 +237,8 @@ Semantic Versioning.
     it", "per message", "needs reload" from `reload_keys` with a Reload banner, and "Reset all my
     values" (less `launch_keys` and the read-only group, after a confirmation). A link from Plan,
     the status line or Apply widens the filter, opens the card and fold, scrolls to the row and
-    focuses its field.
+    focuses its field, for that visit only. A level this app does not know yet is folded with
+    the deepest rows.
 
   Checked with `swift test` and a simulator build; not yet run on an iPhone.
 - **CI pins what it downloads (#351).** The gates' Python packages come from
@@ -314,16 +317,25 @@ not changed.
   no URL is read as an option. New server checks: the name and URL rules, the digest of known
   vectors and of a file longer than one read, the LFS oid on an added entry; Android unit tests for
   the name rule and the digest field, and a BmoeKit test for the name rule.
-- **The iOS app checks its downloads against the SHA-256 too.** A finished transfer moves to
-  `<name>.part` and is read back in 4 MiB chunks with CryptoKit, off the transfers' queue so the
-  other shards keep coming; it becomes the model only when its digest matches the catalog's, and a
-  mismatch deletes it and says so, naming both digests. The row reads "Checking" meanwhile; a
-  cancel stops the check and keeps the file, and a whole `.part` left by an app that ended during
-  its check is checked on the next start instead of fetched again. The app now also drops a catalog
-  entry whose URL is not https or whose digest is malformed, beside the name rule it already held,
-  and a task tagged by an earlier build (no digest) still resumes. BmoeKit tests: the digest of the
-  standard vectors and of a file read in chunks that divide nothing evenly, a cancel, a matching
-  file landed, a mismatch deleted with the model that was there kept, the catalog rules.
+- **The iOS app checks its downloads against the SHA-256 too.** A finished transfer moves to a
+  name of its own check (`<name>.part-<id>`), so a second copy of the same file finishing meanwhile
+  can never replace the bytes being hashed and only the file that was hashed is renamed into place.
+  It is read back in 4 MiB chunks with CryptoKit, off the transfers' queue so the other shards keep
+  coming, and becomes the model only when its digest matches the catalog's; a mismatch deletes it
+  and says so, naming both digests. The row reads "Checking" meanwhile; a cancel stops the check
+  and keeps the file as `<name>.part`, and a whole copy left by an app that ended during its check
+  (of a known size, or of any size for a link whose host said none) is checked on the next start
+  instead of fetched again. A start leaves a file already in flight to its transfer (asked of the
+  system's own task list, so a relaunch cannot double one), and an entry stays Downloading while
+  any of its files still comes, even after another failed; the failure is said once nothing runs.
+  A start is refused before a byte moves when what the entry still needs does not fit in the space
+  the device has free, worded as the server's 507. The app now also drops a catalog entry whose
+  URL is not https or whose digest is malformed, beside the name rule it already held, and a task
+  tagged by an earlier build (no digest) still resumes. BmoeKit tests: the digest of the standard
+  vectors and of a file read in chunks that divide nothing evenly, a cancel, a matching file
+  landed, a mismatch deleted with the model that was there kept, a check's own copy landed while
+  another sits at the partial name, a cut-off check found again, the space refusal, the catalog
+  rules.
 
 ## [0.34.1] - 2026-10-23
 

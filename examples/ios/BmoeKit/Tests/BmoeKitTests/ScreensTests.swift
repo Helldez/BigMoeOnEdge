@@ -66,6 +66,36 @@ final class ScreensTests: XCTestCase {
         XCTAssertEqual(DownloadPlan.remaining([known, unknown], in: dir).map(\.name), ["k.gguf"])
     }
 
+    func testEachCheckReadsACopyOfItsOwnAndOneCutOffIsFoundAgain() throws {
+        let known = CatalogFile(name: "k.gguf", bytes: 3, url: "https://x/k")
+        let unknown = CatalogFile(name: "u.gguf", bytes: 0, url: "https://x/u")
+        let a = DownloadPlan.checkURL("k.gguf", in: dir), b = DownloadPlan.checkURL("k.gguf", in: dir)
+        XCTAssertNotEqual(a, b) // two copies finishing together never share the name a check reads
+        try Data("ab".utf8).write(to: a) // not whole: not a copy to check
+        XCTAssertFalse(DownloadPlan.uncheckedPart(known, in: dir))
+        try Data("abc".utf8).write(to: b) // whole, left by a check the app's end cut off
+        XCTAssertEqual(DownloadPlan.uncheckedParts(known, in: dir), [b])
+        // A link file whose size nobody said: any copy with bytes in it came whole.
+        try Data("u".utf8).write(to: DownloadPlan.partURL("u.gguf", in: dir))
+        XCTAssertTrue(DownloadPlan.uncheckedPart(unknown, in: dir))
+        // The copy hashed is the copy landed, whatever lands at the shared partial name meanwhile.
+        try Data("abd".utf8).write(to: DownloadPlan.partURL("k.gguf", in: dir))
+        try Checksum.land(b, at: dir.appendingPathComponent("k.gguf"), file: "k.gguf", sha256: Self.abc)
+        XCTAssertEqual(try Data(contentsOf: dir.appendingPathComponent("k.gguf")), Data("abc".utf8))
+    }
+
+    func testAStartIsRefusedWhenWhatItNeedsDoesNotFit() throws {
+        let files = [CatalogFile(name: "a.gguf", bytes: 3_000_000_000, url: "https://x/a"),
+                     CatalogFile(name: "b.gguf", bytes: 4, url: "https://x/b")]
+        XCTAssertEqual(DownloadPlan.bytesNeeded(files, in: dir, resumeDir: dir), 3_000_000_004)
+        try Data("abcd".utf8).write(to: dir.appendingPathComponent("b.gguf"))
+        XCTAssertEqual(DownloadPlan.bytesNeeded(files, in: dir, resumeDir: dir), 3_000_000_000)
+        XCTAssertEqual(DownloadPlan.spaceRefusal(needed: 3_000_000_000, free: 1_000_000_000), "needs 3.0 GB more, only 1.0 GB free")
+        XCTAssertNil(DownloadPlan.spaceRefusal(needed: 3, free: 3))
+        XCTAssertNil(DownloadPlan.spaceRefusal(needed: 3, free: nil)) // unreadable: the transfer says
+        XCTAssertEqual(DownloadPlan.bytesNeeded([CatalogFile(name: "u.gguf", bytes: 0, url: "https://x/u")], in: dir, resumeDir: dir), 0)
+    }
+
     func testTheCatalogDropsWhatTheAppCannotWriteFetchOrCheck() throws {
         let upper = Self.abc.uppercased()
         let list = ModelsList(try JSON(parsing: #"""
@@ -120,6 +150,22 @@ final class ScreensTests: XCTestCase {
         // A transfer in flight outranks the file's being there.
         let busy = Library.rows(list, local: list.local, downloading: ["A"], partials: [:], loadedPath: nil)
         XCTAssertEqual(busy[0].state, .downloading)
+    }
+
+    func testAnEntryIsOnTheDeviceAsTheServerSaysNotByAFileOfTheSameNameElsewhere() throws {
+        let list = ModelsList(try JSON(parsing: #"""
+            {"models_dir":"/d",
+             "local":[{"name":"n.gguf","path":"/s/n.gguf","dir":"/s","files":["/s/n.gguf"]},
+                      {"name":"o.gguf","path":"/d/f/o.gguf","dir":"/d","folder":"f","files":["/d/f/o.gguf"]}],
+             "catalog":[{"id":"N","status":"available","files":[{"name":"n.gguf","bytes":1,"url":"https://x/n"}]},
+                        {"id":"O","status":"on_disk","files":[{"name":"o.gguf","bytes":1,"url":"https://x/o"}]}]}
+            """#))
+        XCTAssertEqual(list.status(of: list.catalog[0], downloading: []), .available)
+        XCTAssertEqual(list.status(of: list.catalog[1], downloading: []), .onDevice)
+        let rows = Library.rows(list, local: list.local, downloading: [], partials: [:], loadedPath: nil)
+        // The scan directory's copy is its own row; the entry stays a suggestion with its Download.
+        XCTAssertEqual(rows.map(\.id), ["/s/n.gguf", "/d/f/o.gguf", "catalog:O", "catalog:N"])
+        XCTAssertEqual(rows.last?.state, .available)
     }
 
     func testRunningDownloadsAtAGlance() {
@@ -216,6 +262,27 @@ final class ScreensTests: XCTestCase {
         XCTAssertEqual(SettingsForm.levelCounts(params), [.basic: 3, .advanced: 1, .experimental: 1, .debug: 2])
         XCTAssertEqual(SettingsForm.widened(.basic, toShow: .debug), .debug)
         XCTAssertEqual(SettingsForm.widened(.experimental, toShow: .advanced), .experimental)
+    }
+
+    func testALoadTargetIsReadFromTheReadOnlyGroupNotByName() throws {
+        let params = try table()
+        let none = ConfigState(try JSON(parsing: #"{"values":{"model":""}}"#))
+        let set = ConfigState(try JSON(parsing: #"{"values":{"model":"/d/a.gguf"}}"#))
+        let loaded = ServerInfo(try JSON(parsing: #"{"state":"ready","model":{"name":"a.gguf"}}"#))
+        XCTAssertFalse(SettingsForm.loadTargetChosen(params, config: none, info: nil))
+        XCTAssertTrue(SettingsForm.loadTargetChosen(params, config: set, info: nil))
+        XCTAssertTrue(SettingsForm.loadTargetChosen(params, config: none, info: loaded))
+        XCTAssertFalse(SettingsForm.loadTargetChosen(params, config: nil, info: nil))
+        // A row outside a read-only group holding a value is no load target.
+        XCTAssertFalse(SettingsForm.loadTargetChosen(params.filter { !$0.groupReadOnly }, config: set, info: nil))
+    }
+
+    func testALevelFromLaterIsFoldedAwayNotShownAsBasic() throws {
+        let specs = ParamSpec.parse(try JSON(parsing: #"""
+            [{"key":"a","group":"g","level":"basic"},{"key":"b","group":"g","level":"from-later"},{"key":"c","group":"g"}]
+            """#))
+        XCTAssertEqual(specs.map(\.level), [.basic, .debug, .basic])
+        XCTAssertEqual(SettingsForm.cards(specs, upTo: .experimental).first?.hidden, 1)
     }
 
     func testWhereAValueCameFromAndWhatResetAllRemoves() throws {

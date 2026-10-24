@@ -49,6 +49,11 @@ struct SettingsView: View {
             .onChange(of: nav.settingTarget) { _ in land(proxy) }
             .onChange(of: engine.params.count) { _ in land(proxy) }
             .onChange(of: engine.config == nil) { _ in land(proxy) }
+            // A link widens the filter for that visit only.
+            .onDisappear {
+                widened = nil
+                focusKey = nil
+            }
         }
         .confirmationDialog(resetTitle, isPresented: $confirmReset, titleVisibility: .visible) {
             Button("Reset", role: .destructive) { resetAll() }
@@ -204,6 +209,8 @@ struct SettingsView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
             withAnimation { proxy.scrollTo("param-\(key)", anchor: .center) }
             focusKey = key
+            // The focus is taken once: a later visit opens on the page, not on this row.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { if focusKey == key { focusKey = nil } }
         }
     }
 

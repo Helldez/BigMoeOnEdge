@@ -250,7 +250,12 @@ final class Engine: ObservableObject {
 
     // MARK: models
 
-    func download(_ entry: CatalogEntry) { downloader.start(entry) }
+    /// Starts or resumes the entry, refused before a byte moves when what it still needs does not
+    /// fit in the space the device has free.
+    func download(_ entry: CatalogEntry) throws {
+        if let why = downloader.spaceRefusal(entry) { throw APIError(status: 507, message: "\(entry.title): \(why)") }
+        downloader.start(entry)
+    }
     func cancelDownload(_ id: String) { downloader.cancel(id) }
     func dismissDownload(_ id: String) { downloader.dismiss(id) }
 
@@ -344,7 +349,8 @@ final class Engine: ObservableObject {
         guard let entry = models.catalog.first(where: { $0.id == id }) else {
             throw APIError(status: 0, message: "The server added the model, but its files are not ones this app can download.")
         }
-        downloader.start(entry)
+        // A refusal (no space) throws back to the card that asked, which says why where the person looks.
+        try download(entry)
         return id
     }
 

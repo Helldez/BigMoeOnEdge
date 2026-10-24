@@ -57,7 +57,9 @@ public struct ParamSpec: Equatable, Sendable, Identifiable {
         groupOrder = j["group_order"].int
         groupHelp = j["group_help"].string(or: "")
         groupReadOnly = j["group_read_only"].bool(or: false)
-        level = Level(rawValue: j["level"].string(or: "basic")) ?? .basic
+        // No level is a basic row; a level this app does not know yet is taken as the deepest, so
+        // a new kind of row is folded away rather than shown with the recommended ones.
+        level = Level(rawValue: j["level"].string(or: "basic")) ?? .debug
         scope = Scope(rawValue: j["scope"].string(or: "session")) ?? .session
         help = j["help"].string(or: "")
         flag = j["flag"].string(or: "")

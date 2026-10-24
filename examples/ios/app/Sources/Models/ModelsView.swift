@@ -269,7 +269,7 @@ struct ModelsView: View {
 
     private func download(_ e: CatalogEntry) {
         followed = e.id
-        engine.download(e)
+        do { try engine.download(e) } catch { failure = error.localizedDescription }
     }
 
     // MARK: companions, other models, where they live
