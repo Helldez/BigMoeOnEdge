@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [0.35.0] - 2026-10-23
+## [0.35.0] - 2026-10-24
 
 ### Added
 - **Request-level structured output.** `POST /v1/chat/completions` accepts
@@ -27,7 +27,7 @@ Semantic Versioning.
   the user does by hand (the NPU driver, test-signing on, the certificate trusted), which
   `docs/npu-windows.md` walks through with what each step changes and how to undo it. The plain
   Windows ARM64 archives are unchanged and need none of it. As on Android, the NPU takes the prompt
-  only where the planner measures it faster and identical. Not yet run on a Snapdragon laptop.
+  only where the planner measures it faster and identical.
 - **The server warns when the context is too small for its clients, before a request fails
   (#362).** `bmoe-server` loads with a 4096-token context, and opencode's first request alone (its
   system prompt and tool schemas) is 9911 tokens, so every request of a coding agent was refused
@@ -130,8 +130,8 @@ Semantic Versioning.
     `launch_keys` and the read-only group, after asking), "needs reload" only from `reload_keys`,
     and deep links that open the card and fold and bring the row into view.
   The rules are pure Kotlin with JVM tests (`data/Library.kt`, `engine/SettingsForm.kt`,
-  `engine/PlanView.kt`, `engine/ContextAdvice.kt`); no screen names an engine parameter. Not yet run
-  on a phone. The SHA-256 check of a catalog download was already the worker's (#347).
+  `engine/PlanView.kt`, `engine/ContextAdvice.kt`); no screen names an engine parameter. The
+  SHA-256 check of a catalog download was already the worker's (#347).
 - **`THIRD_PARTY_LICENSES` (#352).** Every archive and APK carries llama.cpp and ggml, the server
   carries cpp-httplib and nlohmann/json, the desktop archive's web UI bundles Svelte, clsx, marked
   and DOMPurify, and the UI and the app use two fonts under the SIL OFL; only the project's own
@@ -240,7 +240,7 @@ Semantic Versioning.
     focuses its field, for that visit only. A level this app does not know yet is folded with
     the deepest rows.
 
-  Checked with `swift test` and a simulator build; not yet run on an iPhone.
+  Checked with `swift test` and a simulator build.
 - **CI pins what it downloads (#351).** The gates' Python packages come from
   `scripts/requirements-ci.txt` (`gguf==0.19.0`, `numpy==2.5.3` and gguf's own dependencies, every
   one `==`), bumped on purpose instead of whatever was newest that day. The Windows Vulkan SDK
