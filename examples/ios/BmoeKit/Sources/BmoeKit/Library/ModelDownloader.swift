@@ -11,15 +11,70 @@ public struct DownloadProgress: Equatable, Sendable {
     public let received: Int64
     public let total: Int64
     public let state: State
+    /// A file of it has come whole and is being read back against its catalog digest.
+    public let checking: Bool
+
+    public init(entryID: String, received: Int64, total: Int64, state: State, checking: Bool = false) {
+        self.entryID = entryID
+        self.received = received
+        self.total = total
+        self.state = state
+        self.checking = checking
+    }
 
     public var fraction: Double { total > 0 ? min(1, Double(received) / Double(total)) : 0 }
 }
 
 /// Which files of an entry still have to come: a file is there when it has its exact size, so a
-/// shard cut short by a crash is fetched again rather than handed to the engine.
+/// shard cut short by a crash is fetched again rather than handed to the engine. A file whose size
+/// the catalog does not know (0: a link whose host said none) is there once it is there at all.
 public enum DownloadPlan {
     public static func remaining(_ files: [CatalogFile], in dir: URL) -> [CatalogFile] {
-        files.filter { size(of: dir.appendingPathComponent($0.name)) != $0.bytes }
+        files.filter { !isWhole($0, in: dir) }
+    }
+
+    static func isWhole(_ f: CatalogFile, in dir: URL) -> Bool {
+        guard let got = size(of: dir.appendingPathComponent(f.name)) else { return false }
+        return f.bytes > 0 ? got == f.bytes : got > 0
+    }
+
+    /// Where a file waits, whole, for its digest to be checked: the name the server reports as a
+    /// partial download (and deletes with Delete partial), so a check that did not finish is found
+    /// again and offered to resume.
+    public static func partURL(_ name: String, in dir: URL) -> URL { dir.appendingPathComponent(name + ".part") }
+
+    /// The name one check reads: its own, so a second copy of the same file finishing meanwhile can
+    /// never replace the bytes under a check, and only the file that was hashed is renamed into place.
+    static func checkURL(_ name: String, in dir: URL) -> URL {
+        dir.appendingPathComponent("\(name).part-\(UUID().uuidString)")
+    }
+
+    /// Whole files of `f` not checked yet: its partial name, and any check's own name a check cut
+    /// off by the app's end left behind. Only a whole file is ever moved to these names (the system
+    /// keeps a transfer's bytes elsewhere until it ends), so any of them with bytes in it is whole.
+    static func uncheckedParts(_ f: CatalogFile, in dir: URL) -> [URL] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        return names.filter { $0 == f.name + ".part" || $0.hasPrefix(f.name + ".part-") }.sorted()
+            .map { dir.appendingPathComponent($0) }
+            .filter { url in size(of: url).map { f.bytes > 0 ? $0 == f.bytes : $0 > 0 } ?? false }
+    }
+
+    /// A file that came whole and was not checked yet: the next start checks it instead of fetching it again.
+    static func uncheckedPart(_ f: CatalogFile, in dir: URL) -> Bool { !uncheckedParts(f, in: dir).isEmpty }
+
+    /// The bytes a start still has to bring for these files: their whole size, less what is here
+    /// whole and what stopped transfers kept. 0 for files whose size nobody said.
+    public static func bytesNeeded(_ files: [CatalogFile], in dir: URL, resumeDir: URL) -> Int64 {
+        let total = files.reduce(Int64(0)) { $0 + max(0, $1.bytes) }
+        let here = partial(files, in: dir, resumeDir: resumeDir)
+            ?? files.filter { isWhole($0, in: dir) }.reduce(Int64(0)) { $0 + max(0, $1.bytes) }
+        return max(0, total - here)
+    }
+
+    /// Why a start is refused for want of space, worded as the server words it, or nil when it fits.
+    public static func spaceRefusal(needed: Int64, free: Int64?) -> String? {
+        guard let free, needed > free else { return nil }
+        return "needs \(ByteText.gb(needed)) more, only \(ByteText.gb(free)) free"
     }
 
     static func size(of url: URL) -> Int64? {
@@ -33,7 +88,10 @@ public enum DownloadPlan {
         var got: Int64 = 0
         var resumable = false
         for f in files {
-            if size(of: dir.appendingPathComponent(f.name)) == f.bytes {
+            if isWhole(f, in: dir) {
+                got += f.bytes
+            } else if uncheckedPart(f, in: dir) {
+                resumable = true
                 got += f.bytes
             } else if let data = try? Data(contentsOf: resumeURL(f.name, in: resumeDir)) {
                 resumable = true
@@ -96,6 +154,10 @@ public final class ModelDownloader: NSObject, @unchecked Sendable {
     private var received: [String: Int64] = [:] // per file name, for the files in flight
     private var failures: [String: String] = [:] // per entry
     private var cancelling: Set<String> = []
+    private var checks: [String: Int] = [:] // per file name, the checks reading a copy of it back
+    // Off the session's delegate queue: reading tens of gigabytes back must not hold up the
+    // progress of the other shards still coming.
+    private let checkQueue = DispatchQueue(label: "io.bigmoeonedge.app.downloads.check", qos: .utility)
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.background(withIdentifier: identifier)
         // A model is gigabytes: the system picks the moment, on Wi-Fi and power when it can.
@@ -127,33 +189,64 @@ public final class ModelDownloader: NSObject, @unchecked Sendable {
     }
 
     /// Starts, or resumes, every file of the entry that is not on the device yet.
+    /// Why the entry cannot start here, for want of space, or nil when what it still needs fits in
+    /// what the models folder's volume has free (as the server refuses with 507 before a byte moves).
+    public func spaceRefusal(_ entry: CatalogEntry) -> String? {
+        let needed = DownloadPlan.bytesNeeded(entry.files, in: modelsDir, resumeDir: resumeDir)
+        let values = try? modelsDir.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return DownloadPlan.spaceRefusal(needed: needed, free: values?.volumeAvailableCapacityForImportantUsage)
+    }
+
+    /// A file already in flight (a transfer the system holds, or a check) is left to it: a second
+    /// transfer of the same file would race the first to the same place.
     public func start(_ entry: CatalogEntry) {
         let todo = DownloadPlan.remaining(entry.files, in: modelsDir)
         guard !todo.isEmpty else { return }
+        if let bad = todo.first(where: { URL(string: $0.url)?.scheme != "https" }) {
+            fail(entry.id, "the catalog gives no https URL for \(bad.name)")
+            return
+        }
         lock.lock()
         entries[entry.id] = entry.files
         failures[entry.id] = nil
         cancelling.remove(entry.id)
-        // In flight from now: the first progress report can take a while to come.
-        for file in todo where received[file.name] == nil { received[file.name] = 0 }
         lock.unlock()
-        for file in todo {
-            guard let url = URL(string: file.url), url.scheme == "https" else {
-                fail(entry.id, "the catalog gives no https URL for \(file.name)")
-                return
-            }
-            let resume = DownloadPlan.resumeURL(file.name, in: resumeDir)
-            let task: URLSessionDownloadTask
-            if let data = try? Data(contentsOf: resume) {
-                try? FileManager.default.removeItem(at: resume)
-                task = session.downloadTask(withResumeData: data)
-            } else {
-                task = session.downloadTask(with: url)
-            }
-            task.taskDescription = Tag(entry: entry.id, file: file.name, files: entry.files).text
-            task.resume()
+        // The system's own list of tasks, not only this object's: after a relaunch the transfers
+        // it still holds may not have been reattached yet.
+        session.getAllTasks { tasks in
+            let live = Set(tasks.filter { $0.state == .running || $0.state == .suspended }
+                .compactMap { Tag($0.taskDescription)?.file })
+            self.lock.lock()
+            let fresh = todo.filter { !live.contains($0.name) && self.received[$0.name] == nil && !self.checkingFile($0.name) }
+            // In flight from now: the first progress report can take a while to come.
+            for file in fresh { self.received[file.name] = 0 }
+            self.lock.unlock()
+            for file in fresh { self.begin(entry, file) }
+            self.publish()
         }
-        publish()
+    }
+
+    private func begin(_ entry: CatalogEntry, _ file: CatalogFile) {
+        // Came whole before and was never checked (the app ended during the check): checked now,
+        // not fetched again.
+        if let part = DownloadPlan.uncheckedParts(file, in: modelsDir).first {
+            lock.lock()
+            received[file.name] = nil
+            lock.unlock()
+            check(entry: entry.id, file: file, part: part)
+            return
+        }
+        guard let url = URL(string: file.url) else { return }
+        let resume = DownloadPlan.resumeURL(file.name, in: resumeDir)
+        let task: URLSessionDownloadTask
+        if let data = try? Data(contentsOf: resume) {
+            try? FileManager.default.removeItem(at: resume)
+            task = session.downloadTask(withResumeData: data)
+        } else {
+            task = session.downloadTask(with: url)
+        }
+        task.taskDescription = Tag(entry: entry.id, file: file.name, files: entry.files).text
+        task.resume()
     }
 
     /// Cancels the entry's transfers. What came so far is kept, so a later start resumes it and
@@ -194,6 +287,10 @@ public final class ModelDownloader: NSObject, @unchecked Sendable {
             candidates.append(caches.appendingPathComponent("com.apple.nsurlsessiond/Downloads/\(bundle)"))
         }
         for f in entry.files {
+            // A whole copy a check did not finish, under a check's own name the server does not know.
+            for part in DownloadPlan.uncheckedParts(f, in: modelsDir) where part.lastPathComponent != f.name + ".part" {
+                try? FileManager.default.removeItem(at: part)
+            }
             let resume = DownloadPlan.resumeURL(f.name, in: resumeDir)
             guard let data = try? Data(contentsOf: resume) else { continue }
             if let tmp = ResumeData.tempFile(data, candidates: candidates) { try? FileManager.default.removeItem(at: tmp) }
@@ -214,7 +311,52 @@ public final class ModelDownloader: NSObject, @unchecked Sendable {
     // MARK: state
 
     private func hasTasks(_ entryID: String) -> Bool {
-        entries[entryID]?.contains { received[$0.name] != nil } ?? false
+        entries[entryID]?.contains { received[$0.name] != nil || checkingFile($0.name) } ?? false
+    }
+
+    // Under the lock.
+    private func checkingFile(_ name: String) -> Bool { (checks[name] ?? 0) > 0 }
+
+    /// Reads a whole file back against its digest, then renames it into place; a mismatch deletes
+    /// it and the entry reports why. The file is first moved to a name of this check's own, so the
+    /// bytes hashed are the bytes renamed whatever else lands meanwhile. The row reads Checking,
+    /// and a cancel stops the check with the file kept under its partial name, so the next start
+    /// checks it again rather than fetching it.
+    private func check(entry entryID: String, file: CatalogFile, part: URL) {
+        let own = DownloadPlan.checkURL(file.name, in: modelsDir)
+        do {
+            try FileManager.default.moveItem(at: part, to: own)
+        } catch {
+            fail(entryID, "\(file.name): \(error.localizedDescription)")
+            return
+        }
+        lock.lock()
+        checks[file.name, default: 0] += 1
+        lock.unlock()
+        publish()
+        let dest = modelsDir.appendingPathComponent(file.name)
+        checkQueue.async {
+            do {
+                try Checksum.land(own, at: dest, file: file.name, sha256: file.sha256) { [weak self] in
+                    guard let self else { return true }
+                    self.lock.lock()
+                    defer { self.lock.unlock() }
+                    return self.cancelling.contains(entryID)
+                }
+            } catch is CancellationError {
+                // Kept for the next start, under the name the server's Delete partial removes.
+                let part = DownloadPlan.partURL(file.name, in: self.modelsDir)
+                try? FileManager.default.removeItem(at: part)
+                try? FileManager.default.moveItem(at: own, to: part)
+            } catch {
+                self.fail(entryID, error.localizedDescription)
+            }
+            self.lock.lock()
+            self.checks[file.name] = (self.checks[file.name] ?? 1) > 1 ? self.checks[file.name]! - 1 : nil
+            self.lock.unlock()
+            self.publish()
+            self.onLanded?()
+        }
     }
 
     private func keep(_ resumeData: Data, for file: String) {
@@ -238,14 +380,18 @@ public final class ModelDownloader: NSObject, @unchecked Sendable {
             for f in files {
                 if let r = received[f.name] {
                     got += r
-                } else if DownloadPlan.size(of: modelsDir.appendingPathComponent(f.name)) == f.bytes {
+                } else if checkingFile(f.name) || DownloadPlan.isWhole(f, in: modelsDir) {
                     got += f.bytes
                 }
             }
-            if let why = failures[id] {
+            let inCheck = files.contains { checkingFile($0.name) }
+            // Downloading while any file of it is still in flight, even after another failed: the
+            // row keeps Cancel, and offers no second start of files already coming. The failure
+            // is said once nothing of it runs.
+            if hasTasks(id) {
+                out[id] = DownloadProgress(entryID: id, received: got, total: total, state: .running, checking: inCheck)
+            } else if let why = failures[id] {
                 out[id] = DownloadProgress(entryID: id, received: got, total: total, state: .failed(why))
-            } else if hasTasks(id) {
-                out[id] = DownloadProgress(entryID: id, received: got, total: total, state: .running)
             }
         }
         // An entry with nothing in flight and nothing to report is done: it leaves the list.
@@ -273,15 +419,19 @@ extension ModelDownloader: URLSessionDownloadDelegate {
             fail(tag.entry, "\(tag.file): the server answered HTTP \(status)")
             return
         }
-        // The file has to move before this returns: the system deletes `location` right after.
-        let dest = modelsDir.appendingPathComponent(tag.file)
+        // The file has to move before this returns: the system deletes `location` right after. It
+        // moves under a name of its own (never one another copy could be checked under), and
+        // becomes the model only once checked.
+        let file = tag.files.first { $0.name == tag.file } ?? CatalogFile(name: tag.file, bytes: 0, url: "")
+        let part = DownloadPlan.checkURL(tag.file, in: modelsDir)
         do {
             try FileManager.default.createDirectory(at: modelsDir, withIntermediateDirectories: true)
-            if FileManager.default.fileExists(atPath: dest.path) { try FileManager.default.removeItem(at: dest) }
-            try FileManager.default.moveItem(at: location, to: dest)
+            try FileManager.default.moveItem(at: location, to: part)
         } catch {
             fail(tag.entry, "\(tag.file): \(error.localizedDescription)")
+            return
         }
+        check(entry: tag.entry, file: file, part: part)
     }
 
     public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {

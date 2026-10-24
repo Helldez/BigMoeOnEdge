@@ -22,7 +22,12 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.remember
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -32,7 +37,9 @@ import androidx.core.content.ContextCompat
 import io.bigmoeonedge.app.engine.Chat
 import io.bigmoeonedge.app.engine.Engine
 import io.bigmoeonedge.app.ui.BmoeTheme
+import androidx.compose.foundation.layout.Column
 import io.bigmoeonedge.app.ui.ChatScreen
+import io.bigmoeonedge.app.ui.EngineStatusLine
 import io.bigmoeonedge.app.ui.MetricsScreen
 import io.bigmoeonedge.app.ui.ModelsScreen
 import io.bigmoeonedge.app.ui.PlanScreen
@@ -75,26 +82,43 @@ private enum class Screen(val label: String, val icon: ImageVector) {
 @Composable
 private fun Root() {
     var screen by rememberSaveable { mutableStateOf(Screen.CHAT) }
+    // The setting a link points at (the Plan screen, the context warning): Settings lands on it.
+    var settingTarget by rememberSaveable { mutableStateOf("") }
+    val openSetting = { key: String -> settingTarget = key; screen = Screen.SETTINGS }
+    // With nothing on the phone there is nothing to chat with: the first listing of a launch, if it is
+    // empty, opens Models instead. Once: a person who then goes to Chat stays there.
+    var firstListingSeen by rememberSaveable { mutableStateOf(false) }
+    val models by remember { Engine.state.map { it.models }.distinctUntilChanged() }.collectAsStateWithLifecycle(null)
+    LaunchedEffect(models) {
+        val m = models ?: return@LaunchedEffect
+        if (firstListingSeen) return@LaunchedEffect
+        firstListingSeen = true
+        if (m.local.isEmpty() && screen == Screen.CHAT) screen = Screen.MODELS
+    }
     Scaffold(
         bottomBar = {
-            NavigationBar {
-                Screen.values().forEach { s ->
-                    NavigationBarItem(
-                        selected = screen == s,
-                        onClick = { screen = s },
-                        icon = { Icon(s.icon, contentDescription = s.label) },
-                        label = { Text(s.label) },
-                    )
+            // The status line sits on every screen, above the bar a thumb reaches: one place, one look.
+            Column {
+                EngineStatusLine(onOpenModels = { screen = Screen.MODELS }, onOpenSetting = openSetting)
+                NavigationBar {
+                    Screen.values().forEach { s ->
+                        NavigationBarItem(
+                            selected = screen == s,
+                            onClick = { screen = s },
+                            icon = { Icon(s.icon, contentDescription = s.label) },
+                            label = { Text(s.label) },
+                        )
+                    }
                 }
             }
         },
     ) { padding ->
         val m = Modifier.padding(padding)
         when (screen) {
-            Screen.CHAT -> ChatScreen(m, onOpenModels = { screen = Screen.MODELS })
-            Screen.MODELS -> ModelsScreen(m)
-            Screen.PLAN -> PlanScreen(m, onOpenSettings = { screen = Screen.SETTINGS })
-            Screen.SETTINGS -> SettingsScreen(m)
+            Screen.CHAT -> ChatScreen(m, onOpenModels = { screen = Screen.MODELS }, onOpenSetting = openSetting)
+            Screen.MODELS -> ModelsScreen(m, onOpenChat = { screen = Screen.CHAT })
+            Screen.PLAN -> PlanScreen(m, onOpenSetting = openSetting)
+            Screen.SETTINGS -> SettingsScreen(m, target = settingTarget, onLanded = { settingTarget = "" })
             Screen.METRICS -> MetricsScreen(m)
         }
     }

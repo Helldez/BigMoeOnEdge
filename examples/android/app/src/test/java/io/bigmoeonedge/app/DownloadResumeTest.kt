@@ -3,6 +3,7 @@ package io.bigmoeonedge.app
 import io.bigmoeonedge.app.data.CatalogEntry
 import io.bigmoeonedge.app.data.bytesStillNeeded
 import io.bigmoeonedge.app.data.freeSpaceRefusal
+import io.bigmoeonedge.app.data.httpRefusal
 import io.bigmoeonedge.app.data.resumeLabel
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -27,6 +28,12 @@ class DownloadResumeTest {
         // 47 GB model, 33 GB already in the .part, 20 GB free: the remaining 14 GB fit.
         assertNull(freeSpaceRefusal(bytesStillNeeded(47_000_000_000L, 33_000_000_000L), 20_000_000_000L))
         assertEquals("needs 14.0 GB more, only 3.0 GB free", freeSpaceRefusal(14_000_000_000L, 3_000_000_000L))
+    }
+
+    @Test
+    fun aDefiniteNoFromTheHostEndsTheDownloadWhereAFailingLineRetries() {
+        for (code in listOf(400, 401, 403, 404, 410)) assertTrue("$code", httpRefusal(code)!!.contains("$code"))
+        for (code in listOf(408, 429, 500, 502, 503, 504, 302)) assertNull("$code", httpRefusal(code))
     }
 
     @Test

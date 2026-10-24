@@ -6,6 +6,7 @@ import SwiftUI
 struct ChatView: View {
     @EnvironmentObject private var engine: Engine
     @EnvironmentObject private var chat: ChatModel
+    @EnvironmentObject private var nav: Navigator
     var openModels: () -> Void
 
     @State private var input = ""
@@ -93,11 +94,14 @@ struct ChatView: View {
 
     /// Decided on by the error's code, never its wording (docs/server-api.md).
     private func errorBanner(_ e: TurnError) -> some View {
-        Banner(text: e.message, color: Palette.err) {
+        // A full context is fixed by a new chat or a larger context; the server says which setting that is.
+        let ctx = e.code == APIError.contextFull ? engine.contextAdvice : nil
+        return Banner(text: ctx?.fullText ?? e.message, color: Palette.err) {
             HStack(spacing: Grid.s) {
                 switch e.code {
                 case APIError.contextFull:
                     Button("New chat") { chat.newConversation() }.buttonStyle(.pixelPrimary)
+                    if let ctx { Button("Raise \(ctx.label)") { nav.openSetting(ctx.key) }.buttonStyle(.pixel) }
                 case APIError.noModel:
                     Button("Models", action: openModels).buttonStyle(.pixelPrimary)
                 default:

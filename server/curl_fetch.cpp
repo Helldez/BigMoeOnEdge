@@ -123,10 +123,11 @@ public:
         subprocess_s proc;
         const int opts = subprocess_option_search_user_path | subprocess_option_inherit_environment |
                          subprocess_option_no_window | subprocess_option_combined_stdout_stderr;
-        if (subprocess_create(cmd, opts, &proc) != 0) {
-            error = "could not start curl: is it installed and on PATH?";
-            return false;
-        }
+        // No curl to ask with (a phone, whose app downloads for itself) is a size not known, as a host
+        // that answers no HEAD is, never a refused link: the entry is made and its download, by the
+        // server or by the client, says whether the file is there. A curl that starts and cannot
+        // exec ends with no headers, which reads the same way below.
+        if (subprocess_create(cmd, opts, &proc) != 0) return true;
         int rc = 0;
         subprocess_join(&proc, &rc);
         subprocess_destroy(&proc);

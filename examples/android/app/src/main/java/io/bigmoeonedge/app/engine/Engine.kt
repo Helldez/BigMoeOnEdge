@@ -47,6 +47,8 @@ data class ModelInfo(
     /** What a CPU figure is read against: the session's compute threads, and every busy thread. */
     val computeThreads: Int,
     val busyThreads: Int,
+    /** The context against what a client of the server sends; null from a server that does not say. */
+    val ctxAdvice: CtxAdvice? = null,
 ) {
     companion object {
         fun of(o: JSONObject?): ModelInfo? {
@@ -55,7 +57,22 @@ data class ModelInfo(
                 o.optString("name"), o.optString("path"), o.optString("arch"), o.optInt("n_ctx"),
                 o.optInt("n_expert_used"), o.optString("think_ctl", "template"), o.optDouble("load_s", 0.0),
                 o.optBoolean("streaming", false), o.optInt("compute_threads", 0), o.optInt("busy_threads", 0),
+                CtxAdvice.of(o.optJSONObject("ctx_advice")),
             )
+        }
+    }
+}
+
+/**
+ * `model.ctx_advice` (docs/server-api.md): the context a client of the server needs, whether the
+ * session's is below it, and the parameter that raises it. The app shows these and names neither
+ * the number nor the key (engine/ContextAdvice.kt).
+ */
+data class CtxAdvice(val recommended: Int, val short: Boolean, val param: String) {
+    companion object {
+        fun of(o: JSONObject?): CtxAdvice? {
+            if (o == null || !o.has("recommended") || o.optString("param").isEmpty()) return null
+            return CtxAdvice(o.optInt("recommended"), o.optBoolean("short", false), o.optString("param"))
         }
     }
 }
@@ -127,6 +144,10 @@ data class ConfigState(
     val reloadRequired: Boolean,
     val plan: List<PlanDecision>?,
     val autoPlan: Boolean,
+    /** The user keys the server was launched with: "reset all my values" leaves them. */
+    val launchKeys: Set<String> = emptySet(),
+    /** The session-scoped parameters whose value differs from the loaded session's, in table order. */
+    val reloadKeys: List<String> = emptyList(),
 ) {
     fun value(key: String): Any? = values[key]
     fun text(key: String): String = values[key]?.toString().orEmpty()
@@ -135,7 +156,8 @@ data class ConfigState(
         fun of(o: JSONObject): ConfigState {
             val v = o.optJSONObject("values") ?: JSONObject()
             val values = v.keys().asSequence().associateWith { k -> if (v.isNull(k)) null else v.get(k) }
-            val uk = o.optJSONArray("user_keys")?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty()
+            fun strings(k: String) = o.optJSONArray(k)?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty()
+            val uk = strings("user_keys")
             return ConfigState(
                 values = values,
                 userKeys = uk.toSet(),
@@ -144,6 +166,8 @@ data class ConfigState(
                 reloadRequired = o.optBoolean("reload_required", false),
                 plan = if (o.isNull("plan")) null else PlanDecision.list(o.optJSONArray("plan")),
                 autoPlan = o.optBoolean("auto_plan", false),
+                launchKeys = strings("launch_keys").toSet(),
+                reloadKeys = strings("reload_keys"),
             )
         }
     }
@@ -228,6 +252,8 @@ data class PlanResult(
     /** Decode as the plan priced it: seconds per token (0 = no prediction), cache hits (-1 = none). */
     val predictedSPerToken: Double = 0.0,
     val predictedHitPct: Double = -1.0,
+    /** The same token with nothing held in memory and every byte read again (0 = not predicted). */
+    val predictedWorstSPerToken: Double = 0.0,
     /** What the loaded model's last turn measured, beside the prediction; null before one. */
     val measured: PlanMeasured? = null,
     val pools: List<PlanPool> = emptyList(),
@@ -250,6 +276,7 @@ data class PlanResult(
             },
             predictedSPerToken = o.optJSONObject("predicted")?.optDouble("s_per_token", 0.0) ?: 0.0,
             predictedHitPct = o.optJSONObject("predicted")?.optDouble("cache_hit_pct", -1.0) ?: -1.0,
+            predictedWorstSPerToken = o.optJSONObject("predicted")?.optDouble("s_per_token_worst", 0.0) ?: 0.0,
             measured = o.optJSONObject("measured")?.let {
                 PlanMeasured(it.optDouble("s_per_token", 0.0), it.optDouble("cache_hit_pct", -1.0), it.optInt("tokens"))
             },
@@ -259,6 +286,8 @@ data class PlanResult(
                     estimated = p.optBoolean("estimated"),
                     capBytes = p.optLong("cap_bytes"),
                     lockedBytes = p.optLong("locked_bytes"),
+                    name = p.optString("name"),
+                    heldBytes = p.optLong("held_bytes"),
                     rows = objects(p.optJSONArray("rows")).map {
                         PlanRow(it.optString("label").ifEmpty { it.optString("name") }, it.optLong("bytes"), it.optBoolean("locked"), it.optBoolean("in_turn"))
                     },
@@ -311,7 +340,16 @@ data class PlanMeasured(val sPerToken: Double, val cacheHitPct: Double, val toke
 data class PlanRow(val label: String, val bytes: Long, val locked: Boolean, val inTurn: Boolean)
 
 /** One memory pool: the host's, or a device's that is its own. `estimated`: an even share of a sum. */
-data class PlanPool(val label: String, val estimated: Boolean, val capBytes: Long, val lockedBytes: Long, val rows: List<PlanRow>)
+data class PlanPool(
+    val label: String,
+    val estimated: Boolean,
+    val capBytes: Long,
+    val lockedBytes: Long,
+    val rows: List<PlanRow>,
+    /** `host` for what the process may hold, the device's own otherwise. */
+    val name: String = "",
+    val heldBytes: Long = 0,
+)
 
 /** A device the plan saw: its rate and badge in words, its role as a code, and why. */
 data class PlanDevice(
@@ -651,6 +689,24 @@ object Engine {
     /** Adds the model to the catalog and answers its id; the models list is refreshed so the entry shows. */
     suspend fun hfAdd(repo: String, name: String, token: String): Result<String> = withContext(Dispatchers.IO) {
         catching { api.hfAdd(hfRequestBody(repo, name, token)).getString("id") }.also { refreshModels() }
+    }
+
+    /**
+     * A direct link to a gguf, made a catalog entry by the server (`POST /api/models/url`): the
+     * entry is answered from the refreshed list, for the app to download its `files` as it does
+     * every entry's.
+     */
+    suspend fun addUrl(url: String): Result<CatalogEntry> = withContext(Dispatchers.IO) {
+        catching {
+            val id = api.addUrl(url.trim()).getString("id")
+            refreshModels()
+            _state.value.models?.catalog?.firstOrNull { it.id == id } ?: error("the server made entry $id but does not list it")
+        }
+    }
+
+    /** A model in the server's models directory, deleted by the server by its listed name (every file of a set). */
+    suspend fun deleteLocal(name: String): Result<Unit> = withContext(Dispatchers.IO) {
+        catching { api.deleteLocal(name); Unit }.also { refreshModels() }
     }
 
     suspend fun removeAdded(id: String): Result<Unit> = withContext(Dispatchers.IO) {

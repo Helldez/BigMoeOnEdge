@@ -42,8 +42,8 @@ Semantic Versioning.
   number or the parameter. The RAM a larger context costs is said, not priced: it depends on the
   model's attention layout and only a placement fit at that context measures it; the plan's
   `kv-budget` note still says what the loaded context takes. The planner's own context choice is
-  unchanged, and the phone apps do not show the warning yet. Docs: `docs/server-api.md` (sizing the
-  context for a client), `docs/screens.md`, the Android and iOS READMEs.
+  unchanged; the Android and iOS apps show the warning too (below). Docs: `docs/server-api.md`
+  (sizing the context for a client), `docs/screens.md`, the Android and iOS READMEs.
 - **Desktop Models screen: one list, a guided flow, downloads in the status line (#355).** The web
   UI's Models screen had five blocks, a model in the catalog and on disk shown twice, and five
   generic buttons spread over three of them. It is now one list, "Your models", where local files and
@@ -87,6 +87,51 @@ Semantic Versioning.
     the loaded model recognised by identity). Both were also run end to end against a scratch models
     folder: a 404 link refused, a real link added, downloaded, refused for delete while loaded, then
     deleted.
+- **The Android app's screens catch up with the web UI's.** The four screens `docs/screens.md`
+  describes for 0.35.0, on the phone, all of it read from the server and the parameter table:
+  - *Status line on every screen.* It moved out of Chat to sit above the navigation bar on all
+    five screens, and carries the running downloads ("Downloading 42%", "2 downloads 42%"; a split
+    set is one download), which lead to Models, and marks a model loaded without streaming.
+  - *Context warning.* A loaded model whose context is below `model.ctx_advice.recommended` gets a
+    line under the status line: the context, the recommendation, that a larger context
+    takes memory from the expert cache, and a link labelled from the parameter table that lands on
+    the setting `ctx_advice.param` names. A `context_full` error offers the same link beside New chat.
+  - *Models: one list.* Local files and catalog entries merged by file (only a file at the top of
+    the models directory, where downloads land, claims an entry; an entry's own state is the
+    server's `status` with the app's transfers over it, as the web UI reads it), one state and one action
+    per row (Available, Downloading, Partly downloaded, On this device, Loaded with Reload, Unload
+    and Go to Chat, Shards missing), suggestions at the bottom, companion files apart, the folders
+    behind "Where models live". Delete asks first and goes through the server's
+    `DELETE /api/models/local/<name>` in its models directory (the app deletes what it may write
+    elsewhere); Forget takes an added entry off the list. With nothing on the phone the screen is
+    the three steps, and the app opens on it. The Hugging Face card is the Find, Pick, Check,
+    Download stepper with the server's verdict headline coloured by `verdict.fit`, one Download
+    button that adds and starts the download, its refusal shown on the card, and the new row
+    scrolled into view. A direct link goes through `POST /api/models/url` and the app downloads the
+    entry's files, so it gets Resume and one progress bar over a split set. The server's size
+    lookup no longer refuses a link when it has no `curl` to start (the phone's case): the size is
+    left unknown, as for a host that answers no `HEAD`, and the file counts whole once present (a
+    desktop server without `curl` now makes the entry and fails at download rather than at add; a
+    new POSIX server check runs the lookup with no `curl` on `PATH`). Nothing checks the link
+    before the download then, so the download worker ends at once on a definite `4xx` from the
+    host (408 and 429 still retry) and the row says why, instead of backing off five times; a link
+    the server refuses shows its reason, and the app no longer fetches one file of it on its own.
+    The file picker stays.
+  - *Plan.* The summary with the lanes in one line and the four figures (decode expected and
+    measured with the difference, cache hits credited and measured, memory held against the host
+    pool, the worst case against the expected), Apply and Measure again together, Apply listing the
+    settings it changed as links, Measure again beside an error, decisions linking to their row, and
+    Copy diagnostic in place of the planner's account on screen. With nothing loaded and no plan
+    to show, the decisions the configuration carries from the last applied plan, grouped the same
+    way. Whether a model is chosen is read from the table's read-only group, not a named key.
+  - *Settings.* One card per group (`group_order`, `group_label`, `group_help`, `group_read_only`)
+    with its levels folded inside, a level filter with counts remembered on the phone, a search over
+    every level, one source chip per row with Use plan value, Reset all my values (less
+    `launch_keys` and the read-only group, after asking), "needs reload" only from `reload_keys`,
+    and deep links that open the card and fold and bring the row into view.
+  The rules are pure Kotlin with JVM tests (`data/Library.kt`, `engine/SettingsForm.kt`,
+  `engine/PlanView.kt`, `engine/ContextAdvice.kt`); no screen names an engine parameter. Not yet run
+  on a phone. The SHA-256 check of a catalog download was already the worker's (#347).
 - **`THIRD_PARTY_LICENSES` (#352).** Every archive and APK carries llama.cpp and ggml, the server
   carries cpp-httplib and nlohmann/json, the desktop archive's web UI bundles Svelte, clsx, marked
   and DOMPurify, and the UI and the app use two fonts under the SIL OFL; only the project's own
@@ -156,6 +201,46 @@ Semantic Versioning.
   line beside its title. The Android and iOS apps sort their settings groups by `group_order` too
   (falling back to table order for a server that does not send it), so Prefill sits after Expert
   streaming there as well. Docs: `docs/screens.md`, `docs/server-api.md`, `docs/settings.md`.
+- **The iOS app's screens match the web UI's of this release.** The same `docs/screens.md`, in
+  SwiftUI, with the logic in BmoeKit under `swift test` and nothing in Swift that names an engine
+  parameter:
+  - **Models is one list.** The files the server lists and the catalog's entries are merged by file
+    (`Library.rows`), each row in one state with one primary action (Download; progress and Cancel;
+    Resume or Delete partial; Load; Reload, Unload and Go to Chat), Delete asked twice and sent to
+    the server (`DELETE /api/models/local/<name>`, so a split set goes whole or not at all), Forget
+    for an added entry, companion files apart, suggestions at the bottom and the folders behind
+    "Where models live". With nothing on the device the screen is the three steps, with the Hugging
+    Face card inline, the suggestions as one-tap downloads and a link field, and a first launch with
+    nothing on the device opens on Models. The Hugging Face card is Find, Pick, Check, Download,
+    the verdict's headline coloured by `verdict.fit`, and the new row scrolls into view and carries
+    the progress. A direct https link becomes an entry through `POST /api/models/url`, and its
+    files download in the app like any other entry's; the bridge now answers the server's `HEAD`
+    for a link's size on `URLSession`, so those files have a size to be whole at, and a file whose
+    host gives none counts as whole once it is there. An entry is on the device when the server
+    says so (`status`), not because a file of the same name sits in a folder or a scan directory,
+    which is that file's own row. A running download shows in the status line on every screen.
+  - **The context warning.** Beside the loaded model's name when `ctx_advice.short`: the context,
+    the recommendation, that a larger context takes memory from the expert cache, and a button
+    named from the parameter table that lands on that setting. A chat's `context_full` error says
+    the context's size and offers the same button beside New chat.
+  - **Plan opens on its verdict.** The sentence, the machine, the lanes in one line and four
+    figures (decode expected and measured with the difference, the cache hit rate credited and
+    measured, memory held against the host pool, the worst case in ms per token), Apply and
+    Measure again together, Apply listing what it changed with each row a link to its setting,
+    Measure again beside an error, each decision linking to its own row, and Copy diagnostic in
+    place of the planner's account shown in full. Whether there is a model to plan for is read
+    from the read-only group of the parameter table or the loaded model, never by the key.
+  - **Settings is one card per group** (`group_order`, `group_label`, `group_help`; the read-only
+    model group shown without a control), its deeper rows folded inside by level with what each
+    level means, a level filter with counts remembered on the device, a search over every level,
+    one chip per row (default, from the plan, set by you), "Use plan value" or "Let the plan set
+    it", "per message", "needs reload" from `reload_keys` with a Reload banner, and "Reset all my
+    values" (less `launch_keys` and the read-only group, after a confirmation). A link from Plan,
+    the status line or Apply widens the filter, opens the card and fold, scrolls to the row and
+    focuses its field, for that visit only. A level this app does not know yet is folded with
+    the deepest rows.
+
+  Checked with `swift test` and a simulator build; not yet run on an iPhone.
 - **CI pins what it downloads (#351).** The gates' Python packages come from
   `scripts/requirements-ci.txt` (`gguf==0.19.0`, `numpy==2.5.3` and gguf's own dependencies, every
   one `==`), bumped on purpose instead of whatever was newest that day. The Windows Vulkan SDK
@@ -231,8 +316,26 @@ not changed.
   (only a plain-http mirror named with `--hf-endpoint` may use http), and `--` before the URL, so
   no URL is read as an option. New server checks: the name and URL rules, the digest of known
   vectors and of a file longer than one read, the LFS oid on an added entry; Android unit tests for
-  the name rule and the digest field, and a BmoeKit test for the name rule. The iOS app does not
-  check the digest yet: it ignores `sha256`.
+  the name rule and the digest field, and a BmoeKit test for the name rule.
+- **The iOS app checks its downloads against the SHA-256 too.** A finished transfer moves to a
+  name of its own check (`<name>.part-<id>`), so a second copy of the same file finishing meanwhile
+  can never replace the bytes being hashed and only the file that was hashed is renamed into place.
+  It is read back in 4 MiB chunks with CryptoKit, off the transfers' queue so the other shards keep
+  coming, and becomes the model only when its digest matches the catalog's; a mismatch deletes it
+  and says so, naming both digests. The row reads "Checking" meanwhile; a cancel stops the check
+  and keeps the file as `<name>.part`, and a whole copy left by an app that ended during its check
+  (of a known size, or of any size for a link whose host said none) is checked on the next start
+  instead of fetched again. A start leaves a file already in flight to its transfer (asked of the
+  system's own task list, so a relaunch cannot double one), and an entry stays Downloading while
+  any of its files still comes, even after another failed; the failure is said once nothing runs.
+  A start is refused before a byte moves when what the entry still needs does not fit in the space
+  the device has free, worded as the server's 507. The app now also drops a catalog entry whose
+  URL is not https or whose digest is malformed, beside the name rule it already held, and a task
+  tagged by an earlier build (no digest) still resumes. BmoeKit tests: the digest of the standard
+  vectors and of a file read in chunks that divide nothing evenly, a cancel, a matching file
+  landed, a mismatch deleted with the model that was there kept, a check's own copy landed while
+  another sits at the partial name, a cut-off check found again, the space refusal, the catalog
+  rules.
 
 ## [0.34.1] - 2026-10-23
 

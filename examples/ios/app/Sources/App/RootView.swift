@@ -1,7 +1,10 @@
+import BmoeKit
 import SwiftUI
 
-/// The five screens in a bottom bar, the status line above every one of them.
-struct RootView: View {
+/// Which screen is open, and the setting a link points at: the app's `#/settings/<key>`. The Plan
+/// screen's decisions, the context warning and Apply's list link to a row of Settings this way.
+@MainActor
+final class Navigator: ObservableObject {
     enum Screen: String, CaseIterable, Identifiable {
         case chat = "Chat", models = "Models", plan = "Plan", settings = "Settings", metrics = "Metrics"
         var id: String { rawValue }
@@ -17,18 +20,38 @@ struct RootView: View {
         }
     }
 
-    @State private var screen = Screen.chat
+    @Published var screen = Screen.chat
+    /// The parameter Settings is to land on, once; nil when no link is pending.
+    @Published var settingTarget: String?
+    /// Whether the first screen was chosen yet: a first visit with nothing on the device opens on
+    /// Models instead of an empty Chat, and only the first.
+    var startChosen = false
+
+    func open(_ s: Screen) { screen = s }
+
+    /// Settings, landed on the row of `key` (a key the server named).
+    func openSetting(_ key: String) {
+        settingTarget = key
+        screen = .settings
+    }
+}
+
+/// The five screens in a bottom bar, the status line above every one of them.
+struct RootView: View {
+    typealias Screen = Navigator.Screen
+    @EnvironmentObject private var nav: Navigator
+    @EnvironmentObject private var engine: Engine
 
     init() {
         Self.styleBars()
     }
 
     var body: some View {
-        TabView(selection: $screen) {
+        TabView(selection: $nav.screen) {
             ForEach(Screen.allCases) { s in
                 NavigationStack {
                     VStack(spacing: 0) {
-                        StatusLine(openModels: { screen = .models })
+                        StatusLine()
                         content(s)
                     }
                     .background(Palette.bg.ignoresSafeArea())
@@ -47,14 +70,20 @@ struct RootView: View {
             }
         }
         .tint(Palette.accent)
+        // A first visit with nothing on the device opens on Models: there is nothing to chat with.
+        .onChange(of: engine.modelsListed) { listed in
+            guard listed, !nav.startChosen else { return }
+            nav.startChosen = true
+            if engine.models.local.isEmpty, nav.screen == .chat { nav.screen = .models }
+        }
     }
 
     @ViewBuilder
     private func content(_ s: Screen) -> some View {
         switch s {
-        case .chat: ChatView(openModels: { screen = .models })
+        case .chat: ChatView(openModels: { nav.open(.models) })
         case .models: ModelsView()
-        case .plan: PlanView(openSettings: { screen = .settings })
+        case .plan: PlanView()
         case .settings: SettingsView()
         case .metrics: MetricsView()
         }
@@ -93,17 +122,30 @@ struct RootView: View {
 /// What the engine is doing, in one line, on every screen (docs/screens.md, "The status line").
 struct StatusLine: View {
     @EnvironmentObject private var engine: Engine
-    var openModels: () -> Void
+    @EnvironmentObject private var nav: Navigator
 
     var body: some View {
-        HStack(spacing: Grid.s) {
-            Rectangle().fill(color).frame(width: 10, height: 10)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.pixel(14, bold: true)).foregroundStyle(Palette.text).lineLimit(1)
-                if let detail { Text(detail).font(.caption).foregroundStyle(Palette.muted).lineLimit(2) }
+        VStack(alignment: .leading, spacing: Grid.s) {
+            HStack(spacing: Grid.s) {
+                Rectangle().fill(color).frame(width: 10, height: 10)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.pixel(14, bold: true)).foregroundStyle(Palette.text).lineLimit(1)
+                    if let detail { Text(detail).font(.caption).foregroundStyle(Palette.muted).lineLimit(2) }
+                }
+                Spacer(minLength: Grid.s)
+                downloads
+                action
             }
-            Spacer(minLength: Grid.s)
-            action
+            // A context below what a client of the server sends: said beside the model, with the
+            // way to the setting that raises it (docs/screens.md, "The status line").
+            if engine.ready, let ctx = engine.contextAdvice, ctx.short {
+                HStack(alignment: .firstTextBaseline, spacing: Grid.s) {
+                    Text(ctx.warning).font(.caption).foregroundStyle(Palette.warn).fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    Button("Raise \(ctx.label)") { nav.openSetting(ctx.key) }
+                        .font(.pixel(13, bold: true)).foregroundStyle(Palette.accent).buttonStyle(.borderless)
+                }
+            }
         }
         .padding(.horizontal, Grid.m)
         .padding(.vertical, Grid.s)
@@ -143,14 +185,23 @@ struct StatusLine: View {
         }
     }
 
+    /// A running download, on every screen: how many and the share done, leading back to Models.
+    @ViewBuilder
+    private var downloads: some View {
+        if let d = Library.downloadSummary(engine.downloads) {
+            Button { nav.open(.models) } label: { Badge(text: Library.downloadText(count: d.count, fraction: d.fraction), color: Palette.accent) }
+                .buttonStyle(.plain)
+        }
+    }
+
     @ViewBuilder
     private var action: some View {
         if !engine.serverUp {
             Button("Start") { engine.start() }.buttonStyle(.pixel)
         } else if engine.generating {
             Button("Stop") { Task { await engine.cancel() } }.buttonStyle(.pixel)
-        } else if let s = engine.info?.state, s == .empty || s == .error {
-            Button("Models", action: openModels).buttonStyle(.pixel)
+        } else if let s = engine.info?.state, s == .empty || s == .error, nav.screen != .models {
+            Button("Models") { nav.open(.models) }.buttonStyle(.pixel)
         }
     }
 

@@ -3,7 +3,6 @@ package io.bigmoeonedge.app.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -16,11 +15,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.bigmoeonedge.app.engine.AppliedChange
 import io.bigmoeonedge.app.engine.Engine
+import io.bigmoeonedge.app.engine.PlanFigures
+import io.bigmoeonedge.app.engine.appliedChanges
+import io.bigmoeonedge.app.engine.diagnosticText
+import io.bigmoeonedge.app.engine.loadTargetChosen
+import io.bigmoeonedge.app.engine.planFigures
 import io.bigmoeonedge.app.engine.PlanDecision
 import io.bigmoeonedge.app.engine.PlanDevice
 import io.bigmoeonedge.app.engine.PlanPool
@@ -37,18 +45,20 @@ import java.util.Locale
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PlanScreen(modifier: Modifier = Modifier, onOpenSettings: () -> Unit = {}) {
+fun PlanScreen(modifier: Modifier = Modifier, onOpenSetting: (key: String) -> Unit = {}) {
     val engine by Engine.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     var plan by remember { mutableStateOf<PlanResult?>(null) }
     var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf("") }
+    var applied by remember { mutableStateOf<List<AppliedChange>?>(null) }
 
     fun fetch(measure: Boolean) {
         if (busy) return
         busy = measure
         scope.launch {
-            Engine.plan(measure).onSuccess { plan = it }.onFailure { snackbar.showSnackbar(it.message ?: "no plan") }
+            Engine.plan(measure).onSuccess { plan = it; error = "" }.onFailure { error = it.message ?: "no plan" }
             busy = false
         }
     }
@@ -65,8 +75,9 @@ fun PlanScreen(modifier: Modifier = Modifier, onOpenSettings: () -> Unit = {}) {
     }
     val cfg = engine.config
     val planner = engine.info?.plannerAvailable ?: true
-    val model = cfg?.text("model").orEmpty()
-    val canMeasure = planner && model.isNotEmpty() && !busy && engine.serverUp
+    // A plan is for the model a load opens: chosen on Models, which the table marks as a read-only group.
+    val chosen = engine.info?.model != null || loadTargetChosen(engine.params, cfg)
+    val canMeasure = planner && chosen && !busy && engine.serverUp
 
     Scaffold(
         modifier = modifier,
@@ -88,16 +99,18 @@ fun PlanScreen(modifier: Modifier = Modifier, onOpenSettings: () -> Unit = {}) {
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             if (!planner) Text("This build does not include the hardware planner.", color = MaterialTheme.colorScheme.error)
-            if (model.isEmpty()) {
+            if (!chosen && engine.params != null) {
                 Text("Choose a model from Models: a plan is for one model on this phone.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (busy || engine.planProgress != null) PlanProgressCard(engine.planProgress)
+            // A failed plan can be retried where it says so: measuring is the person's tap, never automatic.
+            if (error.isNotEmpty()) RetryLine(error, canMeasure) { fetch(measure = true) }
 
             val p = plan
             when {
                 p == null -> {}
                 !p.available -> Text(p.error, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
-                p.error.isNotEmpty() -> Text(p.error, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+                p.error.isNotEmpty() -> RetryLine(p.error, canMeasure) { fetch(measure = true) }
                 p.none -> Tile {
                     Text("Not measured yet.", fontSize = 22.sp, lineHeight = 26.sp)
                     Text("Measure this phone to see what the plan does with the chosen model.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -108,16 +121,31 @@ fun PlanScreen(modifier: Modifier = Modifier, onOpenSettings: () -> Unit = {}) {
                     p,
                     canApply = !busy,
                     onApply = {
+                        val before = engine.config?.values.orEmpty()
+                        applied = null
                         scope.launch {
-                            Engine.applyPlan().onSuccess { snackbar.showSnackbar("Plan applied to the settings") }
+                            Engine.applyPlan().onSuccess { c -> applied = appliedChanges(before, c.values, engine.params.orEmpty()) }
                                 .onFailure { snackbar.showSnackbar(it.message ?: "could not apply") }
                         }
                     },
+                    applied = applied,
+                    canMeasure = canMeasure,
+                    onMeasure = { fetch(measure = true) },
+                    reloadNeeded = engine.ready && cfg?.reloadRequired == true,
                     autoPlan = cfg?.autoPlan ?: false,
                     autoPlanEnabled = planner && cfg != null,
                     onAutoPlan = { on -> scope.launch { Engine.setAutoPlan(on) } },
-                    onOpenSettings = onOpenSettings,
+                    onOpenSetting = onOpenSetting,
+                    onCopied = { scope.launch { snackbar.showSnackbar("Copied: the command and the planner's account") } },
                 )
+            }
+            // With nothing loaded and no plan to show, the decisions the configuration carries from the
+            // last applied plan, grouped the same way: the screen is never empty once a plan was made.
+            val carried = cfg?.plan.orEmpty()
+            if (engine.info?.model == null && carried.isNotEmpty() && (p == null || p.none || p.error.isNotEmpty() || !p.available)) {
+                Text("Decisions from the last applied plan", style = MaterialTheme.typography.titleMedium)
+                Hint("What the settings carry now; Measure shows the plan in full.")
+                Decisions(carried, onOpenSetting)
             }
             Spacer(Modifier.height(24.dp))
         }
@@ -139,17 +167,32 @@ private fun AutoPlanSwitch(checked: Boolean, enabled: Boolean, onChange: (Boolea
     }
 }
 
+/** An error with the way to try again: Measure again, beside it. */
+@Composable
+private fun RetryLine(error: String, canMeasure: Boolean, onMeasure: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(error, color = MaterialTheme.colorScheme.error, fontSize = 13.sp, modifier = Modifier.weight(1f))
+        OutlinedButton(shape = RectangleShape, onClick = onMeasure, enabled = canMeasure) { Text("Measure again") }
+    }
+}
+
 @Composable
 private fun PlanBody(
     p: PlanResult,
     canApply: Boolean,
     onApply: () -> Unit,
+    applied: List<AppliedChange>?,
+    canMeasure: Boolean,
+    onMeasure: () -> Unit,
+    reloadNeeded: Boolean,
     autoPlan: Boolean,
     autoPlanEnabled: Boolean,
     onAutoPlan: (Boolean) -> Unit,
-    onOpenSettings: () -> Unit,
+    onOpenSetting: (String) -> Unit,
+    onCopied: () -> Unit,
 ) {
     if (p.warning.isNotEmpty()) Text(p.warning, fontSize = 12.sp, color = MaterialTheme.colorScheme.tertiary)
+    val f = planFigures(p)
     Tile {
         when {
             p.fromLastLoad -> StatusBadge("The loaded model runs this plan", okColor())
@@ -157,24 +200,45 @@ private fun PlanBody(
         }
         Text(p.sentence.ifEmpty { "Regime: ${p.regime}" }, fontSize = 22.sp, lineHeight = 26.sp)
         if (p.machine.isNotEmpty()) Text(p.machine, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            SpeedWell(p, Modifier.weight(1f))
-            HitsWell(p, Modifier.weight(1f))
+        if (p.lanes.isNotEmpty()) {
+            Text(
+                p.lanes.joinToString("   ") { "${it.label} ${it.on.joinToString(" + ")}" },
+                fontSize = 13.sp, color = MaterialTheme.colorScheme.primary,
+            )
         }
-        p.lanes.forEach { lane ->
-            Row(
-                Modifier.fillMaxWidth().border(2.dp, MaterialTheme.colorScheme.outline).padding(horizontal = 10.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Text(lane.label, fontSize = 14.sp)
-                Text(lane.on.joinToString(" + "), color = MaterialTheme.colorScheme.primary)
+        // The four figures: decode, cache hits, memory, worst case; two to a row on a phone.
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SpeedWell(f, p.fromLastLoad, Modifier.weight(1f))
+            HitsWell(f, Modifier.weight(1f))
+        }
+        if (f.capBytes != null || f.worstMs != null) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                MemoryWell(f, Modifier.weight(1f))
+                WorstWell(f, Modifier.weight(1f))
             }
         }
         if (p.notApplicable.isNotEmpty()) {
             Text("Decided, but not a setting this app can hold: ${p.notApplicable.joinToString("; ")}", fontSize = 12.sp, color = MaterialTheme.colorScheme.tertiary)
         }
-        PrimaryAction("Apply plan", enabled = canApply, onClick = onApply)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(shape = RectangleShape, onClick = onApply, enabled = canApply, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text("Apply plan") }
+            OutlinedButton(shape = RectangleShape, onClick = onMeasure, enabled = canMeasure, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text("Measure again") }
+        }
         Text("Values you set yourself are never changed.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        applied?.let { changes ->
+            if (changes.isEmpty()) {
+                Text("Plan applied: every setting already had the plan's value.", fontSize = 13.sp, color = okColor())
+            } else {
+                Text("Plan applied. ${if (changes.size == 1) "One setting changed" else "${changes.size} settings changed"}:", fontSize = 13.sp, color = okColor())
+                changes.forEach { c ->
+                    Row(Modifier.fillMaxWidth().clickable { onOpenSetting(c.key) }.padding(vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(c.label, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
+                        Text("${c.from} → ${c.to}", style = FigureStyle, fontSize = 13.sp)
+                    }
+                }
+            }
+            if (reloadNeeded) Text("Some applied values need a model reload: Settings has the Reload.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         AutoPlanSwitch(autoPlan, autoPlanEnabled, onAutoPlan)
     }
 
@@ -189,36 +253,42 @@ private fun PlanBody(
         }
     }
     Text("Decisions", style = MaterialTheme.typography.titleMedium)
-    Decisions(p.decisions, onOpenSettings)
+    Decisions(p.decisions, onOpenSetting)
 
     if (p.args.isNotEmpty()) Folded("Command") {
         SelectionContainer { Text("bmoe-cli " + p.args.joinToString(" "), fontFamily = FontFamily.Monospace, fontSize = 11.sp) }
     }
-    if (p.explain.isNotEmpty()) Folded("The planner's full explanation") {
-        SelectionContainer { Text(p.explain, fontFamily = FontFamily.Monospace, fontSize = 10.sp) }
+    // The planner's whole account is not shown (every line of it has a worded twin above); it goes on
+    // the clipboard with the command, for a bug report.
+    val clipboard = LocalClipboardManager.current
+    val uri = LocalUriHandler.current
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(shape = RectangleShape, onClick = { clipboard.setText(AnnotatedString(diagnosticText(p.args, p.explain))); onCopied() }, modifier = Modifier.weight(1f)) {
+            Text("Copy diagnostic")
+        }
+        TextButton(shape = RectangleShape, onClick = { runCatching { uri.openUri(PLANNING_DOC) } }, modifier = Modifier.weight(1f)) { Text("How the planner decides") }
     }
 }
 
+private const val PLANNING_DOC = "https://github.com/Helldez/BigMoeOnEdge/blob/main/docs/hardware-planning.md"
+
 @Composable
-private fun SpeedWell(p: PlanResult, modifier: Modifier) {
-    val measured = p.measured?.sPerToken?.takeIf { it > 0 }
-    val predicted = p.predictedSPerToken.takeIf { it > 0 }
+private fun SpeedWell(f: PlanFigures, fromLastLoad: Boolean, modifier: Modifier) {
     Well(modifier) {
         Text("Tokens", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         when {
-            measured != null -> {
-                Figure(fmt(1 / measured), "tok/s measured")
-                if (predicted != null) {
-                    val delta = 100 * (predicted / measured - 1)
+            f.measuredTokS != null -> {
+                Figure(fmt(f.measuredTokS), "tok/s measured")
+                if (f.deltaPct != null && f.predictedTokS != null) {
                     Text(
-                        String.format(Locale.US, "%+.0f%% against %s", delta, fmt(1 / predicted)),
-                        fontSize = 12.sp, color = if (delta >= 0) okColor() else MaterialTheme.colorScheme.tertiary,
+                        String.format(Locale.US, "%+.0f%% against the %s expected", f.deltaPct, fmt(f.predictedTokS)),
+                        fontSize = 12.sp, color = if (f.deltaPct >= 0) okColor() else warnColor(),
                     )
                 }
             }
-            predicted != null -> {
-                Figure(fmt(1 / predicted), "tok/s expected")
-                Text("Measured after the first answer", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            f.predictedTokS != null -> {
+                Figure(fmt(f.predictedTokS), "tok/s expected")
+                Text(if (fromLastLoad) "Measured after the first answer" else "Measured after a load", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             else -> Text("No prediction", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -226,10 +296,46 @@ private fun SpeedWell(p: PlanResult, modifier: Modifier) {
 }
 
 @Composable
-private fun HitsWell(p: PlanResult, modifier: Modifier) {
-    val measured = p.measured?.cacheHitPct?.takeIf { it >= 0 }
-    val credited = p.predictedHitPct.takeIf { it >= 0 }
-    if (measured == null && credited == null) return
+private fun MemoryWell(f: PlanFigures, modifier: Modifier) {
+    val cap = f.capBytes
+    if (cap == null) {
+        Spacer(modifier)
+        return
+    }
+    val held = f.heldBytes ?: 0
+    Well(modifier) {
+        Text("Memory", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Figure(bytesLabel(held), "held")
+        Meter((held.toDouble() / cap).toFloat(), MaterialTheme.colorScheme.primary)
+        Text("Of the ${bytesLabel(cap)} it may hold", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun WorstWell(f: PlanFigures, modifier: Modifier) {
+    val worst = f.worstMs
+    if (worst == null) {
+        Spacer(modifier)
+        return
+    }
+    Well(modifier) {
+        Text("Worst case", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Figure(String.format(Locale.US, "%.0f", worst), "ms per token")
+        Text(
+            "With nothing held in memory" + (f.expectedMs?.let { String.format(Locale.US, ", against %.0f ms expected", it) } ?: ""),
+            fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun HitsWell(f: PlanFigures, modifier: Modifier) {
+    val measured = f.measuredHitPct
+    val credited = f.creditedHitPct
+    if (measured == null && credited == null) {
+        Spacer(modifier)
+        return
+    }
     Well(modifier) {
         Text("Cache hits", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Figure(String.format(Locale.US, "%.0f%%", measured ?: credited), if (measured != null) "measured" else "credited")
@@ -301,20 +407,20 @@ private fun DeviceRow(d: PlanDevice, scale: Double) {
 
 /** The three groups: the settings the plan decided, open; the ones it left and the notes, folded. */
 @Composable
-private fun Decisions(all: List<PlanDecision>, onOpenSettings: () -> Unit) {
+private fun Decisions(all: List<PlanDecision>, onOpenSetting: (String) -> Unit) {
     val by = all.groupBy { it.group.ifEmpty { "set" } }
-    by["set"]?.let { rows -> Tile { Text("Set by the plan · ${rows.size}", fontSize = 16.sp); rows.forEach { DecisionRow(it, onOpenSettings) } } }
+    by["set"]?.let { rows -> Tile { Text("Set by the plan · ${rows.size}", fontSize = 16.sp); rows.forEach { DecisionRow(it, onOpenSetting) } } }
     by["kept"]?.let { rows ->
-        Folded("Left as is · ${rows.size}", "Settings the plan looked at and left as they were.") { rows.forEach { DecisionRow(it, onOpenSettings) } }
+        Folded("Left as is · ${rows.size}", "Settings the plan looked at and left as they were.") { rows.forEach { DecisionRow(it, onOpenSetting) } }
     }
     by["notes"]?.let { rows ->
-        Folded("Notes · ${rows.size}", "What the plan measured and weighed. None of these is a setting.") { rows.forEach { DecisionRow(it, onOpenSettings) } }
+        Folded("Notes · ${rows.size}", "What the plan measured and weighed. None of these is a setting.") { rows.forEach { DecisionRow(it, onOpenSetting) } }
     }
 }
 
 /** One decision: its label and value; on a tap the one-line brief, the full reason behind Why, and the setting. */
 @Composable
-private fun DecisionRow(d: PlanDecision, onOpenSettings: () -> Unit) {
+private fun DecisionRow(d: PlanDecision, onOpenSetting: (String) -> Unit) {
     var open by remember { mutableStateOf(false) }
     var why by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth().clickable { open = !open }.padding(vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -333,7 +439,7 @@ private fun DecisionRow(d: PlanDecision, onOpenSettings: () -> Unit) {
                     if (why) Text(d.reason, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (d.label.isNotEmpty() && d.group != "notes") {
-                    Text("Open in Settings", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.clickable(onClick = onOpenSettings))
+                    Text("${d.label} in Settings", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.clickable { onOpenSetting(d.knob) })
                 }
             }
         }
@@ -454,8 +560,6 @@ fun SourceBadge(source: String) {
     }
 }
 
-@Composable
-private fun okColor(): Color = if (isSystemInDarkTheme()) Palette.Ok else Palette.LightOk
 
 /** A badge's colour, from a device's role alone; its words come from the server. */
 @Composable

@@ -31,9 +31,8 @@ class ParamsAndConversationsTest {
         val groups = ParamSpec.grouped(specs)
         assertEquals(listOf("Expert cache", "Dense weights"), groups.map { it.first })
         assertEquals(listOf("cache-mb", "overlap"), groups[0].second.map { it.key })
-        assertTrue(ParamSpec.visible("basic", "basic"))
-        assertTrue(!ParamSpec.visible("advanced", "basic"))
-        assertTrue(ParamSpec.visible("advanced", "experimental"))
+        assertTrue(ParamSpec.levelRank("basic") < ParamSpec.levelRank("advanced"))
+        assertTrue(ParamSpec.levelRank("debug") < ParamSpec.levelRank("a level added later"))
         assertEquals(listOf("anon" to "Anon", "mmap" to "Mmap"), specs[2].choices)
         assertEquals("MiB", specs[0].unit)
         assertTrue(specs[0].acceptsAuto)
@@ -74,8 +73,6 @@ class ParamsAndConversationsTest {
         assertEquals("Parallel expert-read lanes, including the calling thread." to "1 is the serial baseline.", row.helpParts())
         val specs = ParamSpec.parse(table)
         assertNull(specs[0].typicalText())
-        // Advanced holds only what the basic groups do not: no row twice.
-        assertEquals(listOf("overlap"), ParamSpec.advanced(specs).flatMap { g -> g.second.map { it.key } })
     }
 
     @Test

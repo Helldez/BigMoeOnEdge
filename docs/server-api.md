@@ -545,8 +545,8 @@ all); `""` when the header could not be read. A UI lists anything but `model` an
 the models, as files that are not loaded on their own. Catalog `status`: `on_disk`, `downloading`, `available`. `files` is every file of the
 entry with its URL, in order, for a client that downloads for itself (a phone, where the server
 has no `curl`), and its `sha256` when the catalog names one (64 lowercase hex digits; absent
-otherwise), which the Android app checks its download against as the server does (the iOS app
-does not yet); `file` and `bytes` are the first file's name and the whole entry's size. A catalog row is held to what its fields
+otherwise), which the Android app checks its download against as the server does, and the iOS
+app too; `file` and `bytes` are the first file's name and the whole entry's size. A catalog row is held to what its fields
 become: `name` a bare file name (no separator, no `.` or `..`, no drive colon), `url` an https
 URL (plain http only under an http mirror named with `--hf-endpoint`), `sha256` a digest when present. An entry with a file that fails this is not listed, and the
 reason is in the server's start-up log; the Android and iOS apps drop such an entry too.
@@ -612,10 +612,17 @@ other shards are the same link with the name changed, and a link may name at mos
 (`kMaxUrlShards` in `server/url_entry.h`: the largest sets published are under 50 shards). Each
 file's size comes from a `HEAD` request that follows redirects (on https only), asked shard by
 shard within 120 s in all (`kUrlSizeDeadline`); a host that answers no size leaves it unknown (`0`)
-and the download runs without a total. `201` with `{"id", "title", "quant", "bytes"}`; `400` with
+and the download runs without a total, and so does a server with no `curl` to ask with (a phone's,
+whose app downloads for itself and counts a file of unknown size whole once it is there). Without
+`curl` nothing checks the link here, so any https gguf link becomes an entry; on a desktop server
+with no `curl` the link is then refused at download, not at add. `201` with `{"id", "title", "quant", "bytes"}`; `400` with
 `code: "invalid_url"` for a link that is not one of these, `502` when the host answers a `HEAD`
 with an HTTP error, `504` when the sizes took longer than the deadline (no entry is made), `409` for an id the shipped catalog has, `403` with `code: "local_only"` from a
-client whose connection is not loopback. Adding the same file again replaces the entry.
+client whose connection is not loopback. Adding the same file again replaces the entry. A client
+that downloads for itself does what it does for `POST /api/hf/add`: it fetches the entry's
+`files[].url` from `GET /api/models` (the Android app, whose download ends at once, with the host's
+status on its row, when the host answers a definite `4xx`; a refusal here is shown as the server
+words it).
 
 ### `POST /api/hf/search`
 

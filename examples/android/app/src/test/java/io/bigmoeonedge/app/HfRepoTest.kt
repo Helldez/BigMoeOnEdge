@@ -39,7 +39,8 @@ class HfRepoTest {
                     "model":{"readable":true,"arch":"qwen35moe","is_moe":true,"n_expert":256,"n_expert_used":8,"n_layer":40,"n_moe_layer":40,
                              "dense_bytes":1872000000,"expert_bytes":19500000000,"token_cycle_bytes":609000000,"streamable":true,"refusal":""},
                     "machine":{"residency_budget":4000000000,"memory_total":12000000000,"disk_free":50000000000,"present_bytes":0},
-                    "verdict":{"downloadable":true,"mode":"streams","disk":"needs 100 MiB","memory":"the experts stream"}}""",
+                    "verdict":{"downloadable":true,"mode":"streams","fit":"fits","headline":"Fits here: the experts stream from flash",
+                               "disk":"needs 100 MiB","memory":"the experts stream"}}""",
             ),
         )
         assertTrue(f.readable && f.isMoe && f.streamable && f.downloadable)
@@ -48,6 +49,8 @@ class HfRepoTest {
         assertEquals(8, f.nExpertUsed)
         assertEquals("streams", f.mode)
         assertEquals("needs 100 MiB", f.disk)
+        assertEquals("fits", f.fit)
+        assertEquals("Fits here: the experts stream from flash", f.headline)
     }
 
     @Test
@@ -55,6 +58,9 @@ class HfRepoTest {
         val f = HfFacts.of(JSONObject("""{"name":"x.gguf","bytes":1,"model":{"readable":false},"verdict":{"downloadable":true,"mode":"not readable","disk":"","memory":""}}"""))
         assertFalse(f.readable)
         assertEquals("not readable", f.mode)
+        // An older server sends no code and no line: the card falls back to the mode.
+        assertEquals("", f.fit)
+        assertEquals("", f.headline)
     }
 
     @Test

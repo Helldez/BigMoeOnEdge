@@ -1,7 +1,12 @@
 package io.bigmoeonedge.app.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -9,6 +14,8 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -27,30 +34,80 @@ import io.bigmoeonedge.app.engine.ConfigState
 import io.bigmoeonedge.app.engine.Engine
 import io.bigmoeonedge.app.engine.ParamSpec
 import io.bigmoeonedge.app.engine.LanAddress
+import io.bigmoeonedge.app.engine.PlanDecision
+import io.bigmoeonedge.app.engine.SettingsCard
+import io.bigmoeonedge.app.engine.ValueSource
+import io.bigmoeonedge.app.engine.differsFromPlan
+import io.bigmoeonedge.app.engine.levelCounts
 import io.bigmoeonedge.app.engine.paramValueFromText
 import io.bigmoeonedge.app.engine.paramValueText
+import io.bigmoeonedge.app.engine.pinnedKeys
+import io.bigmoeonedge.app.engine.resettableKeys
+import io.bigmoeonedge.app.engine.settingsCards
+import io.bigmoeonedge.app.engine.valueSource
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+/** What a level means, in a line under its fold: the levels are the table's enum, the rows in them the server's. */
+private val LEVEL_HINT = mapOf(
+    "advanced" to "Measured levers with a known trade-off.",
+    "experimental" to "Measured once or on one device: they can slow a run down.",
+    "debug" to "Tests, diagnostics and A/B baselines; never a speed setting.",
+)
+
+private fun levelName(l: String) = l.replaceFirstChar { it.uppercase() }
+
 /**
- * Settings, rendered from the engine's parameter table (`GET /api/params`) and nothing else: the
- * groups, the rows, their types, bounds and help all come from the engine, so a knob added there
- * appears here with no app change. Values live in the server's layers; a value set here is the
- * person's and a plan never overrides it. The few settings that are this app's own close the page.
+ * Settings, rendered from the engine's parameter table (`GET /api/params`) and nothing else: one
+ * card per group in the table's order, each with its basic rows open and its deeper levels folded
+ * inside it, a level filter and a search over every level (docs/screens.md, "Settings"). The groups,
+ * rows, types, bounds and help all come from the engine, so a knob added there appears here with no
+ * app change. Values live in the server's layers; a value set here is the person's and a plan never
+ * overrides it. [target] is a parameter a link points at (the Plan screen, the context warning):
+ * the page lands on that row and calls [onLanded]. The few settings that are this app's own close
+ * the page.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(modifier: Modifier = Modifier) {
+fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded: () -> Unit = {}) {
     val context = LocalContext.current
     val engine by Engine.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
-    var advancedOpen by rememberSaveable { mutableStateOf(false) }
+    var upTo by rememberSaveable { mutableStateOf(AppPrefs.settingsLevel(context, ParamSpec.LEVELS, ParamSpec.LEVELS[1])) }
+    var query by rememberSaveable { mutableStateOf("") }
+    // Open state per card and per fold, by group: a card with basic rows starts open, one holding only
+    // deeper rows starts folded, so the page opens on the recommended configuration.
+    var closedCards by remember { mutableStateOf(mapOf<String, Boolean>()) }
+    var openFolds by remember { mutableStateOf(mapOf<String, Boolean>()) }
+    var landedOn by remember { mutableStateOf("") }
+    var confirmReset by remember { mutableStateOf(false) }
 
     fun set(key: String, value: Any?) = scope.launch {
         Engine.setConfig(mapOf(key to value)).onFailure { snackbar.showSnackbar(it.message ?: "not saved") }
     }
-    fun reset(key: String) = scope.launch {
-        Engine.setConfig(emptyMap(), listOf(key)).onFailure { snackbar.showSnackbar(it.message ?: "not reset") }
+    fun reset(keys: List<String>) = scope.launch {
+        Engine.setConfig(emptyMap(), keys).onFailure { snackbar.showSnackbar(it.message ?: "not reset") }
+    }
+
+    val params = engine.params
+    val cfg = engine.config
+    // A path is set at launch, not over the API: only a read-only group's (chosen on Models) is shown.
+    val settable = remember(params) { params?.filter { it.type != "path" || it.groupReadOnly } }
+
+    // A link to one setting lands on it: the filter widened to its level, the search cleared, its card
+    // and fold opened; the row itself scrolls into view. Once per link, so editing another field
+    // afterwards does not jump back.
+    LaunchedEffect(target, settable, cfg != null) {
+        if (target.isEmpty() || settable == null || cfg == null) return@LaunchedEffect
+        val spec = settable.firstOrNull { it.key == target }
+        onLanded()
+        if (spec == null) return@LaunchedEffect
+        query = ""
+        if (ParamSpec.levelRank(spec.level) > ParamSpec.levelRank(upTo)) upTo = spec.level
+        closedCards = closedCards + (spec.group to false)
+        if (spec.level != "basic") openFolds = openFolds + (spec.group to true)
+        landedOn = spec.key
     }
 
     Scaffold(
@@ -58,22 +115,23 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
         topBar = { TopAppBar(title = { Text("Settings") }, navigationIcon = { Box(Modifier.padding(start = 16.dp)) { BrandMark(wordmark = false) } }) },
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
-        val params = engine.params
-        val cfg = engine.config
         Column(
             Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            if (cfg?.reloadRequired == true) {
+            if (cfg != null && engine.ready && (cfg.reloadRequired || cfg.reloadKeys.isNotEmpty())) {
                 ElevatedCard(Modifier.fillMaxWidth()) {
                     Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text("A setting changed that is fixed while a model is loaded. Reload to apply it.", fontSize = 13.sp, modifier = Modifier.weight(1f))
-                        TextButton(shape = RectangleShape, onClick = { scope.launch { Engine.load(null).onFailure { snackbar.showSnackbar(it.message ?: "reload failed") } } }) { Text("Reload") }
+                        Text("Some changes only take effect after the model is reloaded.", fontSize = 13.sp, modifier = Modifier.weight(1f))
+                        TextButton(
+                            shape = RectangleShape, enabled = cfg.valid,
+                            onClick = { scope.launch { Engine.load(null).onFailure { snackbar.showSnackbar(it.message ?: "reload failed") } } },
+                        ) { Text("Reload") }
                     }
                 }
             }
             if (cfg != null && !cfg.valid) {
-                Text("The configuration does not validate: ${cfg.error}", color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+                Text("This configuration does not validate: ${cfg.error}. Loading a model is refused until it is fixed.", color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
             }
 
             // While the engine restarts (a sharing change, a new key) the rows stay where they are, so the
@@ -86,147 +144,262 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                 )
             }
             when {
-                params == null || cfg == null -> if (engine.serverUp) Text("Waiting for the engine…", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                settable == null || cfg == null -> if (engine.serverUp) Text("Waiting for the engine…", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 else -> {
-                    // A path other than the model is set at launch, not over the API: not a setting here.
-                    val settable = params.filter { it.type != "path" || it.key == "model" }
-                    val groups = ParamSpec.grouped(settable)
-                    // The recommended configuration first: each group's basic rows, in the table's order.
-                    groups.forEach { (groupLabel, rows) ->
-                        val basic = rows.filter { it.level == "basic" }
-                        if (basic.isEmpty()) return@forEach
-                        Text(groupLabel, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
-                        basic.forEach { spec ->
-                            ParamRow(spec, cfg, modelName = engine.info?.model?.name, onSet = { set(spec.key, it) }, onReset = { reset(spec.key) })
+                    val searching = query.isNotBlank()
+                    val decisions = remember(cfg.plan) { cfg.plan.orEmpty().associateBy { it.knob } }
+                    val cards = remember(settable, cfg, upTo, query) { settingsCards(settable, upTo, query, pinnedKeys(settable, cfg)) }
+                    val counts = remember(settable) { levelCounts(settable) }
+                    val resettable = remember(settable, cfg) { resettableKeys(cfg.userKeys, cfg.launchKeys, settable) }
+
+                    OutlinedTextField(
+                        value = query, onValueChange = { query = it },
+                        label = { Text("Search settings") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    )
+                    // Rows up to a level; a row someone or the plan set shows whatever the filter.
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        ParamSpec.LEVELS.forEach { l ->
+                            FilterChip(
+                                selected = ParamSpec.levelRank(l) <= ParamSpec.levelRank(upTo),
+                                onClick = { upTo = l; AppPrefs.setSettingsLevel(context, l) },
+                                enabled = !searching,
+                                shape = RectangleShape,
+                                label = { Text("${levelName(l)} ${counts[l] ?: 0}", fontSize = 11.sp, maxLines = 1) },
+                            )
                         }
                     }
-                    // The other rows in one section of their own, folded and grouped the same way; a basic
-                    // row is shown once, above. They ship on purpose, because measuring them on other
-                    // hardware is part of what this app is for; a lever nobody can reach is a lever
-                    // nobody can refute.
-                    AdvancedSection(advancedOpen, onToggle = { advancedOpen = !advancedOpen }) {
-                        ParamSpec.advanced(settable).forEach { (groupLabel, rows) ->
-                            Text(groupLabel, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.tertiary)
-                            rows.forEach { spec ->
-                                ParamRow(spec, cfg, modelName = engine.info?.model?.name, onSet = { set(spec.key, it) }, onReset = { reset(spec.key) })
-                            }
+                    if (searching) Hint(if (cards.isEmpty()) "No setting matches." else "Every level is searched.")
+                    if (resettable.isNotEmpty()) {
+                        TextButton(shape = RectangleShape, onClick = { confirmReset = true }, contentPadding = PaddingValues(horizontal = 0.dp)) {
+                            Text("Reset all my values (${resettable.size})", fontSize = 13.sp)
+                        }
+                    }
+                    if (confirmReset) {
+                        AlertDialog(
+                            onDismissRequest = { confirmReset = false },
+                            title = { Text("Reset all your values?") },
+                            text = {
+                                Text(
+                                    "Your ${resettable.size} ${if (resettable.size == 1) "value goes" else "values go"} back to the engine's " +
+                                        "default, or to the plan's where it decided one. What the engine was launched with and the model stay.",
+                                    fontSize = 13.sp,
+                                )
+                            },
+                            confirmButton = { TextButton(shape = RectangleShape, onClick = { confirmReset = false; reset(resettable) }) { Text("Reset") } },
+                            dismissButton = { TextButton(shape = RectangleShape, onClick = { confirmReset = false }) { Text("Keep") } },
+                        )
+                    }
+
+                    cards.forEach { c ->
+                        val open = searching || !(closedCards[c.group] ?: c.basic.isEmpty())
+                        val foldOpen = searching || openFolds[c.group] == true
+                        GroupCard(
+                            c, open, foldOpen,
+                            onToggle = { if (!searching) closedCards = closedCards + (c.group to open) },
+                            onToggleFold = { if (!searching) openFolds = openFolds + (c.group to !foldOpen) },
+                        ) { spec ->
+                            ParamRow(
+                                spec, cfg, decisions[spec.key], readOnly = c.readOnly, landing = spec.key == landedOn,
+                                onSet = { set(spec.key, it) }, onReset = { reset(listOf(spec.key)) },
+                            )
                         }
                     }
                 }
             }
 
             HorizontalDivider()
-            Text("This app", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
-            var share by remember { mutableStateOf(AppPrefs.shareOnNetwork(context)) }
-            var key by remember { mutableStateOf(AppPrefs.apiKey(context)) }
-            SwitchRow(
-                "Serve on the network",
-                "Other devices on this network can use this phone's engine through its OpenAI-compatible " +
-                    "API, with the key below. Changing this restarts the engine; a loaded model is loaded again. " +
-                    "Prompts and answers cross the network in clear.",
-                share,
-            ) { on ->
-                share = on
-                AppPrefs.setShareOnNetwork(context, on)
-                Engine.restart(context)
-            }
-            if (share) {
-                val clipboard = LocalClipboardManager.current
-                // The phone's own address on this network, followed as the network changes: what a
-                // client types, not a placeholder to work out.
-                var lan by remember { mutableStateOf(LanAddress.current(context)) }
-                DisposableEffect(Unit) { onDispose(LanAddress.watch(context) { lan = it }) }
-                if (lan.isEmpty()) {
-                    Text(
-                        "Not on a Wi-Fi or Ethernet network: no other device can reach the engine until the phone joins one.",
-                        fontSize = 12.sp, color = MaterialTheme.colorScheme.error,
-                    )
-                } else {
-                    Text("Address:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    lan.forEach { ip ->
-                        val url = LanAddress.url(ip)
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(url, fontFamily = FontFamily.Monospace, fontSize = 13.sp, modifier = Modifier.weight(1f))
-                            TextButton(shape = RectangleShape, onClick = { clipboard.setText(AnnotatedString(url)) }) { Text("Copy") }
-                        }
-                    }
-                }
-                Text("Key:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(key, fontFamily = FontFamily.Monospace, fontSize = 13.sp, modifier = Modifier.weight(1f))
-                    TextButton(shape = RectangleShape, onClick = { clipboard.setText(AnnotatedString(key)) }) { Text("Copy") }
-                    TextButton(shape = RectangleShape, onClick = { key = AppPrefs.regenerateApiKey(context); Engine.restart(context) }) { Text("New key") }
-                }
-            }
-            var csv by remember { mutableStateOf(AppPrefs.metricsCsv(context)) }
-            SwitchRow(
-                "Metrics CSV",
-                "One file per loaded model: per-token timings, faults, cache figures and where memory sat. " +
-                    "Read and shared from Metrics.",
-                csv,
-            ) { on -> csv = on; AppPrefs.setMetricsCsv(context, on) }
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(shape = RectangleShape, onClick = { Engine.stop(context) }, enabled = engine.serverUp, modifier = Modifier.weight(1f)) { Text("Stop engine") }
-                OutlinedButton(shape = RectangleShape, onClick = { Engine.start(context) }, enabled = !engine.serverUp, modifier = Modifier.weight(1f)) { Text("Start engine") }
-            }
+            AppSettings(engine.serverUp)
             engine.info?.let { Text("Engine ${it.version}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             Spacer(Modifier.height(24.dp))
         }
     }
 }
 
-/** One parameter: its label and help, the control its type asks for, and whether the person set it. */
+/** One group of the table: its label and help line, the basic rows, the deeper levels folded inside it. */
 @Composable
-private fun ParamRow(spec: ParamSpec, cfg: ConfigState, modelName: String?, onSet: (Any?) -> Unit, onReset: () -> Unit) {
+private fun GroupCard(
+    c: SettingsCard,
+    open: Boolean,
+    foldOpen: Boolean,
+    onToggle: () -> Unit,
+    onToggleFold: () -> Unit,
+    row: @Composable (ParamSpec) -> Unit,
+) {
+    Column(
+        Modifier.fillMaxWidth().border(2.dp, MaterialTheme.colorScheme.outline).padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Column(Modifier.fillMaxWidth().clickable(onClick = onToggle)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(c.label, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
+                if (c.basic.isEmpty()) Text("${c.moreCount}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.width(8.dp))
+                Text(if (open) "v" else ">", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (c.help.isNotEmpty()) Hint(c.help)
+        }
+        if (!open) return@Column
+        c.basic.forEach { row(it) }
+        if (c.more.isNotEmpty()) {
+            val foldable = c.basic.isNotEmpty()
+            if (foldable) {
+                Text(
+                    "${if (foldOpen) "v" else ">"}  ${c.moreCount} more in ${c.label}: ${c.more.joinToString(", ") { it.level }}",
+                    fontSize = 13.sp, color = MaterialTheme.colorScheme.tertiary,
+                    modifier = Modifier.fillMaxWidth().clickable(onClick = onToggleFold).padding(vertical = 4.dp),
+                )
+            }
+            if (!foldable || foldOpen) {
+                c.more.forEach { lv ->
+                    Text(levelName(lv.level), fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.tertiary)
+                    LEVEL_HINT[lv.level]?.let { Hint(it) }
+                    lv.params.forEach { row(it) }
+                }
+            }
+        }
+        if (c.hidden > 0) Hint("${c.hidden} more at a deeper level: widen the filter above to see ${if (c.hidden == 1) "it" else "them"}.")
+    }
+}
+
+/** The settings that are this app's own, never an engine parameter. */
+@Composable
+private fun AppSettings(serverUp: Boolean) {
+    val context = LocalContext.current
+    Text("This app", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+    var share by remember { mutableStateOf(AppPrefs.shareOnNetwork(context)) }
+    var key by remember { mutableStateOf(AppPrefs.apiKey(context)) }
+    SwitchRow(
+        "Serve on the network",
+        "Other devices on this network can use this phone's engine through its OpenAI-compatible " +
+            "API, with the key below. Changing this restarts the engine; a loaded model is loaded again. " +
+            "Prompts and answers cross the network in clear.",
+        share,
+    ) { on ->
+        share = on
+        AppPrefs.setShareOnNetwork(context, on)
+        Engine.restart(context)
+    }
+    if (share) {
+        val clipboard = LocalClipboardManager.current
+        // The phone's own address on this network, followed as the network changes: what a
+        // client types, not a placeholder to work out.
+        var lan by remember { mutableStateOf(LanAddress.current(context)) }
+        DisposableEffect(Unit) { onDispose(LanAddress.watch(context) { lan = it }) }
+        if (lan.isEmpty()) {
+            Text(
+                "Not on a Wi-Fi or Ethernet network: no other device can reach the engine until the phone joins one.",
+                fontSize = 12.sp, color = MaterialTheme.colorScheme.error,
+            )
+        } else {
+            Text("Address:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            lan.forEach { ip ->
+                val url = LanAddress.url(ip)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(url, fontFamily = FontFamily.Monospace, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                    TextButton(shape = RectangleShape, onClick = { clipboard.setText(AnnotatedString(url)) }) { Text("Copy") }
+                }
+            }
+        }
+        Text("Key:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(key, fontFamily = FontFamily.Monospace, fontSize = 13.sp, modifier = Modifier.weight(1f))
+            TextButton(shape = RectangleShape, onClick = { clipboard.setText(AnnotatedString(key)) }) { Text("Copy") }
+            TextButton(shape = RectangleShape, onClick = { key = AppPrefs.regenerateApiKey(context); Engine.restart(context) }) { Text("New key") }
+        }
+    }
+    var csv by remember { mutableStateOf(AppPrefs.metricsCsv(context)) }
+    SwitchRow(
+        "Metrics CSV",
+        "One file per loaded model: per-token timings, faults, cache figures and where memory sat. " +
+            "Read and shared from Metrics.",
+        csv,
+    ) { on -> csv = on; AppPrefs.setMetricsCsv(context, on) }
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        OutlinedButton(shape = RectangleShape, onClick = { Engine.stop(context) }, enabled = serverUp, modifier = Modifier.weight(1f)) { Text("Stop engine") }
+        OutlinedButton(shape = RectangleShape, onClick = { Engine.start(context) }, enabled = !serverUp, modifier = Modifier.weight(1f)) { Text("Start engine") }
+    }
+}
+
+/**
+ * One parameter: its label, the control its type asks for, one chip for where its value came from,
+ * and the way back (to the plan's value or the default). A row a link [landing] on scrolls into view,
+ * is outlined, and its field takes the focus.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ParamRow(
+    spec: ParamSpec,
+    cfg: ConfigState,
+    decision: PlanDecision?,
+    readOnly: Boolean,
+    landing: Boolean,
+    onSet: (Any?) -> Unit,
+    onReset: () -> Unit,
+) {
     val value = cfg.value(spec.key)
     val mine = spec.key in cfg.userKeys
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        when (spec.type) {
-            "bool" -> SwitchRow(spec.label, null, value == true) { onSet(it) }
-            "choice" -> {
+    val source = valueSource(mine, decision)
+    val planOffer = mine && differsFromPlan(value, decision)
+    val bring = remember { BringIntoViewRequester() }
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(landing) {
+        if (!landing) return@LaunchedEffect
+        delay(100) // the card and fold this row sits in were opened in the same frame: let them lay out
+        bring.bringIntoView()
+        if (!readOnly && spec.type != "bool" && spec.type != "choice") runCatching { focus.requestFocus() }
+    }
+    var mod = Modifier.fillMaxWidth().bringIntoViewRequester(bring)
+    if (landing) mod = mod.border(2.dp, MaterialTheme.colorScheme.primary).padding(6.dp)
+    Column(mod, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        when {
+            readOnly -> {
+                Text(spec.label, fontSize = 15.sp)
+                Text(paramValueText(value).substringAfterLast('/').ifEmpty { "none" }, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            spec.type == "bool" -> SwitchRow(spec.label, null, value == true) { onSet(it) }
+            spec.type == "choice" -> {
                 val idx = spec.choices.indexOfFirst { it.first == value?.toString() }.coerceAtLeast(0)
                 LabeledDropdown(spec.label, spec.choices.map { it.second }, idx) { i -> onSet(spec.choices[i].first) }
             }
-            "path" -> {
-                Text(spec.label, fontSize = 15.sp)
-                Text(modelName ?: value?.toString()?.substringAfterLast('/')?.ifEmpty { "none" } ?: "none", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            else -> NumberOrTextField(spec, value, onSet)
+            else -> NumberOrTextField(spec, value, focus, onSet)
         }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                val (lead, rest) = spec.helpParts()
-                var more by remember(spec.key) { mutableStateOf(false) }
-                if (lead.isNotEmpty()) Hint(lead)
-                val extra = listOfNotNull(
-                    rest.ifEmpty { null },
-                    spec.special.takeIf { it.isNotEmpty() }?.joinToString("; ") { "${it.first} = ${it.second}" },
-                )
-                if (extra.isNotEmpty()) {
-                    if (more) extra.forEach { Hint(it) }
-                    Text(
-                        if (more) "Less" else "More",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.clickable { more = !more }.padding(vertical = 2.dp),
-                    )
+        val (lead, rest) = spec.helpParts()
+        var more by remember(spec.key) { mutableStateOf(false) }
+        if (lead.isNotEmpty()) Hint(lead)
+        val extra = listOfNotNull(
+            rest.ifEmpty { null },
+            spec.special.takeIf { it.isNotEmpty() }?.joinToString("; ") { "${it.first} = ${it.second}" },
+        )
+        if (extra.isNotEmpty()) {
+            if (more) extra.forEach { Hint(it) }
+            Text(
+                if (more) "Less" else "More",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable { more = !more }.padding(vertical = 2.dp),
+            )
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (!readOnly) Chip(source.chip, if (source == ValueSource.DEFAULT) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary)
+            if (spec.lossy) Chip("changes the reply", warnColor())
+            if (spec.scope == "request") Chip("per message", MaterialTheme.colorScheme.onSurfaceVariant)
+            if (spec.key in cfg.reloadKeys) Chip("needs reload", warnColor())
+            Spacer(Modifier.weight(1f))
+            if (!readOnly && mine) {
+                val label = when {
+                    planOffer -> "Use plan value" + (decision?.valueText?.ifEmpty { decision.value }?.let { ": $it" } ?: "")
+                    source == ValueSource.YOU && decision != null && decision.group.ifEmpty { "set" } == "set" -> "Let the plan set it"
+                    else -> "Reset"
                 }
-                val tags = listOfNotNull(
-                    spec.level,
-                    if (mine) "set by you" else null,
-                    if (spec.lossy) "changes the reply" else null,
-                    if (spec.scope == "session") "applies on reload" else null,
-                )
-                if (tags.isNotEmpty()) Text(tags.joinToString(" · "), fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                TextButton(shape = RectangleShape, onClick = onReset, contentPadding = PaddingValues(horizontal = 8.dp)) { Text(label, fontSize = 12.sp) }
             }
-            if (mine) TextButton(shape = RectangleShape, onClick = onReset, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Reset", fontSize = 12.sp) }
         }
     }
 }
 
 /** A number (or `auto`, where the row accepts it) or free text; committed when the field is left. */
 @Composable
-private fun NumberOrTextField(spec: ParamSpec, value: Any?, onSet: (Any?) -> Unit) {
+private fun NumberOrTextField(spec: ParamSpec, value: Any?, focus: FocusRequester, onSet: (Any?) -> Unit) {
     var text by remember(spec.key, value) { mutableStateOf(paramValueText(value)) }
     var error by remember(spec.key) { mutableStateOf<String?>(null) }
     fun commit() {
@@ -238,6 +411,7 @@ private fun NumberOrTextField(spec: ParamSpec, value: Any?, onSet: (Any?) -> Uni
         }
         val n = (v as? Number)?.toDouble()
         if (n != null && ((spec.min != null && n < spec.min) || (spec.max != null && n > spec.max))) {
+            // The limits appear only here, when a value is refused; the field otherwise shows what is usual.
             error = if (spec.max != null) "between ${paramValueText(spec.min)} and ${paramValueText(spec.max)}"
             else "at least ${paramValueText(spec.min)}"
             return
@@ -245,50 +419,18 @@ private fun NumberOrTextField(spec: ParamSpec, value: Any?, onSet: (Any?) -> Uni
         error = null
         onSet(v)
     }
+    // Below the field: the problem, else what the value means (= off) and what is usual.
+    val hint = error ?: listOfNotNull(spec.specialLabel(value)?.let { "= $it" }, spec.typicalText()).joinToString(" · ").ifEmpty { null }
     OutlinedTextField(
         value = text,
         onValueChange = { text = it; error = null },
         label = { Text(spec.label) },
         suffix = spec.unit?.let { { Text(it, fontSize = 12.sp) } },
         isError = error != null,
-        // Below the field: the problem, else what the value means (0 = off), else what is usual.
-        supportingText = (error ?: spec.specialLabel(value)?.let { "= $it" } ?: spec.typicalText())?.let { { Text(it) } },
+        supportingText = hint?.let { { Text(it) } },
         singleLine = spec.type != "text",
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
         keyboardActions = KeyboardActions(onDone = { commit() }),
-        modifier = Modifier.fillMaxWidth().onFocusChanged { if (!it.isFocused) commit() },
+        modifier = Modifier.fillMaxWidth().focusRequester(focus).onFocusChanged { if (!it.isFocused) commit() },
     )
-}
-
-/**
- * The fold the advanced, experimental and debug rows live behind. A tonal bar rather than a plain
- * row: closed, it is the one thing standing between the recommended configuration and the levers
- * that can slow a run down or change the reply, so it reads as a boundary and not as a setting.
- */
-@Composable
-private fun AdvancedSection(open: Boolean, onToggle: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
-    Column(Modifier.fillMaxWidth()) {
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-        Surface(
-            color = MaterialTheme.colorScheme.tertiaryContainer,
-            shape = MaterialTheme.shapes.small,
-            modifier = Modifier.fillMaxWidth().padding(top = 8.dp).clickable(onClick = onToggle),
-        ) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Advanced settings", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onTertiaryContainer)
-                Spacer(Modifier.weight(1f))
-                Text(if (open) "hide" else "show", fontSize = 12.sp, color = MaterialTheme.colorScheme.onTertiaryContainer)
-            }
-        }
-        if (open) {
-            Text(
-                "The rest of the engine, grouped like the settings above and marked with their level. The " +
-                    "planner sets what it can measure; these were measured once or on one device and can " +
-                    "slow a run down or change the reply.",
-                fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
-            )
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp), content = content)
-        }
-    }
 }

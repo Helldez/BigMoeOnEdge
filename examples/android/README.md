@@ -56,7 +56,8 @@ imported from a file.
    ```
 
    The app's pure-Kotlin rules (the event-stream parser, the chat protocol, the parameter table,
-   the catalog status, the conversation files) have JVM unit tests under `app/src/test`; CI runs
+   the settings form, the catalog status, the merged model list, the plan's figures, the context
+   warning, the conversation files) have JVM unit tests under `app/src/test`; CI runs
    them, and so does `./gradlew testDevDebugUnitTest`.
 
    Published sideload builds are signed with a stable key instead, so an update installs over
@@ -81,14 +82,25 @@ vendor's, not Android's, so treat any figure as a per-device measurement.
 
 ## Getting a model onto the device
 
-The Models screen lists what the engine sees: its own directory (the app's internal storage, where
-in-app downloads and imports land) and the other places a model can sit on the phone, which the app
-hands the server at launch (`--scan-dir`: the app's external files directory, and on the dev flavor
-`/data/local/tmp/bmoe` and Downloads), each with the folders directly inside it. The server groups
-split sets, reads each model's architecture, says whether this build streams it and whether the
-file is a model at all (a projector or a draft head is listed apart, with no Load); the app reads
-no gguf itself. Nothing below
-needs a storage permission except the last option.
+The Models screen is one list, **Your models**: what the engine sees and what the catalog offers,
+merged by file, so a model the catalog downloaded is one row (`docs/screens.md`, "Models"). Each row
+has one state and one action for it: Available (Download), Downloading (progress and Cancel),
+Partly downloaded (Resume, Delete partial), On this device (Load), Loaded (Reload, Unload, Go to
+Chat), Shards missing (Download, where an entry has the rest). Delete removes a model's files, a
+split set as a unit, after asking (the server deletes in its models directory, the app elsewhere
+where it may write); Forget takes an entry added from a repository or a link off the list and
+leaves its files. Catalog entries with nothing on the phone sit at the bottom as suggestions, and
+files that are not models (a projector, a draft head, by their headers) are listed apart with no
+Load. With nothing on the phone the screen is three steps (find, check it fits, download then
+load), and the app opens on it instead of an empty Chat.
+
+The list covers the engine's own directory (the app's internal storage, where in-app downloads and
+imports land) and the other places a model can sit on the phone, which the app hands the server at
+launch (`--scan-dir`: the app's external files directory, and on the dev flavor
+`/data/local/tmp/bmoe` and Downloads), each with the folders directly inside it; **Where models
+live**, at the foot of the screen, names them. The server groups split sets, reads each model's
+architecture, says whether this build streams it and whether the file is a model at all; the app
+reads no gguf itself. Nothing below needs a storage permission except the last option.
 
 1. **Built-in catalog** (both flavors): the models this engine is measured on, one tap each. The
    catalog is the project's one data file, `catalog/models.json`, shipped in the APK and read by
@@ -97,9 +109,18 @@ needs a storage permission except the last option.
    Its notification shows the progress as the row does. A file whose catalog row names a `sha256`
    is checked against it before it becomes the model; a mismatch deletes the download and says so.
    An entry whose file name is not a bare file name is not offered.
-2. **Any other model**: under **Other model**, paste a direct gguf URL (a Hugging Face
-   `…/resolve/main/model.gguf` link), or pick a `.gguf` already on the device to import it.
-3. **adb push** (dev flavor only, needs all-files access, which the dev build requests on Refresh):
+2. **From Hugging Face**: a model's name, a repository id or its URL, in four steps shown as such:
+   Find, Pick, Check (the server reads the header before any download and answers with a verdict
+   the card shows as its headline, coloured by the server's code), Download (the model becomes a
+   catalog entry and its row in Your models carries the download).
+3. **Any other model**: paste a direct https link to a gguf, or to any shard of a split set. The
+   server makes it a catalog entry (`POST /api/models/url`), and the app downloads its files like
+   any entry's, with Resume and one progress bar over the set. The server has no `curl` on the
+   phone to ask the host for sizes, so they are left unknown and a file counts whole once it is
+   there. Nothing checks the link before the download, so a link to nothing ends at once with the
+   host's answer on its row (a definite `4xx` is never retried). A link the server refuses shows its
+   reason. Or pick a `.gguf` already on the device to import it.
+4. **adb push** (dev flavor only, needs all-files access, which the dev build requests on Refresh):
 
    ```bash
    adb push Qwen3-30B-A3B-Q4_K_M.gguf /data/local/tmp/bmoe/   # a real filesystem: O_DIRECT works
@@ -112,13 +133,14 @@ I/O. A download needs free space equal to the model size, with no temporary seco
 
 **Resume.** A download writes `<name>.part` and renames it once whole, so a stopped one keeps its
 bytes. A dropped connection is retried on its own with backoff, each attempt continuing from the
-`.part` with a `Range` request. Whatever stopped it (the retries ran out, you pressed **Cancel**, or
+`.part` with a `Range` request; a host that answers a definite `4xx` (no such file, a token it
+wants) ends the download at once, the reason on its row. Whatever stopped it (the retries ran out, you pressed **Cancel**, or
 the app or the phone restarted), the row then reads **Resume (X of Y GB)** with the bytes already
 on disk, and pressing it continues from there; the free-space check counts only the bytes still to
 fetch. **Delete partial download** on the same row is the one action that throws them away (the
 server deletes the entry's `.part` files, in its models directory only). These are the desktop web
-UI's words and behaviour too (`docs/server-api.md`, "Models"). A download from a pasted link has no
-row to resume from, so its **Cancel** deletes its partial file.
+UI's words and behaviour too (`docs/server-api.md`, "Models"). A link an older build downloaded on
+its own, with no entry, has no row to resume from, so its **Cancel** deletes its partial file.
 
 ### Sharded models (gpt-oss-120b, DeepSeek V4 Flash, Qwen3.8-Flash-Next)
 
@@ -141,23 +163,44 @@ catalog's Q2_K build has a 2.4 GB dense side instead, which is ~2 GB the expert 
 **Load** on the Models screen opens the model. With **Plan before every load** on (the Plan
 screen; on by default), the engine first measures the phone (storage read rate, what memory it can
 hold and lock, each compute device in a process of its own) and chooses the streaming settings for
-that model, then loads. The Plan screen leads with what the plan decided in one sentence and,
-after the first answer, the measured speed beside the expected one; then where the memory goes,
-what each compute device does and why, and the decisions grouped, each with the fact behind it. It
-shows which stage of the measurement is running, lets you measure again by hand and apply the
-result; a value you set yourself in Settings is never overridden. A model is unloaded after ten idle minutes to give the phone its memory back; the next
-message reloads it.
+that model, then loads. The Plan screen leads with what the plan decided in one sentence, the
+machine, which device takes the prompt and which the tokens, and four figures: decode speed
+expected and, after the first answer, measured with the difference; the cache hit rate the plan
+credited and the one measured; the memory held against what the process may hold; and the worst
+case with nothing held in memory. Apply and Measure again sit under them (Measure again also beside
+an error); Apply lists the settings it changed, each a link to its row in Settings. Then where the
+memory goes, what each compute device does and why, and the decisions grouped, each with the fact
+behind it and a link to its setting. Copy diagnostic puts the command and the planner's whole
+account on the clipboard for a bug report. The screen shows which stage of the measurement is
+running; a value you set yourself in Settings is never overridden. With nothing loaded and no plan
+measured, it shows the decisions the settings carry from the last applied plan. A model is unloaded after ten
+idle minutes to give the phone its memory back; the next message reloads it.
+
+The status line above the navigation bar, on every screen, says what the engine is doing and shows
+the running downloads ("Downloading 42%", or "2 downloads 42%"), which lead to Models. A loaded
+model whose context is below what a coding agent's first request needs gets a warning under it: the
+context, the server's recommendation, that a larger context
+takes memory from the expert cache, and a link to the setting that raises it. A chat refused for a
+full context offers the same link beside New chat. The number and the setting come from the
+server (`model.ctx_advice`).
 
 ## Settings
 
 Every engine tunable comes from the engine's parameter table (`GET /api/params`): the groups, the
 rows, their bounds and help text. The app names none of them, so a knob added to the engine appears
-here with no app change, and the same setting means the same thing on the desktop. Each group shows
-its basic rows, the recommended configuration; everything advanced, experimental or debug sits in
-the **Advanced** section at the end, folded, grouped the same way and marked with its level. They
+here with no app change, and the same setting means the same thing on the desktop. The page is one
+card per group, in the table's order, with the group's one line of help; each card shows its basic
+rows, the recommended configuration, and folds its advanced, experimental and debug rows inside it
+by level. A filter at the top shows rows up to a level (with counts, remembered on the phone), a
+search looks through every level, and a row the plan or you set is shown whatever the filter. They
 ship in the release build on purpose, because measuring them on hardware other than the one test
-phone is part of what this app is for. A value you set is marked and can be reset to the engine's
-default; one that is fixed while a model is loaded asks for a reload.
+phone is part of what this app is for. Each row carries one chip for where its value came from
+(default, from the plan, set by you); a value you set can be reset, or, where the plan decided
+another, replaced with **Use plan value**. **Reset all my values** removes yours after asking,
+leaving what the engine was launched with and the model. A number shows its unit, the name of a
+special value and the usual range. "Needs reload" marks only a row whose value differs from the
+loaded model's, and a banner offers the Reload. A link from the Plan screen or the context warning
+lands on its row.
 
 The app's own settings close the page:
 

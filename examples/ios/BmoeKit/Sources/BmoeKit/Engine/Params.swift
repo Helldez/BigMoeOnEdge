@@ -26,6 +26,10 @@ public struct ParamSpec: Equatable, Sendable, Identifiable {
     public let groupLabel: String
     /// The group's place in the form (`group_order`); nil from a server that does not send it.
     public let groupOrder: Int?
+    /// The group's one line, under its title.
+    public let groupHelp: String
+    /// The group is set with a control of its own (the model, from Models): shown, not edited.
+    public let groupReadOnly: Bool
     public let level: Level
     public let scope: Scope
     public let help: String
@@ -51,7 +55,11 @@ public struct ParamSpec: Equatable, Sendable, Identifiable {
         group = j["group"].string(or: "")
         groupLabel = j["group_label"].string(or: group)
         groupOrder = j["group_order"].int
-        level = Level(rawValue: j["level"].string(or: "basic")) ?? .basic
+        groupHelp = j["group_help"].string(or: "")
+        groupReadOnly = j["group_read_only"].bool(or: false)
+        // No level is a basic row; a level this app does not know yet is taken as the deepest, so
+        // a new kind of row is folded away rather than shown with the recommended ones.
+        level = Level(rawValue: j["level"].string(or: "basic")) ?? .debug
         scope = Scope(rawValue: j["scope"].string(or: "session")) ?? .session
         help = j["help"].string(or: "")
         flag = j["flag"].string(or: "")
@@ -165,11 +173,5 @@ public struct ParamSpec: Equatable, Sendable, Identifiable {
             }
         }
         return (String(text), "")
-    }
-
-    /// The rows behind the Advanced fold: all but the basic ones, which their groups already show,
-    /// grouped over the whole table so the groups keep the order of the form above.
-    public static func advanced(_ specs: [ParamSpec]) -> [(label: String, rows: [ParamSpec])] {
-        grouped(specs).map { ($0.label, $0.rows.filter { $0.level != .basic }) }.filter { !$0.rows.isEmpty }
     }
 }

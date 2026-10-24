@@ -1,7 +1,6 @@
 package io.bigmoeonedge.app.data
 
 import android.content.Context
-import android.net.Uri
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.ExistingWorkPolicy
@@ -50,54 +49,6 @@ object ModelDownloader {
         data class Completed(val name: String) : Event
 
         data class Failed(val name: String, val reason: String) : Event
-    }
-
-    /**
-     * Start a download. Returns the unique-work id (the filename), or an error if the URL doesn't
-     * name a .gguf file or the model cannot fit. No model names or hosts are assumed — for a pasted
-     * URL the filename comes from the URL itself.
-     *
-     * [fileName] overrides that for catalog downloads, where the on-disk name is known upfront and
-     * must not depend on redirects or query strings. [expectedBytes] (when > 0) is checked against
-     * free space before enqueuing so the user isn't left waiting for a transfer that can't fit.
-     */
-    fun enqueue(
-        ctx: Context,
-        rawUrl: String,
-        fileName: String? = null,
-        expectedBytes: Long = -1L,
-    ): Result<String> = runCatching {
-        val url = rawUrl.trim()
-        val uri = Uri.parse(url)
-        require(uri.scheme == "http" || uri.scheme == "https") { "URL must be http(s)" }
-
-        val name = fileName ?: DownloadWorker.fileNameFromUrl(uri)
-        require(name.endsWith(".gguf")) { "URL must point to a .gguf file" }
-
-        val dir = ModelManager.internalModelsDir(ctx)
-        if (expectedBytes > 0) {
-            // A resume needs only what the .part lacks, as enqueueEntry counts it.
-            val needed = bytesStillNeeded(expectedBytes, File(dir, name + DownloadWorker.PART_SUFFIX).length())
-            freeSpaceRefusal(needed, dir.usableSpace)?.let { error(it) }
-        }
-
-        val req = OneTimeWorkRequestBuilder<DownloadWorker>()
-            .setInputData(
-                workDataOf(
-                    DownloadWorker.KEY_URL to url,
-                    DownloadWorker.KEY_NAME to name,
-                    DownloadWorker.KEY_EXPECTED to expectedBytes,
-                )
-            )
-            .addTag(DownloadWorker.TAG)
-            .addTag(NAME_TAG_PREFIX + name)
-            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
-            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
-            .build()
-        // Block until the work is persisted (a fast local DB write) so the next events() emission
-        // already carries it — otherwise the row wouldn't show as downloading.
-        WorkManager.getInstance(ctx).enqueueUniqueWork(name, ExistingWorkPolicy.KEEP, req).result.get()
-        name
     }
 
     /**

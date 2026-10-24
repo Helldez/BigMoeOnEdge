@@ -103,6 +103,13 @@ public struct HFFacts: Equatable, Sendable {
     public let mode: String
     public let disk: String
     public let memory: String
+    /// The verdict as a code a screen colours by (`fits`, `no_streaming`, `will_not_fit`, `no_disk`,
+    /// `not_a_model`, `unknown`), and the server's line for it, shown as the headline.
+    public let fit: String
+    public let headline: String
+    public let nMoeLayer: Int
+    /// What one token reads of the experts.
+    public let tokenCycleBytes: Int64
 
     public init(_ j: JSON) {
         let m = j["model"], v = j["verdict"]
@@ -126,5 +133,32 @@ public struct HFFacts: Equatable, Sendable {
         mode = v["mode"].string(or: "")
         disk = v["disk"].string(or: "")
         memory = v["memory"].string(or: "")
+        fit = v["fit"].string(or: "")
+        headline = v["headline"].string(or: "")
+        nMoeLayer = m["n_moe_layer"].int(or: 0)
+        tokenCycleBytes = m["token_cycle_bytes"].int64(or: 0)
+    }
+
+    /// The colour the verdict is shown in, by the server's code; an older server sends none, and
+    /// its mode is the next best thing to colour by.
+    public var tone: FitTone {
+        if !fit.isEmpty { return FitTone(fit: fit) }
+        if mode == "streams" { return .ok }
+        return mode == "not readable" || mode == "not a model" ? .err : .warn
+    }
+}
+
+/// A verdict's colour, from its code alone (`verdict.fit`): the words are the server's, and a code
+/// this app does not know gets no colour.
+public enum FitTone: Equatable, Sendable {
+    case ok, warn, err, none
+
+    public init(fit: String) {
+        switch fit {
+        case "fits": self = .ok
+        case "no_streaming": self = .warn
+        case "will_not_fit", "no_disk", "not_a_model": self = .err
+        default: self = .none
+        }
     }
 }

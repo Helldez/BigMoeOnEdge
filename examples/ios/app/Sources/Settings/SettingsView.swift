@@ -2,76 +2,215 @@ import BmoeKit
 import SwiftUI
 
 /// Settings (docs/screens.md): every engine tunable, rendered from the parameter table, and the few
-/// settings that are the app's own. The basic rows of each group make the recommended
-/// configuration; the rest live in one folded section, each marked with its level. Each row
-/// appears once.
+/// settings that are the app's own. One card per group of the table, in its order; a card shows its
+/// basic rows (the recommended configuration) and folds its deeper rows inside it, one heading per
+/// level. A filter shows rows up to a level, a search reads every level, and a link
+/// (`Navigator.openSetting`) lands on one row. Each row appears once.
 struct SettingsView: View {
     @EnvironmentObject private var engine: Engine
-    @State private var advancedOpen = false
+    @EnvironmentObject private var nav: Navigator
+    /// The level filter, remembered on this device.
+    @AppStorage("settings.level") private var storedLevel = ParamSpec.Level.advanced.rawValue
+    /// A link to a deeper row widens the filter for this visit, without changing what is remembered.
+    @State private var widened: ParamSpec.Level?
+    @State private var query = ""
+    @State private var closedCards: [String: Bool] = [:]
+    @State private var openFolds: [String: Bool] = [:]
+    @State private var focusKey: String?
     @State private var failure: String?
+    @State private var confirmReset = false
+
+    private var level: ParamSpec.Level { widened ?? ParamSpec.Level(rawValue: storedLevel) ?? .advanced }
+    private var searching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
 
     var body: some View {
-        Page {
-            if let c = engine.config {
-                if !c.valid { Banner(text: "This configuration does not validate, and a load is refused until it does: \(c.error)", color: Palette.err) }
-                if c.reloadRequired, engine.ready {
-                    Banner(text: "Some changes apply when the model is loaded again.") {
-                        Button("Reload") { reload() }.buttonStyle(.pixelPrimary)
+        ScrollViewReader { proxy in
+            Page {
+                banners
+                // While the engine is down (a sharing change restarts it) the rows stay where they are, so
+                // the page keeps its length and its scroll; a line above says why a change waits.
+                if !engine.serverUp || engine.params.isEmpty {
+                    Text(engine.params.isEmpty ? (engine.serverUp ? "Reading the parameter table…" : "The engine is not running.")
+                        : "The engine is not running; changes apply once it is back.")
+                        .font(.subheadline).foregroundStyle(Palette.muted)
+                }
+                if !engine.params.isEmpty {
+                    tools
+                    let cards = SettingsForm.cards(engine.params, upTo: level, query: query,
+                                                   pinned: SettingsForm.pinned(engine.params, config: engine.config))
+                    if searching {
+                        Text(cards.isEmpty ? "No setting matches." : "Every level is searched.").font(.caption).foregroundStyle(Palette.muted)
+                    }
+                    ForEach(cards) { c in card(c) }
+                }
+                AppSettingsSection()
+            }
+            .onAppear { land(proxy) }
+            .onChange(of: nav.settingTarget) { _ in land(proxy) }
+            .onChange(of: engine.params.count) { _ in land(proxy) }
+            .onChange(of: engine.config == nil) { _ in land(proxy) }
+            // A link widens the filter for that visit only.
+            .onDisappear {
+                widened = nil
+                focusKey = nil
+            }
+        }
+        .confirmationDialog(resetTitle, isPresented: $confirmReset, titleVisibility: .visible) {
+            Button("Reset", role: .destructive) { resetAll() }
+            Button("Keep", role: .cancel) {}
+        } message: {
+            Text("The server's defaults and the plan apply to them again. The launch options and the model stay.")
+        }
+    }
+
+    private var resettable: [String] {
+        engine.config.map { SettingsForm.resettable($0, params: engine.params) } ?? []
+    }
+
+    private var resetTitle: String {
+        let n = resettable.count
+        return "Remove your \(n) \(n == 1 ? "value" : "values")?"
+    }
+
+    @ViewBuilder
+    private var banners: some View {
+        if let c = engine.config {
+            if !c.valid { Banner(text: "This configuration does not validate, and a load is refused until it does: \(c.error)", color: Palette.err) }
+            if c.reloadRequired, engine.ready {
+                Banner(text: "Some changes apply when the model is loaded again: the rows marked needs reload.") {
+                    Button("Reload") { reload() }.buttonStyle(.pixelPrimary).disabled(!c.valid)
+                }
+            }
+        }
+        if let failure {
+            Banner(text: failure, color: Palette.err) {
+                Button("Dismiss") { self.failure = nil }.buttonStyle(.pixel)
+            }
+        }
+    }
+
+    /// The search, the level filter with its counts, and Reset all my values.
+    private var tools: some View {
+        let counts = SettingsForm.levelCounts(engine.params)
+        return VStack(alignment: .leading, spacing: Grid.s) {
+            PixelField(placeholder: "Search settings", text: $query)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(ParamSpec.Level.allCases, id: \.self) { l in
+                        let shown = SettingsForm.widened(l, toShow: level) == level
+                        Button {
+                            widened = nil
+                            storedLevel = l.rawValue
+                        } label: {
+                            Text("\(l.rawValue.capitalized) \(counts[l] ?? 0)")
+                                .font(.pixel(13, bold: l == level))
+                                .foregroundStyle(l == level ? Palette.accentText : Palette.text)
+                                .padding(.horizontal, 8).padding(.vertical, 4)
+                                .background(l == level ? Palette.accent : .clear)
+                                .overlay(Rectangle().strokeBorder(shown ? Palette.accent : Palette.border, lineWidth: Grid.edge))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(l == level ? .isSelected : [])
                     }
                 }
+                .padding(.vertical, 2)
             }
-            if let failure { Banner(text: failure, color: Palette.err) }
-            // While the engine is down (a sharing change restarts it) the rows stay where they are, so
-            // the page keeps its length and its scroll; a line above says why a change waits.
-            if !engine.serverUp || engine.params.isEmpty {
-                Text(engine.params.isEmpty ? (engine.serverUp ? "Reading the parameter table…" : "The engine is not running.")
-                    : "The engine is not running; changes apply once it is back.")
-                    .font(.subheadline).foregroundStyle(Palette.muted)
+            .disabled(searching)
+            .opacity(searching ? 0.45 : 1)
+            if !resettable.isEmpty {
+                Button("Reset all my values (\(resettable.count))") { confirmReset = true }.buttonStyle(.pixel)
             }
-            ForEach(basicGroups, id: \.label) { g in group(g.label, g.rows) }
-            if !advancedGroups.isEmpty { advanced }
-            AppSettingsSection()
         }
     }
 
-    private var basicGroups: [(label: String, rows: [ParamSpec])] {
-        ParamSpec.grouped(engine.params.filter { $0.level == .basic })
-    }
+    // MARK: a card
 
-    private var advancedGroups: [(label: String, rows: [ParamSpec])] { ParamSpec.advanced(engine.params) }
-
-    private func group(_ label: String, _ rows: [ParamSpec]) -> some View {
-        VStack(alignment: .leading, spacing: Grid.s) {
-            SectionTitle(label)
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(rows.enumerated()), id: \.element.key) { i, spec in
-                    if i > 0 { Rectangle().fill(Palette.border).frame(height: 1) }
-                    ParamRow(spec: spec, onError: { failure = $0 })
-                }
-            }
-            .card(padding: 12)
-        }
-    }
-
-    private var advanced: some View {
-        let groups = advancedGroups
-        return VStack(alignment: .leading, spacing: Grid.m) {
+    private func card(_ c: SettingsForm.Card) -> some View {
+        let open = searching || !(closedCards[c.group] ?? c.basic.isEmpty)
+        return VStack(alignment: .leading, spacing: Grid.s) {
             Button {
-                withAnimation { advancedOpen.toggle() }
+                closedCards[c.group] = open
             } label: {
-                HStack {
-                    Text("Advanced settings").font(.pixel(18, bold: true)).foregroundStyle(Palette.accent2)
+                HStack(alignment: .firstTextBaseline, spacing: Grid.s) {
+                    Text(c.label).font(.pixel(18, bold: true)).foregroundStyle(Palette.accent2)
+                    if c.basic.isEmpty { Badge(text: "\(c.moreCount)") }
                     Spacer()
-                    Text("\(groups.reduce(0) { $0 + $1.rows.count })").font(.pixel(14)).foregroundStyle(Palette.muted)
-                    Image(systemName: advancedOpen ? "chevron.up" : "chevron.down").foregroundStyle(Palette.muted)
+                    Image(systemName: open ? "chevron.up" : "chevron.down").foregroundStyle(Palette.muted)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(searching)
+            if !c.help.isEmpty {
+                Text(c.help).font(.caption).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
+            }
+            if open {
+                rows(c.basic, c)
+                if !c.more.isEmpty {
+                    if !c.basic.isEmpty {
+                        Fold(title: "\(c.moreCount) more in \(c.label): \(c.more.map(\.level.rawValue).joined(separator: ", "))",
+                             isOpen: Binding(get: { searching || openFolds[c.group] == true },
+                                             set: { if !searching { openFolds[c.group] = $0 } }),
+                             boxed: false)
+                        { levels(c) }
+                    } else {
+                        levels(c)
+                    }
+                }
+                if c.hidden > 0, !searching {
+                    Text("\(c.hidden) more at a deeper level: widen the filter above to see \(c.hidden == 1 ? "it" : "them").")
+                        .font(.caption).foregroundStyle(Palette.muted)
                 }
             }
-            if advancedOpen {
-                Banner(text: "The rest of the engine, grouped like the settings above and marked with their level. The planner "
-                    + "sets what it can measure; these were measured once or on one device and can slow a run down or "
-                    + "change the reply.")
-                ForEach(groups, id: \.label) { g in group(g.label, g.rows) }
+        }
+        .card(padding: 12)
+    }
+
+    private func levels(_ c: SettingsForm.Card) -> some View {
+        ForEach(c.more, id: \.level) { m in
+            VStack(alignment: .leading, spacing: 2) {
+                Text(m.level.rawValue.capitalized).font(.pixel(15, bold: true)).foregroundStyle(Palette.text).padding(.top, Grid.s)
+                let hint = SettingsForm.levelHint(m.level)
+                if !hint.isEmpty { Text(hint).font(.caption).foregroundStyle(Palette.muted) }
+                rows(m.rows, c)
             }
+        }
+    }
+
+    private func rows(_ specs: [ParamSpec], _ c: SettingsForm.Card) -> some View {
+        let decisions = Dictionary((engine.config?.plan ?? []).map { ($0.knob, $0) }, uniquingKeysWith: { _, last in last })
+        let reload = Set(engine.config?.reloadKeys ?? [])
+        return VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(specs.enumerated()), id: \.element.key) { i, spec in
+                if i > 0 { Rectangle().fill(Palette.border).frame(height: 1) }
+                ParamRow(spec: spec, readOnly: c.readOnly, decision: decisions[spec.key], needsReload: reload.contains(spec.key),
+                         focusRequest: focusKey == spec.key, onError: { failure = $0 })
+                    .id("param-\(spec.key)")
+            }
+        }
+    }
+
+    // MARK: actions
+
+    /// A link to one setting lands on it: the filter widened to its level, its card and fold
+    /// opened, the row scrolled into view and its field focused. Once per link.
+    private func land(_ proxy: ScrollViewProxy) {
+        guard let key = nav.settingTarget, engine.config != nil,
+              let spec = engine.params.first(where: { $0.key == key }) else { return }
+        nav.settingTarget = nil
+        query = ""
+        if SettingsForm.widened(level, toShow: spec.level) != level { widened = spec.level }
+        closedCards[spec.group] = false
+        if spec.level != .basic { openFolds[spec.group] = true }
+        focusKey = nil
+        // After the cards above have opened, so the row is there to scroll to.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            withAnimation { proxy.scrollTo("param-\(key)", anchor: .center) }
+            focusKey = key
+            // The focus is taken once: a later visit opens on the page, not on this row.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { if focusKey == key { focusKey = nil } }
         }
     }
 
@@ -81,13 +220,28 @@ struct SettingsView: View {
             do { try await engine.load(engine.info?.model?.path) } catch { failure = error.localizedDescription }
         }
     }
+
+    private func resetAll() {
+        let keys = resettable
+        Task {
+            do { try await engine.setConfig(reset: keys) } catch { failure = error.localizedDescription }
+        }
+    }
 }
 
 /// One parameter: its label, its help, its control by type, what its value means and what is
-/// usual, and where its value came from.
+/// usual, where its value came from and whether the loaded model runs with it.
 struct ParamRow: View {
     @EnvironmentObject private var engine: Engine
     let spec: ParamSpec
+    /// Shown, not edited: its group is set elsewhere (the model, from Models).
+    var readOnly = false
+    /// The applied plan's decision on this row, if it made one.
+    var decision: PlanDecision?
+    /// The value differs from the one the loaded session runs with (the server says which).
+    var needsReload = false
+    /// A link landed here: the field takes the focus.
+    var focusRequest = false
     var onError: (String) -> Void
 
     @State private var text = ""
@@ -96,18 +250,21 @@ struct ParamRow: View {
 
     private var value: JSON { engine.config?[spec.key] ?? .null }
     private var userSet: Bool { engine.config?.userKeys.contains(spec.key) == true }
-    private var planSet: Bool { !userSet && engine.config?.plan?.contains { $0.knob == spec.key } == true }
+    private var source: SettingsForm.Source { SettingsForm.source(userSet: userSet, decision: decision) }
     private var rejected: String? { engine.config?.rejected[spec.key] }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: Grid.s) {
                 Text(spec.label).font(.body).foregroundStyle(Palette.text)
-                if spec.level != .basic { Badge(text: spec.level.rawValue, color: Palette.muted) }
                 Spacer(minLength: Grid.s)
-                if spec.kind == .bool { toggle }
+                if spec.kind == .bool, !readOnly { toggle }
             }
-            if spec.kind != .bool { control }
+            if readOnly {
+                Text(readOnlyText).font(.pixel(15)).foregroundStyle(Palette.text).lineLimit(2)
+            } else if spec.kind != .bool {
+                control
+            }
             if let rejected {
                 // The limits appear only here, beside a value the server refused.
                 Text([rejected, spec.rangeText.map { "accepted: \($0)" }].compactMap { $0 }.joined(separator: " · "))
@@ -117,8 +274,22 @@ struct ParamRow: View {
             marks
         }
         .padding(.vertical, 10)
-        .onAppear { text = value.display }
+        .padding(.leading, SettingsForm.isDefault(spec, value) ? 0 : 6)
+        .overlay(alignment: .leading) {
+            // A value off its default is edged in the accent, as the web form does.
+            if !SettingsForm.isDefault(spec, value) { Rectangle().fill(Palette.accent).frame(width: 2).padding(.vertical, 10) }
+        }
+        .onAppear {
+            text = value.display
+            if focusRequest { focused = true }
+        }
         .onChange(of: value) { v in if !focused { text = v.display } }
+        .onChange(of: focusRequest) { if $0 { focused = true } }
+    }
+
+    private var readOnlyText: String {
+        let shown = spec.kind == .path ? (value.display as NSString).lastPathComponent : value.display
+        return shown.isEmpty ? "none" : shown
     }
 
     /// The help's first sentence, always; the rest and the named values on demand.
@@ -158,7 +329,7 @@ struct ParamRow: View {
             .pickerStyle(.menu)
             .tint(Palette.accent)
         case .path:
-            // The one path a client may set: the model, from what the server lists.
+            // A path a client may set: one of the files the server lists.
             Picker(spec.label, selection: Binding(get: { value.display }, set: { set(.string($0)) })) {
                 Text("None").tag("")
                 ForEach(engine.models.local) { Text($0.name).tag($0.path) }
@@ -195,17 +366,33 @@ struct ParamRow: View {
         }
     }
 
+    /// One chip for where the value came from, the row's other marks, and the way back.
     private var marks: some View {
-        HStack(spacing: Grid.s) {
-            if userSet {
-                Badge(text: "set by you", color: Palette.accent)
-                Button("Reset") { reset() }.font(.pixel(13)).foregroundStyle(Palette.accent).buttonStyle(.borderless)
-            } else if planSet {
-                Badge(text: "set by the plan", color: Palette.ok)
+        let planText = decision.map { $0.valueText.isEmpty ? $0.value : $0.valueText } ?? ""
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: Grid.s) {
+                if !readOnly {
+                    Badge(text: source.text, color: source == .you ? Palette.accent : source == .plan ? Palette.ok : Palette.muted)
+                }
+                if spec.lossy { Badge(text: "changes the reply", color: Palette.warn) }
+                if spec.scope == .request { Badge(text: "per message", color: Palette.accent2) }
+                if needsReload { Badge(text: "needs reload", color: Palette.warn) }
             }
-            if spec.lossy { Badge(text: "changes the reply", color: Palette.warn) }
-            if spec.scope == .session, engine.info?.model != nil { Text("applies on reload").font(.caption).foregroundStyle(Palette.muted) }
+            if userSet, !readOnly {
+                // Taking the plan's value is removing the person's: the plan's layer is beneath it.
+                if SettingsForm.differsFromPlan(value, decision) {
+                    link("Use plan value" + (planText.isEmpty ? "" : ": \(planText)"))
+                } else if decision?.isSet == true {
+                    link("Let the plan set it")
+                } else {
+                    link("Reset to default")
+                }
+            }
         }
+    }
+
+    private func link(_ title: String) -> some View {
+        Button(title) { reset() }.font(.pixel(13)).foregroundStyle(Palette.accent).buttonStyle(.borderless)
     }
 
     private func commit() {

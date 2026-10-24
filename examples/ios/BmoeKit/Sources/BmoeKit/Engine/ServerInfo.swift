@@ -15,6 +15,17 @@ public struct ModelInfo: Equatable, Sendable {
     /// What a CPU figure is read against: the session's compute threads, and every busy thread.
     public let computeThreads: Int
     public let busyThreads: Int
+    /// The session's context against what a client of the server sends; nil from a server that
+    /// does not say.
+    public let ctxAdvice: CtxAdvice?
+
+    /// `ctx_advice`: what a coding agent's first request needs, whether the context is short of
+    /// it, and the parameter that raises it. The app names neither the number nor the key.
+    public struct CtxAdvice: Equatable, Sendable {
+        public let recommended: Int
+        public let short: Bool
+        public let param: String
+    }
 
     public init?(_ j: JSON) {
         guard j.object != nil else { return nil }
@@ -28,6 +39,51 @@ public struct ModelInfo: Equatable, Sendable {
         streaming = j["streaming"].bool(or: false)
         computeThreads = j["compute_threads"].int(or: 0)
         busyThreads = j["busy_threads"].int(or: 0)
+        let a = j["ctx_advice"]
+        if let rec = a["recommended"].int, let param = a["param"].string, !param.isEmpty {
+            ctxAdvice = CtxAdvice(recommended: rec, short: a["short"].bool(or: false), param: param)
+        } else {
+            ctxAdvice = nil
+        }
+    }
+}
+
+/// What the screens say about the loaded session's context against what a client of the server
+/// sends (docs/screens.md, "The status line"): the figures and the setting all come from the
+/// server, the setting's name from the parameter table.
+public struct ContextAdvice: Equatable, Sendable {
+    /// The loaded session's context, in tokens.
+    public let nCtx: Int
+    /// What a coding agent's first request needs, with room for its answer.
+    public let recommended: Int
+    /// The context is below the recommendation: a client like that is refused.
+    public let short: Bool
+    /// The parameter that raises it, for a link to its row in Settings.
+    public let key: String
+    /// That parameter as the table labels it.
+    public let label: String
+
+    /// The advice for `model`, or nil without a model or without the server's advice.
+    public init?(model: ModelInfo?, params: [ParamSpec]) {
+        guard let model, let a = model.ctxAdvice else { return nil }
+        nCtx = model.nCtx
+        recommended = a.recommended
+        short = a.short
+        key = a.param
+        label = params.first { $0.key == a.param }?.label ?? a.param
+    }
+
+    /// The warning beside the model's name.
+    public var warning: String {
+        "Context \(nCtx) tokens, under the \(recommended) a coding agent's first request needs; a larger context "
+            + "takes memory from the expert cache."
+    }
+
+    /// What a chat says when the conversation filled the context.
+    public var fullText: String {
+        "This conversation fills the model's context of \(nCtx) tokens. Start a new chat, or raise \(label) and "
+            + "reload the model"
+            + (short ? " (\(recommended) tokens fits a coding agent's first request; it takes memory from the expert cache)." : ".")
     }
 }
 

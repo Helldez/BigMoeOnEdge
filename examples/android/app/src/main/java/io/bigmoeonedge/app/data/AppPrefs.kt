@@ -36,6 +36,15 @@ object AppPrefs {
     fun metricsCsv(ctx: Context): Boolean = prefs(ctx).getBoolean("metrics_csv", true)
     fun setMetricsCsv(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("metrics_csv", on).apply()
 
+    /**
+     * The deepest level of the parameter table the Settings filter shows, remembered on this phone.
+     * The levels are the table's own; this keeps whichever one was picked while it is one of [known]
+     * (a value an older build stored, or a hand-edited file, is not), else [defaultLevel].
+     */
+    fun settingsLevel(ctx: Context, known: List<String>, defaultLevel: String): String =
+        prefs(ctx).getString("settings_level", null)?.takeIf { it in known } ?: defaultLevel
+    fun setSettingsLevel(ctx: Context, level: String) = prefs(ctx).edit().putString("settings_level", level).apply()
+
     /** Free the model after this long with no generation; the next message reloads it. */
     const val IDLE_UNLOAD_MINUTES = 10
 
