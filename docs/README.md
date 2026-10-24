@@ -43,6 +43,7 @@ for the idea the project is built on.
 | [npu-prefill.md](npu-prefill.md) | `--prefill-device`: prefill on the NPU and decode on the CPU, a model larger than RAM fed to the NPU two layers at a time, and why decode stays on the CPU. |
 | [android-memory.md](android-memory.md) | What reclaims the engine's memory on a phone, which levers exist (almost none), and why the cache hit rate is what the kernel judges you by. |
 | [pressure.md](pressure.md) | Cache policy under memory pressure: why an unaffordable budget starts a reclaim war, why the adaptive governor was retired, and what the fixed `--cache-mb` / `--dense-weights` levers do. |
+| [cache-stall-sizing.md](cache-stall-sizing.md) | A proposal on hold: sizing the expert cache by the stalls it causes rather than by any memory figure the OS reports, the laptop and phone measurements behind it, and how it differs from the retired governor. |
 
 ## Measurements
 

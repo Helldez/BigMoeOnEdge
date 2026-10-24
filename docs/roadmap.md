@@ -369,6 +369,15 @@ layer for devices, and device memory as a tier of the expert cache):
   its one policy figure were sized on a single laptop; a phone with an NPU, a machine with no
   accelerator, a discrete GPU and a system that commits what it reserves each owe a run before the
   rule is believed there ([hardware-planning.md](hardware-planning.md#the-widest-graph)).
+- **The expert cache, sized by its own stalls.** `--auto` sizes the cache from a memory figure the
+  platform reports, and that figure means something different on every platform: on a 15 GB laptop
+  it left the cache at 1.5 GB and the run slower than plain mmap, while the same model with 5 GB of
+  cache ran 69% faster. Counting what other processes hold idle fixed the laptop and failed on a
+  phone, where the system compressed the engine's own memory instead. The proposal on hold is one
+  procedure for every machine: start at the token cycle, grow while a step saves flash reads, halve
+  on a stalled token confirmed by timing a few cache pages
+  ([cache-stall-sizing.md](cache-stall-sizing.md)). Owed first: proof that timing alone tells a
+  reclaimed page from a resident one.
 
 ## Conversation reuse on hybrid models (the server, tool calls)
 

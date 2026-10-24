@@ -1450,6 +1450,16 @@ not changed.
 
 ## [0.29.0] - 2026-10-13
 
+### Docs
+- **`docs/cache-stall-sizing.md`: a proposal, on hold, to size the expert cache by the stalls it
+  causes.** The memory figure each platform reports is a different quantity on each, and on two
+  machines it was wrong in opposite directions: a 15 GB laptop where `--auto` sized a 1.5 GB cache
+  and lost to plain mmap (3.22 against 4.37 tok/s, 5.43 with 5 GB by hand), and a 12 GB phone in
+  ordinary use where a cache sized from other processes' idle memory was compressed by the system
+  (2.26 against 2.83 tok/s, about 15 s lost to a few stalled tokens). The design reads one
+  signal on every machine, the engine's own token time confirmed by timing a few cache pages, and
+  states how it differs from the governor retired in `docs/pressure.md`. Nothing is implemented.
+
 ### Added
 - **`--auto` chooses how wide a prompt is computed (`--ubatch`), and counts its buffers at that
   width.** The compute buffers are reserved for the widest graph, which followed the context, while
