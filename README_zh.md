@@ -17,7 +17,7 @@
 通过从闪存流式读取专家，运行比设备内存更大的混合专家（Mixture-of-Experts）模型。
 基于 llama.cpp 的公开 API 构建；支持 Android、iOS、macOS、Windows 和 Linux；每个平台上都提供本地 OpenAI 兼容服务器。
 
-<table>
+<table align="center">
 <tr>
 <td align="center" width="50%"><img src="docs/assets/screens/android.gif" width="220" alt="Qwen3.6-35B-A3B 在 12 GB Android 手机上实时生成回答。"></td>
 <td align="center" width="50%"><img src="docs/assets/screens/iphone.gif" width="220" alt="Qwen3.6-35B-A3B 在 12 GB iPhone 上实时生成回答。"></td>
