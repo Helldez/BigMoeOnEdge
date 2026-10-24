@@ -1,0 +1,36 @@
+#!/bin/sh
+# The AppImage's entry point: starts bmoe-server, which opens the app in the browser (--open).
+# Started from a file manager there is no terminal, and the server has no window of its own, so the
+# user could neither see it run nor stop it. In that case the AppImage starts itself again inside a
+# terminal window: closing the window stops the server, as with bmoe-server.exe on Windows. With
+# arguments, or from a terminal, it runs right here.
+HERE="$(dirname "$(readlink -f "$0")")"
+SELF="${APPIMAGE:-$0}"
+
+if [ $# -eq 0 ] && [ ! -t 1 ] && [ -z "$BMOE_APPIMAGE_TERMINAL" ] && [ -n "$DISPLAY$WAYLAND_DISPLAY" ]; then
+    export BMOE_APPIMAGE_TERMINAL=1
+    for t in x-terminal-emulator gnome-terminal konsole xfce4-terminal kgx mate-terminal lxterminal xterm; do
+        command -v "$t" > /dev/null 2>&1 || continue
+        case "$t" in
+            gnome-terminal | kgx) exec "$t" -- "$SELF" ;;
+            xfce4-terminal) exec "$t" -x "$SELF" ;;
+            *) exec "$t" -e "$SELF" ;;
+        esac
+    done
+    # No terminal found: run without one. The server still opens the browser; it stops with the
+    # session or with `pkill bmoe-server`.
+fi
+
+if [ -n "$BMOE_APPIMAGE_TERMINAL" ] && [ -t 1 ]; then
+    echo "BigMoeOnEdge is running. Close this window or press Ctrl+C to stop it."
+    echo
+fi
+"$HERE/usr/bin/bmoe-server" --open "$@"
+rc=$?
+# In a window of its own a failure would vanish with the window: keep it up to be read.
+if [ $rc -ne 0 ] && [ -n "$BMOE_APPIMAGE_TERMINAL" ] && [ -t 0 ]; then
+    echo
+    echo "bmoe-server stopped (exit status $rc). Press Enter to close this window."
+    read -r _
+fi
+exit $rc

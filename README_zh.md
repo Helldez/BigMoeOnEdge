@@ -17,7 +17,7 @@
 通过从闪存流式读取专家，运行比设备内存更大的混合专家（Mixture-of-Experts）模型。
 基于 llama.cpp 的公开 API 构建；支持 Android、iOS、macOS、Windows 和 Linux；每个平台上都提供本地 OpenAI 兼容服务器。
 
-<table>
+<table align="center">
 <tr>
 <td align="center" width="50%"><img src="docs/assets/screens/android.gif" width="220" alt="Qwen3.6-35B-A3B 在 12 GB Android 手机上实时生成回答。"></td>
 <td align="center" width="50%"><img src="docs/assets/screens/iphone.gif" width="220" alt="Qwen3.6-35B-A3B 在 12 GB iPhone 上实时生成回答。"></td>
@@ -76,13 +76,25 @@ Qwen3.6-35B-A3B 在各设备上、在发布的应用中实时生成。该模型�
 
 ## 快速开始
 
-**Android。** 从[最新版本](https://github.com/Helldez/BigMoeOnEdge/releases/latest)安装 APK，
-然后在 **Models** 中选择一个模型。**Settings → Serve on the network** 可通过密钥共享该模型。
+以下内容均来自[最新版本](https://github.com/Helldez/BigMoeOnEdge/releases/latest)。
+每个安装包都会启动引擎，并在浏览器中打开 `http://127.0.0.1:8765/` 上的应用；在 **Models** 中选择一个模型。
+
+- **macOS**（Apple 芯片）：打开 `BigMoeOnEdge-<版本>-macos-arm64.dmg`，将应用拖到"应用程序"。
+  运行期间它会显示在程序坞和菜单栏中；**Stop and Quit** 可将其停止。
+  尚未公证：首次启动需要按照 dmg 中 README.txt 的步骤操作。
+- **Windows**：运行 `BigMoeOnEdge-<版本>-windows-x86_64-setup.exe`（或 `-windows-arm64-setup.exe`）。
+  无需管理员权限；从开始菜单启动 BigMoeOnEdge，关闭其窗口即可停止。
+- **Linux**：`chmod +x BigMoeOnEdge-<版本>-linux-x86_64.AppImage`（或 `-linux-aarch64`）后运行。
+  从文件管理器启动时会在终端窗口中打开；关闭该窗口即可停止。
+- **Android**：将应用添加到 [Obtainium][obtainium]，之后每个新版本都会作为更新安装；
+  也可以手动安装 `app-dev-release.apk`。**Settings → Serve on the network** 可通过密钥共享手机上的引擎。
 
 **iOS。** 使用 Xcode 从 [examples/ios](examples/ios/README.md) 构建应用。实验性功能。
 
-**桌面端（macOS、Windows、Linux）。** 从同一版本下载 `bmoe-desktop` 压缩包并运行
-`bmoe-server --open`；应用将在 `http://127.0.0.1:8765/` 打开。
+**压缩包。** `bmoe-desktop` 压缩包以文件夹形式包含同一个应用，适用于脚本化安装：解压后运行
+`bmoe-server --open`。`bmoe-cli` 压缩包包含命令行引擎。
+
+[obtainium]: https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22io.bigmoeonedge.example.dev%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FHelldez%2FBigMoeOnEdge%22%2C%22author%22%3A%22Helldez%22%2C%22name%22%3A%22BigMoeOnEdge%22%2C%22additionalSettings%22%3A%22%7B%5C%22apkFilterRegEx%5C%22%3A%5C%22-release%5C%5C%5C%5C.apk%24%5C%22%7D%22%7D
 
 **命令行。**
 

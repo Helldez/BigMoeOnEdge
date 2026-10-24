@@ -1,6 +1,8 @@
 # Builds bmoe-cli for desktop hosts when a release is published and attaches the archives to it,
 # so a benchmark contributor can download one file and run scripts/bench-report.sh without a
-# toolchain (docs/community-benchmarks.md). Same clean-checkout rule as release-apk.yml: nothing
+# toolchain (docs/community-benchmarks.md). The desktop app also ships as a package per OS, built
+# from the same staged folder as its archive by the scripts under packaging/: BigMoeOnEdge.app in a
+# .dmg, a per-user installer .exe (Inno Setup) and an AppImage. Same clean-checkout rule as release-apk.yml: nothing
 # from a developer machine rides into a published artifact.
 #
 # One layout on every OS: the executable and, beside it, one module per backend and one CPU module
@@ -20,9 +22,10 @@ name: release-host
 on:
   release:
     types: [published]
-  # A PR that edits this workflow builds all four targets as workflow artifacts: the dry run.
+  # A PR that edits this workflow or the packaging scripts builds all four targets as workflow
+  # artifacts: the dry run.
   pull_request:
-    paths: ['.github/workflows/release-host.yml']
+    paths: ['.github/workflows/release-host.yml', 'packaging/**']
   workflow_dispatch:
     inputs:
       tag:
@@ -412,6 +415,33 @@ jobs:
             tar czf "$NAME.tar.gz" "$NAME"
             tar czf "$DESK.tar.gz" "$DESK"
           fi
+          echo "desk=$DESK" >> "$GITHUB_OUTPUT"
+          # The packages, from the folder the archive was just made of. Windows builds its
+          # installer in the next step, from PowerShell, where ISCC's /D arguments stay as typed.
+          case "${{ matrix.target }}" in
+            macos-*) bash packaging/macos/make-app.sh "$DESK" "$TAG" . ;;
+            linux-*) bash packaging/linux/make-appimage.sh "$DESK" "$TAG" "${{ matrix.target }}" . ;;
+          esac
+
+      # Inno Setup comes with the Windows runner images (x64 and ARM64; ISCC runs emulated on the
+      # latter). The NPU target keeps its archives only: its setup is done by hand in the folder it
+      # unpacks to (docs/npu-windows.md), which an installer would only hide.
+      - name: Installer (Windows)
+        if: matrix.target == 'windows-x86_64' || matrix.target == 'windows-arm64'
+        shell: pwsh
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          DESK: ${{ steps.pkg.outputs.desk }}
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "no Inno Setup at $iscc" }
+          $version = (& "$env:DESK\bmoe-server.exe" --version | Select-Object -First 1).Trim()
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "unexpected server version '$version'" }
+          $arch = if ("${{ matrix.target }}" -eq "windows-arm64") { "arm64" } else { "x64compatible" }
+          & $iscc /Q "/DAppVersion=$version" "/DSourceDir=$((Resolve-Path $env:DESK).Path)" "/DOutputDir=$PWD" `
+            "/DOutputBaseName=BigMoeOnEdge-$env:TAG-${{ matrix.target }}-setup" "/DArch=$arch" packaging\windows\bigmoeonedge.iss
+          if ($LASTEXITCODE) { throw "ISCC failed ($LASTEXITCODE)" }
+          Get-ChildItem BigMoeOnEdge-*-setup.exe | Format-Table Name, Length
 
       # The binaries must at least start on the runner they were built on.
       - name: Smoke
@@ -424,12 +454,74 @@ jobs:
             build/bin/bmoe-cli --version && build/bin/bmoe-server --version
           fi
 
+      # Each package started as a user would start it, with no model: the server must answer and
+      # serve the web UI from inside the package, then stop.
+      - name: Smoke the package
+        shell: bash
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          answers() { # the API and the built UI (not the "UI is not built" page) on the default port
+            curl -fsS --retry 60 --retry-delay 1 --retry-connrefused http://127.0.0.1:8765/api/info
+            echo
+            curl -fsS http://127.0.0.1:8765/ | grep -q '<div id="app"' || { echo "the UI is not served"; return 1; }
+          }
+          case "${{ matrix.target }}" in
+            macos-*)
+              codesign --verify --deep --strict BigMoeOnEdge.app
+              DMG="BigMoeOnEdge-$TAG-${{ matrix.target }}.dmg"
+              MNT="$(mktemp -d)"
+              hdiutil attach -nobrowse -readonly -mountpoint "$MNT" "$DMG"
+              [ -L "$MNT/Applications" ] || { echo "no Applications link in $DMG"; exit 1; }
+              codesign --verify --deep --strict "$MNT/BigMoeOnEdge.app"
+              "$MNT/BigMoeOnEdge.app/Contents/MacOS/bmoe-server" --version
+              # The launcher starts the server; quitting the app stops it. SIGTERM takes the same
+              # path as Stop and Quit, and needs no Apple Events permission on the runner.
+              open "$MNT/BigMoeOnEdge.app"
+              answers
+              pkill -TERM -f 'BigMoeOnEdge.app/Contents/MacOS/BigMoeOnEdge'
+              for i in $(seq 20); do pgrep -f 'BigMoeOnEdge.app/Contents/MacOS/' > /dev/null || break; sleep 1; done
+              if pgrep -fl 'BigMoeOnEdge.app/Contents/MacOS/'; then echo "quitting the app left a process"; exit 1; fi
+              hdiutil detach "$MNT"
+              ;;
+            linux-*)
+              IMG="./BigMoeOnEdge-$TAG-${{ matrix.target }}.AppImage"
+              chmod +x "$IMG"
+              # The runner has no FUSE: the runtime extracts and runs instead.
+              "$IMG" --appimage-extract-and-run --version
+              "$IMG" --appimage-extract-and-run --port 8765 > server.log 2>&1 &
+              PID=$!
+              answers || { cat server.log; exit 1; }
+              # The runtime runs AppRun as its child: stop the server itself, then the runtime.
+              pkill -f 'usr/bin/bmoe-server' || true
+              wait "$PID" || true
+              ;;
+            windows-x86_64 | windows-arm64)
+              # A silent per-user install, then what the Start-menu entry starts, then the uninstall.
+              ./BigMoeOnEdge-"$TAG"-${{ matrix.target }}-setup.exe //VERYSILENT //SUPPRESSMSGBOXES //NORESTART
+              APPDIR="$(cygpath -u "$LOCALAPPDATA")/Programs/BigMoeOnEdge"
+              [ -f "$(cygpath -u "$APPDATA")/Microsoft/Windows/Start Menu/Programs/BigMoeOnEdge.lnk" ] \
+                || { echo "no Start-menu entry"; exit 1; }
+              "$APPDIR/bmoe-server.exe" --version
+              "$APPDIR/bmoe-server.exe" --port 8765 > server.log 2>&1 &
+              answers || { cat server.log; exit 1; }
+              taskkill //F //IM bmoe-server.exe
+              sleep 2
+              "$APPDIR/unins000.exe" //VERYSILENT //SUPPRESSMSGBOXES //NORESTART
+              for i in $(seq 30); do [ -e "$APPDIR/bmoe-server.exe" ] || break; sleep 1; done
+              [ ! -e "$APPDIR/bmoe-server.exe" ] || { echo "the uninstall left bmoe-server.exe"; exit 1; }
+              ;;
+          esac
+
       # Always a workflow artifact: the dry run's result, and what `publish` attaches to a release.
       - name: Keep as workflow artifact
         uses: actions/upload-artifact@v7
         with:
           name: host-${{ matrix.target }}
-          path: bmoe-*-${{ matrix.target }}.*
+          path: |
+            bmoe-*-${{ matrix.target }}.*
+            BigMoeOnEdge-*-${{ matrix.target }}.*
+            BigMoeOnEdge-*-${{ matrix.target }}-setup.exe
           if-no-files-found: error
 
   ios-harness:
@@ -536,7 +628,7 @@ jobs:
           esac
           echo "tag=$T" >> "$GITHUB_OUTPUT"
 
-      # Every artifact of this run is an archive a build job made for this tag.
+      # Every artifact of this run is an archive or a package a build job made for this tag.
       - uses: actions/download-artifact@v8
         with:
           path: assets
@@ -550,7 +642,7 @@ jobs:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
           shopt -s nullglob
-          files=(assets/bmoe-*)
+          files=(assets/bmoe-* assets/BigMoeOnEdge-*)
           [ ${#files[@]} -gt 0 ] || { echo "no archive to attach"; exit 1; }
           ls -l "${files[@]}"
           gh release upload "$TAG" "${files[@]}" --clobber

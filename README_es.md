@@ -19,7 +19,7 @@ Ejecuta modelos Mixture-of-Experts más grandes que la memoria del dispositivo h
 Construido sobre la API pública de llama.cpp; Android, iOS, macOS, Windows y Linux; un servidor local
 compatible con OpenAI en cada uno.
 
-<table>
+<table align="center">
 <tr>
 <td align="center" width="50%"><img src="docs/assets/screens/android.gif" width="220" alt="Qwen3.6-35B-A3B generando una respuesta en un teléfono Android de 12 GB, en tiempo real."></td>
 <td align="center" width="50%"><img src="docs/assets/screens/iphone.gif" width="220" alt="Qwen3.6-35B-A3B generando una respuesta en un iPhone de 12 GB, en tiempo real."></td>
@@ -89,13 +89,28 @@ Configuraciones y método: [docs/benchmarks.md](docs/benchmarks.md). Para añadi
 
 ## Inicio rápido
 
-**Android.** Instala el APK desde la [última versión](https://github.com/Helldez/BigMoeOnEdge/releases/latest)
-y elige un modelo en **Models**. **Settings → Serve on the network** lo comparte, con una clave.
+Todo lo que sigue viene de la [última versión](https://github.com/Helldez/BigMoeOnEdge/releases/latest).
+Cada paquete arranca el motor y abre la app en el navegador en `http://127.0.0.1:8765/`; elige un
+modelo en **Models**.
+
+- **macOS** (Apple silicon): abre `BigMoeOnEdge-<versión>-macos-arm64.dmg` y arrastra la app a
+  Aplicaciones. Mientras funciona está en el Dock y en la barra de menús; **Stop and Quit** la detiene.
+  Aún sin notarizar: el primer arranque necesita el paso del README.txt del dmg.
+- **Windows**: ejecuta `BigMoeOnEdge-<versión>-windows-x86_64-setup.exe` (o `-windows-arm64-setup.exe`).
+  Sin derechos de administrador; abre BigMoeOnEdge desde el menú Inicio y cierra su ventana para detenerlo.
+- **Linux**: `chmod +x BigMoeOnEdge-<versión>-linux-x86_64.AppImage` (o `-linux-aarch64`) y ejecútalo.
+  Desde un gestor de archivos se abre en una ventana de terminal; ciérrala para detenerlo.
+- **Android**: añade la app a [Obtainium][obtainium], que instala cada versión como actualización,
+  o instala `app-dev-release.apk` a mano. **Settings → Serve on the network** comparte el motor del
+  teléfono, con una clave.
 
 **iOS.** Compila la app con Xcode desde [examples/ios](examples/ios/README.md). Experimental.
 
-**Escritorio (macOS, Windows, Linux).** Descarga el archivo `bmoe-desktop` de la misma versión y ejecuta
-`bmoe-server --open`; la app se abre en `http://127.0.0.1:8765/`.
+**Archivos.** El archivo `bmoe-desktop` contiene la misma app como carpeta, para instalaciones con
+scripts: extráelo y ejecuta `bmoe-server --open`. El archivo `bmoe-cli` contiene el motor de línea de
+comandos.
+
+[obtainium]: https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22io.bigmoeonedge.example.dev%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FHelldez%2FBigMoeOnEdge%22%2C%22author%22%3A%22Helldez%22%2C%22name%22%3A%22BigMoeOnEdge%22%2C%22additionalSettings%22%3A%22%7B%5C%22apkFilterRegEx%5C%22%3A%5C%22-release%5C%5C%5C%5C.apk%24%5C%22%7D%22%7D
 
 **Línea de comandos.**
 

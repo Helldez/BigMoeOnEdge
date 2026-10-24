@@ -7,6 +7,37 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **Desktop packages that open with a double-click** (part of #385). `release-host` builds one per
+  OS from the same staged folder the `bmoe-desktop` archive carries, and the archives stay for
+  scripted installs and the CLI. The scripts live under `packaging/`.
+  - **macOS:** `BigMoeOnEdge-<tag>-macos-arm64.dmg` holds `BigMoeOnEdge.app` and a link to
+    Applications to drag it onto. The app's executable is a small launcher
+    (`packaging/macos/launcher.swift`). It starts `bmoe-server` from inside the bundle, with the web UI
+    and the catalog from its Resources, and opens the page. While the server runs, the app sits in
+    the Dock and the menu bar with Open in Browser, Show Log and Stop and Quit. Quitting it, from
+    any menu or with SIGTERM, stops the server. If a server already answers on the port, it only
+    opens that server's page. The bundle is ad-hoc signed, not notarised: the dmg's README says how
+    to open it the first time.
+  - **Windows:** `BigMoeOnEdge-<tag>-windows-x86_64-setup.exe` and `-windows-arm64-setup.exe`, a
+    per-user Inno Setup installer that needs no administrator rights. It installs under
+    `%LOCALAPPDATA%\Programs\BigMoeOnEdge` and adds a Start-menu entry that starts
+    `bmoe-server.exe`, which opens the browser; closing its console window stops it. The uninstaller
+    leaves the data folder (settings and models) alone. The installer is not signed yet. The
+    `windows-arm64-npu` build keeps its archives only, since its NPU setup is done by hand in the
+    unpacked folder.
+  - **Linux:** `BigMoeOnEdge-<tag>-linux-x86_64.AppImage` and `-linux-aarch64.AppImage`, built with
+    a pinned appimagetool and runtime (both checked by SHA-256). They start `bmoe-server --open`.
+    Started from a file manager, the AppImage reopens itself in a terminal window so the server can
+    be seen and stopped.
+  - The workflow's dry run (a PR that edits it or `packaging/`) builds every package. Each is then
+    started on its runner with no model, where the API must answer and the web UI must be served
+    from inside the package: the app from the mounted dmg, the AppImage, and the installed copy
+    after a silent install, which is then uninstalled.
+- **Android updates through Obtainium.** `README.md` and `examples/android/README.md` link an
+  [Obtainium](https://github.com/ImranR98/Obtainium) entry that follows this repository's releases
+  and picks `app-dev-release.apk`.
+- **The README quick start leads with the packages,** one line per platform; the archives and the
+  CLI follow.
 - **Claude Code and Codex CLI can use the server.** `bmoe-server` also speaks the Anthropic
   Messages API (`POST /v1/messages`, `POST /v1/messages/count_tokens`) and the OpenAI Responses API
   (`POST /v1/responses`). Each is a translation layer onto the same turn as

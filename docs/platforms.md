@@ -25,12 +25,12 @@ The machines are described generically on purpose.
 | | Android (arm64) | macOS (arm64) | Linux (x86_64, aarch64) | Windows (x86_64, arm64) | iOS |
 |---|---|---|---|---|---|
 | **Engine and `bmoe-cli`** | Shipped, in the APK | Shipped | Shipped | Shipped | Built, compiled into the harness app |
-| **`bmoe-server` and the web UI** | Shipped, in the APK as a child process of the app | Shipped, desktop archive | Shipped, desktop archive | Shipped, desktop archive | Built into the app, run on a thread of its own (no web UI: the app is the UI) |
+| **`bmoe-server` and the web UI** | Shipped, in the APK as a child process of the app | Shipped: `BigMoeOnEdge.app` in a `.dmg`, and the desktop archive | Shipped: an AppImage, and the desktop archive | Shipped: a per-user installer (the `-npu` build: archive only), and the desktop archive | Built into the app, run on a thread of its own (no web UI: the app is the UI) |
 | **Native app** | Measured: the Compose app, a client of the server | - (web UI in the browser) | - (web UI in the browser) | - (web UI in the browser) | Built: the SwiftUI app, a client of the server in its own process; run in the simulator only |
 | **Planner (`--auto`)** | Measured, in the app's load path | Measured on one laptop | Built, not run on Linux hardware | Owed: one documented run | Run through the harness on one 12 GB phone by a contributor (#235); its dense policy corrected in #304 |
 | **Device probes in a process of their own** | Yes | Yes | Yes | Yes, built; owed a run | - (no second process) |
 | **CI** | Engine cross-compiled and the APK packaged, on PRs and tags | Compiled and smoke-tested, on PRs and tags | Built, byte-identity gates and UI tests, on every push | Compiled only, on PRs and tags; arm64 on an ARM64 runner, smoke-tested there | App and harness compiled for the simulator and the app's client package tested, on PRs and tags; the harness packaged by the release workflow |
-| **Release artifact** | Signed APK, built by CI, with the Hexagon, Vulkan and OpenCL backends as modules | CLI and desktop archives, with Metal | CLI and desktop archives, both architectures, with Vulkan | CLI and desktop archives, both architectures, with Vulkan; arm64 adds OpenCL for the Adreno GPU | Harness app for the simulator, unsigned, built by CI |
+| **Release artifact** | Signed APK, built by CI, with the Hexagon, Vulkan and OpenCL backends as modules; Obtainium follows the releases | `.dmg` (ad-hoc signed, not notarised), CLI and desktop archives, with Metal | AppImage, CLI and desktop archives, both architectures, with Vulkan | Installer `.exe` (unsigned), CLI and desktop archives, both architectures, with Vulkan; arm64 adds OpenCL for the Adreno GPU | Harness app for the simulator, unsigned, built by CI |
 | **Run on hardware** | Measured: a 12 GB phone, Snapdragon class, UFS 4.x | Measured: a 16 GB Apple-silicon laptop | Owed: the gates only, no throughput run | Measured: an x86 laptop, 8 cores, 16 GB, NVMe. arm64: owed, never run on a Snapdragon laptop | Measured by a contributor: a 12 GB phone, a 35B-A3B streamed at 1.2 tok/s before #304 |
 
 Sources: [application-framework.md](application-framework.md) for the server on each platform,
@@ -71,14 +71,14 @@ platform: the device is measured, and the streamer's own memory is not yet hande
   armed on the full-backend APK ended in the allocator (#264). The GPU prefill run on the same APK,
   Vulkan and OpenCL against the NPU and the cores. Per-value provenance in the settings, so a reader sees
   what the plan set and what differs from the default ([screens.md](screens.md)).
-- **macOS.** A signed installer that updates itself, in place of the archive. A run of the
-  desktop archive with its Metal module on a Mac, before and after each release.
+- **macOS.** The `.dmg` notarised, and an app that updates itself (#385). A run of the
+  desktop app with its Metal module on a Mac, before and after each release.
 - **Linux.** A throughput run on real hardware, which the community protocol can supply
   ([community-benchmarks.md](community-benchmarks.md)). A discrete GPU, for the planner's capacity
   fitter, prefill-device and graph-width rules.
 - **Windows.** A run of the device probes in a process of their own, now built, on a machine with
   a GPU; the cache lock, the residency sample, the byte-identity gates in its CI job, one
-  documented planner run, and a signed installer. Tracked in
+  documented planner run, and the installer signed (#385). Tracked in
   [#234](https://github.com/Helldez/BigMoeOnEdge/issues/234).
 - **iOS.** The app on the shared framework builds and runs in the simulator, and the release
   carries the harness for it. A contributor has run the harness on a device signed by a free

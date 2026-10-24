@@ -17,7 +17,7 @@ Run Mixture-of-Experts models larger than the device's memory by streaming the e
 Built on llama.cpp's public API; Android, iOS, macOS, Windows and Linux; a local OpenAI-compatible
 server on each.
 
-<table>
+<table align="center">
 <tr>
 <td align="center" width="50%"><img src="docs/assets/screens/android.gif" width="220" alt="Qwen3.6-35B-A3B generating an answer on a 12 GB Android phone, in real time."></td>
 <td align="center" width="50%"><img src="docs/assets/screens/iphone.gif" width="220" alt="Qwen3.6-35B-A3B generating an answer on a 12 GB iPhone, in real time."></td>
@@ -87,13 +87,27 @@ Configurations and method: [docs/benchmarks.md](docs/benchmarks.md). To add a ma
 
 ## Quick start
 
-**Android.** Install the APK from the [latest release](https://github.com/Helldez/BigMoeOnEdge/releases/latest)
-and pick a model under **Models**. **Settings → Serve on the network** shares it, with a key.
+Everything below comes from the [latest release](https://github.com/Helldez/BigMoeOnEdge/releases/latest).
+Each package starts the engine and opens the app in the browser at `http://127.0.0.1:8765/`; pick a
+model under **Models**.
+
+- **macOS** (Apple silicon): open `BigMoeOnEdge-<version>-macos-arm64.dmg` and drag the app to
+  Applications. It stays in the Dock and the menu bar while it runs; **Stop and Quit** stops it. Not
+  notarised yet: the first start needs the step in the dmg's README.txt.
+- **Windows**: run `BigMoeOnEdge-<version>-windows-x86_64-setup.exe` (or `-windows-arm64-setup.exe`).
+  No administrator rights; start BigMoeOnEdge from the Start menu, and close its window to stop it.
+- **Linux**: `chmod +x BigMoeOnEdge-<version>-linux-x86_64.AppImage` (or `-linux-aarch64`) and run it.
+  Started from a file manager it opens in a terminal window; close the window to stop it.
+- **Android**: add the app to [Obtainium][obtainium], which then installs every release as an
+  update, or install `app-dev-release.apk` by hand. **Settings → Serve on the network** shares the
+  phone's engine, with a key.
 
 **iOS.** Build the app with Xcode from [examples/ios](examples/ios/README.md). Experimental.
 
-**Desktop (macOS, Windows, Linux).** Download the `bmoe-desktop` archive from the same release and run
-`bmoe-server --open`; the app opens at `http://127.0.0.1:8765/`.
+**Archives.** The `bmoe-desktop` archive holds the same app as a folder, for scripted installs:
+extract it and run `bmoe-server --open`. The `bmoe-cli` archive holds the command-line engine.
+
+[obtainium]: https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22io.bigmoeonedge.example.dev%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FHelldez%2FBigMoeOnEdge%22%2C%22author%22%3A%22Helldez%22%2C%22name%22%3A%22BigMoeOnEdge%22%2C%22additionalSettings%22%3A%22%7B%5C%22apkFilterRegEx%5C%22%3A%5C%22-release%5C%5C%5C%5C.apk%24%5C%22%7D%22%7D
 
 **Command line.**
 
