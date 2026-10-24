@@ -117,8 +117,9 @@ reads no gguf itself. Nothing below needs a storage permission except the last o
    server makes it a catalog entry (`POST /api/models/url`), and the app downloads its files like
    any entry's, with Resume and one progress bar over the set. The server has no `curl` on the
    phone to ask the host for sizes, so they are left unknown and a file counts whole once it is
-   there; should the server still refuse with a `5xx`, the app downloads the one file the link
-   names on its own. Or pick a `.gguf` already on the device to import it.
+   there. Nothing checks the link before the download, so a link to nothing ends at once with the
+   host's answer on its row (a definite `4xx` is never retried). A link the server refuses shows its
+   reason. Or pick a `.gguf` already on the device to import it.
 4. **adb push** (dev flavor only, needs all-files access, which the dev build requests on Refresh):
 
    ```bash
@@ -132,13 +133,14 @@ I/O. A download needs free space equal to the model size, with no temporary seco
 
 **Resume.** A download writes `<name>.part` and renames it once whole, so a stopped one keeps its
 bytes. A dropped connection is retried on its own with backoff, each attempt continuing from the
-`.part` with a `Range` request. Whatever stopped it (the retries ran out, you pressed **Cancel**, or
+`.part` with a `Range` request; a host that answers a definite `4xx` (no such file, a token it
+wants) ends the download at once, the reason on its row. Whatever stopped it (the retries ran out, you pressed **Cancel**, or
 the app or the phone restarted), the row then reads **Resume (X of Y GB)** with the bytes already
 on disk, and pressing it continues from there; the free-space check counts only the bytes still to
 fetch. **Delete partial download** on the same row is the one action that throws them away (the
 server deletes the entry's `.part` files, in its models directory only). These are the desktop web
-UI's words and behaviour too (`docs/server-api.md`, "Models"). A link the app had to download on its
-own has no row to resume from, so its **Cancel** deletes its partial file.
+UI's words and behaviour too (`docs/server-api.md`, "Models"). A link an older build downloaded on
+its own, with no entry, has no row to resume from, so its **Cancel** deletes its partial file.
 
 ### Sharded models (gpt-oss-120b, DeepSeek V4 Flash, Qwen3.8-Flash-Next)
 

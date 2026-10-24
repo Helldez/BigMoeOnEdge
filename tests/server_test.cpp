@@ -15,7 +15,8 @@
 //   * downloads: which curl failures are retried and after how long, what a resume still needs on
 //     disk, and that deleting a partial download stays inside the models folder;
 //   * events: how many streams may be open, and that a stream that ends gives its place back;
-//   * a model from a link: which links are taken, the entry they become, the size a HEAD gives;
+//   * a model from a link: which links are taken, the entry they become, the size a HEAD gives,
+//     and that a server with no curl leaves the size unknown rather than refuse the link;
 //   * deleting a model: named as the listing names it, a split set whole, nothing outside the
 //     models folder, the loaded model recognised by identity.
 //
@@ -26,6 +27,7 @@
 #include "download_policy.h"
 #include "event_bus.h"
 #include "hf_repo.h"
+#include "http_fetch.h"
 #include "json_util.h"
 #include "model_delete.h"
 #include "model_files.h"
@@ -1551,6 +1553,28 @@ static void url_entry_tests() {
     check(a.status == 404, "url: a missing file is the last response's status, whatever curl exits with");
     check(head_answer("HTTP/2 200\r\ncontent-length: 12x\r\n").length == 0, "url: a malformed length is none");
     check(head_answer("").status == 0, "url: no answer at all is no status");
+
+#ifndef _WIN32
+    // A server with no curl to ask with (a phone's) makes the entry with the size unknown, as for a
+    // host that answers no HEAD: the client that downloads for itself then fetches it. PATH is set
+    // to an empty folder for the call, so no curl can be found, and put back after.
+    namespace fs = std::filesystem;
+    const fs::path empty = fs::temp_directory_path() / ("bmoe-nocurl-" + std::to_string(std::rand()));
+    fs::create_directories(empty);
+    const char * old_path = std::getenv("PATH");
+    const std::string saved = old_path ? old_path : "";
+    setenv("PATH", empty.string().c_str(), 1);
+    uint64_t bytes = 1;
+    std::string why;
+    const bool ok = curl_fetch((empty / "scratch").string(), "")->size("https://example.invalid/x.gguf", bytes, why);
+    if (old_path)
+        setenv("PATH", saved.c_str(), 1);
+    else
+        unsetenv("PATH");
+    std::error_code ec;
+    fs::remove_all(empty, ec);
+    check(ok && bytes == 0, "url: with no curl on PATH the size is unknown, and the link is not refused");
+#endif
 }
 
 static void model_delete_tests() {

@@ -74,7 +74,7 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
     val engine by Engine.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
-    var upTo by rememberSaveable { mutableStateOf(AppPrefs.settingsLevel(context, ParamSpec.LEVELS[1])) }
+    var upTo by rememberSaveable { mutableStateOf(AppPrefs.settingsLevel(context, ParamSpec.LEVELS, ParamSpec.LEVELS[1])) }
     var query by rememberSaveable { mutableStateOf("") }
     // Open state per card and per fold, by group: a card with basic rows starts open, one holding only
     // deeper rows starts folded, so the page opens on the recommended configuration.

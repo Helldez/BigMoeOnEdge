@@ -22,7 +22,8 @@ server/         bmoe-server: the application framework every UI speaks to (docs/
                 sha256 (the digest a finished download is checked against),
                 url_entry (which direct gguf links are taken and the catalog entry they become),
                 model_delete (which files deleting a listed model removes, inside the models folder):
-                pure policy (bmoe_server_core)
+                pure policy (bmoe_server_core), with curl_fetch beside it, the system curl behind the
+                HttpFetch port: the library's one adapter, there so its no-curl answer is tested
                 engine_host: the one Session, loads, the turn line, over the HostedSession seam
                 (hosted_session.h) its test drives with a scripted session; model_library: files, catalog,
                 downloads; planner_adapter: /api/plan when the planner is built in;

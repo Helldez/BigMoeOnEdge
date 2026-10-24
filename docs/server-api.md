@@ -613,13 +613,16 @@ other shards are the same link with the name changed, and a link may name at mos
 file's size comes from a `HEAD` request that follows redirects (on https only), asked shard by
 shard within 120 s in all (`kUrlSizeDeadline`); a host that answers no size leaves it unknown (`0`)
 and the download runs without a total, and so does a server with no `curl` to ask with (a phone's,
-whose app downloads for itself and counts a file of unknown size whole once it is there). `201` with `{"id", "title", "quant", "bytes"}`; `400` with
+whose app downloads for itself and counts a file of unknown size whole once it is there). Without
+`curl` nothing checks the link here, so any https gguf link becomes an entry; on a desktop server
+with no `curl` the link is then refused at download, not at add. `201` with `{"id", "title", "quant", "bytes"}`; `400` with
 `code: "invalid_url"` for a link that is not one of these, `502` when the host answers a `HEAD`
 with an HTTP error, `504` when the sizes took longer than the deadline (no entry is made), `409` for an id the shipped catalog has, `403` with `code: "local_only"` from a
 client whose connection is not loopback. Adding the same file again replaces the entry. A client
 that downloads for itself does what it does for `POST /api/hf/add`: it fetches the entry's
-`files[].url` from `GET /api/models` (the Android app; on any other `5xx` here, the app downloads
-the one file the link names on its own, with no entry).
+`files[].url` from `GET /api/models` (the Android app, whose download ends at once, with the host's
+status on its row, when the host answers a definite `4xx`; a refusal here is shown as the server
+words it).
 
 ### `POST /api/hf/search`
 

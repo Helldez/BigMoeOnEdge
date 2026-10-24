@@ -79,20 +79,6 @@ data class CatalogEntry(
     }
 }
 
-enum class CatalogStatus { ON_DEVICE, DOWNLOADING, AVAILABLE }
-
-/**
- * The on-device rule for a catalog entry. The server answers for its own models directory, and
- * [present] is every model file it lists anywhere (the other places included); the app adds what
- * only it knows: the transfers it has in flight. A set is on the device only when every file is:
- * the first shard alone lands seconds into a multi-hour download.
- */
-fun catalogStatus(e: CatalogEntry, present: Set<String>, downloading: Set<String>): CatalogStatus = when {
-    e.files.any { it.name in downloading } -> CatalogStatus.DOWNLOADING
-    e.serverStatus == "on_disk" || e.files.all { it.name in present } -> CatalogStatus.ON_DEVICE
-    else -> CatalogStatus.AVAILABLE
-}
-
 /**
  * How this app writes a size: decimal GB, one decimal, the unit the model repositories quote.
  * Quoting a model as 17.0 GB and then refusing it for "15 GiB" reads as a bug though both are true.
@@ -112,6 +98,14 @@ fun resumeLabel(received: Long, total: Long): String =
  * would refuse a resume that fits.
  */
 fun bytesStillNeeded(expected: Long, onDisk: Long): Long = (expected - onDisk).coerceAtLeast(0)
+
+/**
+ * Why a download ends for good on HTTP [code], or null when trying again may help. A 4xx is the
+ * host's definite answer (no such file, a token it wants), except a timeout (408) and a rate limit
+ * (429), which pass; a 5xx and anything else are the line or the host failing for now.
+ */
+fun httpRefusal(code: Int): String? =
+    if (code in 400..499 && code != 408 && code != 429) "the host answered HTTP $code: the link names no file it will serve" else null
 
 /** Why a download needing [needed] more bytes cannot start with [free] available, or null when it fits. */
 fun freeSpaceRefusal(needed: Long, free: Long): String? =

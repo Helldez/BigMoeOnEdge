@@ -96,7 +96,9 @@ Semantic Versioning.
     line under the status line: the context, the recommendation, that a larger context
     takes memory from the expert cache, and a link labelled from the parameter table that lands on
     the setting `ctx_advice.param` names. A `context_full` error offers the same link beside New chat.
-  - *Models: one list.* Local files and catalog entries merged by file, one state and one action
+  - *Models: one list.* Local files and catalog entries merged by file (only a file at the top of
+    the models directory, where downloads land, claims an entry; an entry's own state is the
+    server's `status` with the app's transfers over it, as the web UI reads it), one state and one action
     per row (Available, Downloading, Partly downloaded, On this device, Loaded with Reload, Unload
     and Go to Chat, Shards missing), suggestions at the bottom, companion files apart, the folders
     behind "Where models live". Delete asks first and goes through the server's
@@ -108,8 +110,13 @@ Semantic Versioning.
     scrolled into view. A direct link goes through `POST /api/models/url` and the app downloads the
     entry's files, so it gets Resume and one progress bar over a split set. The server's size
     lookup no longer refuses a link when it has no `curl` to start (the phone's case): the size is
-    left unknown, as for a host that answers no `HEAD`, and the file counts whole once present; on
-    any other `5xx` the app downloads the one file on its own as before. The file picker stays.
+    left unknown, as for a host that answers no `HEAD`, and the file counts whole once present (a
+    desktop server without `curl` now makes the entry and fails at download rather than at add; a
+    new POSIX server check runs the lookup with no `curl` on `PATH`). Nothing checks the link
+    before the download then, so the download worker ends at once on a definite `4xx` from the
+    host (408 and 429 still retry) and the row says why, instead of backing off five times; a link
+    the server refuses shows its reason, and the app no longer fetches one file of it on its own.
+    The file picker stays.
   - *Plan.* The summary with the lanes in one line and the four figures (decode expected and
     measured with the difference, cache hits credited and measured, memory held against the host
     pool, the worst case against the expected), Apply and Measure again together, Apply listing the

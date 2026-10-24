@@ -5,7 +5,6 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.content.pm.ServiceInfo
-import android.net.Uri
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
@@ -87,6 +86,8 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
         } catch (t: Throwable) {
             // Denied, not failing: no back-off brings the network back, so say where the switch is.
             if (isNetworkDenied(t)) return@withContext fail(DOWNLOAD_NETWORK_DENIED)
+            // The host said no (a link to nothing, a token it wants): asking again cannot change it.
+            if (t is HttpRefused) return@withContext fail(t.message ?: "refused")
             // Transient network error: keep the .part and let WorkManager back off and resume.
             retryOrFail(t.message ?: "network error")
         }
@@ -104,7 +105,7 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
                 HttpURLConnection.HTTP_PARTIAL -> { /* 206: server honored the resume */ }
                 HttpURLConnection.HTTP_OK -> from = 0L // 200: no resume, start the .part over
                 416 -> return part.length() // range not satisfiable: .part is already the whole file
-                else -> throw java.io.IOException("server returned HTTP $code")
+                else -> throw httpRefusal(code)?.let(::HttpRefused) ?: java.io.IOException("server returned HTTP $code")
             }
             // Total = bytes already on disk + what this response will deliver.
             val remaining = conn.contentLengthLong
@@ -226,13 +227,8 @@ class DownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(c
         private const val CHANNEL = "download"
         private const val NOTIF_ID = 42
         private const val MAX_ATTEMPTS = 5
-
-        /** Last path segment of a URL, query stripped, sanitized to a bare filename. */
-        fun fileNameFromUrl(uri: Uri): String {
-            val seg = uri.lastPathSegment?.substringAfterLast('/') ?: ""
-            val cleaned = seg.substringBefore('?').filter { it.isLetterOrDigit() || it in "._-" }
-            require(cleaned.isNotEmpty()) { "cannot derive a filename from the URL" }
-            return cleaned
-        }
     }
 }
+
+/** A definite answer from the host that no retry changes ([httpRefusal]): the download ends with it. */
+private class HttpRefused(message: String) : java.io.IOException(message)

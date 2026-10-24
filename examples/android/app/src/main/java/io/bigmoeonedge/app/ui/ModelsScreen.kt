@@ -33,7 +33,6 @@ import io.bigmoeonedge.app.data.SafImport
 import io.bigmoeonedge.app.data.gbLabel
 import io.bigmoeonedge.app.data.libraryRows
 import io.bigmoeonedge.app.data.resumeLabel
-import io.bigmoeonedge.app.engine.ApiException
 import io.bigmoeonedge.app.engine.Engine
 import io.bigmoeonedge.app.engine.LocalModel
 import kotlinx.coroutines.Dispatchers
@@ -62,6 +61,8 @@ fun ModelsScreen(modifier: Modifier = Modifier, onOpenChat: () -> Unit = {}) {
     val snackbar = remember { SnackbarHostState() }
 
     var progress by remember { mutableStateOf<Map<String, ModelDownloader.Progress>>(emptyMap()) }
+    // Why a file's last download ended, by file name: its row says so until it is started again.
+    var failed by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var refreshKey by remember { mutableStateOf(0) }
     var deleteTarget by remember { mutableStateOf<DeleteTarget?>(null) }
     var importStatus by remember { mutableStateOf<String?>(null) }
@@ -84,7 +85,7 @@ fun ModelsScreen(modifier: Modifier = Modifier, onOpenChat: () -> Unit = {}) {
                 is ModelDownloader.Event.InFlight -> progress = ev.downloads
                 is ModelDownloader.Event.Completed -> refreshKey++
                 // The server lists the .part it left, so the row offers Resume with its bytes.
-                is ModelDownloader.Event.Failed -> { say("${ev.name}: ${ev.reason}"); refreshKey++ }
+                is ModelDownloader.Event.Failed -> { failed = failed + (ev.name to ev.reason); say("${ev.name}: ${ev.reason}"); refreshKey++ }
             }
         }
     }
@@ -103,6 +104,7 @@ fun ModelsScreen(modifier: Modifier = Modifier, onOpenChat: () -> Unit = {}) {
     /** Start an entry's download, the app's own transfer; a refusal (no space) is thrown to the caller. */
     suspend fun startEntry(e: CatalogEntry) {
         withContext(Dispatchers.IO) { ModelDownloader.enqueueEntry(context, e) }.getOrThrow()
+        failed = failed - e.fileNames()
         focusId = e.id
     }
     fun download(e: CatalogEntry) = scope.launch {
@@ -188,6 +190,7 @@ fun ModelsScreen(modifier: Modifier = Modifier, onOpenChat: () -> Unit = {}) {
                 ModelRow(
                     r,
                     progress = r.entry?.let { ModelDownloader.entryProgress(context, it, progress) },
+                    failure = r.entry?.files?.firstNotNullOfOrNull { failed[it.name] }?.takeIf { r.state != RowState.DOWNLOADING },
                     modelsDir = models?.modelsDir.orEmpty(),
                     followed = r.entry != null && r.entry.id == focusId,
                     canLoad = canLoad,
@@ -363,6 +366,8 @@ private fun stateColour(s: RowState) = when (s) {
 private fun ModelRow(
     r: LibraryRow,
     progress: ModelDownloader.Progress?,
+    /** Why the last download of it ended, shown on the row; null while none failed. */
+    failure: String?,
     modelsDir: String,
     followed: Boolean,
     canLoad: Boolean,
@@ -412,6 +417,7 @@ private fun ModelRow(
                 LinearProgressIndicator(progress = { (e.received.toFloat() / e.bytes).coerceIn(0f, 1f) }, modifier = Modifier.fillMaxWidth())
             }
         }
+        if (failure != null) Text("Download failed: $failure", fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             when {
                 r.state == RowState.LOADED && m != null -> {
@@ -453,12 +459,11 @@ private fun CompanionRow(m: LocalModel, onDelete: (() -> Unit)?) {
 /**
  * Any other model: a direct https link to a gguf, or to any shard of a split set. The server makes it
  * a catalog entry (`POST /api/models/url`), and [onAdded] downloads its files the way every entry is
- * downloaded here, with resume and one progress bar over the set. When the server cannot reach the
- * host itself, the app fetches the one file the link names on its own.
+ * downloaded here, with resume and one progress bar over the set. A link the server refuses (not a
+ * gguf link, a host that answered with an error, sizes that took too long) shows the server's reason.
  */
 @Composable
 private fun LinkImport(onAdded: suspend (CatalogEntry) -> Unit) {
-    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var url by rememberSaveable { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
@@ -466,18 +471,9 @@ private fun LinkImport(onAdded: suspend (CatalogEntry) -> Unit) {
     fun add() = scope.launch {
         busy = true
         error = ""
-        val link = url.trim()
-        Engine.addUrl(link).fold(
+        Engine.addUrl(url.trim()).fold(
             onSuccess = { e -> runCatching { onAdded(e) }.onSuccess { url = "" }.onFailure { error = it.message ?: "download failed to start" } },
-            onFailure = { t ->
-                if (t is ApiException && t.status >= 500) {
-                    // The server's own fetch could not ask the host (no fetcher in its process, a host it
-                    // cannot reach): the app's downloader, which has the phone's network, takes the file.
-                    withContext(Dispatchers.IO) { ModelDownloader.enqueue(context, link) }.onSuccess { url = "" }.onFailure { error = it.message ?: "invalid URL" }
-                } else {
-                    error = t.message ?: "the link was refused"
-                }
-            },
+            onFailure = { error = it.message ?: "the link was refused" },
         )
         busy = false
     }

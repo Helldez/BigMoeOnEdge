@@ -50,9 +50,9 @@ fun libraryRows(models: ModelsList, local: List<LocalModel>, downloading: Set<St
     val claimed = mutableSetOf<String>()
     fun inFlight(e: CatalogEntry) = e.files.any { it.name in downloading }
     for (m in local) {
-        // The entry a download made: its first file, by name, at the top of a directory (the server
-        // lists the models directory first, so a copy there wins over one pushed elsewhere).
-        val entry = models.catalog.firstOrNull { it.id !in claimed && m.folder.isEmpty() && m.name == it.fileName }
+        // The entry a download made: its first file, by name, at the top of the models directory, where
+        // downloads land. A copy pushed elsewhere is a model of its own, not the entry's.
+        val entry = models.catalog.firstOrNull { it.id !in claimed && m.dir == models.modelsDir && m.folder.isEmpty() && m.name == it.fileName }
         entry?.let { claimed += it.id }
         val state = when {
             m.path == loadedPath -> RowState.LOADED
@@ -70,15 +70,18 @@ fun libraryRows(models: ModelsList, local: List<LocalModel>, downloading: Set<St
             deleteName = if (m.dir == models.modelsDir) (if (m.folder.isNotEmpty()) "${m.folder}/${m.name}" else m.name) else null,
         )
     }
-    val present = models.fileNames
     val started = mutableListOf<LibraryRow>()
     val suggested = mutableListOf<LibraryRow>()
     for (e in models.catalog) {
         if (e.id in claimed) continue
-        val state = when (catalogStatus(e, present, downloading)) {
-            CatalogStatus.DOWNLOADING -> RowState.DOWNLOADING
-            CatalogStatus.ON_DEVICE -> RowState.ON_DEVICE
-            CatalogStatus.AVAILABLE -> if (e.partial) RowState.PARTIAL else RowState.AVAILABLE
+        // The server's word for its own directory, the app's transfers over it. An entry it calls
+        // on_disk is claimed by its file above; one that is not (its file listed apart, as a
+        // companion) keeps that state with nothing to load rather than reading as a suggestion.
+        val state = when {
+            inFlight(e) -> RowState.DOWNLOADING
+            e.serverStatus == "on_disk" -> RowState.ON_DEVICE
+            e.partial -> RowState.PARTIAL
+            else -> RowState.AVAILABLE
         }
         val row = LibraryRow("catalog:${e.id}", e.title, null, e, state, state == RowState.AVAILABLE && !e.added, null)
         if (row.suggested) suggested += row else started += row

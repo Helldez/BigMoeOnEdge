@@ -2,10 +2,12 @@ package io.bigmoeonedge.app
 
 import io.bigmoeonedge.app.data.CatalogEntry
 import io.bigmoeonedge.app.data.CatalogFile
-import io.bigmoeonedge.app.data.CatalogStatus
-import io.bigmoeonedge.app.data.catalogStatus
+import io.bigmoeonedge.app.data.RowState
 import io.bigmoeonedge.app.data.isPlainFileName
 import io.bigmoeonedge.app.data.isSha256Hex
+import io.bigmoeonedge.app.data.libraryRows
+import io.bigmoeonedge.app.engine.LocalModel
+import io.bigmoeonedge.app.engine.ModelsList
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -14,10 +16,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The on-device rule for a catalog entry. The server answers for its own directory and lists the
- * files of every other place it was started with; the app adds its transfers in flight. A set is
+ * The state of a catalog entry in the one list. The server answers for its own directory (the
+ * entry's `status`, and the files it lists there); the app adds its transfers in flight. A set is
  * on the device only when every file is: the first shard alone lands seconds into a multi-hour
- * download.
+ * download. A copy of the file in another directory is a model of its own, not the entry's.
  */
 class ModelCatalogStatusTest {
     private val files = listOf(
@@ -27,29 +29,40 @@ class ModelCatalogStatusTest {
     )
     private val split = CatalogEntry("m", "m", "q", "", 6L, "available", files)
 
+    private fun local(dir: String, complete: Boolean) =
+        LocalModel(files[0].name, "$dir/${files[0].name}", dir, "", 1L, 3, listOf("$dir/${files[0].name}"), "a", true, complete, "model")
+
+    private fun state(entry: CatalogEntry, local: List<LocalModel>, downloading: Set<String> = emptySet()): RowState {
+        val list = ModelsList("/models", listOf("/pushed"), local, listOf(entry))
+        return libraryRows(list, local, downloading, null).first { it.entry?.id == entry.id }.state
+    }
+
     @Test
     fun firstShardAloneIsNotOnDevice() {
-        assertEquals(CatalogStatus.AVAILABLE, catalogStatus(split, setOf(files[0].name), emptySet()))
+        assertEquals(RowState.INCOMPLETE, state(split, listOf(local("/models", complete = false))))
     }
 
     @Test
     fun firstShardWithTheRestInFlightIsDownloading() {
-        assertEquals(CatalogStatus.DOWNLOADING, catalogStatus(split, setOf(files[0].name), setOf(files[1].name)))
+        assertEquals(RowState.DOWNLOADING, state(split, listOf(local("/models", complete = false)), setOf(files[1].name)))
     }
 
     @Test
-    fun everyShardPresentIsOnDevice() {
-        assertEquals(CatalogStatus.ON_DEVICE, catalogStatus(split, files.map { it.name }.toSet(), emptySet()))
+    fun aCopyInAnotherDirectoryDoesNotClaimTheEntry() {
+        val rows = libraryRows(ModelsList("/models", listOf("/pushed"), listOf(local("/pushed", true)), listOf(split)), listOf(local("/pushed", true)), emptySet(), null)
+        assertEquals(listOf(RowState.ON_DEVICE, RowState.AVAILABLE), rows.map { it.state })
+        assertNull(rows[0].entry)
+        assertTrue(rows[1].suggested)
     }
 
     @Test
     fun theServerSeeingItOnDiskIsEnough() {
-        assertEquals(CatalogStatus.ON_DEVICE, catalogStatus(split.copy(serverStatus = "on_disk"), emptySet(), emptySet()))
+        assertEquals(RowState.ON_DEVICE, state(split.copy(serverStatus = "on_disk"), emptyList()))
     }
 
     @Test
     fun aTransferInFlightOutranksTheServersView() {
-        assertEquals(CatalogStatus.DOWNLOADING, catalogStatus(split.copy(serverStatus = "on_disk"), emptySet(), setOf(files[2].name)))
+        assertEquals(RowState.DOWNLOADING, state(split.copy(serverStatus = "on_disk"), emptyList(), setOf(files[2].name)))
     }
 
     private fun entryJson(name: String, sha256: String? = null): JSONObject {

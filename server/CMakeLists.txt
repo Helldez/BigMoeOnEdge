@@ -25,6 +25,7 @@ add_library(bmoe_server_core STATIC
     sha256.cpp
     hf_repo.cpp
     url_entry.cpp
+    curl_fetch.cpp
     model_delete.cpp
     settings_store.cpp
     plan_view.cpp
@@ -43,7 +44,6 @@ add_library(bmoe_server STATIC
     engine_host.cpp
     model_library.cpp
     model_inspect.cpp
-    curl_fetch.cpp
     planner_adapter.cpp
     platform.cpp
 )
