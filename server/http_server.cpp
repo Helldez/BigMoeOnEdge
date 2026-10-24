@@ -124,6 +124,7 @@ struct Options {
     bool isolated_probes = true;                  // the planner asks each device in a child process first
     std::string hf_endpoint = kDefaultHfEndpoint; // where repositories are listed and fetched from
     std::string probe_device;                     // internal: this process IS such a child; probe this device and exit
+    std::string probe_decode;                     // internal: the other child; time a decode on this device and exit
     std::map<std::string, std::string> launch;    // engine parameters given on the command line
 };
 
@@ -222,6 +223,8 @@ int parse_args(int argc, char ** argv, Options & o) {
             o.isolated_probes = false;
         else if (a == "--probe-device")
             o.probe_device = next();
+        else if (a == "--probe-decode")
+            o.probe_decode = next();
         else if (a == "--hf-endpoint") {
             o.hf_endpoint = next();
             while (!o.hf_endpoint.empty() && o.hf_endpoint.back() == '/')
@@ -1089,6 +1092,14 @@ int run(int argc, char ** argv, const Embedding & embedding) {
             return 2;
         }
         return run_device_probe_child(model->second, o.probe_device);
+    }
+    if (!o.probe_decode.empty()) {
+        const auto model = o.launch.find("model");
+        if (model == o.launch.end() || model->second.empty()) {
+            std::fprintf(stderr, "bmoe-server: --probe-decode needs -m MODEL\n");
+            return 2;
+        }
+        return run_decode_probe_child(model->second, o.probe_decode);
     }
     const std::string refusal = launch_refusal(o.host, o.api_key, o.no_api_key);
     if (!refusal.empty()) {

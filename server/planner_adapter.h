@@ -50,4 +50,7 @@ PlanOutcome make_plan(const RunConfig & cfg,
 // the marker, and return the process's exit code. 3 when there is no such device or no planner.
 int run_device_probe_child(const std::string & model_path, const std::string & device);
 
+// The other child: time the model's decode with every layer on `device`, print the rate on one line.
+int run_decode_probe_child(const std::string & model_path, const std::string & device);
+
 } // namespace bmoe::server

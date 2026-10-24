@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.36.0] - 2026-10-24
+
+### Added
+- **A resident model runs on a device that shares this memory when it decodes faster there.**
+  Where the whole model fits and the only device reads the host's own memory (an integrated GPU,
+  Apple's unified memory), the capacity fitter's placement is still set aside, since it counts one
+  pool twice, but the plan no longer leaves every layer on the cores by default. It times the
+  model's own decode on the cores and with every layer on the device (`probe_decode`, 16 steps after
+  4 of warm-up; the device in a child started with `--probe-decode`, as device probes are) and moves
+  the whole model there, one device named, when it is faster by the planner's margin and its compute
+  buffer fits beside the model. A `shared-device` line in the plan says which way it went and on
+  what rates. A candidate must have reproduced the host's result on weights left in memory it was
+  handed, so a device that converts weights into a buffer of its own is never one. Measured on a
+  16 GB unified-memory laptop, Granite-3.1-3B-A800M Q4_K_M: 165-170 tok/s with every layer on the
+  GPU against 121-124 on the cores, prefill 300-966 against about 200 tok/s; planning takes about
+  0.7 s longer. No matmul probe predicted this (they ranked the two level or the cores ahead), which
+  is why the model itself is timed: `docs/hardware-planning.md` has the measurements. Models that
+  stream, machines with no device or with a device of its own, and pinned `--gpu-layers`,
+  `--devices` or `--device-split` plan as before.
+
 ## [0.35.1] - 2026-10-24
 
 ### Changed

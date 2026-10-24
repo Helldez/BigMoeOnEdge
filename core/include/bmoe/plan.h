@@ -92,6 +92,12 @@ struct Plan {
     uint64_t cache_budget_bytes = 0;
     uint64_t dense_pending_bytes = 0;
 
+    // Devices whose decode of this model the plan needs measured before it can decide where the
+    // model runs (ComputeDevice::decode_tps), and whether the host's is needed too. Filled only
+    // when a whole-model move is on the table and its figures are missing; the caller measures them
+    // and plans again (probe_and_plan does). Empty: nothing more to measure.
+    std::vector<std::string> decode_probe_devices;
+
     // Where every group of weights ended up and what that is predicted to cost. The config above is
     // what the engine can be TOLD; this is what the plan actually decided, and the two differ
     // wherever the engine has no way to express a per-group choice. Keeping both is what makes a

@@ -70,6 +70,18 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     detail::log_memory_snapshot("auto-probe-end");
     starting(); // rules
     r.plan = plan_run(cfg, r.hw, r.model, placement, req);
+    // The one fact the rules can ask for after they have run: which engine decodes this model
+    // faster, where the model is resident in a pool a device shares and so could run on either. It
+    // is asked of the model itself, so it is measured last and only when asked, and then the rules
+    // run again on it. A device that cannot answer keeps its 0 and the second plan says so.
+    if (!r.plan.decode_probe_devices.empty()) {
+        const DeviceProbeRunner run = opt.decode_probe_args
+                                          ? self_process_runner(opt.decode_probe_args, opt.isolated_probe_seconds)
+                                          : DeviceProbeRunner{};
+        probe_decode_rates(r.hw, path, r.plan.decode_probe_devices, run);
+        detail::log_memory_snapshot("auto-decode");
+        r.plan = plan_run(cfg, r.hw, r.model, placement, req);
+    }
     return r;
 }
 

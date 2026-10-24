@@ -739,7 +739,10 @@ probes (a second or two of storage reads and a bandwidth run, never the intrusiv
 without loading the model; `409` while a generation runs, since that would skew the measurement.
 Each compute device beyond the host is first asked in a process of its own (the server started
 again with `--probe-device`), so a driver that ends the process it is used from marks the device
-unusable instead of ending the server; `--no-isolated-probes` runs them in-process.
+unusable instead of ending the server; `--no-isolated-probes` runs them in-process. For a model
+that fits in memory on a machine whose device shares it, the plan also times the model's decode on
+the cores and on that device (the device in a child started with `--probe-decode`), which loads the
+model twice for a second or two each.
 
 ```json
 {"available": true, "model": "C:/models/Qwen3.6-35B-A3B-Q4_K_M.gguf",

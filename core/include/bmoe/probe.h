@@ -160,12 +160,33 @@ bool device_facts_from_text(const std::string & text, ComputeDevice & d);
 // output on the same stream.
 extern const char * const device_facts_marker;
 
+// ── this model's decode, the one fact no part of it predicts ─────────────────────────────────
+//
+// `probe_decode` loads the model as the run would (mapped, no repack), every layer on `device` or,
+// with an empty name, on the CPU alone, and times a few single-token decode steps after a warm-up:
+// tokens per second, 0 when it could not. It is the plan's only probe that runs the model itself,
+// and it is asked for only where a whole-model move is on the table (Plan::decode_probe_devices):
+// the model is resident there either way, so a second load reads nothing new from storage.
+//
+// `probe_decode_rates` fills HardwareProfile::host_decode_tps here and each named device's
+// ComputeDevice::decode_tps, the devices through `run` when there is one - the same runner as the
+// device probes, whose child calls `probe_decode_child` and prints its rate after the facts marker.
+// As for probe_device_child, the child registers the backends first; this initialises llama.cpp.
+double probe_decode(const char * model_path, const std::string & device, int n_threads);
+bool probe_decode_child(const char * model_path, const std::string & device, int n_threads, std::string & line);
+
 // A runner that starts this same executable again with `argv_for(device)` and gives it
 // `timeout_seconds` to answer. Fails - with the reason - when the child exits abnormally, runs out
 // of time or prints no facts; and, where this platform has no way to do it, returns a runner that
 // is empty (`!runner`), which a caller reads as "probe here instead".
 DeviceProbeRunner self_process_runner(std::function<std::vector<std::string>(const std::string & device)> argv_for,
                                       double timeout_seconds);
+
+// See probe_decode above. `run` may be empty: the devices are then timed in this process.
+void probe_decode_rates(HardwareProfile & hw,
+                        const char * model_path,
+                        const std::vector<std::string> & devices,
+                        const DeviceProbeRunner & run);
 
 // How much memory this process can hold and expect to keep, which is not what the machine reports
 // as available: where a reclaim compresses, that figure is a floor for what could be taken and an

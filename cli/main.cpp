@@ -570,6 +570,7 @@ static void print_usage(const char * argv0) {
                 "                          The child exists so a driver that crashes or hangs costs the\n"
                 "                          device, not the run\n"
                 "      --probe-device D    internal: probe device D, print its facts, exit (the child above)\n"
+                "      --probe-decode D    internal: time this model's decode on device D, print it, exit\n"
                 "      --probe-mem         measure how much memory this machine will let us KEEP, by holding\n"
                 "                          it until the kernel takes some back. The one probe that puts a live\n"
                 "                          machine under real pressure, so it is off unless asked\n"
@@ -698,6 +699,8 @@ int main(int argc, char ** argv) {
     // `probe_device` is that child's mode: probe the one device named, print its facts, exit.
     bool isolated_probes = true;
     std::string probe_device;
+    // The other child: time this model's decode with every layer on the one device named.
+    std::string probe_decode;
 
     // Which parameters the user actually typed, by key. The env overrides below consult this rather
     // than comparing against the default, so passing a flag its default value still wins.
@@ -745,6 +748,8 @@ int main(int argc, char ** argv) {
             probe_io = false;
         else if (a == "--probe-device")
             probe_device = next("--probe-device");
+        else if (a == "--probe-decode")
+            probe_decode = next("--probe-decode");
         else if (a == "--no-isolated-probes")
             isolated_probes = false;
         else if (a == "--probe-mem") {
@@ -889,6 +894,16 @@ int main(int argc, char ** argv) {
         std::fflush(stdout);
         return 0;
     }
+    if (!probe_decode.empty()) {
+        std::string line;
+        if (!probe_decode_child(cfg.model_path.c_str(), probe_decode, 0, line)) {
+            std::fprintf(stderr, "bmoe: could not time a decode on: %s\n", probe_decode.c_str());
+            return 3;
+        }
+        std::printf("%s\n", line.c_str());
+        std::fflush(stdout);
+        return 0;
+    }
 
     if (auto_plan && !cfg.model_path.empty()) {
         PlanRequest req;
@@ -906,6 +921,9 @@ int main(int argc, char ** argv) {
             const std::string model = cfg.model_path;
             opt.isolated_probe_args = [model](const std::string & dev) {
                 return std::vector<std::string>{"-m", model, "--probe-device", dev};
+            };
+            opt.decode_probe_args = [model](const std::string & dev) {
+                return std::vector<std::string>{"-m", model, "--probe-decode", dev};
             };
         }
         const AutoPlan planned = probe_and_plan(cfg, req, opt);

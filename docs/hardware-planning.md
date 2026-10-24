@@ -40,6 +40,12 @@ One public route has since appeared beside it: llama.cpp's experimental device-s
 them there. It is not armed by this planner yet. What it needs first, including a correctness check
 with streamed experts, is in [measured-planning.md](measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache).
 
+A device whose memory is the host's is the other case. The fitter's placement there is set aside,
+because its arithmetic counts one pool twice, so on its own the whole run would stay on the cores.
+Where the model is resident (`fits`), the plan instead asks which engine decodes this model faster,
+by decoding it on each, and moves every layer to the device when it wins: see
+[A resident model on a device that shares this memory](#a-resident-model-on-a-device-that-shares-this-memory).
+
 ## Two stages, one composer
 
 Placing tensors across compute devices is a capacity problem, exactly solvable from tensor sizes,
@@ -242,7 +248,8 @@ and `BMOE_*` env overrides both count as the caller speaking.
    the residency budget is `fits`; only the dense set is `experts-stream`; not even that is
    `dense-oversized`.
 3. `fits` **declines streaming and says so**: on that machine reading experts from flash only adds
-   reads that resident weights do not need.
+   reads that resident weights do not need. Where a device shares this memory, the plan then asks
+   for the model's decode to be timed on it and on the cores, and plans again on the answer.
 4. **Dense policy**, from what a reclaim costs here.
 5. **The memory ledger**: one account for everything the run holds — context and compute buffers,
    an armed device, the dense set, the expert cache — against two ceilings, what can be held and
@@ -305,6 +312,7 @@ number it turns on as its value ("6.3 GB/s", "581 MiB") or `-`.
 | how much may be locked where it already sits | whether the cache is sized to what can be locked or to what can be held |
 | whether a device's buffers are held reclaim-exempt | whether arming it is charged to that total too |
 | the same matmul many tokens wide, on the host and on every device, with the result compared | `--prefill-device`: which device, if any, runs the prefill |
+| this model's own decode, timed on the cores and with every layer on a device that shares this memory (only for a resident model) | `--gpu-layers` and `--device-split`: whether the whole model runs on that device |
 | model: the largest layer's experts, and its other weights | what a prefill device costs in memory |
 | compute buffers at the widest graph, and what a token of width adds | `--ubatch`: how wide a prompt is computed |
 | whether uncached reads work on this path | `--no-odirect` |
@@ -718,16 +726,72 @@ process costs about 3.5 s, most of it the child measuring the host again as its 
 Starting a second process is the front-end's business, so the probe takes a runner, built from the
 arguments each front-end hands `probe_and_plan` to start itself again (`AutoPlanOptions`); `bmoe-cli`
 and `bmoe-server` each give them (`--probe-device` is the child's mode in both, and the child's whole
-side is one call, `probe_device_child`; `--no-isolated-probes` turns it off). Where a platform has no way to start one the runner is empty and the probes run
+side is one call, `probe_device_child`; `--no-isolated-probes` turns it off). The decode timing
+below has a child of its own for the same reason, `--probe-decode`, whose side is
+`probe_decode_child`. Where a platform has no way to start one the runner is empty and the probes run
 here, as they always did: that is the case on iOS. Windows has its own implementation of the child,
 built and not yet run on a machine with a GPU. The time limit is two minutes, and it has not been
 seen to fire.
 
 What this does not do: it measures a matmul, not a prefill. The loaders that fill the device's
 slots from flash, and the storage under them, are not in the probe, so on a machine whose storage
-is the bottleneck the real gain is smaller than the ratio. And it does not arm a device where the whole
-model fits and nothing streams, because there the device would need a resident copy of every
-layer, which is the capacity fitter's question and not this one.
+is the bottleneck the real gain is smaller than the ratio. And it does not arm a prefill device where
+the whole model fits and nothing streams: there the question is where the whole model runs, prompt
+included, which the next section answers.
+
+## A resident model on a device that shares this memory
+
+The fitter places layers on such a device and its placement is set aside, because it counts the
+device's memory and the host's as two pools when they are one. That settles capacity and nothing
+else: the model is in this pool either way, and computing it on the device moves no byte. What is
+left is which engine decodes it faster, and the answer is asked of the model itself
+(`ComputeDevice::decode_tps`, `HardwareProfile::host_decode_tps`): `probe_decode`
+(`core/src/plan/decode_probe.cpp`) loads it as the run would, mapped and unrepacked, on the cores
+alone and then with every layer on the device, and times 16 single-token steps after 4 of warm-up.
+
+Nothing smaller predicted it. Measured on a 16 GB unified-memory laptop with a 6 GB, 64-expert cut
+of Qwen3.6-35B-A3B held in memory, the model itself decoded at 54 tok/s with every layer on the GPU
+and 40 on the cores (8 threads), while the matmul instruments ranked the two level or the cores
+ahead:
+
+| instrument | GPU | cores |
+|---|---|---|
+| one matmul per graph (the one-token figure) | 71-78 GiB/s | 105-112 GiB/s |
+| 16 large matmuls in one graph | 121 GiB/s | 125 GiB/s |
+| 100+ matmuls of the model's expert shape in one graph | 54-55 GiB/s | 53-63 GiB/s |
+| the model's own decode | **54-55 tok/s** | **40 tok/s** |
+
+The one-matmul figure charges a graph launch to every matmul, which on an accelerator is a
+submission and a wait; batching matmuls removes that and still misses the gap, because a decode is
+the model's whole op mix - routing, attention, recurrent state, norms - and those are what the cores
+lose. A probe of that mix would have to be rebuilt per architecture, which is a table of models
+under another name. Timing the model is agnostic by construction: it measures exactly what is being
+decided, on whatever device and model are present. It costs a second or two per engine, and it is
+asked for only here, where the model is resident and so a second load reads nothing new from
+storage.
+
+The rule (`place_on_shared_device`) runs after `fits` declines streaming. A candidate is a device
+that shares this memory, was not refused by its own probe, reproduced the CPU's result, computed
+it correctly on weights left in memory it was handed (the host-pointer check of the bandwidth
+probe: the load maps the file, and a device that must convert weights into a buffer of its own
+never passes it), runs the model's expert op, and whose compute buffer, as the fitter projected it, fits
+in the pool beside the model with the same air the `fits` exit asks for; a device whose buffer was
+never projected is not a candidate, since nothing has priced it. With candidates and no rates, the
+plan lists them in `Plan::decode_probe_devices`, `probe_and_plan` times each (a device in a process
+of its own, `--probe-decode`) and plans again. With rates, the fastest device moves the whole model
+if it beats the cores by `min_backend_win`: `n_gpu_layers` covers every block and the output head,
+and `device_split` names that one device, so llama.cpp does not divide the layers between two
+backends that drive the same silicon. All or nothing, because a partial placement crosses the
+boundary twice per split layer, the shape measured slower on a phone. Every outcome is a
+`shared-device` line in the plan, `cpu` or the device's name, with the rates it was decided on.
+Pinning `--gpu-layers`, `--devices` or `--device-split` leaves it alone.
+
+What it does not cover: a model that does not fit. There the experts stream, a streamed expert
+lives in memory only the host is known to read, and the decode stays on the cores; computing
+streamed experts on a device that shares this memory is the next step (`note_expert_compute`), not
+this rule. The `fits` exit asks for air equal to the model, so on a 16 GB machine this applies to
+models of a few GB, and on a machine with several times the memory to correspondingly larger ones.
+
 
 ## The storage probe
 

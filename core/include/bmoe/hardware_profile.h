@@ -168,6 +168,15 @@ struct ComputeDevice {
     double wide_matmul_gibs = 0.0;
     Tri wide_identity_ok = Tri::Unknown;
 
+    // This model's own decode on this device, every layer on it, in tokens per second; 0 when
+    // unmeasured. Not derived from any figure above and not derivable: a decode is the model's whole
+    // op mix in one graph a token - routing, attention, recurrent state, norms - and a matmul probe,
+    // one per graph or many, ranked a unified-memory laptop's two engines level or the cores ahead
+    // while the model itself decoded 54 tok/s on the GPU against 40 on the cores. Measured only
+    // where a whole-model move is on the table (a model resident in a pool this device shares),
+    // because only there is running the model itself a probe rather than the run.
+    double decode_tps = 0.0;
+
     // Whether this device reproduced the CPU's result on the probe graph. A device that computes
     // something else is excluded on CORRECTNESS, before speed is considered at all — and the
     // exclusion has to be a probe rather than a promise, since nothing in a backend's advertised
@@ -337,6 +346,10 @@ struct HardwareProfile {
     // measured at, for the rationale. 0 when unmeasured, and then no prefill device is armed.
     double host_wide_matmul_gibs = 0.0;
     uint32_t wide_batch = 0;
+
+    // The host's side of that measurement (ComputeDevice::decode_tps), on the CPU alone at the
+    // thread count measured above. 0 when unmeasured, and then no whole-model move is made.
+    double host_decode_tps = 0.0;
 
     // The router-gate GEMV route-ahead's prediction runs once per layer per token, timed on this
     // model's gate shape over the gate's float weights and over an int8 mirror of them, in
