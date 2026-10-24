@@ -27,6 +27,12 @@ struct OpenAiChatRequest {
 // body the engine cannot answer; the session validates model/configuration compatibility.
 bool parse_chat_request(const json & body, const RunConfig & cfg, OpenAiChatRequest & out, std::string & err);
 
+// The answer budget a request names in `key` (max_tokens and its kin, in every protocol): a
+// non-negative integer, clamped to the bound the parameter table sets; null and 0 leave `out` alone
+// with `given` false. False with `err` set for any other value.
+bool read_token_budget(
+    const json & body, const char * key, const RunConfig & cfg, bool & given, int & out, std::string & err);
+
 // What stays the same across every object of one response.
 struct ChatResponseMeta {
     std::string id;

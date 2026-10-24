@@ -8,9 +8,11 @@
 #include "server.h"
 
 #include "access.h"
+#include "anthropic_messages.h"
 #include "decide_protocol.h"
 #include "engine_host.h"
 #include "openai_chat.h"
+#include "openai_responses.h"
 #include "event_bus.h"
 #include "hf_repo.h"
 #include "http_fetch.h"
@@ -285,6 +287,26 @@ void send_error(httplib::Response & res, int status, const std::string & msg, co
     send_json(res, body, status);
 }
 
+bool is_messages_path(const std::string & path) {
+    return path == "/v1/messages" || path.rfind("/v1/messages/", 0) == 0;
+}
+bool is_responses_path(const std::string & path) {
+    return path == "/v1/responses" || path.rfind("/v1/responses/", 0) == 0;
+}
+
+// The error body the protocol of `path` defines: an Anthropic client and a Responses client each
+// read only their own shape, from the refusals before routing as much as from a turn. Every other
+// path answers in this API's.
+void send_path_error(const std::string & path,
+                     httplib::Response & res,
+                     int status,
+                     const std::string & msg,
+                     const std::string & code = "") {
+    if (is_messages_path(path)) return send_json(res, anthropic_error_json(status, msg, code), status);
+    if (is_responses_path(path)) return send_json(res, responses_error_json(status, msg, code), status);
+    send_error(res, status, msg, code);
+}
+
 // Every body this API reads is an object; anything else is refused here, so no handler reads a
 // field out of an array or a number.
 bool parse_body(const httplib::Request & req, httplib::Response & res, json & out) {
@@ -295,11 +317,11 @@ bool parse_body(const httplib::Request & req, httplib::Response & res, json & ou
     try {
         out = json::parse(req.body);
     } catch (const std::exception & e) {
-        send_error(res, 400, std::string("invalid JSON body: ") + e.what(), "invalid_request");
+        send_path_error(req.path, res, 400, std::string("invalid JSON body: ") + e.what(), "invalid_request");
         return false;
     }
     if (!out.is_object()) {
-        send_error(res, 400, "the request body must be a JSON object", "invalid_request");
+        send_path_error(req.path, res, 400, "the request body must be a JSON object", "invalid_request");
         return false;
     }
     return true;
@@ -547,6 +569,59 @@ json hf_model_json(const HfModel & m) {
                 {"count", m.count}, {"complete", m.complete()}, {"files", files}};
 }
 
+// One turn of an agent protocol (Anthropic Messages, OpenAI Responses): the chat endpoint's turn,
+// answered whole through `answer` or streamed through `Stream` (AnthropicStream, ResponsesStream),
+// whose frames are append-only (agent_protocol.h). `keepalive` is what the protocol writes while
+// the turn waits its place in line.
+template <class Stream, class Answer>
+void agent_turn(App & app,
+                const httplib::Request & req,
+                httplib::Response & res,
+                const ChatRequest & turn,
+                bool stream,
+                const ChatResponseMeta & meta,
+                Answer answer,
+                const std::string & keepalive) {
+    if (!stream) {
+        ChatOutcome out = app.host.chat(turn, nullptr, [&req] { return !req.is_connection_closed(); });
+        if (out.status != 200) return send_path_error(req.path, res, out.status, out.error, out.code);
+        ensure_tool_call_ids(out.result.tool_calls, meta.id);
+        return send_json(res, answer(meta, out.result, finish_reason(out.result, out.n_predict)));
+    }
+    res.set_header("Cache-Control", "no-cache");
+    res.set_header("X-Accel-Buffering", "no");
+    res.set_chunked_content_provider("text/event-stream",
+                                     [&app, turn, meta, keepalive](size_t, httplib::DataSink & sink) {
+                                         // As on the chat endpoint, a failed write marks the client gone, and stopping
+                                         // the work is the host's, through on_token's answer.
+                                         bool alive = true;
+                                         auto write = [&](const std::string & frames) {
+                                             if (alive && !frames.empty() && !sink.write(frames.data(), frames.size()))
+                                                 alive = false;
+                                         };
+                                         Stream s(meta);
+                                         write(s.start());
+                                         ChatOutcome out = app.host.chat(
+                                             turn,
+                                             [&](const TokenMetrics & m) {
+                                                 if (alive) write(s.on_token(m.text, m.reasoning));
+                                                 return alive;
+                                             },
+                                             [&] {
+                                                 write(keepalive);
+                                                 return alive;
+                                             });
+                                         if (out.status != 200) {
+                                             write(s.error(out.status, out.error, out.code));
+                                         } else {
+                                             ensure_tool_call_ids(out.result.tool_calls, meta.id);
+                                             write(s.finish(out.result, finish_reason(out.result, out.n_predict)));
+                                         }
+                                         sink.done();
+                                         return true;
+                                     });
+}
+
 void register_routes(httplib::Server & svr, App & app) {
     svr.Get("/api/info", [&](const httplib::Request &, httplib::Response & res) { send_json(res, app.host.info()); });
 
@@ -743,6 +818,56 @@ void register_routes(httplib::Server & svr, App & app) {
             sink.done();
             return true;
         });
+    });
+
+    // The Anthropic Messages API, for Claude Code (anthropic_messages.h). The request names a model;
+    // the loaded one answers, as on the chat endpoint.
+    svr.Post("/v1/messages", [&](const httplib::Request & req, httplib::Response & res) {
+        json body;
+        if (!parse_body(req, res, body)) return;
+        AnthropicRequest ar;
+        std::string err;
+        if (!parse_messages_request(body, app.store.config(), ar, err))
+            return send_path_error(req.path, res, 400, err, "invalid_request");
+        if (!app.host.ready())
+            return send_path_error(req.path, res, 503, "no model is loaded: load one from the Models page",
+                                   error_code::no_model);
+        ChatResponseMeta meta;
+        meta.id = "msg_" + std::to_string(++app.chat_seq);
+        meta.created = (long long) std::time(nullptr);
+        meta.model = app.host.model_name();
+        agent_turn<AnthropicStream>(app, req, res, ar.turn, ar.stream, meta, message_json, AnthropicStream::ping());
+    });
+
+    // An estimate, not a count: the host has no tokenizer outside a turn (estimate_prompt_tokens).
+    svr.Post("/v1/messages/count_tokens", [&](const httplib::Request & req, httplib::Response & res) {
+        json body;
+        if (!parse_body(req, res, body)) return;
+        AnthropicRequest ar;
+        std::string err;
+        if (!parse_messages_request(body, app.store.config(), ar, err))
+            return send_path_error(req.path, res, 400, err, "invalid_request");
+        send_json(res, json{{"input_tokens", estimate_prompt_tokens(ar.turn)}});
+    });
+
+    // The OpenAI Responses API, for Codex CLI (openai_responses.h). Stateless: the whole
+    // conversation comes in every request.
+    svr.Post("/v1/responses", [&](const httplib::Request & req, httplib::Response & res) {
+        json body;
+        if (!parse_body(req, res, body)) return;
+        ResponsesRequest rr;
+        std::string err;
+        if (!parse_responses_request(body, app.store.config(), rr, err))
+            return send_path_error(req.path, res, 400, err, "invalid_request");
+        if (!app.host.ready())
+            return send_path_error(req.path, res, 503, "no model is loaded: load one from the Models page",
+                                   error_code::no_model);
+        ChatResponseMeta meta;
+        meta.id = "resp_" + std::to_string(++app.chat_seq);
+        meta.created = (long long) std::time(nullptr);
+        meta.model = app.host.model_name();
+        agent_turn<ResponsesStream>(app, req, res, rr.turn, rr.stream, meta, response_json,
+                                    std::string(": waiting for a turn\n\n"));
     });
 
     // A decision: which of a list of choices the model would answer next, from one prefill and no
@@ -1037,10 +1162,11 @@ void register_guards(httplib::Server & svr, const Options & o) {
         f.sec_fetch_site = req.get_header_value("Sec-Fetch-Site");
         f.content_type = req.get_header_value("Content-Type");
         f.authorization = req.get_header_value("Authorization");
+        f.x_api_key = req.get_header_value("X-Api-Key");
         const AccessDecision d = check_access(policy, f);
         if (d.allowed()) return httplib::Server::HandlerResponse::Unhandled;
         if (d.status == 401) res.set_header("WWW-Authenticate", "Bearer realm=\"bmoe-server\"");
-        send_error(res, d.status, d.error);
+        send_path_error(req.path, res, d.status, d.error);
         return httplib::Server::HandlerResponse::Handled;
     });
     // On every response, the refusals above and the UI's files alike.
@@ -1050,15 +1176,15 @@ void register_guards(httplib::Server & svr, const Options & o) {
     });
     // A handler that reads a field of the wrong type out of a request throws; that is the client's
     // mistake (400), not the server's (500). Anything else is a fault here, said as one.
-    svr.set_exception_handler([](const httplib::Request &, httplib::Response & res, std::exception_ptr ep) {
+    svr.set_exception_handler([](const httplib::Request & req, httplib::Response & res, std::exception_ptr ep) {
         try {
             std::rethrow_exception(ep);
         } catch (const json::exception & e) {
-            send_error(res, 400, std::string("malformed request: ") + e.what(), "invalid_request");
+            send_path_error(req.path, res, 400, std::string("malformed request: ") + e.what(), "invalid_request");
         } catch (const std::exception & e) {
-            send_error(res, 500, std::string("internal error: ") + e.what(), "failed");
+            send_path_error(req.path, res, 500, std::string("internal error: ") + e.what(), "failed");
         } catch (...) {
-            send_error(res, 500, "internal error", "failed");
+            send_path_error(req.path, res, 500, "internal error", "failed");
         }
     });
 }

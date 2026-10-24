@@ -2,7 +2,8 @@
 
 `bmoe-server` is the engine behind a local web UI. It keeps one model loaded in one `Session`,
 serves the UI's static files, and exposes a small JSON API plus an OpenAI-compatible chat
-endpoint, so any OpenAI client can use it too.
+endpoint, so any OpenAI client can use it too, and the Anthropic Messages and OpenAI Responses
+APIs that Claude Code and Codex CLI speak.
 
 It binds to `127.0.0.1` on port 8765 by default and, unless started with a key (`--api-key-file` or
 `--api-key`), has no authentication:
@@ -23,7 +24,8 @@ type (a `role` that is a number, an `id` that is an object) is a `400` with `cod
 Inside a stream that had already answered `200`, the same pair arrives as one
 `data: {"error": {"message": ..., "code": ...}}` chunk. Every `POST`, `PUT` and `DELETE` must carry `Content-Type: application/json`, body
 or no body (`curl -X POST -H 'Content-Type: application/json' .../api/cancel`); one that does not
-gets `415`.
+gets `415`. The agent protocols, `/v1/messages` and `/v1/responses`, answer every error in their
+own protocol's shape instead ([Agent protocols](#agent-protocols-what-the-two-below-share)).
 
 ## Security model
 
@@ -37,8 +39,8 @@ other software, or other people, on that machine or on a network it was told to 
   widens it. A `--host` beyond loopback is refused at start unless a key is set (`--api-key-file`
   or `--api-key`) or `--no-api-key` says the open server is meant, and the server prints a warning
   in that case.
-- With a key, every request to `/api/*` or `/v1/*` must carry `Authorization: Bearer KEY`,
-  whatever its origin, or is refused with `401` and a `WWW-Authenticate: Bearer` header. The key is
+- With a key, every request to `/api/*` or `/v1/*` must carry `Authorization: Bearer KEY` (or
+  `X-Api-Key: KEY`, as Anthropic clients send it), whatever its origin, or is refused with `401` and a `WWW-Authenticate: Bearer` header. The key is
   compared in constant time. The UI's own files are served without it: the UI asks for the key
   when it gets a `401`, keeps it in the browser, and sends it on every request, the event stream
   included. `--api-key-file PATH` reads the key from a file (trailing line breaks and blanks
@@ -412,8 +414,8 @@ Non-streaming response: a `chat.completion` object with `message.content` (`null
 only calls tools), `message.reasoning_content`, `message.tool_calls`, `usage` and `bmoe.summary`.
 `usage.prompt_tokens` is the whole prompt the answer was conditioned on.
 
-Not implemented: `/v1/completions`, `/v1/embeddings`, `/v1/responses`, `stop`,
-`n` above 1, and per-request sampling.
+Not implemented: `/v1/completions`, `/v1/embeddings`, `stop`, `n` above 1, and per-request
+sampling.
 
 ### Sizing the context for a client
 
@@ -433,6 +435,114 @@ leaves a smaller cache and a slower decode on a machine that is short of memory.
 
 `{"object": "list", "data": [{"id": "<model file name>", "object": "model", "owned_by": "local"}]}`
 with the loaded model, or an empty list.
+
+### Agent protocols: what the two below share
+
+`POST /v1/messages` (Anthropic Messages, what Claude Code speaks) and `POST /v1/responses` (OpenAI
+Responses, what Codex CLI speaks) are two more front doors on the same turn: each request becomes
+the conversation, tools, budget and thinking switch `/v1/chat/completions` builds, and runs in the
+same line, with the same context checks, cancel-on-disconnect and key. The README says how to point
+each agent at the server. What they share:
+
+- **Errors** come in the protocol's own shape, so the client can read them: on these paths every
+  refusal, the access checks' included, is `{"type": "error", "error": {"type", "message"}}` for
+  Messages and `{"error": {"message", "type", "param", "code"}}` for Responses. A full context is
+  said the way each protocol says it, so an agent compacts its conversation instead of failing:
+  Messages answers `invalid_request_error` with a message that starts `prompt is too long:`, and
+  Responses has `code: "context_length_exceeded"`. Responses' other codes are this server's own
+  (`no_model`, `busy`, `invalid_request`, ...). Inside a stream that already answered `200`, a
+  failed turn ends with an `error` event (Messages) or `response.failed` (Responses).
+- **System messages.** A chat template takes one system message, at the start, and most raise on
+  any other. The leading system text (Messages' `system`, Responses' `instructions` and leading
+  `system`/`developer` items) becomes one system message; a system message later in the
+  conversation (Claude Code adds them, so does Codex) is passed as a user message in its place,
+  which also leaves the prompt before it unchanged, so the KV is reused.
+- **Streams are append-only.** Neither protocol can take back text it sent, so there is no `reset`
+  as on the chat endpoint: the text and the reasoning are each sent only as far as the chat
+  parser's view extends what was already sent, held back to the last whole UTF-8 character, and a
+  snapshot that reclassifies earlier text is not sent until a later one extends it again. The
+  parser holds back markup it cannot classify yet, so in practice the stream carries the whole
+  answer; if a final answer does not extend what was sent, the client keeps what it holds. Tool
+  calls are known whole once the turn is parsed, and arrive after the text, each in one piece.
+  A reasoning model's thinking is sent as thinking (Messages) or reasoning items (Responses)
+  whether or not the client asked to see it, so that the client returns it in the next request
+  and the prompt still matches the KV.
+- **Images and files** are refused with `400`, as on the chat endpoint, rather than dropped.
+- **Ignored**: `model` (the loaded one answers), `temperature`, `top_p`, `top_k` and every other
+  sampling field, as on the chat endpoint, and the fields that only mean something to a hosted
+  service (prompt caching, metadata, `store`, `include`, `prompt_cache_key`, `parallel_tool_calls`).
+
+### `POST /v1/messages`
+
+The Anthropic Messages API. Request fields that are read:
+
+| field | meaning |
+|---|---|
+| `system` | a string or an array of `{type: "text", text}` blocks, joined. The per-request `x-anthropic-billing-header:` block Claude Code puts first is client metadata that changes on every request, and is dropped, or no request could reuse the KV. |
+| `messages` | `role` is `user`, `assistant` or `system`; `content` a string or blocks. `user`: `text` and `tool_result` (`tool_use_id`, content a string or `text` blocks; a `tool_reference` from Claude Code's tool search reads as `Tool loaded: <name>`). `assistant`: `text`, `thinking` (the reasoning, sent back), `redacted_thinking` (skipped) and `tool_use` (`id`, `name`, `input`). Any other block type is refused with `400`. The last message must be from the user or carry tool results: a prefilled assistant answer is refused, since the engine does not continue one. |
+| `tools` | client tools, `{name, description, input_schema}`. A tool with `defer_loading: true` is not described to the model (tool search loads it later). A server tool (one with a `type` such as `web_search_20250305`) is refused with `400`: nothing here runs it. |
+| `tool_choice` | `{type: "auto"}` (default), `"any"` or `"tool"` (both required: the engine can require a call, not choose which), `"none"`. |
+| `max_tokens` | the budget, read as `max_tokens` on the chat endpoint. Required by the protocol; absent, the `n-predict` parameter. |
+| `thinking` | `{type: "enabled"}` or `"adaptive"` turns thinking on, `"disabled"` off; absent, the `think` parameter. `budget_tokens` and `display` are not read. |
+| `output_config.format` | `{type: "json_schema", schema}`: the answer must match the schema, as `response_format` on the chat endpoint. |
+| `stream` | stream the answer as events. |
+
+Also accepted and not read: `stop_sequences` (the engine has no stop strings), `metadata`,
+`cache_control`, `context_management`, `output_config.effort`.
+
+Non-streaming response: a `message` with `content` blocks in order, a `thinking` block (with an
+empty `signature`: a local model has none to give), a `text` block, then a `tool_use` block per call
+with its `input` as an object; `stop_reason` `end_turn`, `max_tokens` or `tool_use` (a cancelled
+turn is `end_turn`); `usage` with `input_tokens` (the part of the prompt prefilled for this turn),
+`cache_read_input_tokens` (the part the KV already held) and `output_tokens`; and `bmoe.summary`.
+
+Streaming response: `event: message_start` (usage zero: the counts are known once the turn has
+run), then content blocks, each `content_block_start` / `content_block_delta` / `content_block_stop`:
+thinking (`thinking_delta`, closed by an empty `signature_delta`), text (`text_delta`), and one
+`tool_use` block per call with its whole input in one `input_json_delta`. Then `message_delta` with
+the `stop_reason` and the full `usage` (and `bmoe.summary`), and `message_stop`. While the request
+waits its place in line, `event: ping`.
+
+### `POST /v1/messages/count_tokens`
+
+The same body as `/v1/messages`, answered with `{"input_tokens": N}`. N is an estimate from the
+request's length (about 3 bytes of text per token, on the high side for an agent's prompt of code
+and JSON schemas), not a count: the engine exposes no tokenizer outside a turn. It needs no loaded
+model.
+
+### `POST /v1/responses`
+
+The OpenAI Responses API, stateless: every request carries its whole conversation in `input`, as
+Codex sends it with `store: false`. Nothing is stored, so `previous_response_id`, `conversation`,
+an `item_reference` and `background: true` are refused with `400` rather than answered without the
+state they name; `store` itself is accepted and not read. Request fields that are read:
+
+| field | meaning |
+|---|---|
+| `instructions` | the system prompt. |
+| `input` | a string (one user message) or items: `message` (`role` `user`, `system`, `developer` or `assistant`; content a string or `input_text` / `output_text` / `refusal` parts), `function_call` (`call_id`, `name`, `arguments`), `function_call_output` (`call_id`, `output` a string or `input_text` parts) and `reasoning` (its `content` text; a summary or an encrypted content is not the reasoning, and is not read). The items of one model turn (reasoning, text, calls) become one assistant message. An image or file part, or another item type, is refused with `400`. The last item must be from the user or a `function_call_output`. |
+| `tools` | `{type: "function", name, description, parameters}` tools are described to the model. Every other tool type (`web_search`, `namespace`, `custom`, `local_shell`, ...) is dropped, not refused: nothing here runs it, and Codex sends some whatever the provider has. |
+| `tool_choice` | `"auto"` (default), `"none"`, `"required"`, or `{type: "function", name}`, honoured as required. |
+| `max_output_tokens` | the budget, read as `max_tokens` on the chat endpoint. |
+| `reasoning.effort` | `"none"` turns thinking off, any other level on; absent, the `think` parameter. |
+| `text.format` | `{type: "json_schema", schema}` or `{type: "json_object"}` constrains the answer, as `response_format` on the chat endpoint. |
+| `stream` | stream the answer as events. |
+
+Non-streaming response: a `response` object with `status` `completed`, or `incomplete` with
+`incomplete_details.reason` `max_output_tokens` (or `cancelled`); `output` items in order, a
+`reasoning` item (`content: [{type: "reasoning_text", text}]`), a `message` item
+(`content: [{type: "output_text", text}]`) and a `function_call` item per call (`call_id`, `name`,
+`arguments`); `usage` with `input_tokens` (the whole prompt), `input_tokens_details.cached_tokens`
+(the part the KV already held), `output_tokens`, `total_tokens`; and `bmoe.summary`.
+
+Streaming response: each event named in `event:` and in its data's `type`, numbered by
+`sequence_number`. `response.created` and `response.in_progress`; then per item
+`response.output_item.added`, its deltas (`response.reasoning_text.delta` for reasoning;
+`response.content_part.added`, `response.output_text.delta`, `.done` and
+`response.content_part.done` for a message; `response.function_call_arguments.delta` and `.done`,
+the whole arguments in one delta, for a call) and `response.output_item.done` with the item whole;
+and last `response.completed` (or `response.incomplete`) with the response object, its `output`
+and `usage`. While the request waits its place in line, an SSE comment.
 
 ## Decide
 

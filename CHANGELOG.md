@@ -38,6 +38,19 @@ Semantic Versioning.
   and picks `app-dev-release.apk`.
 - **The README quick start leads with the packages,** one line per platform; the archives and the
   CLI follow.
+- **Claude Code and Codex CLI can use the server.** `bmoe-server` also speaks the Anthropic
+  Messages API (`POST /v1/messages`, `POST /v1/messages/count_tokens`) and the OpenAI Responses API
+  (`POST /v1/responses`). Each is a translation layer onto the same turn as
+  `/v1/chat/completions`: same line, context checks, cancel-on-disconnect and key (now also
+  accepted as `X-Api-Key`). Tools, tool results, thinking/reasoning, the budget and structured
+  output map across; errors come in each protocol's shape, a full context as "prompt is too long"
+  / `context_length_exceeded` so an agent compacts. Streams are append-only (no `reset`): text is
+  sent only as far as the chat parser's view extends what was sent. Mid-conversation system
+  messages become user messages, which a template accepts and which keeps the KV reusable, and
+  Claude Code's per-request billing-header block is dropped for the same reason. Images, server
+  tools, `previous_response_id` and stored items are refused with `400`; Responses built-in tools
+  are dropped. `count_tokens` is an estimate from the request's length. The README says how to
+  point each agent at the server; `docs/server-api.md` has the reference.
 
 ### Changed
 - **`--dense-weights pinned` is the name of the reclaim-exempt mode** that was `ahwb`. The mode

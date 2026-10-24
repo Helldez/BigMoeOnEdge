@@ -32,6 +32,7 @@ struct RequestFacts {
     std::string sec_fetch_site;
     std::string content_type;
     std::string authorization;
+    std::string x_api_key; // the X-Api-Key header: how Anthropic clients send a key
 };
 
 // status 0 when the request may proceed; otherwise the status to answer with, and why.
@@ -54,6 +55,9 @@ std::string browse_url(const std::string & bind_host, int port);
 // `authorization` is "Bearer <key>" (the scheme case-insensitive, as RFC 6750 has it), compared to
 // `key` in constant time. An empty key matches nothing.
 bool bearer_matches(const std::string & authorization, const std::string & key);
+
+// `token` is `key`, compared in constant time. An empty key matches nothing.
+bool key_matches(const std::string & token, const std::string & key);
 
 AccessDecision check_access(const AccessPolicy & policy, const RequestFacts & req);
 

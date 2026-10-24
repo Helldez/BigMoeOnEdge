@@ -15,8 +15,11 @@ endif()
 # edges and the plan as a person reads it (plan_view).
 add_library(bmoe_server_core STATIC
     access.cpp
+    agent_protocol.cpp
+    anthropic_messages.cpp
     decide_protocol.cpp
     openai_chat.cpp
+    openai_responses.cpp
     turn_queue.cpp
     event_bus.cpp
     json_util.cpp
