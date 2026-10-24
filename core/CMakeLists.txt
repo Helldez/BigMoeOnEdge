@@ -85,8 +85,8 @@ if(BMOE_HAVE_LLAMA)
     endif()
 
     if(ANDROID)
-        # libandroid carries AHardwareBuffer_*, the reclaim-exempt allocation behind
-        # `--dense-weights ahwb` (pio::pinned_alloc). No other platform has an equivalent.
+        # libandroid carries AHardwareBuffer_*, Android's reclaim-exempt allocation behind
+        # `--dense-weights pinned` (pio::pinned_alloc; Darwin's needs no extra library).
         target_link_libraries(bmoe_core PUBLIC android)
     endif()
     if(WIN32)

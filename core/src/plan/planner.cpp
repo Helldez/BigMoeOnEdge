@@ -30,20 +30,6 @@ std::string u64s(uint64_t v) {
     return std::to_string((unsigned long long) v);
 }
 
-std::string dense_mode_name(DenseWeightsMode m) {
-    switch (m) {
-    case DenseWeightsMode::Mmap:
-        return "mmap";
-    case DenseWeightsMode::Warmed:
-        return "warm";
-    case DenseWeightsMode::Anonymous:
-        return "anon";
-    case DenseWeightsMode::Pinned:
-        return "ahwb";
-    }
-    return "?";
-}
-
 // What this process may hold. The measured figure wins where it exists, because it answers the
 // question the rules are actually asking - what can be KEPT - while the reported one answers what
 // could be allocated at this instant. They differ by more than rounding wherever a reclaim
@@ -804,7 +790,7 @@ void note_expert_compute(Planning & s, const DeviceSurvey & v) {
 bool choose_dense_policy(Planning & s) {
     Plan & p = s.p;
     const HardwareProfile & hw = s.hw;
-    if (s.pinned("dense-weights", dense_mode_name(p.config.moe.dense_weights))) return false;
+    if (s.pinned("dense-weights", dense_weights_mode_name(p.config.moe.dense_weights))) return false;
     if (hw.reclaim_exempt_max > 0 && hw.lockable_bytes_known && hw.anon_overflow == Overflow::Compress) {
         // Anonymous memory keeps the dense set off flash but not out of a compressed swap, where
         // every touch costs a decompression that no I/O counter shows. A store the kernel may not
@@ -813,19 +799,19 @@ bool choose_dense_policy(Planning & s) {
         return true;
     } else if (hw.reclaim_exempt_max > 0 && !hw.lockable_bytes_known && hw.anon_overflow == Overflow::Compress) {
         p.config.moe.dense_weights = DenseWeightsMode::Anonymous;
-        s.note("dense-weights", "anon", Source::Unprobed,
+        s.note("dense-weights", dense_weights_mode_name(DenseWeightsMode::Anonymous), Source::Unprobed,
                "Dense weights are copied into RAM: the reclaim-exempt total is unmeasured.",
                "a reclaim-exempt allocation exists, but an unread ceiling cannot establish that the whole dense "
                "set fits it; anonymous buffers keep the dense set off flash without assuming a lock grant");
     } else if (hw.anon_overflow == Overflow::Unknown) {
         p.config.moe.dense_weights = DenseWeightsMode::Anonymous;
-        s.note("dense-weights", "anon", Source::Policy,
+        s.note("dense-weights", dense_weights_mode_name(DenseWeightsMode::Anonymous), Source::Policy,
                "Dense weights are copied into RAM, the default where memory pressure is unknown.",
                "what a reclaim costs here was not probed; anonymous buffers are the default that at "
                "least keeps the dense set off a flash refault");
     } else {
         p.config.moe.dense_weights = DenseWeightsMode::Anonymous;
-        s.note("dense-weights", "anon", Source::Derived,
+        s.note("dense-weights", dense_weights_mode_name(DenseWeightsMode::Anonymous), Source::Derived,
                "Dense weights are copied into RAM, so they are never re-read from storage.",
                "no reclaim-exempt store here, so anonymous buffers are what keeps the dense set off a "
                "flash refault (a reclaim then means: " +
@@ -1185,7 +1171,7 @@ void settle_dense_pin(Planning & s, bool pin_candidate, const Allocation & alloc
     if (!pin_candidate) return;
     const uint64_t dense_pending = s.p.dense_pending_bytes;
     if (alloc.dense_pinned) {
-        s.note("dense-weights", "ahwb", Source::Derived,
+        s.note("dense-weights", dense_weights_mode_name(DenseWeightsMode::Pinned), Source::Derived,
                "Dense weights (" + size_brief(dense_pending) + ") are pinned, so memory pressure cannot take them.",
                "anonymous memory here is " + std::string(overflow_name(s.hw.anon_overflow)) + ", and the " +
                    u64s(mib(dense_pending)) + " MiB dense set fits whole in the " + u64s(mib(ai.lockable_bytes)) +
@@ -1194,7 +1180,7 @@ void settle_dense_pin(Planning & s, bool pin_candidate, const Allocation & alloc
         return;
     }
     s.p.config.moe.dense_weights = DenseWeightsMode::Anonymous;
-    s.note("dense-weights", "anon", Source::Derived,
+    s.note("dense-weights", dense_weights_mode_name(DenseWeightsMode::Anonymous), Source::Derived,
            "Dense weights are copied into RAM: " + size_brief(alloc.pinned_shortfall_bytes) + " too big to pin whole.",
            "anonymous memory here is " + std::string(overflow_name(s.hw.anon_overflow)) +
                " and a reclaim-exempt store exists, but the " + u64s(mib(dense_pending)) + " MiB dense set is " +

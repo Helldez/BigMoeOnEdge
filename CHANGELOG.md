@@ -52,6 +52,14 @@ Semantic Versioning.
   are dropped. `count_tokens` is an estimate from the request's length. The README says how to
   point each agent at the server; `docs/server-api.md` has the reference.
 
+### Changed
+- **`--dense-weights pinned` is the name of the reclaim-exempt mode** that was `ahwb`. The mode
+  runs on Android (a dma-buf) and on macOS (wired memory), and the name only described the first.
+  `ahwb` still parses, on the command line and in saved settings, and is written back as `pinned`;
+  the choice the UIs list, the plan, the logs and the telemetry (`dense <...>` in the perf block,
+  `dense_weights=` in the CSV header) say `pinned`. The mode's spelling now lives in one function
+  (`dense_weights_mode_name`) instead of four copies.
+
 ## [0.35.1] - 2026-10-24
 
 ### Changed

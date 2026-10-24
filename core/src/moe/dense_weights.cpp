@@ -51,7 +51,7 @@ bool DenseWeights::init(DenseWeightsMode mode,
             return true;
         }
         if (mode_ == DenseWeightsMode::Pinned && pio::pinned_max_bytes() == 0) {
-            log_printf(LogLevel::Error, "--dense-weights ahwb needs reclaim-exempt memory, which this "
+            log_printf(LogLevel::Error, "--dense-weights pinned needs reclaim-exempt memory, which this "
                                         "platform does not provide");
             return false;
         }
@@ -74,20 +74,6 @@ bool DenseWeights::init(DenseWeightsMode mode,
     }
     advise_random_mapped();
     return true;
-}
-
-static const char * mode_flag(DenseWeightsMode m) {
-    switch (m) {
-    case DenseWeightsMode::Mmap:
-        return "mmap";
-    case DenseWeightsMode::Warmed:
-        return "warm";
-    case DenseWeightsMode::Anonymous:
-        return "anon";
-    case DenseWeightsMode::Pinned:
-        return "ahwb";
-    }
-    return "?";
 }
 
 // Remove [a, b) from a sorted list of disjoint [first, second) ranges, splitting the one it falls in.
@@ -143,7 +129,7 @@ void DenseWeights::hold_back_oversized() {
         log_printf(LogLevel::Warn,
                    "dense-weights=%s — %llu MiB in %zu tensor(s) exceeds the %llu MiB available: left "
                    "mmap'd with random-access advice, outside the warm sweep and the residency sensor",
-                   mode_flag(mode_), (unsigned long long) (held >> 20), mapped_.size(),
+                   dense_weights_mode_name(mode_), (unsigned long long) (held >> 20), mapped_.size(),
                    (unsigned long long) (avail >> 20));
 }
 
@@ -219,7 +205,7 @@ void DenseWeights::take_row_gathered() {
     }
     tensors_ = std::move(keep);
     log_printf(LogLevel::Info, "dense-weights=%s — %llu MiB of row-gathered table(s) left out of the resident set",
-               mode_flag(mode_), (unsigned long long) (freed >> 20));
+               dense_weights_mode_name(mode_), (unsigned long long) (freed >> 20));
 }
 
 void DenseWeights::advise_random_mapped() {
@@ -309,11 +295,12 @@ bool DenseWeights::read_anonymous() {
         total += d.size;
     }
     if (pin_refused_bytes_)
-        log_printf(LogLevel::Info, "dense-weights=ahwb — %llu MiB in %zu buffers, %llu MiB of it pinned",
+        log_printf(LogLevel::Info, "dense-weights=pinned — %llu MiB in %zu buffers, %llu MiB of it pinned",
                    (unsigned long long) (total >> 20), buf_sz_.size(),
                    (unsigned long long) ((total - pin_refused_bytes_) >> 20));
     else
-        log_printf(LogLevel::Info, "dense-weights=%s — %llu MiB in %zu %s buffers", pinned ? "ahwb" : "anon",
+        log_printf(LogLevel::Info, "dense-weights=%s — %llu MiB in %zu %s buffers",
+                   dense_weights_mode_name(pinned ? DenseWeightsMode::Pinned : DenseWeightsMode::Anonymous),
                    (unsigned long long) (total >> 20), buf_sz_.size(), pinned ? "pinned" : "anon");
     return true;
 }
@@ -370,7 +357,7 @@ void DenseWeights::drop_mmap_copies(size_t page) {
     }
     if (dropped)
         log_printf(LogLevel::Info, "dense-weights=%s — dropped %llu MiB of now-unused mmap pages",
-                   mode_ == DenseWeightsMode::Pinned ? "ahwb" : "anon", (unsigned long long) (dropped >> 20));
+                   dense_weights_mode_name(mode_), (unsigned long long) (dropped >> 20));
 }
 
 // ── Warmed: one sequential buffered sweep over the dense ranges to populate the page cache ──

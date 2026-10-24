@@ -1624,11 +1624,7 @@ void Session::Impl::describe_run(Opening & o) {
         ri.drop_renorm = cfg.moe.drop_renorm;
         ri.drop_prefill = cfg.moe.drop_prefill;
         ri.substitute_lambda = cfg.moe.enabled ? cfg.moe.substitute_lambda : 0.0f;
-        // The CSV keeps the two familiar flags, derived from the resolved dense-weights policy.
-        ri.dense_weights = cfg.moe.dense_weights == DenseWeightsMode::Mmap        ? "mmap"
-                           : cfg.moe.dense_weights == DenseWeightsMode::Anonymous ? "anon"
-                           : cfg.moe.dense_weights == DenseWeightsMode::Pinned    ? "ahwb"
-                                                                                  : "warm";
+        ri.dense_weights = dense_weights_mode_name(cfg.moe.dense_weights);
         if (cfg.moe.enabled) {
             const IExpertSource::Stats st = source.stats();
             ri.cache_mb = (int) (st.cache_budget_bytes / (1024ull * 1024ull));

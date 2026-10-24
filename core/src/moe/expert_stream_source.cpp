@@ -110,7 +110,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         const size_t min_budget =
             std::min<size_t>((size_t) MoeStreamConfig::cache_min_mb * 1024ull * 1024ull, hard_cap);
         uint64_t avail = pio::mem_available_bytes();
-        // Under anon/ahwb the dense weights are ABOUT to move from reclaimable page cache into
+        // Under anon/pinned the dense weights are ABOUT to move from reclaimable page cache into
         // buffers the kernel cannot take back (dense_.init runs below). At this moment the kernel
         // still counts those pages as available, so a budget sized from the raw number plans the
         // dense set twice and overcommits by its whole size — enough to take the device down on a

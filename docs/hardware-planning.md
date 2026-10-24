@@ -953,7 +953,7 @@ are designed and not yet active.
  | 0 llama.cpp symbols . 0 platform names                         |
  |                                                                |
  |  DENSE policy  <-- overflow + reclaim-exempt store + ledger    |
- |      compress & dma-buf         -> pinned (ahwb)               |
+ |      compress & dma-buf         -> pinned                      |
  |      otherwise                  -> anon                        |
  |      (kill -> a wider margin, not a mapping)                   |
  |                                                                |
