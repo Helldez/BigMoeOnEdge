@@ -19,7 +19,7 @@ Ejecuta modelos Mixture-of-Experts más grandes que la memoria del dispositivo h
 Construido sobre la API pública de llama.cpp; Android, iOS, macOS, Windows y Linux; un servidor local
 compatible con OpenAI en cada uno.
 
-<table>
+<table align="center">
 <tr>
 <td align="center" width="50%"><img src="docs/assets/screens/android.gif" width="220" alt="Qwen3.6-35B-A3B generando una respuesta en un teléfono Android de 12 GB, en tiempo real."></td>
 <td align="center" width="50%"><img src="docs/assets/screens/iphone.gif" width="220" alt="Qwen3.6-35B-A3B generando una respuesta en un iPhone de 12 GB, en tiempo real."></td>

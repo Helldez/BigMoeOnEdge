@@ -17,7 +17,7 @@
 エキスパートをフラッシュストレージからストリーミングすることで、デバイスのメモリより大きな Mixture-of-Experts モデルを実行します。
 llama.cpp の公開 API の上に構築されており、Android、iOS、macOS、Windows、Linux に対応し、それぞれでローカルの OpenAI 互換サーバーを提供します。
 
-<table>
+<table align="center">
 <tr>
 <td align="center" width="50%"><img src="docs/assets/screens/android.gif" width="220" alt="12 GB の Android スマートフォンで Qwen3.6-35B-A3B がリアルタイムに回答を生成している様子。"></td>
 <td align="center" width="50%"><img src="docs/assets/screens/iphone.gif" width="220" alt="12 GB の iPhone で Qwen3.6-35B-A3B がリアルタイムに回答を生成している様子。"></td>

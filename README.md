@@ -17,7 +17,7 @@ Run Mixture-of-Experts models larger than the device's memory by streaming the e
 Built on llama.cpp's public API; Android, iOS, macOS, Windows and Linux; a local OpenAI-compatible
 server on each.
 
-<table>
+<table align="center">
 <tr>
 <td align="center" width="50%"><img src="docs/assets/screens/android.gif" width="220" alt="Qwen3.6-35B-A3B generating an answer on a 12 GB Android phone, in real time."></td>
 <td align="center" width="50%"><img src="docs/assets/screens/iphone.gif" width="220" alt="Qwen3.6-35B-A3B generating an answer on a 12 GB iPhone, in real time."></td>
