@@ -337,7 +337,11 @@ std::string ResponsesStream::event(const std::string & type, json data) {
 std::string ResponsesStream::start() {
     output_ = json::array();
     const json r = response_object(meta_, "in_progress", json::array());
-    return event("response.created", {{"response", r}}) + event("response.in_progress", {{"response", r}});
+    // Two statements, not one `+`: each event takes the next sequence number, and the operands of
+    // `+` are evaluated in no specified order (GCC numbered these two backwards).
+    std::string f = event("response.created", {{"response", r}});
+    f += event("response.in_progress", {{"response", r}});
+    return f;
 }
 
 std::string ResponsesStream::frames(const std::vector<BlockEvent> & events) {
