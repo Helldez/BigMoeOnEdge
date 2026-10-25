@@ -368,6 +368,10 @@ struct SpecConfig {
     // Past the source's acceptance horizon the extra drafts are rejected and paid for anyway, which
     // is why the useful range is small; 3 is upstream's default for a single trained head.
     int draft_max = 3;
+    // The narrowest ubatch an MTP draft context is reserved at: it computes 1 + draft_max positions
+    // at decode, a prompt chunk in pieces this wide at prefill (Session::open, and the placement
+    // probe that fits it beside the target).
+    static constexpr int mtp_draft_ubatch = 32;
 
     // MTP only. Confidence floor for continuing to draft, as the head's own probability for the
     // token it is proposing. At 0 the head is asked for draft_max tokens unconditionally, however

@@ -16,6 +16,8 @@
 
 namespace bmoe {
 
+struct SpecConfig;
+
 // Everything this machine will tell us for free: memory accounting, what a reclaim costs, whether a
 // reclaim-exempt allocation exists, the registered compute devices, and whether uncached reads are
 // in effect for `model_path` (passing nullptr skips the storage half).
@@ -201,7 +203,15 @@ void probe_storage(HardwareProfile & hw, const char * model_path, uint64_t slice
 // one graph per context, the ledger charged 1.2 GB for what then reserved 8 GB at a 16384 context. The
 // projection is taken at that width and at half of it, which gives the slope a narrower graph is
 // priced with (Placement::at_width).
-Placement probe_placement(
-    const char * model_path, const ModelProfile & model, const HardwareProfile & hw, uint32_t n_ctx, uint32_t n_ubatch);
+//
+// `spec`, where it drafts with an MTP head, adds the draft context to the fit as the second model
+// that shares the devices (llama.cpp's common_fit_extra_model): it reserves its own state and
+// compute buffers on them, and a placement fitted without it is one the session then cannot open.
+Placement probe_placement(const char * model_path,
+                          const ModelProfile & model,
+                          const HardwareProfile & hw,
+                          uint32_t n_ctx,
+                          uint32_t n_ubatch,
+                          const SpecConfig * spec = nullptr);
 
 } // namespace bmoe

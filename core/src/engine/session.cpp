@@ -102,7 +102,6 @@ double secs(clock_t_::time_point a, clock_t_::time_point b) {
 //
 // Raised to 1 + draft_max when a very wide draft asks for more, and clamped down to the target's own
 // ubatch so it is never the wider of the two.
-constexpr int mtp_draft_ubatch = 32;
 
 llama_token argmax(const float * logits, int n_vocab) {
     llama_token best = 0;
@@ -1078,7 +1077,7 @@ bool Session::Impl::create_contexts(Opening & o) {
         // points of hit rate. n_batch stays as it is — the speculative driver sizes its internal
         // batch from it and must still accept a whole prefill chunk, which llama.cpp then splits
         // into ubatches of the width below.
-        dparams.n_ubatch = (uint32_t) std::max(cfg.spec.draft_max + 1, mtp_draft_ubatch);
+        dparams.n_ubatch = (uint32_t) std::max(cfg.spec.draft_max + 1, SpecConfig::mtp_draft_ubatch);
         if (dparams.n_ubatch > cparams.n_ubatch) dparams.n_ubatch = cparams.n_ubatch;
         if (model_dft) {
             // A head of its own: its layer is not the streamer's, and it reads the target's hidden

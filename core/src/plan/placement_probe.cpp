@@ -44,7 +44,8 @@ Placement probe_placement(const char * model_path,
                           const ModelProfile & model,
                           const HardwareProfile & hw,
                           uint32_t n_ctx,
-                          uint32_t n_ubatch) {
+                          uint32_t n_ubatch,
+                          const SpecConfig * spec) {
     Placement pl;
     if (!model_path || !*model_path || !model.ok) return pl;
 
@@ -87,9 +88,36 @@ Placement probe_placement(const char * model_path,
     }
     std::vector<size_t> margins(llama_max_devices() + 1, fitter_device_margin_bytes);
 
+    // Any speculation keeps rollback snapshots of the recurrent state, one per drafted position, in
+    // the target's own context (Session::open).
+    if (spec && spec->enabled()) cparams.n_rs_seq = (uint32_t) spec->draft_max;
+    // The MTP draft context, opened as the session opens it: its head is the target's own block
+    // (weights already counted, the target loaded with it) or a file of its own on the host, and
+    // either way its state and compute buffers land on the devices beside the target's.
+    const bool mtp = spec && spec->is_mtp();
+    const bool own_head = mtp && !spec->mtp_head.empty();
+    mparams.load_mtp = mtp && !own_head;
+    llama_model_params dmparams = llama_model_default_params();
+    llama_context_params dcparams = cparams;
+    common_fit_extra_model draft{};
+    if (mtp) {
+        dmparams.load_mtp = true;
+        if (own_head) dmparams.n_gpu_layers = 0;
+        dcparams.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
+        dcparams.moe_cache_size = 0;
+        dcparams.n_rs_seq = 0;
+        dcparams.n_outputs_max = 0;
+        dcparams.n_ubatch = std::min<uint32_t>(cparams.n_ubatch,
+                                               (uint32_t) std::max(spec->draft_max + 1, SpecConfig::mtp_draft_ubatch));
+        draft.path_model = own_head ? spec->mtp_head.c_str() : model_path;
+        draft.mparams = &dmparams;
+        draft.cparams = &dcparams;
+        draft.shares_model = !own_head;
+    }
+
     const common_params_fit_status st =
         common_fit_params(model_path, &mparams, &cparams, tensor_split.data(), overrides.data(), margins.data(),
-                          fitter_n_ctx_min, /*extra=*/nullptr, GGML_LOG_LEVEL_WARN);
+                          fitter_n_ctx_min, mtp ? &draft : nullptr, GGML_LOG_LEVEL_WARN);
     if (st == COMMON_PARAMS_FIT_STATUS_ERROR) {
         pl.outcome = "the capacity fitter hit an error; planning as if there were no devices";
         return pl;
