@@ -86,6 +86,9 @@ ValidationResult validate(const RunConfig & cfg) {
     if (cfg.n_expert_used < 0) {
         return fail("n_expert_used must be >= 0 (0 = model default)");
     }
+    if (cfg.moe.expert_host_buffer && (cfg.moe.device_cache_mb <= 0 || cfg.moe.enabled))
+        return fail("moe.expert_host_buffer is where a device cache uploads resident experts from: it needs "
+                    "--device-cache-mb and experts that are not streamed");
 
     // Sampling ranges are enforced only when sampling is actually on (temp > 0). With temp <= 0
     // the engine takes the argmax path and the other knobs are inert, so a caller that leaves them

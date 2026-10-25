@@ -81,6 +81,13 @@ struct MoeStreamConfig {
     // its slots from where the streamer put it. On a device that shares the host's memory the upload
     // is a copy within one pool; elsewhere it crosses the device's link. See docs/backends.md.
     int device_cache_mb = 0;
+    // Where that cache's misses are uploaded FROM, for experts resident on the host: a copy of them in
+    // a buffer of the device's own host buffer type (ggml_backend_dev_host_buffer_type) instead of the
+    // file's mapping, the same bytes in the same layout, the expert tensors pointed at it as the
+    // streamer points them at its slots. The backend's host memory reaches its device faster where it
+    // can be locked; a device with no such type keeps the mapping. Off: the planner sets it where it
+    // measured the gain and the host holds the copy.
+    bool expert_host_buffer = false;
     int cache_floor_mb = 1536; // RAM to leave free for the rest of the system when auto-sizing
     int cache_ceil_mb = 0;     // upper bound on the auto budget in MiB (0 = cap only at the full
                                // expert-set size); useful to keep the cache from taking all the

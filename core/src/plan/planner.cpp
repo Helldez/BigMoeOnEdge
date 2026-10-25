@@ -458,6 +458,49 @@ void choose_device_tier(Planning & s) {
                nums + "; a miss is uploaded from the host");
 }
 
+// Where the device cache's misses come from. A resident expert is a page of the file's mapping,
+// ordinary memory, and a device's backend copies ordinary memory through a staging buffer of its
+// own; from a buffer of the backend's own host type it may copy directly (bmoe/hardware_profile.h,
+// `upload_host_buffer_gibs`). The copy of the experts that makes the difference costs their size in
+// RAM again and cannot be paged out, so it is made where the gain was measured on this device, past
+// the margin, and the host holds the copy beside everything else it was already charged for. The
+// experts streamed instead live in the streamer's slots, which this does not move.
+void choose_expert_staging(Planning & s) {
+    MoeStreamConfig & moe = s.p.config.moe;
+    if (moe.device_cache_mb <= 0 || s.p.regime != Regime::Fits || s.req.is_pinned("expert-host-buffer")) return;
+    std::string why;
+    const ComputeDevice * dev = device_tier_device(s, why);
+    if (!dev) return;
+    const auto mib_s = [](uint64_t b) { return u64s(mib(b)); };
+    const std::string pct = u64s((uint64_t) (s.pol.min_backend_win * 100.0f + 0.5f)) + "%";
+    char rates[200];
+    std::snprintf(rates, sizeof(rates),
+                  "a miss reaches %s at %.1f GiB/s from the file's mapping and at %.1f from "
+                  "the backend's own host memory",
+                  dev->name.c_str(), dev->upload_gibs, dev->upload_host_buffer_gibs);
+    if (dev->upload_host_buffer_gibs <= 0.0 || dev->upload_gibs <= 0.0 ||
+        dev->upload_host_buffer_gibs <= dev->upload_gibs * (1.0 + (double) s.pol.min_backend_win)) {
+        s.note("expert-host-buffer", "false", dev->upload_host_buffer_gibs > 0.0 ? Source::Measured : Source::Derived,
+               "The device cache uploads from the file's mapping.",
+               dev->upload_host_buffer_gibs > 0.0
+                   ? std::string(rates) + ", inside the " + pct + " margin"
+                   : dev->name + " offers no host memory of its own to upload from, or its rate is unmeasured");
+        return;
+    }
+    const uint64_t copy = s.host_expert_bytes;
+    if (s.host_all + copy > s.usable) {
+        s.note("expert-host-buffer", "false", Source::Derived, "The device cache uploads from the file's mapping.",
+               std::string(rates) + ", but the copy's " + mib_s(copy) + " MiB beside the " + mib_s(s.host_all) +
+                   " MiB the host already holds is past the " + mib_s(s.usable) + " MiB it may");
+        return;
+    }
+    moe.expert_host_buffer = true;
+    s.note("expert-host-buffer", "true", Source::Measured,
+           "The experts copied into " + dev->name + "'s own host memory, for the cache's misses.",
+           std::string(rates) + "; the copy takes " + mib_s(copy) + " MiB, inside the " + mib_s(s.usable) +
+               " MiB the host may hold with the " + mib_s(s.host_all) + " MiB it already does");
+}
+
 // ── the device crossing: layers on a device for decode, or fewer (measured-planning.md, Step 3) ──
 // Where not every dense part fits beside the experts, the capacity fitter puts the dense part of
 // some layers on a device and leaves their experts on the host: each such layer then crosses the
@@ -2119,6 +2162,7 @@ Plan plan_from(const RunConfig & base,
     else if (!s.home.decision.knob.empty() && !s.home.priced)
         s.p.decisions.push_back(s.home.decision);
     note_regime(s);
+    choose_expert_staging(s);
     if (declines_residency(s)) {
         // Nothing is streamed and nothing ranked: the layers stay as the fitter put them.
         if (s.home.priced) {
