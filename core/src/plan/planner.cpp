@@ -358,8 +358,6 @@ void share_of_host(Planning & s) {
 // against 28-47 for the fitter's layers, where a price of the two (the cache's misses at the
 // measured upload rate against the host's compute) had called them a tie and kept the layers.
 
-std::string margin_pct(const Planning & s);
-
 // The share of a token's routed bytes a cache of `bytes` serves: from this model's own routing where
 // a record of it was replayed (Step 1), else the fraction of the expert set it holds.
 double expert_share_at(const ModelProfile & model, uint64_t bytes, bool * measured) {
@@ -436,7 +434,7 @@ void choose_device_tier(Planning & s) {
     if (rates.device <= rates.host * (1.0 + (double) s.pol.min_backend_win)) {
         s.note("device-cache-mb", "0", Source::Measured,
                "The host computes the experts as fast as the device: they stay where the fitter put them.",
-               std::string(nums) + ", inside the " + margin_pct(s) +
+               std::string(nums) + ", inside the " + u64s((uint64_t) (s.pol.min_backend_win * 100.0f + 0.5f)) + "%" +
                    " margin of each other, so the fastest processor is not the device and nothing moves");
         return;
     }
