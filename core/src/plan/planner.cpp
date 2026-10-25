@@ -234,7 +234,7 @@ struct Planning {
              const PlanRequest & req_,
              const PlannerPolicy & pol_,
              Plan & plan)
-        : hw(hw_), model(model_), req(req_), pol(pol_), p(plan), placement(projected) {
+        : hw(hw_), model(model_), req(req_), pol(pol_), p(plan), placement(projected), projected(projected) {
         p.config = base;
         p.placement = placement;
     }
@@ -248,6 +248,21 @@ struct Planning {
     // The first stage's answer at the graph width this stage chose (choose_graph_width). The
     // width is this stage's to choose, and the compute figures move with it.
     Placement placement;
+    // And as the first stage gave it, for a plan made again from an alternative to it.
+    const Placement projected;
+
+    // The device's dense-only layers brought home (price_layers_home): the alternative placement,
+    // what it costs the host and what it saves a token, and the account of it. `considered` is
+    // false in the plan made again from that alternative, so it is priced once.
+    struct LayersHome {
+        bool considered = true;
+        bool priced = false;
+        uint32_t layers = 0;
+        uint64_t bytes = 0;
+        double saved = 0.0;
+        Placement whole;
+        Decision decision;
+    } home;
 
     // The rate a device has to beat before it is said to read this model's weights faster than the
     // host: the policy's margin over the host's own figure, computed once so the lines quoting it
@@ -369,7 +384,7 @@ const ComputeDevice * device_tier_device(const Planning & s, std::string & why) 
             why = d.name + " does not execute this model's expert matmul on its own layout";
             return nullptr;
         }
-        if (d.memory_bandwidth_gibs <= 0.0 || d.upload_gibs <= 0.0 || d.split_seconds <= 0.0) {
+        if (expert_rates(s.hw, d).device <= 0.0 || d.upload_gibs <= 0.0 || d.split_seconds <= 0.0) {
             why = "what " + d.name + " costs per expert, per upload or per crossing is unmeasured";
             return nullptr;
         }
@@ -395,7 +410,10 @@ void choose_device_tier(Planning & s) {
     const auto mib_s = [](uint64_t b) { return u64s(mib(b)); };
     std::string why;
     const ComputeDevice * dev = device_tier_device(s, why);
-    if (!dev || s.hw.host_bandwidth_gibs <= 0.0) {
+    // The host and the device on the same experiment: the model's own expert block where both were
+    // measured on it. The synthetic GEMV overstated a 48-core host's expert rate six times over.
+    const RatePair rates = dev ? expert_rates(s.hw, *dev) : RatePair{};
+    if (!dev || rates.host <= 0.0) {
         s.note("device-cache-mb", "0", dev ? Source::Unprobed : Source::Derived,
                "The device holds whole layers' experts, not a cache of the most used ones.",
                "a cache of experts on the device could hold the " + mib_s(on_devices) +
@@ -414,19 +432,18 @@ void choose_device_tier(Planning & s) {
     // Per token, only the terms that differ. The split computes its host layers' routed bytes on the
     // cores and crosses twice for each of those layers; the cache computes everything on the device,
     // uploads what it misses and synchronizes once per layer it serves to read the selection.
-    t.split_seconds = (1.0 - t.split_share) * routed / (s.hw.host_bandwidth_gibs * gib) +
-                      t.split_share * routed / (dev->memory_bandwidth_gibs * gib) +
-                      2.0 * (double) s.host_layers * dev->split_seconds;
-    t.tier_seconds = routed / (dev->memory_bandwidth_gibs * gib) +
-                     (1.0 - t.tier_share) * routed / (dev->upload_gibs * gib) +
+    t.split_seconds = (1.0 - t.split_share) * routed / (rates.host * gib) +
+                      t.split_share * routed / (rates.device * gib) + 2.0 * (double) s.host_layers * dev->split_seconds;
+    t.tier_seconds = routed / (rates.device * gib) + (1.0 - t.tier_share) * routed / (dev->upload_gibs * gib) +
                      (double) m.n_moe_layer * dev->split_seconds;
 
     char nums[320];
     std::snprintf(nums, sizeof(nums),
                   "by layer %.2f ms/token (%.0f%% of the routed bytes on the device, the rest at %.0f GiB/s "
-                  "on the cores), as a cache %.2f ms/token (%.0f%% %s, misses uploaded at %.1f GiB/s, %u "
+                  "on the cores%s), as a cache %.2f ms/token (%.0f%% %s, misses uploaded at %.1f GiB/s, %u "
                   "crossings at %.0f us)",
-                  1e3 * t.split_seconds, 100.0 * t.split_share, s.hw.host_bandwidth_gibs, 1e3 * t.tier_seconds,
+                  1e3 * t.split_seconds, 100.0 * t.split_share, rates.host,
+                  rates.real_layer ? ", measured on this model's own expert block" : "", 1e3 * t.tier_seconds,
                   100.0 * t.tier_share, t.tier_share_measured ? "from this model's own routing" : "credited linearly",
                   dev->upload_gibs, m.n_moe_layer, 1e6 * dev->split_seconds);
     const bool wins = t.tier_seconds * (1.0 + (double) s.pol.min_backend_win) < t.split_seconds;
@@ -462,6 +479,175 @@ void choose_device_tier(Planning & s) {
            std::string("the bytes the capacity fitter gave whole layers' experts hold a cache of the experts "
                        "used most, from every layer, computed on the device: ") +
                nums);
+}
+
+// ── the device crossing: layers on a device for decode, or fewer (measured-planning.md, Step 3) ──
+// Where not every dense part fits beside the experts, the capacity fitter puts the dense part of
+// some layers on a device and leaves their experts on the host: each such layer then crosses the
+// host/device boundary twice a token, its dense matmuls on the device and its experts on the host.
+// The fitter decides that by capacity alone, and it is right wherever the device's dense rate saves
+// more than two crossings cost. Where it does not - a slow link, a device no faster on those shapes -
+// the same layers are cheaper whole on the host, and the device keeps only the layers it holds
+// whole, contiguous at the top, crossing once each way.
+//
+// Priced on measured facts only: each device's rate on the model's own dense matrices against the
+// host's on the same experiment, and its measured crossing. The RAM is not free - the host then
+// holds those layers' dense part and their context - so the saving enters the ranking (allocate.cpp)
+// as one more use of the budget, against the cache; where it is funded the plan is made again from
+// the layers brought home.
+//
+// The device keeps as many layers whole as the fitter gave it, so what it holds can only shrink -
+// but they become the top ones, so each is bounded by the largest layer the file has, and a device
+// whose bound does not fit its free memory keeps the fitter's placement.
+void price_layers_home(Planning & s) {
+    const Placement & pl = s.projected;
+    const ModelProfile & m = s.model;
+    if (!s.home.considered || !pl.fitted || pl.n_gpu_layers == 0 || m.n_layer == 0) return;
+    for (const char * knob : {"gpu-layers", "tensor-overrides", "devices", "device-cache-mb"})
+        if (s.req.is_pinned(knob)) return;
+    if (s.p.config.moe.device_cache_mb > 0) return; // the device tier keeps every layer on the device
+
+    // The device slots, top down as llama.cpp fills them: the layers and, last, the output.
+    const uint32_t slots = m.n_layer + 1;
+    const uint32_t ngl = pl.n_gpu_layers < 0 ? slots : std::min<uint32_t>((uint32_t) pl.n_gpu_layers, slots);
+    std::vector<std::pair<std::string, uint32_t>> split = pl.device_split;
+    if (split.empty()) {
+        for (const ComputeDevice & d : s.hw.devices)
+            if (!d.is_cpu && d.has_own_memory()) split.emplace_back(d.name, ngl);
+        if (split.size() != 1) return; // which device holds the layers is not said
+    }
+    const auto is_moe = [&](uint32_t il) {
+        return m.moe_layers.empty() || std::find(m.moe_layers.begin(), m.moe_layers.end(), il) != m.moe_layers.end();
+    };
+    const auto experts_home = [&](uint32_t il) {
+        return std::find(pl.host_expert_layers.begin(), pl.host_expert_layers.end(), il) != pl.host_expert_layers.end();
+    };
+    struct Part {
+        const ComputeDevice * dev = nullptr;
+        uint32_t dense_only = 0, whole = 0;
+        bool output = false;
+    };
+    std::vector<Part> parts;
+    uint32_t at = slots - ngl, dense_only = 0;
+    for (const auto & e : split) {
+        Part q;
+        for (const ComputeDevice & d : s.hw.devices)
+            if (!d.is_cpu && d.name == e.first) q.dev = &d;
+        for (uint32_t k = 0; k < e.second && at < slots; ++k, ++at) {
+            if (at == m.n_layer)
+                q.output = true;
+            else if (is_moe(at) && experts_home(at))
+                ++q.dense_only;
+            else
+                ++q.whole;
+        }
+        dense_only += q.dense_only;
+        parts.push_back(q);
+    }
+    if (dense_only == 0) return; // every device layer is whole: one boundary, nothing to price
+
+    const auto mib_s = [](uint64_t b) { return u64s(mib(b)); };
+    std::string unpriced;
+    for (const Part & q : parts) {
+        if (q.dense_only == 0) continue;
+        if (!q.dev || !q.dev->has_own_memory())
+            unpriced = "a device holding them is not known to have memory of its own";
+        else if (q.dev->identity_ok != Tri::Yes)
+            unpriced = q.dev->name + " has not been shown to compute the host's results";
+        else if (q.dev->split_seconds <= 0.0 || dense_rates(s.hw, *q.dev).device <= 0.0 ||
+                 dense_rates(s.hw, *q.dev).host <= 0.0)
+            unpriced = "what a crossing to " + q.dev->name + " or its dense matmuls cost is unmeasured";
+    }
+    Decision & d = s.home.decision;
+    d.knob = "device-layers";
+    d.value = u64s(dense_only) + " split";
+    if (!unpriced.empty()) {
+        d.source = Source::Unprobed;
+        d.brief = u64s(dense_only) + " layers are split between a device and the CPU; the hops are unpriced.";
+        d.reason = "the capacity fitter put the dense part of " + u64s(dense_only) +
+                   " layers on a device and their experts on the host, two crossings a token each, and " + unpriced +
+                   ": the placement stands as the fitter made it";
+        return;
+    }
+
+    // Per token, only what differs: those layers' dense matmuls on the device plus two crossings each,
+    // against the same matmuls on the host.
+    constexpr double gib = 1024.0 * 1024.0 * 1024.0;
+    const double dense_tok =
+        (double) (m.group(WeightGroup::Attention).bytes_per_token + m.group(WeightGroup::DenseFfn).bytes_per_token) /
+        (double) m.n_layer;
+    double on_device = 0.0, on_host = 0.0;
+    for (const Part & q : parts) {
+        if (q.dense_only == 0) continue;
+        const RatePair r = dense_rates(s.hw, *q.dev);
+        on_device += q.dense_only * (dense_tok / (r.device * gib) + 2.0 * q.dev->split_seconds);
+        on_host += q.dense_only * dense_tok / (r.host * gib);
+    }
+    char nums[256];
+    std::snprintf(nums, sizeof(nums),
+                  "their dense matmuls and two crossings each cost %.2f ms a token on the device, the same matmuls "
+                  "%.2f ms on the host",
+                  1e3 * on_device, 1e3 * on_host);
+    d.source = Source::Measured;
+    if (on_host * (1.0 + (double) s.pol.min_backend_win) >= on_device) {
+        d.brief = u64s(dense_only) + " layers keep their dense part on the device: it saves more than the hops cost.";
+        d.reason = "the capacity fitter put the dense part of " + u64s(dense_only) +
+                   " layers on a device and their experts on the host; measured, " + nums + ", so the split stands";
+        return;
+    }
+
+    // The alternative: each device keeps as many whole layers, at the top; the rest come home whole.
+    const uint64_t layer_bound = m.largest_expert_layer_bytes + m.largest_layer_dense_bytes;
+    const uint64_t kv = pl.device_context_bytes; // bounded by all of it: per layer it need not be uniform
+    const uint64_t dense_home = (uint64_t) dense_only * m.largest_layer_dense_bytes;
+    std::string refused = layer_bound == 0 || dense_home == 0 ? "the size of the file's layers is unknown" : "";
+    uint32_t whole_total = 0;
+    for (const Part & q : parts) {
+        const uint32_t keep = q.whole + (q.output ? 1 : 0);
+        whole_total += keep;
+        if (keep == 0 || !refused.empty()) continue;
+        const uint64_t bound = (uint64_t) q.whole * layer_bound + (q.output ? m.group(WeightGroup::Output).bytes : 0) +
+                               kv + pl.device_compute_of(q.dev->name);
+        if (q.dev->memory_free == 0 || bound > q.dev->memory_free)
+            refused = q.dev->name + " could not be shown to hold its whole layers at the top (" + mib_s(bound) +
+                      " MiB bound against " + mib_s(q.dev->memory_free) + " MiB free)";
+    }
+    if (!refused.empty()) {
+        d.brief = u64s(dense_only) + " layers stay split: bringing them home cannot be accounted here.";
+        d.reason =
+            std::string("measured, ") + nums + "; bringing them onto the host is not accounted, because " + refused;
+        return;
+    }
+    Placement w = pl;
+    w.n_gpu_layers = (int32_t) whole_total;
+    w.device_split.clear();
+    if (!pl.device_split.empty())
+        for (const Part & q : parts) {
+            const uint32_t keep = q.whole + (q.output ? 1 : 0);
+            if (keep && q.dev) w.device_split.emplace_back(q.dev->name, keep);
+        }
+    // Below the devices' slots every block is the host's, experts and all, so no override is needed,
+    // and the layers the devices keep are whole.
+    w.override_patterns.clear();
+    w.host_expert_layers.clear();
+    const uint32_t first_device = slots - std::min(whole_total, slots);
+    for (uint32_t il = 0; il < m.n_layer && il < first_device; ++il)
+        if (is_moe(il)) w.host_expert_layers.push_back(il);
+    w.host_resident_bytes += dense_home + kv;
+    w.raw_host_context_bytes += kv;
+    w.device_bytes -= std::min(w.device_bytes, dense_home + kv);
+    w.device_context_bytes = 0;
+
+    s.home.priced = true;
+    s.home.layers = dense_only;
+    s.home.bytes = dense_home + kv;
+    s.home.saved = on_device - on_host;
+    s.home.whole = std::move(w);
+    d.brief = u64s(dense_only) + " layers keep their dense part on the device: the RAM to bring them home buys more "
+                                 "as cache.";
+    d.reason = std::string("measured, ") + nums + "; bringing them home costs the host " + mib_s(s.home.bytes) +
+               " MiB (their dense part and, bounded by all of it, the context), which the ranking weighed against "
+               "the cache and did not fund";
 }
 
 // ── the regime: a ratio of the two profiles, never a property of either ─────────
@@ -995,6 +1181,11 @@ ModelProfile host_model(const Planning & s) {
 AllocationInputs ledger_inputs(const Planning & s, uint64_t dense_pending) {
     const RunConfig & c = s.p.config;
     AllocationInputs ai;
+    if (s.home.priced) {
+        ai.layers_home_bytes = s.home.bytes;
+        ai.layers_home_saved = s.home.saved;
+        ai.layers_home_count = s.home.layers;
+    }
     ai.budget_bytes = s.usable;
     ai.engine_cache_min = (uint64_t) MoeStreamConfig::cache_min_mb << 20;
     ai.can_pin = c.moe.dense_weights == DenseWeightsMode::Pinned;
@@ -1922,14 +2113,18 @@ void choose_threads(Planning & s) {
 
 } // namespace
 
-Plan plan_run(const RunConfig & base,
-              const HardwareProfile & hw,
-              const ModelProfile & model,
-              const Placement & projected,
-              const PlanRequest & req,
-              const PlannerPolicy & pol) {
+namespace {
+
+Plan plan_from(const RunConfig & base,
+               const HardwareProfile & hw,
+               const ModelProfile & model,
+               const Placement & projected,
+               const PlanRequest & req,
+               const PlannerPolicy & pol,
+               const Planning::LayersHome * home_from) {
     Plan p;
     Planning s(base, hw, model, projected, req, pol, p);
+    if (home_from) s.home.considered = false;
 
     // The machine and the model, against each other.
     share_of_host(s);
@@ -1939,8 +2134,27 @@ Plan plan_run(const RunConfig & base,
     choose_graph_width(s);
     classify_regime(s);
     apply_placement(s);
+    price_layers_home(s);
+    // The account of the device's split layers: said now where nothing is left to weigh, after the
+    // ranking where it is.
+    if (home_from)
+        s.p.decisions.push_back(home_from->decision);
+    else if (!s.home.decision.knob.empty() && !s.home.priced)
+        s.p.decisions.push_back(s.home.decision);
     note_regime(s);
-    if (declines_residency(s)) return p;
+    if (declines_residency(s)) {
+        // Nothing is streamed and nothing ranked: the layers stay as the fitter put them.
+        if (s.home.priced) {
+            s.home.decision.brief = u64s(s.home.layers) + " layers keep their dense part on the device: not weighed, "
+                                                          "nothing is streamed.";
+            const size_t cut = s.home.decision.reason.find("; bringing them home costs");
+            s.home.decision.reason = s.home.decision.reason.substr(0, cut) +
+                                     "; with nothing streamed there is no ranking to weigh bringing them home in, so "
+                                     "the fitter's placement stands";
+            s.p.decisions.push_back(s.home.decision);
+        }
+        return p;
+    }
 
     // What could leave the host beyond the first stage's placement, and why it does not.
     const DeviceSurvey devices = survey_devices(hw);
@@ -1953,6 +2167,22 @@ Plan plan_run(const RunConfig & base,
     s.host_model = host_model(s);
     AllocationInputs ai = ledger_inputs(s, p.dense_pending_bytes);
     const Allocation alloc = plan_prefill(s, ai);
+    if (s.home.priced) {
+        // Funded: the plan is made again with those layers on the host, so every line below - the
+        // regime, the ledger, the cache - is the one of the placement the run will load.
+        if (alloc.layers_home) {
+            Planning::LayersHome home = s.home;
+            home.decision.value = u64s(home.layers) + " home";
+            home.decision.brief =
+                u64s(home.layers) + " layers come home whole: the hops to the device cost more than it saves.";
+            const size_t cut = home.decision.reason.find("; bringing them home costs");
+            home.decision.reason = home.decision.reason.substr(0, cut) + "; they come onto the host whole, for " +
+                                   u64s(mib(home.bytes)) +
+                                   " MiB the ranking funded, and the devices keep the layers they held whole";
+            return plan_from(base, hw, model, home.whole, req, pol, &home);
+        }
+        s.p.decisions.push_back(s.home.decision);
+    }
     p.allocation = alloc;
     settle_dense_pin(s, pin_candidate, alloc, ai);
     settle_cache_lock(s, alloc);
@@ -1974,6 +2204,17 @@ Plan plan_run(const RunConfig & base,
     note_overlap(s);
     choose_threads(s);
     return p;
+}
+
+} // namespace
+
+Plan plan_run(const RunConfig & base,
+              const HardwareProfile & hw,
+              const ModelProfile & model,
+              const Placement & projected,
+              const PlanRequest & req,
+              const PlannerPolicy & pol) {
+    return plan_from(base, hw, model, projected, req, pol, nullptr);
 }
 
 } // namespace bmoe

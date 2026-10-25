@@ -136,6 +136,18 @@ struct AllocationInputs {
     // it caches, and on a machine where the first stage placed some layers on a device that set is
     // smaller than the model's.
     uint64_t cacheable_bytes = 0;
+
+    // ── the device crossing, as a candidate (docs/measured-planning.md, Step 3) ─────────────────
+    // Where the capacity fitter put the dense part of some layers on a device and left their experts
+    // on the host, every such layer crosses the host/device boundary twice a token. Bringing those
+    // layers home - whole, onto the host - removes the crossings and costs the host what their dense
+    // part and context take. `layers_home_bytes` is that RAM, `layers_home_saved` the seconds per
+    // token the measured crossings cost more than the device saves on those layers' dense matmuls;
+    // both 0 when there is nothing to price, or the host does not win. It is ranked against the
+    // cache and the resident groups like any other use of the budget.
+    uint64_t layers_home_bytes = 0;
+    double layers_home_saved = 0.0;
+    uint32_t layers_home_count = 0; // the layers it brings home, for the rationale
 };
 
 // One line of the memory ledger: something the run holds for its whole length, and whether it is
@@ -198,6 +210,10 @@ struct Allocation {
     bool cache_lock_unverified = false;
 
     uint64_t cache_bytes = 0; // expert cache budget; 0 means the expert lane is not used
+
+    // Whether the ranking funded AllocationInputs::layers_home_*: the plan then brings those layers
+    // home and is made again with them there.
+    bool layers_home = false;
     // The share of a token's expert reads the cost model credits the cache with serving, 0..1: what
     // `seconds_per_token` was priced with, so a front-end shows the figure the plan stands on rather
     // than a cache-to-experts ratio of its own. 0 without a cache.

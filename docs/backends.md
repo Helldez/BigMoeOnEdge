@@ -160,8 +160,9 @@ fastest placement measured.
 ## How a backend reaches the planner
 
 No rule names a backend. A device that registers is enumerated, asked for its memory, and
-measured: the same matmul on the model's own quantized format as the host, checked against the
-host's result, and the cost of one host/device crossing. A device that does not reproduce the
+measured: one layer of the model itself, its expert block and its dense matrices from the file's
+own bytes, run as the host runs it and checked against the host's result, and the cost of one
+host/device crossing. A device that does not reproduce the
 host's result is excluded on correctness, whatever its speed.
 
 So a backend llama.cpp adds needs no code here to be seen. It does need a module beside the

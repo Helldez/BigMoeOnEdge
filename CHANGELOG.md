@@ -7,6 +7,27 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **The cost of a device measured on a real layer** (Step 3 of `docs/measured-planning.md`). The
+  planner's compute probe now builds one layer of the model from the file's own tensors and bytes
+  (the expert block as `mul_mat_id` over the layer's expert matrices, top-k per token, and the
+  block's other matrices as plain matmuls) and runs it on the host and on every device at decode
+  width and at prefill width, the result compared with the host's first: a device that disagrees is
+  refused. Four facts come out of it: each backend's rate on the expert block and on the dense
+  matrices at one token (`expert_gibs`, `dense_gibs`, the host's `host_expert_gibs` /
+  `host_dense_gibs`), and the whole layer at 128 tokens, which replaces the synthetic wide matmul
+  behind `--prefill-device` (kept for a file whose layer cannot be read). The synthetic GEMV stays
+  for the thread sweep and the figures that mean it. `--plan-explain` prints the new facts per
+  device.
+- **A crossing that is measured everywhere, and priced into the placement.** The crossing is now
+  timed the way the graph crosses at a layer boundary - one token's hidden state copied to the
+  device, one op run there, copied back, each leg waited for - instead of by differencing a chain of
+  ops through the scheduler, which read 0 on CUDA and left every discrete card's crossing unpriced.
+  With it, `--auto` prices the layers the capacity fitter split - dense part on a device, experts on
+  the host, two crossings a token each - against the same layers whole on the host, on the device's
+  measured dense rate and crossing, and enters the saving in the ranking against the expert cache
+  (`device-layers`, `device-crossing`). Where it is funded those layers come home and the device
+  keeps its whole layers at the top; where the device saves more than the hops cost, the fitter's
+  split stands and the plan says by how much.
 - **Device memory as a tier of the expert cache** (Step 4 of `docs/measured-planning.md`, closes
   #378, supersedes #381). `--device-cache-mb N` puts llama.cpp's device-side expert cache in front of
   the experts the host holds, resident or streamed: the experts used most are computed on the device
@@ -85,6 +106,13 @@ Semantic Versioning.
   reads it yet. The on-device runs this is judged by are owed.
 
 ### Changed
+- **The device tier and the cost model read the real layer's rates.** `choose_device_tier` prices the
+  split's host layers at the host's rate on the model's own expert block, where host and device were
+  both measured on it (the synthetic GEMV read a 48-core host at 77 GiB/s while its decode's experts
+  ran at about 12), and the allocation prices the host's expert and dense compute each at its own
+  rate. Every comparison of a host with a device takes both figures from the same experiment, the
+  GEMV's where either side lacks the layer. The isolated device probe's facts line is `v=2`, with
+  `expert=` and `dense=`.
 - **The plan's hit rate is set against the decode's.** The line `bmoe-cli --auto` prints after a run
   compares the credited hit rate with the one measured over the decode alone (the figure a token is
   priced with), with the prompt-inclusive one in brackets; it used to show the cache's share of the

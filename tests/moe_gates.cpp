@@ -1643,6 +1643,57 @@ int main(int argc, char ** argv) {
         }
     }
 
+    // ── G22: the real-layer probe (docs/measured-planning.md, Step 3) ─────────────────────────────
+    // The planner's compute probe on this model's own layer: built from the file's tensors, run on
+    // the host and on every device this build has - the loopback RPC device among them, whose buffers
+    // are not host memory - with the results compared to the host's, and the crossing timed. Not an
+    // identity gate on output: it holds that every device that runs the layer agrees with the host,
+    // that every fact the rules read was filled, and that the probe stays inside its time bound.
+    {
+        const std::string rpc = loopback_rpc_device(); // registered once per process; "" without RPC
+        HardwareProfile hw = probe_hardware(model.c_str());
+        const ModelProfile mp = probe_model(model.c_str());
+        probe_device_support(hw, mp);
+        const auto t0 = std::chrono::steady_clock::now();
+        probe_bandwidth(hw, mp);
+        const double t_layer = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        probe_device_costs(hw, mp);
+        const double t_all = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        constexpr double k_bound_seconds = 30.0; // generous: a loaded CI runner, every device here
+        bool ok = hw.host_expert_gibs > 0.0 && hw.host_dense_gibs > 0.0 && hw.host_wide_matmul_gibs > 0.0 &&
+                  t_all < k_bound_seconds;
+        std::printf("       G22 host: experts %.2f GiB/s, dense %.2f GiB/s, %u wide %.2f GiB/s (GEMV %.2f)\n",
+                    hw.host_expert_gibs, hw.host_dense_gibs, hw.wide_batch, hw.host_wide_matmul_gibs,
+                    hw.host_bandwidth_gibs);
+        bool saw_rpc = rpc.empty();
+        for (const ComputeDevice & d : hw.devices) {
+            if (d.is_cpu) continue;
+            std::printf("       G22 %s: experts %.2f, dense %.2f, wide %.2f GiB/s, identity %s/%s, crossing %.1f us\n",
+                        d.name.c_str(), d.expert_gibs, d.dense_gibs, d.wide_matmul_gibs,
+                        d.identity_ok == Tri::Yes  ? "same"
+                        : d.identity_ok == Tri::No ? "WRONG"
+                                                   : "unknown",
+                        d.wide_identity_ok == Tri::Yes  ? "same"
+                        : d.wide_identity_ok == Tri::No ? "WRONG"
+                                                        : "unknown",
+                        1e6 * d.split_seconds);
+            if (d.identity_ok == Tri::No || d.wide_identity_ok == Tri::No) ok = false;
+            if (d.name == rpc) {
+                saw_rpc = true;
+                ok = ok && d.expert_gibs > 0.0 && d.dense_gibs > 0.0 && d.wide_matmul_gibs > 0.0 &&
+                     d.identity_ok == Tri::Yes && d.wide_identity_ok == Tri::Yes && d.split_seconds > 0.0;
+            }
+        }
+        if (!ok || !saw_rpc) {
+            std::printf("[FAIL] G22 the real-layer probe left a fact unfilled, disagreed or ran %.2f s\n", t_all);
+            ++fails;
+        } else {
+            std::printf("[PASS] G22 real-layer probe: every device agrees with the host (%.2f s compute, %.2f s "
+                        "with the device costs)\n",
+                        t_layer, t_all);
+        }
+    }
+
     if (fails == 0) std::printf("\nall MoE byte-identity gates passed\n");
     return fails == 0 ? 0 : 1;
 }
