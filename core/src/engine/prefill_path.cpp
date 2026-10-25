@@ -208,7 +208,7 @@ bool PrefillPath::reserve_on_device(llama_context * ctx, const llama_vocab * voc
 // The device can be out of room at that moment. Then the graph runs on the host, and the context is
 // made to schedule it afresh: a host graph of the same width as the device graph before it would
 // otherwise be reused as it was placed.
-bool PrefillPath::place(bool on_device) {
+bool PrefillPath::place(bool on_device, bool hold_slots) {
     if (!dev_) return false;
     const bool turns = arena_ && arena_->on_demand();
     if (on_device && turns && !arena_->slots_held()) {
@@ -235,7 +235,7 @@ bool PrefillPath::place(bool on_device) {
         arena_->place(on_device);
         hook_->set_device_arena(on_device ? arena_.get() : nullptr);
     }
-    if (!on_device && turns && arena_->slots_held()) {
+    if (!on_device && !hold_slots && turns && arena_->slots_held()) {
         arena_->release();
         if (cache_ && yielded_budget_ > 0) cache_->set_cache_budget(yielded_budget_);
         yielded_budget_ = 0;

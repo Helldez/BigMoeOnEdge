@@ -53,6 +53,16 @@ Semantic Versioning.
   point each agent at the server; `docs/server-api.md` has the reference.
 
 ### Changed
+- **Speculative decoding works beside a prefill device** (GPU, NPU or any device the prefill path
+  takes). The pair was refused outright, so `--mtp` or `--ngram` sent the prompt back to the CPU:
+  on a 16 GB laptop a 1307-token prompt of a 35B-A3B read at 68-95 tok/s with `--mtp` against 474
+  without it. The refusal is now the rule it stood for: a verify batch (`--draft` + 1 positions) is
+  a CPU graph and must be narrower than `--prefill-min-tokens`, so it never reuses a graph the
+  device ran, and the planner declines a device only on that width. The MTP draft context, which
+  runs on the CPU's backends, walks each chunk the device ran with the weights at home and the
+  slots kept. Measured on that laptop with Metal: the same prompt at 340 tok/s with `--mtp`, and
+  decode at 19.5-21.5 tok/s against 17.8-18.4 without it. Gate G16d holds a device prefill with
+  n-gram speculation byte-identical to the CPU's run.
 - **`--dense-weights pinned` is the name of the reclaim-exempt mode** that was `ahwb`. The mode
   runs on Android (a dma-buf) and on macOS (wired memory), and the name only described the first.
   `ahwb` still parses, on the command line and in saved settings, and is written back as `pinned`;

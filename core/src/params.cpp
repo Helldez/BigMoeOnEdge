@@ -619,7 +619,8 @@ std::vector<ParamDesc> build() {
         ParamDesc d = row("prefill-device", "Prefill device", G::Prefill, L::Experimental,
                           "Run wide prefill graphs on this ggml device (e.g. HTP0, MTL0) while decode stays on "
                           "the CPU. With streaming the experts reach it through a two-layer arena. Not with "
-                          "speculation or row streaming. Empty is off.");
+                          "row streaming; with speculation, a verify narrower than --prefill-min-tokens. "
+                          "Empty is off.");
         d.type = ParamType::Text;
         d.value_hint = "D";
         bind_string(d, [](RunConfig & c) -> std::string & { return c.prefill.device; });

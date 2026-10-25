@@ -127,8 +127,17 @@ joins the scheduler at load as the model's only non-CPU device, with no layer as
 The one hazard is graph reuse: llama.cpp skips re-scheduling a graph shaped like the previous one.
 The rule that makes the rebind safe is about widths. The prompt goes in one ubatch per decode;
 pieces at least `--prefill-min-tokens` wide (default 32) run on the device and a shorter tail runs
-on the CPU, so a device graph and a CPU graph never share a shape. Speculative decoding widens CPU
-graphs and runs a second context over the same weights, so the two are refused together for now.
+on the CPU, so a device graph and a CPU graph never share a shape. Speculative decoding works beside
+it under the same rule: a verify batch is a CPU graph `--draft` + 1 positions wide, so it has to be
+narrower than `--prefill-min-tokens`, and `validate()` refuses the pair otherwise. The MTP draft is a
+second context over the same weights, on the CPU's backends: after each chunk the device ran, the
+weights go home for the draft's walk of that chunk (the slots taken on demand are kept) and go out
+again for the next one. Gate G16d holds a device prefill with n-gram speculation byte-identical to
+the CPU's run. The device's prefill is not bit-identical to the CPU's on a real backend (the load
+confirmation measures it), and the MTP draft asks the target's prompt graph for its hidden states
+too, so a device that compiles that graph differently can flip a near-tie token: on a 16 GB
+laptop with Metal, a 35B-A3B's answer with `--mtp` diverged a few lines in, where `--ngram`, which
+leaves the graph alone, was identical.
 
 ### The arena: two layers of the model at a time
 
