@@ -83,6 +83,11 @@ struct Placement {
     // The override patterns the fitter wrote, kept verbatim so the session can reapply them at load
     // (they are what routes the placed experts to a device buffer type).
     std::vector<std::string> override_patterns;
+    // The pattern that keeps one layer's routed experts on the host, for every layer that carries
+    // experts, written by the adapter (which owns tensor naming) for a plan that moves every
+    // layer's experts to the host itself: the device tier keeps the layers on the device and makes
+    // the bytes the fitter gave their experts a cache instead.
+    std::vector<std::string> all_expert_patterns;
 
     // How many of `n_gpu_layers` each device takes, by device name, in the order the fitter listed
     // the devices. The fitter decides this per device and projects its memory with it; loaded

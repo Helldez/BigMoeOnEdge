@@ -1597,7 +1597,10 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
         // as the prefetch does — the isolated variant measured ~+0.04 s/token of pure barrier and
         // GEMV tax on the host. What makes that safe for a COMMITTED consumer is the watchdog in
         // route_ahead_submit plus the passthrough default, not a barrier.
-        return ctrace_iso || is_topk || weights_iso || (is_logits && predict_log_) || probe_ask;
+        // Without a streamer the routing nodes are wanted only while the routing record is still
+        // open: each is a barrier, and once the record is full a run that does not stream pays none.
+        const bool want_topk = is_topk && (source_ || recording());
+        return ctrace_iso || want_topk || weights_iso || (is_logits && predict_log_) || probe_ask;
     }
 
     // The probe attaches to the gate matmul rather than to the topk node because this is where the
@@ -1622,8 +1625,32 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
             apply_drop(t);
     }
 
-    if (source_ && is_topk && t->data && t->type == GGML_TYPE_I32) on_topk(t, il);
+    if (is_topk && t->data && t->type == GGML_TYPE_I32) {
+        if (source_)
+            on_topk(t, il);
+        else if (rec_on_)
+            record_topk(t, il);
+    }
     return true;
+}
+
+// A run with no streamer still records its routing when asked to (the plan does, to price a cache
+// it cannot price yet): the ids are read where they lie, or from a host copy when the routing ran
+// on a device, and nothing else the streamer's path does happens here.
+void RouterHook::record_topk(ggml_tensor * t, int il) {
+    if (il < 0) return;
+    const int nu = (int) t->ne[0], nt = (int) t->ne[1];
+    const char * ids = (const char *) t->data;
+    if (!host_readable(t)) {
+        staged_ids_.resize(ggml_nbytes(t));
+        ggml_backend_tensor_get(t, staged_ids_.data(), 0, staged_ids_.size());
+        ids = staged_ids_.data();
+    }
+    gathered_.clear();
+    for (int j = 0; j < nt; ++j)
+        for (int k = 0; k < nu; ++k)
+            gathered_.push_back(*(const int32_t *) (ids + (size_t) j * t->nb[1] + (size_t) k * t->nb[0]));
+    rec_.batches.push_back({(uint32_t) il, rec_decode_, gathered_});
 }
 
 } // namespace bmoe

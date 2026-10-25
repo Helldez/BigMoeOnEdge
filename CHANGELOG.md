@@ -7,6 +7,22 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **Device memory as a tier of the expert cache** (Step 4 of `docs/measured-planning.md`, closes
+  #378, supersedes #381). `--device-cache-mb N` puts llama.cpp's device-side expert cache in front of
+  the experts the host holds, resident or streamed: the experts used most are computed on the device
+  from a cache in its own memory, and a miss is uploaded from the host. `--auto` arms it where a device
+  has memory of its own, every layer's dense part is on it, and the cache prices faster than the
+  capacity fitter's whole layers on the same bytes. The price reads three measured facts of the
+  device (its rate on the experts, a crossing, and a new one: the rate at which host memory reaches it
+  one expert at a time, `upload_gibs`, measured in its isolated probe) and the share of the routed
+  bytes the cache serves, from this model's recorded routing. Without a record the share is credited
+  linearly and the split stands; the run then records its routing even when it does not stream
+  (`--record-unstreamed`, which the plan sets), so the next plan of the file prices the cache. On a
+  24 GB discrete card with a 125B model resident on the host, a 16 GB device cache decoded at 61.8 and
+  62.8 tok/s over 256 tokens and 84-88 once settled, against 31.9 for the best whole-layer split and
+  18.9 with the experts on the cores. Speculation now works beside it. Gates G21a-c prove the cached
+  runs byte-identical to the resident placement (resident, streamed, streamed under n-gram
+  speculation), and G2u that an unstreamed run's record is the routing a stream asks for.
 - **Desktop packages that open with a double-click** (part of #385). `release-host` builds one per
   OS from the same staged folder the `bmoe-desktop` archive carries, and the archives stay for
   scripted installs and the CLI. The scripts live under `packaging/`.

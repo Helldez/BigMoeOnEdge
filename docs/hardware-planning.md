@@ -919,10 +919,22 @@ machine and model planned twice minutes apart produced 4.3 GB and 8.2 GB of avai
 therefore two different cache budgets. The plan quotes the number it used, which is what makes the
 difference visible rather than mysterious.
 
-Compute devices are enumerated through `ggml_backend_dev_*` and measured, and one rule reads them:
-the choice of the prefill device. No rule moves decode onto one. A device whose memory is host
-memory frees nothing when a tensor moves off it, which is why the capacity tier is nearly inert on
-an integrated GPU and only the bandwidth tier is left.
+Compute devices are enumerated through `ggml_backend_dev_*` and measured, and two rules read them:
+the choice of the prefill device, and the device tier of the expert cache. A device whose memory is
+host memory frees nothing when a tensor moves off it, which is why the capacity tier is nearly inert
+on an integrated GPU and only the bandwidth tier is left.
+
+The device tier (`choose_device_tier`, [measured-planning.md](measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache)):
+where every layer's dense part is on devices with memory of their own and the capacity fitter gave
+whole layers' experts the rest, the same bytes can instead hold a cache of the experts used most,
+from every layer, computed on the device. The two are priced per token on measured facts only: the
+routed bytes the split computes on the cores (at the host's rate) and its two crossings per host
+layer, against the cache's misses uploaded at the device's measured upload rate and one crossing per
+layer it serves, with the cache's share read from this model's own routing (Step 1) or credited
+linearly where none was recorded. The cache must win by `min_backend_win`. Where it does, every
+layer's experts are kept on the host (resident or streamed, as the regime then says) and the bytes
+become `--device-cache-mb`; where a fact is missing it says which and leaves the fitter's placement.
+On a shared pool, or with the caller's own placement, it says nothing and changes nothing.
 
 ## Architecture
 

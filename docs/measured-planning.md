@@ -1,7 +1,7 @@
 # Measured planning: pricing the plan on the model itself
 
-> **Mostly design.** This page describes where `--auto` goes next and in what order. Step 1 is built
-> and awaits its on-device judgement (its status is below); Steps 2 to 4 have not shipped. Each step
+> **Partly built.** This page describes where `--auto` goes next and in what order. Steps 1 and 4 are
+> built and await their on-device judgement (their status is below); Steps 2 and 3 have not shipped. Each step
 > names what it removes, what it must not break, and how it is judged. The planner as it stands is
 > [hardware-planning.md](hardware-planning.md).
 
@@ -231,6 +231,31 @@ its own, and on a shared pool there is no second tier to fill.
 **Judged by.** Byte-identical output with the cache on (gates). Decode and prefill against the same
 plan without it, interleaved, on #321's desktop and on a single small card like #330's. On machines
 without a device of their own, an unchanged plan.
+
+**Status: built, judgement owed.** What landed (`choose_device_tier` in `core/src/plan/planner.cpp`):
+
+- **Correctness.** Gates G21a-c: the device cache over resident experts, over streamed experts, and
+  over streamed experts under n-gram speculation, each byte-identical to the same placement with the
+  experts resident, on the loopback RPC device (buffers that are not host memory, as a discrete card's
+  are). The cache was live in every run: 75-90% device hits, misses uploaded.
+- **The split, priced.** Where every layer's dense part is on devices with memory of their own and
+  the fitter gave whole layers' experts some of it, the same bytes are priced as a cache: the routed
+  bytes the cores compute and the crossings of the split, against the uploads of the cache's misses
+  and one synchronization per layer it serves. The device's facts are measured in its isolated
+  probe: its rate on the experts, the crossing (`split_seconds`), and a new one, the rate at which
+  pageable host memory reaches it one expert at a time (`upload_gibs`). The cache's share is Step 1's
+  curve at that size; without a record it is the linear credit, under which the two tie on share and
+  the link decides, so the split stands and the run records its routing (`record_unstreamed`, set by
+  the plan, which also records a run that does not stream) for the next plan to price.
+- **Not done.** The double reads stay, measured rather than removed: on a model that fits the host,
+  the experts are resident and nothing is read. Pipeline parallelism on several devices is not
+  weighed. A warm start of the device cache from the record's hottest experts is not built: the first
+  hundred tokens fill it (51 tok/s in the first 128 tokens, 84-88 from the 256th, on the card below).
+- **Measured on a 24 GB discrete card,** Qwen3.8-Flash-Next 125B Q2_0, every layer on the card: experts
+  on the cores 18.9 tok/s, the best whole-layer split 31.9, resident behind a 16 GB device cache 61.8
+  and 62.8 over 256 tokens (84-88 once settled), against the planner's prediction of a cache faster
+  than the split on a curve like that model's. The plan's own choice on that card, from a recorded
+  first run, is the run owed.
 
 ## What the planner looks like afterwards
 

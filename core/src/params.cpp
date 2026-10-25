@@ -365,6 +365,17 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("device-cache-mb", "Device expert cache", G::Cache, L::Experimental,
+                          "EXPERIMENTAL: Compute the streamed experts on the device the layers are on, from a cache "
+                          "of this many MiB in its memory. 0 is off. Needs the layers on that device and the experts "
+                          "kept on the host.");
+        d.value_hint = "N";
+        at_least(d, 0, "MiB");
+        special(d, "0", "off");
+        bind_int(d, [](RunConfig & c) -> int & { return c.moe.device_cache_mb; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("io-threads", "Read lanes", G::Streaming, L::Advanced,
                           "Parallel expert-read lanes, including the calling thread. 1 is the serial baseline.");
         d.value_hint = "N";
@@ -474,6 +485,16 @@ std::vector<ParamDesc> build() {
         bounds(d, 0, MoeStreamConfig::routing_record_tokens_max, "tokens");
         special(d, "0", "off");
         bind_int(d, [](RunConfig & c) -> int & { return c.moe.routing_record_tokens; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("record-unstreamed", "Record without streaming", G::Cache, L::Advanced,
+                          "Also record the routing of a run that does not stream, at one barrier per MoE layer "
+                          "per token until the record is full. --auto sets it where a choice waits on that record.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--record-unstreamed", "true"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.record_unstreamed; });
         t.push_back(d);
     }
 

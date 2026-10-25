@@ -509,6 +509,46 @@ int main(int argc, char ** argv) {
             std::printf("[PASS] G2r' the record stops at its bound, is off at 0, and changes no output\n");
         }
     }
+    // G2u — a run that does not stream records its routing only when asked to, and the record is the
+    // same routing a streamed run of the same prompt asked its cache for (routing does not depend on
+    // where an expert lives). Asked or not, the output is the resident run's.
+    {
+        RunConfig plain = base(model);
+        RunConfig asked = plain;
+        asked.moe.record_unstreamed = true;
+        const RunResult rp = run(plain);
+        const RunResult ra = run(asked);
+        const RunResult rs = run(streamc);
+        size_t same = 0, decoded = 0;
+        for (size_t i = 0, j = 0; i < ra.routing.batches.size() && j < rs.routing.batches.size();) {
+            const RoutingBatch & a = ra.routing.batches[i];
+            const RoutingBatch & b = rs.routing.batches[j];
+            if (!a.decode) {
+                ++i;
+                continue;
+            }
+            if (!b.decode) {
+                ++j;
+                continue;
+            }
+            ++decoded;
+            same += a.layer == b.layer && a.experts == b.experts;
+            ++i;
+            ++j;
+        }
+        if (!rp || !ra || !rp.routing.empty() || ra.routing.decode_tokens == 0 ||
+            ra.generated_text != rp.generated_text || decoded == 0 || same != decoded) {
+            std::printf("[FAIL] G2u an unstreamed run records only when asked, the routing a stream asks for, and "
+                        "changes no output (%zu batches unasked, %u decode tokens asked, %zu of %zu decode batches "
+                        "match the stream's)\n",
+                        rp.routing.batches.size(), ra.routing.decode_tokens, same, decoded);
+            ++fails;
+        } else {
+            std::printf("[PASS] G2u an unstreamed run records only when asked (%u decode tokens), the routing a "
+                        "stream asks for, and changes no output\n",
+                        ra.routing.decode_tokens);
+        }
+    }
     fails += check("G3 streaming(selective) == streaming(load-all)", s_s0, s_all);
     // G6: rebinding the dense weights onto O_DIRECT anon buffers must not change a byte — same
     // bytes, same offsets, so identical output to the mmap-resident reference. This is the
@@ -1555,6 +1595,37 @@ int main(int argc, char ** argv) {
                 ++fails;
             } else {
                 std::printf("[PASS] G20a the experts streamed from the host (%.3f MiB read)\n", read_mib);
+            }
+            // G21 — the device tier: the same placement with llama.cpp's device-side expert cache in
+            // front of the host's experts, so every routed expert is computed on the device from a
+            // slot the cache filled. a) the experts resident on the host, b) streamed to it. Both
+            // must give the resident placement's bytes: a slot is the expert's own bytes, computed by
+            // the device's own kernel.
+            {
+                RunConfig cached = placed;
+                cached.moe.device_cache_mb = 4;
+                RunConfig cached_s = placed_s;
+                cached_s.moe.device_cache_mb = 4;
+                std::string s_cached, s_cached_s;
+                if (!gen(cached, s_cached, err) || !gen(cached_s, s_cached_s, err)) {
+                    std::printf("[FAIL] G21 a device cache run failed: %s\n", err.c_str());
+                    ++fails;
+                } else {
+                    fails += check("G21a device cache over resident experts == resident experts", s_placed, s_cached);
+                    fails += check("G21b device cache over streamed experts == resident experts", s_placed, s_cached_s);
+                    // c) with speculation: a verify batch is a few positions wide, served by the same
+                    // slots, and greedy drafting accepts only what the target would have produced.
+                    RunConfig cached_spec = cached_s;
+                    cached_spec.spec.source = DraftSource::ngram;
+                    std::string s_cached_spec;
+                    if (!gen(cached_spec, s_cached_spec, err)) {
+                        std::printf("[FAIL] G21c a device cache run with speculation failed: %s\n", err.c_str());
+                        ++fails;
+                    } else {
+                        fails += check("G21c device cache, streamed, n-gram speculation == resident experts", s_placed,
+                                       s_cached_spec);
+                    }
+                }
             }
             if (!have_hook) {
                 std::printf("[SKIP] G20b (the CPU backend here has no expert-ready hook)\n");

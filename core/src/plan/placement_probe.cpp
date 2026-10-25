@@ -210,11 +210,11 @@ Placement probe_placement(const char * model_path,
     // architecture the list would otherwise count every block, and a count of 52 "MoE layers" out of
     // 23 prorates the expert set past itself. Where the profile does not say, every block counts.
     for (uint32_t il = 0; il < n_layer; ++il) {
-        if (!host[il]) continue;
         if (!model.moe_layers.empty() &&
             std::find(model.moe_layers.begin(), model.moe_layers.end(), il) == model.moe_layers.end())
             continue;
-        pl.host_expert_layers.push_back(il);
+        pl.all_expert_patterns.push_back(tensor_names::expert_override_pattern((int) il));
+        if (host[il]) pl.host_expert_layers.push_back(il);
     }
 
     // The host memory the placed model is projected to take. The breakdown's last entry is the
