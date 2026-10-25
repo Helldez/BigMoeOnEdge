@@ -953,10 +953,11 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
-        ParamDesc d = row("cache-brake", "Brake under pressure", G::Cache, L::Advanced,
-                          "Halve the expert cache when the system starts taking it back mid-run: a stalled "
-                          "token, confirmed by cache pages no longer in RAM. It only shrinks, never under "
-                          "one token's working set, and does nothing where memory is not under pressure.");
+        ParamDesc d = row("cache-brake", "Adapt under pressure", G::Cache, L::Advanced,
+                          "Halve the expert cache when the system starts taking the engine's memory mid-run: a "
+                          "stalled token, confirmed by memory of this process taken or cache pages no longer in "
+                          "RAM. Once calm, it climbs back a token cycle at a time, never to a size the machine "
+                          "refused nor over the planned one. Does nothing where memory is not under pressure.");
         d.type = ParamType::Bool;
         d.flag.clear();
         d.switches = {{"--no-cache-brake", "false"}};

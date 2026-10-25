@@ -53,6 +53,18 @@ Semantic Versioning.
   point each agent at the server; `docs/server-api.md` has the reference.
 
 ### Changed
+- **The expert cache is sized while the run goes, for the whole process's memory** (closes #238's
+  question for the host tier). `--cache-brake` was a brake that only shrank, and only on cache
+  pages found missing; a locked cache cannot be taken, so on a 16 GB laptop running a 125B model it
+  never fired while the system compressed the compute buffers instead and single tokens took up to
+  15 minutes. The policy (`residency_controller.h`, replacing `cache_brake.h`) now confirms a stall
+  with the process's own memory taken (`pio::process_memory`), falling back to the page sample where
+  that is not published; keeps halving while the stalls go on with the memory still gone; and once
+  calm climbs back a token cycle every 64 clean tokens, never to a size the machine refused, never
+  over the plan, and never while the system is still taking memory. On that laptop with 5 GiB in
+  active use beside the engine, the first request took 85-88 s against 190 s and 1088 s, with no
+  token over 6.5 s; unpressed runs never moved and decoded at the same speed. The flag keeps its
+  name. `scripts/pressure-check.py` runs the same check on any machine.
 - **`--dense-weights pinned` is the name of the reclaim-exempt mode** that was `ahwb`. The mode
   runs on Android (a dma-buf) and on macOS (wired memory), and the name only described the first.
   `ahwb` still parses, on the command line and in saved settings, and is written back as `pinned`;

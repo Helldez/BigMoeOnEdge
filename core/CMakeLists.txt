@@ -16,7 +16,7 @@ add_library(bmoe_core STATIC
     src/plan/allocate.cpp
     src/plan/planner.cpp
     src/engine/logits.cpp
-    src/engine/cache_brake.cpp
+    src/engine/residency_controller.cpp
     src/engine/decide/prompt_split.cpp
     src/engine/decide/choice_scorer.cpp
     src/engine/decide/prefix_cache.cpp
