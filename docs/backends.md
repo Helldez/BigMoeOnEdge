@@ -131,8 +131,10 @@ Measured on a 24 GB card in a rented container (31 CPUs, 241 GiB RAM), Qwen3.8-F
 backend's host memory; decode went 63.5 → 72.6 tok/s, and with `--mtp --mtp-head` 75.5 → 89.4. The
 cost is at load: copying 32 GB into page-locked memory took the load from 4.4 to 36 s. Two greedy
 runs on that card differ after a few hundred characters with or without the copy (the device
-cache's order of computation), so the gates, not that card, are what prove the copy changes no
-output.
+cache's order of computation), so that card cannot show the copy changes no output, and no gate
+does yet: the loopback RPC device the gates run on has no host buffer type of its own. The bytes
+are copied unchanged and the tensors' shapes and strides untouched, which is the argument until a
+gate runs on a device that has one.
 
 Measured on a 24 GB discrete card (PCIe at about 26 GB/s, 48 host cores, 85 GiB of host memory),
 Qwen3.8-Flash-Next 125B GSQ-RCO Q2_0, every layer on the card, greedy:
