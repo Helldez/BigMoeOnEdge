@@ -959,6 +959,10 @@ bool Session::Impl::read_model(Opening & o) {
         if (!o.layout.ok)
             return o.fail("not a MoE this engine streams: " + o.layout.error +
                           " (docs/which-models-stream.md; without --moe-stream the file runs as plain mmap)");
+    } else if (!cfg.moe.expert_host_buffer.empty()) {
+        // The copy into a device's host memory needs only to know which tensors are experts; a file
+        // it cannot read that way is simply not copied.
+        o.layout = discover_expert_layout(o.meta().offsets.extents, o.gguf().n_expert);
     }
 
     // Chat templates are model-bound: initialise once here, apply per prompt in generate().
