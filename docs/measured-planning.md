@@ -294,15 +294,24 @@ without a device of their own, an unchanged plan.
   over streamed experts under n-gram speculation, each byte-identical to the same placement with the
   experts resident, on the loopback RPC device (buffers that are not host memory, as a discrete card's
   are). The cache was live in every run: 75-90% device hits, misses uploaded.
-- **The split, priced.** Where every layer's dense part is on devices with memory of their own and
-  the fitter gave whole layers' experts some of it, the same bytes are priced as a cache: the routed
-  bytes the cores compute and the crossings of the split, against the uploads of the cache's misses
-  and one synchronization per layer it serves. The device's facts are measured in its isolated
-  probe: its rate on the experts, the crossing (`split_seconds`), and a new one, the rate at which
-  pageable host memory reaches it one expert at a time (`upload_gibs`). The cache's share is Step 1's
-  curve at that size; without a record it is the linear credit, under which the two tie on share and
-  the link decides, so the split stands and the run records its routing (`record_unstreamed`, set by
-  the plan, which also records a run that does not stream) for the next plan to price.
+- **The rule: the experts used most live next to the fastest processor.** It is the rule flash and
+  RAM already follow, one level up. Where every layer's dense part is on devices with memory of their
+  own (the fitter gives the dense part, read by every token, the first claim on them) and a device
+  computes the model's experts faster than the host by `min_backend_win` (both rates from the same
+  experiment: the real layer where both were measured on it, the GEMV otherwise), the bytes the
+  fitter gave whole layers' experts hold a cache of the experts used most, from every layer, and
+  every layer's experts go back to the host, resident or streamed. A miss is uploaded from there as
+  a miss in RAM is read from flash. The cache fills from use, so it needs no record of the routing;
+  a record only says, in the plan's line, how much of a token it serves. Where the device is not
+  faster, its rate is unmeasured, or the dense parts did not all fit, the fitter's placement stands.
+- **Why not a price.** The first version priced the two per token (the split's host layers at the
+  host's rate and its crossings, against the cache's misses at the measured upload rate) and armed
+  the cache only where it won. On the second rented card of the runs below it called them a tie
+  (4.23 against 4.73 ms a token) and kept the layers, which decoded at 30-47 tok/s against the
+  cache's 64-79 there set by hand: the price missed what a host layer costs beyond its bytes, and a
+  price that can be wrong by half on the one comparison it exists for is a coefficient, not a fact.
+  A layer split by capacity waits for the host on every token wherever the device is the faster
+  processor; that part needs no price.
 - **Not done.** The double reads stay, measured rather than removed: on a model that fits the host,
   the experts are resident and nothing is read. Pipeline parallelism on several devices is not
   weighed. A warm start of the device cache from the record's hottest experts is not built: the first
@@ -310,16 +319,19 @@ without a device of their own, an unchanged plan.
 - **Measured on a 24 GB discrete card,** Qwen3.8-Flash-Next 125B Q2_0, every layer on the card: experts
   on the cores 18.9 tok/s, the best whole-layer split 31.9, resident behind a 16 GB device cache 61.8
   and 62.8 over 256 tokens (84-88 once settled), against the planner's prediction of a cache faster
-  than the split on a curve like that model's. The plan's own choice on that card, from a recorded
-  first run, is the run owed.
+  than the split on a curve like that model's. On a second card the plan's own choice, from a
+  recorded first run, armed the cache: 63.3 tok/s over 256 tokens and 80.8 over 1024. The cache costs
+  prefill there: 650 tok/s on a 1516-token prompt against 1134 for the whole layers, which the plan
+  does not price yet. The rule above, which arms the cache from the first load, is not yet run on a
+  card.
 
 ## What the planner looks like afterwards
 
 - **Memory:** the ledger, unchanged, still the only thing that decides what is held.
 - **Speed:** facts measured on the model, the routing trace for the cache, the first request for the
   lossless knobs, one real layer for devices. Each enters the existing ranking in its own unit.
-- **Tiers:** flash, RAM and device memory, each a cache for the one above it. The split of device
-  memory between full layers and expert slots is chosen with the same measurements.
+- **Tiers:** flash, RAM and device memory, each a cache for the one above it, the experts used most
+  next to the fastest processor.
 - **Removed:** the linear hit credit and its coefficient, the synthetic thread sweep, the synthetic
   bandwidth GEMV and the separate prefill matmul probe (gone, Step 3, except for a file whose layer
   cannot be read), and the unpriced crossing term that kept devices out of decode (gone, Step 3).

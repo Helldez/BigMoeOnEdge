@@ -86,7 +86,7 @@ The engine uses a device in one of four ways, and each asks for something differ
 | decode on the host | be the CPU backend, with the expert-ready hook for the overlap | every platform |
 | prefill device (`--prefill-device`) | run wide graphs, accept weights through `ggml_backend_tensor_set`, and take the model's weight types or a type the engine can convert to | Hexagon and Metal measured; the mechanism names no backend, so the others are untested, not excluded |
 | layers on a device (`--gpu-layers`, from llama.cpp's capacity fitter) | have memory of its own, or the placement frees nothing | applied by the planner where a device has its own memory; never run on such a machine here. On unified memory the fitter's answer is set aside, and forcing it on the 16 GB laptop ended in the GPU's out-of-memory error |
-| experts computed on a device from a cache in its memory | have memory of its own, and execute the model's expert matmul on its own layout: llama.cpp's device-side expert cache, fed from where the host holds the experts | planned by `--auto` where it prices faster than the fitter's layers (below); measured on a 24 GB discrete card and on Metal |
+| experts computed on a device from a cache in its memory | have memory of its own, and execute the model's expert matmul on its own layout: llama.cpp's device-side expert cache, fed from where the host holds the experts | planned by `--auto` where the device computes the experts faster than the host (below); measured on a 24 GB discrete card and on Metal |
 
 ## Experts computed on a device, from a cache in its memory
 
@@ -106,13 +106,12 @@ loopback RPC device).
 
 **Planned.** `--auto` arms it where a device has memory of its own and the fitter has given whole
 layers' experts some of it: the same bytes become a cache of the experts used most, from every
-layer, when that prices faster (`choose_device_tier` in `core/src/plan/planner.cpp`, and
-[measured-planning.md](measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache)).
-The price is three measured facts of the device (its rate on the experts, the rate at which host
-memory reaches it one expert at a time, and what a crossing costs) and the share of the routed bytes
-the cache serves at that size, from this model's own routing where it has been recorded. Without the
-record the share is credited linearly, the split wins, and the run records the routing for the next
-plan (`--record-unstreamed`, set by the plan).
+layer, wherever the device computes the model's experts faster than the host
+(`choose_device_tier` in `core/src/plan/planner.cpp`, and
+[measured-planning.md](measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache)):
+the experts used most live next to the fastest processor, as RAM holds what flash would read. The
+cache fills from use, so the first load arms it; a recorded routing says in the plan how much of a
+token it serves.
 
 Measured on a 24 GB discrete card (PCIe at about 26 GB/s, 48 host cores, 85 GiB of host memory),
 Qwen3.8-Flash-Next 125B GSQ-RCO Q2_0, every layer on the card, greedy:

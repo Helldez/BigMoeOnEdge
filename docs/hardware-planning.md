@@ -928,16 +928,15 @@ host memory frees nothing when a tensor moves off it, which is why the capacity 
 on an integrated GPU and only the bandwidth tier is left.
 
 The device tier (`choose_device_tier`, [measured-planning.md](measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache)):
-where every layer's dense part is on devices with memory of their own and the capacity fitter gave
-whole layers' experts the rest, the same bytes can instead hold a cache of the experts used most,
-from every layer, computed on the device. The two are priced per token on measured facts only: the
-routed bytes the split computes on the cores (at the host's rate) and its two crossings per host
-layer, against the cache's misses uploaded at the device's measured upload rate and one crossing per
-layer it serves, with the cache's share read from this model's own routing (Step 1) or credited
-linearly where none was recorded. The cache must win by `min_backend_win`. Where it does, every
+the experts used most live next to the fastest processor, as RAM holds what flash would read. Where
+every layer's dense part is on devices with memory of their own and a device computes the model's
+experts faster than the host by `min_backend_win`, the bytes the capacity fitter gave whole layers'
+experts hold a cache of the experts used most, from every layer, computed on the device: every
 layer's experts are kept on the host (resident or streamed, as the regime then says) and the bytes
-become `--device-cache-mb`; where a fact is missing it says which and leaves the fitter's placement.
-On a shared pool, or with the caller's own placement, it says nothing and changes nothing.
+become `--device-cache-mb`. It needs no record of the routing, since the cache fills from use; with
+one, the plan says how much of a token it serves. Where the device is not faster, a fact is missing,
+or not every dense part fits, the fitter's placement stands and the plan says which. On a shared
+pool, or with the caller's own placement, it says nothing and changes nothing.
 
 The layers the fitter split (`price_layers_home`, [measured-planning.md](measured-planning.md#step-3-the-cost-of-a-device-measured-on-a-real-layer)):
 where the capacity fitter put the dense part of some layers on a device and left their experts on

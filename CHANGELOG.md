@@ -32,13 +32,12 @@ Semantic Versioning.
   #378, supersedes #381). `--device-cache-mb N` puts llama.cpp's device-side expert cache in front of
   the experts the host holds, resident or streamed: the experts used most are computed on the device
   from a cache in its own memory, and a miss is uploaded from the host. `--auto` arms it where a device
-  has memory of its own, every layer's dense part is on it, and the cache prices faster than the
-  capacity fitter's whole layers on the same bytes. The price reads three measured facts of the
-  device (its rate on the experts, a crossing, and a new one: the rate at which host memory reaches it
-  one expert at a time, `upload_gibs`, measured in its isolated probe) and the share of the routed
-  bytes the cache serves, from this model's recorded routing. Without a record the share is credited
-  linearly and the split stands; the run then records its routing even when it does not stream
-  (`--record-unstreamed`, which the plan sets), so the next plan of the file prices the cache. On a
+  has memory of its own, every layer's dense part is on it, and it computes the model's experts
+  faster than the host: the experts used most then live next to the fastest processor, as RAM holds
+  what flash would read, in place of the fitter's whole layers whose experts wait on the host every
+  token. The cache fills from use and needs no record of the routing; a recorded routing says in the
+  plan how much of a token it serves. The device's isolated probe also measures the rate at which
+  host memory reaches it one expert at a time (`upload_gibs`), printed with the plan. On a
   24 GB discrete card with a 125B model resident on the host, a 16 GB device cache decoded at 61.8 and
   62.8 tok/s over 256 tokens and 84-88 once settled, against 31.9 for the best whole-layer split and
   18.9 with the experts on the cores. Speculation now works beside it. Gates G21a-c prove the cached

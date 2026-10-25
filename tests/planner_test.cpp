@@ -1828,17 +1828,24 @@ int main() {
             return plan_run(base_cfg(), h, model, pl, r, PlannerPolicy::defaults());
         };
 
-        // Credited linearly, the cache and the split serve the same share from the device, and a miss
-        // uploaded across the link costs more than the cores computing it: the split stands.
+        // No record of the routing yet: the cache still goes on the faster processor, and fills from use
+        // as the RAM cache does. A record is what says how much of a token it serves, not whether.
         const Plan linear = plan_on(card, half, PlanRequest{});
         const Decision * d = find(linear, "device-cache-mb");
-        check(d && d->value == "0" && d->source == Source::Measured &&
-                  d->reason.find("credited linearly") != std::string::npos,
-              "device tier, linear credit: whole layers stay, and the plan says why", d ? d->reason : "no decision");
-        check(linear.config.moe.device_cache_mb == 0 && linear.config.buft_overrides.size() == 24,
-              "device tier, linear credit: the fitter's placement is applied unchanged");
-        check(linear.config.moe.record_unstreamed,
-              "device tier, linear credit: the run records the routing that would price it");
+        check(d && d->source == Source::Measured && linear.config.moe.device_cache_mb == (int) (9 * 1024) &&
+                  d->reason.find("the fraction of the expert set it holds") != std::string::npos,
+              "device tier, no record: the cache is on the faster processor all the same", d ? d->reason : "none");
+        check(linear.config.buft_overrides.size() == model.n_layer && !linear.config.moe.record_unstreamed,
+              "device tier, no record: every layer's experts on the host, nothing recorded for a price");
+
+        // A device no faster at the experts than the host: the fastest processor is the host, and the
+        // fitter's placement stands.
+        HardwareProfile even = card;
+        even.devices[0].memory_bandwidth_gibs = 70.0;
+        const Plan level = plan_on(even, half, PlanRequest{});
+        d = find(level, "device-cache-mb");
+        check(d && d->value == "0" && level.config.moe.device_cache_mb == 0 && level.config.buft_overrides.size() == 24,
+              "device tier, device no faster: the fitter's placement stands", d ? d->reason : "none");
 
         // Where the cores are slow against the link, the cache wins even on the linear credit: every
         // layer's experts go to the host, and the bytes they held become the cache.
@@ -1854,14 +1861,15 @@ int main() {
         check(!tier.config.prefill.enabled(), "device tier, cache faster: no prefill device beside it");
         check(validate(tier.config).ok, "device tier, cache faster: a valid config", validate(tier.config).error);
 
-        // A fact missing is a tier not priced, and nothing moves.
-        HardwareProfile no_upload = slow_cores;
-        no_upload.devices[0].upload_gibs = 0.0;
-        const Plan unpriced = plan_on(no_upload, half, PlanRequest{});
+        // The device's rate unmeasured: nothing says it is the faster processor, and nothing moves.
+        HardwareProfile no_rate = slow_cores;
+        no_rate.devices[0].memory_bandwidth_gibs = 0.0;
+        no_rate.devices[0].expert_gibs = 0.0;
+        const Plan unpriced = plan_on(no_rate, half, PlanRequest{});
         d = find(unpriced, "device-cache-mb");
         check(d && d->value == "0" && unpriced.config.moe.device_cache_mb == 0 &&
                   unpriced.config.buft_overrides.size() == 24,
-              "device tier, upload unmeasured: not priced, the fitter's placement stands");
+              "device tier, device rate unmeasured: the fitter's placement stands");
 
         // A shared pool has no second tier: the stage says nothing and changes nothing.
         HardwareProfile shared = slow_cores;
@@ -1882,7 +1890,7 @@ int main() {
         d = find(curve, "device-cache-mb");
         check(d && curve.config.moe.device_cache_mb > 0 &&
                   d->reason.find("from this model's own routing") != std::string::npos,
-              "device tier, measured routing: the cache wins where the linear credit tied", d ? d->reason : "none");
+              "device tier, measured routing: the share is the model's own", d ? d->reason : "none");
         check(curve.config.buft_overrides.size() == model.n_layer,
               "device tier, measured routing: every layer's experts on the host");
         check(!curve.config.moe.record_unstreamed, "device tier, measured routing: nothing more to record");
@@ -2064,8 +2072,11 @@ int main() {
         HardwareProfile host_only = card;
         host_only.host_expert_gibs = 4.0;
         const Plan gemv = plan_run(base_cfg(), host_only, model, half, PlanRequest{}, PlannerPolicy::defaults());
-        check(gemv.config.moe.device_cache_mb == 0,
-              "device tier, real layer on the host only: both sides from the GEMV, the split stands");
+        const Decision * g = find(gemv, "device-cache-mb");
+        check(gemv.config.moe.device_cache_mb > 0 && g &&
+                  g->reason.find("measured on this model's own expert block") == std::string::npos,
+              "device tier, real layer on the host only: both sides from the GEMV, never one of each",
+              g ? g->reason : "none");
     }
 
     // ── no device of its own: the new facts change nothing they do not measure ──────────────────
