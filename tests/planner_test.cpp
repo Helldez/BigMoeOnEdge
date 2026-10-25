@@ -1903,18 +1903,20 @@ int main() {
             hb.devices[0].upload_host_buffer_gibs = 48.0;
             const Plan staged = plan_on(hb, half, PlanRequest{});
             const Decision * e = find(staged, "expert-host-buffer");
-            check(staged.regime == Regime::Fits && staged.config.moe.expert_host_buffer && e &&
+            check(staged.regime == Regime::Fits && staged.config.moe.expert_host_buffer == "discrete" && e &&
                       e->source == Source::Measured,
                   "expert host buffer: faster from the backend's host memory, and the copy fits",
                   e ? e->reason : "no decision");
             check(validate(staged.config).ok, "expert host buffer: a valid config", validate(staged.config).error);
             hb.devices[0].upload_host_buffer_gibs = 25.0;
             const Plan level_hb = plan_on(hb, half, PlanRequest{});
-            check(!level_hb.config.moe.expert_host_buffer, "expert host buffer: inside the margin, the mapping stays");
+            check(level_hb.config.moe.expert_host_buffer.empty(),
+                  "expert host buffer: inside the margin, the mapping stays");
             hb.devices[0].upload_host_buffer_gibs = 48.0;
             hb.residency_budget = model.file_bytes + model.expert_bytes / 2;
             const Plan tight = plan_on(hb, half, PlanRequest{});
-            check(!tight.config.moe.expert_host_buffer, "expert host buffer: a copy the host cannot hold is not made");
+            check(tight.config.moe.expert_host_buffer.empty(),
+                  "expert host buffer: a copy the host cannot hold is not made");
         }
 
         // The caller's placement is the caller's.

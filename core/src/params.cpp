@@ -376,11 +376,13 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
-        ParamDesc d = row("expert-host-buffer", "Experts in the device's host memory", G::Cache, L::Experimental,
+        ParamDesc d = row("expert-host-buffer", "Experts in a device's host memory", G::Cache, L::Experimental,
                           "EXPERIMENTAL: With a device expert cache over resident experts, keep a copy of the experts "
-                          "in the device backend's own host memory, which it uploads from faster where it can lock "
-                          "it. Takes the experts' size in RAM again.");
-        bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.expert_host_buffer; });
+                          "in this device's own host memory (its backend's), which it uploads from faster where it "
+                          "can lock it. Takes the experts' size in RAM again. Empty is off.");
+        d.type = ParamType::Text;
+        d.value_hint = "DEVICE";
+        bind_string(d, [](RunConfig & c) -> std::string & { return c.moe.expert_host_buffer; });
         t.push_back(d);
     }
     {

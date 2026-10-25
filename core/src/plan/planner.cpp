@@ -494,8 +494,8 @@ void choose_expert_staging(Planning & s) {
                    " MiB the host already holds is past the " + mib_s(s.usable) + " MiB it may");
         return;
     }
-    moe.expert_host_buffer = true;
-    s.note("expert-host-buffer", "true", Source::Measured,
+    moe.expert_host_buffer = dev->name;
+    s.note("expert-host-buffer", dev->name, Source::Measured,
            "The experts copied into " + dev->name + "'s own host memory, for the cache's misses.",
            std::string(rates) + "; the copy takes " + mib_s(copy) + " MiB, inside the " + mib_s(s.usable) +
                " MiB the host may hold with the " + mib_s(s.host_all) + " MiB it already does");

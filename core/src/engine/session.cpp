@@ -1037,7 +1037,9 @@ bool Session::Impl::create_contexts(Opening & o) {
     // mmap baseline the streamed numbers are argued against.
     // The prefill device needs it once, for the capture that finds the layer weights, and so does
     // the copy of the experts into a device's host memory.
-    if (cfg.moe.enabled || o.compute_trace || prefill || records_unstreamed(cfg) || cfg.moe.expert_host_buffer) {
+    // The copy captures on the context the device cache then makes again, which needs no callback.
+    const bool copy_capture = !cfg.moe.expert_host_buffer.empty() && !device_cache_armed;
+    if (cfg.moe.enabled || o.compute_trace || prefill || records_unstreamed(cfg) || copy_capture) {
         cparams.cb_eval = &RouterHook::c_eval;
         cparams.cb_eval_user_data = hook.get();
     }
@@ -1469,20 +1471,13 @@ bool Session::Impl::arm_device_cache(Opening & o) {
 // The experts a device cache uploads from, copied into a buffer of the device backend's own host
 // type (MoeStreamConfig::expert_host_buffer): the same bytes in the same layout, and the expert
 // tensors pointed at the copy, as the streamer points them at its slots. The device is the one the
-// layers' weights were placed on. A device with no host type of its own, or a copy that cannot be
-// allocated, leaves the mapping where it is: the copy changes how fast a miss arrives, never what.
+// plan named. A device with no host type of its own, or a copy that cannot be allocated, leaves the
+// mapping where it is: the copy changes how fast a miss arrives, never what. It runs before the
+// device cache is armed, whose context is made again without the callback the capture needs.
 bool Session::Impl::stage_experts_in_host_buffer(Opening & o) {
     const bool captured_here = hook->captured().empty();
     if (captured_here && !capture_warmup(o)) return false;
-    ggml_backend_dev_t dev = nullptr;
-    for (ggml_tensor * w : hook->captured_weight_objects()) {
-        ggml_backend_dev_t d =
-            w->buffer ? ggml_backend_buft_get_device(ggml_backend_buffer_get_type(w->buffer)) : nullptr;
-        if (d && ggml_backend_dev_type(d) != GGML_BACKEND_DEVICE_TYPE_CPU) {
-            dev = d;
-            break;
-        }
-    }
+    ggml_backend_dev_t dev = ggml_backend_dev_by_name(o.cfg.moe.expert_host_buffer.c_str());
     ggml_backend_buffer_type_t buft = dev ? ggml_backend_dev_host_buffer_type(dev) : nullptr;
     std::vector<ggml_tensor *> experts;
     for (const LayerExperts & L : hook->captured())
@@ -1491,7 +1486,7 @@ bool Session::Impl::stage_experts_in_host_buffer(Opening & o) {
                 experts.push_back(p.tensor);
     if (!buft || experts.empty()) {
         log_printf(LogLevel::Warn, "expert host buffer: %s; the cache uploads from the file's mapping",
-                   !dev    ? "no layer weights on a device"
+                   !dev    ? "no device of that name"
                    : !buft ? "the device's backend has no host memory of its own"
                            : "no expert tensor was found");
         if (captured_here) clear_memory(ctx.get());
@@ -1883,8 +1878,8 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     if (!im.init_speculation(o)) return nullptr;
     if (cfg.moe.enabled && !im.bind_streaming(o)) return nullptr;
     if (records_unstreamed(cfg) && !im.arm_unstreamed_record(o)) return nullptr;
+    if (!cfg.moe.expert_host_buffer.empty() && !im.stage_experts_in_host_buffer(o)) return nullptr;
     if (cfg.moe.device_cache_mb > 0 && !im.arm_device_cache(o)) return nullptr;
-    if (cfg.moe.expert_host_buffer && !im.stage_experts_in_host_buffer(o)) return nullptr;
     if (im.prefill && !im.open_prefill_device(o)) return nullptr;
     if (im.prefill && cfg.prefill.verify && !im.confirm_prefill_device(o)) return nullptr;
     im.arm_decode_traces(o);
