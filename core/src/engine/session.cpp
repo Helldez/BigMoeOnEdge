@@ -1479,7 +1479,9 @@ bool Session::Impl::arm_device_cache(Opening & o) {
 // mapping where it is: the copy changes how fast a miss arrives, never what. It runs before the
 // device cache is armed, whose context is made again without the callback the capture needs.
 bool Session::Impl::stage_experts_in_host_buffer(Opening & o) {
-    const bool captured_here = hook->captured().empty();
+    // The hook holds a slot per layer from the start; a capture is what binds them.
+    const std::vector<LayerExperts> & seen = hook->captured();
+    const bool captured_here = std::none_of(seen.begin(), seen.end(), [](const LayerExperts & L) { return L.bound; });
     if (captured_here && !capture_warmup(o)) return false;
     ggml_backend_dev_t dev = ggml_backend_dev_by_name(o.cfg.moe.expert_host_buffer.c_str());
     ggml_backend_buffer_type_t buft = dev ? ggml_backend_dev_host_buffer_type(dev) : nullptr;
