@@ -51,12 +51,16 @@ what each use of a device asks of one. This table is the subset that has been bu
 | **Metal** | - | Measured, on in every macOS build | - | - | Prefill on the GPU, decode on the CPU ([npu-prefill.md](npu-prefill.md)) |
 | **OpenCL** | Measured on a Snapdragon-class phone, in the release APK: fast at prefill width and wrong, so the plan refuses it; the dense weights on a phone GPU lost 27 % in July | - | Not built | Shipped in the arm64 archive, with the Adreno kernels; never run | Nothing yet: refused on correctness on the phone; on a laptop the probe decides ([npu-prefill.md](npu-prefill.md)) |
 | **Vulkan** | Measured on a Snapdragon-class phone, in the release APK: no faster than the cores at prefill width, not armed; on one 2020 phone its driver ended the probe, which the isolated probe contains | Not built | Shipped, a module in the release archives; never run | Shipped, as Linux; never run | Nothing yet: not a win on the phone measured ([npu-prefill.md](npu-prefill.md)) |
-| **CUDA, HIP, SYCL** | - | - | Not built: a module built with the toolchain and dropped beside the binary is loaded like the shipped ones | Same as Linux | Nothing |
+| **CUDA** | - | - | Shipped in the x86_64 archives and packages with the NVIDIA runtime and cuBLAS it links; measured on rented 24 GB cards with builds from source | Shipped in the x86_64 archive and installer, as Linux | Every role a device with memory of its own takes ([backends.md](backends.md)) |
+| **HIP** (AMD ROCm) | - | - | Shipped in the x86_64 archives and packages as the module alone: it loads where ROCm is installed and is skipped where it is not; never run | Not built | As CUDA |
+| **SYCL** | - | - | Not built: a module built with the toolchain and dropped beside the binary is loaded like the shipped ones | Same as Linux | Nothing |
 | **RPC** | - | - | Test fixture for the gates | - | Nothing a front-end can select |
 
 Every release has the same shape: the engine and, beside it, one module per backend and one CPU
 module per instruction-set tier, loaded at start-up ([backends.md](backends.md)). The APK carries
-Vulkan and OpenCL beside Hexagon, the Linux and Windows archives carry Vulkan, the Windows arm64
+Vulkan and OpenCL beside Hexagon, the Linux and Windows archives carry Vulkan (and on x86_64 CUDA,
+with the NVIDIA runtime and cuBLAS, about 400 MB of the download; Linux x86_64 also HIP, without
+ROCm, which an AMD machine installs system-wide), the Windows arm64
 archive OpenCL as well (its `-npu` twin Hexagon too), the macOS archive Metal. A module whose driver library the machine lacks is not loaded, so the same archive serves
 a laptop with a GPU and a server without one, and the planner finds whichever devices registered.
 

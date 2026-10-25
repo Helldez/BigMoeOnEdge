@@ -16,6 +16,11 @@ own license, reproduced here as those licenses require.
   MPL-2.0 or Apache-2.0 and used here under the Apache License 2.0.
 - Oxanium and Pixelify Sans: the fonts of the web UI and the Android app. SIL Open Font License,
   Version 1.1.
+- The NVIDIA CUDA runtime and cuBLAS (libcudart, libcublas, libcublasLt; cudart64_12, cublas64_12
+  and cublasLt64_12 on Windows), in the x86_64 Linux and Windows archives and packages beside the
+  CUDA backend module that links them. Redistributed as the NVIDIA CUDA Toolkit End User License
+  Agreement allows for these files (its Attachment A), which travels beside them as
+  LICENSE-CUDA.txt. NVIDIA's software, not under this repository's license.
 
 ----------------------------------------------------------------------------------------------------
 llama.cpp and ggml

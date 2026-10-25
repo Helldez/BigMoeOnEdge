@@ -146,7 +146,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/CMakeLists.txt")
         if(APPLE)
             set(CMAKE_INSTALL_RPATH "@loader_path")
         elseif(UNIX)
-            set(CMAKE_INSTALL_RPATH "$ORIGIN")
+            # And, after it, any directory a toolkit installs its libraries to system-wide that a
+            # module links against and a release does not carry (ROCm's, for the HIP module).
+            set(BMOE_EXTRA_RPATH "" CACHE STRING "Directories after $ORIGIN in the binaries' run path")
+            set(CMAKE_INSTALL_RPATH "$ORIGIN" ${BMOE_EXTRA_RPATH})
         endif()
     endif()
     # The prefill-device gate (G16) needs a second device to move weights onto, and the one every

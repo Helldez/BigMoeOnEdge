@@ -7,6 +7,14 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **CUDA and HIP in the release archives.** The x86_64 Linux and Windows archives and packages now
+  carry the CUDA backend module with the NVIDIA runtime and cuBLAS it links (about 400 MB), built
+  from NVIDIA's redistributable archives checked against their SHA-256
+  (`scripts/fetch-cuda-redist.py`), for every NVIDIA generation from Turing on. The x86_64 Linux
+  ones also carry the HIP module, built in AMD's ROCm image for RDNA 2-4 and the Instinct parts, and
+  loaded only where ROCm is installed. A module whose driver the machine lacks is not loaded, so the
+  same download still runs on a machine with any GPU or none. The Windows x86_64 build now uses Ninja
+  with the MSVC environment, which CUDA needs without NVIDIA's Visual Studio integration.
 - **Context checkpoints, as llama.cpp's server keeps them** (`--ctx-checkpoints N`, default 8, where the server keeps 32: Qwen3.6-35B-A3B's is 62.8 MiB and comes
   out of the expert cache's memory;
   `--checkpoint-min-step N`, default 8192). A chat turn whose prompt diverges from the cached one
