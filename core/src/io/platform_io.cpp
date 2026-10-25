@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cerrno>
+#include <cmath>
 #include <poll.h>
 #include <signal.h>
 #include <spawn.h>
@@ -240,6 +241,10 @@ bool reclaim_facts(ReclaimFacts * out) {
 
 uint64_t cgroup_memory_left(const char *, const char *) {
     return 0; // job objects, not control groups, cap a process here; none is read yet
+}
+
+uint32_t cgroup_cpu_limit(const char *, const char *) {
+    return 0;
 }
 
 #else
@@ -554,33 +559,54 @@ uint64_t read_cgroup_stat(const std::string & path, const char * key) {
 // A v1 limit at or above this is the kernel's "unlimited" (PAGE_COUNTER_MAX rounded to a page),
 // not a cap anyone set.
 constexpr uint64_t k_cgroup_v1_unlimited = 1ull << 62;
+
+// Where this process sits: "0::<path>" for the unified hierarchy, "<n>:<controllers>:<path>" for a
+// v1 hierarchy, of which the one naming `controller` is kept with its mount's directory name.
+struct CgroupPlace {
+    bool v2 = false, v1 = false;
+    std::string v2_path, v1_path, v1_dir;
+};
+CgroupPlace cgroup_place(const char * self, const char * controller) {
+    CgroupPlace c;
+    FILE * f = std::fopen(self, "re");
+    if (!f) return c;
+    char line[1024];
+    while (std::fgets(line, sizeof(line), f)) {
+        std::string l(line);
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r'))
+            l.pop_back();
+        if (l.rfind("0::", 0) == 0) {
+            c.v2 = true;
+            c.v2_path = l.substr(3);
+        } else {
+            const size_t a = l.find(':'), b = a == std::string::npos ? a : l.find(':', a + 1);
+            if (b == std::string::npos) continue;
+            const std::string controllers = l.substr(a + 1, b - a - 1);
+            if (("," + controllers + ",").find("," + std::string(controller) + ",") != std::string::npos) {
+                c.v1 = true;
+                c.v1_path = l.substr(b + 1);
+                c.v1_dir = controllers; // mounted as "cpu,cpuacct" with "cpu" a link to it
+            }
+        }
+    }
+    std::fclose(f);
+    return c;
+}
+
+// Each directory from the group up to the root of what this namespace shows: a limit anywhere
+// above applies too.
+template <typename F> void cgroup_walk(const std::string & base, std::string path, F && visit) {
+    for (;;) {
+        visit(base + (path == "/" ? "" : path));
+        if (path.empty() || path == "/") break;
+        const size_t slash = path.find_last_of('/');
+        path = slash == 0 || slash == std::string::npos ? "/" : path.substr(0, slash);
+    }
+}
 } // namespace
 
 uint64_t cgroup_memory_left(const char * fs_root, const char * self) {
-    // Where this process sits: "0::<path>" for the unified hierarchy, "<n>:memory:<path>" for v1.
-    std::string v2_path, v1_path;
-    bool v2 = false, v1 = false;
-    if (FILE * f = std::fopen(self, "re")) {
-        char line[1024];
-        while (std::fgets(line, sizeof(line), f)) {
-            std::string l(line);
-            while (!l.empty() && (l.back() == '\n' || l.back() == '\r'))
-                l.pop_back();
-            if (l.rfind("0::", 0) == 0) {
-                v2 = true;
-                v2_path = l.substr(3);
-            } else {
-                const size_t a = l.find(':'), b = a == std::string::npos ? a : l.find(':', a + 1);
-                if (b == std::string::npos) continue;
-                const std::string controllers = l.substr(a + 1, b - a - 1);
-                if (("," + controllers + ",").find(",memory,") != std::string::npos) {
-                    v1 = true;
-                    v1_path = l.substr(b + 1);
-                }
-            }
-        }
-        std::fclose(f);
-    }
+    const CgroupPlace place = cgroup_place(self, "memory");
     const std::string root = fs_root;
     uint64_t best = 0; // the tightest finite remainder found
     auto consider = [&](uint64_t limit, uint64_t used, uint64_t reclaimable) {
@@ -589,25 +615,55 @@ uint64_t cgroup_memory_left(const char * fs_root, const char * self) {
         const uint64_t left = limit > held ? limit - held : 1; // over the cap: nothing left, but known
         if (best == 0 || left < best) best = left;
     };
-    // From the group up to the root of what this namespace shows: a limit anywhere above applies too.
-    auto walk = [&](const std::string & base, std::string path, const char * max_f, const char * cur_f,
+    auto walk = [&](const std::string & base, const std::string & path, const char * max_f, const char * cur_f,
                     const char * stat_key, bool v1_units) {
-        for (;;) {
-            const std::string dir = base + (path == "/" ? "" : path);
+        cgroup_walk(base, path, [&](const std::string & dir) {
             uint64_t limit = 0, used = 0;
             if (read_cgroup_number(dir + "/" + max_f, &limit) && read_cgroup_number(dir + "/" + cur_f, &used)) {
                 if (v1_units && limit >= k_cgroup_v1_unlimited) limit = 0;
                 consider(limit, used, read_cgroup_stat(dir + "/memory.stat", stat_key));
             }
-            if (path.empty() || path == "/") break;
-            const size_t slash = path.find_last_of('/');
-            path = slash == 0 || slash == std::string::npos ? "/" : path.substr(0, slash);
-        }
+        });
     };
-    if (v2) walk(root, v2_path, "memory.max", "memory.current", "inactive_file", false);
-    if (v1)
-        walk(root + "/memory", v1_path, "memory.limit_in_bytes", "memory.usage_in_bytes", "total_inactive_file", true);
+    if (place.v2) walk(root, place.v2_path, "memory.max", "memory.current", "inactive_file", false);
+    if (place.v1)
+        walk(root + "/memory", place.v1_path, "memory.limit_in_bytes", "memory.usage_in_bytes", "total_inactive_file",
+             true);
     return best;
+}
+
+uint32_t cgroup_cpu_limit(const char * fs_root, const char * self) {
+    const CgroupPlace place = cgroup_place(self, "cpu");
+    const std::string root = fs_root;
+    double best = 0.0; // the tightest quota found, in CPUs
+    auto consider = [&](long long quota, long long period) {
+        if (quota <= 0 || period <= 0) return; // "max" or v1's -1: no quota
+        const double cpus = (double) quota / (double) period;
+        if (best == 0.0 || cpus < best) best = cpus;
+    };
+    if (place.v2)
+        cgroup_walk(root, place.v2_path, [&](const std::string & dir) {
+            // "<quota> <period>", the quota "max" where none is set.
+            FILE * f = std::fopen((dir + "/cpu.max").c_str(), "re");
+            if (!f) return;
+            char q[32] = {0};
+            long long period = 0;
+            if (std::fscanf(f, "%31s %lld", q, &period) == 2 && std::strcmp(q, "max") != 0)
+                consider(std::strtoll(q, nullptr, 10), period);
+            std::fclose(f);
+        });
+    if (place.v1)
+        cgroup_walk(root + "/" + place.v1_dir, place.v1_path, [&](const std::string & dir) {
+            long long quota = 0, period = 0;
+            FILE * fq = std::fopen((dir + "/cpu.cfs_quota_us").c_str(), "re");
+            FILE * fp = std::fopen((dir + "/cpu.cfs_period_us").c_str(), "re");
+            if (fq && fp && std::fscanf(fq, "%lld", &quota) == 1 && std::fscanf(fp, "%lld", &period) == 1)
+                consider(quota, period);
+            if (fq) std::fclose(fq);
+            if (fp) std::fclose(fp);
+        });
+    // A fraction of a CPU is still a thread that runs: 1.5 CPUs serve two, throttled.
+    return best > 0.0 ? (uint32_t) std::ceil(best - 1e-9) : 0;
 }
 
 #if defined(__APPLE__)

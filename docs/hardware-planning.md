@@ -870,7 +870,16 @@ The residency budget is `MemAvailable` on every platform that reports it, capped
 process's memory control group still lets it take (`pio::cgroup_memory_left`: the tightest limit of
 its group and every ancestor it can see, less what each holds, crediting its inactive file pages).
 A rented GPU box reported 103 GB available inside an 85 GiB group; a plan sized from the first
-figure would be ended by the second. On a machine whose
+figure would be ended by the second. The cores are read the same way (`usable_cores` in the hardware probe):
+the CPUs the process may be scheduled on (its affinity mask, which a phone narrows for an app it
+keeps in the background and `taskset` or a cpuset narrows anywhere) and no more than a CPU control
+group's quota lets it run at once (`pio::cgroup_cpu_limit`: `cpu.max` in v2, `cpu.cfs_quota_us`
+over `cpu.cfs_period_us` in v1, the tightest of the group and its ancestors, rounded up). Either
+one leaves every core of the machine visible to `hardware_concurrency`: a rented box showed 128
+cores under a quota of 30.7 CPUs, swept its threads over all 128, and measured its host expert
+rate at 77 GiB/s in bursts shorter than the quota's period, against 56 when the same probe was
+pinned to 32 CPUs. The count is now 31 there. A burst of a few milliseconds still runs on more
+cores than the quota sustains, so the rates measured under a quota stay an upper bound. On a machine whose
 reclaim *compresses* that is a floor rather than a cap: the phone held 3.8 GB of pinned dense set
 plus cache with 3.6 GB "available", because the kernel compressed other processes' idle memory to
 make room, and reported 5.6 GB available afterwards. The honest budget there is the compressible

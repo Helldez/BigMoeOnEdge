@@ -78,6 +78,12 @@ Semantic Versioning.
   each holds and crediting its inactive file pages, for cgroup v2 and v1. A finite limit is also
   read as a share the process is ended for exceeding, which widens the plan's margin the way an
   app's own share does on a phone.
+- **The cores a process can keep busy, not the machine's.** The core count every thread rule and
+  sweep starts from was `hardware_concurrency`, which counts every core of the machine. It is now
+  the CPUs the process's affinity mask allows, capped by a CPU control group's quota (cgroup v2
+  `cpu.max`, v1 `cpu.cfs_quota_us`, rounded up). A container given 30.7 CPUs of 128 swept its
+  threads over 128 and probed its rates in bursts it could not sustain; the count is now 31. The
+  core classes are read over the CPUs the mask allows.
 
 ## [0.35.1] - 2026-10-24
 
