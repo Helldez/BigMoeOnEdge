@@ -18,11 +18,13 @@ Standard library only. Re-running continues: a shard already written with the ex
 """
 
 import argparse
+import concurrent.futures
 import json
 import os
 import re
 import struct
 import sys
+import time
 import urllib.request
 
 SMALL_LIMIT = 64 << 20  # repository files under this size are copied whole (configs, tokenizers)
@@ -32,13 +34,24 @@ def url_of(endpoint, repo, revision, path):
     return f"{endpoint}/{repo}/resolve/{revision}/{path}"
 
 
-def get(url, rng=None, token=None):
+def get(url, rng=None, token=None, tries=6):
+    # A dropped or timed-out read is retried with a growing pause: a range is idempotent.
+    for attempt in range(tries):
+        try:
+            return get_once(url, rng, token)
+        except (IOError, OSError) as e:
+            if attempt == tries - 1 or "asked for bytes" in str(e):
+                raise
+            time.sleep(2 ** attempt)
+
+
+def get_once(url, rng=None, token=None):
     req = urllib.request.Request(url)
     if rng:
         req.add_header("Range", f"bytes={rng[0]}-{rng[1] - 1}")
     if token:
         req.add_header("Authorization", f"Bearer {token}")
-    with urllib.request.urlopen(req, timeout=120) as r:
+    with urllib.request.urlopen(req, timeout=300) as r:
         if rng:
             cr = r.headers.get("Content-Range", "")
             if r.status != 206 or not cr.startswith(f"bytes {rng[0]}-{rng[1] - 1}/"):
@@ -60,6 +73,7 @@ def main():
     ap.add_argument("--revision", default="main")
     ap.add_argument("--include", action="append", required=True, help="regex over tensor names; repeatable")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--jobs", type=int, default=8, help="range requests in flight at once")
     ap.add_argument("--endpoint", default=os.environ.get("HF_ENDPOINT", "https://huggingface.co").rstrip("/"))
     args = ap.parse_args()
     token = os.environ.get("HF_TOKEN")
@@ -101,13 +115,23 @@ def main():
         dst = os.path.join(args.out, shard)
         expected = 8 + len(blob) + off
         if not (os.path.exists(dst) and os.path.getsize(dst) == expected):
+            # Pieces of every selected tensor, fetched by several requests at once and written at
+            # their own offsets: one range at a time is bound by the round trip, not the link.
+            pieces, pos = [], 8 + len(blob)
+            for n, a, b in chunks:
+                step = 16 << 20
+                for s0 in range(a, b, step):
+                    e0 = min(b, s0 + step)
+                    pieces.append((s0, e0, pos))
+                    pos += e0 - s0
             with open(dst + ".part", "wb") as w:
                 w.write(struct.pack("<Q", len(blob)))
                 w.write(blob)
-                for n, a, b in chunks:
-                    step = 64 << 20
-                    for s in range(a, b, step):
-                        w.write(get(url, (s, min(b, s + step)), token))
+                w.truncate(pos)
+            with open(dst + ".part", "r+b") as w, concurrent.futures.ThreadPoolExecutor(args.jobs) as ex:
+                for (s0, e0, at), data in zip(pieces, ex.map(lambda pc: get(url, (pc[0], pc[1]), token), pieces)):
+                    w.seek(at)
+                    w.write(data)
             os.replace(dst + ".part", dst)
         for n in names:
             new_map[n] = shard
