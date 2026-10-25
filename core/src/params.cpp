@@ -800,6 +800,16 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("mtp-head", "MTP head file", G::Speculation, L::Advanced,
+                          "MTP only: a GGUF holding the model's MTP head on its own (llama.cpp's converter "
+                          "writes one with --mtp), for a model file that ships without it. Empty uses the "
+                          "head inside the model.");
+        d.type = ParamType::Text;
+        d.value_hint = "PATH";
+        bind_string(d, [](RunConfig & c) -> std::string & { return c.spec.mtp_head; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("mtp-p-min", "MTP confidence floor", G::Speculation, L::Advanced,
                           "MTP only: stop drafting when the head's best candidate falls below this "
                           "probability (0 = always draft the full width).");

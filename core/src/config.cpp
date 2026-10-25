@@ -103,6 +103,8 @@ ValidationResult validate(const RunConfig & cfg) {
     // sampling chain the accepted prefix would depend on which draws happened to agree, which is a
     // different distribution from the one the caller asked for. Rejected rather than silently
     // ignored: a caller who asked for both was promised something the engine cannot give.
+    if (!cfg.spec.mtp_head.empty() && !cfg.spec.is_mtp())
+        return fail("spec.mtp_head is the MTP source's head: it needs --mtp");
     if (cfg.spec.enabled() && cfg.sampling.temp > 0.0f) {
         return fail("speculative decoding requires greedy decoding (sampling.temp <= 0): verification is "
                     "token-identical to single-token decode only under argmax.");

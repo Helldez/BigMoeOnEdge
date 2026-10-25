@@ -318,6 +318,9 @@ struct Session::Impl {
     // The n-gram source has no equivalent state: it drafts from the token history alone, which is
     // why it costs no context, no memory and no expert read. Everything below this pair is shared by
     // both sources, because the verify half of the loop does not care who drafted.
+    // The MTP head when it comes in a file of its own (SpecConfig::mtp_head); null when the head is
+    // the model's own nextn block. Declared before the draft context so it outlives it.
+    std::unique_ptr<llama_model, void (*)(llama_model *)> model_dft{nullptr, llama_model_free};
     std::unique_ptr<llama_context, void (*)(llama_context *)> ctx_dft{nullptr, llama_free};
     common_speculative_ptr mtp;
     // Serves both roles on the speculative path, never both at once: a prefill chunk (up to
@@ -822,7 +825,7 @@ bool Session::Impl::load_model(Opening & o) {
     // TENSOR_SKIP by default, and only --mtp builds a graph over them. n_layer_nextn comes from
     // the gguf metadata either way, so the "this model has no trained head" check below is
     // unaffected by this flag.
-    mparams.load_mtp = cfg.spec.is_mtp();
+    mparams.load_mtp = cfg.spec.is_mtp() && cfg.spec.mtp_head.empty();
 
     // The prefill device joins the scheduler as the model's only non-CPU device, with no layer
     // assigned to it: every weight still loads from the mmap, and the device runs nothing until
@@ -896,6 +899,16 @@ bool Session::Impl::load_model(Opening & o) {
     llama_model * m = llama_model_load_from_file(cfg.model_path.c_str(), mparams);
     if (!m) return o.fail("failed to load model: " + cfg.model_path);
     model.reset(m);
+    if (cfg.spec.is_mtp() && !cfg.spec.mtp_head.empty()) {
+        // The head on the host, whole and resident: one layer the streamer does not serve, small
+        // beside the model, and computed for a draft position at a time.
+        llama_model_params hp = llama_model_default_params();
+        hp.n_gpu_layers = 0;
+        hp.load_mtp = true;
+        llama_model * h = llama_model_load_from_file(cfg.spec.mtp_head.c_str(), hp);
+        if (!h) return o.fail("failed to load the MTP head: " + cfg.spec.mtp_head);
+        model_dft.reset(h);
+    }
     return true;
 }
 
@@ -910,7 +923,10 @@ bool Session::Impl::read_model(Opening & o) {
     // trained MTP head — which is most ggufs, including quants of MTP-capable models that were
     // converted without the nextn tensors.
     n_layer_nextn = llama_model_n_layer_nextn(m);
-    if (cfg.spec.is_mtp() && n_layer_nextn <= 0)
+    if (model_dft && llama_model_n_layer_nextn(model_dft.get()) <= 0)
+        return o.fail("--mtp-head names a file with no MTP head (nextn_predict_layers is absent or zero): " +
+                      cfg.spec.mtp_head);
+    if (cfg.spec.is_mtp() && !model_dft && n_layer_nextn <= 0)
         return o.fail("--mtp needs a model with a trained MTP head, and this gguf has no nextn block "
                       "(nextn_predict_layers is absent or zero). Qwen3.5/3.6 carry one in their "
                       "ordinary quantisations; other architectures have none. --ngram speculates on any "
@@ -982,7 +998,7 @@ bool Session::Impl::build_hook(Opening & o) {
     // on the hook and the streamer must span the trunk PLUS the head. The index space is contiguous
     // and the tensor naming identical, so this bound is the only thing standing between the streamer
     // and the MTP experts — left at n_layer they are silently skipped and stay mmap-resident.
-    o.n_layer_streamed = n_layer + (cfg.spec.is_mtp() ? n_layer_nextn : 0);
+    o.n_layer_streamed = n_layer + (cfg.spec.is_mtp() && !model_dft ? n_layer_nextn : 0);
     hook = std::make_unique<RouterHook>(o.layout, o.n_layer_streamed);
     hook->set_prefetch_layers(cfg.moe.prefetch_layers);
     hook->set_drop_policy(cfg.moe.drop_cold_frac, cfg.moe.drop_renorm, cfg.moe.drop_prefill);
@@ -1064,7 +1080,14 @@ bool Session::Impl::create_contexts(Opening & o) {
         // into ubatches of the width below.
         dparams.n_ubatch = (uint32_t) std::max(cfg.spec.draft_max + 1, mtp_draft_ubatch);
         if (dparams.n_ubatch > cparams.n_ubatch) dparams.n_ubatch = cparams.n_ubatch;
-        llama_context * d = llama_init_from_model(model.get(), dparams);
+        if (model_dft) {
+            // A head of its own: its layer is not the streamer's, and it reads the target's hidden
+            // states through the context it drafts for.
+            dparams.cb_eval = nullptr;
+            dparams.cb_eval_user_data = nullptr;
+            dparams.ctx_other = ctx.get();
+        }
+        llama_context * d = llama_init_from_model(model_dft ? model_dft.get() : model.get(), dparams);
         if (!d) return o.fail("failed to create the MTP draft context");
         ctx_dft.reset(d);
         llama_set_n_threads(d, cfg.n_threads, n_threads_batch);
@@ -1124,7 +1147,7 @@ bool Session::Impl::init_speculation(Opening & o) {
         // width becomes adaptive per step. See SpecConfig::draft_p_min for why that pays twice on a
         // streamed device.
         sp.draft.p_min = cfg.spec.draft_p_min;
-        sp.draft.ctx_tgt = ctx.get(); // self-speculation: one model, two contexts over it
+        sp.draft.ctx_tgt = ctx.get(); // two contexts: over one model, or over the model and its head
         sp.draft.ctx_dft = ctx_dft.get();
         mtp.reset(common_speculative_init(sp, /*n_seq*/ 1));
         if (!mtp) return o.fail("failed to initialise MTP speculative decoding");
