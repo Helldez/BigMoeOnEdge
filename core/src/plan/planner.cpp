@@ -1412,8 +1412,9 @@ void note_kv_budget(Planning & s) {
            "the context reserves " + u64s(mib(kv)) + " MiB on the host and its compute buffers another " +
                u64s(mib(compute)) + ", against " + u64s(mib(s.p.cache_budget_bytes)) +
                " MiB left for the expert cache: the two come out of the same memory, and a shorter context "
-               "is the caller's cheapest way to buy cache. Quantizing the K/V caches would buy more and "
-               "changes the output, so it stays a lever this plan will not pull");
+               "is the caller's cheapest way to buy cache. Quantizing the K/V caches (--cache-type-k / "
+               "--cache-type-v q8_0) would buy more and changes the output, so it stays a lever this plan "
+               "will not pull");
 }
 
 // ── the I/O policy: from the machine's own rate curve, never from a class name ──

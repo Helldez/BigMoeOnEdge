@@ -51,6 +51,30 @@ bool parse_prefix_cache_mode(const std::string & s, PrefixCacheMode & out) {
     return false;
 }
 
+const char * kv_cache_type_name(KvCacheType t) {
+    switch (t) {
+    case KvCacheType::F16:
+        return "f16";
+    case KvCacheType::BF16:
+        return "bf16";
+    case KvCacheType::F32:
+        return "f32";
+    case KvCacheType::Q8_0:
+        return "q8_0";
+    case KvCacheType::Q5_1:
+        return "q5_1";
+    case KvCacheType::Q5_0:
+        return "q5_0";
+    case KvCacheType::Q4_1:
+        return "q4_1";
+    case KvCacheType::Q4_0:
+        return "q4_0";
+    case KvCacheType::IQ4_NL:
+        return "iq4_nl";
+    }
+    return "f16";
+}
+
 ValidationResult validate(const RunConfig & cfg) {
     ValidationResult r;
     auto fail = [&](std::string msg) {
