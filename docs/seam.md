@@ -166,6 +166,14 @@ keywords belong to the pinned upstream implementation. Final validation checks J
 not the full schema. Length limits and cancellation preserve partial output and their finish
 reason. The integration changes neither upstream code nor the streamed-weight layout.
 
+### Context checkpoints
+
+`context_checkpoints.cpp` keeps its checkpoints in `common_prompt_checkpoint`, the type llama.cpp's
+server keeps them in, and copies them with its `update_tgt` / `load_tgt` helpers, which call the public
+`llama_state_seq_*_ext` functions with `LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY`. The restore rule (how far
+back a checkpoint may reach under a sliding window) is the server's, and the MTP driver's own state is
+saved beside it with `common_speculative_get_state`, as the server does. See [session.md](session.md).
+
 ### Speculative decoding
 
 Only the MTP source crosses into `common`. The verify half of the loop — the wide batch, the argmax

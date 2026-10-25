@@ -57,6 +57,10 @@
 //       a session without decide enabled refuses it harmlessly (f), and with a prefill device
 //       decisions (no prefix state kept) and a generate() after them == all CPU (g). G16 and G17 are
 //       the prefill-device gates.
+//   G22 context checkpoints: a follow-up whose prompt diverges from the cached one inside the
+//       previous answer (the client resent it edited) restarts from the checkpoint at the end of the
+//       previous prompt where the memory refuses the cut, and answers exactly as the same pieces
+//       prefilled without any restore (a); with checkpoints off such a memory prefills it all (b).
 //   G20 the fitter's placement for a model larger than the device: dense parts on a device with
 //       memory of its own, experts streamed from the host, == the same placement resident, serial
 //       (a) and under --overlap (b). The router's ids are then read through a host copy.
@@ -1520,6 +1524,79 @@ int main(int argc, char ** argv) {
                 fails +=
                     check("G20b device routing, streamed experts, overlap == resident experts", s_placed, s_placed_ov);
             }
+        }
+    }
+
+    // G22 — context checkpoints (context_checkpoints.h). Turn 1 answers u1; turn 2 resends a
+    // different answer in its place, so the prompt diverges inside it. A memory that cuts anywhere just cuts there; one
+    // that refuses (a recurrent state, a sliding window) goes back to the checkpoint taken at the end
+    // of turn 1's prompt. The reference reaches the same pieces with no restore: turn 1 generates
+    // nothing, so turn 2 only extends it. Comparing with a one-piece prefill instead would compare
+    // llama.cpp's rounding across piece boundaries, which it does not promise (G18b).
+    {
+        auto msgs = [](std::initializer_list<std::pair<const char *, std::string>> l) {
+            std::vector<ChatMessage> v;
+            for (const auto & m : l)
+                v.push_back(ChatMessage{m.first, m.second});
+            return v;
+        };
+        const std::string u1 = "Name a colour.";
+        const std::string u2 = "And a fruit?";
+        // false (with err) on a failed open or turn. prefilled = tokens turn 2 prefilled.
+        auto two_turns = [&](int checkpoints, int n_predict1, std::string & out, int & prefilled, int & n_prompt2) {
+            RunConfig c = stream0;
+            c.chatml = true;
+            c.ctx_checkpoints = checkpoints;
+            std::unique_ptr<Session> s = Session::open(session_config_from(c), err);
+            if (!s) return false;
+            GenerateRequest q;
+            q.messages = msgs({{"user", u1}});
+            q.n_predict = n_predict1;
+            RunResult r1 = s->generate(q);
+            if (!r1) {
+                err = r1.error;
+                return false;
+            }
+            q.messages = msgs({{"user", u1}, {"assistant", "Blue, I would say."}, {"user", u2}});
+            q.n_predict = 8;
+            q.clear_kv = false;
+            RunResult r2 = s->generate(q);
+            if (!r2) {
+                err = r2.error;
+                return false;
+            }
+            out = r2.generated_text;
+            prefilled = r2.summary.n_prompt;
+            n_prompt2 = r2.summary.n_past - r2.summary.n_generated;
+            return true;
+        };
+        std::string out_ck, out_ref, out_off;
+        int pf_ck = 0, pf_ref = 0, pf_off = 0, np_ck = 0, np_ref = 0, np_off = 0;
+        if (!two_turns(32, 8, out_ck, pf_ck, np_ck) || !two_turns(32, 0, out_ref, pf_ref, np_ref) ||
+            !two_turns(0, 8, out_off, pf_off, np_off)) {
+            std::fprintf(stderr, "G22 run failed: %s\n", err.c_str());
+            return 2;
+        }
+        if (pf_off < np_off) {
+            // This memory cut at the divergence by itself: checkpoints had nothing to add.
+            std::printf("[PASS] G22 this model's context cuts anywhere (turn 2 prefilled %d of %d without "
+                        "checkpoints): nothing to restore\n",
+                        pf_off, np_off);
+            if (pf_ck >= np_ck) {
+                std::printf("[FAIL] G22 with checkpoints turn 2 prefilled all %d tokens\n", np_ck);
+                ++fails;
+            }
+        } else {
+            std::printf("[PASS] G22b without checkpoints this model's context refuses the cut (turn 2 prefilled "
+                        "all %d tokens)\n",
+                        np_off);
+            if (pf_ck != pf_ref || pf_ck >= np_ck) {
+                std::printf("[FAIL] G22a the restore must land at the end of turn 1's prompt (prefilled %d, the "
+                            "reference %d, of %d)\n",
+                            pf_ck, pf_ref, np_ck);
+                ++fails;
+            }
+            fails += check("G22a turn 2 restored from a checkpoint == the same pieces prefilled", out_ref, out_ck);
         }
     }
 

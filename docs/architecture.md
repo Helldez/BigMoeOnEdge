@@ -96,6 +96,8 @@ core/
                   asked for, a requested cancel's decode errors demoted while it is in flight
                 chat_messages — bmoe/chat.h to and from llama.cpp's chat types, in one place
                 chat_parse — reasoning-parser wiring (llama.cpp `common`, see seam.md)
+                context_checkpoints — the cut-resistant part of the context state, copied at prompt
+                  ends and restored when a chat turn diverges inside it (session.md)
                 ngram_draft — the prompt-lookup draft source (see ngram_draft.h)
                 thinking_control — how "thinking off" is honoured, probed per model
                 logits, prefill_support — log-softmax, batch filling and prefill attribution,

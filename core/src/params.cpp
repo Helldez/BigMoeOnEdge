@@ -211,6 +211,8 @@ constexpr int io_threads_lo = 2, io_threads_hi = 8;
 constexpr int cache_hi_mb = 8192;
 constexpr int cache_floor_lo_mb = 1024, cache_floor_hi_mb = 3072;
 constexpr int ubatch_lo = 512, ubatch_hi = 2048;
+constexpr int ctx_checkpoints_lo = 4, ctx_checkpoints_hi = 32;
+constexpr int checkpoint_step_lo = 2048, checkpoint_step_hi = 8192;
 constexpr int row_stream_lo_mb = 32, row_stream_hi_mb = 256;
 constexpr int prefill_min_tokens_hi = 128;
 constexpr int prefill_loaders_lo = 4, prefill_loaders_hi = 8;
@@ -497,6 +499,31 @@ std::vector<ParamDesc> build() {
         typical(d, usual::ubatch_lo, usual::ubatch_hi);
         special(d, "0", "as wide as the context");
         bind_int(d, [](RunConfig & c) -> int & { return c.n_ubatch; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("ctx-checkpoints", "Context checkpoints", G::Memory, L::Advanced,
+                          "Copies of the context state that cannot be cut anywhere (a recurrent state, a "
+                          "sliding window), kept as llama.cpp's server keeps them. A follow-up whose prompt "
+                          "differs from the cached one inside that state restarts from the newest copy "
+                          "before the difference instead of from the beginning. Each takes memory; a model "
+                          "whose context cuts anywhere keeps none. 0 = off.");
+        d.value_hint = "N";
+        bounds(d, 0, RunConfig::ctx_checkpoints_max, "checkpoints");
+        typical(d, usual::ctx_checkpoints_lo, usual::ctx_checkpoints_hi);
+        special(d, "0", "off");
+        bind_int(d, [](RunConfig & c) -> int & { return c.ctx_checkpoints; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("checkpoint-min-step", "Checkpoint spacing", G::Memory, L::Debug,
+                          "Least distance between two context checkpoints inside one prompt prefilled in "
+                          "pieces. The end of every prompt gets one regardless. 0 = no minimum.");
+        d.value_hint = "N";
+        bounds(d, 0, RunConfig::tokens_max, "tokens");
+        typical(d, usual::checkpoint_step_lo, usual::checkpoint_step_hi);
+        special(d, "0", "no minimum");
+        bind_int(d, [](RunConfig & c) -> int & { return c.checkpoint_min_step; });
         t.push_back(d);
     }
     {
