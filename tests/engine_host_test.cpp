@@ -541,8 +541,7 @@ static void log_tests() {
     Script script;
     auto q = bus.subscribe();
     {
-        auto host_owner = std::make_unique<EngineHost>(bus, opener(script));
-        EngineHost & host = *host_owner;
+        auto host_owner = std::make_unique<EngineHost>(bus, opener(script)); // its life is the sink's
         log_printf(LogLevel::Warn, "prefill stays on the %s", "CPU");
         std::string frame;
         bool seen = false;
