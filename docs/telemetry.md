@@ -266,6 +266,7 @@ prints just the summary lines.
 ```
 # bmoe_metrics v2
 # engine=<ver>
+# cache_type_k=<f16|bf16|f32|q8_0|q5_1|q5_0|q4_1|q4_0|iq4_nl> cache_type_v=<same>
 # model=<file> arch=<arch> n_layer=<n> n_expert=<n> n_expert_used=<k> threads=<n>
   n_ctx=<n> n_ubatch=<n> chatml=<0|1>
 # moe_stream=<0|1> cache_mb=<n> cache_auto=<0|1> cache_floor_mb=<n> cache_ceil_mb=<n>

@@ -22,6 +22,7 @@
 #include "../moe/tensor_names.h"
 #include "cache_brake.h"
 #include "context_checkpoints.h"
+#include "kv_cache_type.h"
 #include "../io/platform_io.h"
 #include "../io/mapping_release.h"
 #include "../metrics/memory_snapshot.h"
@@ -1033,6 +1034,8 @@ bool Session::Impl::create_contexts(Opening & o) {
     // buffers — the memory this engine is always short of. 0 keeps the historical behaviour
     // (one graph as wide as the batch); a smaller value chunks prefill to buy that memory back.
     cparams.n_ubatch = cfg.n_ubatch > 0 ? (uint32_t) cfg.n_ubatch : (uint32_t) cfg.n_batch;
+    cparams.type_k = detail::to_ggml_type(cfg.cache_type_k);
+    cparams.type_v = detail::to_ggml_type(cfg.cache_type_v);
     // The streamer needs the callback to see routing; the compute trace needs it to time nodes.
     // Installing it for the trace alone is what lets a NON-streamed run be measured — the dense
     // mmap baseline the streamed numbers are argued against.
@@ -1060,7 +1063,14 @@ bool Session::Impl::create_contexts(Opening & o) {
     if (cfg.spec.enabled()) cparams.n_rs_seq = (uint32_t) cfg.spec.draft_max;
 
     llama_context * c = llama_init_from_model(model.get(), cparams);
-    if (!c) return o.fail("failed to create context");
+    if (!c) {
+        // llama.cpp's own log says why. A quantized V cache adds a cause of its own, so name it.
+        if (ggml_is_quantized(cparams.type_v))
+            return o.fail(std::string("failed to create context; a quantized V cache (") +
+                          kv_cache_type_name(cfg.cache_type_v) +
+                          ") needs flash attention, and llama.cpp's log above says whether this backend has it");
+        return o.fail("failed to create context");
+    }
     ctx.reset(c);
     // Decode and prefill get their own counts. They are different workloads: prefill is compute-bound
     // and scales with cores, a streamed decode waits on flash. 0 means "the same", which is what
@@ -1619,6 +1629,8 @@ void Session::Impl::describe_run(Opening & o) {
         ri.n_threads = cfg.n_threads;
         ri.n_ctx = cfg.n_ctx;
         ri.n_ubatch = cfg.n_ubatch;
+        ri.cache_type_k = kv_cache_type_name(cfg.cache_type_k);
+        ri.cache_type_v = kv_cache_type_name(cfg.cache_type_v);
         ri.chatml = cfg.chatml;
         ri.compute_trace_layers = compute_trace && compute_trace->layers_only();
         ri.spec = cfg.spec.is_mtp() ? "mtp" : cfg.spec.is_ngram() ? "ngram" : "off";

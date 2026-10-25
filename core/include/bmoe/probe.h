@@ -6,6 +6,7 @@
 // testable against machines nobody here owns.
 #pragma once
 
+#include "bmoe/config.h"
 #include "bmoe/hardware_profile.h"
 #include "bmoe/model_profile.h"
 #include "bmoe/placement.h"
@@ -200,8 +201,14 @@ void probe_storage(HardwareProfile & hw, const char * model_path, uint64_t slice
 // projection of a different run: read at llama.cpp's own default of 512 while the session opened
 // one graph per context, the ledger charged 1.2 GB for what then reserved 8 GB at a 16384 context. The
 // projection is taken at that width and at half of it, which gives the slope a narrower graph is
-// priced with (Placement::at_width).
-Placement probe_placement(
-    const char * model_path, const ModelProfile & model, const HardwareProfile & hw, uint32_t n_ctx, uint32_t n_ubatch);
+// priced with (Placement::at_width). `type_k` / `type_v` are the KV cache's element types
+// (RunConfig::cache_type_k / _v): the KV it projects is the one the run will allocate.
+Placement probe_placement(const char * model_path,
+                          const ModelProfile & model,
+                          const HardwareProfile & hw,
+                          uint32_t n_ctx,
+                          uint32_t n_ubatch,
+                          KvCacheType type_k = KvCacheType::F16,
+                          KvCacheType type_v = KvCacheType::F16);
 
 } // namespace bmoe

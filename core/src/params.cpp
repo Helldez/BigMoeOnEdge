@@ -858,6 +858,31 @@ std::vector<ParamDesc> build() {
 
     // ── lossy ────────────────────────────────────────────────────────────────────────
     {
+        // llama.cpp's names and flags, so a command line written for llama-server reads the same here.
+        std::vector<std::pair<KvCacheType, ParamChoice>> kv_types;
+        for (KvCacheType k : k_kv_cache_types)
+            kv_types.push_back({k, {kv_cache_type_name(k), kv_cache_type_name(k)}});
+        const auto kv_row = [&](const char * key, const char * short_flag, const char * label, const char * help,
+                                Field<KvCacheType> field) {
+            ParamDesc d = row(key, label, G::Lossy, L::Advanced, help);
+            d.type = ParamType::Choice;
+            d.short_flag = short_flag;
+            d.value_hint = "TYPE";
+            d.lossy = true;
+            bind_choice<KvCacheType>(d, field, kv_types);
+            t.push_back(d);
+        };
+        kv_row("cache-type-k", "-ctk", "Key cache type",
+               "Element type of the attention keys kept for the context, as llama.cpp's flag of the same name. "
+               "q8_0 halves the memory a long context takes and q4_0 quarters it, at a cost in quality that "
+               "grows as the bits shrink. That memory goes to the expert cache.",
+               [](RunConfig & c) -> KvCacheType & { return c.cache_type_k; });
+        kv_row("cache-type-v", "-ctv", "Value cache type",
+               "Element type of the attention values kept for the context, as llama.cpp's flag of the same name. "
+               "A quantized type needs flash attention, which llama.cpp uses where the backend has it.",
+               [](RunConfig & c) -> KvCacheType & { return c.cache_type_v; });
+    }
+    {
         ParamDesc d = row("n-expert-used", "Active experts", G::Lossy, L::Advanced,
                           "Override the experts routed per token (top-k). Lower is faster but changes the "
                           "output. 0 = the model's own value.");

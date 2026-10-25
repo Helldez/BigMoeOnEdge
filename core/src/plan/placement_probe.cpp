@@ -11,6 +11,7 @@
 #include "bmoe/config.h"
 #include "bmoe/probe.h"
 
+#include "../engine/kv_cache_type.h"
 #include "../moe/tensor_names.h"
 
 #include "fit.h"
@@ -44,7 +45,9 @@ Placement probe_placement(const char * model_path,
                           const ModelProfile & model,
                           const HardwareProfile & hw,
                           uint32_t n_ctx,
-                          uint32_t n_ubatch) {
+                          uint32_t n_ubatch,
+                          KvCacheType type_k,
+                          KvCacheType type_v) {
     Placement pl;
     if (!model_path || !*model_path || !model.ok) return pl;
 
@@ -78,6 +81,9 @@ Placement probe_placement(const char * model_path,
     // it reads one row. What is held is what is touched, so the projection is made with the row cap
     // the session itself sets when a device computes its prefill.
     cparams.n_outputs_max = (uint32_t) PrefillDeviceConfig::max_outputs;
+    // The cache's own element types, so the KV it projects is the one the run allocates.
+    cparams.type_k = detail::to_ggml_type(type_k);
+    cparams.type_v = detail::to_ggml_type(type_v);
 
     std::vector<float> tensor_split(llama_max_devices(), 0.0f);
     std::vector<llama_model_tensor_buft_override> overrides(llama_max_tensor_buft_overrides());

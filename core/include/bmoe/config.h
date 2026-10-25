@@ -536,6 +536,18 @@ enum class DeviceUse {
     CpuOnly, // the CPU and nothing else
 };
 
+// The element type of the K and V caches, by llama.cpp's own names (its --cache-type-k and
+// --cache-type-v). F16 is llama.cpp's default. Every other type changes the output, the quantized
+// ones by storing the cache in fewer bits (llama.cpp rotates a quantized cache's heads first, which
+// is most of what keeps 4 bits usable), so the planner never picks one: a caller arms it.
+enum class KvCacheType { F16, BF16, F32, Q8_0, Q5_1, Q5_0, Q4_1, Q4_0, IQ4_NL };
+// Every value, in declaration order, and its llama.cpp name: the one list both the parameter table
+// and the telemetry read.
+inline constexpr KvCacheType k_kv_cache_types[] = {KvCacheType::F16,  KvCacheType::BF16, KvCacheType::F32,
+                                                   KvCacheType::Q8_0, KvCacheType::Q5_1, KvCacheType::Q5_0,
+                                                   KvCacheType::Q4_1, KvCacheType::Q4_0, KvCacheType::IQ4_NL};
+const char * kv_cache_type_name(KvCacheType t);
+
 // A full run: model, prompt, decoding, streaming, telemetry.
 struct RunConfig {
     std::string model_path;
@@ -578,6 +590,13 @@ struct RunConfig {
     // last prompt nearly always, which the newest checkpoint covers.
     int ctx_checkpoints = 8;
     int checkpoint_min_step = 8192;
+
+    // The K and V caches' element type (llama.cpp's --cache-type-k / --cache-type-v). A quantized
+    // cache holds a long context in a half or a quarter of the memory, which on this engine goes to
+    // the expert cache, at a cost in output quality: see KvCacheType. A quantized V cache needs flash
+    // attention, which llama.cpp turns on where the backend has it.
+    KvCacheType cache_type_k = KvCacheType::F16;
+    KvCacheType cache_type_v = KvCacheType::F16;
     bool chatml = false; // wrap the prompt in the model family's chat turn (arch-aware)
 
     // Render the chat template with reasoning enabled. Passed to the template as the
