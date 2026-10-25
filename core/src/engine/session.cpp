@@ -20,7 +20,7 @@
 #include "../moe/expert_stream_source.h"
 #include "../moe/gguf_offsets.h"
 #include "../moe/tensor_names.h"
-#include "cache_brake.h"
+#include "residency_controller.h"
 #include "../io/platform_io.h"
 #include "../io/mapping_release.h"
 #include "../metrics/memory_snapshot.h"
@@ -285,8 +285,9 @@ struct Session::Impl {
     std::unique_ptr<RouterHook> hook; // heap: its address is baked into cparams.cb_eval_user_data
     ExpertStreamSource source;
     // Kept per session, not per turn: the reference it measures stalls against is this machine's,
-    // and a later turn of a chat is compared with what the earlier ones settled to.
-    CacheBrake brake;
+    // a later turn of a chat is compared with what the earlier ones settled to, and a size the
+    // machine refused stays refused for the rest of the session.
+    ResidencyController residency;
 
     // Prefill on an accelerator (SessionConfig::prefill); null when off. Created before the model
     // load, whose device list it holds, and opened after it.
@@ -1386,6 +1387,7 @@ bool Session::Impl::bind_streaming(Opening & o) {
     if (!source.init(offs.shard_paths, n_expert, std::move(layers), cfg.moe))
         return o.fail("expert stream source init failed");
     source.set_pin_floor(source.worst_cycle_bytes(n_expert_used));
+    residency.start(source.cache_budget(), source.cache_floor());
     hook->set_source(&source);
     // The row policy exists only once dense_.init has taken the tables over; null means nothing
     // qualified or the takeover declined, and the hook then costs exactly nothing per node.
@@ -2491,24 +2493,40 @@ struct Session::Impl::Turn {
         }
     }
 
-    // ── the cache brake (cache_brake.h) ──
-    // Between two decodes, which is the only time the budget may move. A stalled token is asked
-    // about first, because it is the cheap signal; the residency sample is the expensive one and runs
-    // only to confirm it, so a run that never stalls never pays for it.
-    void brake_cache() {
+    // ── the cache's size under pressure (residency_controller.h) ──
+    // Between two decodes, which is the only time the budget may move. The process's own memory is
+    // the cheap fact and is read every token; the page sample is the expensive one and runs only to
+    // confirm a stall that fact could not (or where the platform does not publish it), so a run that
+    // never stalls never pays for it.
+    void adapt_cache() {
         if (!moe.enabled || !moe.cache_brake || im.source.cache_budget() == 0) return;
-        const double ref = im.brake.reference();
-        if (!im.brake.stalled(last_compute_s)) return;
-        const double lost = im.source.cache_lost_frac(k_brake_sample);
-        if (lost <= 0.0) return; // slow, but not because memory went: the cores, the clock, a neighbour
+        pio::ProcessMemory pm;
+        OwnMemory own;
+        if (pio::process_memory(&pm)) {
+            own.known = true;
+            own.lost_bytes = pm.swap_bytes;
+        }
         const size_t budget = im.source.cache_budget();
-        const size_t next = CacheBrake::braked(budget, im.source.cache_floor());
-        if (next >= budget) return;
+        const double ref = im.residency.reference();
+        const size_t next = im.residency.on_token(last_compute_s, own, budget,
+                                                  [this] { return im.source.cache_lost_frac(k_brake_sample); });
+        if (next == budget) return;
         im.source.set_cache_budget(next);
-        log_printf(LogLevel::Info,
-                   "cache brake: a token took %.0f ms of compute against %.0f, and %.0f%% of the cache's sampled "
-                   "pages were no longer in RAM; cache %zu -> %zu MiB",
-                   last_compute_s * 1000.0, ref * 1000.0, lost * 100.0, budget >> 20, next >> 20);
+        if (im.residency.last_event() == ResidencyEvent::brake) {
+            char why[128];
+            if (im.residency.last_lost_bytes() > 0)
+                std::snprintf(why, sizeof(why), "%.0f MiB more of this process's memory was taken",
+                              im.residency.last_lost_bytes() / (1024.0 * 1024.0));
+            else
+                std::snprintf(why, sizeof(why), "%.0f%% of its sampled pages were no longer in RAM",
+                              im.residency.last_lost_share() * 100.0);
+            log_printf(LogLevel::Info,
+                       "cache brake: a token took %.0f ms of compute against %.0f, and %s; cache %zu -> %zu MiB",
+                       last_compute_s * 1000.0, ref * 1000.0, why, budget >> 20, next >> 20);
+        } else {
+            log_printf(LogLevel::Info, "cache recover: calm since the last brake; cache %zu -> %zu MiB (ceiling %zu)",
+                       budget >> 20, next >> 20, im.residency.ceiling() >> 20);
+        }
     }
     // Entries sampled per stall: enough that a system holding back a tenth of the cache is seen,
     // few enough to be a few dozen syscalls on a token that already took seconds.
@@ -2536,7 +2554,7 @@ struct Session::Impl::Turn {
             ++im.mtp_decodes;
             if (!accept(s)) return false;
             emit(s, on_token, sink);
-            brake_cache();
+            adapt_cache();
 
             if (structured() && im.cancel_requested.load(std::memory_order_relaxed)) {
                 res.cancelled = true;

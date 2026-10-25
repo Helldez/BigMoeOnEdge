@@ -255,6 +255,6 @@ endif()
 add_test(NAME memory_topology COMMAND bmoe_memory_topology_test)
 
 # The cache brake's policy, replayed on measured per-token compute traces.
-add_executable(bmoe_cache_brake_test cache_brake_test.cpp)
-target_link_libraries(bmoe_cache_brake_test PRIVATE bmoe_core)
-add_test(NAME cache_brake COMMAND bmoe_cache_brake_test)
+add_executable(bmoe_residency_controller_test residency_controller_test.cpp)
+target_link_libraries(bmoe_residency_controller_test PRIVATE bmoe_core)
+add_test(NAME residency_controller COMMAND bmoe_residency_controller_test)

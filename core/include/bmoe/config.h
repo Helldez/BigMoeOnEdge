@@ -103,10 +103,11 @@ struct MoeStreamConfig {
     // when it sized the cache to the lockable total; a hand-set budget is never shrunk unasked.
     bool cache_pin_fit = false;
 
-    // Halve the expert cache when the system takes it back mid-run: a token whose compute stalls
-    // against this machine's own reference, confirmed by a sample of the cache's pages that are no
-    // longer in RAM. Shrinks only, never under one token's cycle, and never grows back within the run
-    // (docs/pressure.md is why). Inert wherever nothing presses on memory.
+    // Size the expert cache while the run goes (residency_controller.h): halve it when the system
+    // takes the engine's memory mid-run (a token whose compute stalls against this machine's own
+    // reference, confirmed by the process's own memory taken or by cache pages no longer in RAM),
+    // then climb back a token cycle at a time once the run has been calm, never to a size the machine
+    // refused nor over the planned budget (docs/pressure.md). Inert wherever nothing presses on memory.
     bool cache_brake = true;
 
     // Overlap async expert reads with FFN compute instead of blocking on them: load_layer()

@@ -79,45 +79,67 @@ and the churn while converging on what cache-off gives for free. So the engine n
 either holds a fixed cache (`--cache-mb N`, which pays only where the whole working set fits) or runs
 cache-off (the default), and lets the dense-weights policy handle the other half.
 
-## The brake: shrink once the system has shown it, never grow back
+## The cache under pressure: brake, then a bounded recovery
 
-There is one runtime move now, and it is the half of the governor that was never the problem.
-`--cache-brake` (on by default, `--no-cache-brake` to turn it off) halves the expert cache when the
-system takes it back mid-run, and that is all it does: it never grows the budget again within a run,
-and it never goes under one token's worst-case cycle.
+There is one runtime move, and it sizes the expert cache while the run goes
+(`core/src/engine/residency_controller.h`). `--cache-brake` (on by default, `--no-cache-brake` to
+turn it off) halves the cache when the system takes the engine's memory mid-run, keeps halving while
+it goes on taking it, and once the run has been calm climbs back one token cycle at a time. It never
+goes under one token's worst-case cycle, never climbs to a size the machine refused, and never over
+the planned budget. A run on a machine that is not pressed never moves from the plan.
 
-It moves only when two signals agree, both about the engine's own work and its own pages, so it reads
-the same on every platform:
+It moves only when two signals agree, both about the engine's own work and its own memory, so it
+reads the same on every platform:
 
 1. **A stall.** A decoded token whose compute took at least twice the median of this machine's
    recent tokens. The reference is this run's, not a constant.
-2. **Pages gone.** A sample of one page from each of up to 64 cache entries, spread hot to cold, of
-   which some are no longer in RAM (`pio::vm_resident_sample`: `mincore`, or `QueryWorkingSetEx`).
-   A page the cache wrote and the kernel then compressed, swapped or trimmed is reclaim by definition.
+2. **Memory of ours taken.** The process's own anonymous memory the system has taken (compressed
+   or swapped: `pio::process_memory`), grown past what it was the last time the run was calm. Where
+   the platform does not publish that figure, a sample of one page from each of up to 64 cache
+   entries, spread hot to cold, of which some are no longer in RAM (`pio::vm_resident_sample`).
 
-A slow token with every sampled page in place (the cores, the clock, a neighbour) moves nothing. A
-run that never stalls never pays for a sample.
+The whole process, not the cache alone, because a locked cache cannot be taken. On a 16 GB laptop
+running a 125B model with 7 GB of cache and dense weights locked, the system compressed 680 MB of
+the compute buffers every token reads instead: tokens went from 0.12 s to 2-8 s while every sampled
+cache page was still in place, so a brake that asked only the cache never fired. Giving cache back
+is what relieves that too: the cache is the one holding the engine can drop at no cost, since its
+bytes are on flash.
+
+A slow token with nothing taken (the cores, the clock, a neighbour) moves nothing. A run that never
+stalls never pays for a page sample.
+
+**One episode, one ceiling.** The stalls after a brake belong to the same episode until the run has
+been calm for a window of tokens; each one with the memory still gone halves again, so a machine
+that keeps taking reaches the floor in a few tokens instead of crawling at half. The ceiling is
+lowered once per episode, under the size the episode started from.
+
+**Recovery is bounded,** which is what keeps it from being the governor this document retired. It
+climbs one token cycle every 64 clean tokens, and every new episode doubles that wait; it never
+climbs while the system is still taking memory, stall or not; and the ceiling only comes down. The
+governor grew whenever things were calm, which on a machine that could not concede the budget
+turned a reclaim into a standing war. Here every refusal lowers the ceiling and makes the next
+attempt rarer, so the number of attempts a machine can refuse is bounded. A long-lived server is
+why it climbs at all: without it, one minute of pressure from another program would cost the rest
+of the session's speed.
 
 What it answers is what the planner cannot know at load: how much of the budget this machine will
 let the process keep, now. A 12 GB phone given a 6 GB share compressed 2.5 GB of an engine holding
-4.6 GB and ended it (Jetsam `proc-thrashing`, #304). Its own compressed memory jumped at token 26 and
-compute collapsed from 28. The policy, replayed on that trace, calls the stall at 25.
+4.6 GB and ended it (Jetsam `proc-thrashing`, #304). Its own compressed memory jumped at token 26
+and compute collapsed from 28; the policy, replayed on that trace, brakes at 26.
 
-Measured on a 16 GB desktop, Qwen3.6-35B-A3B, a 6000 MiB unpinned cache, 200 tokens:
+Measured on a 16 GB laptop, `--auto` only, arms alternated with pauses between runs:
 
-| condition | brake | decode | engine's own memory compressed |
-|---|---|---:|---:|
-| ordinary use | off | 5.99 tok/s | 5483 MiB |
-| ordinary use | on (6000 → 581 MiB in four steps) | 7.49 tok/s | 2046 MiB |
-| a second process holding 9 GB | off | 4.77 tok/s | |
-| a second process holding 9 GB | on | 5.97 tok/s | |
-| `--auto` (cache pinned) | off / on, alternated, 2 runs each | 18.2, 18.7 / 17.9, 18.6 tok/s | never fired |
+| model and condition | before | with this controller |
+|---|---|---|
+| Qwen3.6-35B-A3B Q4_K_M, nothing else running, 256 tokens | 20.7, 20.9 tok/s | 20.6, 21.3 tok/s |
+| the same, another process holding 4 GiB from before the start | 20.2, 20.0 tok/s | 19.7, 20.2 tok/s |
+| Qwen3.8-Flash-Next 125B Q2_0, six requests in one session, 5 GiB in active use beside it from the first request (two runs each) | first request 190 s and 1088 s; slowest token 158 s and 927 s | first request 88 s and 85 s; slowest token 6.0 s and 6.5 s |
 
-It is not the governor back. The governor grew whenever things were calm, which on a machine that
-could not concede the budget turned a reclaim into a standing war. The brake has nothing to grow
-back into: the budget a run gives up is what the machine showed it could not keep, and the next run
-is planned afresh. Sizing the cache from its own stalls in both directions is the larger design
-proposed in #238; this is its brake alone.
+On the unpressed runs it never moved. Under pressure it braked four times per run, to the floor,
+and climbed back over the following requests, which then started a little slower while the cache
+refilled. Other machines are owed (`scripts/pressure-check.py` runs the same check anywhere Python
+does: the engine alone and beside a process holding memory, with the slowest token and what the
+cache did).
 
 ## The floor is measured — and it is not the obvious one
 
@@ -213,8 +235,8 @@ The one runtime signal left is diagnostic: the dense-residency telemetry (`dense
 `mincore` over the dense set — the least exotic syscall available, present on every POSIX target, no
 permission, undisablable by a vendor kernel the way PSI and `mlock` are here. On a platform that
 cannot report it (the Windows host build) it reads unmeasured and nothing downstream depends on it.
-There is no control loop to port: the budget is fixed at load and only the brake can lower it, from
-the same residency primitive every platform already implements.
+The controller ports as it is: it reads the process's own memory where the platform publishes it
+and the same residency primitive every platform already implements where it does not.
 
 ## Status
 
@@ -222,7 +244,8 @@ The default is cache-off (shared-slot streaming) plus `--dense-weights anon` —
 on the >RAM models the engine targets (3.2× on gpt-oss, see
 [benchmarks-gpt-oss.md](benchmarks-gpt-oss.md)). `--cache-mb N` and `--cache-mb auto` are there for
 RAM-fitting models, where `--dense-weights warm` (or `mmap`) is the lighter choice; under either,
-the brake gives back what the system shows it cannot keep. The retired
+the controller gives back what the system shows it cannot keep, and takes it back only as the
+machine allows. The retired
 governor is kept in git history (branch line through `feat/pressure-cache`) if the analysis ever
 needs revisiting.
 
