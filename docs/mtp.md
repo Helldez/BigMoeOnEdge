@@ -114,6 +114,27 @@ zero, so a gguf that kept the key but dropped the tensors would not open at all.
 with `--mtp`, the head is genuinely there; if it has no head, the engine fails at load with a
 message rather than quietly decoding one token at a time.
 
+### A head in a file of its own (`--mtp-head`)
+
+Some quantised files leave the head out: the GSQ-RCO quants of Qwen3.8-Flash-Next carry no `nextn`
+block, while the checkpoint they came from trains one. llama.cpp's converter writes the head on its
+own (`convert_hf_to_gguf.py --mtp`), and `--mtp-head FILE` opens such a file as a model of its own,
+the way llama.cpp's speculative driver opens a draft head: the head drafts in its own context, which
+reads the target's hidden states, while the target is the model file as it is. The head is loaded
+whole on the host and is not the streamer's (one layer, small beside the model).
+
+The converter needs the checkpoint, and the head is a small part of it, so
+`scripts/fetch-hf-subset.py` fetches only the tensors named by its patterns with HTTP range requests
+and writes a directory the converter reads like the checkpoint:
+
+    python3 scripts/fetch-hf-subset.py Qwen/Qwen3.8-Flash-Next --include '^mtp\.' \
+        --include 'embed_tokens' --include '^lm_head' --out mtp-src
+    python3 third_party/llama.cpp/convert_hf_to_gguf.py mtp-src --mtp --outtype q8_0 --outfile head.gguf
+    bmoe-cli -m model.gguf --auto --mtp --mtp-head head.gguf
+
+Nothing in the tool or the option knows an architecture: the patterns choose the tensors, the
+converter knows the names, and a file with no head is refused at load.
+
 One consequence for measurement: **an MTP A/B must be the same file with the flag on and off.**
 Comparing an `-MTP-`-named file against a differently-quantised baseline confounds the feature with
 the quantisation change.

@@ -7,6 +7,14 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **An MTP head from a file of its own** (`--mtp-head FILE`). Some quantised files leave the trained
+  head out (the GSQ-RCO quants of Qwen3.8-Flash-Next), and llama.cpp's converter writes it on its own
+  (`convert_hf_to_gguf.py --mtp`). The head is opened as a model of its own, whole on the host, and
+  drafts in a context that reads the target's hidden states, as llama.cpp's speculative driver does
+  with a draft head; the target loads as it is. `scripts/fetch-hf-subset.py` fetches only the
+  tensors a set of patterns names from a Hugging Face checkpoint, by HTTP range requests (each must
+  come back as the range asked for), into a directory the converter reads like the checkpoint, so a
+  head is a few GB of download instead of the whole model. `docs/mtp.md` has the three commands.
 - **Desktop packages that open with a double-click** (part of #385). `release-host` builds one per
   OS from the same staged folder the `bmoe-desktop` archive carries, and the archives stay for
   scripted installs and the CLI. The scripts live under `packaging/`.

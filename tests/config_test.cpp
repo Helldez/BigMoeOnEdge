@@ -158,6 +158,14 @@ int main() {
         c.spec.source = DraftSource::none;
         expect_ok("route_ahead with speculation off", c);
     }
+    // A head of its own belongs to the MTP source.
+    {
+        RunConfig c = ok_base();
+        c.spec.mtp_head = "head.gguf";
+        expect_fail("an MTP head without --mtp", c);
+        c.spec.source = DraftSource::mtp;
+        expect_ok("an MTP head with --mtp", c);
+    }
 
     // Sampling ranges — enforced only when temp > 0.
     {
