@@ -30,8 +30,9 @@ we do not fork llama.cpp. See `docs/architecture.md` and `docs/seam.md`.
   that may. A rule that needs to know the platform is missing a fact: add the field, not the branch.
   `auto_plan` (`probe_and_plan`) runs the probes in their order and then the rules; every front-end
   plans through it rather than calling the probes itself. `routing` is the model's own routing
-  record as a value (the LRU replay behind its hit curve, `docs/measured-planning.md`); the
-  front-ends decide where a record is kept, keyed by `model_fingerprint`.
+  record as a value (the LRU replay behind its hit curve, `docs/measured-planning.md`), and
+  `measured_knobs` the verdicts the first answer measured for the lossless knobs; the front-ends
+  decide where both are kept, keyed by `model_fingerprint` (and a verdict by `hardware_fingerprint`).
 - `core/include/bmoe/params.h` + `core/src/params.cpp` — the parameter table: every tunable of a
   `RunConfig`, described once. The CLI parses and documents its flags from it; front-ends render
   their settings from its JSON (`bmoe-cli --describe-params`).

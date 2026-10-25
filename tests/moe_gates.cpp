@@ -60,6 +60,9 @@
 //   G20 the fitter's placement for a model larger than the device: dense parts on a device with
 //       memory of its own, experts streamed from the host, == the same placement resident, serial
 //       (a) and under --overlap (b). The router's ids are then read through a host copy.
+//   G21 the knob trial switches the decode thread count and overlap between timed windows of the
+//       answer it decodes: == resident over one long answer (a) and over four turns that each end
+//       inside a window (b), and the trial must have reached its verdicts.
 //
 // G15 needs no separate "did it do anything" check of the G10 kind: the tensor is bound to
 // RESERVED address space, so a row the policy fails to fetch is not a slightly wrong weight but
@@ -1562,6 +1565,92 @@ int main(int argc, char ** argv) {
                 fails +=
                     check("G20b device routing, streamed experts, overlap == resident experts", s_placed, s_placed_ov);
             }
+        }
+    }
+
+    // ── G21: the knob trial (docs/measured-planning.md, Step 2) switches the decode thread count and
+    // overlap between windows of the answer it is decoding: the answer must be the resident one. ──
+    {
+        RunConfig ref = resident;
+        ref.n_predict = 120; // long enough for both knobs' rounds at a two-token window
+        std::string s_ref;
+        if (!gen(ref, s_ref, err)) {
+            std::fprintf(stderr, "G21 reference run failed: %s\n", err.c_str());
+            return 2;
+        }
+        RunConfig trial = streamc; // the cache settles, then the windows alternate
+        trial.n_predict = ref.n_predict;
+        trial.trial.threads = {1, 4};
+        trial.trial.overlap = have_hook; // without the hook the session leaves overlap out, and says so
+        trial.trial.window_tokens = 2;
+        const RunResult r = run(trial);
+        if (!r) {
+            std::fprintf(stderr, "G21 run failed: %s\n", r.error.c_str());
+            return 2;
+        }
+        fails += check("G21a knob trial (threads 2 vs 1 vs 4, then overlap) == resident", s_ref, r.generated_text);
+        // Identity alone would pass a trial that never switched anything.
+        const MeasuredKnobs & mk = r.knobs;
+        const bool threads_ok = mk.threads > 0 && mk.threads_tried == std::vector<int>({2, 1, 4}) && mk.rounds > 0;
+        const bool overlap_ok = !have_hook || (mk.overlap >= 0 && mk.overlap_incumbent == 0);
+        if (!threads_ok || !overlap_ok) {
+            std::printf("[FAIL] G21a the trial did not reach its verdicts: threads %d (%zu tried), overlap %d, "
+                        "%d rounds\n",
+                        mk.threads, mk.threads_tried.size(), mk.overlap, mk.rounds);
+            ++fails;
+        } else {
+            std::printf("[PASS] G21a the trial reached its verdicts: %d threads (x%.2f), overlap %s, %d rounds\n",
+                        mk.threads, mk.threads_gain,
+                        mk.overlap < 0 ? "not measured"
+                        : mk.overlap   ? "on"
+                                       : "off",
+                        mk.rounds);
+        }
+
+        // G21b: the trial spans turns. A request that ends inside a window drops it and the next one
+        // takes up the trial where it stood; every answer is still the resident one.
+        RunConfig ref_b = resident;
+        ref_b.n_predict = 40;
+        std::string s_ref_b;
+        if (!gen(ref_b, s_ref_b, err)) {
+            std::fprintf(stderr, "G21b reference run failed: %s\n", err.c_str());
+            return 2;
+        }
+        RunConfig turns = trial;
+        turns.n_predict = ref_b.n_predict;
+        std::unique_ptr<Session> s = Session::open(session_config_from(turns), err);
+        if (!s) {
+            std::fprintf(stderr, "G21b open failed: %s\n", err.c_str());
+            return 2;
+        }
+        GenerateRequest req;
+        req.prompt = turns.prompt;
+        req.n_predict = turns.n_predict;
+        req.clear_kv = true;
+        bool same = true;
+        std::string differ;
+        for (int t = 0; t < 4; ++t) {
+            const RunResult rt = s->generate(req);
+            if (!rt) {
+                std::fprintf(stderr, "G21b turn %d failed: %s\n", t, rt.error.c_str());
+                return 2;
+            }
+            if (rt.generated_text != s_ref_b) {
+                same = false;
+                differ = rt.generated_text;
+            }
+        }
+        fails += check("G21b knob trial across four turns == resident, every turn", s_ref_b, same ? s_ref_b : differ);
+        const MeasuredKnobs mt = s->measured_knobs();
+        if (mt.threads <= 0) {
+            std::printf("[FAIL] G21b the trial reached no verdict across the turns\n");
+            ++fails;
+        } else {
+            std::printf("[PASS] G21b the trial reached its verdict across the turns: %d threads, overlap %s\n",
+                        mt.threads,
+                        mt.overlap < 0 ? "not measured"
+                        : mt.overlap   ? "on"
+                                       : "off");
         }
     }
 

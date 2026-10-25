@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 
 namespace bmoe {
 
@@ -1721,12 +1722,153 @@ void dense_on_shared_device(Planning & s) {
 // recipe that had it. It is still not armed, and the reason is the same one that withdrew the thread
 // rule below: one machine's evidence is not a rule. What the plan can do honestly is say the knob
 // exists and that the caller is the one who knows.
+//
+// So the answer is measured, on this model and this machine: the first real request alternates
+// decode windows with it on and off (docs/measured-planning.md, Step 2), and a load after that starts
+// from the verdict. Only where the trial can switch it - streaming, and every layer on the host,
+// since with one on a device overlap changes how the context offloads and that is fixed at creation.
+// The same condition holds a stored verdict: one measured on a host-only run says nothing about a
+// placement that crosses to a device.
+// A device-side expert cache, when there is one, is a second condition of the same kind: it refuses
+// overlap, so neither the trial nor a verdict may arm it there.
+bool overlap_switchable(const RunConfig & c) {
+    return c.moe.enabled && c.n_gpu_layers == 0 && !c.moe.io_two_wave && !c.moe.prefetch_sync;
+}
+
+std::string gain_pct(double gain) {
+    char b[16];
+    std::snprintf(b, sizeof(b), "%+.0f%%", 100.0 * (gain - 1.0));
+    return b;
+}
+
+std::string margin_pct(const Planning & s) {
+    return u64s((uint64_t) (s.pol.min_backend_win * 100.0f + 0.5f)) + "%";
+}
+
 void note_overlap(Planning & s) {
-    if (s.req.is_pinned("overlap") || s.p.config.moe.overlap) return;
+    if (s.req.is_pinned("overlap")) return;
+    RunConfig & c = s.p.config;
+    const MeasuredKnobs & mk = s.model.knobs;
+    if (mk.overlap >= 0 && overlap_switchable(c)) {
+        const bool on = mk.overlap == 1;
+        const bool switched = mk.overlap_incumbent >= 0 && mk.overlap_incumbent != mk.overlap;
+        const char * value = on ? "on" : "off";
+        const char * other = on ? "off" : "on";
+        c.moe.overlap = on;
+        s.note("overlap", value, Source::Measured,
+               std::string(on ? "On" : "Off") + ": measured on this model, " +
+                   (switched ? "it decoded " + gain_pct(mk.overlap_gain) + " against " + other + "."
+                             : std::string(other) + " was no faster here (" + gain_pct(mk.overlap_gain) + ")."),
+               "measured on this model: an earlier load's first answer decoded in alternating windows with overlap "
+               "on and off, " +
+                   u64s((uint64_t) std::max(0, mk.rounds)) +
+                   " rounds of the one tried, each between two of the other; " +
+                   (switched ? std::string(value) + " was " + gain_pct(mk.overlap_gain) + " against " + other +
+                                   ", past the " + margin_pct(s) + " margin"
+                             : std::string(other) + " was " + gain_pct(mk.overlap_gain) + ", inside the " +
+                                   margin_pct(s) + " margin, so " + value + " held"));
+        return;
+    }
+    // The trial is symmetric: a caller whose default is on (a server that arms it wherever the hook
+    // exists) has it measured against off, by the same margin.
+    if (s.req.measure_knobs && overlap_switchable(c) && !s.req.is_pinned("trial-overlap")) {
+        c.trial.overlap = true;
+        const bool on = c.moe.overlap;
+        s.note("overlap", on ? "on" : "off", Source::Unprobed,
+               std::string(on ? "On" : "Off") + " until the first answer measures it against " + (on ? "off." : "on."),
+               "hiding compute behind the reads changes no output and has measured faster, but one machine is not a "
+               "rule: the first real request alternates decode windows with it on and off once the cache has "
+               "settled, and switches it only if the other setting decodes " +
+                   margin_pct(s) + " faster; the next load starts from the verdict");
+        return;
+    }
+    if (c.moe.overlap) return;
     s.note("overlap", "off", Source::Unprobed, "Off: it changes no output, but its gain here is unmeasured.",
            "hiding compute behind the reads changes no output and has measured faster, but one machine is not "
            "a rule and nothing here predicts where it stops paying: pass " +
                flag_spelling("overlap", "true"));
+}
+
+// The thread counts a trial tries against the incumbent: where a barrier would start or stop
+// waiting on a slower class (the running sums of the core classes), every core, and half of them
+// where all are alike (a machine with two hardware threads a core reports both). The ones nearest
+// the incumbent first, as many as the trial takes.
+std::vector<int> thread_candidates(const HardwareProfile & hw, int incumbent) {
+    std::vector<int> pool;
+    uint32_t sum = 0;
+    for (uint32_t k : hw.core_classes) {
+        sum += k;
+        pool.push_back((int) sum);
+    }
+    if (hw.n_cores) pool.push_back((int) hw.n_cores);
+    if (hw.core_classes.size() <= 1 && hw.n_cores >= 2) pool.push_back((int) hw.n_cores / 2);
+    std::sort(pool.begin(), pool.end());
+    pool.erase(std::unique(pool.begin(), pool.end()), pool.end());
+    pool.erase(std::remove_if(pool.begin(), pool.end(),
+                              [&](int n) { return n < 1 || n > RunConfig::threads_max || n == incumbent; }),
+               pool.end());
+    std::stable_sort(pool.begin(), pool.end(),
+                     [&](int a, int b) { return std::abs(a - incumbent) < std::abs(b - incumbent); });
+    if ((int) pool.size() > KnobTrialConfig::threads_max_candidates)
+        pool.resize((size_t) KnobTrialConfig::threads_max_candidates);
+    return pool;
+}
+
+std::string thread_list(const std::vector<int> & v, const char * last_sep) {
+    std::string out;
+    for (size_t i = 0; i < v.size(); ++i)
+        out += (i == 0 ? "" : i + 1 == v.size() ? last_sep : ", ") + std::to_string(v[i]);
+    return out;
+}
+
+// A count an earlier load measured on this model. Prefill is a different load, compute-bound where
+// a streamed decode is not, and was not part of the measurement: it keeps the count it would have had.
+void apply_measured_threads(Planning & s, int would_have) {
+    RunConfig & c = s.p.config;
+    const MeasuredKnobs & mk = s.model.knobs;
+    c.n_threads = mk.threads;
+    std::string prefill;
+    if (c.n_threads_batch == 0 && would_have != mk.threads && !s.req.is_pinned("threads-batch")) {
+        c.n_threads_batch = would_have;
+        prefill = "; prefill keeps " + u64s((uint64_t) would_have) + ", which the trial did not measure";
+    }
+    std::vector<int> others;
+    for (int n : mk.threads_tried)
+        if (n != mk.threads) others.push_back(n);
+    const bool held = !mk.threads_tried.empty() && mk.threads_tried.front() == mk.threads;
+    const std::string n = u64s((uint64_t) mk.threads);
+    s.note("threads", n, Source::Measured,
+           n + " threads: measured on this model, the fastest decode " +
+               (others.empty() ? std::string("here.") : "against " + thread_list(others, " and ") + "."),
+           "measured on this model: an earlier load's first answer decoded in alternating windows with " +
+               thread_list(mk.threads_tried, " and ") + " threads, " + u64s((uint64_t) std::max(0, mk.rounds)) +
+               " rounds each between two of the incumbent's; " +
+               (held ? "the best other count was " + gain_pct(mk.threads_gain) + ", inside the " + margin_pct(s) +
+                           " margin, so " + n + " held"
+                     : n + " was " + gain_pct(mk.threads_gain) + " against " +
+                           u64s((uint64_t) mk.threads_tried.front()) + ", past the " + margin_pct(s) + " margin") +
+               prefill);
+}
+
+// The trial of the count, armed when the front-end keeps its verdict and nothing measured it yet.
+void arm_thread_trial(Planning & s) {
+    RunConfig & c = s.p.config;
+    if (!s.req.measure_knobs || s.req.is_pinned("trial-threads") || !c.trial.threads.empty()) return;
+    const std::vector<int> cand = thread_candidates(s.hw, c.n_threads);
+    if (cand.empty()) return;
+    c.trial.threads = cand;
+    std::string value;
+    for (size_t i = 0; i < cand.size(); ++i)
+        value += (i ? "," : "") + std::to_string(cand[i]);
+    s.note("trial-threads", value, Source::Policy,
+           "The first answer measures " + thread_list(cand, " and ") + " threads against " +
+               u64s((uint64_t) c.n_threads) + ".",
+           "the thread count changes no output and which one decodes fastest is this machine's answer, not a "
+           "rule's: once the cache has settled the first real request alternates decode windows between " +
+               u64s((uint64_t) c.n_threads) + " and " + thread_list(cand, " and ") +
+               " (where a slower class of core starts, every core, or half of them where all are alike), and "
+               "switches only to a count " +
+               margin_pct(s) + " faster in the median of its rounds; the next load starts from the verdict");
 }
 
 // ── threads: the classes are a fact, the rule that read them was wrong ─────────
@@ -1741,10 +1883,22 @@ void note_overlap(Planning & s) {
 // its default. Deriving a count from them would need a thread sweep on the machine itself, which is
 // a probe this does not have. The same applies to prefill: it is compute-bound and plausibly wants
 // every core, and "plausibly" is exactly what this planner does not ship.
+void choose_threads_unmeasured(Planning & s);
 void choose_threads(Planning & s) {
     const HardwareProfile & hw = s.hw;
     RunConfig & c = s.p.config;
     if (s.req.is_pinned("threads")) return;
+    if (s.model.knobs.threads > 0) {
+        apply_measured_threads(s, hw.best_threads > 0 ? (int) hw.best_threads : c.n_threads);
+        return;
+    }
+    choose_threads_unmeasured(s);
+    arm_thread_trial(s);
+}
+
+void choose_threads_unmeasured(Planning & s) {
+    const HardwareProfile & hw = s.hw;
+    RunConfig & c = s.p.config;
     if (hw.best_threads > 0) {
         c.n_threads = (int) hw.best_threads;
         s.note("threads", u64s(hw.best_threads), Source::Measured,

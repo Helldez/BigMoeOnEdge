@@ -374,6 +374,22 @@ struct App {
           routing(std::move(routing_dir)) {
         host.set_routing_sink(
             [this](const std::string & model, const RoutingTrace & rec) { routing.keep(model, rec); });
+        // A verdict is kept against the machine the plan of that model measured; with no plan of it
+        // there is no machine to name, and it is not kept.
+        host.set_knobs_sink([this](const std::string & model, const MeasuredKnobs & mk) {
+            MeasuredKnobs rec = mk;
+            {
+                std::lock_guard<std::mutex> lk(plan_m);
+                for (const PlanOutcome * p : {&load_plan, &last_plan})
+                    if (p->ok && p->body.value("model", "") == model && !p->hardware.empty()) {
+                        rec.hardware = p->hardware;
+                        break;
+                    }
+            }
+            if (rec.hardware.empty()) return;
+            rec.engine = version();
+            routing.keep_knobs(model, rec);
+        });
     }
 
     // Each model's recorded routing, kept for the next plan of that file (routing_store.h).
@@ -405,13 +421,17 @@ struct App {
         const RunConfig cfg = store.planning_config();
         RoutingTrace kept;
         const bool have = routing.load(cfg.model_path, kept);
+        // The knob verdicts kept for this model; a plan here always lets the first answer measure
+        // what they do not cover, since the verdict has a place to be kept.
+        std::vector<MeasuredKnobs> knobs;
+        const bool have_knobs = routing.load_knobs(cfg.model_path, knobs);
         PlanOutcome p = make_plan(
             cfg, store.operator_keys(), opt.isolated_probes,
             [this](const std::string & step, const std::string & label, int index, int count) {
                 bus.publish("plan_progress",
                             json{{"step", step}, {"label", label}, {"index", index}, {"count", count}});
             },
-            have ? &kept : nullptr);
+            have ? &kept : nullptr, have_knobs ? &knobs : nullptr, /*measure_knobs*/ true);
         bus.publish("plan_progress", json{{"step", "done"}});
         return p;
     }
@@ -500,6 +520,7 @@ struct App {
         c.moe.predict_prefetch = false;
         c.moe.route_ahead = 0;
         c.moe.row_stream = false;
+        c.trial.overlap = false;
     }
 };
 

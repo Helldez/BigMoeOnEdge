@@ -216,6 +216,51 @@ one ([measured-planning.md](measured-planning.md#step-1-the-cache-sized-from-the
 `bmoe::hottest_experts(trace)` ranks the same record's (block, expert) pairs by use, for a later step
 that warms a device-side cache at start; nothing reads it yet.
 
+### Lossless knobs measured on the first answer
+
+The decode thread count and `--overlap` change no output, and which setting decodes faster is this
+machine's answer for this model, not a rule's: the thread rule from core classes was withdrawn in a
+day (below), and overlap measured faster on two machines with nothing in the plan able to say where
+it stops paying (#294). So when the front-end has a place to keep the verdict, the plan arms a
+measurement instead of a guess ([measured-planning.md](measured-planning.md#step-2-lossless-knobs-settled-on-the-first-real-request)):
+
+- **The trial.** `--trial-threads N[,M]` names one or two decode thread counts to try against
+  `--threads`; the plan picks the ones nearest the incumbent among the running sums of the core
+  classes (where a barrier starts waiting on a slower class), every core, and half of them where all
+  are alike. `--trial-overlap` tries the other overlap setting. Once the cache's hit rate has
+  settled (two windows in a row within two points), decode windows of `--trial-window` tokens
+  (default 8) alternate incumbent, candidate, incumbent, every candidate window between two of the
+  incumbent's, three rounds a candidate, on the user's own answer. A candidate wins only if it
+  decodes faster by `min_backend_win` (10%, the device rule's margin) in the median of its rounds'
+  ratios against the mean of the two incumbent windows around it, so a drift linear over a round
+  cancels and one stalled window does not decide. The thread count is measured first, then overlap
+  starting from its verdict. Both together take about 200 decoded tokens after the cache settles
+  (fewer with one thread candidate), spread over as many turns of the session as that needs: a
+  request that ends inside a window drops it, and the next takes up where the trial stood. A
+  one-shot `bmoe-cli` run shorter than that keeps what it finished (the thread count's verdict, or
+  nothing), and the next plan measures the rest. The policy is `KnobTrial` (`core/src/engine/knob_trial.h`), fed per-step
+  timings and unit-tested on synthetic ones (`knob_trial` test).
+- **What switches live.** The thread count through `llama_set_n_threads` (prefill keeps its own
+  count). Overlap by giving the streamer's first read lane a worker of its own or taking it back,
+  with the expert-ready hook registered or not, between two decodes; it needs streaming, the hook,
+  and every layer on the host, since with one on a device overlap also changes how the context
+  offloads, which is fixed when it is created. `--io-threads` is left out: it is already measured on
+  the model's own file by the storage probe, and changing it would reopen every reader.
+- **Lossless, checked.** Gate `G21` decodes a 120-token answer while the trial switches threads
+  (2, 1, 4) and overlap, and across four turns that each end inside a window, and every answer is the
+  resident one.
+- **The verdict** stays for the rest of the session and is returned as a value
+  (`Session::measured_knobs()`, `bmoe/measured_knobs.h`). The front-end keeps it beside the model's
+  routing (`bmoe-cli --routing-dir DIR`, `bmoe-server` under `routing/`): one file per model, a line
+  per machine and engine, keyed by `hardware_fingerprint()` (core count and classes, total memory,
+  each device's name and own memory; never a rate or a free-memory figure) and the engine version.
+- **The next plan** of that model on that machine and engine (`AutoPlanOptions::knobs`) starts from
+  it, states `--threads` and `--overlap` as `[measured]` with "measured on this model" and the gain,
+  and measures nothing. A measured count keeps prefill at the count it would have had
+  (`--threads-batch`). A verdict on overlap is not applied where layers sit on a device.
+- **Off** (no place to keep a verdict, `PlanRequest::measure_knobs` false) and with nothing stored,
+  the plan is byte for byte the one before this existed.
+
 ## Backends this build can even see
 
 The planner enumerates what ggml registers. A backend the build did not compile in, and did not find
@@ -331,6 +376,7 @@ number it turns on as its value ("6.3 GB/s", "581 MiB") or `-`.
 | residency budget: how much this process may hold | the regime, and the cache budget |
 | headroom: how much of it can be KEPT | the same two, when it has been measured rather than reported |
 | core classes, fastest first | `--threads`: a barrier waits for its slowest participant |
+| the decode itself, timed in alternating windows of the first answer (kept as a verdict) | `--threads` and `--overlap` on the next load; the candidates `--trial-threads` tries |
 | whether a device executes over a host buffer | whether streamed experts could be computed on it |
 | host memory bandwidth, and a device's | whether moving that compute is worth anything |
 | what happens to anonymous memory under pressure | the dense policy, and the margin |
@@ -853,6 +899,10 @@ is a probe this does not have. The same reasoning retired the prefill count at t
 It is worth writing down that this is the second principle in two days to be overturned by a
 measurement rather than by an argument — the lane tie-break was the first. Both were sound. Neither
 was true.
+
+The probe it lacked now exists, twice over: a GEMV sweep in the model's own format sets the count on
+a first load, and where a front-end keeps the verdict the first answer measures the class boundaries
+against it on the model itself ([Lossless knobs measured on the first answer](#lossless-knobs-measured-on-the-first-answer)).
 
 ## Where a rule is still cruder than the fact it stands in for
 

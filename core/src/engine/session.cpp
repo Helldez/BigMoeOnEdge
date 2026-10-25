@@ -3,6 +3,7 @@
 #include "bmoe/route_trace.h"
 #include "bmoe/decode_trace.h"
 #include "bmoe/version.h"
+#include "bmoe/probe.h"
 #include "bmoe/ngram_draft.h"
 #include "bmoe/log.h"
 #include "chat_messages.h"
@@ -21,6 +22,7 @@
 #include "../moe/gguf_offsets.h"
 #include "../moe/tensor_names.h"
 #include "cache_brake.h"
+#include "knob_trial.h"
 #include "../io/platform_io.h"
 #include "../io/mapping_release.h"
 #include "../metrics/memory_snapshot.h"
@@ -288,6 +290,28 @@ struct Session::Impl {
     // and a later turn of a chat is compared with what the earlier ones settled to.
     CacheBrake brake;
 
+    // The knob trial (SessionConfig::trial): the lossless knobs measured on the first decodes once
+    // the cache has settled, one knob after the other, each winner kept for the rest of the session
+    // and returned (Session::measured_knobs). Stage 0 is the thread count, 1 overlap, 2 done.
+    struct Trials {
+        std::vector<int> threads; // arms: the incumbent, then the candidates; empty: not measured
+        std::vector<int> overlap; // arms as 0/1, the incumbent first; empty: not measured
+        int stage = 2;
+        std::unique_ptr<KnobTrial> cur;
+        MeasuredKnobs result;
+        uint64_t lookups_seen = 0, hits_seen = 0; // the cache's counters at the last step
+    } trials;
+    int threads_now = 0; // the decode thread count the contexts run with
+    void arm_trials();
+    void start_trial_stage(bool settle);
+    void finish_trial_stage();
+    bool apply_trial_arm(int arm);
+    void set_decode_threads(int n);
+    void trial_step(double seconds, int tokens);
+    void pause_trial();
+    void resume_trial();
+    void snapshot_trial_counters();
+
     // Prefill on an accelerator (SessionConfig::prefill); null when off. Created before the model
     // load, whose device list it holds, and opened after it.
     std::unique_ptr<detail::PrefillPath> prefill;
@@ -485,6 +509,9 @@ int Session::n_expert_used() const {
 }
 RoutingTrace Session::routing_record() const {
     return impl_->hook ? impl_->hook->routing_record() : RoutingTrace{};
+}
+MeasuredKnobs Session::measured_knobs() const {
+    return impl_->trials.result;
 }
 ThinkControl Session::think_control() const {
     return impl_->think_ctl;
@@ -1670,6 +1697,147 @@ void Session::Impl::describe_run(Opening & o) {
     }
 }
 
+// ── the knob trial (KnobTrialConfig, knob_trial.h) ──────────────────────────────────────────
+// Which knobs this session measures, decided once it is open: a knob whose switch this build or
+// this run cannot make is left out and said so, and the trial measures what is left.
+void Session::Impl::arm_trials() {
+    const KnobTrialConfig & t = cfg.trial;
+    threads_now = cfg.n_threads;
+    if (!t.enabled()) return;
+    if (!t.threads.empty()) {
+        trials.threads.push_back(cfg.n_threads);
+        trials.threads.insert(trials.threads.end(), t.threads.begin(), t.threads.end());
+    }
+    if (t.overlap) {
+        if (!cfg.moe.enabled)
+            log_printf(LogLevel::Warn, "knob trial: overlap is not measured without expert streaming");
+        else if (!cfg.moe.overlap && !expert_ready_hook_available())
+            log_printf(LogLevel::Warn, "knob trial: overlap is not measured: the CPU backend loaded here has no "
+                                       "expert-ready hook");
+        else
+            trials.overlap = {cfg.moe.overlap ? 1 : 0, cfg.moe.overlap ? 0 : 1};
+    }
+    trials.stage = !trials.threads.empty() ? 0 : !trials.overlap.empty() ? 1 : 2;
+    if (trials.stage < 2) start_trial_stage(/*settle*/ true);
+}
+
+void Session::Impl::start_trial_stage(bool settle) {
+    KnobTrialPolicy pol;
+    pol.window_tokens = cfg.trial.window_tokens;
+    const size_t arms = trials.stage == 0 ? trials.threads.size() : trials.overlap.size();
+    trials.cur = std::make_unique<KnobTrial>((int) arms - 1, settle, pol);
+}
+
+void Session::Impl::set_decode_threads(int n) {
+    if (n == threads_now) return;
+    // Prefill keeps the count it had: the trial measures decode, and a prompt is a different load.
+    const int n_batch = cfg.n_threads_batch > 0 ? cfg.n_threads_batch : cfg.n_threads;
+    llama_set_n_threads(ctx.get(), n, n_batch);
+    if (ctx_dft) llama_set_n_threads(ctx_dft.get(), n, n_batch);
+    threads_now = n;
+}
+
+// False when the switch could not be made; the stage is then abandoned on its incumbent.
+bool Session::Impl::apply_trial_arm(int arm) {
+    if (trials.stage == 0) {
+        set_decode_threads(trials.threads[(size_t) arm]);
+        return true;
+    }
+    if (trials.stage == 1) {
+        const bool on = trials.overlap[(size_t) arm] != 0;
+        if (source.overlap() == on || source.set_overlap(on)) return true;
+        log_printf(LogLevel::Warn, "knob trial: overlap could not be switched %s; it is not measured",
+                   on ? "on" : "off");
+        trials.stage = 2;
+        trials.cur.reset();
+        source.set_overlap(cfg.moe.overlap);
+        return false;
+    }
+    return true;
+}
+
+void Session::Impl::snapshot_trial_counters() {
+    if (!cfg.moe.enabled) return;
+    const IExpertSource::Stats st = source.stats();
+    trials.lookups_seen = (uint64_t) st.cache_lookups;
+    trials.hits_seen = (uint64_t) st.cache_hits;
+}
+
+void Session::Impl::resume_trial() {
+    if (trials.stage >= 2) return;
+    snapshot_trial_counters(); // the prompt's lookups are not the first window's
+    apply_trial_arm(trials.cur->arm());
+}
+
+void Session::Impl::pause_trial() {
+    if (trials.stage >= 2) return;
+    trials.cur->interrupt();
+    apply_trial_arm(0);
+}
+
+void Session::Impl::trial_step(double seconds, int tokens) {
+    if (trials.stage >= 2) return;
+    uint64_t lookups = 0, hits = 0;
+    if (cfg.moe.enabled) {
+        const uint64_t l0 = trials.lookups_seen, h0 = trials.hits_seen;
+        snapshot_trial_counters();
+        lookups = trials.lookups_seen - l0;
+        hits = trials.hits_seen - h0;
+    }
+    KnobTrial & k = *trials.cur;
+    const bool settling = k.settling();
+    k.record(seconds, tokens, lookups, hits);
+    if (settling && !k.settling())
+        log_printf(LogLevel::Info, "knob trial: the cache has settled; measuring %s",
+                   trials.stage == 0 ? "the decode thread count" : "overlap");
+    if (k.done()) {
+        finish_trial_stage();
+        return;
+    }
+    apply_trial_arm(k.arm());
+}
+
+// A stage's verdict: the winner is applied and stays, the result records it, and the next knob
+// starts on the cache this one already settled.
+void Session::Impl::finish_trial_stage() {
+    KnobTrial & k = *trials.cur;
+    const int w = k.winner();
+    const int arms = trials.stage == 0 ? (int) trials.threads.size() : (int) trials.overlap.size();
+    int best = 1;
+    for (int c = 2; c < arms; ++c)
+        if (k.gain(c) > k.gain(best)) best = c;
+    const double gain = k.gain(w ? w : best);
+    if (!apply_trial_arm(w)) return;
+    char verdict[160];
+    if (w)
+        std::snprintf(verdict, sizeof(verdict), "decoded %.1f%% faster in the median of %d rounds",
+                      100.0 * (gain - 1.0), k.rounds(w));
+    else
+        std::snprintf(verdict, sizeof(verdict),
+                      "held: the best candidate was %+.1f%% in the median of %d rounds, "
+                      "inside the %.0f%% margin",
+                      100.0 * (gain - 1.0), k.rounds(best), 100.0 * KnobTrialPolicy{}.min_win);
+    trials.result.rounds = k.rounds(w ? w : best);
+    if (trials.stage == 0) {
+        trials.result.threads = trials.threads[(size_t) w];
+        trials.result.threads_tried = trials.threads;
+        trials.result.threads_gain = gain;
+        log_printf(LogLevel::Info, "knob trial: %d decode threads (against %d): %s", trials.threads[(size_t) w],
+                   trials.threads[0], verdict);
+    } else {
+        trials.result.overlap = trials.overlap[(size_t) w];
+        trials.result.overlap_incumbent = trials.overlap[0];
+        trials.result.overlap_gain = gain;
+        log_printf(LogLevel::Info, "knob trial: overlap %s (against %s): %s", trials.result.overlap ? "on" : "off",
+                   trials.overlap[0] ? "on" : "off", verdict);
+    }
+    trials.stage = trials.stage == 0 && !trials.overlap.empty() ? 1 : 2;
+    if (trials.stage < 2)
+        start_trial_stage(/*settle*/ false);
+    else
+        trials.cur.reset();
+}
+
 // The two configurations that are legal and still worth a word at load, said once.
 void Session::Impl::warn_about_load(const SessionConfig & cfg) {
     // Cache-aware dropping on a narrow routing.
@@ -1743,6 +1911,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     if (im.prefill && !im.open_prefill_device(o)) return nullptr;
     if (im.prefill && cfg.prefill.verify && !im.confirm_prefill_device(o)) return nullptr;
     im.arm_decode_traces(o);
+    im.arm_trials();
     im.describe_run(o);
     im.warn_about_load(cfg);
 
@@ -2168,7 +2337,7 @@ struct Session::Impl::Turn {
                     res.cancelled = true;
                     return false;
                 }
-                if (moe.overlap && im.source.fatal())
+                if (im.source.overlap() && im.source.fatal())
                     return fail(RunError::Failed, "expert stream I/O failed during overlap prefill");
                 return fail(RunError::Failed, "prefill decode failed");
             }
@@ -2206,7 +2375,7 @@ struct Session::Impl::Turn {
         // phases, so end()'s snapshot IS the decode baseline — one reading of the counters at the
         // boundary instead of two that could drift apart. In a warm session these counters carry the
         // prior prompts' totals; the deltas make each prompt self-relative.
-        tally.overlap = moe.overlap;
+        tally.overlap = moe.enabled && im.source.overlap();
         if (moe.enabled) {
             const IExpertSource::Stats & st0 = prefill_tally.post;
             tally.prev_bytes = (long long) st0.read_bytes;
@@ -2543,11 +2712,26 @@ struct Session::Impl::Turn {
     // few enough to be a few dozen syscalls on a token that already took seconds.
     static constexpr int k_brake_sample = 64;
 
+    // A trial's switch of overlap changes what the streamer's read counter measures (time the eval
+    // thread was blocked serially, lane time under overlap), so the cursor the next token's delta is
+    // taken against moves to the new counter at the switch: no token is charged the difference
+    // between two different clocks.
+    template <typename F> void trial_guarded(F && f) {
+        const bool before = moe.enabled && im.source.overlap();
+        f();
+        const bool after = moe.enabled && im.source.overlap();
+        if (after == before) return;
+        tally.overlap = after;
+        tally.prev_io_s = im.source.stats().read_seconds;
+    }
+
     // ── greedy generation ──
     // Returns false only on a failure; a cancel ends the loop with res.cancelled set.
     bool decode(const std::function<void(const TokenMetrics &)> & on_token, IMetricsSink * sink) {
         res.ok = true;
         if (!begin_decode()) return false;
+        // A knob trial in progress takes up where the last turn left it.
+        trial_guarded([&] { im.resume_trial(); });
         while (n_gen < n_predict) {
             if (llama_vocab_is_eog(im.vocab, tok)) break;
             Step s;
@@ -2557,7 +2741,7 @@ struct Session::Impl::Turn {
                     res.cancelled = true;
                     break;
                 }
-                if (moe.overlap && im.source.fatal())
+                if (im.source.overlap() && im.source.fatal())
                     return fail(RunError::Failed, "expert stream I/O failed during overlap decode");
                 return fail(RunError::Failed, "decode failed during generation");
             }
@@ -2566,6 +2750,12 @@ struct Session::Impl::Turn {
             if (!accept(s)) return false;
             emit(s, on_token, sink);
             brake_cache();
+            if (im.trials.stage < 2) {
+                // The decode as the knob changes it: the target's and the draft's passes, not the
+                // emission around them, which a person's own client paces.
+                const double step_s = secs(s.s0, s.s1) + s.draft_s;
+                trial_guarded([&] { im.trial_step(step_s, (int) confirmed.size()); });
+            }
 
             if (structured() && im.cancel_requested.load(std::memory_order_relaxed)) {
                 res.cancelled = true;
@@ -2640,7 +2830,7 @@ struct Session::Impl::Turn {
             s.moe_io_s_per_token = n_gen ? tally.io_seconds / n_gen : 0.0;
             s.moe_mgmt_s_per_token = n_gen ? tally.mgmt_seconds / n_gen : 0.0;
             s.moe_stall_s_per_token = n_gen ? tally.stall_seconds / n_gen : 0.0;
-            s.moe_flash_wait_s_per_token = moe.overlap ? s.moe_stall_s_per_token : s.moe_io_s_per_token;
+            s.moe_flash_wait_s_per_token = tally.overlap ? s.moe_stall_s_per_token : s.moe_io_s_per_token;
             s.moe_compute_s_per_token = s.s_per_token - s.moe_flash_wait_s_per_token - s.moe_mgmt_s_per_token;
             if (s.moe_compute_s_per_token < 0) s.moe_compute_s_per_token = 0;
             s.cache_hit_pct = st.cache_lookups > 0 ? 100.0 * st.cache_hits / st.cache_lookups : -1.0;
@@ -2803,8 +2993,13 @@ RunResult Session::generate(const GenerateRequest & req,
     if (!turn.render_prompt()) return res;
     if (!turn.tokenize_prompt()) return res;
     turn.reuse_kv_prefix();
-    // Every exit from here on leaves the weights on the host (see PlacementGuard).
+    // Every exit from here on leaves the weights on the host (see PlacementGuard), and a knob trial
+    // in progress on its incumbent: the next prefill is not part of the trial.
     Impl::PlacementGuard placement_guard{im};
+    struct TrialPause {
+        Impl & im;
+        ~TrialPause() { im.pause_trial(); }
+    } trial_pause{im};
     if (!turn.prefill()) return res; // a failure, or a cancel already rolled back
     if (!turn.decode(on_token, sink)) return res;
     if (!turn.parse_result()) return res;

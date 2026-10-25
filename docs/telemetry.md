@@ -571,6 +571,35 @@ the run's budget, the record gives the hit rate the run measured (gate `G2r`).
 `plan: predicted ...` line and `bmoe-server`'s `/api/plan` `measured.cache_hit_pct` now set against
 the plan's credited hit rate, since that is the figure a decoded token is priced with.
 
+## Knob trial
+
+With `--trial-threads` or `--trial-overlap` (which `--auto` sets when the verdict is kept;
+[hardware-planning.md](hardware-planning.md#lossless-knobs-measured-on-the-first-answer)), the first
+answer's decode alternates the knob between timed windows, and the engine logs what it did:
+
+```
+bmoe: knob trial: the cache has settled; measuring the decode thread count
+bmoe: knob trial: <n> decode threads (against <n>): decoded <pct>% faster in the median of <r> rounds
+bmoe: knob trial: <n> decode threads (against <n>): held: the best candidate was <+pct>% in the median of <r> rounds, inside the 10% margin
+bmoe: knob trial: overlap <on|off> (against <on|off>): ...
+```
+
+Per-token metrics during the trial are of the setting each token ran under: when overlap switches,
+`io_ms` changes meaning with it (wall blocked serially, lane busy time under overlap, as above) and
+the cursor it is taken against moves to the new counter, so no token straddles the two. The `mode:`
+line and the CSV preamble's `threads=` and `overlap=` are the session's settings at load. The verdict
+(`Session::measured_knobs()`) is kept beside the routing record as `<fingerprint>.knobs`, one line per
+machine and engine:
+
+```
+bmoe-measured-knobs 1
+hardware=<16 hex> engine=<version> threads=<n> threads_tried=<incumbent,candidates> threads_gain=<f>
+  overlap=<-1|0|1> overlap_incumbent=<-1|0|1> overlap_gain=<f> rounds=<n>      (one line)
+```
+
+`threads=0` and `overlap=-1` mean not measured. A key the reader does not know is skipped, so a later
+engine may add one.
+
 ## Session mode
 
 With `--session`, `bmoe-cli` keeps the model loaded and the expert cache warm across prompts

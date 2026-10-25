@@ -10,6 +10,7 @@
 #include "json_util.h"
 
 #include "bmoe/config.h"
+#include "bmoe/measured_knobs.h"
 #include "bmoe/routing.h"
 
 #include <cstdint>
@@ -29,6 +30,9 @@ struct PlanOutcome {
     // What the plan's memory ledger charges the run with (Ledger::held): the session's own account
     // of the memory it holds once loaded, which a question about loading another model gives back.
     uint64_t held_bytes = 0;
+    // The machine the plan measured (hardware_fingerprint): what a knob verdict measured under this
+    // plan is kept against.
+    std::string hardware;
 };
 
 bool planner_available();
@@ -43,12 +47,16 @@ bool planner_available();
 // many there are.
 using PlanStepFn = std::function<void(const std::string & step, const std::string & label, int index, int count)>;
 // `routing` (nullable) is the model's own recorded routing from an earlier load (routing_store.h):
-// with it the cache is priced on the model's hit curve.
+// with it the cache is priced on the model's hit curve. `knobs` (nullable) are the knob verdicts kept
+// for the model; with `measure_knobs` the plan arms the first answer to measure what is not measured
+// yet, for the caller to keep.
 PlanOutcome make_plan(const RunConfig & cfg,
                       const std::vector<std::string> & pinned,
                       bool isolated_probes = true,
                       const PlanStepFn & on_step = nullptr,
-                      const RoutingTrace * routing = nullptr);
+                      const RoutingTrace * routing = nullptr,
+                      const std::vector<MeasuredKnobs> * knobs = nullptr,
+                      bool measure_knobs = false);
 
 // The child's side of an isolated probe: probe `device` for `model_path`, print its facts after
 // the marker, and return the process's exit code. 3 when there is no such device or no planner.

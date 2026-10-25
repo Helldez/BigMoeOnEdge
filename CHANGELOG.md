@@ -67,6 +67,24 @@ Semantic Versioning.
   session's record replays to the hit rate its cache measured. The same record ranks the hottest
   (block, expert) pairs (`hottest_experts()`), for a later device-side cache to warm from; nothing
   reads it yet. The on-device runs this is judged by are owed.
+- **The thread count and overlap are measured on the first answer** (Step 2 of
+  `docs/measured-planning.md`; #294). Where the front-end keeps the verdict (`bmoe-cli --auto` with
+  `--routing-dir`, and `bmoe-server` always), the plan arms a trial instead of a guess:
+  `--trial-threads N[,M]`, the core-class boundaries nearest the incumbent, and `--trial-overlap`.
+  Once the cache's hit rate has settled, decode windows (`--trial-window`, 8 tokens) alternate
+  between the incumbent and each candidate, every candidate window between two of the incumbent's,
+  on the user's own answer; a candidate wins only if it decodes `min_backend_win` (10%) faster in the
+  median of its rounds. Both knobs switch with the session open: the thread count through
+  `llama_set_n_threads`, overlap by starting or stopping the streamer's first read lane worker and
+  the expert-ready hook between two decodes (it needs every layer on the host). The winner stays for
+  the session and is returned (`Session::measured_knobs()`, `bmoe/measured_knobs.h`); the
+  front-ends keep it beside the routing record, a line per machine (`hardware_fingerprint()`) and
+  engine version, and the next plan of the model starts from it, states `threads` and `overlap` as
+  measured on this model, and measures nothing. `--io-threads` is left to the storage probe, which
+  already measures it on the model's own file. Gate `G21` holds the output byte-identical while the
+  trial switches, within one answer and across turns; the policy has its own test (`knob_trial`).
+  With nothing kept and the feature off, the plan is unchanged. The on-device runs this is judged by
+  are owed.
 
 ### Changed
 - **The plan's hit rate is set against the decode's.** The line `bmoe-cli --auto` prints after a run

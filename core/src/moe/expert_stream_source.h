@@ -113,6 +113,13 @@ public:
     // not expose it. Paired with shutdown(), which unregisters it.
     bool enable_overlap_hook();
 
+    // Switch between serial and overlapped reads with the session open (the knob trial's overlap
+    // arm, docs/measured-planning.md). Between two decodes only, from the eval thread. Turning it
+    // on registers the hook if it is not, and fails, changing nothing, when the CPU backend has
+    // none. Output is identical either way: only who waits for a read, and where, changes.
+    bool set_overlap(bool on);
+    bool overlap() const { return overlap_.load(std::memory_order_relaxed); }
+
     // True once an async read has failed or the source is shutting down. Wired to
     // llama_set_abort_callback so a mid-decode I/O failure aborts the graph cleanly
     // instead of computing on a half-read expert.
@@ -206,6 +213,7 @@ private:
     void maybe_sample_dense();
 
     bool load_layer_async(int il, const int32_t * ids, int n_ids); // overlap path
+    void build_ready_map();                                        // overlap's readiness cells and tensor map
 
     static void c_expert_ready(const ggml_tensor * src0, int expert, void * user_data);
     void on_expert_ready(const ggml_tensor * src0, int expert);
@@ -249,7 +257,8 @@ private:
     size_t pin_floor_ = 0;        // see set_pin_floor
     size_t pin_refused_at_ = 0;   // cache bytes resident when the platform first refused a pin; 0 = never
     uint64_t pin_shrunk_gen_ = 0; // the load generation the budget last stepped down in
-    bool overlap_ = false;
+    // Written by the eval thread only (init, set_overlap); read by a lane on a failed read, hence atomic.
+    std::atomic<bool> overlap_{false};
     bool two_wave_ = false;                  // publish the first projection's jobs before committing the rest (#118)
     bool prefetch_sync_ = false;             // test only: drain prefetch reads synchronously (serial mode)
     bool spec_adopt_ = false;                // route-ahead: staged layers adopt committed spec reads (see quiesce_spec)
@@ -367,7 +376,11 @@ private:
 
     // I/O lane pool
     int io_threads_ = 1;
-    std::vector<std::thread> io_pool_;
+    std::vector<std::thread> io_pool_; // lanes 1..N-1
+    // Lane 0's worker, which runs only under overlap: serially lane 0 is the eval thread itself.
+    // lane0_stop_ (under io_mtx_) hands the lane back without stopping the others.
+    std::thread lane0_worker_;
+    bool lane0_stop_ = false;
     std::vector<IoJob> jobs_;
     std::mutex io_mtx_;
     std::condition_variable io_cv_, io_cv_done_;

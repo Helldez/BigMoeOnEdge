@@ -60,6 +60,12 @@ struct AutoPlanOptions {
     // cache is priced on the model's own hit curve (bmoe/routing.h); without it, or with one that is
     // not this model's, the plan is the one a first load gets. Not owned; read during the call only.
     const RoutingTrace * routing = nullptr;
+
+    // What earlier loads of this model measured about its lossless knobs (Session::measured_knobs),
+    // every record the front-end kept for the file, one per machine and engine. The one whose
+    // hardware_fingerprint and engine version are this run's becomes ModelProfile::knobs; the rest
+    // are another machine's or another engine's and are not read. Not owned; read during the call.
+    const std::vector<MeasuredKnobs> * knobs = nullptr;
 };
 
 // The stages probe_and_plan() reports through AutoPlanOptions::on_step, in the order they run. The

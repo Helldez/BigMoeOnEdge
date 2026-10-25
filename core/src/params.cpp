@@ -1,5 +1,6 @@
 #include "bmoe/params.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
@@ -293,6 +294,48 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("trial-threads", "Thread counts to measure", G::Generation, L::Experimental,
+                          "Decode thread counts to try against the compute threads on the first answer, one or two, "
+                          "comma-separated: decode windows alternate between them once the cache has settled, and "
+                          "one replaces the compute threads only if it decodes clearly faster. Changes no output; "
+                          "the plan sets it when the result is kept.");
+        d.type = ParamType::Text;
+        d.value_hint = "N[,M]";
+        d.get = [](const RunConfig & c) {
+            std::string s;
+            for (size_t i = 0; i < c.trial.threads.size(); ++i)
+                s += (i ? "," : "") + std::to_string(c.trial.threads[i]);
+            return s;
+        };
+        d.set = [](RunConfig & c, const std::string & s, std::string & err) {
+            std::vector<int> v;
+            size_t at = 0;
+            while (at < s.size()) {
+                const size_t comma = std::min(s.find(',', at), s.size());
+                long long n = 0;
+                if (!parse_int(s.substr(at, comma - at), 1, RunConfig::threads_max, n, err)) return false;
+                v.push_back((int) n);
+                at = comma + 1;
+                if (comma + 1 == s.size()) {
+                    err = "expects N or N,M, got '" + s + "'";
+                    return false;
+                }
+            }
+            c.trial.threads = std::move(v);
+            return true;
+        };
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("trial-window", "Tokens per measured window", G::Generation, L::Debug,
+                          "Decoded tokens in each timed window of the knob measurement. Small values are for "
+                          "tests: a window of one token times one token's noise.");
+        d.value_hint = "N";
+        bounds(d, 1, KnobTrialConfig::window_tokens_max, "tokens");
+        bind_int(d, [](RunConfig & c) -> int & { return c.trial.window_tokens; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("chatml", "Wrap in chat turns", G::Generation, L::Advanced,
                           "Wrap the prompt in the model family's own chat turn. A chat front-end always "
                           "sets it; off sends the prompt as raw text.");
@@ -400,6 +443,17 @@ std::vector<ParamDesc> build() {
         d.flag.clear();
         d.switches = {{"--io-two-wave", "true"}};
         bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.io_two_wave; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("trial-overlap", "Measure overlap", G::Streaming, L::Experimental,
+                          "Try the other overlap setting against this one on the first answer, in alternating "
+                          "decode windows, and keep it only if it decodes clearly faster. Changes no output; the "
+                          "plan sets it when the result is kept. Needs every layer on the host.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--trial-overlap", "true"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.trial.overlap; });
         t.push_back(d);
     }
     {
