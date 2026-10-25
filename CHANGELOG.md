@@ -7,6 +7,13 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **A device cache's misses uploaded from the backend's own host memory** (`--expert-host-buffer
+  DEVICE`). The device probe now also times an upload from a buffer of the device's own host buffer
+  type (page-locked on CUDA, Vulkan and SYCL), and where it beats the file's mapping by the margin
+  and the host holds a second copy of the experts, `--auto` copies the resident experts into that
+  memory at load, byte for byte, and points the expert tensors at it. On a 24 GB card,
+  Qwen3.8-Flash-Next 125B: uploads 9.9 → 20.6 GiB/s, decode 63.5 → 72.6 tok/s, with MTP 75.5 → 89.4;
+  the load takes 36 s instead of 4.4 for the copy.
 - **The cost of a device measured on a real layer** (Step 3 of `docs/measured-planning.md`). The
   planner's compute probe now builds one layer of the model from the file's own tensors and bytes
   (the expert block as `mul_mat_id` over the layer's expert matrices, top-k per token, and the

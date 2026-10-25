@@ -113,6 +113,27 @@ the experts used most live next to the fastest processor, as RAM holds what flas
 cache fills from use, so the first load arms it; a recorded routing says in the plan how much of a
 token it serves.
 
+**Where a miss is uploaded from.** A resident expert is a page of the file's mapping, ordinary
+memory, and a device's backend copies ordinary memory through a staging buffer of its own. Every
+backend may offer a host buffer type of its own (`ggml_backend_dev_host_buffer_type`: page-locked
+memory on CUDA, Vulkan and SYCL; none on Metal, OpenCL or RPC), and a copy from it can go straight to
+the device. The isolated device probe times the same upload from both (`upload_gibs`,
+`upload_host_buffer_gibs`), and where the second wins by the planner's margin and the host holds a
+second copy of the experts beside everything else, the plan names the device in
+`--expert-host-buffer`: at load the experts are copied into that buffer type, byte for byte in the
+file's layout, and the expert tensors pointed at the copy as the streamer points them at its slots.
+The capture that finds them runs on the context the device cache then makes again, so the decode
+context carries no callback. Experts streamed from flash live in the streamer's slots, which this
+does not move.
+
+Measured on a 24 GB card in a rented container (31 CPUs, 241 GiB RAM), Qwen3.8-Flash-Next 125B Q2_0,
+`--auto`, 256 greedy tokens: a miss reached the card at 9.9 GiB/s from the mapping and 20.6 from the
+backend's host memory; decode went 63.5 → 72.6 tok/s, and with `--mtp --mtp-head` 75.5 → 89.4. The
+cost is at load: copying 32 GB into page-locked memory took the load from 4.4 to 36 s. Two greedy
+runs on that card differ after a few hundred characters with or without the copy (the device
+cache's order of computation), so the gates, not that card, are what prove the copy changes no
+output.
+
 Measured on a 24 GB discrete card (PCIe at about 26 GB/s, 48 host cores, 85 GiB of host memory),
 Qwen3.8-Flash-Next 125B GSQ-RCO Q2_0, every layer on the card, greedy:
 
