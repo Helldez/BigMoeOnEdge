@@ -58,6 +58,11 @@ struct ComputeDevice {
     // plan arms a device by.
     std::string name;
     std::string description; //
+    // Which physical device this is, as the backend reports it (ggml_backend_dev_props::device_id:
+    // the PCI bus id for a PCI device), empty when the backend does not say. Two backends that
+    // drive the same card - CUDA and Vulkan on one NVIDIA board, HIP and Vulkan on one AMD board -
+    // each register a device of their own, and this is what says they are one card rather than two.
+    std::string physical_id;
     uint64_t memory_free = 0;
     uint64_t memory_total = 0;
     // True when this device IS the CPU backend. Kept separate from `host_memory` on purpose: an

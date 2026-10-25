@@ -107,6 +107,8 @@ core/
                   port (prompt split, choice scoring, IPrefixCache), plus one llama.cpp adapter
     plan/       the hardware planner (hardware-planning.md). Two halves that must not mix:
                 planner, allocate, plan - pure rules over the profiles; no I/O, no platform names
+                backend_choice - which backend drives each card where two can (CUDA and Vulkan,
+                  HIP and Vulkan), the faster measured; pure as the rules
                 routing - the routing record's text form, the LRU replay over it, the hit curve
                   and the hottest experts (measured-planning.md, Step 1); pure as the rules
                 hardware_probe, model_probe, storage_probe, headroom_probe, bandwidth_probe,

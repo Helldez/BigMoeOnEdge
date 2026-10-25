@@ -209,7 +209,14 @@ void probe_storage(HardwareProfile & hw, const char * model_path, uint64_t slice
 // one graph per context, the ledger charged 1.2 GB for what then reserved 8 GB at a 16384 context. The
 // projection is taken at that width and at half of it, which gives the slope a narrower graph is
 // priced with (Placement::at_width).
-Placement probe_placement(
-    const char * model_path, const ModelProfile & model, const HardwareProfile & hw, uint32_t n_ctx, uint32_t n_ubatch);
+//
+// `devices`, where the plan chose among backends of one card (bmoe/backend_choice.h), is the list the
+// fitter places on; empty lets it see every device, as llama.cpp would.
+Placement probe_placement(const char * model_path,
+                          const ModelProfile & model,
+                          const HardwareProfile & hw,
+                          uint32_t n_ctx,
+                          uint32_t n_ubatch,
+                          const std::vector<std::string> & devices = {});
 
 } // namespace bmoe

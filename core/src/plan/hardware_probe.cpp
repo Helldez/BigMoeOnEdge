@@ -120,6 +120,7 @@ void probe_devices(HardwareProfile & h) {
             ComputeDevice d;
             d.name = props.name ? props.name : "";
             d.description = props.description ? props.description : "";
+            d.physical_id = props.device_id ? props.device_id : "";
             d.memory_free = props.memory_free;
             d.memory_total = props.memory_total;
             d.is_cpu = props.type == GGML_BACKEND_DEVICE_TYPE_CPU;

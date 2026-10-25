@@ -864,6 +864,18 @@ bool Session::Impl::load_model(Opening & o) {
             mparams.devices = const_cast<ggml_backend_dev_t *>(devs);
         }
     }
+    // The backends the plan chose, one per card: a name this build does not have is a plan for
+    // another machine.
+    std::vector<ggml_backend_dev_t> listed_devices;
+    if (!prefill && !cpu_only && !cfg.device_list.empty()) {
+        for (const std::string & n : cfg.device_list) {
+            ggml_backend_dev_t dev = ggml_backend_dev_by_name(n.c_str());
+            if (!dev) return o.fail("the plan names device '" + n + "', which this build does not have");
+            listed_devices.push_back(dev);
+        }
+        listed_devices.push_back(nullptr);
+        mparams.devices = listed_devices.data();
+    }
     // The fitter's split, applied as it was projected: the devices it put layers on, in its order,
     // each with its own count. Left to llama.cpp the layers are divided by free memory, which is not
     // the division the fitter sized each device's share for - on two cards it handed one of them
