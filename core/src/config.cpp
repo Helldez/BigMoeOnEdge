@@ -73,6 +73,8 @@ ValidationResult validate(const RunConfig & cfg) {
     }
     // 0 means "as wide as the context"; anything larger than the context would be reserved for a
     // batch that can never arrive, which is the opposite of what this knob is for.
+    if (cfg.ctx_checkpoints < 0) return fail("ctx_checkpoints must be >= 0 (0 = keep none)");
+    if (cfg.checkpoint_min_step < 0) return fail("checkpoint_min_step must be >= 0 (0 = no minimum spacing)");
     if (cfg.n_ubatch < 0) {
         return fail("n_ubatch must be >= 0 (0 = as wide as the context)");
     }

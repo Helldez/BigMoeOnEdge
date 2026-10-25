@@ -7,6 +7,16 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **Context checkpoints, as llama.cpp's server keeps them** (`--ctx-checkpoints N`, default 8, where the server keeps 32: Qwen3.6-35B-A3B's is 62.8 MiB and comes
+  out of the expert cache's memory;
+  `--checkpoint-min-step N`, default 8192). A chat turn whose prompt diverges from the cached one
+  inside a state that cannot be cut (a recurrent state, a sliding window) used to clear the context
+  and prefill the whole conversation again. It now restores the newest checkpoint before the
+  divergence: the part of the state that cannot be cut, copied at the end of every prompt through the
+  public state API into `common`'s `common_prompt_checkpoint`. It matters most for coding agents,
+  whose clients resend each answer as text: with Claude Code on Qwen3.6-35B-A3B, five requests of eight
+  re-prefilled their whole 12k-token prompt. A memory that cuts anywhere keeps no checkpoint. Gate G22
+  checks the restore is lossless on a recurrent model, and that a model that cuts anywhere is untouched.
 - **Desktop packages that open with a double-click** (part of #385). `release-host` builds one per
   OS from the same staged folder the `bmoe-desktop` archive carries, and the archives stay for
   scripted installs and the CLI. The scripts live under `packaging/`.

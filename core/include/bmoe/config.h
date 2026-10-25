@@ -563,6 +563,21 @@ struct RunConfig {
     // Decode is unaffected: a decode graph is one token wide whatever this says. The cost is
     // prefill throughput, which processes a long prompt in more, smaller passes.
     int n_ubatch = 0;
+
+    // Context checkpoints, as llama.cpp's server keeps them (--ctx-checkpoints and
+    // --checkpoint-min-step): copies of the part of the context's state that
+    // cannot be cut at an arbitrary position, so a chat turn whose prompt diverges from the cached
+    // one inside a recurrent state or a sliding window rolls back to the newest one before the
+    // divergence instead of prefilling the whole conversation again. One is taken at the end of
+    // every prompt, and inside a prompt prefilled in pieces every min_step tokens. A memory that can
+    // be cut anywhere has no such state, and keeps none. Lossless: a restored state is the state the
+    // same tokens computed.
+    //
+    // Fewer than the server's 32 by default: here every MiB they hold is a MiB the expert cache does
+    // not get, and Qwen3.6-35B-A3B's state is 62.8 MiB. An agent's request diverges at the end of the
+    // last prompt nearly always, which the newest checkpoint covers.
+    int ctx_checkpoints = 8;
+    int checkpoint_min_step = 8192;
     bool chatml = false; // wrap the prompt in the model family's chat turn (arch-aware)
 
     // Render the chat template with reasoning enabled. Passed to the template as the
@@ -635,6 +650,7 @@ struct RunConfig {
     static constexpr int threads_max = 256;    // n_threads and n_threads_batch
     static constexpr int n_expert_used_max = 256;
     static constexpr int n_gpu_layers_max = 1024;
+    static constexpr int ctx_checkpoints_max = 256;
 
     // The context a client of a server needs, below which a front-end warns before the first
     // request fails rather than after. Measured: opencode's first request, its system prompt and

@@ -56,6 +56,7 @@ if(BMOE_HAVE_LLAMA)
         src/moe/decide_probe.cpp
         src/moe/device_arena.cpp
         src/engine/session.cpp
+        src/engine/context_checkpoints.cpp
         src/engine/llama_log.cpp
         src/engine/prefill_device.cpp
         src/engine/prefill_path.cpp
