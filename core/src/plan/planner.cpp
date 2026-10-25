@@ -1805,7 +1805,12 @@ std::vector<int> thread_candidates(const HardwareProfile & hw, int incumbent) {
     std::sort(pool.begin(), pool.end());
     pool.erase(std::unique(pool.begin(), pool.end()), pool.end());
     pool.erase(std::remove_if(pool.begin(), pool.end(),
-                              [&](int n) { return n < 1 || n > RunConfig::threads_max || n == incumbent; }),
+                              [&](int n) {
+                                  // A class sum past the cores this process may use is a count the
+                                  // quota or the affinity mask would only time-slice.
+                                  return n < 1 || n > RunConfig::threads_max || n == incumbent ||
+                                         (hw.n_cores > 0 && n > (int) hw.n_cores);
+                              }),
                pool.end());
     std::stable_sort(pool.begin(), pool.end(),
                      [&](int a, int b) { return std::abs(a - incumbent) < std::abs(b - incumbent); });
