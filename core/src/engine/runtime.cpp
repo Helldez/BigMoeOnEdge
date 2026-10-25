@@ -84,7 +84,9 @@ RunResult run(const RunConfig & cfg, const RunOutputs & out) {
     // per-token answer for them would be O(n²) of nothing.
     req.render_text = out.render_text;
 
-    return session->generate(req, out.on_token, out.sink);
+    RunResult r = session->generate(req, out.on_token, out.sink);
+    r.routing = session->routing_record();
+    return r;
 }
 
 } // namespace bmoe

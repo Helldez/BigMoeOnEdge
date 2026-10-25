@@ -51,8 +51,30 @@ Semantic Versioning.
   tools, `previous_response_id` and stored items are refused with `400`; Responses built-in tools
   are dropped. `count_tokens` is an estimate from the request's length. The README says how to
   point each agent at the server; `docs/server-api.md` has the reference.
+- **The cache is sized from the model's own routing** (Step 1 of `docs/measured-planning.md`). A
+  streamed session keeps the experts each MoE layer asked the cache for during its first tokens
+  (`--routing-record`, default 256 decoded tokens and the prompt's last 256; it adds no graph nodes
+  and changes no output) and returns it as a value (`Session::routing_record()`, `bmoe/routing.h`).
+  `bmoe-cli --routing-dir DIR` and `bmoe-server` (under `routing/` in its data folder) keep it, one
+  file per model named by a content fingerprint of the file (`model_fingerprint()`). The next
+  `--auto` plan of that file replays it through the engine's LRU at every size up to the whole
+  expert set: the model's hit curve (`ModelProfile::hit_curve`). The cache is then ranked against
+  the resident groups along that curve and credited the hit rate it gives at the chosen size,
+  tagged `[measured on this model]` and with a `cache-hits` decision saying what it was replayed
+  from. Without a record, or with one for another model or top-k, the plan is unchanged: the
+  linear credit stays for a first load. The replay matches `scripts/route-replay.py` to the third
+  decimal on the archived phone traces (`routing` test), and a new gate (`G2r`) checks that a real
+  session's record replays to the hit rate its cache measured. The same record ranks the hottest
+  (block, expert) pairs (`hottest_experts()`), for a later device-side cache to warm from; nothing
+  reads it yet. The on-device runs this is judged by are owed.
 
 ### Changed
+- **The plan's hit rate is set against the decode's.** The line `bmoe-cli --auto` prints after a run
+  compares the credited hit rate with the one measured over the decode alone (the figure a token is
+  priced with), with the prompt-inclusive one in brackets; it used to show the cache's share of the
+  expert set against the cumulative rate. `bmoe-server`'s `/api/plan` `measured.cache_hit_pct` is
+  likewise the last turn's decode now. `RunSummary::cache_hit_decode_pct` carries it;
+  `BMOE_DONE`'s `cache_hit_pct` is unchanged.
 - **`--dense-weights pinned` is the name of the reclaim-exempt mode** that was `ahwb`. The mode
   runs on Android (a dma-buf) and on macOS (wired memory), and the name only described the first.
   `ahwb` still parses, on the command line and in saved settings, and is written back as `pinned`;

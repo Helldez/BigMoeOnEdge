@@ -132,6 +132,15 @@ struct MoeStreamConfig {
     // so validate() rejects it when both are off. See docs/prefetch.md.
     int prefetch_layers = 0;
 
+    // How many tokens of this model's routing the session keeps for the planner: the experts each
+    // MoE layer asks the cache for, for the first N decoded tokens and the last N of the prompt
+    // before them (Session::routing_record). A front-end that keeps the record hands it to the next
+    // --auto plan of the same file, which then prices the cache on the hit rate this model's routing
+    // actually gets at every size instead of a linear credit (bmoe/routing.h). It asks the graph for
+    // nothing - the ids are gathered on every routing anyway - and stops by itself; 0 records nothing.
+    // Lossless: it changes no output.
+    int routing_record_tokens = 256;
+
     // How the dense (non-expert) weights are treated. The streamer only rebinds experts; the rest —
     // gguf header/metadata, embeddings, attention, norms, lm_head — is handled by one of three
     // policies (see core/src/moe/dense_weights.h):
@@ -322,6 +331,8 @@ struct MoeStreamConfig {
     static constexpr int cache_min_mb = 1500; // smallest non-pathological cache (see above)
     static constexpr int io_threads_max = 8;
     static constexpr int prefetch_layers_max = 8;
+    // A record's memory is a few ints per layer per token; this keeps the longest one in single MiB.
+    static constexpr int routing_record_tokens_max = 4096;
     static constexpr int route_ahead_max = 8; // beyond this the staleness has no measured meaning
     static constexpr int predict_spec_max_limit = 8;
     static constexpr float drop_cold_frac_max = 1.0f;    // the uniform share: never empties a routing

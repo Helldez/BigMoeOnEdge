@@ -261,6 +261,10 @@ ValidationResult validate(const RunConfig & cfg) {
             return fail("moe.prefetch_layers must be in [0, " + std::to_string(MoeStreamConfig::prefetch_layers_max) +
                         "]");
         }
+        if (m.routing_record_tokens < 0 || m.routing_record_tokens > MoeStreamConfig::routing_record_tokens_max) {
+            return fail("moe.routing_record_tokens must be in [0, " +
+                        std::to_string(MoeStreamConfig::routing_record_tokens_max) + "]");
+        }
         if (m.cache_auto && m.cache_mb > 0) {
             return fail("moe.cache_auto and an explicit moe.cache_mb are mutually exclusive: choose "
                         "auto-sizing (cache_mb = 0, cache_auto) or a fixed budget (cache_mb > 0).");

@@ -13,6 +13,7 @@
 #include "bmoe/run_error.h"
 #include "bmoe/config.h"
 #include "bmoe/metrics.h"
+#include "bmoe/routing.h"
 
 #include <functional>
 #include <string>
@@ -38,6 +39,9 @@ struct RunResult {
     // Empty unless the request described tools. A turn that calls usually has no answer text.
     std::vector<ChatToolCall> tool_calls;
     RunSummary summary;
+    // What the session recorded of the model's routing (Session::routing_record). run() fills it;
+    // Session::generate() leaves it empty, since a session's record spans its turns.
+    RoutingTrace routing;
     explicit operator bool() const { return ok; }
 };
 

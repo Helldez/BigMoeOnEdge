@@ -1,8 +1,9 @@
 # Measured planning: pricing the plan on the model itself
 
-> **Design, not yet built.** This page describes where `--auto` goes next and in what order. Nothing
-> here has shipped; each step names what it removes, what it must not break, and how it is judged.
-> The planner as it stands is [hardware-planning.md](hardware-planning.md).
+> **Mostly design.** This page describes where `--auto` goes next and in what order. Step 1 is built
+> and awaits its on-device judgement (its status is below); Steps 2 to 4 have not shipped. Each step
+> names what it removes, what it must not break, and how it is judged. The planner as it stands is
+> [hardware-planning.md](hardware-planning.md).
 
 The goal is a planner that is smaller than today's, agnostic by construction, and right more often:
 the plan that decodes and prefills fastest on this machine, with this model, holding no more memory
@@ -17,7 +18,7 @@ model's own tensors rather than on stand-ins.
 | `--io-threads`, `--no-odirect`, `--release-mmap` | the storage probe, reading the model file itself at its own expert slice size | yes |
 | Prefill device | a wide matmul probe, then a short real prefill compared against the host at load | yes, for correctness |
 | `--threads`, host and device bandwidth | a GEMV sweep on synthetic bytes encoded in the model's quant format | format only |
-| Cache size against resident dense groups | seconds saved per byte, with the hit rate credited **linearly** in the fraction of the expert set held | no: a coefficient |
+| Cache size against resident dense groups | seconds saved per byte, with the hit rate read off the model's own routing record (Step 1), or on a first load credited **linearly** in the fraction of the expert set held | with a record, yes; on a first load, no: a coefficient |
 | Layers on a device for decode, beyond what the fitter placed for capacity | the crossing price, which is unmeasured, so never | no |
 | `--overlap` | lossless and measured faster on two machines, never armed by the plan (#294) | no |
 
@@ -93,6 +94,36 @@ credited 65% and the run measured 79.4%.
 points of the measured one on the reference machines (phone, Mac, Windows laptop) and on #321's
 desktop. Decode tok/s must not drop on any of them. Output is unchanged by construction: only the
 cache size moves, and the cache is lossless.
+
+**Status: built, judgement owed.** What landed, and how it was checked off the device:
+
+- The replay is `replay_lru` in `core/src/plan/routing.cpp` (`bmoe/routing.h`). On the three archived
+  phone traces it matches `scripts/route-replay.py`'s LRU row to the third decimal at five budgets each,
+  and at each run's own budget reproduces the hit rate the run recorded (74.9, 76.8, 32.4%); a test
+  (`routing`) holds both. In the gates (`G2r`), the record a real streamed session kept replays to the
+  hit rate that session's cache measured, prompt included and decode alone.
+- The record is kept by the session itself (`--routing-record`, default 256 decoded tokens and the
+  prompt's last 256), from the ids the hook gathers for the cache anyway: no extra graph nodes, unlike
+  `--route-trace`. It is one line per cache request, so a chunked prompt replays as the engine served
+  it rather than as one batch.
+- The front-ends keep it: `bmoe-cli --routing-dir DIR`, `bmoe-server` under `routing/` in its data
+  folder, one file per model named by a content fingerprint of the file (`model_fingerprint`). The
+  next plan of the file hands it back (`AutoPlanOptions::routing`) and `attach_routing` turns it into
+  `ModelProfile::hit_curve`: `hit_share(bytes)`, monotone, over the whole expert set, absent unless
+  the record is this model at this top-k with enough decoded tokens.
+- The cache then enters the ranking as pieces of the curve's concave hull, and is credited the curve
+  at the size it gets, tagged `[measured on this model]`. The predicted-against-measured line sets
+  that credit against the decode's own measured hit rate, the figure it prices.
+- **Not removed:** `cache_hit_optimism` and the linear credit stay as what a first load, with no
+  record yet, is priced with, and a plan without a record is byte for byte the plan before this step
+  (asserted in `planner`). They go when every front-end ships with a record for every model it
+  plans, which is not yet true on a first download.
+- The same record ranks the hottest (block, expert) pairs by use (`hottest_experts`), for Step 4's
+  device tier to warm from at start. Nothing reads it yet.
+
+Owed: the on-device runs this step is judged by (the reference machines and #321's desktop), each a
+first load to record and a second to plan from the record, with the predicted-against-measured line
+from both.
 
 ## Step 2: lossless knobs settled on the first real request
 

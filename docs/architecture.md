@@ -28,7 +28,8 @@ server/         bmoe-server: the application framework every UI speaks to (docs/
                 HttpFetch port: the library's one adapter, there so its no-curl answer is tested
                 engine_host: the one Session, loads, the turn line, over the HostedSession seam
                 (hosted_session.h) its test drives with a scripted session; model_library: files, catalog,
-                downloads; planner_adapter: /api/plan when the planner is built in;
+                downloads; planner_adapter: /api/plan when the planner is built in; routing_store:
+                each model's routing record, kept by content fingerprint for the next plan;
                 access: who may reach the API (host, origin, key, content type), pure and tested;
                 platform: the only file with platform #ifs; http_server: the HTTP routes and
                 run(); the whole is the bmoe_server library, main.cpp the process around it
@@ -66,6 +67,8 @@ core/
     planner.h, allocate.h, plan.h
                     the planning rules: (machine, model, request) -> a resolved RunConfig with the
                     reason for each knob; the cost model and the memory ledger; the plan as a value
+    routing.h       a model's own routing as a value: the record a session keeps, its text form,
+                    the LRU replay that gives the model's hit curve, and its hottest experts
     probe.h         the adapters' entry points: what fills the two profiles
     auto_plan.h     probe_and_plan: the one probe-and-plan sequence every front-end calls, the
                     adapters in their order and then the rules; the options are what differs
@@ -104,6 +107,8 @@ core/
                   port (prompt split, choice scoring, IPrefixCache), plus one llama.cpp adapter
     plan/       the hardware planner (hardware-planning.md). Two halves that must not mix:
                 planner, allocate, plan - pure rules over the profiles; no I/O, no platform names
+                routing - the routing record's text form, the LRU replay over it, the hit curve
+                  and the hottest experts (measured-planning.md, Step 1); pure as the rules
                 hardware_probe, model_probe, storage_probe, headroom_probe, bandwidth_probe, gate_probe,
                   device_probe, placement_probe, isolated_probe (a device asked in a second
                   process, so a driver that ends it ends only that) - the adapters that measure a

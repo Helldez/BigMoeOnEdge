@@ -164,7 +164,57 @@ struct Candidate {
     bool fractional; // may take part of `bytes` and save proportionally (the expert cache)
     uint64_t floor;  // fractional only: below this it saves nothing at all
     std::string why;
+    // A piece of the cache priced from the model's measured hit curve rather than the linear credit:
+    // its position along the curve. The pieces are taken in that order and only while each one
+    // before was taken whole, since a hit further along the curve is only bought by holding the
+    // bytes before it. -1 for every other candidate.
+    int curve_piece = -1;
 };
+
+// The cache as pieces of this model's measured hit curve, for the ranking. Each piece is a stretch
+// of the curve's upper concave hull, so their densities fall along it and the ranking, taking the
+// densest first, walks the curve from the floor up as far as each next byte is worth more than what
+// competes with it. The hull, not the curve itself: a stretch where the curve rises late (an LRU
+// below one token cycle returns nothing, then a great deal at once) is worth its average to a buyer
+// who takes all of it, which is the only way it can be bought. What the cache is finally credited is
+// the curve at the size it gets (bound_cache), never the hull.
+//
+// The curve covers the whole expert set; the cache serves the host's share of it, and a host cache
+// of C is read as a whole-set cache of C scaled up by the share it covers.
+void push_curve_pieces(std::vector<Candidate> & out,
+                       const HitCurve & curve,
+                       double scale,
+                       uint64_t cacheable,
+                       uint64_t floor,
+                       double cycle_seconds) {
+    struct Vertex {
+        double x, y;
+    };
+    std::vector<Vertex> hull{{0.0, 0.0}};
+    for (const HitPoint & pt : curve.points) {
+        const double x = (double) pt.cache_bytes * scale;
+        if (x < (double) floor || x > (double) cacheable + 0.5) continue;
+        const Vertex v{x, pt.hit};
+        // Keep the hull concave: drop a vertex that lies on or under the chord past it.
+        while (hull.size() >= 2) {
+            const Vertex & a = hull[hull.size() - 2];
+            const Vertex & b = hull.back();
+            if ((b.x - a.x) * (v.y - a.y) - (b.y - a.y) * (v.x - a.x) < 0.0) break;
+            hull.pop_back();
+        }
+        if (v.x > hull.back().x) hull.push_back(v);
+    }
+    int piece = 0;
+    for (size_t i = 1; i < hull.size(); ++i) {
+        const uint64_t bytes = (uint64_t) (hull[i].x - hull[i - 1].x);
+        const double saved = cycle_seconds * (hull[i].y - hull[i - 1].y);
+        if (bytes == 0 || !(saved > 0.0)) break;
+        Candidate k{WeightGroup::Experts,   Lane::ExpertStream, bytes, saved, saved / (double) bytes, true,
+                    piece == 0 ? floor : 0, "expert cache"};
+        k.curve_piece = piece++;
+        out.push_back(k);
+    }
+}
 
 // ── the rates every price is built from ──────────────────────────────────────────────────────
 void measure_rates(Pricing & c) {
@@ -317,6 +367,14 @@ std::vector<Candidate> price_lanes(Pricing & c) {
                          "), so a budget between the two returns hits and needs force-cache to be accepted; the "
                          "floor enforced here is the model's");
 
+            // With this model's own hit curve, the cache is priced along it.
+            if (model.hit_curve.measured && c.in.cacheable_bytes > 0 && model.expert_bytes > 0) {
+                push_curve_pieces(candidates, model.hit_curve,
+                                  (double) c.in.cacheable_bytes / (double) model.expert_bytes, d.bytes, floor,
+                                  seconds_at_mibs(cycle, c.stream_mibs));
+                continue;
+            }
+
             // A cache holding the whole expert set saves every read. The credited hit rate is
             // linear in its size, so the saving per byte of RAM is constant above the floor and this
             // candidate can be ranked directly against the read-whole groups.
@@ -368,6 +426,9 @@ std::vector<Candidate> price_lanes(Pricing & c) {
 void spend_ranking(Pricing & c, std::vector<Candidate> & candidates) {
     Allocation & a = c.a;
     std::sort(candidates.begin(), candidates.end(), [](const Candidate & x, const Candidate & y) {
+        // Pieces of the curve keep their order along it, which the hull already makes their density
+        // order: this only stops the tie rule below from swapping two that are nearly collinear.
+        if (x.curve_piece >= 0 && y.curve_piece >= 0) return x.curve_piece < y.curve_piece;
         // Ties are compared with a relative tolerance, not exactly, and that is the whole point of
         // this comparator. In exact arithmetic every group that is read whole every token has the
         // SAME density - it is `1/refault_rate - 1/compute_rate`, and the group's size cancels -
@@ -383,10 +444,13 @@ void spend_ranking(Pricing & c, std::vector<Candidate> & candidates) {
     });
 
     uint64_t remaining = c.spendable;
+    bool curve_open = true; // the next piece of the curve may still be taken
     for (const Candidate & k : candidates) {
         GroupPlacement & p = a.at(k.group);
+        if (k.curve_piece > 0 && !curve_open) continue;
         if (k.fractional) {
             if (remaining < k.floor) {
+                curve_open = false;
                 note(a, "cache-off", size_brief(remaining),
                      "No cache: " + size_brief(remaining) + " is left, under the " + size_brief(k.floor) +
                          " one token reads.",
@@ -395,6 +459,22 @@ void spend_ranking(Pricing & c, std::vector<Candidate> & candidates) {
                          ". A budget below that evicts a slice before the same token needs it again - an eviction "
                          "per read and no hits, measurably slower than no cache at all. The floor is the model's, "
                          "not a constant.");
+                continue;
+            }
+            if (k.curve_piece >= 0) {
+                // Along the curve: the piece whole while it fits, the rest of the budget where it
+                // does not, and then no further piece. The total is what is rounded, as below.
+                const uint64_t want = std::min(remaining, k.bytes);
+                curve_open = want == k.bytes;
+                const uint64_t total = (a.cache_bytes + want) & ~((1ull << 20) - 1);
+                if (total < k.floor) {
+                    curve_open = false;
+                    continue;
+                }
+                remaining -= total - a.cache_bytes;
+                a.cache_bytes = total;
+                p.lane = Lane::ExpertStream;
+                p.resident_bytes = total;
                 continue;
             }
             // Rounded down to a whole MiB: the flag this becomes is expressed in MiB, and a report
@@ -538,16 +618,27 @@ void bound_cache(Pricing & c) {
 
     // The cost and the rationale, both from the size that was actually chosen.
     const double held = (double) sized / (double) in.cacheable_bytes;
-    const double hit = std::min(1.0, (double) c.pol.cache_hit_optimism * held);
+    const HitCurve & curve = model.hit_curve;
+    const bool from_curve = curve.measured && model.expert_bytes > 0;
+    const double hit =
+        from_curve
+            ? curve.hit_share((uint64_t) ((double) sized * (double) model.expert_bytes / (double) in.cacheable_bytes))
+            : std::min(1.0, (double) c.pol.cache_hit_optimism * held);
     a.cache_hit_credited = hit;
     p.seconds_per_token =
         seconds_at_mibs((uint64_t) ((1.0 - hit) * (double) model.token_cycle_bytes), c.stream_mibs) +
         finite_or_zero(seconds_at_gibs(model.group(WeightGroup::Experts).bytes_per_token, c.host_gibs));
-    char buf[256];
-    std::snprintf(buf, sizeof(buf),
-                  "streamed with a %s cache, %.0f%% of the expert set; credited hit rate %.0f%%, which is "
-                  "conservative on purpose and is the coefficient a run's own counters correct",
-                  mibs(sized).c_str(), 100.0 * held, 100.0 * hit);
+    char buf[320];
+    if (from_curve)
+        std::snprintf(buf, sizeof(buf),
+                      "streamed with a %s cache, %.0f%% of the expert set; credited hit rate %.0f%% [measured on "
+                      "this model]: its own routing, %u decoded tokens, replayed through the cache at this size",
+                      mibs(sized).c_str(), 100.0 * held, 100.0 * hit, curve.decode_tokens);
+    else
+        std::snprintf(buf, sizeof(buf),
+                      "streamed with a %s cache, %.0f%% of the expert set; credited hit rate %.0f%%, which is "
+                      "conservative on purpose and is the coefficient a run's own counters correct",
+                      mibs(sized).c_str(), 100.0 * held, 100.0 * hit);
     p.reason = buf;
 }
 

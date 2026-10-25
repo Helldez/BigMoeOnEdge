@@ -62,6 +62,34 @@ struct GroupDemand {
     bool streamable = false;
 };
 
+// How many of a token's expert reads an LRU expert cache of a given size serves, for THIS model: an
+// LRU replay of a routing trace this model recorded (bmoe/routing.h), at sizes from nothing to the
+// whole expert set. Routing does not depend on where an expert is computed or which machine ran it,
+// so the curve is a property of the model (and of the kind of prompt it was recorded on), and it is
+// over the WHOLE expert set: a caller sizing a cache for part of it scales by the share it serves.
+//
+// Absent (`measured` false) is the first load of a model, and every caller keeps the credit it had
+// before there was a curve. A curve is never invented from a coefficient.
+struct HitPoint {
+    uint64_t cache_bytes = 0;
+    double hit = 0.0; // decode lookups served from the cache, 0..1: what a decoded token is priced with
+};
+
+struct HitCurve {
+    bool measured = false;
+    // Ascending in cache_bytes, monotone in hit, starting at (0, 0). Between two points the share is
+    // interpolated; past the last it holds the last.
+    std::vector<HitPoint> points;
+    uint32_t decode_tokens = 0;  // decoded tokens in the trace it was replayed from
+    uint32_t prefill_tokens = 0; // prompt tokens in it
+    // Why a trace that was offered was not used (a different model, too short): "" otherwise. A
+    // rejected trace leaves `measured` false, and the plan is the one it would be without it.
+    std::string rejected;
+
+    // The share served at `cache_bytes`, 0..1, non-decreasing in it. 0 when not measured.
+    double hit_share(uint64_t cache_bytes) const;
+};
+
 struct ModelProfile {
     std::string arch; // for the rationale and for the record; never branched on
     bool is_moe = false;
@@ -161,6 +189,11 @@ struct ModelProfile {
     // streaming however large it is. No size threshold or architecture name is involved.
     bool tied_output_head = false;
     bool has_mtp = false; // a trained multi-token-prediction block is present
+
+    // This model's own hit-rate curve, from a routing trace it recorded on an earlier run
+    // (attach_routing in bmoe/routing.h). Not read from the file: a front-end that kept a trace hands
+    // it back, and without one the curve is absent and the plan is what it always was.
+    HitCurve hit_curve;
 
     bool ok = false; // false when the file could not be read; every rule declines
     std::string error;

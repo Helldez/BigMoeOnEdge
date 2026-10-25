@@ -21,6 +21,7 @@
 #include "model_library.h"
 #include "planner_adapter.h"
 #include "platform.h"
+#include "routing_store.h"
 #include "settings_store.h"
 #include "url_entry.h"
 
@@ -365,10 +366,18 @@ struct App {
         std::string catalog,
         std::string added,
         std::string scratch,
+        std::string routing_dir,
         const std::function<std::unique_ptr<HttpFetch>(const std::string &)> & fetch)
         : opt(std::move(o)), store(server_defaults(), std::move(settings_path)), host(bus),
           lib(std::move(models_dir), opt.scan_dirs, std::move(catalog), std::move(added), opt.hf_endpoint, bus),
-          net(fetch ? fetch(scratch) : curl_fetch(scratch, opt.hf_endpoint)), scratch_dir(std::move(scratch)) {}
+          net(fetch ? fetch(scratch) : curl_fetch(scratch, opt.hf_endpoint)), scratch_dir(std::move(scratch)),
+          routing(std::move(routing_dir)) {
+        host.set_routing_sink(
+            [this](const std::string & model, const RoutingTrace & rec) { routing.keep(model, rec); });
+    }
+
+    // Each model's recorded routing, kept for the next plan of that file (routing_store.h).
+    RoutingStore routing;
 
     json config_object(const json * rejected = nullptr) {
         const RunConfig cfg = store.config();
@@ -393,12 +402,16 @@ struct App {
     // A measurement, with each stage announced as it starts (`plan_progress` events) and its end, so
     // a UI says which probe is running rather than waiting blind. The caller holds measure_m.
     PlanOutcome measure_plan() {
-        PlanOutcome p =
-            make_plan(store.planning_config(), store.operator_keys(), opt.isolated_probes,
-                      [this](const std::string & step, const std::string & label, int index, int count) {
-                          bus.publish("plan_progress",
-                                      json{{"step", step}, {"label", label}, {"index", index}, {"count", count}});
-                      });
+        const RunConfig cfg = store.planning_config();
+        RoutingTrace kept;
+        const bool have = routing.load(cfg.model_path, kept);
+        PlanOutcome p = make_plan(
+            cfg, store.operator_keys(), opt.isolated_probes,
+            [this](const std::string & step, const std::string & label, int index, int count) {
+                bus.publish("plan_progress",
+                            json{{"step", step}, {"label", label}, {"index", index}, {"count", count}});
+            },
+            have ? &kept : nullptr);
         bus.publish("plan_progress", json{{"step", "done"}});
         return p;
     }
@@ -1242,7 +1255,8 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     const std::string added = (fs::u8path(data_dir) / "added-models.json").u8string();
     const std::string scratch = (fs::u8path(data_dir) / "tmp").u8string();
 
-    App app(o, settings, models_dir, catalog, added, scratch, embedding.fetch);
+    const std::string routing_dir = (fs::u8path(data_dir) / "routing").u8string();
+    App app(o, settings, models_dir, catalog, added, scratch, routing_dir, embedding.fetch);
     for (const std::string & w : app.store.load())
         std::fprintf(stderr, "warning: %s\n", w.c_str());
     for (const std::string & w : app.lib.warnings())

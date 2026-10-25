@@ -18,6 +18,7 @@
 #include "bmoe/hardware_profile.h"
 #include "bmoe/model_profile.h"
 #include "bmoe/plan.h"
+#include "bmoe/routing.h"
 
 #include <functional>
 #include <string>
@@ -53,6 +54,12 @@ struct AutoPlanOptions {
     // the number of stages, so a front-end can say which probe is running instead of a blind wait.
     // Called on the planning thread; empty, nothing is reported.
     std::function<void(const char * step, int index, int count)> on_step;
+
+    // The routing this model recorded on an earlier run (Session::routing_record), kept by the
+    // front-end against the model file's fingerprint (model_fingerprint in bmoe/probe.h). With it the
+    // cache is priced on the model's own hit curve (bmoe/routing.h); without it, or with one that is
+    // not this model's, the plan is the one a first load gets. Not owned; read during the call only.
+    const RoutingTrace * routing = nullptr;
 };
 
 // The stages probe_and_plan() reports through AutoPlanOptions::on_step, in the order they run. The

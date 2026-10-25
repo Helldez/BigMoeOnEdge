@@ -10,6 +10,7 @@
 #include "json_util.h"
 
 #include "bmoe/config.h"
+#include "bmoe/routing.h"
 
 #include <cstdint>
 #include <functional>
@@ -41,10 +42,13 @@ bool planner_available();
 // starts: its key (bmoe/auto_plan.h, k_plan_steps), its words for a person, its position and how
 // many there are.
 using PlanStepFn = std::function<void(const std::string & step, const std::string & label, int index, int count)>;
+// `routing` (nullable) is the model's own recorded routing from an earlier load (routing_store.h):
+// with it the cache is priced on the model's hit curve.
 PlanOutcome make_plan(const RunConfig & cfg,
                       const std::vector<std::string> & pinned,
                       bool isolated_probes = true,
-                      const PlanStepFn & on_step = nullptr);
+                      const PlanStepFn & on_step = nullptr,
+                      const RoutingTrace * routing = nullptr);
 
 // The child's side of an isolated probe: probe `device` for `model_path`, print its facts after
 // the marker, and return the process's exit code. 3 when there is no such device or no planner.

@@ -466,6 +466,16 @@ std::vector<ParamDesc> build() {
         bind_int(d, [](RunConfig & c) -> int & { return c.moe.cache_ceil_mb; });
         t.push_back(d);
     }
+    {
+        ParamDesc d = row("routing-record", "Routing recorded for planning", G::Cache, L::Advanced,
+                          "Keep the experts this model routes for its first N tokens, so the next --auto plan "
+                          "sizes the cache on the hit rate this model really gets. Changes no output. 0 is off.");
+        d.value_hint = "N";
+        bounds(d, 0, MoeStreamConfig::routing_record_tokens_max, "tokens");
+        special(d, "0", "off");
+        bind_int(d, [](RunConfig & c) -> int & { return c.moe.routing_record_tokens; });
+        t.push_back(d);
+    }
 
     // ── memory ───────────────────────────────────────────────────────────────────────
     {

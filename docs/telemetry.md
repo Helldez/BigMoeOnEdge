@@ -542,6 +542,35 @@ Real traces from Qwen3-30B-A3B, Gemma-4-26B-A4B and gpt-oss-120b on device, with
 support, are archived in
 [bench-data/2026-07-15-route-trace/](bench-data/2026-07-15-route-trace/findings.md).
 
+A route trace also prices a plan: `bmoe::parse_routing_trace` reads one into the planner's routing
+record, rebuilding its cache requests the way `scripts/route-replay.py` does.
+
+## Routing record
+
+Not a trace and not opt-in: a streamed session keeps the experts each MoE layer asked the cache for
+during its first tokens (`--routing-record N`, default 256 decoded tokens and the last 256 of the
+prompt; `0` is off), for the planner to read the model's hit curve from
+([hardware-planning.md](hardware-planning.md#the-cache-priced-on-the-models-own-routing)). It asks
+the graph for nothing, so a run with it is a benchmark run. `bmoe-cli --routing-dir DIR` and
+`bmoe-server` (under `routing/` in its data folder) keep it as one text file per model,
+`<fingerprint>.routing`:
+
+```
+# bmoe routing v1
+# n_layer=<int> n_expert=<int> n_expert_used=<int> prefill_tokens=<int> decode_tokens=<int>
+# layer=<int> expert_bytes=<int>                           (one per block with streamed experts)
+p <layer> <expert> <expert> ...                            (a prompt chunk's request, token-major)
+d <layer> <expert> ...                                     (a decoded token's request)
+```
+
+One line is one request to the expert cache, in the order the engine made them: what a block
+routed for one llama_decode, every token of a prompt chunk on one line. Replayed through an LRU of
+the run's budget, the record gives the hit rate the run measured (gate `G2r`).
+
+`BMOE_DONE`'s `cache_hit_pct` stays the cumulative figure. The decode-only one is what the CLI's
+`plan: predicted ...` line and `bmoe-server`'s `/api/plan` `measured.cache_hit_pct` now set against
+the plan's credited hit rate, since that is the figure a decoded token is priced with.
+
 ## Session mode
 
 With `--session`, `bmoe-cli` keeps the model loaded and the expert cache warm across prompts

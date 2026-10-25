@@ -54,6 +54,14 @@ struct GgufHeaderFacts {
 };
 GgufHeaderFacts probe_gguf_header(const char * model_path);
 
+// What a front-end keys the model's own measurements by (its routing trace, bmoe/routing.h): a
+// 64-bit hash of the file's size and of bytes sampled from its content - the header and metadata at
+// the start, and windows across the tensor data - as 16 hex digits. Content, not path or modification
+// time, because what it keys is a property of the model: the same file copied to another folder or
+// another machine keeps it, and two fine-tunes of one base, which share every shape and most of a
+// header, do not share their tensor bytes. A few MiB read; "" when the file cannot be read.
+std::string model_fingerprint(const char * model_path);
+
 // Ask every registered device whether it can execute THIS model's expert matmul on THIS model's
 // quantized layout, and whether placing such a weight there would need a repack. Asking the backend
 // about the real operation is what keeps the answer vendor-neutral and current: a backend that
