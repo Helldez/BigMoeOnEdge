@@ -2022,7 +2022,8 @@ int main() {
         // Measured on one side only, the pair falls back to the GEMV on both, and the split stands.
         HardwareProfile half_real = h;
         half_real.host_dense_gibs = 30.0;
-        d = find(plan_on(half_real, PlanRequest{}), "device-layers");
+        const Plan one_side = plan_on(half_real, PlanRequest{});
+        d = find(one_side, "device-layers");
         check(d && d->value == "40 split", "device crossing, one side measured: the same experiment on both");
     }
 
