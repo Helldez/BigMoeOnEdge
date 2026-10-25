@@ -14,7 +14,19 @@ Semantic Versioning.
   with a draft head; the target loads as it is. `scripts/fetch-hf-subset.py` fetches only the
   tensors a set of patterns names from a Hugging Face checkpoint, by HTTP range requests (each must
   come back as the range asked for), into a directory the converter reads like the checkpoint, so a
-  head is a few GB of download instead of the whole model. `docs/mtp.md` has the three commands.
+  head is a few GB of download instead of the whole model, eight range requests at a time.
+  `scripts/convert-mtp-head.py` runs llama.cpp's converter with the pre-tokenizer name taken from the
+  model file the head drafts for, where the converter's own table does not know the tokenizer yet.
+  `docs/mtp.md` has the three commands. Measured on a 24 GB desktop GPU with Qwen3.8-Flash-Next:
+  45.1 tok/s against 30.5-33.8 without the head.
+
+### Fixed
+- **Speculation's memory is in the placement.** The rollback snapshots speculation keeps in the
+  target's context, and the MTP draft context's own state and compute buffers, were not in what
+  llama.cpp's capacity fitter placed the model against, so on a card the fitter had filled the
+  draft context's 0.9 GB of compute buffers ended the first prompt in a CUDA out-of-memory. The
+  placement probe now hands the draft context to the fitter as the second model sharing the
+  devices.
 - **Desktop packages that open with a double-click** (part of #385). `release-host` builds one per
   OS from the same staged folder the `bmoe-desktop` archive carries, and the archives stay for
   scripted installs and the CLI. The scripts live under `packaging/`.
