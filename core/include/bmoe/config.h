@@ -565,6 +565,31 @@ inline constexpr KvCacheType k_kv_cache_types[] = {KvCacheType::F16,  KvCacheTyp
                                                    KvCacheType::Q8_0, KvCacheType::Q5_1, KvCacheType::Q5_0,
                                                    KvCacheType::Q4_1, KvCacheType::Q4_0, KvCacheType::IQ4_NL};
 const char * kv_cache_type_name(KvCacheType t);
+// Lossless knobs measured on the first real request (docs/measured-planning.md, Step 2). Empty by
+// default, and then nothing is measured: the plan arms it when the front-end keeps the result
+// (bmoe/measured_knobs.h), or a person does by hand. Once the cache's hit rate has settled, decode
+// windows alternate between the incumbent and each candidate, A B A B, every window decoding the
+// user's own answer; a candidate replaces the incumbent only if it decodes faster by the planner's
+// device margin in the median of its rounds. The winner stays for the rest of the session and is
+// returned (Session::measured_knobs). Changes no output: every knob here is lossless.
+struct KnobTrialConfig {
+    // Decode thread counts tried against n_threads, at most threads_max_candidates. Switched live
+    // (llama_set_n_threads); prefill keeps n_threads_batch.
+    std::vector<int> threads;
+    // Also try the other setting of moe.overlap. Switched live between two decodes, by giving the
+    // streamer's first read lane a worker of its own or taking it back; needs streaming, the
+    // expert-ready hook, and no layer on a device (overlap changes how a context offloads, which is
+    // fixed when it is created).
+    bool overlap = false;
+    // Tokens per timed window. Small values are for tests: a window of a token or two times the
+    // noise of one token.
+    int window_tokens = 8;
+
+    bool enabled() const { return !threads.empty() || overlap; }
+
+    static constexpr int threads_max_candidates = 2;
+    static constexpr int window_tokens_max = 256;
+};
 
 // A full run: model, prompt, decoding, streaming, telemetry.
 struct RunConfig {
@@ -676,6 +701,7 @@ struct RunConfig {
     SpecConfig spec;             // self-speculative decoding (MTP head or n-gram lookup); off by default
     PrefillDeviceConfig prefill; // prefill graphs on an accelerator; off by default
     DecideConfig decide;         // decide()'s prefix-state policy; off by default
+    KnobTrialConfig trial;       // lossless knobs measured on the first real request; off by default
 
     // Let llama.cpp's and ggml's DEBUG log lines through to stderr. Off, they are dropped: about
     // 1200 lines of graph bookkeeping per model load, which buried the engine's own output. For

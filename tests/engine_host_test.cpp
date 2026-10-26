@@ -159,6 +159,16 @@ public:
         if (t.decode_tokens) t.batches.push_back({0, true, {1, 2}});
         return t;
     }
+    // The knob trial's verdicts: the thread count after the first turn, overlap after the second.
+    MeasuredKnobs measured_knobs() const override {
+        MeasuredKnobs k;
+        if (s_.turns.load() >= 1) {
+            k.threads = 6;
+            k.threads_tried = {8, 6};
+        }
+        if (s_.turns.load() >= 2) k.overlap = 1;
+        return k;
+    }
 
 private:
     Script & s_;
@@ -454,6 +464,24 @@ static void measured_tests() {
               "the routing record is handed on while it grows, and not once it stops");
     }
     {
+        // The knob trial's verdicts go to their sink as each one comes in, and not again.
+        auto bus_owner = std::make_unique<EventBus>();
+        EventBus & bus = *bus_owner;
+        Script script;
+        auto host_owner = std::make_unique<EngineHost>(bus, opener(script));
+        EngineHost & host = *host_owner;
+        std::vector<int> verdicts;
+        host.set_knobs_sink([&](const std::string & path, const MeasuredKnobs & k) {
+            verdicts.push_back((k.threads > 0) + (k.overlap >= 0));
+            check(path == config().model_path, "the knob verdicts name the model's file");
+        });
+        host.load(config(), config());
+        wait_state(host, "ready");
+        for (int i = 0; i < 4; ++i)
+            host.chat(turn(), nullptr);
+        check(verdicts == std::vector<int>{1, 2}, "a knob verdict is handed on when it comes in, once");
+    }
+    {
         auto bus_owner = std::make_unique<EventBus>();
         EventBus & bus = *bus_owner;
         Script script;
@@ -703,6 +731,28 @@ static void routing_store_tests() {
     check(store.load(model.u8string(), got) && got.decode_tokens == 64, "a longer one does");
     check(store.load(copy.u8string(), got) && got.decode_tokens == 64, "a copy of the file finds its record");
     check(!store.load(other.u8string(), got), "another model of the same size does not");
+
+    // The knob verdicts beside it: one per machine and engine, a machine's newer verdict replacing its own.
+    MeasuredKnobs k;
+    k.hardware = "aaaaaaaaaaaaaaaa";
+    k.engine = "1.0";
+    k.threads = 6;
+    k.threads_tried = {8, 6};
+    std::vector<MeasuredKnobs> kk;
+    check(!store.load_knobs(model.u8string(), kk), "no knob verdict before one is kept");
+    store.keep_knobs(model.u8string(), k);
+    MeasuredKnobs k2 = k;
+    k2.hardware = "bbbbbbbbbbbbbbbb";
+    k2.threads = 4;
+    store.keep_knobs(model.u8string(), k2);
+    k.overlap = 1;
+    store.keep_knobs(model.u8string(), k);
+    check(store.load_knobs(copy.u8string(), kk) && kk.size() == 2 && kk[0].overlap == 1 && kk[1].threads == 4,
+          "knob verdicts: one per machine, by the file's content, the newer replacing a machine's own");
+    MeasuredKnobs unstamped = k;
+    unstamped.hardware.clear();
+    store.keep_knobs(other.u8string(), unstamped);
+    check(!store.load_knobs(other.u8string(), kk), "knob verdicts: one naming no machine is not kept");
     fs::remove_all(root, ec);
 }
 

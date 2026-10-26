@@ -68,6 +68,7 @@ struct SessionConfig {
     // joins the scheduler at load. See RunConfig::prefill.
     PrefillDeviceConfig prefill;
     DecideConfig decide;          // decide()'s prefix-state policy. See RunConfig::decide.
+    KnobTrialConfig trial;        // lossless knobs measured on the first decodes. See RunConfig::trial.
     bool llama_debug_log = false; // See RunConfig::llama_debug_log.
 };
 
@@ -231,6 +232,13 @@ public:
     // (AutoPlanOptions::routing): the hit curve the cache is priced on (bmoe/routing.h). Empty
     // without streaming or with the record off. Call it between generations.
     RoutingTrace routing_record() const;
+
+    // What the knob trial (SessionConfig::trial) has settled so far, as a value for the front-end to
+    // keep against the model's fingerprint, stamped with this machine's hardware_fingerprint and the
+    // engine version (bmoe/measured_knobs.h), and hand to the next plan (AutoPlanOptions::knobs).
+    // Each knob appears once its verdict is in; empty with no trial or before the first verdict.
+    // Call it between generations.
+    MeasuredKnobs measured_knobs() const;
 
     // Which thinking-off mechanism this model supports (probed at open()). Report it to the user
     // rather than leaving a Thinking toggle that silently does nothing. Always Template when chat

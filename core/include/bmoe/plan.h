@@ -59,6 +59,11 @@ struct PlanRequest {
     // silently traded accuracy for speed is a run nobody can reproduce or trust.
     float quality_budget = 0.0f;
 
+    // Measure the lossless knobs on the first real request (RunConfig::trial) when nothing measured
+    // them before (ModelProfile::knobs). Set by a front-end that keeps the result, so the second load
+    // starts from it; off, the plan arms no measurement and is the plan it always was.
+    bool measure_knobs = false;
+
     bool is_pinned(const char * knob) const;
 };
 

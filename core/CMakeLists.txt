@@ -18,6 +18,8 @@ add_library(bmoe_core STATIC
     src/plan/routing.cpp
     src/engine/logits.cpp
     src/engine/cache_brake.cpp
+    src/engine/knob_trial.cpp
+    src/plan/measured_knobs.cpp
     src/engine/decide/prompt_split.cpp
     src/engine/decide/choice_scorer.cpp
     src/engine/decide/prefix_cache.cpp

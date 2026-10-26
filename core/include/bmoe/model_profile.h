@@ -23,6 +23,8 @@
 // this from a gguf, and bmoe/planner.h for what reads it.
 #pragma once
 
+#include "bmoe/measured_knobs.h"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -194,6 +196,12 @@ struct ModelProfile {
     // (attach_routing in bmoe/routing.h). Not read from the file: a front-end that kept a trace hands
     // it back, and without one the curve is absent and the plan is what it always was.
     HitCurve hit_curve;
+
+    // What an earlier load of this model measured about its lossless knobs on this machine and this
+    // engine (bmoe/measured_knobs.h), the record a front-end kept and probe_and_plan matched by
+    // hardware_fingerprint and engine version. Empty without one, and the plan is then the one a
+    // first load gets.
+    MeasuredKnobs knobs;
 
     bool ok = false; // false when the file could not be read; every rule declines
     std::string error;

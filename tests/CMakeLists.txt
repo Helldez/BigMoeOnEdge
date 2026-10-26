@@ -274,3 +274,10 @@ add_test(NAME memory_topology COMMAND bmoe_memory_topology_test)
 add_executable(bmoe_cache_brake_test cache_brake_test.cpp)
 target_link_libraries(bmoe_cache_brake_test PRIVATE bmoe_core)
 add_test(NAME cache_brake COMMAND bmoe_cache_brake_test)
+
+# The knob trial's A/B policy (core/src/engine/knob_trial.h) on synthetic decode steps - noise, a real
+# win, a tie inside the margin, drift, an outlier window, the cache settling - and the record its
+# verdict is kept as (bmoe/measured_knobs.h). Pure policy, no model.
+add_executable(bmoe_knob_trial_test knob_trial_test.cpp)
+target_link_libraries(bmoe_knob_trial_test PRIVATE bmoe_core)
+add_test(NAME knob_trial COMMAND bmoe_knob_trial_test)

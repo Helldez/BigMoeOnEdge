@@ -49,6 +49,7 @@ public:
     ThinkControl think_control() const override { return s_->think_control(); }
     double load_seconds() const override { return s_->load_seconds(); }
     RoutingTrace routing_record() const override { return s_->routing_record(); }
+    MeasuredKnobs measured_knobs() const override { return s_->measured_knobs(); }
 
 private:
     std::unique_ptr<Session> s_;
@@ -152,6 +153,7 @@ std::string EngineHost::load(const RunConfig & effective, const RunConfig & requ
             } else {
                 session_ = s;
                 routing_kept_ = 0; // a new session records afresh
+                knobs_kept_ = 0;   // and measures afresh
                 state_ = State::Ready;
                 model_ = json{{"path", effective.model_path},
                               {"name", std::filesystem::u8path(effective.model_path).filename().u8string()},
@@ -378,11 +380,23 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
     bus_.publish("done", summary_json(out.result.summary, out.result.cancelled));
     publish_state();
     keep_routing(*s);
+    keep_knobs(*s);
     return out;
 }
 
 // The record grows over a session's first turns and then stops: handed on each time it grew, still
 // inside the turn's lock, so the session is not read while another turn runs on it.
+// The knob trial's verdicts come in one knob at a time during the first answers: each is handed on
+// as it arrives, so a session ended any way at all has kept what it measured.
+void EngineHost::keep_knobs(const HostedSession & s) {
+    if (!knobs_sink_) return;
+    const MeasuredKnobs mk = s.measured_knobs();
+    const int verdicts = (mk.threads > 0) + (mk.overlap >= 0);
+    if (verdicts <= knobs_kept_) return;
+    knobs_kept_ = verdicts;
+    knobs_sink_(model_path(), mk);
+}
+
 void EngineHost::keep_routing(const HostedSession & s) {
     if (!routing_sink_) return;
     RoutingTrace rec = s.routing_record();

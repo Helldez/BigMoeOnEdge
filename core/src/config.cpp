@@ -381,6 +381,33 @@ ValidationResult validate(const RunConfig & cfg) {
         }
     }
 
+    // The knob trial: each candidate is a knob value this run could equally have started with.
+    const KnobTrialConfig & t = cfg.trial;
+    if ((int) t.threads.size() > KnobTrialConfig::threads_max_candidates)
+        return fail("trial.threads takes at most " + std::to_string(KnobTrialConfig::threads_max_candidates) +
+                    " candidates: every one costs its rounds of the first answer");
+    for (size_t i = 0; i < t.threads.size(); ++i) {
+        const int n = t.threads[i];
+        if (n <= 0 || n > RunConfig::threads_max)
+            return fail("trial.threads: " + std::to_string(n) + " is not a thread count");
+        if (n == cfg.n_threads)
+            return fail("trial.threads: " + std::to_string(n) + " is the incumbent (n_threads) and measures nothing");
+        for (size_t j = 0; j < i; ++j)
+            if (t.threads[j] == n) return fail("trial.threads: " + std::to_string(n) + " is listed twice");
+    }
+    if (t.window_tokens < 1 || t.window_tokens > KnobTrialConfig::window_tokens_max)
+        return fail("trial.window_tokens must be in [1, " + std::to_string(KnobTrialConfig::window_tokens_max) + "]");
+    if (t.overlap) {
+        if (!cfg.moe.enabled) return fail("trial.overlap requires moe.enabled: overlap gates the streamer's own reads");
+        if (cfg.moe.io_two_wave)
+            return fail("trial.overlap cannot run with moe.io_two_wave, which requires overlap on throughout");
+        if (cfg.moe.prefetch_sync)
+            return fail("trial.overlap cannot run with moe.prefetch_sync, a serial-only test mode");
+        if (cfg.n_gpu_layers != 0)
+            return fail("trial.overlap needs every layer on the host: with one on a device, overlap changes how the "
+                        "context offloads, which is fixed when the context is created");
+    }
+
     return r;
 }
 

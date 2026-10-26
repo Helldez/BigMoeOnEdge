@@ -311,6 +311,22 @@ int main() {
         expect_roundtrip("speculation + prefetch", c);
     }
     {
+        RunConfig c;
+        c.moe.enabled = true;
+        c.trial.threads = {6, 10};
+        c.trial.overlap = true;
+        c.trial.window_tokens = 4;
+        expect_roundtrip("knob trial", c);
+    }
+    expect_flag({"--trial-threads", "6,10"},
+                [](const RunConfig & c) { return c.trial.threads == std::vector<int>({6, 10}); });
+    expect_flag({"--trial-threads", "12"},
+                [](const RunConfig & c) { return c.trial.threads == std::vector<int>({12}); });
+    expect_flag({"--trial-overlap"}, [](const RunConfig & c) { return c.trial.overlap; });
+    expect_reject({"--trial-threads", "6,"});
+    expect_reject({"--trial-threads", "6,,8"});
+    expect_reject({"--trial-threads", "x"});
+    {
         // Deprecated switches parse but are never emitted.
         RunConfig c;
         c.moe.dense_weights = DenseWeightsMode::Mmap;

@@ -51,6 +51,7 @@ SessionConfig session_config_from(const RunConfig & cfg) {
     sc.spec = cfg.spec;       // self-speculation (MTP head or n-gram lookup); off by default
     sc.prefill = cfg.prefill; // prefill on an accelerator; off by default
     sc.decide = cfg.decide;
+    sc.trial = cfg.trial;
     sc.llama_debug_log = cfg.llama_debug_log;
     return sc;
 }
@@ -90,6 +91,7 @@ RunResult run(const RunConfig & cfg, const RunOutputs & out) {
 
     RunResult r = session->generate(req, out.on_token, out.sink);
     r.routing = session->routing_record();
+    r.knobs = session->measured_knobs();
     return r;
 }
 
