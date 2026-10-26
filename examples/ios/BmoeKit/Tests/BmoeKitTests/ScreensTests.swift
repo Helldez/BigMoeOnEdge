@@ -333,7 +333,7 @@ final class ScreensTests: XCTestCase {
 
     // MARK: the plan's figures
 
-    func testTheFourFiguresAndWhatApplyChanged() throws {
+    func testTheThreeFiguresAndWhatApplyChanged() throws {
         let p = PlanResult(try JSON(parsing: #"""
             {"available":true,"model":"/m/a.gguf","args":["--cache-mb","703"],"explain":"  the account \n",
              "predicted":{"s_per_token":0.4,"cache_hit_pct":38.0,"s_per_token_worst":1.69},
@@ -349,15 +349,12 @@ final class ScreensTests: XCTestCase {
         XCTAssertEqual(f.measuredHitPct, 41.5)
         XCTAssertEqual(f.heldBytes, 3000) // the host pool, wherever it sits
         XCTAssertEqual(f.capBytes, 4000)
-        XCTAssertEqual(f.worstMs!, 1690, accuracy: 1e-9)
-        XCTAssertEqual(f.expectedMs!, 400, accuracy: 1e-9)
         XCTAssertEqual(p.diagnostic, "bmoe-cli -m /m/a.gguf --cache-mb 703\n\nthe account\n")
 
         let none = PlanResult(try JSON(parsing: #"{"available":true,"measured":{"s_per_token":0,"cache_hit_pct":-1}}"#)).figures
         XCTAssertNil(none.expectedTokS)
         XCTAssertNil(none.measuredHitPct)
         XCTAssertNil(none.heldBytes)
-        XCTAssertNil(none.worstMs)
         XCTAssertEqual(PlanResult(try JSON(parsing: #"{"available":true}"#)).diagnostic,
                        "(no arguments: the plan declines streaming)\n")
 

@@ -31,7 +31,7 @@ class PlanAndContextTest {
     )
 
     @Test
-    fun theFourFiguresComeFromThePredictionTheMeasurementAndTheHostPool() {
+    fun theThreeFiguresComeFromThePredictionTheMeasurementAndTheHostPool() {
         val p = PlanResult.of(
             JSONObject(
                 """{"available":true,"predicted":{"s_per_token":0.5,"cache_hit_pct":40.0,"s_per_token_worst":2.0},
@@ -48,15 +48,12 @@ class PlanAndContextTest {
         assertEquals(45.0, f.measuredHitPct!!, 1e-9)
         assertEquals(600L, f.heldBytes)
         assertEquals(1000L, f.capBytes)
-        assertEquals(2000.0, f.worstMs!!, 1e-9)
-        assertEquals(500.0, f.expectedMs!!, 1e-9)
 
         val bare = planFigures(PlanResult.of(JSONObject("""{"available":true,"measured":{"s_per_token":0.4,"cache_hit_pct":-1}}""")))
         assertNull(bare.predictedTokS)
         assertNull(bare.deltaPct)
         assertNull(bare.measuredHitPct)
         assertNull(bare.capBytes)
-        assertNull(bare.worstMs)
     }
 
     @Test

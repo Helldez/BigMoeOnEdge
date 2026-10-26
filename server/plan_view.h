@@ -12,9 +12,29 @@
 #include "bmoe/hardware_profile.h"
 #include "bmoe/plan.h"
 
+#include <cstdint>
 #include <string>
 
 namespace bmoe::server {
+
+// Which held plan answers a read with a model loaded (`GET /api/plan` without `measure`). The two
+// plans the server holds are each named by the model they are for and their place in the order
+// measured (0: none held): the one the load applied, and the last one measured.
+struct PlanRead {
+    std::string model; // the loaded model
+    bool want_cached = false;
+    std::string load_model;
+    uint64_t load_seq = 0;
+    std::string last_model;
+    uint64_t last_seq = 0;
+};
+// `Runs`: the plan the model was loaded with, while nothing was measured after that load, with what
+// the model has done since beside it. `Last`: the last plan measured, for the same model, when the
+// caller asked for a held one - a measurement made by hand with the model resident, which Apply
+// applies, shown with the model's figures but not compared to them. `None`: nothing held for this
+// model; the read measures, or says so.
+enum class HeldPlan { None, Runs, Last };
+HeldPlan held_plan(const PlanRead & r);
 
 // summary, predicted (decode as priced, the hit rate it credited, the nothing-resident bound),
 // memory, devices, devices_none and devices_none_text, as one object to merge into /api/plan.

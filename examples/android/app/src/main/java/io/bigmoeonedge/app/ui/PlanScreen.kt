@@ -7,8 +7,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -41,7 +39,9 @@ import java.util.Locale
  * The plan: what the hardware planner measured on this phone and what it decided for the chosen
  * model, read top down as the web UI reads it (docs/screens.md): one sentence and how it turned
  * out, where the memory goes, what each device does, the decisions grouped, the command. One
- * layout for every machine: each block is a list of whatever the plan holds.
+ * layout for every machine and the same one on every front-end: each block is a list of whatever
+ * the plan holds. The plan itself lives in the engine state, which reads it again when a session
+ * opens and when a turn ends, so this screen only draws it.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -49,35 +49,28 @@ fun PlanScreen(modifier: Modifier = Modifier, onOpenSetting: (key: String) -> Un
     val engine by Engine.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
-    var plan by remember { mutableStateOf<PlanResult?>(null) }
-    var busy by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf("") }
     var applied by remember { mutableStateOf<List<AppliedChange>?>(null) }
 
-    fun fetch(measure: Boolean) {
-        if (busy) return
-        busy = measure
-        scope.launch {
-            Engine.plan(measure).onSuccess { plan = it; error = "" }.onFailure { error = it.message ?: "no plan" }
-            busy = false
-        }
+    // The engine reads the plan when it reaches the server, when a session opens and when a turn
+    // ends: never a measurement, which on a phone takes a while and must not start on its own. A
+    // screen opened before the engine got there asks once.
+    LaunchedEffect(engine.serverUp) {
+        if (engine.serverUp && engine.plan == null) Engine.refreshPlan()
+    }
+    fun measure() {
+        applied = null
+        Engine.measurePlan()
     }
 
-    // On opening, the plan the loaded model runs with, or the last one the server holds: never a
-    // measurement, which on a phone takes a while and must not start on its own. The same screen
-    // follows whatever comes back, as the web UI does.
-    LaunchedEffect(engine.serverUp, engine.info?.model?.path) {
-        if (engine.serverUp) fetch(measure = false)
-    }
-    // A finished turn is a new measurement of the plan the model runs with: read it again.
-    LaunchedEffect(engine.lastDone) {
-        if (engine.lastDone != null && plan?.fromLastLoad == true) fetch(measure = false)
-    }
     val cfg = engine.config
+    val plan = engine.plan
+    val busy = engine.measuring
     val planner = engine.info?.plannerAvailable ?: true
     // A plan is for the model a load opens: chosen on Models, which the table marks as a read-only group.
     val chosen = engine.info?.model != null || loadTargetChosen(engine.params, cfg)
     val canMeasure = planner && chosen && !busy && engine.serverUp
+    // One banner for whatever went wrong: the request, or a plan the server could not make.
+    val shownError = engine.planError.ifEmpty { plan?.takeIf { it.available }?.error.orEmpty() }
 
     Scaffold(
         modifier = modifier,
@@ -85,11 +78,6 @@ fun PlanScreen(modifier: Modifier = Modifier, onOpenSetting: (key: String) -> Un
             TopAppBar(
                 title = { Text("Plan") },
                 navigationIcon = { Box(Modifier.padding(start = 16.dp)) { BrandMark(wordmark = false) } },
-                actions = {
-                    IconButton(onClick = { fetch(measure = true) }, enabled = canMeasure, modifier = Modifier.size(48.dp)) {
-                        Icon(Icons.Filled.Refresh, contentDescription = "Measure again")
-                    }
-                },
             )
         },
         snackbarHost = { SnackbarHost(snackbar) },
@@ -102,20 +90,22 @@ fun PlanScreen(modifier: Modifier = Modifier, onOpenSetting: (key: String) -> Un
             if (!chosen && engine.params != null) {
                 Text("Choose a model from Models: a plan is for one model on this phone.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            if (busy || engine.planProgress != null) PlanProgressCard(engine.planProgress)
             // A failed plan can be retried where it says so: measuring is the person's tap, never automatic.
-            if (error.isNotEmpty()) RetryLine(error, canMeasure) { fetch(measure = true) }
+            if (shownError.isNotEmpty()) RetryLine(shownError, canMeasure) { measure() }
+            if (busy || engine.planProgress != null) PlanProgressCard(engine.planProgress)
 
             val p = plan
+            if (p?.available == true && cfg != null) {
+                AutoPlanSwitch(cfg.autoPlan, planner) { on -> scope.launch { Engine.setAutoPlan(on) } }
+            }
             when {
                 p == null -> {}
                 !p.available -> Text(p.error, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
-                p.error.isNotEmpty() -> RetryLine(p.error, canMeasure) { fetch(measure = true) }
+                p.error.isNotEmpty() -> {} // in the banner above
                 p.none -> Tile {
                     Text("Not measured yet.", fontSize = 22.sp, lineHeight = 26.sp)
                     Text("Measure this phone to see what the plan does with the chosen model.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    PrimaryAction("Measure", enabled = canMeasure) { fetch(measure = true) }
-                    AutoPlanSwitch(cfg?.autoPlan ?: false, planner && cfg != null) { on -> scope.launch { Engine.setAutoPlan(on) } }
+                    PrimaryAction(if (busy) "Measuring..." else "Measure", enabled = canMeasure) { measure() }
                 }
                 else -> PlanBody(
                     p,
@@ -130,11 +120,9 @@ fun PlanScreen(modifier: Modifier = Modifier, onOpenSetting: (key: String) -> Un
                     },
                     applied = applied,
                     canMeasure = canMeasure,
-                    onMeasure = { fetch(measure = true) },
+                    measuring = busy,
+                    onMeasure = { measure() },
                     reloadNeeded = engine.ready && cfg?.reloadRequired == true,
-                    autoPlan = cfg?.autoPlan ?: false,
-                    autoPlanEnabled = planner && cfg != null,
-                    onAutoPlan = { on -> scope.launch { Engine.setAutoPlan(on) } },
                     onOpenSetting = onOpenSetting,
                     onCopied = { scope.launch { snackbar.showSnackbar("Copied: the command and the planner's account") } },
                 )
@@ -183,11 +171,9 @@ private fun PlanBody(
     onApply: () -> Unit,
     applied: List<AppliedChange>?,
     canMeasure: Boolean,
+    measuring: Boolean,
     onMeasure: () -> Unit,
     reloadNeeded: Boolean,
-    autoPlan: Boolean,
-    autoPlanEnabled: Boolean,
-    onAutoPlan: (Boolean) -> Unit,
     onOpenSetting: (String) -> Unit,
     onCopied: () -> Unit,
 ) {
@@ -206,15 +192,15 @@ private fun PlanBody(
                 fontSize = 13.sp, color = MaterialTheme.colorScheme.primary,
             )
         }
-        // The four figures: decode, cache hits, memory, worst case; two to a row on a phone.
+        // The three figures: decode, cache hits, memory; two to a row on a phone.
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             SpeedWell(f, p.fromLastLoad, Modifier.weight(1f))
             HitsWell(f, Modifier.weight(1f))
         }
-        if (f.capBytes != null || f.worstMs != null) {
+        if (f.capBytes != null) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 MemoryWell(f, Modifier.weight(1f))
-                WorstWell(f, Modifier.weight(1f))
+                Spacer(Modifier.weight(1f))
             }
         }
         if (p.notApplicable.isNotEmpty()) {
@@ -222,7 +208,9 @@ private fun PlanBody(
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(shape = RectangleShape, onClick = onApply, enabled = canApply, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text("Apply plan") }
-            OutlinedButton(shape = RectangleShape, onClick = onMeasure, enabled = canMeasure, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text("Measure again") }
+            OutlinedButton(shape = RectangleShape, onClick = onMeasure, enabled = canMeasure, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
+                Text(if (measuring) "Measuring..." else "Measure again")
+            }
         }
         Text("Values you set yourself are never changed.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         applied?.let { changes ->
@@ -239,7 +227,6 @@ private fun PlanBody(
             }
             if (reloadNeeded) Text("Some applied values need a model reload: Settings has the Reload.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        AutoPlanSwitch(autoPlan, autoPlanEnabled, onAutoPlan)
     }
 
     if (p.pools.isNotEmpty()) {
@@ -280,10 +267,14 @@ private fun SpeedWell(f: PlanFigures, fromLastLoad: Boolean, modifier: Modifier)
             f.measuredTokS != null -> {
                 Figure(fmt(f.measuredTokS), "tok/s measured")
                 if (f.deltaPct != null && f.predictedTokS != null) {
-                    Text(
-                        String.format(Locale.US, "%+.0f%% against the %s expected", f.deltaPct, fmt(f.predictedTokS)),
-                        fontSize = 12.sp, color = if (f.deltaPct >= 0) okColor() else warnColor(),
-                    )
+                    if (fromLastLoad) {
+                        Text(
+                            String.format(Locale.US, "%+.0f%% against the %s expected", f.deltaPct, fmt(f.predictedTokS)),
+                            fontSize = 12.sp, color = if (f.deltaPct >= 0) okColor() else warnColor(),
+                        )
+                    } else {
+                        Text("${fmt(f.predictedTokS)} tok/s expected under this plan", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             }
             f.predictedTokS != null -> {
@@ -308,23 +299,6 @@ private fun MemoryWell(f: PlanFigures, modifier: Modifier) {
         Figure(bytesLabel(held), "held")
         Meter((held.toDouble() / cap).toFloat(), MaterialTheme.colorScheme.primary)
         Text("Of the ${bytesLabel(cap)} it may hold", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-}
-
-@Composable
-private fun WorstWell(f: PlanFigures, modifier: Modifier) {
-    val worst = f.worstMs
-    if (worst == null) {
-        Spacer(modifier)
-        return
-    }
-    Well(modifier) {
-        Text("Worst case", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Figure(String.format(Locale.US, "%.0f", worst), "ms per token")
-        Text(
-            "With nothing held in memory" + (f.expectedMs?.let { String.format(Locale.US, ", against %.0f ms expected", it) } ?: ""),
-            fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 

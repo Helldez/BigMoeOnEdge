@@ -30,6 +30,13 @@ final class Engine: ObservableObject {
     @Published private(set) var lastDone: JSON?
     /// The stage a measurement is in (Measure, or an auto load), from `plan_progress`; nil when none runs.
     @Published private(set) var planProgress: PlanProgress?
+    /// The plan the server holds for the chosen model (`GET /api/plan?cached=1`, never a measurement):
+    /// read when the server is reached, when a session opens and when a turn ends, so the Plan screen
+    /// opens on it at once and its measured figures land when the answer does, whichever screen is open.
+    @Published private(set) var plan: PlanResult?
+    @Published private(set) var planError: String?
+    /// A measurement asked for (`?measure=1`) is in flight: the person's tap, never automatic.
+    @Published private(set) var measuring = false
     /// The engine's last diagnostics (`log` events), newest last.
     @Published private(set) var log: [String] = []
 
@@ -166,6 +173,31 @@ final class Engine: ObservableObject {
         if let p = try? await api.params() { params = p }
         if let c = try? await api.config() { config = c }
         await refreshModels()
+        await refreshPlan()
+    }
+
+    /// The plan held, without measuring; skipped while a measurement runs, which answers instead.
+    func refreshPlan() async {
+        guard !measuring else { return }
+        do {
+            plan = try await api.plan(measure: false)
+            planError = nil
+        } catch {
+            planError = error.localizedDescription
+        }
+    }
+
+    /// Measure the device for the chosen model: the probes run, and the plan shown is the new one.
+    func measurePlan() async {
+        guard !measuring else { return }
+        measuring = true
+        planError = nil
+        do {
+            plan = try await api.plan(measure: true)
+        } catch {
+            planError = error.localizedDescription
+        }
+        measuring = false
     }
 
     func refreshModels() async {
@@ -190,6 +222,8 @@ final class Engine: ObservableObject {
                 // A new session: a fresh metrics file for it, and the models list may have changed.
                 if preferences.metricsCSV { recorder.sessionOpened(info: next, config: config) }
                 Task { await refreshModels() }
+                // A new session runs a plan of its own (an auto load's, or the settings as they were).
+                Task { await refreshPlan() }
             }
             if next.state == .empty || next.state == .error { recorder.close() }
         case "config":
@@ -211,6 +245,8 @@ final class Engine: ObservableObject {
             live = t
             lastDone = o
             recorder.done(o)
+            // A finished turn is a new measurement beside the plan the model runs with.
+            if info?.model != nil { Task { await refreshPlan() } }
         case "plan_progress":
             planProgress = PlanProgress(o)
         case "log":
@@ -243,8 +279,6 @@ final class Engine: ObservableObject {
     func setAutoPlan(_ on: Bool) async throws {
         config = try await api.updateConfig(autoPlan: on)
     }
-
-    func plan(measure: Bool) async throws -> PlanResult { try await api.plan(measure: measure) }
 
     func applyPlan() async throws { config = try await api.applyPlan() }
 

@@ -102,17 +102,15 @@ public struct PlanResult: Equatable, Sendable {
     }
 
     /// Decode as the plan priced it, or as a finished turn measured it: seconds per token (0 when
-    /// absent) and the cache hit rate (-1 when absent or without a cache).
+    /// absent) and the cache hit rate (-1 when absent or without a cache). The API's `predicted`
+    /// also carries `s_per_token_worst`, the cost model's bound with nothing resident, which no
+    /// screen draws.
     public struct Decode: Equatable, Sendable {
         public let sPerToken: Double
         public let cacheHitPct: Double
         public let tokens: Int
-        /// The same token with nothing held in memory and every byte read again (predicted only; 0
-        /// when absent): a bound beside the prediction.
-        public let sPerTokenWorst: Double
 
         init(_ j: JSON) {
-            sPerTokenWorst = j["s_per_token_worst"].double(or: 0)
             sPerToken = j["s_per_token"].double(or: 0)
             cacheHitPct = j["cache_hit_pct"].double(or: -1)
             tokens = j["tokens"].int(or: 0)
@@ -244,8 +242,9 @@ public struct PlanResult: Equatable, Sendable {
         return (p, m, 100 * (m / p - 1))
     }
 
-    /// The four figures under the plan's sentence (docs/screens.md, "Plan"), each nil when the
-    /// plan does not have it.
+    /// The three figures under the plan's sentence (docs/screens.md, "Plan"), each nil when the
+    /// plan does not have it. The measured ones are the loaded model's; a screen compares them to
+    /// the expected ones only under `fromLastLoad`.
     public struct Figures: Equatable, Sendable {
         /// Decode in tokens per second, expected and measured, and the measured one's difference.
         public let expectedTokS: Double?
@@ -257,22 +256,17 @@ public struct PlanResult: Equatable, Sendable {
         /// What the host pool holds for the run, against what the process may hold.
         public let heldBytes: Int64?
         public let capBytes: Int64?
-        /// Milliseconds per token with nothing held in memory, and the expected one beside it.
-        public let worstMs: Double?
-        public let expectedMs: Double?
     }
 
     public var figures: Figures {
         let s = speedCheck
         let host = pools.first { $0.name == "host" } ?? pools.first
-        let worst = predicted.map(\.sPerTokenWorst).flatMap { $0 > 0 ? $0 * 1000 : nil }
         return Figures(
             expectedTokS: s.expected, measuredTokS: s.measured, deltaPct: s.deltaPct,
             creditedHitPct: predicted.map(\.cacheHitPct).flatMap { $0 >= 0 ? $0 : nil },
             measuredHitPct: measured.map(\.cacheHitPct).flatMap { $0 >= 0 ? $0 : nil },
             heldBytes: host.flatMap { $0.capBytes > 0 ? $0.heldBytes : nil },
-            capBytes: host.flatMap { $0.capBytes > 0 ? $0.capBytes : nil },
-            worstMs: worst, expectedMs: s.expected.map { 1000 / $0 })
+            capBytes: host.flatMap { $0.capBytes > 0 ? $0.capBytes : nil })
     }
 
     /// What "Copy diagnostic" puts on the clipboard, for a bug report: the command that reproduces

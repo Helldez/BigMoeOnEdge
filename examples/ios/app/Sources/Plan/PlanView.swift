@@ -3,19 +3,30 @@ import SwiftUI
 
 /// Plan (docs/screens.md): what the hardware planner measured on this device and what it decided
 /// for the chosen model, read top down as the web UI and the Android app read it: the verdict and
-/// its four figures, Apply and Measure again, where the memory goes, what each device does, the
-/// decisions grouped, the command. One layout for every machine: each block is a list of whatever
-/// the plan holds, and every word in it is the server's; a code beside a word only picks a colour.
+/// its three figures, Apply and Measure again, where the memory goes, what each device does, the
+/// decisions grouped, the command. One layout for every machine and the same one on every
+/// front-end: each block is a list of whatever the plan holds, and every word in it is the
+/// server's; a code beside a word only picks a colour. The plan itself lives in the engine, which
+/// reads it again when a session opens and when a turn ends, so this screen only draws it.
 struct PlanView: View {
     @EnvironmentObject private var engine: Engine
     @EnvironmentObject private var nav: Navigator
-    @State private var plan: PlanResult?
-    @State private var measuring = false
     @State private var applying = false
     /// What the last Apply changed, row by row; nil before one.
     @State private var applied: [AppliedChange]?
+    /// Why Apply failed; a failed read or measurement is the engine's `planError`.
     @State private var failure: String?
     @State private var copied = false
+
+    private var plan: PlanResult? { engine.plan }
+    private var measuring: Bool { engine.measuring }
+    /// One banner for whatever went wrong: the request, Apply, or a plan the server could not make.
+    private var shownError: String? {
+        if let failure { return failure }
+        if let e = engine.planError { return e }
+        if let p = plan, p.available, !p.error.isEmpty { return p.error }
+        return nil
+    }
 
     static let planningDoc = URL(string: "https://github.com/Helldez/BigMoeOnEdge/blob/main/docs/hardware-planning.md")!
 
@@ -33,47 +44,40 @@ struct PlanView: View {
                 Text("Choose a model from Models: a plan is for one model on this device.")
                     .font(.subheadline).foregroundStyle(Palette.muted)
             }
-            if let failure {
+            if let shownError {
                 // A failed plan can be measured again from where it is said.
-                Banner(text: failure, color: Palette.err) {
-                    HStack(spacing: Grid.s) {
-                        if planner { measureButton(primary: false) }
-                        Button("Dismiss") { self.failure = nil }.buttonStyle(.pixel)
-                    }
+                Banner(text: shownError, color: Palette.err) {
+                    if planner { measureButton(primary: false) }
                 }
             }
             if measuring || engine.planProgress != nil { PlanProgressCard(progress: engine.planProgress) }
+            if let p = plan, p.available, engine.config != nil { autoPlan }
             content
-            Link("How the planner decides", destination: Self.planningDoc).font(.caption).foregroundStyle(Palette.accent)
         }
-        // On opening, the plan the loaded model runs with, or the last one the server holds: never a
-        // measurement, which on a phone takes a while and must not start on its own.
-        .task(id: "\(engine.serverUp) \(engine.info?.model?.path ?? "")") {
-            if engine.serverUp { await fetch(measure: false) }
-        }
-        // A finished turn is a new measurement of the plan the model runs with: read it again.
-        .onChange(of: engine.lastDone) { done in
-            if done != nil, plan?.fromLastLoad == true { Task { await fetch(measure: false) } }
+        // The engine reads the plan when it reaches the server, when a session opens and when a turn
+        // ends: never a measurement, which on a phone takes a while and must not start on its own.
+        // A screen opened before the engine got there asks once.
+        .task(id: engine.serverUp) {
+            if engine.serverUp, engine.plan == nil { await engine.refreshPlan() }
         }
     }
 
     @ViewBuilder
     private var content: some View {
         if let p = plan {
-            if !p.available || !p.error.isEmpty {
-                Banner(text: p.error.isEmpty ? "No plan." : p.error, color: p.available ? Palette.muted : Palette.err) {
-                    if p.available, planner { measureButton(primary: false) }
-                }
+            if !p.available {
+                Banner(text: p.error.isEmpty ? "No plan." : p.error, color: Palette.err)
                 lastApplied
+            } else if !p.error.isEmpty {
+                lastApplied // the error is in the banner above
             } else if p.none {
                 VStack(alignment: .leading, spacing: Grid.s) {
                     Text("Not measured yet.").font(.pixel(22, bold: true)).foregroundStyle(Palette.text)
                     Text("Measure this device to see what the plan does with the chosen model. The probes read "
                         + "storage and run a matmul on every device; on a phone that takes a while.")
                         .font(.subheadline).foregroundStyle(Palette.muted)
-                    Button("Measure") { Task { await fetch(measure: true) } }
+                    Button(measuring ? "Measuring…" : "Measure") { Task { await measure() } }
                         .buttonStyle(.pixelPrimary).disabled(!canMeasure)
-                    autoPlan
                 }
                 .card()
                 lastApplied
@@ -110,7 +114,7 @@ struct PlanView: View {
     }
 
     private func measureButton(primary: Bool) -> some View {
-        Button(measuring ? "Measuring…" : "Measure again") { Task { await fetch(measure: true) } }
+        Button(measuring ? "Measuring…" : "Measure again") { Task { await measure() } }
             .buttonStyle(primary ? .pixelPrimary : .pixel).disabled(!canMeasure)
     }
 
@@ -147,6 +151,7 @@ struct PlanView: View {
             .buttonStyle(.pixel)
             Text("The command and the planner's whole account, for a bug report.").font(.caption).foregroundStyle(Palette.muted)
         }
+        Link("How the planner decides", destination: Self.planningDoc).font(.caption).foregroundStyle(Palette.accent)
     }
 
     private func summary(_ p: PlanResult) -> some View {
@@ -177,7 +182,6 @@ struct PlanView: View {
                 speedTile(p, f)
                 if let shown = f.measuredHitPct ?? f.creditedHitPct { hitsTile(f, shown) }
                 if let held = f.heldBytes, let cap = f.capBytes { memoryTile(held, cap) }
-                if let worst = f.worstMs { worstTile(worst, f.expectedMs) }
             }
             HStack(spacing: Grid.s) {
                 Button(applying ? "Applying…" : "Apply plan") { Task { await apply() } }
@@ -192,7 +196,6 @@ struct PlanView: View {
                     Button("Settings") { nav.open(.settings) }.font(.pixel(13)).foregroundStyle(Palette.accent).buttonStyle(.borderless)
                 }
             }
-            autoPlan
         }
         .card()
     }
@@ -237,9 +240,13 @@ struct PlanView: View {
             if let m = f.measuredTokS {
                 Figure(value: Self.number(m), label: "tok/s measured")
                 if let d = f.deltaPct, let e = f.expectedTokS {
-                    HStack(spacing: 4) {
-                        Badge(text: String(format: "%+.0f%%", d), color: d >= 0 ? Palette.ok : Palette.warn)
-                        Text("against the \(Self.number(e)) expected").font(.caption).foregroundStyle(Palette.muted)
+                    if p.fromLastLoad {
+                        HStack(spacing: 4) {
+                            Badge(text: String(format: "%+.0f%%", d), color: d >= 0 ? Palette.ok : Palette.warn)
+                            Text("against the \(Self.number(e)) expected").font(.caption).foregroundStyle(Palette.muted)
+                        }
+                    } else {
+                        Text("\(Self.number(e)) tok/s expected under this plan").font(.caption).foregroundStyle(Palette.muted)
                     }
                 }
             } else if let e = f.expectedTokS {
@@ -273,26 +280,10 @@ struct PlanView: View {
         }
     }
 
-    private func worstTile(_ worst: Double, _ expected: Double?) -> some View {
-        Tile {
-            Text("Worst case").font(.caption).foregroundStyle(Palette.muted)
-            Figure(value: String(format: "%.0f", worst), label: "ms per token")
-            Text("With nothing held in memory" + (expected.map { String(format: ", against %.0f ms expected", $0) } ?? ""))
-                .font(.caption).foregroundStyle(Palette.muted)
-        }
-    }
-
-    private func fetch(measure: Bool) async {
-        guard engine.serverUp, !measuring else { return }
-        measuring = measure
-        if measure { failure = nil }
-        do {
-            plan = try await engine.plan(measure: measure)
-            if measure { applied = nil }
-        } catch {
-            failure = error.localizedDescription
-        }
-        measuring = false
+    private func measure() async {
+        failure = nil
+        applied = nil
+        await engine.measurePlan()
     }
 
     private func apply() async {

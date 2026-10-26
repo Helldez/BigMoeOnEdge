@@ -260,9 +260,7 @@ data class PlanResult(
     /** Decode as the plan priced it: seconds per token (0 = no prediction), cache hits (-1 = none). */
     val predictedSPerToken: Double = 0.0,
     val predictedHitPct: Double = -1.0,
-    /** The same token with nothing held in memory and every byte read again (0 = not predicted). */
-    val predictedWorstSPerToken: Double = 0.0,
-    /** What the loaded model's last turn measured, beside the prediction; null before one. */
+    /** What the loaded model's last turn measured; compared to the prediction only under [fromLastLoad]. */
     val measured: PlanMeasured? = null,
     val pools: List<PlanPool> = emptyList(),
     val devices: List<PlanDevice> = emptyList(),
@@ -284,7 +282,6 @@ data class PlanResult(
             },
             predictedSPerToken = o.optJSONObject("predicted")?.optDouble("s_per_token", 0.0) ?: 0.0,
             predictedHitPct = o.optJSONObject("predicted")?.optDouble("cache_hit_pct", -1.0) ?: -1.0,
-            predictedWorstSPerToken = o.optJSONObject("predicted")?.optDouble("s_per_token_worst", 0.0) ?: 0.0,
             measured = o.optJSONObject("measured")?.let {
                 PlanMeasured(it.optDouble("s_per_token", 0.0), it.optDouble("cache_hit_pct", -1.0), it.optInt("tokens"))
             },
@@ -392,6 +389,15 @@ data class EngineUi(
     val cpuTempC: Double? = null,
     /** The stage a measurement is in; null when none runs. */
     val planProgress: PlanProgress? = null,
+    /**
+     * The plan the server holds for the chosen model (`GET /api/plan?cached=1`, never a measurement):
+     * read when the server is reached, when a session opens and when a turn ends, so the Plan screen
+     * opens on it at once and its measured figures land when the answer does, whichever screen is open.
+     */
+    val plan: PlanResult? = null,
+    val planError: String = "",
+    /** A measurement asked for (`?measure=1`) is in flight: the person's tap, never automatic. */
+    val measuring: Boolean = false,
 ) {
     val ready get() = serverUp && info?.ready == true
     val generating get() = info?.generating == true
@@ -585,6 +591,7 @@ object Engine {
         catching { ParamSpec.parse(api.params()) }.onSuccess { p -> _state.update { it.copy(params = p) } }
         catching { ConfigState.of(api.config()) }.onSuccess { c -> _state.update { it.copy(config = c) } }
         refreshModels()
+        refreshPlan()
     }
 
     suspend fun refreshModels() {
@@ -604,6 +611,8 @@ object Engine {
                     // A new session: a fresh metrics file for it, and the models list may have changed.
                     recorder?.sessionOpened(info, _state.value.config)
                     scope.launch { refreshModels() }
+                    // A new session runs a plan of its own (an auto load's, or the settings as they were).
+                    refreshPlan()
                 }
                 if (info.state == "empty" || info.state == "error") recorder?.close()
                 if (info.generating) {
@@ -633,6 +642,8 @@ object Engine {
                 val t = _state.value.live.copy().applyDone(o)
                 recorder?.done(o)
                 _state.update { it.copy(live = t, lastDone = o) }
+                // A finished turn is a new measurement beside the plan the model runs with.
+                if (_state.value.info?.model != null) refreshPlan()
             }
             "plan_progress" -> {
                 val step = o.optString("step")
@@ -673,8 +684,26 @@ object Engine {
     }
 
     /** The plan in force or the last one held (never a measurement), or a new measurement. */
-    suspend fun plan(measure: Boolean): Result<PlanResult> = withContext(Dispatchers.IO) {
-        catching { PlanResult.of(api.plan(measure)) }
+    /** The plan held, without measuring; skipped while a measurement runs, which answers instead. */
+    fun refreshPlan() {
+        if (_state.value.measuring) return
+        scope.launch {
+            catching { PlanResult.of(api.plan(measure = false)) }
+                .onSuccess { p -> _state.update { it.copy(plan = p, planError = "") } }
+                .onFailure { e -> _state.update { it.copy(planError = e.message ?: "no plan") } }
+        }
+    }
+
+    /** Measure the phone for the chosen model: the probes run, and the plan shown is the new one. */
+    fun measurePlan() {
+        if (_state.value.measuring) return
+        _state.update { it.copy(measuring = true, planError = "") }
+        scope.launch {
+            catching { PlanResult.of(api.plan(measure = true)) }
+                .onSuccess { p -> _state.update { it.copy(plan = p, planError = "") } }
+                .onFailure { e -> _state.update { it.copy(planError = e.message ?: "no plan") } }
+            _state.update { it.copy(measuring = false) }
+        }
     }
 
     suspend fun applyPlan(): Result<ConfigState> = withContext(Dispatchers.IO) {

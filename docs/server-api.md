@@ -939,14 +939,17 @@ to measure them (`docs/hardware-planning.md`), and the server keeps the verdict 
 routing record under `routing/`. The next plan of that model reads it, its `threads` and `overlap`
 decisions say `measured on this model`, and those two values are gone.
 With a model loaded that an auto load planned, `GET /api/plan` answers at once with that plan and
-`"from_last_load": true`, without measuring, and once the model has answered, `measured`: what
-its last complete turn measured for decode (`s_per_token`, `cache_hit_pct` over that turn's decode
-alone, -1 without a cache,
-and `tokens`), to set beside `predicted`; a cancelled turn does not count. `GET /api/plan?cached=1`
-never measures: with no model loaded it answers the last plan this server holds (the last
-measurement, else the last load's) with `"cached": true`, or `{"available": true, "none": true}`
-when it holds none, so a screen can open on it at no cost. `GET /api/plan?measure=1` measures again
-regardless; a plan computed while a model is loaded carries a `warning`, because that model's memory reads as
+`"from_last_load": true`, without measuring, as long as nothing was measured after that load; once
+the model has answered it also carries `measured`: what its last complete turn measured for decode
+(`s_per_token`, `cache_hit_pct` over that turn's decode alone, -1 without a cache, and `tokens`), to
+set beside `predicted`; a cancelled turn does not count. `GET /api/plan?cached=1` never measures:
+it answers the last plan this server holds (the last measurement, else the last load's) with
+`"cached": true`, or `{"available": true, "none": true}` when it holds none, so a screen can open on
+it at no cost; with a model loaded and that plan measured for it by hand after the load, the plan
+the person saw last is what Apply applies, so it is the one answered, with `measured` beside it
+too (the figures are the running model's, under the load's settings, so a UI shows them without
+comparing them to this plan's prediction). `GET /api/plan?measure=1` measures again regardless; a
+plan computed while a model is loaded carries a `warning`, because that model's memory reads as
 taken and the plan is sized for a smaller machine. Auto mode avoids this by planning with nothing
 loaded.
 

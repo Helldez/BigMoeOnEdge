@@ -179,11 +179,12 @@ catalog's Q2_K build has a 2.4 GB dense side instead, which is ~2 GB the expert 
 screen; on by default), the engine first measures the phone (storage read rate, what memory it can
 hold and lock, each compute device in a process of its own) and chooses the streaming settings for
 that model, then loads. The Plan screen leads with what the plan decided in one sentence, the
-machine, which device takes the prompt and which the tokens, and four figures: decode speed
+machine, which device takes the prompt and which the tokens, and three figures: decode speed
 expected and, after the first answer, measured with the difference; the cache hit rate the plan
-credited and the one measured; the memory held against what the process may hold; and the worst
-case with nothing held in memory. Apply and Measure again sit under them (Measure again also beside
-an error); Apply lists the settings it changed, each a link to its row in Settings. Then where the
+credited and the one measured; and the memory held against what the process may hold. The app
+reads the plan when a session opens and when an answer ends, whichever screen is open, so the
+figures are there when you look. Apply and Measure again sit under them (an error at the top has
+its own Measure again); Apply lists the settings it changed, each a link to its row in Settings. Then where the
 memory goes, what each compute device does and why, and the decisions grouped, each with the fact
 behind it and a link to its setting. Copy diagnostic puts the command and the planner's whole
 account on the clipboard for a bug report. The screen shows which stage of the measurement is

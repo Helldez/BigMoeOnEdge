@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Changed
+- **The Plan screen is one screen on every front-end, and its figures arrive when the answer
+  does.** The plan now lives in each UI's engine state (the web app's server store, the Android
+  `Engine`, the iOS `Engine`), read when the server is reached, when a session opens and when a
+  turn ends, whichever screen is open: before, each Plan screen held its own copy and re-read it
+  only while it was the screen showing, so on a phone the measured figures appeared when you came
+  back to it, not when the answer ended. The three UIs now share one layout: one banner for
+  whatever went wrong with Measure again beside it, the measurement's stages, the Plan-before-
+  every-load switch above the plan, the verdict with three figures (decode, cache hits, memory),
+  Apply and Measure again together under them and nowhere else (the Android top bar loses its
+  refresh icon, the iOS error loses its Dismiss), then memory, devices, decisions, the command and
+  Copy diagnostic with the link to how the planner decides. The worst-case tile is gone from all
+  three: `predicted.s_per_token_worst` is the cost model's own bound (one token with nothing
+  resident, where every tier's saving is subtracted from), stays in the API and the diagnostic, and
+  told a person nothing the expected figure did not. A decode figure is compared to the plan's
+  prediction (`+26%`) only when the loaded model runs that plan.
+- **`GET /api/plan` with a model loaded answers the plan Apply would apply.** With a model loaded,
+  the load's plan is answered (`from_last_load`) only while nothing was measured after that load;
+  `?cached=1` after a measurement made by hand with the model resident answers that measurement
+  (`cached`), the one Apply applies, now with `measured` beside it too (before, a cached plan never
+  carried the model's figures, so a Plan screen showing one never updated after an answer). The
+  rule is `held_plan` in `server/plan_view.h`, with its test.
+
 ## [0.37.1] - 2026-10-26
 
 ### Fixed

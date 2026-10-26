@@ -222,8 +222,10 @@ export interface PlanAvailable {
   cached?: boolean;
   from_last_load?: boolean;
   summary?: { sentence: string; lanes: PlanLane[] };
-  /** Decode as the plan priced it: the prediction, the hit rate it credited, the bound with nothing resident. */
-  predicted?: { s_per_token?: number; cache_hit_pct?: number; s_per_token_worst?: number };
+  /** Decode as the plan priced it: the prediction and the hit rate it credited. The API also carries
+   * `s_per_token_worst`, the cost model's bound with nothing resident, which no screen draws. */
+  predicted?: { s_per_token?: number; cache_hit_pct?: number };
+  /** What the loaded model's last turn measured; compared to `predicted` only under `from_last_load`. */
   measured?: PlanMeasured;
   memory?: { pools: PlanMemoryPool[] };
   devices?: PlanDevice[];

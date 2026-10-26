@@ -1,7 +1,9 @@
 <script lang="ts">
   // The plan, read top down: what it decided in one sentence and how that turned out, where the
   // memory goes, what each device does, then the decisions grouped and the command. One layout for
-  // every machine: each block is a list of whatever the plan holds.
+  // every machine and the same one on every front-end (docs/screens.md): each block is a list of
+  // whatever the plan holds. The plan itself lives in the server store, which reads it again when
+  // a session opens and when a turn ends, so this page only draws it.
   import { onMount } from 'svelte';
   import PlanDecisions from '../components/plan/PlanDecisions.svelte';
   import PlanDevices from '../components/plan/PlanDevices.svelte';
@@ -9,28 +11,18 @@
   import PlanProgress from '../components/plan/PlanProgress.svelte';
   import { api } from '../lib/api';
   import { commandLine, formatBytes, formatNum } from '../lib/format';
-  import { appliedChanges, diagnosticText, speedCheck, type AppliedChange } from '../lib/plan';
+  import { appliedChanges, diagnosticText, planDecisions, speedCheck, type AppliedChange } from '../lib/plan';
   import { settingHref } from '../lib/route';
-  import type { Plan } from '../lib/types';
   import { server } from '../stores/server.svelte';
 
-  let plan = $state<Plan | null>(null);
   let error = $state('');
   let applying = $state(false);
   let applied = $state<AppliedChange[] | null>(null);
 
-  let measuring = $state(false);
-
-  async function refresh(measure = false) {
+  async function measure() {
     error = '';
-    measuring = measure;
-    try {
-      plan = await api.plan(measure ? 'measure' : 'cached');
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-    } finally {
-      measuring = false;
-    }
+    applied = null;
+    await server.measurePlan();
   }
 
   async function apply() {
@@ -62,23 +54,22 @@
     }
   }
 
-  onMount(() => refresh());
-
-  // A finished turn is a new measurement of the plan the model runs with: read it again (no probes).
-  let seenDone: unknown = null;
-  $effect(() => {
-    const d = server.lastDone;
-    if (d && d !== seenDone && plan?.available && plan.from_last_load && !measuring) {
-      seenDone = d;
-      refresh();
-    }
+  // The store reads the plan when it reaches the server; a page opened before that asks once.
+  onMount(() => {
+    if (!server.plan && server.connected) server.refreshPlan();
   });
 
+  const plan = $derived(server.plan);
+  const measuring = $derived(server.measuring);
   const avail = $derived(plan?.available && !plan.error ? plan : null);
   const check = $derived(avail ? speedCheck(avail.predicted, avail.measured) : null);
   const showProgress = $derived(measuring || server.planProgress !== null);
   const host = $derived(avail?.memory?.pools?.[0]);
-  const worstMs = $derived((avail?.predicted?.s_per_token_worst ?? 0) * 1000);
+  // One banner for whatever went wrong: the request, Apply, or a plan the server could not make.
+  const shownError = $derived(error || server.planError || (plan?.available ? (plan.error ?? '') : ''));
+  // With nothing to show, what the settings carry from the last applied plan: never an empty page.
+  const carried = $derived(planDecisions(server.config?.plan));
+  const showCarried = $derived(!server.ready && carried.length > 0 && (!plan || !plan.available || plan.none || !!plan.error));
 
   // The planner's whole account stays in the API for a bug report; it is copied, not shown.
   let diag = $state<'idle' | 'ok' | 'failed'>('idle');
@@ -95,15 +86,12 @@
   const PLANNING_DOC = 'https://github.com/Helldez/BigMoeOnEdge/blob/main/docs/hardware-planning.md';
 </script>
 
-<div class="head">
-  <h1>Plan</h1>
-  <a class="muted doc" href={PLANNING_DOC} target="_blank" rel="noopener noreferrer">How the planner decides</a>
-</div>
+<h1>Plan</h1>
 
-{#if error}
+{#if shownError}
   <div class="banner error" role="alert">
-    <span>{error}</span>
-    <button type="button" onclick={() => refresh(true)} disabled={measuring}>{measuring ? 'Measuring...' : 'Measure again'}</button>
+    <span>{shownError}</span>
+    <button type="button" onclick={measure} disabled={measuring}>{measuring ? 'Measuring...' : 'Measure again'}</button>
   </div>
 {/if}
 
@@ -112,7 +100,7 @@
 {/if}
 
 {#if !plan}
-  {#if !error && !showProgress}<p class="muted">Reading the plan...</p>{/if}
+  {#if !shownError && !showProgress}<p class="muted">Reading the plan...</p>{/if}
 {:else if !plan.available}
   <div class="card">
     <p><strong>The automatic hardware planner is not in this build.</strong></p>
@@ -130,17 +118,12 @@
     <span><strong>Plan before every load</strong>, on a quiet machine (the previous model is unloaded first). Values you set yourself are kept.</span>
   </label>
 
-  {#if plan.error}
-    <p class="muted">{plan.error}</p>
-    <div class="apply">
-      <button type="button" onclick={() => refresh(true)} disabled={measuring}>{measuring ? 'Measuring...' : 'Measure again'}</button>
-    </div>
-  {:else if plan.none}
+  {#if plan.none}
     <section class="card summary">
       <p class="sentence">Not measured yet.</p>
       <p class="muted machine">Measure this machine to see what the plan does with the chosen model.</p>
       <div class="apply">
-        <button type="button" class="primary" onclick={() => refresh(true)} disabled={measuring}>Measure</button>
+        <button type="button" class="primary" onclick={measure} disabled={measuring}>{measuring ? 'Measuring...' : 'Measure'}</button>
       </div>
     </section>
   {:else if avail && check}
@@ -172,8 +155,12 @@
           <span class="muted k">Tokens</span>
           {#if check.measuredTokS !== null}
             <span><span class="figure big">{formatNum(check.measuredTokS)}</span> <span class="figure muted">tok/s measured</span></span>
-            {#if check.deltaPct !== null && check.predictedTokS !== null}
-              <span class="muted k"><span class="badge {check.deltaPct >= 0 ? 'ok' : 'warn'}">{check.deltaPct >= 0 ? '+' : ''}{check.deltaPct.toFixed(0)}%</span> against the {formatNum(check.predictedTokS)} expected</span>
+            {#if check.predictedTokS !== null && check.deltaPct !== null}
+              {#if avail.from_last_load}
+                <span class="muted k"><span class="badge {check.deltaPct >= 0 ? 'ok' : 'warn'}">{check.deltaPct >= 0 ? '+' : ''}{check.deltaPct.toFixed(0)}%</span> against the {formatNum(check.predictedTokS)} expected</span>
+              {:else}
+                <span class="muted k">{formatNum(check.predictedTokS)} tok/s expected under this plan</span>
+              {/if}
             {/if}
           {:else if check.predictedTokS !== null}
             <span><span class="figure big">{formatNum(check.predictedTokS)}</span> <span class="figure muted">tok/s expected</span></span>
@@ -210,18 +197,11 @@
             <span class="muted k">Of the {formatBytes(host.cap_bytes)} it may hold</span>
           </div>
         {/if}
-        {#if worstMs > 0}
-          <div class="tile">
-            <span class="muted k">Worst case</span>
-            <span><span class="figure big">{formatNum(worstMs, 0)}</span> <span class="figure muted">ms per token</span></span>
-            <span class="muted k">With nothing held in memory{#if check.predictedTokS !== null}, against {formatNum(1000 / check.predictedTokS, 0)} ms expected{/if}</span>
-          </div>
-        {/if}
       </div>
 
       <div class="apply">
-        <button type="button" class="primary" onclick={apply} disabled={applying}>Apply plan</button>
-        <button type="button" onclick={() => refresh(true)} disabled={measuring}>
+        <button type="button" class="primary" onclick={apply} disabled={applying || measuring}>Apply plan</button>
+        <button type="button" onclick={measure} disabled={measuring}>
           {measuring ? 'Measuring...' : 'Measure again'}
         </button>
         <span class="muted">Values you set yourself are never changed.</span>
@@ -266,6 +246,7 @@
       <button type="button" onclick={copyDiagnostic}>Copy diagnostic</button>
       <span class="muted">The command and the planner's whole account, for a bug report.</span>
       {#if diag === 'ok'}<span class="ok-text" role="status">Copied.</span>{/if}
+      <a class="doc" href={PLANNING_DOC} target="_blank" rel="noopener noreferrer">How the planner decides</a>
     </div>
     {#if diag === 'failed'}
       <div class="banner warn">
@@ -276,16 +257,13 @@
   {/if}
 {/if}
 
+{#if showCarried}
+  <h2>Decisions from the last applied plan</h2>
+  <p class="muted">What the settings carry now; Measure shows the plan in full.</p>
+  <PlanDecisions decisions={carried} />
+{/if}
+
 <style>
-  .head {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    margin-bottom: 0.75rem;
-  }
-  .head h1 {
-    margin: 0;
-  }
   .auto {
     display: flex;
     gap: 0.6rem;
@@ -361,7 +339,6 @@
     overflow-wrap: anywhere;
   }
   .doc {
-    margin-left: auto;
     font-size: 0.9rem;
   }
   .applied ul {

@@ -1462,6 +1462,33 @@ static const json * device_named(const json & view, const std::string & name) {
 }
 
 static void plan_view_tests() {
+    {
+        // Which held plan answers a read with a model loaded: the load's own while nothing was
+        // measured after it; the last measured for the same model only when a held one was asked
+        // for; nothing for another model, or with nothing held.
+        PlanRead r;
+        r.model = "/m/a.gguf";
+        check(held_plan(r) == HeldPlan::None, "held plan: nothing held, nothing answers");
+        r.load_model = "/m/a.gguf";
+        r.load_seq = 1;
+        r.last_model = "/m/a.gguf";
+        r.last_seq = 1;
+        check(held_plan(r) == HeldPlan::Runs, "held plan: the load's plan, which is the last measured");
+        r.want_cached = true;
+        check(held_plan(r) == HeldPlan::Runs, "held plan: the same when a held one is asked for");
+        r.last_seq = 2;
+        check(held_plan(r) == HeldPlan::Last, "held plan: a measurement after the load is the last one");
+        r.want_cached = false;
+        check(held_plan(r) == HeldPlan::None, "held plan: ...but only when a held one was asked for");
+        r.want_cached = true;
+        r.last_model = "/m/b.gguf";
+        check(held_plan(r) == HeldPlan::None, "held plan: a plan for another model does not answer");
+        r.last_seq = 0;
+        r.last_model.clear();
+        check(held_plan(r) == HeldPlan::Runs, "held plan: the load's plan with no measurement held");
+        r.model = "/m/b.gguf";
+        check(held_plan(r) == HeldPlan::None, "held plan: the load's plan for another model does not");
+    }
     // A phone: the NPU is armed for the prompt, a GPU is slower, another gave the wrong results,
     // one did not survive its probe, and the device slots take turns with the cache.
     HardwareProfile hw;

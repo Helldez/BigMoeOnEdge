@@ -19,6 +19,7 @@
 #include "json_util.h"
 #include "model_inspect.h"
 #include "model_library.h"
+#include "plan_view.h"
 #include "planner_adapter.h"
 #include "platform.h"
 #include "routing_store.h"
@@ -355,6 +356,7 @@ struct App {
     // from last_plan: a plan measured by hand with that model resident is a different, pessimistic
     // measurement and must not replace it.
     PlanOutcome load_plan;
+    std::atomic<uint64_t> plan_seq{0};
 
     // The network, for reading a repository (http_fetch.h), and where its bytes in flight go.
     std::unique_ptr<HttpFetch> net;
@@ -433,6 +435,7 @@ struct App {
             },
             have ? &kept : nullptr, have_knobs ? &knobs : nullptr, /*measure_knobs*/ true);
         bus.publish("plan_progress", json{{"step", "done"}});
+        p.seq = ++plan_seq;
         return p;
     }
 
@@ -491,6 +494,11 @@ struct App {
                 last_plan = std::move(p);
             }
             publish_config();
+        } else {
+            // A load on the settings as they are runs no plan: an earlier auto load's must not be
+            // answered as the one this session runs with.
+            std::lock_guard<std::mutex> lk(plan_m);
+            load_plan = PlanOutcome{};
         }
         // The planning flag is cleared after the load has been asked for, so the state goes from
         // planning straight to loading (or to the error) with no empty in between.
@@ -1113,18 +1121,33 @@ void register_routes(httplib::Server & svr, App & app) {
         if (!planner_available())
             return send_json(res, json{{"available", false},
                                        {"reason", "this build does not include the automatic hardware planner"}});
-        // With a model loaded, the answer is the plan it runs with: measuring again now would count
-        // that model's memory as taken. `?measure=1` asks for a fresh measurement anyway.
+        // With a model loaded, the answer is a plan this server holds for it (plan_view.h, held_plan):
+        // measuring again now would count that model's memory as taken. `?measure=1` asks for a
+        // fresh measurement anyway.
         if (!req.has_param("measure") && app.host.loaded_or_loading()) {
-            PlanOutcome lp;
+            PlanOutcome lp, last;
             {
                 std::lock_guard<std::mutex> lk(app.plan_m);
                 lp = app.load_plan;
+                last = app.last_plan;
             }
-            if (lp.ok && lp.body.value("model", "") == app.store.config().model_path) {
-                json body = lp.body;
-                body["from_last_load"] = true;
-                // What the loaded model has done since, beside what the plan predicted.
+            PlanRead r;
+            r.model = app.store.config().model_path;
+            r.want_cached = req.has_param("cached");
+            if (lp.ok) {
+                r.load_model = lp.body.value("model", "");
+                r.load_seq = lp.seq;
+            }
+            if (last.ok) {
+                r.last_model = last.body.value("model", "");
+                r.last_seq = last.seq;
+            }
+            const HeldPlan held = held_plan(r);
+            if (held != HeldPlan::None) {
+                json body = held == HeldPlan::Runs ? lp.body : last.body;
+                body[held == HeldPlan::Runs ? "from_last_load" : "cached"] = true;
+                // What the loaded model has done since, beside the plan (compared to it by a UI only
+                // when the model runs that plan).
                 const json measured = app.host.last_turn();
                 if (!measured.is_null()) body["measured"] = measured;
                 return send_json(res, body);
