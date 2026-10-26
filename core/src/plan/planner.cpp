@@ -452,9 +452,34 @@ void choose_device_tier(Planning & s) {
     pl.device_bytes = pl.device_bytes > on_devices ? pl.device_bytes - on_devices : 0;
     s.host_layers = s.n_moe_layer;
     s.host_expert_bytes = m.expert_bytes;
-    s.p.config.moe.device_cache_mb = (int) mib(on_devices);
-    s.note("device-cache-mb", mib_s(on_devices), Source::Measured,
-           "A " + size_brief(on_devices) + " cache of the most used experts on " + dev->name +
+    // The MTP head of a file of its own follows the experts to the processor that computes them
+    // fastest: its block is one more expert block, and drafting on a slower processor was measured
+    // losing (35 ms of a 65 ms token on 8 slow cores, against no head at all). It takes its bytes
+    // from the cache, never from the fitter's layers, so the target keeps the placement it was
+    // fitted; where it does not fit, it drafts on the host and the plan says so.
+    uint64_t cache_bytes = on_devices;
+    RunConfig & c = s.p.config;
+    if (c.spec.is_mtp() && !c.spec.mtp_head.empty() && !s.req.is_pinned("mtp-head-on-devices")) {
+        const uint64_t head = m.mtp_head_bytes;
+        c.spec.mtp_head_on_devices = head > 0 && head < cache_bytes;
+        if (c.spec.mtp_head_on_devices) {
+            cache_bytes -= head;
+            pl.device_bytes += head;
+            s.note("mtp-head-on-devices", "true", Source::Measured,
+                   "The MTP head (" + size_brief(head) + ") is loaded on " + dev->name + ", beside the expert cache.",
+                   "the head's block is an expert block, and " + dev->name +
+                       " computes this model's experts faster than the host by the margin; its " + mib_s(head) +
+                       " MiB come out of the " + mib_s(on_devices) + " MiB the fitter gave the experts");
+        } else {
+            s.note("mtp-head-on-devices", "false", Source::Derived, "The MTP head drafts on the host.",
+                   head == 0 ? "the head file's size is unknown"
+                             : "the head's " + mib_s(head) + " MiB do not fit in the " + mib_s(on_devices) +
+                                   " MiB the fitter gave the experts on " + dev->name);
+        }
+    }
+    s.p.config.moe.device_cache_mb = (int) mib(cache_bytes);
+    s.note("device-cache-mb", mib_s(cache_bytes), Source::Measured,
+           "A " + size_brief(cache_bytes) + " cache of the most used experts on " + dev->name +
                ", in place of whole layers' experts.",
            std::string("the experts used most live on the processor that computes them fastest, as the RAM "
                        "cache holds what flash would read: ") +

@@ -398,11 +398,28 @@ enum class DraftSource {
 struct SpecConfig {
     DraftSource source = DraftSource::none;
 
+    // MTP only. A GGUF holding the model's trained MTP head on its own, for a model file that ships
+    // without it: llama.cpp's converter writes one (convert_hf_to_gguf.py --mtp). Empty uses the head
+    // inside the model file. The head is opened as a model of its own and drafts in a context that
+    // reads the target's hidden states, as llama.cpp's own speculative driver loads a draft head.
+    std::string mtp_head;
+    // MTP only, with a head file: the head's weights on the devices the target's layers are on
+    // (true) or on the host (false). The planner sets it where a device computes this model's
+    // experts faster than the host by the margin - the head's block is one more expert block - and
+    // the head fits in the bytes the capacity fitter gave the experts, which it takes from the
+    // device expert cache; the target's own placement is untouched. Measured why: on a 12 GB card
+    // with 8 slow cores, drafting on the host cost 35 ms of a 65 ms token and lost to no head at all.
+    bool mtp_head_on_devices = false;
+
     // Tokens drafted per verify batch. The verify decode is 1 + draft_max positions wide, so this
     // sets both the ceiling on tokens-per-decode and the width of the read-set widening above.
     // Past the source's acceptance horizon the extra drafts are rejected and paid for anyway, which
     // is why the useful range is small; 3 is upstream's default for a single trained head.
     int draft_max = 3;
+    // The narrowest ubatch an MTP draft context is reserved at: it computes 1 + draft_max positions
+    // at decode, a prompt chunk in pieces this wide at prefill (Session::open, and the placement
+    // probe that fits it beside the target).
+    static constexpr int mtp_draft_ubatch = 32;
 
     // MTP only. Confidence floor for continuing to draft, as the head's own probability for the
     // token it is proposing. At 0 the head is asked for draft_max tokens unconditionally, however

@@ -187,6 +187,7 @@ int main() {
     expect_flag({"--seed", "42"}, [](const RunConfig & c) { return c.sampling.seed == 42u; });
     expect_flag({"--seed", "4294967295"}, [](const RunConfig & c) { return c.sampling.seed == 0xFFFFFFFFu; });
     expect_flag({"--mtp"}, [](const RunConfig & c) { return c.spec.source == DraftSource::mtp; });
+    expect_flag({"--mtp-head-on-devices"}, [](const RunConfig & c) { return c.spec.mtp_head_on_devices; });
     expect_flag({"--ngram"}, [](const RunConfig & c) { return c.spec.source == DraftSource::ngram; });
     expect_flag({"--draft", "5"}, [](const RunConfig & c) { return c.spec.draft_max == 5; });
     expect_flag({"--mtp-p-min", "0.6"}, [](const RunConfig & c) { return c.spec.draft_p_min == 0.6f; });

@@ -114,6 +114,55 @@ zero, so a gguf that kept the key but dropped the tensors would not open at all.
 with `--mtp`, the head is genuinely there; if it has no head, the engine fails at load with a
 message rather than quietly decoding one token at a time.
 
+### A head in a file of its own (`--mtp-head`)
+
+Some quantised files leave the head out: the GSQ-RCO quants of Qwen3.8-Flash-Next carry no `nextn`
+block, while the checkpoint they came from trains one. llama.cpp's converter writes the head on its
+own (`convert_hf_to_gguf.py --mtp`), and `--mtp-head FILE` opens such a file as a model of its own,
+the way llama.cpp's speculative driver opens a draft head: the head drafts in its own context, which
+reads the target's hidden states, while the target is the model file as it is. The head is loaded
+whole, and is not the streamer's (one layer, small beside the model). Where it lives is the plan's
+decision (`mtp-head-on-devices`): where the plan arms a device expert cache (a device computes
+this model's experts faster than the host by the margin), the head follows the experts to that
+device and takes its bytes from the cache, so the target keeps the placement it was fitted;
+otherwise it drafts on the host. Measured why on a 12 GB card with 8 slow cores: the head drafting
+on the host cost 35 ms of a 65 ms token and lost to no head at all (9.9 against 15.5 tok/s).
+Placed on a device at llama.cpp's defaults instead, before this rule, it was measured worse: the
+fitter gave the target 3.2 GB of a 24 GB card to make room for it, and the draft's first read of
+the target's hidden states crashed; the plan now never lets the head take from the target's layers.
+
+The converter needs the checkpoint, and the head is a small part of it, so
+`scripts/fetch-hf-subset.py` fetches only the tensors named by its patterns with HTTP range requests
+and writes a directory the converter reads like the checkpoint:
+
+    python3 scripts/fetch-hf-subset.py Qwen/Qwen3.8-Flash-Next --include '^mtp\.' \
+        --include 'embed_tokens' --include '^lm_head' --out mtp-src
+    python3 scripts/convert-mtp-head.py mtp-src --like model-00001-of-00002.gguf --outfile head.gguf
+    bmoe-cli -m model.gguf --auto --mtp --mtp-head head.gguf
+
+`convert-mtp-head.py` runs `convert_hf_to_gguf.py --mtp` unchanged but for one fact it takes from the
+model file the head will draft for: the tokenizer's pre-tokenizer name. The converter recognises a
+pre-tokenizer by hashing what it does to a fixed text, and a tokenizer newer than its table stops the
+conversion, though the model file beside it already says which one it is. The fetch runs eight range
+requests at once (`--jobs`): one at a time is bound by the round trip, not the link.
+
+Nothing in the tools or the option knows an architecture: the patterns choose the tensors, the
+converter knows the names, and a file with no head is refused at load.
+
+The plan fits the draft context beside the target. Speculation keeps rollback snapshots of the
+recurrent state in the target's context, and the MTP draft context reserves its own state and
+compute buffers on the devices; llama.cpp's capacity fitter takes such a context as the second model
+that shares the devices (`common_fit_extra_model`), and the placement probe now hands it over. Fitted
+without it, Qwen3.8-Flash-Next on a 24 GB card left 2.3 GB free for the 0.9 GB of draft compute
+buffers and the session ended in a CUDA out-of-memory on the first prompt.
+
+Measured on a rented 24 GB desktop GPU (31 CPUs of a 128-core host, 241 GiB RAM), Qwen3.8-Flash-Next
+GSQ-RCO Q2_0 with the head fetched and converted to Q8_0 (4.1 GB), `--auto`, 256 greedy tokens from
+a 40-token prompt, the plan placing whole layers on the card: **45.1 tok/s** with `--mtp --mtp-head`
+(167/264 drafts accepted, 2.88 tokens per verify decode) against 30.5-33.8 without. Drafting on the
+host costs 9.4 ms of each token. One machine, one placement; the device-cache placement with the
+head is not yet measured.
+
 One consequence for measurement: **an MTP A/B must be the same file with the flag on and off.**
 Comparing an `-MTP-`-named file against a differently-quantised baseline confounds the feature with
 the quantisation change.

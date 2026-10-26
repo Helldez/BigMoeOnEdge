@@ -6,18 +6,24 @@ Semantic Versioning.
 
 ## [Unreleased]
 
-### Fixed
-- **The tables the plan leaves mapped stay mapped.** The allocation prices the embedding group on
-  its own lane, and where that lane is not residency (the graph gathers rows from it, so a copy buys
-  bytes nothing reads) the run's `anon`/`pinned` dense policy still copied every dense tensor it was
-  handed: a 28.8 GB per-layer table that "fits" by the kernel's count went into memory the ledger had
-  sized the expert cache without, and on a 12 GB card's 42.6 GiB control group the run was killed at
-  43 GB (#424). The plan now hands the run the tables it priced as mapped (`dense-mapped`, names read
-  off the file's own grouping, a `[derived]` decision), the run holds them back as it holds back a
-  tensor too large, and llama.cpp's lazy prefetch of such a table stays off. Nothing names a tensor
-  or a size; a small table the allocation finds worth a resident copy is copied as before.
-
 ### Added
+- **An MTP head from a file of its own** (`--mtp-head FILE`). Some quantised files leave the trained
+  head out (the GSQ-RCO quants of Qwen3.8-Flash-Next), and llama.cpp's converter writes it on its own
+  (`convert_hf_to_gguf.py --mtp`). The head is opened as a model of its own, whole on the host, and
+  drafts in a context that reads the target's hidden states, as llama.cpp's speculative driver does
+  with a draft head; the target loads as it is. `scripts/fetch-hf-subset.py` fetches only the
+  tensors a set of patterns names from a Hugging Face checkpoint, by HTTP range requests (each must
+  come back as the range asked for), into a directory the converter reads like the checkpoint, so a
+  head is a few GB of download instead of the whole model, eight range requests at a time.
+  `scripts/convert-mtp-head.py` runs llama.cpp's converter with the pre-tokenizer name taken from the
+  model file the head drafts for, where the converter's own table does not know the tokenizer yet.
+  `docs/mtp.md` has the three commands. Measured on a 24 GB desktop GPU with Qwen3.8-Flash-Next:
+  45.1 tok/s against 30.5-33.8 without the head.
+  Where the plan arms a device expert cache, the head follows the experts to that device
+  (`mtp-head-on-devices`, a measured decision) and takes its bytes from the cache, never from the
+  target's layers; on a 12 GB card with 8 slow cores the head drafting on the host cost 35 ms of a
+  65 ms token and lost to no head at all.
+
 - **The stack measured on rented desktop GPUs** (`docs/bench-data/2026-10-26-rented-gpu/`,
   `docs/benchmarks.md`, `docs/community-benchmarks.md`). A 24 GB card, `--auto` only: Qwen3.6-35B
   resident on the card at 217 tok/s, Flash-Next 125B with its hottest 18 GB of experts cached on the
@@ -29,6 +35,23 @@ Semantic Versioning.
   the MTP head drafting on 8 slow cores cost more than it saved. With CUDA and Vulkan built together,
   the Vulkan device reported no PCI id, so the backends were not grouped and the tier priced the
   slower one (#421).
+
+### Fixed
+- **Speculation's memory is in the placement.** The rollback snapshots speculation keeps in the
+  target's context, and the MTP draft context's own state and compute buffers, were not in what
+  llama.cpp's capacity fitter placed the model against, so on a card the fitter had filled the
+  draft context's 0.9 GB of compute buffers ended the first prompt in a CUDA out-of-memory. The
+  placement probe now hands the draft context to the fitter as the second model sharing the
+  devices.
+- **The tables the plan leaves mapped stay mapped.** The allocation prices the embedding group on
+  its own lane, and where that lane is not residency (the graph gathers rows from it, so a copy buys
+  bytes nothing reads) the run's `anon`/`pinned` dense policy still copied every dense tensor it was
+  handed: a 28.8 GB per-layer table that "fits" by the kernel's count went into memory the ledger had
+  sized the expert cache without, and on a 12 GB card's 42.6 GiB control group the run was killed at
+  43 GB (#424). The plan now hands the run the tables it priced as mapped (`dense-mapped`, names read
+  off the file's own grouping, a `[derived]` decision), the run holds them back as it holds back a
+  tensor too large, and llama.cpp's lazy prefetch of such a table stays off. Nothing names a tensor
+  or a size; a small table the allocation finds worth a resident copy is copied as before.
 
 ## [0.37.1] - 2026-10-26
 
