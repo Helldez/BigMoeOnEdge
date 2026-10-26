@@ -1316,6 +1316,22 @@ int main() {
               "ledger: context and compute are charged without a fitted placement");
         check(ph.cache_budget_bytes - fx.cache_budget_bytes == 600 * MiB, "ledger: and the cache is sized after them",
               mibs_of(ph.cache_budget_bytes) + " against " + mibs_of(fx.cache_budget_bytes));
+
+        // A chat run keeps context checkpoints, each a copy of the context's fixed part: a line of
+        // their own at the count kept, the cache sized after it, and nothing on a run that is not a chat.
+        Placement ck = pl;
+        ck.context_fixed_bytes = 50 * MiB;
+        RunConfig chat = base_cfg();
+        chat.chatml = true;
+        chat.ctx_checkpoints = 4;
+        const Plan cx = plan_run(chat, phone(), model, ck, PlanRequest{});
+        const LedgerRow * ck_row = ledger_row(cx, "context checkpoints");
+        check(ck_row && ck_row->bytes == 200 * MiB, "ledger: a chat run charges its checkpoints",
+              ck_row ? mibs_of(ck_row->bytes) : "no row");
+        check(fx.cache_budget_bytes - cx.cache_budget_bytes == 200 * MiB, "ledger: and the cache gives them up",
+              mibs_of(fx.cache_budget_bytes) + " against " + mibs_of(cx.cache_budget_bytes));
+        check(ledger_row(plan_run(base_cfg(), phone(), model, ck, PlanRequest{}), "context checkpoints") == nullptr,
+              "ledger: a run that is not a chat keeps no checkpoints");
     }
 
     // ── the prefill plan: a second placement, decided at prefill width ─────────────

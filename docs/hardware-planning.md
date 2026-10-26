@@ -246,7 +246,7 @@ and `BMOE_*` env overrides both count as the caller speaking.
    reads that resident weights do not need.
 4. **Dense policy**, from what a reclaim costs here.
 5. **The memory ledger**: one account for everything the run holds — context and compute buffers,
-   an armed device, the dense set, the expert cache — against two ceilings, what can be held and
+   a chat run's context checkpoints, an armed device, the dense set, the expert cache — against two ceilings, what can be held and
    what can be held reclaim-exempt. The cache is what is left under both, capped at the experts'
    own size and floored at the model's token cycle. See [The memory ledger](#the-memory-ledger).
 6. **I/O policy** from the storage facts.
@@ -406,6 +406,7 @@ alone is how a plan comes to ask for locks the machine stops granting part way.
 | row | from | charged to |
 |---|---|---|
 | context and compute buffers | llama.cpp's own projection for this model and context | holdable |
+| context checkpoints (a chat run) | `--ctx-checkpoints` copies of the context's fixed part: llama.cpp's projection at the context and at half of it, twice the half less the whole (a recurrent state, a sliding window; nothing for a context that is all attention) | holdable |
 | a device armed for prefill | two of the model's largest expert layer, plus the compute buffer llama.cpp projects for that device (none for one it never places layers on, such as an NPU) | holdable; lockable too where its buffers are |
 | dense set | the gguf | holdable; lockable if it is pinned |
 | expert cache | what is left | holdable; lockable for the part that can be locked in place |
