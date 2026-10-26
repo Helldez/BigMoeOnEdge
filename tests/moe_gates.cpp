@@ -57,9 +57,19 @@
 //       a session without decide enabled refuses it harmlessly (f), and with a prefill device
 //       decisions (no prefix state kept) and a generate() after them == all CPU (g). G16 and G17 are
 //       the prefill-device gates.
+//   G22 context checkpoints: a follow-up whose prompt diverges from the cached one inside the
+//       previous answer (the client resent it edited) restarts from the checkpoint at the end of the
+//       previous prompt where the memory refuses the cut, and answers exactly as the same pieces
+//       prefilled without any restore (a); with checkpoints off such a memory prefills it all (b).
+//   G23 the KV cache at f16, llama.cpp's type: streaming == resident. q8_0 is the default, so every
+//       other gate runs on a quantized cache; this one keeps the lossless type covered. The cache
+//       type changes the output, never what streaming the experts produces.
 //   G20 the fitter's placement for a model larger than the device: dense parts on a device with
 //       memory of its own, experts streamed from the host, == the same placement resident, serial
 //       (a) and under --overlap (b). The router's ids are then read through a host copy.
+//   G21 the knob trial switches the decode thread count and overlap between timed windows of the
+//       answer it decodes: == resident over one long answer (a) and over four turns that each end
+//       inside a window (b), and the trial must have reached its verdicts.
 //
 // G15 needs no separate "did it do anything" check of the G10 kind: the tensor is bound to
 // RESERVED address space, so a row the policy fails to fetch is not a slightly wrong weight but
@@ -1641,6 +1651,181 @@ int main(int argc, char ** argv) {
                     check("G20b device routing, streamed experts, overlap == resident experts", s_placed, s_placed_ov);
             }
         }
+    }
+
+    // ── G21: the knob trial (docs/measured-planning.md, Step 2) switches the decode thread count and
+    // overlap between windows of the answer it is decoding: the answer must be the resident one. ──
+    {
+        RunConfig ref = resident;
+        ref.n_predict = 120; // long enough for both knobs' rounds at a two-token window
+        std::string s_ref;
+        if (!gen(ref, s_ref, err)) {
+            std::fprintf(stderr, "G21 reference run failed: %s\n", err.c_str());
+            return 2;
+        }
+        RunConfig trial = streamc; // the cache settles, then the windows alternate
+        trial.n_predict = ref.n_predict;
+        trial.trial.threads = {1, 4};
+        trial.trial.overlap = have_hook; // without the hook the session leaves overlap out, and says so
+        trial.trial.window_tokens = 2;
+        const RunResult r = run(trial);
+        if (!r) {
+            std::fprintf(stderr, "G21 run failed: %s\n", r.error.c_str());
+            return 2;
+        }
+        fails += check("G21a knob trial (threads 2 vs 1 vs 4, then overlap) == resident", s_ref, r.generated_text);
+        // Identity alone would pass a trial that never switched anything.
+        const MeasuredKnobs & mk = r.knobs;
+        const bool threads_ok = mk.threads > 0 && mk.threads_tried == std::vector<int>({2, 1, 4}) && mk.rounds > 0;
+        const bool overlap_ok = !have_hook || (mk.overlap >= 0 && mk.overlap_incumbent == 0);
+        if (!threads_ok || !overlap_ok) {
+            std::printf("[FAIL] G21a the trial did not reach its verdicts: threads %d (%zu tried), overlap %d, "
+                        "%d rounds\n",
+                        mk.threads, mk.threads_tried.size(), mk.overlap, mk.rounds);
+            ++fails;
+        } else {
+            std::printf("[PASS] G21a the trial reached its verdicts: %d threads (x%.2f), overlap %s, %d rounds\n",
+                        mk.threads, mk.threads_gain,
+                        mk.overlap < 0 ? "not measured"
+                        : mk.overlap   ? "on"
+                                       : "off",
+                        mk.rounds);
+        }
+
+        // G21b: the trial spans turns. A request that ends inside a window drops it and the next one
+        // takes up the trial where it stood; every answer is still the resident one.
+        RunConfig ref_b = resident;
+        ref_b.n_predict = 40;
+        std::string s_ref_b;
+        if (!gen(ref_b, s_ref_b, err)) {
+            std::fprintf(stderr, "G21b reference run failed: %s\n", err.c_str());
+            return 2;
+        }
+        RunConfig turns = trial;
+        turns.n_predict = ref_b.n_predict;
+        std::unique_ptr<Session> s = Session::open(session_config_from(turns), err);
+        if (!s) {
+            std::fprintf(stderr, "G21b open failed: %s\n", err.c_str());
+            return 2;
+        }
+        GenerateRequest req;
+        req.prompt = turns.prompt;
+        req.n_predict = turns.n_predict;
+        req.clear_kv = true;
+        bool same = true;
+        std::string differ;
+        for (int t = 0; t < 4; ++t) {
+            const RunResult rt = s->generate(req);
+            if (!rt) {
+                std::fprintf(stderr, "G21b turn %d failed: %s\n", t, rt.error.c_str());
+                return 2;
+            }
+            if (rt.generated_text != s_ref_b) {
+                same = false;
+                differ = rt.generated_text;
+            }
+        }
+        fails += check("G21b knob trial across four turns == resident, every turn", s_ref_b, same ? s_ref_b : differ);
+        const MeasuredKnobs mt = s->measured_knobs();
+        if (mt.threads <= 0) {
+            std::printf("[FAIL] G21b the trial reached no verdict across the turns\n");
+            ++fails;
+        } else {
+            std::printf("[PASS] G21b the trial reached its verdict across the turns: %d threads, overlap %s\n",
+                        mt.threads,
+                        mt.overlap < 0 ? "not measured"
+                        : mt.overlap   ? "on"
+                                       : "off");
+        }
+    }
+
+    // G22 — context checkpoints (context_checkpoints.h). Turn 1 answers u1; turn 2 resends a
+    // different answer in its place, so the prompt diverges inside it. A memory that cuts anywhere just cuts there; one
+    // that refuses (a recurrent state, a sliding window) goes back to the checkpoint taken at the end
+    // of turn 1's prompt. The reference reaches the same pieces with no restore: turn 1 generates
+    // nothing, so turn 2 only extends it. Comparing with a one-piece prefill instead would compare
+    // llama.cpp's rounding across piece boundaries, which it does not promise (G18b).
+    {
+        auto msgs = [](std::initializer_list<std::pair<const char *, std::string>> l) {
+            std::vector<ChatMessage> v;
+            for (const auto & m : l)
+                v.push_back(ChatMessage{m.first, m.second});
+            return v;
+        };
+        const std::string u1 = "Name a colour.";
+        const std::string u2 = "And a fruit?";
+        // false (with err) on a failed open or turn. prefilled = tokens turn 2 prefilled.
+        auto two_turns = [&](int checkpoints, int n_predict1, std::string & out, int & prefilled, int & n_prompt2) {
+            RunConfig c = stream0;
+            c.chatml = true;
+            c.ctx_checkpoints = checkpoints;
+            std::unique_ptr<Session> s = Session::open(session_config_from(c), err);
+            if (!s) return false;
+            GenerateRequest q;
+            q.messages = msgs({{"user", u1}});
+            q.n_predict = n_predict1;
+            RunResult r1 = s->generate(q);
+            if (!r1) {
+                err = r1.error;
+                return false;
+            }
+            q.messages = msgs({{"user", u1}, {"assistant", "Blue, I would say."}, {"user", u2}});
+            q.n_predict = 8;
+            q.clear_kv = false;
+            RunResult r2 = s->generate(q);
+            if (!r2) {
+                err = r2.error;
+                return false;
+            }
+            out = r2.generated_text;
+            prefilled = r2.summary.n_prompt;
+            n_prompt2 = r2.summary.n_past - r2.summary.n_generated;
+            return true;
+        };
+        std::string out_ck, out_ref, out_off;
+        int pf_ck = 0, pf_ref = 0, pf_off = 0, np_ck = 0, np_ref = 0, np_off = 0;
+        if (!two_turns(32, 8, out_ck, pf_ck, np_ck) || !two_turns(32, 0, out_ref, pf_ref, np_ref) ||
+            !two_turns(0, 8, out_off, pf_off, np_off)) {
+            std::fprintf(stderr, "G22 run failed: %s\n", err.c_str());
+            return 2;
+        }
+        if (pf_off < np_off) {
+            // This memory cut at the divergence by itself: checkpoints had nothing to add.
+            std::printf("[PASS] G22 this model's context cuts anywhere (turn 2 prefilled %d of %d without "
+                        "checkpoints): nothing to restore\n",
+                        pf_off, np_off);
+            if (pf_ck >= np_ck) {
+                std::printf("[FAIL] G22 with checkpoints turn 2 prefilled all %d tokens\n", np_ck);
+                ++fails;
+            }
+        } else {
+            std::printf("[PASS] G22b without checkpoints this model's context refuses the cut (turn 2 prefilled "
+                        "all %d tokens)\n",
+                        np_off);
+            if (pf_ck != pf_ref || pf_ck >= np_ck) {
+                std::printf("[FAIL] G22a the restore must land at the end of turn 1's prompt (prefilled %d, the "
+                            "reference %d, of %d)\n",
+                            pf_ck, pf_ref, np_ck);
+                ++fails;
+            }
+            fails += check("G22a turn 2 restored from a checkpoint == the same pieces prefilled", out_ref, out_ck);
+        }
+    }
+
+    // G23 — the KV cache's element type is orthogonal to streaming: with f16 keys and values, the
+    // streamed run and the resident one must still agree to the byte, as they do at the q8_0 default.
+    {
+        RunConfig res_q = resident, str_q = stream0;
+        for (RunConfig * c : {&res_q, &str_q}) {
+            c->cache_type_k = KvCacheType::F16;
+            c->cache_type_v = KvCacheType::F16;
+        }
+        std::string r_q, s_q;
+        if (!gen(res_q, r_q, err) || !gen(str_q, s_q, err)) {
+            std::fprintf(stderr, "G23 run failed: %s\n", err.c_str());
+            return 2;
+        }
+        fails += check("G23 f16 KV cache: streaming == resident", r_q, s_q);
     }
 
     if (fails == 0) std::printf("\nall MoE byte-identity gates passed\n");

@@ -35,6 +35,10 @@ SessionConfig session_config_from(const RunConfig & cfg) {
     sc.n_ctx = cfg.n_ctx;
     sc.n_batch = cfg.n_ctx;     // one-batch prefill for any prompt that fits the context
     sc.n_ubatch = cfg.n_ubatch; // 0 = follow n_batch; smaller trades prefill speed for memory
+    sc.ctx_checkpoints = cfg.ctx_checkpoints;
+    sc.checkpoint_min_step = cfg.checkpoint_min_step;
+    sc.cache_type_k = cfg.cache_type_k;
+    sc.cache_type_v = cfg.cache_type_v;
     sc.chatml = cfg.chatml;
     sc.n_expert_used = cfg.n_expert_used; // active-expert (top-k) override; 0 = model default
     sc.n_gpu_layers = cfg.n_gpu_layers;   // the first stage's placement; 0 = everything on the host
@@ -47,6 +51,7 @@ SessionConfig session_config_from(const RunConfig & cfg) {
     sc.spec = cfg.spec;       // self-speculation (MTP head or n-gram lookup); off by default
     sc.prefill = cfg.prefill; // prefill on an accelerator; off by default
     sc.decide = cfg.decide;
+    sc.trial = cfg.trial;
     sc.llama_debug_log = cfg.llama_debug_log;
     return sc;
 }
@@ -86,6 +91,7 @@ RunResult run(const RunConfig & cfg, const RunOutputs & out) {
 
     RunResult r = session->generate(req, out.on_token, out.sink);
     r.routing = session->routing_record();
+    r.knobs = session->measured_knobs();
     return r;
 }
 

@@ -81,6 +81,11 @@ public:
     void set_routing_sink(std::function<void(const std::string & model_path, const RoutingTrace & rec)> sink) {
         routing_sink_ = std::move(sink);
     }
+    // Where the knob trial's verdicts go when one comes in (the model's file and what the session
+    // measured so far, not yet stamped with a machine). Set before any load.
+    void set_knobs_sink(std::function<void(const std::string & model_path, const MeasuredKnobs & rec)> sink) {
+        knobs_sink_ = std::move(sink);
+    }
 
     // A load in auto mode measures the machine before it loads, for tens of seconds on a phone,
     // with nothing loaded meanwhile: `state` reads "planning" between these two calls, so a UI can
@@ -147,6 +152,11 @@ private:
     void note_context_full(int n_ctx);
     // Hand the session's routing record to the sink when it grew. Called inside a turn (gen_m_).
     void keep_routing(const HostedSession & s);
+    // Likewise the knob trial's verdicts, when a new one came in.
+    void keep_knobs(const HostedSession & s);
+
+    std::function<void(const std::string &, const MeasuredKnobs &)> knobs_sink_;
+    int knobs_kept_ = 0; // verdicts in the record last handed on; under gen_m_
 
     std::function<void(const std::string &, const RoutingTrace &)> routing_sink_;
     uint32_t routing_kept_ = 0; // decoded tokens of the record last handed on; under gen_m_

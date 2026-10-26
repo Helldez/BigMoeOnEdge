@@ -1,9 +1,9 @@
 # Measured planning: pricing the plan on the model itself
 
-> **Partly built.** This page describes where `--auto` goes next and in what order. Steps 1 and 4 are
-> built and await their on-device judgement (their status is below); Steps 2 and 3 have not shipped. Each step
-> names what it removes, what it must not break, and how it is judged. The planner as it stands is
-> [hardware-planning.md](hardware-planning.md).
+> **Partly built.** This page describes where `--auto` goes next and in what order. Steps 1, 2 and 4
+> are built and await their on-device judgement (their status is below each); Step 3 has not shipped.
+> Each step names what it removes, what it must not break, and how it is judged. The planner as it
+> stands is [hardware-planning.md](hardware-planning.md).
 
 The goal is a planner that is smaller than today's, agnostic by construction, and right more often:
 the plan that decodes and prefills fastest on this machine, with this model, holding no more memory
@@ -17,10 +17,10 @@ model's own tensors rather than on stand-ins.
 | What fits where (layers per device, context and compute reservations) | llama.cpp's capacity fitter, a `no_alloc` load of the real file | yes, sizes only |
 | `--io-threads`, `--no-odirect`, `--release-mmap` | the storage probe, reading the model file itself at its own expert slice size | yes |
 | Prefill device | a wide matmul probe, then a short real prefill compared against the host at load | yes, for correctness |
-| `--threads`, host and device bandwidth | a GEMV sweep on synthetic bytes encoded in the model's quant format | format only |
+| `--threads`, host and device bandwidth | a GEMV sweep on synthetic bytes encoded in the model's quant format; for `--threads`, once a front-end kept a verdict, the model's own decode on the first answer (Step 2) | format only; with a verdict, yes |
 | Cache size against resident dense groups | seconds saved per byte, with the hit rate read off the model's own routing record (Step 1), or on a first load credited **linearly** in the fraction of the expert set held | with a record, yes; on a first load, no: a coefficient |
 | Layers on a device for decode, beyond what the fitter placed for capacity | the crossing price, which is unmeasured, so never | no |
-| `--overlap` | lossless and measured faster on two machines, never armed by the plan (#294) | no |
+| `--overlap` | measured on the first answer against the other setting, and kept (Step 2); without a place to keep it, never armed (#294) | with a verdict, yes |
 
 At the end of a run the plan prints its prediction against the measurement
 (`predicted 0.048 s/token, measured 0.055`) and the credited hit rate against the measured one. Then
@@ -147,6 +147,52 @@ the same thing either way: the fact, its source (`[measured on this model]`), an
 
 **Judged by.** Interleaved windows against the incumbent on every reference machine; byte-identical
 output with the gates (`bmoe_moe_gates`), since every knob here is lossless.
+
+**Status: built, judgement owed.** What landed, and how it was checked off the device:
+
+- **The policy** is `KnobTrial` (`core/src/engine/knob_trial.h`), pure and fed one decode step at a
+  time. It waits for the cache's hit rate to settle (two windows within `settle_hit_delta`, two
+  points), then runs `incumbent, c1, incumbent, c2, incumbent, ...` for `rounds` (3) rounds, a window
+  of `--trial-window` tokens (8) each, the first token after a switch untimed. A candidate's ratio in
+  a round is its seconds per token over the mean of the two incumbent windows around it, so a drift
+  that is linear over three windows cancels exactly; the verdict is the median of the ratios, and a
+  candidate wins only past `min_backend_win` (the same field the device rule reads). The `knob_trial`
+  test holds it on synthetic timings: equal arms under 10% noise never win over 50 seeds, a 25% win
+  always does, 5% is a tie, 12% wins, a run that slows to twice the time per token measures a 20%
+  win as 20%, one stalled window does not overturn the median, a window cut by the end of a request
+  is dropped.
+- **Which knobs switch live.** `--threads` through `llama_set_n_threads` (decode only; prefill keeps
+  its count). `--overlap` too, by a change to the streamer rather than a reload: serial and overlapped
+  reads differ only in whether the first read lane is the eval thread or a worker of its own, so the
+  switch is starting or stopping that one worker and registering the expert-ready hook, between two
+  decodes (`ExpertStreamSource::set_overlap`). It needs every layer on the host: with one on a device
+  overlap also turns off the context's offload of host-weight matmuls, which is fixed when the
+  context is created. **`--io-threads` is left out**: the storage probe already measures it on the
+  model's own file at its own slice size, and changing it with the session open means reopening every
+  reader with another lane count for a figure the plan already has from the model.
+- **Lossless.** Gate `G21` runs the trial over a 120-token answer (threads 2 against 1 and 4, then
+  overlap) and over four turns of 40 that each end inside a window; every answer equals the resident
+  one, and the gate fails if the trial reached no verdict.
+- **Kept.** The verdict is `MeasuredKnobs` (`bmoe/measured_knobs.h`), returned by
+  `Session::measured_knobs()` as each knob's verdict comes in. The front-ends keep it beside the
+  model's routing record, one `.knobs` file per model fingerprint with a line per machine
+  (`hardware_fingerprint`: cores, core classes, total memory, each device's name and own memory) and
+  engine version. `bmoe-cli --routing-dir DIR` arms the trial on its `--auto` plans and writes the
+  verdict; `bmoe-server` always does, under `routing/` in its data folder. `core/` gained no file
+  access and no environment read.
+- **Read back.** `probe_and_plan` matches the record to this machine and engine
+  (`AutoPlanOptions::knobs` into `ModelProfile::knobs`); the plan applies it, says
+  `measured on this model` with the gain and the margin, and arms no trial. A plan with the feature
+  off and no record is byte for byte the plan before this step: the previous `planner` test's whole
+  output (its checks and three printed rationales) is identical against this build, and the
+  `planner` test asserts the overlap and thread decisions word for word.
+- **Not removed yet:** the synthetic thread sweep stays as a first load's count, the one the trial
+  starts from; it goes when every front-end ships with a verdict for every model it plans, as with
+  Step 1's linear credit. A device-side expert cache refuses overlap, so when one is armed neither
+  the trial nor a verdict may turn overlap on.
+
+Owed: the on-device runs this step is judged by, each a first load whose first answer measures and a
+second that starts from the verdict, on the phone, the Mac and the Windows laptop.
 
 ## Step 3: the cost of a device measured on a real layer
 

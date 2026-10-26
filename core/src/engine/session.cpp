@@ -3,6 +3,7 @@
 #include "bmoe/route_trace.h"
 #include "bmoe/decode_trace.h"
 #include "bmoe/version.h"
+#include "bmoe/probe.h"
 #include "bmoe/ngram_draft.h"
 #include "bmoe/log.h"
 #include "chat_messages.h"
@@ -21,6 +22,9 @@
 #include "../moe/gguf_offsets.h"
 #include "../moe/tensor_names.h"
 #include "cache_brake.h"
+#include "context_checkpoints.h"
+#include "kv_cache_type.h"
+#include "knob_trial.h"
 #include "../io/platform_io.h"
 #include "../io/mapping_release.h"
 #include "../metrics/memory_snapshot.h"
@@ -296,6 +300,28 @@ struct Session::Impl {
     // and a later turn of a chat is compared with what the earlier ones settled to.
     CacheBrake brake;
 
+    // The knob trial (SessionConfig::trial): the lossless knobs measured on the first decodes once
+    // the cache has settled, one knob after the other, each winner kept for the rest of the session
+    // and returned (Session::measured_knobs). Stage 0 is the thread count, 1 overlap, 2 done.
+    struct Trials {
+        std::vector<int> threads; // arms: the incumbent, then the candidates; empty: not measured
+        std::vector<int> overlap; // arms as 0/1, the incumbent first; empty: not measured
+        int stage = 2;
+        std::unique_ptr<KnobTrial> cur;
+        MeasuredKnobs result;
+        uint64_t lookups_seen = 0, hits_seen = 0; // the cache's counters at the last step
+    } trials;
+    int threads_now = 0; // the decode thread count the contexts run with
+    void arm_trials();
+    void start_trial_stage(bool settle);
+    void finish_trial_stage();
+    bool apply_trial_arm(int arm);
+    void set_decode_threads(int n);
+    void trial_step(double seconds, int tokens);
+    void pause_trial();
+    void resume_trial();
+    void snapshot_trial_counters();
+
     // Prefill on an accelerator (SessionConfig::prefill); null when off. Created before the model
     // load, whose device list it holds, and opened after it.
     std::unique_ptr<detail::PrefillPath> prefill;
@@ -379,6 +405,28 @@ struct Session::Impl {
     // and prefill only the diverging suffix instead of re-running the whole conversation.
     std::vector<common_chat_msg> chat_history;
     std::vector<llama_token> kv_tokens;
+    // What a refused cut of the KV rolls back to (context_checkpoints.h). They describe a prefix of
+    // kv_tokens, so they go wherever it goes.
+    detail::ContextCheckpoints checkpoints;
+    bool checkpoint_size_logged = false; // the size is the model's, so said once per session
+    detail::CheckpointContexts checkpoint_contexts() { return {ctx.get(), ctx_dft.get(), mtp.get()}; }
+    void forget_kv_tokens() {
+        kv_tokens.clear();
+        checkpoints.clear();
+    }
+    // Keep the first n tokens of the KV and drop the rest. Where the memory refuses the cut, the
+    // newest checkpoint at or before n stands in for it; returns how many tokens are still held,
+    // 0 with the context cleared when no checkpoint helps.
+    size_t keep_kv_prefix(size_t n) {
+        size_t kept = n;
+        if (!llama_memory_seq_rm(llama_get_memory(ctx.get()), 0, (llama_pos) n, -1)) {
+            kept = (size_t) checkpoints.restore(checkpoint_contexts(), (int64_t) n);
+            if (kept == 0) clear_memory(ctx.get());
+        }
+        kv_tokens.resize(std::min(kept, kv_tokens.size()));
+        checkpoints.drop_after((int64_t) kept);
+        return kept;
+    }
 
     // decide()'s kept prefix state. Chosen at the first decide() (the policy needs the backend's
     // answer on prefill cost), null when the policy keeps none.
@@ -497,6 +545,9 @@ int Session::n_expert_used() const {
 RoutingTrace Session::routing_record() const {
     return impl_->hook ? impl_->hook->routing_record() : RoutingTrace{};
 }
+MeasuredKnobs Session::measured_knobs() const {
+    return impl_->trials.result;
+}
 ThinkControl Session::think_control() const {
     return impl_->think_ctl;
 }
@@ -531,7 +582,7 @@ PplResult Session::perplexity(const PplRequest & req) {
     r.n_tokens = n;
 
     im.clear_memory(ctx);
-    im.kv_tokens.clear();
+    im.forget_kv_tokens();
 
     // Warm-up graph, discarded. Both routing policies decide at the terminal node of each layer's
     // weight chain, and which node that is gets LEARNED from the first graph of a run — so on a
@@ -682,7 +733,7 @@ DecideResult Session::decide(const DecideRequest & req) {
     // A decision is not a conversation turn: whatever generate() was continuing is gone once the
     // context is overwritten, so forget it rather than let a later turn diff against stale tokens.
     im.chat_history.clear();
-    im.kv_tokens.clear();
+    im.forget_kv_tokens();
 
     detail::LlamaDecideDeps deps;
     deps.ctx = im.ctx.get();
@@ -1025,6 +1076,8 @@ bool Session::Impl::create_contexts(Opening & o) {
     // buffers — the memory this engine is always short of. 0 keeps the historical behaviour
     // (one graph as wide as the batch); a smaller value chunks prefill to buy that memory back.
     cparams.n_ubatch = cfg.n_ubatch > 0 ? (uint32_t) cfg.n_ubatch : (uint32_t) cfg.n_batch;
+    cparams.type_k = detail::to_ggml_type(cfg.cache_type_k);
+    cparams.type_v = detail::to_ggml_type(cfg.cache_type_v);
     // The streamer needs the callback to see routing; the compute trace needs it to time nodes.
     // Installing it for the trace alone is what lets a NON-streamed run be measured — the dense
     // mmap baseline the streamed numbers are argued against.
@@ -1061,7 +1114,19 @@ bool Session::Impl::create_contexts(Opening & o) {
     if (device_cache_armed) cparams.moe_cache_size = (size_t) cfg.moe.device_cache_mb << 20;
 
     llama_context * c = llama_init_from_model(model.get(), cparams);
-    if (!c) return o.fail("failed to create context");
+    // A quantized V cache needs flash attention, and whether a backend has it is only known by asking
+    // llama.cpp for the context. The default is quantized, so a backend without it must not lose the
+    // run: V goes back to F16 (K stays, it needs nothing). The fitter charged the smaller V, which is
+    // why the fallback is said out loud.
+    if (!c && ggml_is_quantized(cparams.type_v)) {
+        log_printf(LogLevel::Warn,
+                   "a %s V cache needs flash attention, which this backend refused; V falls back to f16",
+                   kv_cache_type_name(cfg.cache_type_v));
+        cparams.type_v = GGML_TYPE_F16;
+        c = llama_init_from_model(model.get(), cparams);
+        if (c) this->cfg.cache_type_v = KvCacheType::F16;
+    }
+    if (!c) return o.fail("failed to create context"); // llama.cpp's own log says why
     ctx.reset(c);
     // Decode and prefill get their own counts. They are different workloads: prefill is compute-bound
     // and scales with cores, a streamed decode waits on flash. 0 means "the same", which is what
@@ -1169,6 +1234,7 @@ bool Session::Impl::init_speculation(Opening & o) {
         mtp_batch_owned = true;
         draft_buf.reserve((size_t) cfg.spec.draft_max);
     }
+    checkpoints.configure(cfg.ctx_checkpoints, cfg.checkpoint_min_step, llama_model_n_swa(model.get()));
     return true;
 }
 
@@ -1684,6 +1750,8 @@ void Session::Impl::describe_run(Opening & o) {
         ri.n_threads = cfg.n_threads;
         ri.n_ctx = cfg.n_ctx;
         ri.n_ubatch = cfg.n_ubatch;
+        ri.cache_type_k = kv_cache_type_name(this->cfg.cache_type_k); // what was allocated, after any fallback
+        ri.cache_type_v = kv_cache_type_name(this->cfg.cache_type_v);
         ri.chatml = cfg.chatml;
         ri.compute_trace_layers = compute_trace && compute_trace->layers_only();
         ri.spec = cfg.spec.is_mtp() ? "mtp" : cfg.spec.is_ngram() ? "ngram" : "off";
@@ -1733,6 +1801,147 @@ void Session::Impl::describe_run(Opening & o) {
         ri.cache_cycle_mb =
             (int) ((source.worst_cycle_bytes(ri.n_expert_used) + 1024ull * 1024ull - 1) / (1024ull * 1024ull));
     }
+}
+
+// ── the knob trial (KnobTrialConfig, knob_trial.h) ──────────────────────────────────────────
+// Which knobs this session measures, decided once it is open: a knob whose switch this build or
+// this run cannot make is left out and said so, and the trial measures what is left.
+void Session::Impl::arm_trials() {
+    const KnobTrialConfig & t = cfg.trial;
+    threads_now = cfg.n_threads;
+    if (!t.enabled()) return;
+    if (!t.threads.empty()) {
+        trials.threads.push_back(cfg.n_threads);
+        trials.threads.insert(trials.threads.end(), t.threads.begin(), t.threads.end());
+    }
+    if (t.overlap) {
+        if (!cfg.moe.enabled)
+            log_printf(LogLevel::Warn, "knob trial: overlap is not measured without expert streaming");
+        else if (!cfg.moe.overlap && !expert_ready_hook_available())
+            log_printf(LogLevel::Warn, "knob trial: overlap is not measured: the CPU backend loaded here has no "
+                                       "expert-ready hook");
+        else
+            trials.overlap = {cfg.moe.overlap ? 1 : 0, cfg.moe.overlap ? 0 : 1};
+    }
+    trials.stage = !trials.threads.empty() ? 0 : !trials.overlap.empty() ? 1 : 2;
+    if (trials.stage < 2) start_trial_stage(/*settle*/ true);
+}
+
+void Session::Impl::start_trial_stage(bool settle) {
+    KnobTrialPolicy pol;
+    pol.window_tokens = cfg.trial.window_tokens;
+    const size_t arms = trials.stage == 0 ? trials.threads.size() : trials.overlap.size();
+    trials.cur = std::make_unique<KnobTrial>((int) arms - 1, settle, pol);
+}
+
+void Session::Impl::set_decode_threads(int n) {
+    if (n == threads_now) return;
+    // Prefill keeps the count it had: the trial measures decode, and a prompt is a different load.
+    const int n_batch = cfg.n_threads_batch > 0 ? cfg.n_threads_batch : cfg.n_threads;
+    llama_set_n_threads(ctx.get(), n, n_batch);
+    if (ctx_dft) llama_set_n_threads(ctx_dft.get(), n, n_batch);
+    threads_now = n;
+}
+
+// False when the switch could not be made; the stage is then abandoned on its incumbent.
+bool Session::Impl::apply_trial_arm(int arm) {
+    if (trials.stage == 0) {
+        set_decode_threads(trials.threads[(size_t) arm]);
+        return true;
+    }
+    if (trials.stage == 1) {
+        const bool on = trials.overlap[(size_t) arm] != 0;
+        if (source.overlap() == on || source.set_overlap(on)) return true;
+        log_printf(LogLevel::Warn, "knob trial: overlap could not be switched %s; it is not measured",
+                   on ? "on" : "off");
+        trials.stage = 2;
+        trials.cur.reset();
+        source.set_overlap(cfg.moe.overlap);
+        return false;
+    }
+    return true;
+}
+
+void Session::Impl::snapshot_trial_counters() {
+    if (!cfg.moe.enabled) return;
+    const IExpertSource::Stats st = source.stats();
+    trials.lookups_seen = (uint64_t) st.cache_lookups;
+    trials.hits_seen = (uint64_t) st.cache_hits;
+}
+
+void Session::Impl::resume_trial() {
+    if (trials.stage >= 2) return;
+    snapshot_trial_counters(); // the prompt's lookups are not the first window's
+    apply_trial_arm(trials.cur->arm());
+}
+
+void Session::Impl::pause_trial() {
+    if (trials.stage >= 2) return;
+    trials.cur->interrupt();
+    apply_trial_arm(0);
+}
+
+void Session::Impl::trial_step(double seconds, int tokens) {
+    if (trials.stage >= 2) return;
+    uint64_t lookups = 0, hits = 0;
+    if (cfg.moe.enabled) {
+        const uint64_t l0 = trials.lookups_seen, h0 = trials.hits_seen;
+        snapshot_trial_counters();
+        lookups = trials.lookups_seen - l0;
+        hits = trials.hits_seen - h0;
+    }
+    KnobTrial & k = *trials.cur;
+    const bool settling = k.settling();
+    k.record(seconds, tokens, lookups, hits);
+    if (settling && !k.settling())
+        log_printf(LogLevel::Info, "knob trial: the cache has settled; measuring %s",
+                   trials.stage == 0 ? "the decode thread count" : "overlap");
+    if (k.done()) {
+        finish_trial_stage();
+        return;
+    }
+    apply_trial_arm(k.arm());
+}
+
+// A stage's verdict: the winner is applied and stays, the result records it, and the next knob
+// starts on the cache this one already settled.
+void Session::Impl::finish_trial_stage() {
+    KnobTrial & k = *trials.cur;
+    const int w = k.winner();
+    const int arms = trials.stage == 0 ? (int) trials.threads.size() : (int) trials.overlap.size();
+    int best = 1;
+    for (int c = 2; c < arms; ++c)
+        if (k.gain(c) > k.gain(best)) best = c;
+    const double gain = k.gain(w ? w : best);
+    if (!apply_trial_arm(w)) return;
+    char verdict[160];
+    if (w)
+        std::snprintf(verdict, sizeof(verdict), "decoded %.1f%% faster in the median of %d rounds",
+                      100.0 * (gain - 1.0), k.rounds(w));
+    else
+        std::snprintf(verdict, sizeof(verdict),
+                      "held: the best candidate was %+.1f%% in the median of %d rounds, "
+                      "inside the %.0f%% margin",
+                      100.0 * (gain - 1.0), k.rounds(best), 100.0 * KnobTrialPolicy{}.min_win);
+    trials.result.rounds = k.rounds(w ? w : best);
+    if (trials.stage == 0) {
+        trials.result.threads = trials.threads[(size_t) w];
+        trials.result.threads_tried = trials.threads;
+        trials.result.threads_gain = gain;
+        log_printf(LogLevel::Info, "knob trial: %d decode threads (against %d): %s", trials.threads[(size_t) w],
+                   trials.threads[0], verdict);
+    } else {
+        trials.result.overlap = trials.overlap[(size_t) w];
+        trials.result.overlap_incumbent = trials.overlap[0];
+        trials.result.overlap_gain = gain;
+        log_printf(LogLevel::Info, "knob trial: overlap %s (against %s): %s", trials.result.overlap ? "on" : "off",
+                   trials.overlap[0] ? "on" : "off", verdict);
+    }
+    trials.stage = trials.stage == 0 && !trials.overlap.empty() ? 1 : 2;
+    if (trials.stage < 2)
+        start_trial_stage(/*settle*/ false);
+    else
+        trials.cur.reset();
 }
 
 // The two configurations that are legal and still worth a word at load, said once.
@@ -1810,6 +2019,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     if (im.prefill && !im.open_prefill_device(o)) return nullptr;
     if (im.prefill && cfg.prefill.verify && !im.confirm_prefill_device(o)) return nullptr;
     im.arm_decode_traces(o);
+    im.arm_trials();
     im.describe_run(o);
     im.warn_about_load(cfg);
 
@@ -1845,7 +2055,7 @@ void Session::Impl::begin_generate(const GenerateRequest & req, IMetricsSink * s
         // draft of the new conversation is conditioned on the previous one.
         if (ctx_dft) llama_memory_clear(llama_get_memory(ctx_dft.get()), true);
         chat_history.clear();
-        kv_tokens.clear();
+        forget_kv_tokens();
         // A new chat resets the sampler RNG, so a fixed seed reproduces the same transcript from a
         // fresh conversation. A continued turn (clear_kv=false) keeps the stream going, matching the
         // KV it decodes against.
@@ -2102,15 +2312,9 @@ struct Session::Impl::Turn {
         const size_t max_common = tokens.size() > 0 ? tokens.size() - 1 : 0;
         while (n_common < im.kv_tokens.size() && n_common < max_common && im.kv_tokens[n_common] == tokens[n_common])
             ++n_common;
-        if (n_common < im.kv_tokens.size()) {
-            // SWA-style memory (e.g. Gemma) can refuse a partial removal; fall back to a full
-            // re-prefill in that case rather than continuing from an inconsistent cache.
-            if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, (llama_pos) n_common, -1)) {
-                im.clear_memory(ctx);
-                n_common = 0;
-            }
-            im.kv_tokens.resize(n_common);
-        }
+        // A memory that cannot be cut here (a recurrent state, a sliding window) goes back to the
+        // newest checkpoint before the divergence, and only a context with none starts again.
+        if (n_common < im.kv_tokens.size()) n_common = im.keep_kv_prefix(n_common);
         // The draft context mirrors the target's positions, so it has to be rewound to the SAME
         // point — including when n_common did not move, since the previous turn left it holding
         // everything it generated. Miss this and the first prefill batch of the turn starts at a
@@ -2124,11 +2328,8 @@ struct Session::Impl::Turn {
     // tokens we fed, and un-append the user message. Used on cancel so prior turns stay usable.
     void rollback_turn() {
         if (chat_on) {
-            if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, (llama_pos) n_common, -1)) {
-                im.clear_memory(ctx);
-                n_common = 0; // a full clear cannot leave a reusable prefix in the bookkeeping
-            }
-            im.kv_tokens.resize(n_common);
+            // A cleared context cannot leave a reusable prefix in the bookkeeping: n_common follows it.
+            n_common = im.keep_kv_prefix(n_common);
             undo_history();
         } else {
             im.clear_memory(ctx);
@@ -2141,7 +2342,7 @@ struct Session::Impl::Turn {
                 llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
                 // Both contexts must resume at the same prefix after an aborted turn.
                 im.clear_memory(ctx);
-                im.kv_tokens.clear();
+                im.forget_kv_tokens();
                 n_common = 0;
             }
         }
@@ -2214,6 +2415,9 @@ struct Session::Impl::Turn {
         const long long device_nodes0 = im.hook->device_nodes();
         for (int i = (int) n_common; i < n_prompt; i += pf_step) {
             const int chunk = std::min(pf_step, n_prompt - i);
+            // A long prompt prefilled in pieces leaves checkpoints inside it too, min_step apart.
+            if (chat_on && i > (int) n_common && im.checkpoints.wanted(i, /*prompt_end*/ false))
+                im.checkpoints.create(im.checkpoint_contexts(), i);
             if (im.prefill) {
                 const bool on_dev = im.place_prefill(chunk >= im.cfg.prefill.min_tokens);
                 if (on_dev) prefill_device_tokens += chunk;
@@ -2235,7 +2439,7 @@ struct Session::Impl::Turn {
                     res.cancelled = true;
                     return false;
                 }
-                if (moe.overlap && im.source.fatal())
+                if (im.source.overlap() && im.source.fatal())
                     return fail(RunError::Failed, "expert stream I/O failed during overlap prefill");
                 return fail(RunError::Failed, "prefill decode failed");
             }
@@ -2251,6 +2455,14 @@ struct Session::Impl::Turn {
         if (chat_on)
             for (int i = (int) n_common; i < n_prompt; ++i)
                 im.kv_tokens.push_back(tokens[i]);
+        // The end of this prompt is where the next request most often diverges: a client sends the
+        // answer back as text, and the template's tokens for it need not be the ones sampled.
+        if (chat_on && im.checkpoints.create(im.checkpoint_contexts(), n_prompt) && !im.checkpoint_size_logged) {
+            im.checkpoint_size_logged = true;
+            log_printf(LogLevel::Info, "context checkpoints: %.1f MiB each, up to %d kept",
+                       (double) im.checkpoints.bytes() / im.checkpoints.count() / (1024.0 * 1024.0),
+                       im.cfg.ctx_checkpoints);
+        }
         // Announced only once the prompt is in both contexts: begin() checks how far the draft context
         // has actually got, so calling it before prefill would warn about a gap that is about to close.
         if (mtp_on) common_speculative_begin(im.mtp.get(), /*seq_id*/ 0, tokens);
@@ -2273,7 +2485,7 @@ struct Session::Impl::Turn {
         // phases, so end()'s snapshot IS the decode baseline — one reading of the counters at the
         // boundary instead of two that could drift apart. In a warm session these counters carry the
         // prior prompts' totals; the deltas make each prompt self-relative.
-        tally.overlap = moe.overlap;
+        tally.overlap = moe.enabled && im.source.overlap();
         if (moe.enabled) {
             const IExpertSource::Stats & st0 = prefill_tally.post;
             tally.prev_bytes = (long long) st0.read_bytes;
@@ -2610,11 +2822,26 @@ struct Session::Impl::Turn {
     // few enough to be a few dozen syscalls on a token that already took seconds.
     static constexpr int k_brake_sample = 64;
 
+    // A trial's switch of overlap changes what the streamer's read counter measures (time the eval
+    // thread was blocked serially, lane time under overlap), so the cursor the next token's delta is
+    // taken against moves to the new counter at the switch: no token is charged the difference
+    // between two different clocks.
+    template <typename F> void trial_guarded(F && f) {
+        const bool before = moe.enabled && im.source.overlap();
+        f();
+        const bool after = moe.enabled && im.source.overlap();
+        if (after == before) return;
+        tally.overlap = after;
+        tally.prev_io_s = im.source.stats().read_seconds;
+    }
+
     // ── greedy generation ──
     // Returns false only on a failure; a cancel ends the loop with res.cancelled set.
     bool decode(const std::function<void(const TokenMetrics &)> & on_token, IMetricsSink * sink) {
         res.ok = true;
         if (!begin_decode()) return false;
+        // A knob trial in progress takes up where the last turn left it.
+        trial_guarded([&] { im.resume_trial(); });
         while (n_gen < n_predict) {
             if (llama_vocab_is_eog(im.vocab, tok)) break;
             Step s;
@@ -2624,7 +2851,7 @@ struct Session::Impl::Turn {
                     res.cancelled = true;
                     break;
                 }
-                if (moe.overlap && im.source.fatal())
+                if (im.source.overlap() && im.source.fatal())
                     return fail(RunError::Failed, "expert stream I/O failed during overlap decode");
                 return fail(RunError::Failed, "decode failed during generation");
             }
@@ -2633,6 +2860,12 @@ struct Session::Impl::Turn {
             if (!accept(s)) return false;
             emit(s, on_token, sink);
             brake_cache();
+            if (im.trials.stage < 2) {
+                // The decode as the knob changes it: the target's and the draft's passes, not the
+                // emission around them, which a person's own client paces.
+                const double step_s = secs(s.s0, s.s1) + s.draft_s;
+                trial_guarded([&] { im.trial_step(step_s, (int) confirmed.size()); });
+            }
 
             if (structured() && im.cancel_requested.load(std::memory_order_relaxed)) {
                 res.cancelled = true;
@@ -2657,12 +2890,9 @@ struct Session::Impl::Turn {
     void trim_speculative_kv() {
         if (!spec_on) return;
         const llama_pos emitted_end = (llama_pos) n_prompt + n_gen;
-        if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, emitted_end, -1)) {
-            // Nothing survives that we can still describe, so say so rather than leave kv_tokens
-            // asserting a prefix the context no longer holds. The next turn re-prefills in full.
-            im.clear_memory(ctx);
-            im.kv_tokens.clear();
-        }
+        // A memory that refuses the cut keeps what a checkpoint still describes, at worst nothing,
+        // rather than leave kv_tokens asserting a prefix the context no longer holds.
+        im.keep_kv_prefix((size_t) emitted_end);
         // The draft context mirrors the target's positions (process() decodes the same batches into
         // it), so it is trimmed to the same point — not cleared, or a continued chat turn would
         // feed it only the new suffix and draft from a state that never saw the conversation.
@@ -2707,7 +2937,7 @@ struct Session::Impl::Turn {
             s.moe_io_s_per_token = n_gen ? tally.io_seconds / n_gen : 0.0;
             s.moe_mgmt_s_per_token = n_gen ? tally.mgmt_seconds / n_gen : 0.0;
             s.moe_stall_s_per_token = n_gen ? tally.stall_seconds / n_gen : 0.0;
-            s.moe_flash_wait_s_per_token = moe.overlap ? s.moe_stall_s_per_token : s.moe_io_s_per_token;
+            s.moe_flash_wait_s_per_token = tally.overlap ? s.moe_stall_s_per_token : s.moe_io_s_per_token;
             s.moe_compute_s_per_token = s.s_per_token - s.moe_flash_wait_s_per_token - s.moe_mgmt_s_per_token;
             if (s.moe_compute_s_per_token < 0) s.moe_compute_s_per_token = 0;
             s.cache_hit_pct = st.cache_lookups > 0 ? 100.0 * st.cache_hits / st.cache_lookups : -1.0;
@@ -2870,8 +3100,13 @@ RunResult Session::generate(const GenerateRequest & req,
     if (!turn.render_prompt()) return res;
     if (!turn.tokenize_prompt()) return res;
     turn.reuse_kv_prefix();
-    // Every exit from here on leaves the weights on the host (see PlacementGuard).
+    // Every exit from here on leaves the weights on the host (see PlacementGuard), and a knob trial
+    // in progress on its incumbent: the next prefill is not part of the trial.
     Impl::PlacementGuard placement_guard{im};
+    struct TrialPause {
+        Impl & im;
+        ~TrialPause() { im.pause_trial(); }
+    } trial_pause{im};
     if (!turn.prefill()) return res; // a failure, or a cancel already rolled back
     if (!turn.decode(on_token, sink)) return res;
     if (!turn.parse_result()) return res;

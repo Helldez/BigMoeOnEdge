@@ -16,6 +16,7 @@
 #include "bmoe/metrics.h"
 #include "bmoe/route_trace.h"
 #include "bmoe/routing.h"
+#include "bmoe/measured_knobs.h"
 #include "bmoe/decode_trace.h"
 #include "bmoe/version.h"
 
@@ -298,13 +299,15 @@ static bool emit_decide(Session & session, const SessionCmd & cmd) {
     return true;
 }
 
-// ── the model's own routing, kept between runs (--routing-dir) ───────────────────────────────
+// ── the model's own measurements, kept between runs (--routing-dir) ──────────────────────────
 // The engine records what the model routed during its first tokens and returns it as a value; where
 // that lives is this front-end's decision. One file per model, named by the model file's content
 // fingerprint, so a copied or renamed file finds its record and another model never does. The next
 // --auto plan of the same file prices the cache on it (docs/measured-planning.md, Step 1).
 struct RoutingStore {
-    std::string path; // empty: no --routing-dir, or the model could not be fingerprinted
+    std::string path;       // empty: no --routing-dir, or the model could not be fingerprinted
+    std::string knobs_path; // the lossless knobs' verdicts beside it (bmoe/measured_knobs.h)
+    std::string hardware;   // this machine's hardware_fingerprint, once a plan probed it
 
     static RoutingStore open(const std::string & dir, const std::string & model_path) {
         RoutingStore s;
@@ -315,7 +318,52 @@ struct RoutingStore {
             return s;
         }
         s.path = (std::filesystem::u8path(dir) / (fp + ".routing")).u8string();
+        s.knobs_path = (std::filesystem::u8path(dir) / (fp + ".knobs")).u8string();
         return s;
+    }
+
+    // Every verdict kept for this model, one per machine and engine; the plan picks this machine's.
+    bool load_knobs(std::vector<MeasuredKnobs> & out) const {
+        out.clear();
+        if (knobs_path.empty()) return false;
+        std::ifstream f(std::filesystem::u8path(knobs_path), std::ios::binary);
+        if (!f) return false;
+        std::ostringstream text;
+        text << f.rdbuf();
+        std::string err;
+        if (parse_measured_knobs(text.str(), out, err)) return true;
+        std::fprintf(stderr, "warning: ignoring the knob measurements kept in %s: %s\n", knobs_path.c_str(),
+                     err.c_str());
+        return false;
+    }
+
+    // This machine's verdict, replacing the one it had: the next --auto plan of the file starts from it.
+    void keep_knobs(MeasuredKnobs rec) const {
+        if (knobs_path.empty() || hardware.empty() || rec.empty()) return;
+        rec.hardware = hardware;
+        rec.engine = version();
+        std::vector<MeasuredKnobs> all;
+        load_knobs(all);
+        keep_measured_knobs(all, rec);
+        write_file(knobs_path, format_measured_knobs(all), "knob measurements");
+    }
+
+    static void write_file(const std::string & path, const std::string & text, const char * what) {
+        const std::filesystem::path p = std::filesystem::u8path(path);
+        std::error_code ec;
+        std::filesystem::create_directories(p.parent_path(), ec);
+        std::filesystem::path tmp = p;
+        tmp += ".tmp";
+        {
+            std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+            if (!f) {
+                std::fprintf(stderr, "warning: cannot write the %s %s\n", what, path.c_str());
+                return;
+            }
+            f << text;
+        }
+        std::filesystem::rename(tmp, p, ec);
+        if (ec) std::fprintf(stderr, "warning: cannot write the %s %s\n", what, path.c_str());
     }
 
     bool load(RoutingTrace & out) const {
@@ -336,21 +384,7 @@ struct RoutingStore {
         if (path.empty() || rec.empty() || rec.decode_tokens == 0) return;
         RoutingTrace old;
         if (load(old) && old.decode_tokens > rec.decode_tokens) return;
-        const std::filesystem::path p = std::filesystem::u8path(path);
-        std::error_code ec;
-        std::filesystem::create_directories(p.parent_path(), ec);
-        std::filesystem::path tmp = p;
-        tmp += ".tmp";
-        {
-            std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
-            if (!f) {
-                std::fprintf(stderr, "warning: cannot write the routing record %s\n", path.c_str());
-                return;
-            }
-            f << format_routing_trace(rec);
-        }
-        std::filesystem::rename(tmp, p, ec);
-        if (ec) std::fprintf(stderr, "warning: cannot write the routing record %s\n", path.c_str());
+        write_file(path, format_routing_trace(rec), "routing record");
     }
 };
 
@@ -365,6 +399,7 @@ static int run_session_loop(const RunConfig & cfg,
                             const RoutingStore & routing) {
     const SessionConfig sc = session_config_from(cfg);
     uint32_t routing_kept = 0; // decoded tokens of the record last written
+    int knobs_kept = 0;        // verdicts in the knob record last written
 
     std::string error;
     std::unique_ptr<Session> session = Session::open(sc, error, route_trace, compute_trace, io_trace);
@@ -517,6 +552,13 @@ static int run_session_loop(const RunConfig & cfg,
                 routing.keep(rec);
                 routing_kept = rec.decode_tokens;
             }
+            // Likewise the knob trial's verdicts, each written as it comes in.
+            const MeasuredKnobs mk = session->measured_knobs();
+            const int verdicts = (mk.threads > 0) + (mk.overlap >= 0);
+            if (verdicts > knobs_kept) {
+                routing.keep_knobs(mk);
+                knobs_kept = verdicts;
+            }
         }
     }
 
@@ -646,7 +688,9 @@ static void print_usage(const char * argv0) {
                 "      --csv PATH          also write per-token metrics as CSV\n"
                 "      --routing-dir DIR   keep this model's recorded routing in DIR (one file per model,\n"
                 "                          named by its content). A streamed run writes it; the next --auto\n"
-                "                          plan of the same file sizes the cache on the hit rate it implies\n"
+                "                          plan of the same file sizes the cache on the hit rate it implies.\n"
+                "                          With --auto, the first answer also measures the thread count and\n"
+                "                          overlap, kept beside it; the next plan starts from the verdict\n"
                 "      --route-trace PATH  diagnostics: write the per-step per-layer MoE routing trace\n"
                 "                          (which experts each layer routed, their weight, cache state).\n"
                 "                          Needs --moe-stream; costs speed — not for benchmark runs\n"
@@ -966,7 +1010,7 @@ int main(int argc, char ** argv) {
         return 0;
     }
 
-    const RoutingStore routing = RoutingStore::open(routing_dir, cfg.model_path);
+    RoutingStore routing = RoutingStore::open(routing_dir, cfg.model_path);
     if (auto_plan && !cfg.model_path.empty()) {
         PlanRequest req;
         req.pinned.assign(seen.begin(), seen.end());
@@ -989,11 +1033,17 @@ int main(int argc, char ** argv) {
         // priced on its hit curve rather than the linear credit.
         RoutingTrace kept;
         if (routing.load(kept)) opt.routing = &kept;
+        // And what an earlier load measured about the lossless knobs; with a place to keep the
+        // verdict, the first answer measures what is not measured yet (docs/measured-planning.md).
+        std::vector<MeasuredKnobs> knobs_kept;
+        if (routing.load_knobs(knobs_kept)) opt.knobs = &knobs_kept;
+        req.measure_knobs = !routing.knobs_path.empty();
         const AutoPlan planned = probe_and_plan(cfg, req, opt);
         const HardwareProfile & hw = planned.hw;
         const ModelProfile & mp = planned.model;
         const Plan & plan = planned.plan;
         cfg = plan.config;
+        routing.hardware = hardware_fingerprint(hw);
         predicted_s_per_token = plan.allocation.seconds_per_token;
         // What the plan credited, from the curve when there was one: the figure its prediction stands on.
         if (plan.allocation.cache_bytes > 0 && plan.allocation.cache_hit_credited > 0)
@@ -1211,6 +1261,7 @@ int main(int argc, char ** argv) {
         return 1;
     }
     routing.keep(r.routing);
+    routing.keep_knobs(r.knobs);
 
     const RunSummary & s = r.summary;
     if (progress) {
