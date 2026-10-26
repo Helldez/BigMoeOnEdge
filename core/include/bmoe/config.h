@@ -539,8 +539,14 @@ enum class DeviceUse {
 // The element type of the K and V caches, by llama.cpp's own names (its --cache-type-k and
 // --cache-type-v). F16 is llama.cpp's default. Every other type changes the output, the quantized
 // ones by storing the cache in fewer bits (llama.cpp rotates a quantized cache's heads first, which
-// is most of what keeps 4 bits usable), so the planner never picks one: a caller arms it.
+// is most of what keeps 4 bits usable). The planner never picks one; the default below is the one
+// lossy choice the engine makes for its caller.
 enum class KvCacheType { F16, BF16, F32, Q8_0, Q5_1, Q5_0, Q4_1, Q4_0, IQ4_NL };
+
+// Q8_0 by default, where llama.cpp keeps F16: on this engine the KV is memory the expert cache does
+// not get, and a long agent chat (18 turns to 60k on Qwen3.6-35B-A3B, 16 GB) decoded in 281-303 s
+// at Q8_0 against 442-490 s at F16. F16 is the lossless choice, one flag away.
+inline constexpr KvCacheType k_default_kv_cache_type = KvCacheType::Q8_0;
 // Every value, in declaration order, and its llama.cpp name: the one list both the parameter table
 // and the telemetry read.
 inline constexpr KvCacheType k_kv_cache_types[] = {KvCacheType::F16,  KvCacheType::BF16, KvCacheType::F32,
@@ -594,9 +600,10 @@ struct RunConfig {
     // The K and V caches' element type (llama.cpp's --cache-type-k / --cache-type-v). A quantized
     // cache holds a long context in a half or a quarter of the memory, which on this engine goes to
     // the expert cache, at a cost in output quality: see KvCacheType. A quantized V cache needs flash
-    // attention, which llama.cpp turns on where the backend has it.
-    KvCacheType cache_type_k = KvCacheType::F16;
-    KvCacheType cache_type_v = KvCacheType::F16;
+    // attention, which llama.cpp turns on where the backend has it; where it has not, a quantized V
+    // falls back to F16 rather than failing the run.
+    KvCacheType cache_type_k = k_default_kv_cache_type;
+    KvCacheType cache_type_v = k_default_kv_cache_type;
     bool chatml = false; // wrap the prompt in the model family's chat turn (arch-aware)
 
     // Render the chat template with reasoning enabled. Passed to the template as the

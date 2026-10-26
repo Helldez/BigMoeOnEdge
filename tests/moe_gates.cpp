@@ -61,9 +61,9 @@
 //       previous answer (the client resent it edited) restarts from the checkpoint at the end of the
 //       previous prompt where the memory refuses the cut, and answers exactly as the same pieces
 //       prefilled without any restore (a); with checkpoints off such a memory prefills it all (b).
-//   G23 a quantized KV cache (q8_0 keys and values): streaming == resident. The cache type changes
-//       the output against f16, which is why it is a caller's choice; it must not change what
-//       streaming the experts produces.
+//   G23 the KV cache at f16, llama.cpp's type: streaming == resident. q8_0 is the default, so every
+//       other gate runs on a quantized cache; this one keeps the lossless type covered. The cache
+//       type changes the output, never what streaming the experts produces.
 //   G20 the fitter's placement for a model larger than the device: dense parts on a device with
 //       memory of its own, experts streamed from the host, == the same placement resident, serial
 //       (a) and under --overlap (b). The router's ids are then read through a host copy.
@@ -1603,20 +1603,20 @@ int main(int argc, char ** argv) {
         }
     }
 
-    // G23 — the KV cache's element type is orthogonal to streaming: with q8_0 keys and values, the
-    // streamed run and the resident one must still agree to the byte.
+    // G23 — the KV cache's element type is orthogonal to streaming: with f16 keys and values, the
+    // streamed run and the resident one must still agree to the byte, as they do at the q8_0 default.
     {
         RunConfig res_q = resident, str_q = stream0;
         for (RunConfig * c : {&res_q, &str_q}) {
-            c->cache_type_k = KvCacheType::Q8_0;
-            c->cache_type_v = KvCacheType::Q8_0;
+            c->cache_type_k = KvCacheType::F16;
+            c->cache_type_v = KvCacheType::F16;
         }
         std::string r_q, s_q;
         if (!gen(res_q, r_q, err) || !gen(str_q, s_q, err)) {
             std::fprintf(stderr, "G23 run failed: %s\n", err.c_str());
             return 2;
         }
-        fails += check("G23 q8_0 KV cache: streaming == resident", r_q, s_q);
+        fails += check("G23 f16 KV cache: streaming == resident", r_q, s_q);
     }
 
     if (fails == 0) std::printf("\nall MoE byte-identity gates passed\n");

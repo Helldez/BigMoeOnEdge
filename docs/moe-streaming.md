@@ -36,6 +36,8 @@ by the gates. That is the streaming path itself; two opt-in knobs deliberately t
 speed on top of it — `--n-expert-used` (fewer experts per token) and
 [`--drop-cold-experts`](expert-dropping.md) (skip an expert that would cost a read and was barely
 weighted). Both are off unless asked for, which is what keeps the sentence above true by default.
+The KV cache is `q8_0` by default (`--cache-type-k` / `--cache-type-v`): that changes the output
+against llama.cpp's `f16`, for streamed and resident runs alike, and not what streaming produces.
 
 ## Residency modes
 

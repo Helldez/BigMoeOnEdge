@@ -1063,14 +1063,19 @@ bool Session::Impl::create_contexts(Opening & o) {
     if (cfg.spec.enabled()) cparams.n_rs_seq = (uint32_t) cfg.spec.draft_max;
 
     llama_context * c = llama_init_from_model(model.get(), cparams);
-    if (!c) {
-        // llama.cpp's own log says why. A quantized V cache adds a cause of its own, so name it.
-        if (ggml_is_quantized(cparams.type_v))
-            return o.fail(std::string("failed to create context; a quantized V cache (") +
-                          kv_cache_type_name(cfg.cache_type_v) +
-                          ") needs flash attention, and llama.cpp's log above says whether this backend has it");
-        return o.fail("failed to create context");
+    // A quantized V cache needs flash attention, and whether a backend has it is only known by asking
+    // llama.cpp for the context. The default is quantized, so a backend without it must not lose the
+    // run: V goes back to F16 (K stays, it needs nothing). The fitter charged the smaller V, which is
+    // why the fallback is said out loud.
+    if (!c && ggml_is_quantized(cparams.type_v)) {
+        log_printf(LogLevel::Warn,
+                   "a %s V cache needs flash attention, which this backend refused; V falls back to f16",
+                   kv_cache_type_name(cfg.cache_type_v));
+        cparams.type_v = GGML_TYPE_F16;
+        c = llama_init_from_model(model.get(), cparams);
+        if (c) this->cfg.cache_type_v = KvCacheType::F16;
     }
+    if (!c) return o.fail("failed to create context"); // llama.cpp's own log says why
     ctx.reset(c);
     // Decode and prefill get their own counts. They are different workloads: prefill is compute-bound
     // and scales with cores, a streamed decode waits on flash. 0 means "the same", which is what
@@ -1629,8 +1634,8 @@ void Session::Impl::describe_run(Opening & o) {
         ri.n_threads = cfg.n_threads;
         ri.n_ctx = cfg.n_ctx;
         ri.n_ubatch = cfg.n_ubatch;
-        ri.cache_type_k = kv_cache_type_name(cfg.cache_type_k);
-        ri.cache_type_v = kv_cache_type_name(cfg.cache_type_v);
+        ri.cache_type_k = kv_cache_type_name(this->cfg.cache_type_k); // what was allocated, after any fallback
+        ri.cache_type_v = kv_cache_type_name(this->cfg.cache_type_v);
         ri.chatml = cfg.chatml;
         ri.compute_trace_layers = compute_trace && compute_trace->layers_only();
         ri.spec = cfg.spec.is_mtp() ? "mtp" : cfg.spec.is_ngram() ? "ngram" : "off";

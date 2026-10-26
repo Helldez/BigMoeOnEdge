@@ -18,14 +18,17 @@ Semantic Versioning.
   re-prefilled their whole 12k-token prompt. A memory that cuts anywhere keeps no checkpoint. Gate G22
   checks the restore is lossless on a recurrent model, and that a model that cuts anywhere is untouched.
 - **A quantized KV cache, with llama.cpp's flags** (`--cache-type-k` / `-ctk`, `--cache-type-v` /
-  `-ctv`; `f16` by default, then `bf16`, `f32`, `q8_0`, `q5_1`, `q5_0`, `q4_1`, `q4_0`, `iq4_nl`). The
-  types are llama.cpp's own, through `llama_context_params`, which rotates a quantized cache's heads
-  first. `q8_0` halves the memory a long context takes and `q4_0` quarters it, and on this engine that
-  memory goes to the expert cache. Every type but `f16` changes the output, so both are lossy
-  parameters a caller arms and the plan never picks; the capacity fitter projects the KV at the type
-  the run allocates, so the plan prices the cache it is given. The metrics CSV records both types in
-  its preamble. A quantized V cache needs flash attention, which llama.cpp uses where the backend has
-  it. Gate G23 checks streaming stays byte-identical to resident with a `q8_0` cache.
+  `-ctv`: `f16`, `bf16`, `f32`, `q8_0`, `q5_1`, `q5_0`, `q4_1`, `q4_0`, `iq4_nl`). The types are
+  llama.cpp's own, through `llama_context_params`, which rotates a quantized cache's heads first.
+  `q8_0` halves the memory a long context takes and `q4_0` quarters it, and on this engine that memory
+  goes to the expert cache. **`q8_0` is the default**, where llama.cpp keeps `f16`: an 18-turn agent
+  chat to 60k tokens on Qwen3.6-35B-A3B (16 GB laptop) decoded in 281-303 s at `q8_0` against 442-490 s
+  at `f16`. Every type but `f16` changes the output, and the default was set without a quality
+  measurement; `-ctk f16 -ctv f16` is the lossless run. The plan never picks a type; the capacity
+  fitter projects the KV at the type the run allocates. The metrics CSV records both types in its
+  preamble. A quantized V cache needs flash attention: where llama.cpp's backend refuses it, V falls
+  back to `f16` with a warning instead of failing the run. Gate G23 checks streaming stays
+  byte-identical to resident with an `f16` cache; every other gate now runs at `q8_0`.
 - **Desktop packages that open with a double-click** (part of #385). `release-host` builds one per
   OS from the same staged folder the `bmoe-desktop` archive carries, and the archives stay for
   scripted installs and the CLI. The scripts live under `packaging/`.
