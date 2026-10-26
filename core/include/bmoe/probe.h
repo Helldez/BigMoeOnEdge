@@ -6,6 +6,7 @@
 // testable against machines nobody here owns.
 #pragma once
 
+#include "bmoe/config.h"
 #include "bmoe/hardware_profile.h"
 #include "bmoe/model_profile.h"
 #include "bmoe/placement.h"
@@ -55,6 +56,14 @@ struct GgufHeaderFacts {
     bool ok = false;
 };
 GgufHeaderFacts probe_gguf_header(const char * model_path);
+
+// What a front-end keys the model's own measurements by (its routing trace, bmoe/routing.h): a
+// 64-bit hash of the file's size and of bytes sampled from its content - the header and metadata at
+// the start, and windows across the tensor data - as 16 hex digits. Content, not path or modification
+// time, because what it keys is a property of the model: the same file copied to another folder or
+// another machine keeps it, and two fine-tunes of one base, which share every shape and most of a
+// header, do not share their tensor bytes. A few MiB read; "" when the file cannot be read.
+std::string model_fingerprint(const char * model_path);
 
 // Ask every registered device whether it can execute THIS model's expert matmul on THIS model's
 // quantized layout, and whether placing such a weight there would need a repack. Asking the backend
@@ -202,7 +211,11 @@ void probe_storage(HardwareProfile & hw, const char * model_path, uint64_t slice
 // projection of a different run: read at llama.cpp's own default of 512 while the session opened
 // one graph per context, the ledger charged 1.2 GB for what then reserved 8 GB at a 16384 context. The
 // projection is taken at that width and at half of it, which gives the slope a narrower graph is
-// priced with (Placement::at_width).
+// priced with (Placement::at_width). `type_k` / `type_v` are the KV cache's element types
+// (RunConfig::cache_type_k / _v): the KV it projects is the one the run will allocate.
+//
+// `devices`, where the plan chose among backends of one card (bmoe/backend_choice.h), is the list the
+// fitter places on; empty lets it see every device, as llama.cpp would.
 //
 // `spec`, where it drafts with an MTP head, adds the draft context to the fit as the second model
 // that shares the devices (llama.cpp's common_fit_extra_model): it reserves its own state and
@@ -212,6 +225,9 @@ Placement probe_placement(const char * model_path,
                           const HardwareProfile & hw,
                           uint32_t n_ctx,
                           uint32_t n_ubatch,
+                          KvCacheType type_k = KvCacheType::F16,
+                          KvCacheType type_v = KvCacheType::F16,
+                          const std::vector<std::string> & devices = {},
                           const SpecConfig * spec = nullptr);
 
 } // namespace bmoe

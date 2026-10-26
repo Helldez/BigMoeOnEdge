@@ -12,12 +12,15 @@
 
 #include "bmoe/probe.h"
 
+#include "../io/platform_io.h"
 #include "../moe/gguf_offsets.h"
 #include "../moe/tensor_names.h"
 #include "bmoe/expert_layout.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
+#include <vector>
 #include <map>
 #include <set>
 #include <string>
@@ -246,6 +249,50 @@ ModelProfile probe_model(const char * model_path) {
     }
 
     return m;
+}
+
+std::string model_fingerprint(const char * model_path) {
+    // Where the samples are taken, as fractions of the file: the start carries the header and the
+    // metadata, the rest the tensor bytes that tell two models of one shape apart.
+    constexpr uint64_t k_head_bytes = 1ull << 20;
+    constexpr uint64_t k_window_bytes = 64ull << 10;
+    constexpr int k_windows = 4;
+
+    const pio::fd_t fd = pio::open_read(model_path, false);
+    if (!pio::fd_ok(fd)) return "";
+    const uint64_t size = pio::file_size(fd);
+    uint64_t h = 1469598103934665603ull; // FNV-1a, 64-bit
+    auto mix = [&h](const unsigned char * p, size_t n) {
+        for (size_t i = 0; i < n; ++i) {
+            h ^= p[i];
+            h *= 1099511628211ull;
+        }
+    };
+    unsigned char size_le[8];
+    for (int i = 0; i < 8; ++i)
+        size_le[i] = (unsigned char) (size >> (8 * i));
+    mix(size_le, sizeof(size_le));
+
+    std::vector<unsigned char> buf(k_head_bytes);
+    bool ok = size > 0;
+    auto sample = [&](uint64_t off, uint64_t len) {
+        if (!ok || off >= size) return;
+        len = std::min(len, size - off);
+        const long long got = pio::pread_at(fd, buf.data(), (size_t) len, off);
+        if (got != (long long) len) {
+            ok = false;
+            return;
+        }
+        mix(buf.data(), (size_t) len);
+    };
+    sample(0, k_head_bytes);
+    for (int i = 1; i <= k_windows; ++i)
+        sample(size > k_window_bytes ? (size - k_window_bytes) / k_windows * i : 0, k_window_bytes);
+    pio::close_fd(fd);
+    if (!ok) return "";
+    char hex[17];
+    std::snprintf(hex, sizeof(hex), "%016llx", (unsigned long long) h);
+    return hex;
 }
 
 } // namespace bmoe

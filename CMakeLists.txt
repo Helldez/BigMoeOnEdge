@@ -21,7 +21,7 @@ cmake_minimum_required(VERSION 3.21)
 # --version, and the run-parameter preamble of every metrics CSV), so a committed benchmark file
 # says which engine produced it. Keep it in step with CHANGELOG.md and the app's versionName:
 # scripts/check-version.sh compares the three, in CI and against the tag before a release builds.
-project(bigmoeonedge VERSION 0.35.1 LANGUAGES CXX)
+project(bigmoeonedge VERSION 0.37.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -146,7 +146,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/CMakeLists.txt")
         if(APPLE)
             set(CMAKE_INSTALL_RPATH "@loader_path")
         elseif(UNIX)
-            set(CMAKE_INSTALL_RPATH "$ORIGIN")
+            # And, after it, any directory a toolkit installs its libraries to system-wide that a
+            # module links against and a release does not carry (ROCm's, for the HIP module).
+            set(BMOE_EXTRA_RPATH "" CACHE STRING "Directories after $ORIGIN in the binaries' run path")
+            set(CMAKE_INSTALL_RPATH "$ORIGIN" ${BMOE_EXTRA_RPATH})
         endif()
     endif()
     # The prefill-device gate (G16) needs a second device to move weights onto, and the one every

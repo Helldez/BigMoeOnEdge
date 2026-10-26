@@ -15,6 +15,8 @@
 #include "bmoe/session.h"
 #include "bmoe/metrics.h"
 #include "bmoe/route_trace.h"
+#include "bmoe/routing.h"
+#include "bmoe/measured_knobs.h"
 #include "bmoe/decode_trace.h"
 #include "bmoe/version.h"
 
@@ -25,6 +27,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -296,6 +299,95 @@ static bool emit_decide(Session & session, const SessionCmd & cmd) {
     return true;
 }
 
+// ── the model's own measurements, kept between runs (--routing-dir) ──────────────────────────
+// The engine records what the model routed during its first tokens and returns it as a value; where
+// that lives is this front-end's decision. One file per model, named by the model file's content
+// fingerprint, so a copied or renamed file finds its record and another model never does. The next
+// --auto plan of the same file prices the cache on it (docs/measured-planning.md, Step 1).
+struct RoutingStore {
+    std::string path;       // empty: no --routing-dir, or the model could not be fingerprinted
+    std::string knobs_path; // the lossless knobs' verdicts beside it (bmoe/measured_knobs.h)
+    std::string hardware;   // this machine's hardware_fingerprint, once a plan probed it
+
+    static RoutingStore open(const std::string & dir, const std::string & model_path) {
+        RoutingStore s;
+        if (dir.empty() || model_path.empty()) return s;
+        const std::string fp = model_fingerprint(model_path.c_str());
+        if (fp.empty()) {
+            std::fprintf(stderr, "warning: cannot fingerprint %s; its routing is not kept\n", model_path.c_str());
+            return s;
+        }
+        s.path = (std::filesystem::u8path(dir) / (fp + ".routing")).u8string();
+        s.knobs_path = (std::filesystem::u8path(dir) / (fp + ".knobs")).u8string();
+        return s;
+    }
+
+    // Every verdict kept for this model, one per machine and engine; the plan picks this machine's.
+    bool load_knobs(std::vector<MeasuredKnobs> & out) const {
+        out.clear();
+        if (knobs_path.empty()) return false;
+        std::ifstream f(std::filesystem::u8path(knobs_path), std::ios::binary);
+        if (!f) return false;
+        std::ostringstream text;
+        text << f.rdbuf();
+        std::string err;
+        if (parse_measured_knobs(text.str(), out, err)) return true;
+        std::fprintf(stderr, "warning: ignoring the knob measurements kept in %s: %s\n", knobs_path.c_str(),
+                     err.c_str());
+        return false;
+    }
+
+    // This machine's verdict, replacing the one it had: the next --auto plan of the file starts from it.
+    void keep_knobs(MeasuredKnobs rec) const {
+        if (knobs_path.empty() || hardware.empty() || rec.empty()) return;
+        rec.hardware = hardware;
+        rec.engine = version();
+        std::vector<MeasuredKnobs> all;
+        load_knobs(all);
+        keep_measured_knobs(all, rec);
+        write_file(knobs_path, format_measured_knobs(all), "knob measurements");
+    }
+
+    static void write_file(const std::string & path, const std::string & text, const char * what) {
+        const std::filesystem::path p = std::filesystem::u8path(path);
+        std::error_code ec;
+        std::filesystem::create_directories(p.parent_path(), ec);
+        std::filesystem::path tmp = p;
+        tmp += ".tmp";
+        {
+            std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+            if (!f) {
+                std::fprintf(stderr, "warning: cannot write the %s %s\n", what, path.c_str());
+                return;
+            }
+            f << text;
+        }
+        std::filesystem::rename(tmp, p, ec);
+        if (ec) std::fprintf(stderr, "warning: cannot write the %s %s\n", what, path.c_str());
+    }
+
+    bool load(RoutingTrace & out) const {
+        if (path.empty()) return false;
+        std::ifstream f(std::filesystem::u8path(path), std::ios::binary);
+        if (!f) return false;
+        std::ostringstream text;
+        text << f.rdbuf();
+        std::string err;
+        if (parse_routing_trace(text.str(), out, err)) return true;
+        std::fprintf(stderr, "warning: ignoring the routing kept in %s: %s\n", path.c_str(), err.c_str());
+        return false;
+    }
+
+    // Kept when it decoded at least as far as the one already there: a short run does not replace a
+    // longer record of the same model. Written beside and renamed, so a reader never sees half of one.
+    void keep(const RoutingTrace & rec) const {
+        if (path.empty() || rec.empty() || rec.decode_tokens == 0) return;
+        RoutingTrace old;
+        if (load(old) && old.decode_tokens > rec.decode_tokens) return;
+        write_file(path, format_routing_trace(rec), "routing record");
+    }
+};
+
 // Interactive session: keep the model loaded and the expert cache warm across prompts, reading
 // one JSON request per line from stdin and emitting the BMOE_* line protocol on stdout. See
 // docs/telemetry.md. Returns the process exit code.
@@ -303,8 +395,11 @@ static int run_session_loop(const RunConfig & cfg,
                             IMetricsSink * sink,
                             IRouteTraceSink * route_trace,
                             IComputeTraceSink * compute_trace,
-                            IIoTraceSink * io_trace) {
+                            IIoTraceSink * io_trace,
+                            const RoutingStore & routing) {
     const SessionConfig sc = session_config_from(cfg);
+    uint32_t routing_kept = 0; // decoded tokens of the record last written
+    int knobs_kept = 0;        // verdicts in the knob record last written
 
     std::string error;
     std::unique_ptr<Session> session = Session::open(sc, error, route_trace, compute_trace, io_trace);
@@ -449,6 +544,22 @@ static int run_session_loop(const RunConfig & cfg,
                     s.mtp_draft_s_per_token, s.drafted_steps, s.loop_overhead_s_per_token,
                     json_escape(r.reasoning_text).c_str(), json_escape(r.generated_text).c_str());
         std::fflush(stdout);
+        // The record grows over the first turns and then stops; it is written each time it grew, so a
+        // session ended any way at all has kept what it recorded.
+        if (!routing.path.empty()) {
+            const RoutingTrace rec = session->routing_record();
+            if (rec.decode_tokens > routing_kept) {
+                routing.keep(rec);
+                routing_kept = rec.decode_tokens;
+            }
+            // Likewise the knob trial's verdicts, each written as it comes in.
+            const MeasuredKnobs mk = session->measured_knobs();
+            const int verdicts = (mk.threads > 0) + (mk.overlap >= 0);
+            if (verdicts > knobs_kept) {
+                routing.keep_knobs(mk);
+                knobs_kept = verdicts;
+            }
+        }
     }
 
     // Unblock the reader if it is still waiting on stdin (it exits on EOF; on an explicit close
@@ -575,6 +686,11 @@ static void print_usage(const char * argv0) {
                 "                          machine under real pressure, so it is off unless asked\n"
                 "      --session           keep the model loaded and serve JSON prompt requests from stdin\n"
                 "      --csv PATH          also write per-token metrics as CSV\n"
+                "      --routing-dir DIR   keep this model's recorded routing in DIR (one file per model,\n"
+                "                          named by its content). A streamed run writes it; the next --auto\n"
+                "                          plan of the same file sizes the cache on the hit rate it implies.\n"
+                "                          With --auto, the first answer also measures the thread count and\n"
+                "                          overlap, kept beside it; the next plan starts from the verdict\n"
                 "      --route-trace PATH  diagnostics: write the per-step per-layer MoE routing trace\n"
                 "                          (which experts each layer routed, their weight, cache state).\n"
                 "                          Needs --moe-stream; costs speed — not for benchmark runs\n"
@@ -698,6 +814,7 @@ int main(int argc, char ** argv) {
     // `probe_device` is that child's mode: probe the one device named, print its facts, exit.
     bool isolated_probes = true;
     std::string probe_device;
+    std::string routing_dir; // --routing-dir: where this model's recorded routing is kept between runs
 
     // Which parameters the user actually typed, by key. The env overrides below consult this rather
     // than comparing against the default, so passing a flag its default value still wins.
@@ -754,6 +871,8 @@ int main(int argc, char ** argv) {
             session_mode = true;
         else if (a == "--csv")
             csv_path = next("--csv");
+        else if (a == "--routing-dir")
+            routing_dir = next("--routing-dir");
         else if (a == "--route-trace")
             route_trace_path = next("--route-trace");
         else if (a == "--compute-trace")
@@ -874,6 +993,7 @@ int main(int argc, char ** argv) {
     // which is the name a Decision uses for its knob. See docs/hardware-planning.md.
     double predicted_s_per_token = 0.0;
     double predicted_hit_pct = -1.0;
+    bool predicted_hit_measured = false;                 // the credit came from the model's own hit curve
     if (seen.count("dense-on-device")) auto_plan = true; // a request to the planner, as before
     // The child of an isolated device probe: one device, its facts on one line, nothing else. If
     // the driver ends this process, or it never returns, that is the parent's answer about the device.
@@ -890,6 +1010,7 @@ int main(int argc, char ** argv) {
         return 0;
     }
 
+    RoutingStore routing = RoutingStore::open(routing_dir, cfg.model_path);
     if (auto_plan && !cfg.model_path.empty()) {
         PlanRequest req;
         req.pinned.assign(seen.begin(), seen.end());
@@ -908,14 +1029,28 @@ int main(int argc, char ** argv) {
                 return std::vector<std::string>{"-m", model, "--probe-device", dev};
             };
         }
+        // The routing this model recorded on an earlier run, when one was kept: the cache is then
+        // priced on its hit curve rather than the linear credit.
+        RoutingTrace kept;
+        if (routing.load(kept)) opt.routing = &kept;
+        // And what an earlier load measured about the lossless knobs; with a place to keep the
+        // verdict, the first answer measures what is not measured yet (docs/measured-planning.md).
+        std::vector<MeasuredKnobs> knobs_kept;
+        if (routing.load_knobs(knobs_kept)) opt.knobs = &knobs_kept;
+        req.measure_knobs = !routing.knobs_path.empty();
         const AutoPlan planned = probe_and_plan(cfg, req, opt);
         const HardwareProfile & hw = planned.hw;
         const ModelProfile & mp = planned.model;
         const Plan & plan = planned.plan;
         cfg = plan.config;
+        routing.hardware = hardware_fingerprint(hw);
         predicted_s_per_token = plan.allocation.seconds_per_token;
-        if (plan.allocation.cache_bytes > 0 && mp.expert_bytes > 0)
-            predicted_hit_pct = 100.0 * (double) plan.allocation.cache_bytes / (double) mp.expert_bytes;
+        // What the plan credited, from the curve when there was one: the figure its prediction stands on.
+        if (plan.allocation.cache_bytes > 0 && plan.allocation.cache_hit_credited > 0)
+            predicted_hit_pct = 100.0 * plan.allocation.cache_hit_credited;
+        predicted_hit_measured = mp.hit_curve.measured;
+        if (plan_explain && opt.routing)
+            std::fprintf(stderr, "plan: this model's routing read from %s\n", routing.path.c_str());
 
         if (plan_explain) {
             std::fprintf(stderr, "plan: machine %s\n", hw.label.c_str());
@@ -929,9 +1064,16 @@ int main(int argc, char ** argv) {
                     std::fprintf(stderr, "plan: device %s: UNUSABLE - %s\n", d.name.c_str(), d.unusable_reason.c_str());
                     continue;
                 }
-                std::fprintf(stderr, "plan: device %s%s: one token %.0f GiB/s (%s), %u tokens wide %.0f GiB/s (%s)%s\n",
+                // The real layer's halves and the crossing: the facts the device rules price with.
+                char layer[160] = "";
+                if (d.expert_gibs > 0.0 || d.dense_gibs > 0.0 || d.split_seconds > 0.0)
+                    std::snprintf(layer, sizeof(layer),
+                                  "; this model's layer: experts %.1f, dense %.1f GiB/s; crossing %.0f us",
+                                  d.expert_gibs, d.dense_gibs, 1e6 * d.split_seconds);
+                std::fprintf(stderr,
+                             "plan: device %s%s: one token %.0f GiB/s (%s), %u tokens wide %.0f GiB/s (%s)%s%s\n",
                              d.name.c_str(), d.is_cpu ? " (host)" : "", d.memory_bandwidth_gibs, verdict(d.identity_ok),
-                             hw.wide_batch, d.wide_matmul_gibs, verdict(d.wide_identity_ok),
+                             hw.wide_batch, d.wide_matmul_gibs, verdict(d.wide_identity_ok), layer,
                              d.probed_out_of_process ? ", probed in a process of its own" : "");
             }
             if (mp.ok) {
@@ -1031,7 +1173,8 @@ int main(int argc, char ** argv) {
     // Interactive session: one persistent process serves many prompts over stdin, keeping the
     // model loaded and the expert cache warm between them. Prompts arrive as JSON requests, not
     // via -p. This is a superset of --progress output (BMOE_* lines), so it never streams inline.
-    if (session_mode) return run_session_loop(cfg, sink.get(), route_trace.get(), compute_trace.get(), io_trace.get());
+    if (session_mode)
+        return run_session_loop(cfg, sink.get(), route_trace.get(), compute_trace.get(), io_trace.get(), routing);
 
     // Perplexity mode: score a fixed text instead of generating one. It opens the same session
     // with the same flags, so a lossy setting is priced under exactly the configuration it ships
@@ -1124,6 +1267,8 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr, "\nerror: %s\n", r.error.c_str());
         return 1;
     }
+    routing.keep(r.routing);
+    routing.keep_knobs(r.knobs);
 
     const RunSummary & s = r.summary;
     if (progress) {
@@ -1140,8 +1285,12 @@ int main(int argc, char ** argv) {
     if (predicted_s_per_token > 0.0 && s.s_per_token > 0.0) {
         const double err = 100.0 * (predicted_s_per_token / s.s_per_token - 1.0);
         std::printf("plan: predicted %.3f s/token, measured %.3f (%+.0f%%)", predicted_s_per_token, s.s_per_token, err);
-        if (predicted_hit_pct >= 0.0 && s.cache_hit_pct >= 0.0)
-            std::printf("; cache hits credited %.0f%%, measured %.1f%%", predicted_hit_pct, s.cache_hit_pct);
+        // Credited is a decode figure, so it is set against the decode's own; the cumulative one,
+        // which also counts the prompt, follows in brackets.
+        if (predicted_hit_pct >= 0.0 && s.cache_hit_decode_pct >= 0.0)
+            std::printf("; cache hits credited %.0f%%%s, measured %.1f%% in decode (%.1f%% with the prompt)",
+                        predicted_hit_pct, predicted_hit_measured ? " from this model's routing" : "",
+                        s.cache_hit_decode_pct, s.cache_hit_pct);
         std::printf("\n");
     }
     // Compute decomposition (0 s/tok CPU means the platform couldn't measure it; a negative fault

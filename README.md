@@ -178,6 +178,11 @@ from the file's tensor layout ([docs/which-models-stream.md](docs/which-models-s
 `ctest` checks that streamed output equals fully resident output across the cache, evictions,
 overlap, sessions and split models ([docs/architecture.md](docs/architecture.md)).
 
+Streaming only reads. The model file is mapped read-only and the expert cache is a region of RAM,
+never a file, so a streamed token costs flash reads and no flash writes: it does not wear the
+drive the way writes do. What the engine writes is explicit and small: a model you download, your
+settings, and a metrics CSV or routing record when asked for.
+
 ## The planner
 
 <p align="center">
@@ -198,7 +203,7 @@ each device does, and the reason for each decision.
 |---|---|---|---|---|---|
 | Engine and CLI | arm64 | Apple silicon | x86_64, arm64 | x86_64, aarch64 | arm64 (in the app) |
 | App and server | native app | web app | web app | web app | native app, built from source |
-| Accelerators | Hexagon NPU, Vulkan, OpenCL | Metal | Vulkan, OpenCL (arm64), Hexagon NPU (arm64, opt-in) | Vulkan | Metal |
+| Accelerators | Hexagon NPU, Vulkan, OpenCL | Metal | Vulkan, CUDA (x86_64, separate download), OpenCL (arm64), Hexagon NPU (arm64, opt-in) | Vulkan, CUDA and HIP (x86_64; CUDA a separate download, HIP where ROCm 7 is installed) | Metal |
 | Run on hardware | 12 GB phone | 16 GB laptop | 16 GB laptop | CI, community | 12 GB iPhone ([#235](https://github.com/Helldez/BigMoeOnEdge/issues/235)) |
 
 Details and what was measured where: [docs/platforms.md](docs/platforms.md).

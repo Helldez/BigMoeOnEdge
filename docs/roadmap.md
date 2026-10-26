@@ -323,21 +323,19 @@ machine reports available; and a thread rule that reads core classes rather than
 because a barrier waits for its slowest participant.
 
 What is still owed is measurement rather than design, and every knob the plan cannot decide prints
-`[unprobed]`. Where the planner goes next, in four steps that replace predictions with measurements
-on the model itself (its routing for the cache, its first request for the lossless knobs, one real
-layer for devices, and device memory as a tier of the expert cache):
-[measured-planning.md](measured-planning.md).
+`[unprobed]`. The four steps that replace the plan's predictions with measurements on the model
+itself are built: its routing for the cache, its first request for the lossless knobs, one real
+layer of it for every device, and device memory as a tier of the expert cache
+([measured-planning.md](measured-planning.md)). What each still owes is its run on the reference
+phone, a Windows machine and a discrete card the archives now carry a CUDA module for.
 
-- **Streamed experts computed on a device, rather than on the CPU cores.** Half built, and the
-  missing half is a design question rather than plumbing. A device is asked whether it offers a host buffer type and whether it runs this model's
-  own expert matmul on the file's native layout; the bandwidth probe schedules one GEMV on every
-  backend so the host's figure and the device's are the same measurement; where the device wins, the
-  session binds the overridden experts to that device's host buffer type at load. What is not done is
-  the streamer's own reservations coming from that same allocator: it rebinds `data` onto memory it
-  reserved itself, so a device pointed at those tensors would read ordinary host memory it was never
-  given access to. Doing it trades against the lazy commit that lets a model far past RAM have valid
-  addresses everywhere while holding a fraction of it. On a machine that registers only a CPU the
-  measured half runs and finds nothing to compare, which is what the plan says.
+- **Streamed experts computed on a device, rather than on the CPU cores.** Built as the device tier
+  of the expert cache: llama.cpp's device-side expert cache holds the experts used most in the
+  device's own memory and computes them there, resident or streamed, a miss uploaded from the host
+  (from the backend's own host memory where that measured faster); the plan arms it where the device
+  prices faster on this model's own expert block, and the byte-identity gates cover it. What stays
+  on the host is the streamer's own reservations, by design: a model far past RAM keeps valid
+  addresses everywhere while holding a fraction of it.
 - **A prefill-aware cache floor.** Each expert is already read at most once per ubatch (the `seen_`
   guard in the streamer), so the read-once property that wave-partitioned prefill exists to provide
   is not missing. What is missing is a guarantee that the cache can hold one layer's ubatch working

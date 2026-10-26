@@ -31,6 +31,7 @@
 #include "bmoe/probe.h"
 
 #include "../io/platform_io.h"
+#include "layer_probe.h"
 
 #include "ggml-backend.h"
 #include "ggml.h"
@@ -57,17 +58,6 @@ namespace {
 constexpr int64_t k_rows = 16384;
 constexpr int64_t k_cols = 4096;
 
-// How long one sample must last, and the cap that keeps a slow device from turning a probe into a
-// benchmark. Sized by DURATION rather than by a repetition count, for the same reason the storage
-// probe is sized by bytes: a fixed count makes the sample shorter as the machine gets faster, and a
-// 4096x4096 Q4_K weight is about 9 MB, so four repetitions is 38 MB - two milliseconds on a phone.
-// A two-millisecond sample on a general-purpose OS reports scheduling noise, and this sample decides
-// the thread count: the ladder takes a rung only if it beats the incumbent by 2%, so noise at that
-// scale made the same binary answer 1, 1, 4 across three runs of the same model. One thread is
-// worth about half this device's throughput.
-constexpr double k_sample_seconds = 0.15;
-constexpr int k_reps_max = 512;
-
 // The second instrument: the same matmul, many tokens wide. A one-token graph is bound by how fast
 // weights can be READ, which is why the figure above is a bandwidth; a wide one multiplies every
 // weight by a whole batch, so it is bound by how fast the engine can COMPUTE, and the two rank
@@ -79,7 +69,7 @@ constexpr int k_reps_max = 512;
 // sits inside the regime it speaks for. The weight is smaller than the bandwidth probe's on
 // purpose: nothing here depends on outrunning a cache, and at the full size a slow machine would
 // spend seconds on a probe.
-constexpr int64_t k_wide_batch = 128;
+constexpr int64_t k_wide_batch = detail::k_wide_batch;
 constexpr int64_t k_wide_rows = 4096;
 
 // The weight type to measure with. The model's own where it has one; falling back to F32 makes the
@@ -247,11 +237,11 @@ RunResult run_gemv(ggml_backend_dev_t dev, const Probe & p, int n_threads, bool 
                 // times. The clock is read each pass rather than a rep count computed up front,
                 // because the rate this is trying to measure is the very thing such a count would
                 // have to assume.
-                while (all_ok && reps < k_reps_max) {
+                while (all_ok && reps < detail::k_reps_max) {
                     all_ok = ggml_backend_graph_compute(backend, gf) == GGML_STATUS_SUCCESS;
                     ++reps;
                     if (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() >=
-                        k_sample_seconds)
+                        detail::k_sample_seconds)
                         break;
                 }
                 ggml_backend_synchronize(backend);
@@ -292,18 +282,7 @@ RunResult run_gemv(ggml_backend_dev_t dev, const Probe & p, int n_threads, bool 
 // half-precision grid). The previous bound, 1e-4 in this unit, refused it, and both of a phone's
 // GPU backends with it, though upstream's own test passes them. A wrong kernel is still off by the
 // size of the answer, an NMSE near 1.
-constexpr double k_max_nmse = 5e-4;
-bool agrees(const std::vector<float> & a, const std::vector<float> & b) {
-    if (a.size() != b.size() || a.empty()) return false;
-    double num = 0, den = 0;
-    for (size_t i = 0; i < a.size(); ++i) {
-        const double d = (double) a[i] - (double) b[i];
-        num += d * d;
-        den += (double) a[i] * (double) a[i];
-    }
-    if (den <= 0) return false;
-    return num / den < k_max_nmse;
-}
+using detail::agrees;
 
 } // namespace
 
@@ -383,8 +362,13 @@ void probe_bandwidth(HardwareProfile & hw, const ModelProfile & model) {
     // one-token result: a device that lost there is measured here all the same, because losing
     // there says nothing about here. A device that will not run the wide graph keeps its
     // unmeasured 0 and its Unknown, and no rule arms it.
+    //
+    // The model's own layer answers this, at the prompt's own per-expert batch (layer_probe.cpp),
+    // and decides identity at decode width on its real kernels too. The synthetic matmul below is
+    // what a model whose layer cannot be read is measured with, as before.
+    const bool real_layer = detail::probe_real_layer(hw, model);
     Probe wide;
-    if (build_probe(wide, probe.type, k_wide_rows, k_wide_batch)) {
+    if (!real_layer && build_probe(wide, probe.type, k_wide_rows, k_wide_batch)) {
         std::vector<float> wide_ref;
         for (ComputeDevice & d : hw.devices) {
             if (!d.is_cpu) continue;
