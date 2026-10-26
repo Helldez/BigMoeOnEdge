@@ -1,8 +1,9 @@
 # Measured planning: pricing the plan on the model itself
 
-> **Design, not yet built.** This page describes where `--auto` goes next and in what order. Nothing
-> here has shipped; each step names what it removes, what it must not break, and how it is judged.
-> The planner as it stands is [hardware-planning.md](hardware-planning.md).
+> **Partly built.** This page describes where `--auto` goes next and in what order. Steps 1 to 4 are
+> built and await their on-device judgement (their status is below each). Each step names what it
+> removes, what it must not break, and how it is judged. The planner as it stands is
+> [hardware-planning.md](hardware-planning.md).
 
 The goal is a planner that is smaller than today's, agnostic by construction, and right more often:
 the plan that decodes and prefills fastest on this machine, with this model, holding no more memory
@@ -15,11 +16,12 @@ model's own tensors rather than on stand-ins.
 |---|---|---|
 | What fits where (layers per device, context and compute reservations) | llama.cpp's capacity fitter, a `no_alloc` load of the real file | yes, sizes only |
 | `--io-threads`, `--no-odirect`, `--release-mmap` | the storage probe, reading the model file itself at its own expert slice size | yes |
-| Prefill device | a wide matmul probe, then a short real prefill compared against the host at load | yes, for correctness |
-| `--threads`, host and device bandwidth | a GEMV sweep on synthetic bytes encoded in the model's quant format | format only |
-| Cache size against resident dense groups | seconds saved per byte, with the hit rate credited **linearly** in the fraction of the expert set held | no: a coefficient |
-| Layers on a device for decode, beyond what the fitter placed for capacity | the crossing price, which is unmeasured, so never | no |
-| `--overlap` | lossless and measured faster on two machines, never armed by the plan (#294) | no |
+| Prefill device | one real layer of the model at 128 tokens (Step 3), then a short real prefill compared against the host at load | yes |
+| `--threads`, host and device bandwidth | a GEMV sweep on synthetic bytes encoded in the model's quant format; for `--threads`, once a front-end kept a verdict, the model's own decode on the first answer (Step 2) | format only; with a verdict, yes |
+| Host and device rate on the experts and on the dense matrices | one real layer of the model at one token (Step 3) | yes, its matmuls |
+| Cache size against resident dense groups | seconds saved per byte, with the hit rate read off the model's own routing record (Step 1), or on a first load credited **linearly** in the fraction of the expert set held | with a record, yes; on a first load, no: a coefficient |
+| Layers on a device for decode, beyond what the fitter placed for capacity | the fitter's split layers priced against the same layers on the host, on the measured crossing and dense rates, in the ranking (Step 3) | yes, its matmuls and the crossing |
+| `--overlap` | measured on the first answer against the other setting, and kept (Step 2); without a place to keep it, never armed (#294) | with a verdict, yes |
 
 At the end of a run the plan prints its prediction against the measurement
 (`predicted 0.048 s/token, measured 0.055`) and the credited hit rate against the measured one. Then
@@ -94,6 +96,36 @@ points of the measured one on the reference machines (phone, Mac, Windows laptop
 desktop. Decode tok/s must not drop on any of them. Output is unchanged by construction: only the
 cache size moves, and the cache is lossless.
 
+**Status: built, judgement owed.** What landed, and how it was checked off the device:
+
+- The replay is `replay_lru` in `core/src/plan/routing.cpp` (`bmoe/routing.h`). On the three archived
+  phone traces it matches `scripts/route-replay.py`'s LRU row to the third decimal at five budgets each,
+  and at each run's own budget reproduces the hit rate the run recorded (74.9, 76.8, 32.4%); a test
+  (`routing`) holds both. In the gates (`G2r`), the record a real streamed session kept replays to the
+  hit rate that session's cache measured, prompt included and decode alone.
+- The record is kept by the session itself (`--routing-record`, default 256 decoded tokens and the
+  prompt's last 256), from the ids the hook gathers for the cache anyway: no extra graph nodes, unlike
+  `--route-trace`. It is one line per cache request, so a chunked prompt replays as the engine served
+  it rather than as one batch.
+- The front-ends keep it: `bmoe-cli --routing-dir DIR`, `bmoe-server` under `routing/` in its data
+  folder, one file per model named by a content fingerprint of the file (`model_fingerprint`). The
+  next plan of the file hands it back (`AutoPlanOptions::routing`) and `attach_routing` turns it into
+  `ModelProfile::hit_curve`: `hit_share(bytes)`, monotone, over the whole expert set, absent unless
+  the record is this model at this top-k with enough decoded tokens.
+- The cache then enters the ranking as pieces of the curve's concave hull, and is credited the curve
+  at the size it gets, tagged `[measured on this model]`. The predicted-against-measured line sets
+  that credit against the decode's own measured hit rate, the figure it prices.
+- **Not removed:** `cache_hit_optimism` and the linear credit stay as what a first load, with no
+  record yet, is priced with, and a plan without a record is byte for byte the plan before this step
+  (asserted in `planner`). They go when every front-end ships with a record for every model it
+  plans, which is not yet true on a first download.
+- The same record ranks the hottest (block, expert) pairs by use (`hottest_experts`), for Step 4's
+  device tier to warm from at start. Nothing reads it yet.
+
+Owed: the on-device runs this step is judged by (the reference machines and #321's desktop), each a
+first load to record and a second to plan from the record, with the predicted-against-measured line
+from both.
+
 ## Step 2: lossless knobs settled on the first real request
 
 **What it measures.** The knobs that do not change output and that can change with the session open:
@@ -116,6 +148,52 @@ the same thing either way: the fact, its source (`[measured on this model]`), an
 
 **Judged by.** Interleaved windows against the incumbent on every reference machine; byte-identical
 output with the gates (`bmoe_moe_gates`), since every knob here is lossless.
+
+**Status: built, judgement owed.** What landed, and how it was checked off the device:
+
+- **The policy** is `KnobTrial` (`core/src/engine/knob_trial.h`), pure and fed one decode step at a
+  time. It waits for the cache's hit rate to settle (two windows within `settle_hit_delta`, two
+  points), then runs `incumbent, c1, incumbent, c2, incumbent, ...` for `rounds` (3) rounds, a window
+  of `--trial-window` tokens (8) each, the first token after a switch untimed. A candidate's ratio in
+  a round is its seconds per token over the mean of the two incumbent windows around it, so a drift
+  that is linear over three windows cancels exactly; the verdict is the median of the ratios, and a
+  candidate wins only past `min_backend_win` (the same field the device rule reads). The `knob_trial`
+  test holds it on synthetic timings: equal arms under 10% noise never win over 50 seeds, a 25% win
+  always does, 5% is a tie, 12% wins, a run that slows to twice the time per token measures a 20%
+  win as 20%, one stalled window does not overturn the median, a window cut by the end of a request
+  is dropped.
+- **Which knobs switch live.** `--threads` through `llama_set_n_threads` (decode only; prefill keeps
+  its count). `--overlap` too, by a change to the streamer rather than a reload: serial and overlapped
+  reads differ only in whether the first read lane is the eval thread or a worker of its own, so the
+  switch is starting or stopping that one worker and registering the expert-ready hook, between two
+  decodes (`ExpertStreamSource::set_overlap`). It needs every layer on the host: with one on a device
+  overlap also turns off the context's offload of host-weight matmuls, which is fixed when the
+  context is created. **`--io-threads` is left out**: the storage probe already measures it on the
+  model's own file at its own slice size, and changing it with the session open means reopening every
+  reader with another lane count for a figure the plan already has from the model.
+- **Lossless.** Gate `G24` runs the trial over a 120-token answer (threads 2 against 1 and 4, then
+  overlap) and over four turns of 40 that each end inside a window; every answer equals the resident
+  one, and the gate fails if the trial reached no verdict.
+- **Kept.** The verdict is `MeasuredKnobs` (`bmoe/measured_knobs.h`), returned by
+  `Session::measured_knobs()` as each knob's verdict comes in. The front-ends keep it beside the
+  model's routing record, one `.knobs` file per model fingerprint with a line per machine
+  (`hardware_fingerprint`: cores, core classes, total memory, each device's name and own memory) and
+  engine version. `bmoe-cli --routing-dir DIR` arms the trial on its `--auto` plans and writes the
+  verdict; `bmoe-server` always does, under `routing/` in its data folder. `core/` gained no file
+  access and no environment read.
+- **Read back.** `probe_and_plan` matches the record to this machine and engine
+  (`AutoPlanOptions::knobs` into `ModelProfile::knobs`); the plan applies it, says
+  `measured on this model` with the gain and the margin, and arms no trial. A plan with the feature
+  off and no record is byte for byte the plan before this step: the previous `planner` test's whole
+  output (its checks and three printed rationales) is identical against this build, and the
+  `planner` test asserts the overlap and thread decisions word for word.
+- **Not removed yet:** the synthetic thread sweep stays as a first load's count, the one the trial
+  starts from; it goes when every front-end ships with a verdict for every model it plans, as with
+  Step 1's linear credit. A device-side expert cache refuses overlap, so when one is armed neither
+  the trial nor a verdict may turn overlap on.
+
+Owed: the on-device runs this step is judged by, each a first load whose first answer measures and a
+second that starts from the verdict, on the phone, the Mac and the Windows laptop.
 
 ## Step 3: the cost of a device measured on a real layer
 
@@ -142,6 +220,61 @@ next step is a discussion about the llama.cpp boundary, not an in-tree patch.
 **Judged by.** On a machine with a discrete device, the plan's predicted decode within a few percent
 of the measured run, and a placement that matches or beats the fitter's. On machines with none, an
 unchanged plan.
+
+**Status: built, judgement owed.** What landed:
+
+- **The probe** (`core/src/plan/layer_probe.cpp`). The MoE block with the most expert bytes in the
+  file the experts live in; its expert matrices (a block's 3-D weights indexed by the expert count,
+  whatever the file fuses) as `mul_mat_id`, k experts per token, and the block's other 2-D weights
+  as `mul_mat`, each matrix with an input of its own width - so no dataflow, no norms and no
+  attention arithmetic, which is the stated limit. The bytes are the file's, read once. At one token
+  a pass reads enough disjoint sets of k experts, and enough copies of the dense matrices, to outrun
+  the last-level cache (64 MiB of each, at most 256 MiB of experts held, 16 copies); at 128 tokens a
+  subset of the experts gets the per-expert batch a 128-token prompt gives the whole set
+  (`128 * k / n_expert`), so the kernels run at the prompt's own intensity. Samples are 0.15 s each,
+  every pass ends with a read of its result (a backend that queues work is timed on doing it, not on
+  accepting it), and everything is freed on every path. It runs in the isolated child with the other
+  device probes; the facts line is `v=2` and carries `expert=` and `dense=`.
+- **Correctness first.** Every backend computes the same bytes on the same inputs; a device whose
+  result at one token disagrees with the host's (llama.cpp's own NMSE bound) is refused for good
+  (`identity_ok = No`), and at 128 tokens it is not armed for the prefill. A node a device has no
+  kernel for is left out of its graph and priced at the host's rate for that half, where the
+  scheduler would run it.
+- **The facts.** `expert_gibs` and `dense_gibs` per device and the host's `host_expert_gibs` and
+  `host_dense_gibs`; `wide_matmul_gibs` is now the whole layer at 128 tokens. A rule comparing a host
+  with a device reads both figures from the same experiment (`RatePair`): the real layer's where both
+  were measured on it, the GEMV's otherwise.
+- **The crossing** (`device_probe.cpp`): one token's hidden state copied host to device, one op run
+  there, copied back, each leg waited for; half the round trip. The chain differenced through the
+  scheduler it replaces read 0 on a CUDA card (its mixed arm was no slower than the host arm), which
+  is why every discrete card's plan said the crossing was unpriced.
+- **What reads them.** `choose_device_tier` (Step 4) prices the split's host layers at the host's
+  real expert rate. The allocation prices the host's expert and dense compute each at its own rate,
+  and a dense group's offer to a device on the dense pair. And the new `price_layers_home`: where the
+  fitter put the dense part of some layers on a device with their experts on the host, those layers'
+  dense matmuls on the device plus two crossings each are priced against the same matmuls on the host.
+  Where the host wins by `min_backend_win`, bringing them home - whole, onto the host, the device
+  keeping as many whole layers at the top - is one more candidate in the ranking (`device-crossing`),
+  its RAM their dense part and, bounded, the context, against the cache; funded, the plan is made
+  again from that placement (`device-layers`). The device's bound per whole layer is the file's
+  largest, so a device that could not be shown to hold them keeps the fitter's placement.
+- **No regression where there is no device of its own.** The plan of a CPU-only machine, and of one
+  whose devices share its memory, is byte for byte what it was on the planner's fixtures, the real
+  layer's rates included, and a measured crossing moves no layer there (asserted in `planner`). The
+  full plan text of twelve fixture plans was diffed before and after: only a discrete card with a
+  split placement gained a line, its priced `device-layers`.
+- **Measured off the device, on this repository's tiny models** (gate G26, every architecture): a
+  16 GB laptop's host, its integrated GPU and the loopback RPC device all agree with the host at both
+  widths, every fact is filled, the crossing reads 65 us on the integrated GPU and 28 us on loopback
+  RPC, and the probe with the device costs takes about 7 s for the three backends in one process.
+
+**Not done.** The synthetic GEMV is not removed: the thread sweep runs on it, and `memory_bandwidth_gibs`
+and `host_bandwidth_gibs` keep its meaning for the rules that read a bandwidth (the shared-memory
+notes, the expert-compute note); Step 2 retires the sweep. "More" layers on a device than the fitter
+placed is not chosen: the bytes the split layers free on the device would hold more whole layers, but
+sizing them needs the fitter's projection rather than a bound. Attention is not probed, as stated. The
+plan's predicted decode still prices the host's share only; the device side is in the `device-layers`
+line. Owed: the runs this step is judged by, on #321's desktop first.
 
 ## Step 4: device memory as a tier of the expert cache
 
@@ -201,16 +334,53 @@ its own, and on a shared pool there is no second tier to fill.
 plan without it, interleaved, on #321's desktop and on a single small card like #330's. On machines
 without a device of their own, an unchanged plan.
 
+**Status: built, judgement owed.** What landed (`choose_device_tier` in `core/src/plan/planner.cpp`):
+
+- **Correctness.** Gates G25a-c: the device cache over resident experts, over streamed experts, and
+  over streamed experts under n-gram speculation, each byte-identical to the same placement with the
+  experts resident, on the loopback RPC device (buffers that are not host memory, as a discrete card's
+  are). The cache was live in every run: 75-90% device hits, misses uploaded.
+- **The rule: the experts used most live next to the fastest processor.** It is the rule flash and
+  RAM already follow, one level up. Where every layer's dense part is on devices with memory of their
+  own (the fitter gives the dense part, read by every token, the first claim on them) and a device
+  computes the model's experts faster than the host by `min_backend_win` (both rates from the same
+  experiment: the real layer where both were measured on it, the GEMV otherwise), the bytes the
+  fitter gave whole layers' experts hold a cache of the experts used most, from every layer, and
+  every layer's experts go back to the host, resident or streamed. A miss is uploaded from there as
+  a miss in RAM is read from flash. The cache fills from use, so it needs no record of the routing;
+  a record only says, in the plan's line, how much of a token it serves. Where the device is not
+  faster, its rate is unmeasured, or the dense parts did not all fit, the fitter's placement stands.
+- **Why not a price.** The first version priced the two per token (the split's host layers at the
+  host's rate and its crossings, against the cache's misses at the measured upload rate) and armed
+  the cache only where it won. On the second rented card of the runs below it called them a tie
+  (4.23 against 4.73 ms a token) and kept the layers, which decoded at 30-47 tok/s against the
+  cache's 64-79 there set by hand: the price missed what a host layer costs beyond its bytes, and a
+  price that can be wrong by half on the one comparison it exists for is a coefficient, not a fact.
+  A layer split by capacity waits for the host on every token wherever the device is the faster
+  processor; that part needs no price.
+- **Not done.** The double reads stay, measured rather than removed: on a model that fits the host,
+  the experts are resident and nothing is read. Pipeline parallelism on several devices is not
+  weighed. A warm start of the device cache from the record's hottest experts is not built: the first
+  hundred tokens fill it (51 tok/s in the first 128 tokens, 84-88 from the 256th, on the card below).
+- **Measured on a 24 GB discrete card,** Qwen3.8-Flash-Next 125B Q2_0, every layer on the card: experts
+  on the cores 18.9 tok/s, the best whole-layer split 31.9, resident behind a 16 GB device cache 61.8
+  and 62.8 over 256 tokens (84-88 once settled), against the planner's prediction of a cache faster
+  than the split on a curve like that model's. On a second card the plan's own choice, from a
+  recorded first run, armed the cache: 63.3 tok/s over 256 tokens and 80.8 over 1024. The cache costs
+  prefill there: 650 tok/s on a 1516-token prompt against 1134 for the whole layers, which the plan
+  does not price yet. The rule above, which arms the cache from the first load, is not yet run on a
+  card.
+
 ## What the planner looks like afterwards
 
 - **Memory:** the ledger, unchanged, still the only thing that decides what is held.
 - **Speed:** facts measured on the model, the routing trace for the cache, the first request for the
   lossless knobs, one real layer for devices. Each enters the existing ranking in its own unit.
-- **Tiers:** flash, RAM and device memory, each a cache for the one above it. The split of device
-  memory between full layers and expert slots is chosen with the same measurements.
+- **Tiers:** flash, RAM and device memory, each a cache for the one above it, the experts used most
+  next to the fastest processor.
 - **Removed:** the linear hit credit and its coefficient, the synthetic thread sweep, the synthetic
-  bandwidth GEMV and the separate prefill matmul probe, and the unpriced crossing term that kept
-  devices out of decode.
+  bandwidth GEMV and the separate prefill matmul probe (gone, Step 3, except for a file whose layer
+  cannot be read), and the unpriced crossing term that kept devices out of decode (gone, Step 3).
 - **Remembered:** what was measured about this hardware and this model, never the free memory.
 
 Fewer coefficients, fewer probes, and every number in the plan traceable to a measurement on the

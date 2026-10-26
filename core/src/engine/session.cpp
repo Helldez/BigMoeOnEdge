@@ -3,6 +3,7 @@
 #include "bmoe/route_trace.h"
 #include "bmoe/decode_trace.h"
 #include "bmoe/version.h"
+#include "bmoe/probe.h"
 #include "bmoe/ngram_draft.h"
 #include "bmoe/log.h"
 #include "chat_messages.h"
@@ -22,6 +23,8 @@
 #include "../moe/tensor_names.h"
 #include "cache_brake.h"
 #include "context_checkpoints.h"
+#include "kv_cache_type.h"
+#include "knob_trial.h"
 #include "../io/platform_io.h"
 #include "../io/mapping_release.h"
 #include "../metrics/memory_snapshot.h"
@@ -273,6 +276,14 @@ constexpr const char * k_verify_text =
 
 // All native state lives here, behind the pimpl. Built once by Session::open(); every
 // generate() reuses the loaded model, the live context and the warm expert cache.
+namespace {
+// A run that does not stream keeps its routing only where it was asked to, and only for a MoE model.
+bool records_unstreamed(const SessionConfig & cfg) {
+    return !cfg.moe.enabled && cfg.moe.record_unstreamed && cfg.moe.routing_record_tokens > 0;
+}
+
+} // namespace
+
 struct Session::Impl {
     SessionConfig cfg;
     std::string arch;
@@ -284,17 +295,45 @@ struct Session::Impl {
     std::unique_ptr<llama_model, void (*)(llama_model *)> model{nullptr, llama_model_free};
     std::unique_ptr<llama_context, void (*)(llama_context *)> ctx{nullptr, llama_free};
     std::unique_ptr<RouterHook> hook; // heap: its address is baked into cparams.cb_eval_user_data
+    // The experts' copy in a device backend's host memory (MoeStreamConfig::expert_host_buffer):
+    // the expert tensors point into it, so it outlives the contexts and the model.
+    std::unique_ptr<ggml_backend_buffer, void (*)(ggml_backend_buffer_t)> expert_host_buf{nullptr,
+                                                                                          ggml_backend_buffer_free};
     ExpertStreamSource source;
     // Kept per session, not per turn: the reference it measures stalls against is this machine's,
     // and a later turn of a chat is compared with what the earlier ones settled to.
     CacheBrake brake;
+
+    // The knob trial (SessionConfig::trial): the lossless knobs measured on the first decodes once
+    // the cache has settled, one knob after the other, each winner kept for the rest of the session
+    // and returned (Session::measured_knobs). Stage 0 is the thread count, 1 overlap, 2 done.
+    struct Trials {
+        std::vector<int> threads; // arms: the incumbent, then the candidates; empty: not measured
+        std::vector<int> overlap; // arms as 0/1, the incumbent first; empty: not measured
+        int stage = 2;
+        std::unique_ptr<KnobTrial> cur;
+        MeasuredKnobs result;
+        uint64_t lookups_seen = 0, hits_seen = 0; // the cache's counters at the last step
+    } trials;
+    int threads_now = 0; // the decode thread count the contexts run with
+    void arm_trials();
+    void start_trial_stage(bool settle);
+    void finish_trial_stage();
+    bool apply_trial_arm(int arm);
+    void set_decode_threads(int n);
+    void trial_step(double seconds, int tokens);
+    void pause_trial();
+    void resume_trial();
+    void snapshot_trial_counters();
 
     // Prefill on an accelerator (SessionConfig::prefill); null when off. Created before the model
     // load, whose device list it holds, and opened after it.
     std::unique_ptr<detail::PrefillPath> prefill;
 
     // Where the next graph actually goes: a device with no room right now leaves it on the host.
-    bool place_prefill(bool on_device) { return prefill ? prefill->place(on_device) : false; }
+    bool place_prefill(bool on_device, bool hold_slots = false) {
+        return prefill ? prefill->place(on_device, hold_slots) : false;
+    }
     int decode_placed(llama_context * c, const llama_batch & b) {
         return prefill ? prefill->decode(c, b) : llama_decode(c, b);
     }
@@ -447,8 +486,12 @@ struct Session::Impl {
     void build_sampler(const SessionConfig & c);
     void install_abort_callback();
     bool init_speculation(Opening & o);
+    bool init_mtp_driver(Opening & o);
+    bool stage_experts_in_host_buffer(Opening & o);
     bool bind_streaming(Opening & o);
     bool capture_warmup(Opening & o);
+    bool arm_device_cache(Opening & o);
+    bool device_cache_armed = false;
     bool bind_expert_offsets(Opening & o, const GgufOffsets & offs, std::vector<LayerExperts> & layers, int & n_expert);
     void hand_over_dense_weights(const SessionConfig & cfg,
                                  const GgufOffsets & offs,
@@ -457,6 +500,8 @@ struct Session::Impl {
     void
     release_mapping(const SessionConfig & cfg, const GgufOffsets & offs, const std::vector<std::string> & unaccounted);
     void arm_route_trace(Opening & o, int n_expert, std::vector<uint64_t> dense_bytes);
+    void arm_routing_record(Opening & o, int n_expert);
+    bool arm_unstreamed_record(Opening & o);
     bool open_prefill_device(Opening & o);
     void hand_back_prefill(const std::string & why);
     bool confirm_prefill_device(Opening & o);
@@ -485,6 +530,7 @@ struct Session::Impl {
         ctx.reset();
         hook.reset();
         model.reset();
+        expert_host_buf.reset();
         mapping_placeholders.release();
         if (backend_inited) llama_backend_free();
     }
@@ -504,6 +550,12 @@ int Session::n_ctx() const {
 }
 int Session::n_expert_used() const {
     return impl_->n_expert_used;
+}
+RoutingTrace Session::routing_record() const {
+    return impl_->hook ? impl_->hook->routing_record() : RoutingTrace{};
+}
+MeasuredKnobs Session::measured_knobs() const {
+    return impl_->trials.result;
 }
 ThinkControl Session::think_control() const {
     return impl_->think_ctl;
@@ -616,9 +668,9 @@ PplResult Session::perplexity(const PplRequest & req) {
         // Same placement rule as generate()'s prefill, so --ppl scores exactly the numerics a prompt
         // gets: wide pieces on the prefill device, a narrow tail on the CPU.
         // Every row here wants its logits, so a piece is also capped by the output rows the context
-        // reserved (PrefillDeviceConfig::max_outputs).
+        // reserved (PrefillDeviceConfig::max_outputs), with or without a device.
         const int step =
-            im.prefill ? std::min(prefill_piece(im.cfg), PrefillDeviceConfig::max_outputs) : im.cfg.n_batch;
+            std::min(im.prefill ? prefill_piece(im.cfg) : im.cfg.n_batch, PrefillDeviceConfig::max_outputs);
         Impl::PlacementGuard placement_guard{im};
         for (int i = 0; i < n; i += step) {
             const int chunk = std::min(step, n - i);
@@ -871,6 +923,18 @@ bool Session::Impl::load_model(Opening & o) {
             mparams.devices = const_cast<ggml_backend_dev_t *>(devs);
         }
     }
+    // The backends the plan chose, one per card: a name this build does not have is a plan for
+    // another machine.
+    std::vector<ggml_backend_dev_t> listed_devices;
+    if (!prefill && !cpu_only && !cfg.device_list.empty()) {
+        for (const std::string & n : cfg.device_list) {
+            ggml_backend_dev_t dev = ggml_backend_dev_by_name(n.c_str());
+            if (!dev) return o.fail("the plan names device '" + n + "', which this build does not have");
+            listed_devices.push_back(dev);
+        }
+        listed_devices.push_back(nullptr);
+        mparams.devices = listed_devices.data();
+    }
     // The fitter's split, applied as it was projected: the devices it put layers on, in its order,
     // each with its own count. Left to llama.cpp the layers are divided by free memory, which is not
     // the division the fitter sized each device's share for - on two cards it handed one of them
@@ -960,6 +1024,10 @@ bool Session::Impl::read_model(Opening & o) {
         if (!o.layout.ok)
             return o.fail("not a MoE this engine streams: " + o.layout.error +
                           " (docs/which-models-stream.md; without --moe-stream the file runs as plain mmap)");
+    } else if (!cfg.moe.expert_host_buffer.empty()) {
+        // The copy into a device's host memory needs only to know which tensors are experts; a file
+        // it cannot read that way is simply not copied.
+        o.layout = discover_expert_layout(o.meta().offsets.extents, o.gguf().n_expert);
     }
 
     // Chat templates are model-bound: initialise once here, apply per prompt in generate().
@@ -1033,20 +1101,22 @@ bool Session::Impl::create_contexts(Opening & o) {
     // buffers — the memory this engine is always short of. 0 keeps the historical behaviour
     // (one graph as wide as the batch); a smaller value chunks prefill to buy that memory back.
     cparams.n_ubatch = cfg.n_ubatch > 0 ? (uint32_t) cfg.n_ubatch : (uint32_t) cfg.n_batch;
+    cparams.type_k = detail::to_ggml_type(cfg.cache_type_k);
+    cparams.type_v = detail::to_ggml_type(cfg.cache_type_v);
     // The streamer needs the callback to see routing; the compute trace needs it to time nodes.
     // Installing it for the trace alone is what lets a NON-streamed run be measured — the dense
     // mmap baseline the streamed numbers are argued against.
-    // The prefill device needs it once, for the capture that finds the layer weights.
-    if (cfg.moe.enabled || o.compute_trace || prefill) {
+    // The prefill device needs it once, for the capture that finds the layer weights, and so does
+    // the copy of the experts into a device's host memory.
+    // The copy captures on the context the device cache then makes again, which needs no callback.
+    const bool copy_capture = !cfg.moe.expert_host_buffer.empty() && !device_cache_armed;
+    if (cfg.moe.enabled || o.compute_trace || prefill || records_unstreamed(cfg) || copy_capture) {
         cparams.cb_eval = &RouterHook::c_eval;
         cparams.cb_eval_user_data = hook.get();
     }
     // Placement is decided here, by moving weights; a backend's own offload heuristic would move
     // ops of CPU-resident weights to the device on its own (GPU backends do for wide batches).
-    if (prefill) {
-        cparams.op_offload = false;
-        cparams.n_outputs_max = (uint32_t) PrefillDeviceConfig::max_outputs;
-    }
+    if (prefill) cparams.op_offload = false;
     // Under overlap a streamed expert is waited for inside the CPU's expert matmul, as it is read.
     // With layers on a device, a wide graph's host-weight matmuls are offered to that device, which
     // copies the expert tensor before the reads land: a Metal run with 12 layers placed and a
@@ -1054,13 +1124,37 @@ bool Session::Impl::create_contexts(Opening & o) {
     // streaming has every routed expert in place before the matmul's split starts, so only overlap
     // gives the offload up; the decode's one-token graphs are never offloaded either way.
     if (cfg.moe.enabled && cfg.moe.overlap && cfg.n_gpu_layers != 0) cparams.op_offload = false;
+    // Logit rows are reserved for as many outputs as a graph may return, and left at llama.cpp's
+    // default that is the whole ubatch. A row is the whole vocabulary, and the reservation goes where
+    // the output layer is: on a CPU-only run of a 35B-A3B at 2048 tokens it was 1.7 GiB of compute
+    // buffer for rows a prompt never reads, and on a 24 GB card holding a 125B model's layers it was
+    // the 2.1 GiB that no longer fit, so the context could not be created. The planner projects
+    // every run at this cap, and leaving it to the prefill device made the run reserve 2028 MiB where
+    // the ledger had 436.
+    cparams.n_outputs_max = (uint32_t) PrefillDeviceConfig::max_outputs;
     // Rejecting a draft means rewinding the KV to the last accepted position. With recurrent-state
     // snapshots the rewind is a cheap restore; without them llama.cpp has to fall back to replaying
     // the sequence, which would hand back exactly the decode the speculation just saved.
     if (cfg.spec.enabled()) cparams.n_rs_seq = (uint32_t) cfg.spec.draft_max;
+    // The device-side expert cache is armed only on the second creation (see open()): with it on,
+    // the expert matmuls read its slots rather than the host tensors, so the capture warm-up, which
+    // finds those tensors by the nodes that read them, runs on a context without it.
+    if (device_cache_armed) cparams.moe_cache_size = (size_t) cfg.moe.device_cache_mb << 20;
 
     llama_context * c = llama_init_from_model(model.get(), cparams);
-    if (!c) return o.fail("failed to create context");
+    // A quantized V cache needs flash attention, and whether a backend has it is only known by asking
+    // llama.cpp for the context. The default is quantized, so a backend without it must not lose the
+    // run: V goes back to F16 (K stays, it needs nothing). The fitter charged the smaller V, which is
+    // why the fallback is said out loud.
+    if (!c && ggml_is_quantized(cparams.type_v)) {
+        log_printf(LogLevel::Warn,
+                   "a %s V cache needs flash attention, which this backend refused; V falls back to f16",
+                   kv_cache_type_name(cfg.cache_type_v));
+        cparams.type_v = GGML_TYPE_F16;
+        c = llama_init_from_model(model.get(), cparams);
+        if (c) this->cfg.cache_type_v = KvCacheType::F16;
+    }
+    if (!c) return o.fail("failed to create context"); // llama.cpp's own log says why
     ctx.reset(c);
     // Decode and prefill get their own counts. They are different workloads: prefill is compute-bound
     // and scales with cores, a streamed decode waits on flash. 0 means "the same", which is what
@@ -1074,7 +1168,13 @@ bool Session::Impl::create_contexts(Opening & o) {
     if (cfg.spec.is_mtp()) {
         llama_context_params dparams = cparams;
         dparams.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
+        // One device cache, the target's: the draft's own expert layer is served from the host, and a
+        // second cache would take as much device memory again for a head that routes one position.
+        dparams.moe_cache_size = 0;
         dparams.n_rs_seq = 0;
+        // The target's output cap is about the target's logits; the draft keeps llama.cpp's own,
+        // which its narrow ubatch below already bounds.
+        dparams.n_outputs_max = 0;
         // Compute buffers are reserved for the WIDEST ubatch, and left at the target's width the
         // draft context reserves gigabytes for a graph it never runs: the widest thing it ever
         // computes is a prefill chunk, and at decode time it is 1 + draft_max positions. On this
@@ -1131,27 +1231,33 @@ void Session::Impl::install_abort_callback() {
         this);
 }
 
+// The MTP speculative driver over the two contexts as they are now: it holds both, so a context made
+// again (the device cache's, arm_device_cache) needs a driver made again.
+bool Session::Impl::init_mtp_driver(Opening & o) {
+    const SessionConfig & cfg = o.cfg;
+    common_params_speculative sp;
+    sp.types = {COMMON_SPECULATIVE_TYPE_DRAFT_MTP};
+    sp.draft.n_max = cfg.spec.draft_max;
+    sp.draft.n_min = 0; // never skip a whole draft; width is bounded by n_max and p_min below
+    // The head's own confidence floor for continuing to draft. At 0 (the default) it drafts
+    // n_max tokens however unsure it is, which is what the host was measured at; above 0 the
+    // width becomes adaptive per step. See SpecConfig::draft_p_min for why that pays twice on a
+    // streamed device.
+    sp.draft.p_min = cfg.spec.draft_p_min;
+    sp.draft.ctx_tgt = ctx.get(); // self-speculation: one model, two contexts over it
+    sp.draft.ctx_dft = ctx_dft.get();
+    mtp.reset(common_speculative_init(sp, /*n_seq*/ 1));
+    if (!mtp) return o.fail("failed to initialise MTP speculative decoding");
+    return true;
+}
+
 // The speculative driver (MTP) and the verify batch every speculation source shares.
 bool Session::Impl::init_speculation(Opening & o) {
     const SessionConfig & cfg = o.cfg;
     // Built before the capture warm-up on purpose: the driver's constructor turns on nextn
     // extraction for both contexts, which is what the target graph looks like for the rest of the
     // session. Capturing the graph it actually runs beats capturing the one it briefly had.
-    if (cfg.spec.is_mtp()) {
-        common_params_speculative sp;
-        sp.types = {COMMON_SPECULATIVE_TYPE_DRAFT_MTP};
-        sp.draft.n_max = cfg.spec.draft_max;
-        sp.draft.n_min = 0; // never skip a whole draft; width is bounded by n_max and p_min below
-        // The head's own confidence floor for continuing to draft. At 0 (the default) it drafts
-        // n_max tokens however unsure it is, which is what the host was measured at; above 0 the
-        // width becomes adaptive per step. See SpecConfig::draft_p_min for why that pays twice on a
-        // streamed device.
-        sp.draft.p_min = cfg.spec.draft_p_min;
-        sp.draft.ctx_tgt = ctx.get(); // self-speculation: one model, two contexts over it
-        sp.draft.ctx_dft = ctx_dft.get();
-        mtp.reset(common_speculative_init(sp, /*n_seq*/ 1));
-        if (!mtp) return o.fail("failed to initialise MTP speculative decoding");
-    }
+    if (cfg.spec.is_mtp() && !init_mtp_driver(o)) return false;
 
     // The wide verify batch belongs to the loop, not to a source: whoever drafted, the target is
     // handed 1 + draft_max positions in one decode. Allocated for any speculation, which is what
@@ -1383,6 +1489,122 @@ void Session::Impl::arm_route_trace(Opening & o, int n_expert, std::vector<uint6
     o.route_trace->on_static(st);
 }
 
+// The routing record's static facts, in the streamer's own units: what the cache charges per expert of
+// each block, and the top-k the routing runs at. The record itself fills during the first tokens.
+void Session::Impl::arm_routing_record(Opening & o, int n_expert) {
+    const SessionConfig & cfg = o.cfg;
+    RoutingTrace shape;
+    shape.n_layer = (uint32_t) o.n_layer_streamed;
+    shape.n_expert = (uint32_t) n_expert;
+    int k = cfg.n_expert_used;
+    if (k <= 0) {
+        const GgufModelInfo & info = o.gguf();
+        k = info.ok ? info.n_expert_used : 0;
+    }
+    shape.n_expert_used = (uint32_t) std::max(0, k);
+    shape.expert_bytes.resize((size_t) o.n_layer_streamed);
+    for (int il = 0; il < o.n_layer_streamed; ++il)
+        shape.expert_bytes[(size_t) il] = source.expert_bytes(il);
+    hook->set_routing_record(cfg.moe.routing_record_tokens, std::move(shape));
+}
+
+// The routing record of a run with no streamer: the same capture finds the expert tensors, whose
+// own strides give what one expert of each block costs a cache, and the hook then records the
+// routing nodes it sees until the record is full. Nothing is rebound and nothing is read.
+bool Session::Impl::arm_unstreamed_record(Opening & o) {
+    if (!capture_warmup(o)) return false;
+    const std::vector<LayerExperts> layers = hook->captured();
+    RoutingTrace shape;
+    shape.n_layer = (uint32_t) o.n_layer_streamed;
+    int k = o.cfg.n_expert_used;
+    if (k <= 0) k = o.gguf().ok ? o.gguf().n_expert_used : 0;
+    shape.n_expert_used = (uint32_t) std::max(0, k);
+    shape.n_expert = o.gguf().ok ? (uint32_t) o.gguf().n_expert : 0;
+    shape.expert_bytes.assign((size_t) o.n_layer_streamed, 0);
+    for (size_t il = 0; il < layers.size() && il < shape.expert_bytes.size(); ++il)
+        for (const ExpertTensorRef & p : layers[il].proj)
+            if (p.tensor) shape.expert_bytes[il] += (uint64_t) p.tensor->nb[2];
+    hook->set_routing_record(o.cfg.moe.routing_record_tokens, std::move(shape));
+    clear_memory(ctx.get()); // discard the capture's KV
+    return true;
+}
+
+// The streamed experts computed on the layers' device: the context is made again with llama.cpp's
+// device-side expert cache, which uploads each routed expert from the host tensor the streamer has
+// just filled. The tensors and the streamer are the model's and outlive the first context; the
+// warm-up's KV went with it. Serial streaming only: the overlap hook waits inside the CPU's matmul,
+// which no longer runs the experts.
+bool Session::Impl::arm_device_cache(Opening & o) {
+    const SessionConfig & cfg = o.cfg;
+    if (cfg.moe.overlap)
+        return o.fail("--device-cache-mb computes the experts on the device; --overlap waits for them on the CPU");
+    if (prefill) return o.fail("--device-cache-mb keeps the layers on their device; a prefill device moves them");
+    if (cfg.n_gpu_layers == 0) return o.fail("--device-cache-mb needs the layers on a device (--gpu-layers)");
+    // The speculative driver holds both contexts, and both are made again: it goes first, and is
+    // made again over the new ones.
+    const bool had_mtp = mtp != nullptr;
+    mtp.reset();
+    ctx_dft.reset();
+    ctx.reset();
+    device_cache_armed = true;
+    if (!create_contexts(o)) return false;
+    install_abort_callback();
+    return !had_mtp || init_mtp_driver(o);
+}
+
+// The experts a device cache uploads from, copied into a buffer of the device backend's own host
+// type (MoeStreamConfig::expert_host_buffer): the same bytes in the same layout, and the expert
+// tensors pointed at the copy, as the streamer points them at its slots. The device is the one the
+// plan named. A device with no host type of its own, or a copy that cannot be allocated, leaves the
+// mapping where it is: the copy changes how fast a miss arrives, never what. It runs before the
+// device cache is armed, whose context is made again without the callback the capture needs.
+bool Session::Impl::stage_experts_in_host_buffer(Opening & o) {
+    // The hook holds a slot per layer from the start; a capture is what binds them.
+    const std::vector<LayerExperts> & seen = hook->captured();
+    const bool captured_here = std::none_of(seen.begin(), seen.end(), [](const LayerExperts & L) { return L.bound; });
+    if (captured_here && !capture_warmup(o)) return false;
+    ggml_backend_dev_t dev = ggml_backend_dev_by_name(o.cfg.moe.expert_host_buffer.c_str());
+    ggml_backend_buffer_type_t buft = dev ? ggml_backend_dev_host_buffer_type(dev) : nullptr;
+    std::vector<ggml_tensor *> experts;
+    for (const LayerExperts & L : hook->captured())
+        for (const ExpertTensorRef & p : L.proj)
+            if (p.tensor && std::find(experts.begin(), experts.end(), p.tensor) == experts.end())
+                experts.push_back(p.tensor);
+    if (!buft || experts.empty()) {
+        log_printf(LogLevel::Warn, "expert host buffer: %s; the cache uploads from the file's mapping",
+                   !dev    ? "no device of that name"
+                   : !buft ? "the device's backend has no host memory of its own"
+                           : "no expert tensor was found");
+        if (captured_here) clear_memory(ctx.get());
+        return true;
+    }
+    const size_t align = ggml_backend_buft_get_alignment(buft);
+    size_t total = 0;
+    for (ggml_tensor * t : experts)
+        total += GGML_PAD(ggml_nbytes(t), align);
+    ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(buft, total);
+    if (!buf) {
+        log_printf(LogLevel::Warn,
+                   "expert host buffer: %s could not allocate %.0f MiB; the cache uploads from the "
+                   "file's mapping",
+                   ggml_backend_buft_name(buft), (double) total / (1024.0 * 1024.0));
+        if (captured_here) clear_memory(ctx.get());
+        return true;
+    }
+    uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(buf);
+    size_t off = 0;
+    for (ggml_tensor * t : experts) {
+        std::memcpy(base + off, t->data, ggml_nbytes(t));
+        t->data = base + off;
+        off += GGML_PAD(ggml_nbytes(t), align);
+    }
+    expert_host_buf.reset(buf);
+    log_printf(LogLevel::Info, "expert host buffer: %zu expert tensors, %.0f MiB, copied into %s", experts.size(),
+               (double) total / (1024.0 * 1024.0), ggml_backend_buft_name(buft));
+    if (captured_here) clear_memory(ctx.get()); // discard the capture's KV
+    return true;
+}
+
 // Everything streaming adds to a loaded model: capture the expert tensors, place them in the file,
 // hand the dense weights and the row tables to their policies, start the expert source, and arm
 // what watches it. Ends with the warm-up's KV discarded.
@@ -1418,6 +1640,7 @@ bool Session::Impl::bind_streaming(Opening & o) {
     release_mapping(cfg, offs, unaccounted);
 
     if (o.route_trace) arm_route_trace(o, n_expert, std::move(dense_bytes));
+    arm_routing_record(o, n_expert);
 
     if (o.io_trace) {
         io_trace = o.io_trace;
@@ -1619,6 +1842,8 @@ void Session::Impl::describe_run(Opening & o) {
         ri.n_threads = cfg.n_threads;
         ri.n_ctx = cfg.n_ctx;
         ri.n_ubatch = cfg.n_ubatch;
+        ri.cache_type_k = kv_cache_type_name(this->cfg.cache_type_k); // what was allocated, after any fallback
+        ri.cache_type_v = kv_cache_type_name(this->cfg.cache_type_v);
         ri.chatml = cfg.chatml;
         ri.compute_trace_layers = compute_trace && compute_trace->layers_only();
         ri.spec = cfg.spec.is_mtp() ? "mtp" : cfg.spec.is_ngram() ? "ngram" : "off";
@@ -1668,6 +1893,147 @@ void Session::Impl::describe_run(Opening & o) {
         ri.cache_cycle_mb =
             (int) ((source.worst_cycle_bytes(ri.n_expert_used) + 1024ull * 1024ull - 1) / (1024ull * 1024ull));
     }
+}
+
+// ── the knob trial (KnobTrialConfig, knob_trial.h) ──────────────────────────────────────────
+// Which knobs this session measures, decided once it is open: a knob whose switch this build or
+// this run cannot make is left out and said so, and the trial measures what is left.
+void Session::Impl::arm_trials() {
+    const KnobTrialConfig & t = cfg.trial;
+    threads_now = cfg.n_threads;
+    if (!t.enabled()) return;
+    if (!t.threads.empty()) {
+        trials.threads.push_back(cfg.n_threads);
+        trials.threads.insert(trials.threads.end(), t.threads.begin(), t.threads.end());
+    }
+    if (t.overlap) {
+        if (!cfg.moe.enabled)
+            log_printf(LogLevel::Warn, "knob trial: overlap is not measured without expert streaming");
+        else if (!cfg.moe.overlap && !expert_ready_hook_available())
+            log_printf(LogLevel::Warn, "knob trial: overlap is not measured: the CPU backend loaded here has no "
+                                       "expert-ready hook");
+        else
+            trials.overlap = {cfg.moe.overlap ? 1 : 0, cfg.moe.overlap ? 0 : 1};
+    }
+    trials.stage = !trials.threads.empty() ? 0 : !trials.overlap.empty() ? 1 : 2;
+    if (trials.stage < 2) start_trial_stage(/*settle*/ true);
+}
+
+void Session::Impl::start_trial_stage(bool settle) {
+    KnobTrialPolicy pol;
+    pol.window_tokens = cfg.trial.window_tokens;
+    const size_t arms = trials.stage == 0 ? trials.threads.size() : trials.overlap.size();
+    trials.cur = std::make_unique<KnobTrial>((int) arms - 1, settle, pol);
+}
+
+void Session::Impl::set_decode_threads(int n) {
+    if (n == threads_now) return;
+    // Prefill keeps the count it had: the trial measures decode, and a prompt is a different load.
+    const int n_batch = cfg.n_threads_batch > 0 ? cfg.n_threads_batch : cfg.n_threads;
+    llama_set_n_threads(ctx.get(), n, n_batch);
+    if (ctx_dft) llama_set_n_threads(ctx_dft.get(), n, n_batch);
+    threads_now = n;
+}
+
+// False when the switch could not be made; the stage is then abandoned on its incumbent.
+bool Session::Impl::apply_trial_arm(int arm) {
+    if (trials.stage == 0) {
+        set_decode_threads(trials.threads[(size_t) arm]);
+        return true;
+    }
+    if (trials.stage == 1) {
+        const bool on = trials.overlap[(size_t) arm] != 0;
+        if (source.overlap() == on || source.set_overlap(on)) return true;
+        log_printf(LogLevel::Warn, "knob trial: overlap could not be switched %s; it is not measured",
+                   on ? "on" : "off");
+        trials.stage = 2;
+        trials.cur.reset();
+        source.set_overlap(cfg.moe.overlap);
+        return false;
+    }
+    return true;
+}
+
+void Session::Impl::snapshot_trial_counters() {
+    if (!cfg.moe.enabled) return;
+    const IExpertSource::Stats st = source.stats();
+    trials.lookups_seen = (uint64_t) st.cache_lookups;
+    trials.hits_seen = (uint64_t) st.cache_hits;
+}
+
+void Session::Impl::resume_trial() {
+    if (trials.stage >= 2) return;
+    snapshot_trial_counters(); // the prompt's lookups are not the first window's
+    apply_trial_arm(trials.cur->arm());
+}
+
+void Session::Impl::pause_trial() {
+    if (trials.stage >= 2) return;
+    trials.cur->interrupt();
+    apply_trial_arm(0);
+}
+
+void Session::Impl::trial_step(double seconds, int tokens) {
+    if (trials.stage >= 2) return;
+    uint64_t lookups = 0, hits = 0;
+    if (cfg.moe.enabled) {
+        const uint64_t l0 = trials.lookups_seen, h0 = trials.hits_seen;
+        snapshot_trial_counters();
+        lookups = trials.lookups_seen - l0;
+        hits = trials.hits_seen - h0;
+    }
+    KnobTrial & k = *trials.cur;
+    const bool settling = k.settling();
+    k.record(seconds, tokens, lookups, hits);
+    if (settling && !k.settling())
+        log_printf(LogLevel::Info, "knob trial: the cache has settled; measuring %s",
+                   trials.stage == 0 ? "the decode thread count" : "overlap");
+    if (k.done()) {
+        finish_trial_stage();
+        return;
+    }
+    apply_trial_arm(k.arm());
+}
+
+// A stage's verdict: the winner is applied and stays, the result records it, and the next knob
+// starts on the cache this one already settled.
+void Session::Impl::finish_trial_stage() {
+    KnobTrial & k = *trials.cur;
+    const int w = k.winner();
+    const int arms = trials.stage == 0 ? (int) trials.threads.size() : (int) trials.overlap.size();
+    int best = 1;
+    for (int c = 2; c < arms; ++c)
+        if (k.gain(c) > k.gain(best)) best = c;
+    const double gain = k.gain(w ? w : best);
+    if (!apply_trial_arm(w)) return;
+    char verdict[160];
+    if (w)
+        std::snprintf(verdict, sizeof(verdict), "decoded %.1f%% faster in the median of %d rounds",
+                      100.0 * (gain - 1.0), k.rounds(w));
+    else
+        std::snprintf(verdict, sizeof(verdict),
+                      "held: the best candidate was %+.1f%% in the median of %d rounds, "
+                      "inside the %.0f%% margin",
+                      100.0 * (gain - 1.0), k.rounds(best), 100.0 * KnobTrialPolicy{}.min_win);
+    trials.result.rounds = k.rounds(w ? w : best);
+    if (trials.stage == 0) {
+        trials.result.threads = trials.threads[(size_t) w];
+        trials.result.threads_tried = trials.threads;
+        trials.result.threads_gain = gain;
+        log_printf(LogLevel::Info, "knob trial: %d decode threads (against %d): %s", trials.threads[(size_t) w],
+                   trials.threads[0], verdict);
+    } else {
+        trials.result.overlap = trials.overlap[(size_t) w];
+        trials.result.overlap_incumbent = trials.overlap[0];
+        trials.result.overlap_gain = gain;
+        log_printf(LogLevel::Info, "knob trial: overlap %s (against %s): %s", trials.result.overlap ? "on" : "off",
+                   trials.overlap[0] ? "on" : "off", verdict);
+    }
+    trials.stage = trials.stage == 0 && !trials.overlap.empty() ? 1 : 2;
+    if (trials.stage < 2)
+        start_trial_stage(/*settle*/ false);
+    else
+        trials.cur.reset();
 }
 
 // The two configurations that are legal and still worth a word at load, said once.
@@ -1740,9 +2106,13 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     im.install_abort_callback();
     if (!im.init_speculation(o)) return nullptr;
     if (cfg.moe.enabled && !im.bind_streaming(o)) return nullptr;
+    if (records_unstreamed(cfg) && !im.arm_unstreamed_record(o)) return nullptr;
+    if (!cfg.moe.expert_host_buffer.empty() && !im.stage_experts_in_host_buffer(o)) return nullptr;
+    if (cfg.moe.device_cache_mb > 0 && !im.arm_device_cache(o)) return nullptr;
     if (im.prefill && !im.open_prefill_device(o)) return nullptr;
     if (im.prefill && cfg.prefill.verify && !im.confirm_prefill_device(o)) return nullptr;
     im.arm_decode_traces(o);
+    im.arm_trials();
     im.describe_run(o);
     im.warn_about_load(cfg);
 
@@ -1838,6 +2208,7 @@ struct Session::Impl::Turn {
     double last_compute_s = 0.0; // the last decode's compute, what the cache brake reads
     GenTally tally;
     long long prev_spec_bytes = 0, prev_spec_experts = 0, prev_spec_useful = 0;
+    long long prev_cache_lookups = 0, prev_cache_hits = 0; // at the start of the decode
     long long prev_routed = 0, prev_dropped = 0, prev_reranked = 0, prev_substituted = 0;
     long long prev_ra_issue_ns = 0, prev_ra_wd_ns = 0;
     clock_t_::time_point loop_mark;
@@ -2078,6 +2449,7 @@ struct Session::Impl::Turn {
         // unless armed for prefill, so it has to be told which phase this batch is.
         im.hook->set_batch_phase(phase);
         if (im.route_trace) im.hook->begin_trace_batch(base_pos, n_tokens, phase, im.turn);
+        im.hook->begin_record_batch(phase, n_tokens);
         // A node is computed once for the whole batch, not per token, so a prefill chunk's graph is
         // attributed to its last position rather than pretending to split across the chunk.
         if (im.compute_trace) im.hook->begin_compute_batch(base_pos + n_tokens - 1, phase, im.turn);
@@ -2089,6 +2461,7 @@ struct Session::Impl::Turn {
         // is charged the wall since the last boundary, and everything trace_flush does before the
         // close would be billed to the LM head.
         if (im.compute_trace) im.hook->end_compute_batch();
+        im.hook->end_record_batch();
         if (im.route_trace) {
             im.hook->end_trace_batch();
             std::vector<RouteTraceRow> & rows = im.hook->trace_rows();
@@ -2159,13 +2532,16 @@ struct Session::Impl::Turn {
                     res.cancelled = true;
                     return false;
                 }
-                if (moe.overlap && im.source.fatal())
+                if (im.source.overlap() && im.source.fatal())
                     return fail(RunError::Failed, "expert stream I/O failed during overlap prefill");
                 return fail(RunError::Failed, "prefill decode failed");
             }
             trace_flush();
             // The draft context has to walk the prompt too: its KV must reach the last prompt position
-            // or the first draft is made from a hidden state that never saw the prompt.
+            // or the first draft is made from a hidden state that never saw the prompt. It is a second
+            // context on the host's backends, so the weights go home for its walk, slots kept, and the
+            // next wide chunk takes them out again.
+            if (mtp_on && im.prefill) im.place_prefill(false, /*hold_slots*/ true);
             if (mtp_on && !common_speculative_process(im.mtp.get(), to_common_batch(pf)))
                 return fail(RunError::Failed, "MTP draft context failed to process the prefill batch");
         }
@@ -2205,7 +2581,7 @@ struct Session::Impl::Turn {
         // phases, so end()'s snapshot IS the decode baseline — one reading of the counters at the
         // boundary instead of two that could drift apart. In a warm session these counters carry the
         // prior prompts' totals; the deltas make each prompt self-relative.
-        tally.overlap = moe.overlap;
+        tally.overlap = moe.enabled && im.source.overlap();
         if (moe.enabled) {
             const IExpertSource::Stats & st0 = prefill_tally.post;
             tally.prev_bytes = (long long) st0.read_bytes;
@@ -2219,6 +2595,8 @@ struct Session::Impl::Turn {
         prev_spec_bytes = (long long) st_spec0.spec_read_bytes;
         prev_spec_experts = st_spec0.spec_experts;
         prev_spec_useful = st_spec0.spec_useful;
+        prev_cache_lookups = st_spec0.cache_lookups;
+        prev_cache_hits = st_spec0.cache_hits;
         // Taken after prefill, so the drop counters describe generation — the phase the policy is
         // armed for and the one the tok/s number is about.
         prev_routed = im.hook->experts_routed();
@@ -2540,11 +2918,26 @@ struct Session::Impl::Turn {
     // few enough to be a few dozen syscalls on a token that already took seconds.
     static constexpr int k_brake_sample = 64;
 
+    // A trial's switch of overlap changes what the streamer's read counter measures (time the eval
+    // thread was blocked serially, lane time under overlap), so the cursor the next token's delta is
+    // taken against moves to the new counter at the switch: no token is charged the difference
+    // between two different clocks.
+    template <typename F> void trial_guarded(F && f) {
+        const bool before = moe.enabled && im.source.overlap();
+        f();
+        const bool after = moe.enabled && im.source.overlap();
+        if (after == before) return;
+        tally.overlap = after;
+        tally.prev_io_s = im.source.stats().read_seconds;
+    }
+
     // ── greedy generation ──
     // Returns false only on a failure; a cancel ends the loop with res.cancelled set.
     bool decode(const std::function<void(const TokenMetrics &)> & on_token, IMetricsSink * sink) {
         res.ok = true;
         if (!begin_decode()) return false;
+        // A knob trial in progress takes up where the last turn left it.
+        trial_guarded([&] { im.resume_trial(); });
         while (n_gen < n_predict) {
             if (llama_vocab_is_eog(im.vocab, tok)) break;
             Step s;
@@ -2554,7 +2947,7 @@ struct Session::Impl::Turn {
                     res.cancelled = true;
                     break;
                 }
-                if (moe.overlap && im.source.fatal())
+                if (im.source.overlap() && im.source.fatal())
                     return fail(RunError::Failed, "expert stream I/O failed during overlap decode");
                 return fail(RunError::Failed, "decode failed during generation");
             }
@@ -2563,6 +2956,12 @@ struct Session::Impl::Turn {
             if (!accept(s)) return false;
             emit(s, on_token, sink);
             brake_cache();
+            if (im.trials.stage < 2) {
+                // The decode as the knob changes it: the target's and the draft's passes, not the
+                // emission around them, which a person's own client paces.
+                const double step_s = secs(s.s0, s.s1) + s.draft_s;
+                trial_guarded([&] { im.trial_step(step_s, (int) confirmed.size()); });
+            }
 
             if (structured() && im.cancel_requested.load(std::memory_order_relaxed)) {
                 res.cancelled = true;
@@ -2634,10 +3033,13 @@ struct Session::Impl::Turn {
             s.moe_io_s_per_token = n_gen ? tally.io_seconds / n_gen : 0.0;
             s.moe_mgmt_s_per_token = n_gen ? tally.mgmt_seconds / n_gen : 0.0;
             s.moe_stall_s_per_token = n_gen ? tally.stall_seconds / n_gen : 0.0;
-            s.moe_flash_wait_s_per_token = moe.overlap ? s.moe_stall_s_per_token : s.moe_io_s_per_token;
+            s.moe_flash_wait_s_per_token = tally.overlap ? s.moe_stall_s_per_token : s.moe_io_s_per_token;
             s.moe_compute_s_per_token = s.s_per_token - s.moe_flash_wait_s_per_token - s.moe_mgmt_s_per_token;
             if (s.moe_compute_s_per_token < 0) s.moe_compute_s_per_token = 0;
             s.cache_hit_pct = st.cache_lookups > 0 ? 100.0 * st.cache_hits / st.cache_lookups : -1.0;
+            const long long dec_lookups = st.cache_lookups - prev_cache_lookups;
+            s.cache_hit_decode_pct =
+                dec_lookups > 0 ? 100.0 * (double) (st.cache_hits - prev_cache_hits) / (double) dec_lookups : -1.0;
             s.cache_resident_mib = st.cache_resident_bytes / (1024.0 * 1024.0);
             s.cache_budget_mib = st.cache_budget_bytes / (1024.0 * 1024.0);
             s.cache_resizes = st.cache_resizes;
@@ -2794,8 +3196,13 @@ RunResult Session::generate(const GenerateRequest & req,
     if (!turn.render_prompt()) return res;
     if (!turn.tokenize_prompt()) return res;
     turn.reuse_kv_prefix();
-    // Every exit from here on leaves the weights on the host (see PlacementGuard).
+    // Every exit from here on leaves the weights on the host (see PlacementGuard), and a knob trial
+    // in progress on its incumbent: the next prefill is not part of the trial.
     Impl::PlacementGuard placement_guard{im};
+    struct TrialPause {
+        Impl & im;
+        ~TrialPause() { im.pause_trial(); }
+    } trial_pause{im};
     if (!turn.prefill()) return res; // a failure, or a cancel already rolled back
     if (!turn.decode(on_token, sink)) return res;
     if (!turn.parse_result()) return res;

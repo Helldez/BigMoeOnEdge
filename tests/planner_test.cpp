@@ -14,9 +14,11 @@
 
 #include "bmoe/config.h"
 #include "bmoe/allocate.h"
+#include "bmoe/backend_choice.h"
 #include "bmoe/planner.h"
 #include "bmoe/probe.h"
 
+#include <cmath>
 #include <cstdio>
 #include <string>
 
@@ -1316,6 +1318,22 @@ int main() {
               "ledger: context and compute are charged without a fitted placement");
         check(ph.cache_budget_bytes - fx.cache_budget_bytes == 600 * MiB, "ledger: and the cache is sized after them",
               mibs_of(ph.cache_budget_bytes) + " against " + mibs_of(fx.cache_budget_bytes));
+
+        // A chat run keeps context checkpoints, each a copy of the context's fixed part: a line of
+        // their own at the count kept, the cache sized after it, and nothing on a run that is not a chat.
+        Placement ck = pl;
+        ck.context_fixed_bytes = 50 * MiB;
+        RunConfig chat = base_cfg();
+        chat.chatml = true;
+        chat.ctx_checkpoints = 4;
+        const Plan cx = plan_run(chat, phone(), model, ck, PlanRequest{});
+        const LedgerRow * ck_row = ledger_row(cx, "context checkpoints");
+        check(ck_row && ck_row->bytes == 200 * MiB, "ledger: a chat run charges its checkpoints",
+              ck_row ? mibs_of(ck_row->bytes) : "no row");
+        check(fx.cache_budget_bytes - cx.cache_budget_bytes == 200 * MiB, "ledger: and the cache gives them up",
+              mibs_of(fx.cache_budget_bytes) + " against " + mibs_of(cx.cache_budget_bytes));
+        check(ledger_row(plan_run(base_cfg(), phone(), model, ck, PlanRequest{}), "context checkpoints") == nullptr,
+              "ledger: a run that is not a chat keeps no checkpoints");
     }
 
     // ── the prefill plan: a second placement, decided at prefill width ─────────────
@@ -1540,6 +1558,10 @@ int main() {
         src.wide_matmul_gibs = 1502.25;
         src.wide_identity_ok = Tri::Yes;
         src.buffers_locked = Tri::Yes;
+        src.upload_gibs = 24.25;
+        src.upload_host_buffer_gibs = 25.5;
+        src.expert_gibs = 12.5;
+        src.dense_gibs = 33.25;
         ComputeDevice dst;
         dst.name = "accel";
         const std::string line = device_facts_to_text(src);
@@ -1548,7 +1570,9 @@ int main() {
                   dst.async_copies == Tri::No && dst.rebindable && dst.runs_expert_op == Tri::Yes &&
                   dst.needs_repack == Tri::No && dst.memory_bandwidth_gibs == 63.5 && dst.identity_ok == Tri::Yes &&
                   dst.host_ptr_verified == Tri::No && dst.split_seconds == 0.000125 && dst.graph_splits == 96 &&
-                  dst.wide_matmul_gibs == 1502.25 && dst.wide_identity_ok == Tri::Yes && dst.buffers_locked == Tri::Yes,
+                  dst.wide_matmul_gibs == 1502.25 && dst.wide_identity_ok == Tri::Yes &&
+                  dst.buffers_locked == Tri::Yes && dst.upload_gibs == 24.25 && dst.upload_host_buffer_gibs == 25.5 &&
+                  dst.expert_gibs == 12.5 && dst.dense_gibs == 33.25,
               "isolated: and every one of them is what was sent");
         // A line cut short - a child that died while printing - is applied not at all.
         ComputeDevice untouched;
@@ -1556,6 +1580,9 @@ int main() {
         check(!device_facts_from_text(line.substr(0, line.size() / 2), untouched) &&
                   untouched.memory_bandwidth_gibs == 7.0,
               "isolated: half a line changes nothing");
+        std::string old_line = line;
+        old_line.replace(old_line.find("v=3"), 3, "v=2");
+        check(!device_facts_from_text(old_line, untouched), "isolated: a line of another version is not applied");
         check(!device_facts_from_text("", untouched) && !device_facts_from_text("garbage in the stream", untouched),
               "isolated: nor does noise");
 
@@ -1655,6 +1682,289 @@ int main() {
         }
     }
 
+    // ── the cache priced on the model's own hit curve (docs/measured-planning.md, Step 1) ──────
+    {
+        auto measured_machine = [&]() {
+            HardwareProfile h = desktop();
+            h.host_bandwidth_gibs = 100.0;
+            h.storage.refault_mibs = 24.0;
+            h.devices.clear();
+            return h;
+        };
+        // A curve shaped like the archived phone traces: little under one token cycle, most of the
+        // reads served by a small share of the set, the rest bought slowly.
+        auto curve_model = [&](std::vector<std::pair<double, double>> shape) {
+            ModelProfile m = model;
+            m.hit_curve.measured = true;
+            m.hit_curve.decode_tokens = 256;
+            m.hit_curve.prefill_tokens = 28;
+            m.hit_curve.points.push_back({0, 0.0});
+            for (const auto & sh : shape)
+                m.hit_curve.points.push_back({(uint64_t) ((double) m.expert_bytes * sh.first), sh.second});
+            return m;
+        };
+        const ModelProfile steep = curve_model({{0.02, 0.0}, {0.05, 0.40}, {0.13, 0.75}, {0.25, 0.85}, {1.0, 1.0}});
+
+        // No trace: the plan is today's. Pinned to the figures this fixture produced before the curve
+        // existed (and its whole rationale was diffed byte for byte against that build): the linear
+        // credit, the cache it sized and the cost it predicted.
+        {
+            const Plan p = plan_run(base_cfg(), measured_machine(), model, PlanRequest{});
+            const GroupPlacement & e = p.allocation.at(WeightGroup::Experts);
+            check(p.allocation.cache_bytes == 9147777024ull, "no trace: the cache is the linear credit's",
+                  std::to_string(p.allocation.cache_bytes));
+            check(std::fabs(p.allocation.cache_hit_credited - 0.473307) < 1e-6, "no trace: credited linearly",
+                  std::to_string(p.allocation.cache_hit_credited));
+            check(std::fabs(p.allocation.seconds_per_token - 0.160544713) < 1e-9, "no trace: the same prediction",
+                  std::to_string(p.allocation.seconds_per_token));
+            check(e.reason == "streamed with a 8724 MiB cache, 47% of the expert set; credited hit rate 47%, which is "
+                              "conservative on purpose and is the coefficient a run's own counters correct",
+                  "no trace: the experts' rationale is word for word today's", e.reason);
+            check(!find(p, "cache-hits"), "no trace: nothing is said about a curve there is none of");
+
+            // A trace that is not this model's is the same plan, plus the one line saying why.
+            ModelProfile rejected = model;
+            rejected.hit_curve.rejected = "the trace was recorded at top-6 and this run routes top-8";
+            const Plan r = plan_run(base_cfg(), measured_machine(), rejected, PlanRequest{});
+            std::string without;
+            std::string reasons;
+            for (const Decision & d : r.decisions)
+                if (d.knob != "cache-hits") without += d.knob + "=" + d.value + ":" + d.reason + "|" + d.brief + "\n";
+            for (const Decision & d : p.decisions)
+                reasons += d.knob + "=" + d.value + ":" + d.reason + "|" + d.brief + "\n";
+            check(without == reasons && r.allocation.cache_bytes == p.allocation.cache_bytes &&
+                      r.allocation.seconds_per_token == p.allocation.seconds_per_token,
+                  "a rejected trace leaves the plan as it is without one");
+            const Decision * why = find(r, "cache-hits");
+            check(why && why->source == Source::Policy && why->reason.find("top-6") != std::string::npos,
+                  "a rejected trace says why it was not used");
+        }
+
+        // With the curve: the credit is the curve at the size chosen, and the plan says so.
+        {
+            const Plan p = plan_run(base_cfg(), measured_machine(), steep, PlanRequest{});
+            const GroupPlacement & e = p.allocation.at(WeightGroup::Experts);
+            const double expect = steep.hit_curve.hit_share(p.allocation.cache_bytes);
+            check(p.allocation.cache_bytes > 0 && std::fabs(p.allocation.cache_hit_credited - expect) < 1e-12,
+                  "with a curve: the credited hit rate is the curve at the cache's size",
+                  std::to_string(p.allocation.cache_hit_credited) + " vs " + std::to_string(expect));
+            check(e.reason.find("[measured on this model]") != std::string::npos,
+                  "with a curve: the experts' rationale names its source", e.reason);
+            const Decision * d = find(p, "cache-hits");
+            check(d && d->source == Source::Measured && d->reason.find("256 decoded") != std::string::npos,
+                  "with a curve: a measured decision states the hit rate and what it was replayed from");
+            const Plan lin = plan_run(base_cfg(), measured_machine(), model, PlanRequest{});
+            check(p.allocation.seconds_per_token < lin.allocation.seconds_per_token,
+                  "with a steep curve the same cache is priced cheaper than the linear credit says");
+        }
+
+        // The ranking walks the curve: where the cache competes with a read-whole group for the same
+        // bytes, a curve that serves most reads from a small cache keeps the cache at its knee and
+        // gives the rest to the group, and one that rises late takes more for the cache.
+        {
+            const HardwareProfile h = measured_machine();
+            const PlannerPolicy pol = PlannerPolicy::defaults();
+            AllocationInputs in;
+            in.budget_bytes = 6 * GiB;
+            in.cacheable_bytes = model.expert_bytes;
+            const Allocation lin = allocate(h, model, in, pol);
+            const Allocation cur = allocate(h, steep, in, pol);
+            check(cur.cache_bytes >= model.token_cycle_bytes && cur.cache_bytes <= in.budget_bytes,
+                  "with a curve: the cache is sized above its floor, inside the budget",
+                  std::to_string(cur.cache_bytes >> 20) + " MiB");
+            check(std::fabs(cur.cache_hit_credited - steep.hit_curve.hit_share(cur.cache_bytes)) < 1e-12,
+                  "allocate credits the curve at the size it chose");
+            check(cur.seconds_per_token <= lin.seconds_per_token + 1e-12,
+                  "a curve above the linear credit never prices the token higher");
+
+            // A curve flat above its knee: past 5% of the set nothing more is served, so the ranking
+            // stops the cache there however much budget remains.
+            const ModelProfile knee = curve_model({{0.05, 0.6}, {1.0, 0.6}});
+            in.budget_bytes = 12 * GiB;
+            const Allocation k = allocate(h, knee, in, pol);
+            const uint64_t at_knee = (uint64_t) ((double) model.expert_bytes * 0.05);
+            check(k.cache_bytes <= at_knee && k.cache_bytes + (1ull << 20) >= at_knee,
+                  "a curve that stops rising stops the cache where it does",
+                  std::to_string(k.cache_bytes >> 20) + " MiB against " + std::to_string(at_knee >> 20));
+
+            // The floor still holds: a budget under one token cycle is no cache, curve or not.
+            AllocationInputs tight = in;
+            tight.budget_bytes = 3 * GiB;
+            tight.reserved_bytes = 3 * GiB - (100 * MiB);
+            check(allocate(h, steep, tight, pol).cache_bytes == 0, "with a curve: under the floor there is no cache");
+
+            // The host's share: where the first stage placed half the layers' experts on a device, a
+            // host cache of C is read as a whole-set cache of 2C.
+            AllocationInputs half = in;
+            half.budget_bytes = 6 * GiB;
+            half.cacheable_bytes = model.expert_bytes / 2;
+            const Allocation hh = allocate(h, steep, half, pol);
+            check(hh.cache_bytes > 0 &&
+                      std::fabs(hh.cache_hit_credited - steep.hit_curve.hit_share(2 * hh.cache_bytes)) < 1e-6,
+                  "a cache for the host's half is credited at the whole-set size it stands for");
+        }
+    }
+
+    // ── lossless knobs measured on the first answer (docs/measured-planning.md, Step 2) ──────────
+    {
+        // Ten cores in two classes, a sweep that picked 8, nothing placed on a device.
+        HardwareProfile het = desktop();
+        het.devices.clear();
+        het.n_cores = 10;
+        het.core_classes = {4, 6};
+        het.best_threads = 8;
+        PlanRequest on;
+        on.measure_knobs = true;
+
+        // Off, nothing stored: the plan arms no measurement and says what it always said.
+        {
+            const Plan p = plan_run(base_cfg(), het, model, PlanRequest{});
+            check(!p.config.trial.enabled(), "knobs off: no trial is armed");
+            check(!find(p, "trial-threads"), "knobs off: no trial decision");
+            check(p.to_flags().find("trial") == std::string::npos, "knobs off: the command line names no trial",
+                  p.to_flags());
+            const Decision * ov = find(p, "overlap");
+            check(ov && ov->source == Source::Unprobed && ov->value == "off" &&
+                      ov->brief == "Off: it changes no output, but its gain here is unmeasured." &&
+                      ov->reason.find("pass --overlap") != std::string::npos,
+                  "knobs off: overlap is named and not armed, word for word as before", ov ? ov->reason : "none");
+            const Decision * th = find(p, "threads");
+            check(p.config.n_threads == 8 && p.config.n_threads_batch == 0 && th && th->source == Source::Measured &&
+                      th->reason.find("swept over") != std::string::npos,
+                  "knobs off: the sweep's count, as before");
+        }
+
+        // On, nothing stored: the first answer measures the counts nearest the incumbent and overlap.
+        const Plan armed = plan_run(base_cfg(), het, model, on);
+        {
+            check(armed.config.trial.threads == std::vector<int>({10, 4}),
+                  "knobs on: the class boundaries nearest the incumbent are tried, nearest first",
+                  armed.config.trial.threads.size() == 2 ? std::to_string(armed.config.trial.threads[0]) + "," +
+                                                               std::to_string(armed.config.trial.threads[1])
+                                                         : "size " + std::to_string(armed.config.trial.threads.size()));
+            check(armed.config.n_threads == 8 && !armed.config.moe.overlap, "knobs on: the incumbents are unchanged");
+            check(armed.config.trial.overlap, "knobs on: overlap is measured too");
+            check(validate(armed.config).ok, "knobs on: the armed plan is a valid config",
+                  validate(armed.config).error);
+            const Decision * t = find(armed, "trial-threads");
+            check(t && t->value == "10,4" && t->source == Source::Policy,
+                  "knobs on: the trial is a decision of its own");
+            const Decision * ov = find(armed, "overlap");
+            check(ov && ov->source == Source::Unprobed && ov->brief.find("until the first answer") != std::string::npos,
+                  "knobs on: overlap waits for the first answer");
+            check(armed.to_flags().find("--trial-threads 10,4") != std::string::npos &&
+                      armed.to_flags().find("--trial-overlap") != std::string::npos,
+                  "knobs on: the trial is part of the command line that reproduces the plan", armed.to_flags());
+        }
+
+        // A stored verdict: applied, stated as measured on this model, and nothing is measured again.
+        ModelProfile measured = model;
+        measured.knobs.hardware = "0123456789abcdef";
+        measured.knobs.engine = "test";
+        measured.knobs.threads = 4;
+        measured.knobs.threads_tried = {8, 10, 4};
+        measured.knobs.threads_gain = 1.15;
+        measured.knobs.overlap = 1;
+        measured.knobs.overlap_incumbent = 0;
+        measured.knobs.overlap_gain = 1.12;
+        measured.knobs.rounds = 3;
+        {
+            const Plan p = plan_run(base_cfg(), het, measured, on);
+            check(p.config.n_threads == 4, "stored: the measured count is the plan's");
+            check(p.config.n_threads_batch == 8, "stored: prefill keeps the count it would have had",
+                  std::to_string(p.config.n_threads_batch));
+            check(p.config.moe.overlap, "stored: overlap as measured");
+            check(!p.config.trial.enabled(), "stored: nothing is measured again");
+            const Decision * th = find(p, "threads");
+            check(th && th->source == Source::Measured && th->reason.rfind("measured on this model", 0) == 0 &&
+                      th->reason.find("+15%") != std::string::npos &&
+                      th->reason.find("prefill keeps 8") != std::string::npos,
+                  "stored: the count says it was measured on this model, and by how much", th ? th->reason : "none");
+            const Decision * ov = find(p, "overlap");
+            check(ov && ov->source == Source::Measured && ov->value == "on" &&
+                      ov->reason.rfind("measured on this model", 0) == 0 &&
+                      ov->reason.find("+12%") != std::string::npos,
+                  "stored: overlap says it was measured on this model", ov ? ov->reason : "none");
+            check(validate(p.config).ok, "stored: a valid config", validate(p.config).error);
+            // The same verdict with the feature off is applied all the same: it is a fact, not a trial.
+            const Plan q = plan_run(base_cfg(), het, measured, PlanRequest{});
+            check(q.config.n_threads == 4 && q.config.moe.overlap && !q.config.trial.enabled(),
+                  "stored, knobs off: the verdict still applies");
+        }
+        {
+            // A verdict that held: the incumbent stays, and the plan says the other was inside the margin.
+            ModelProfile held = measured;
+            held.knobs.threads = 8;
+            held.knobs.threads_gain = 1.04;
+            held.knobs.overlap = 0;
+            held.knobs.overlap_gain = 0.97;
+            const Plan p = plan_run(base_cfg(), het, held, on);
+            const Decision * th = find(p, "threads");
+            const Decision * ov = find(p, "overlap");
+            check(p.config.n_threads == 8 && p.config.n_threads_batch == 0 && !p.config.moe.overlap && th &&
+                      th->reason.find("inside the 10% margin, so 8 held") != std::string::npos && ov &&
+                      ov->source == Source::Measured && ov->reason.find("so off held") != std::string::npos,
+                  "stored, held: the incumbents stay, measured",
+                  (th ? th->reason : "") + " / " + (ov ? ov->reason : ""));
+        }
+        {
+            // Only the count was measured (overlap could not be switched then): the trial measures overlap alone.
+            ModelProfile half = measured;
+            half.knobs.overlap = -1;
+            half.knobs.overlap_incumbent = -1;
+            const Plan p = plan_run(base_cfg(), het, half, on);
+            check(p.config.n_threads == 4 && p.config.trial.threads.empty() && p.config.trial.overlap,
+                  "stored count only: overlap alone is measured");
+        }
+        {
+            // Pinned knobs are the caller's: neither a verdict nor a trial touches them.
+            RunConfig b = base_cfg();
+            b.n_threads = 6;
+            b.moe.enabled = true;
+            PlanRequest pinned = on;
+            pinned.pinned = {"threads", "overlap"};
+            const Plan p = plan_run(b, het, measured, pinned);
+            check(p.config.n_threads == 6 && !p.config.moe.overlap && !p.config.trial.enabled(),
+                  "pinned: the caller's count and overlap stand, nothing measured");
+        }
+        {
+            // With layers on a device overlap changes how the context offloads, fixed at creation: the trial
+            // cannot switch it, so it is neither measured nor taken from a verdict measured without them.
+            Placement pl;
+            pl.fitted = true;
+            pl.outcome = "synthetic";
+            pl.n_gpu_layers = 24;
+            pl.n_ctx = 4096;
+            for (uint32_t il = 0; il < 24; ++il)
+                pl.host_expert_layers.push_back(il);
+            pl.host_resident_bytes = 4 * GiB;
+            pl.device_bytes = 8 * GiB;
+            HardwareProfile dev = het;
+            dev.devices = desktop().devices;
+            const Plan p = plan_run(base_cfg(), dev, measured, pl, on);
+            check(p.config.n_gpu_layers == 24 && !p.config.moe.overlap && !p.config.trial.overlap,
+                  "layers on a device: overlap is not armed from a verdict nor measured");
+            check(validate(p.config).ok, "layers on a device: a valid config", validate(p.config).error);
+        }
+        {
+            // Every core alike: the whole count and half of it are the candidates.
+            HardwareProfile uni = het;
+            uni.n_cores = 16;
+            uni.core_classes = {16};
+            uni.best_threads = 0;
+            const Plan p = plan_run(base_cfg(), uni, model, on);
+            check(p.config.trial.threads == std::vector<int>({8, 16}),
+                  "alike cores: half and all of them are tried against the default");
+            // Nothing known about the cores: nothing to try.
+            HardwareProfile blind = het;
+            blind.n_cores = 0;
+            blind.core_classes.clear();
+            blind.best_threads = 0;
+            check(plan_run(base_cfg(), blind, model, on).config.trial.threads.empty(),
+                  "unknown cores: no thread trial");
+        }
+    }
+
     // Informational: the rationale as a user would read it. Printed rather than asserted, because
     // its wording is meant to change as the rules learn; what is asserted is that it exists, names
     // the regime, and tags every decision with where its authority came from.
@@ -1665,5 +1975,396 @@ int main() {
     }
 
     std::printf(failures ? "\n%d check(s) failed\n" : "\nall checks passed\n", failures);
+    // ── device memory as a tier of the expert cache ──────────────────────────────────
+    // A card with memory of its own, every layer's dense part on it, and the fitter's leftover
+    // device memory given to whole layers' experts: half the layers here. The plan prices the same
+    // bytes as a cache of the most used experts, and chooses on the measured facts alone.
+    {
+        HardwareProfile card = desktop();
+        card.residency_budget = 80 * GiB;
+        card.memory_total = 125 * GiB;
+        card.host_bandwidth_gibs = 66.0;
+        ComputeDevice & gpu = card.devices[0];
+        gpu.memory_total = 24 * GiB;
+        gpu.memory_free = 23 * GiB;
+        gpu.usable = Tri::Yes;
+        gpu.runs_expert_op = Tri::Yes;
+        gpu.identity_ok = Tri::Yes;
+        gpu.memory_bandwidth_gibs = 881.0;
+        gpu.upload_gibs = 24.0;
+        gpu.split_seconds = 20e-6;
+        Placement half;
+        half.fitted = true;
+        half.n_gpu_layers = (int32_t) model.n_layer + 1;
+        for (uint32_t il = 0; il < 24; ++il)
+            half.host_expert_layers.push_back(il);
+        for (uint32_t il = 0; il < model.n_layer; ++il)
+            half.all_expert_patterns.push_back("blk\\." + std::to_string(il) + "\\.ffn_(up|down|gate)_exps");
+        half.override_patterns.assign(half.all_expert_patterns.begin(), half.all_expert_patterns.begin() + 24);
+        half.device_bytes = 9 * GiB + 3 * GiB;
+        const auto plan_on = [&](const HardwareProfile & h, const Placement & pl, const PlanRequest & r) {
+            return plan_run(base_cfg(), h, model, pl, r, PlannerPolicy::defaults());
+        };
+
+        // No record of the routing yet: the cache still goes on the faster processor, and fills from use
+        // as the RAM cache does. A record is what says how much of a token it serves, not whether.
+        const Plan linear = plan_on(card, half, PlanRequest{});
+        const Decision * d = find(linear, "device-cache-mb");
+        check(d && d->source == Source::Measured && linear.config.moe.device_cache_mb == (int) (9 * 1024) &&
+                  d->reason.find("the fraction of the expert set it holds") != std::string::npos,
+              "device tier, no record: the cache is on the faster processor all the same", d ? d->reason : "none");
+        check(linear.config.buft_overrides.size() == model.n_layer && !linear.config.moe.record_unstreamed,
+              "device tier, no record: every layer's experts on the host, nothing recorded for a price");
+
+        // A device no faster at the experts than the host: the fastest processor is the host, and the
+        // fitter's placement stands.
+        HardwareProfile even = card;
+        even.devices[0].memory_bandwidth_gibs = 70.0;
+        const Plan level = plan_on(even, half, PlanRequest{});
+        d = find(level, "device-cache-mb");
+        check(d && d->value == "0" && level.config.moe.device_cache_mb == 0 && level.config.buft_overrides.size() == 24,
+              "device tier, device no faster: the fitter's placement stands", d ? d->reason : "none");
+
+        // Where the cores are slow against the link, the cache wins even on the linear credit: every
+        // layer's experts go to the host, and the bytes they held become the cache.
+        HardwareProfile slow_cores = card;
+        slow_cores.host_bandwidth_gibs = 4.0;
+        const Plan tier = plan_on(slow_cores, half, PlanRequest{});
+        d = find(tier, "device-cache-mb");
+        check(d && d->source == Source::Measured && tier.config.moe.device_cache_mb == (int) (9 * 1024),
+              "device tier, cache faster: the expert bytes the fitter placed become the cache",
+              std::to_string(tier.config.moe.device_cache_mb));
+        check(tier.config.buft_overrides.size() == model.n_layer && tier.config.n_gpu_layers == half.n_gpu_layers,
+              "device tier, cache faster: every layer stays on the card and every layer's experts on the host");
+        check(!tier.config.prefill.enabled(), "device tier, cache faster: no prefill device beside it");
+        check(validate(tier.config).ok, "device tier, cache faster: a valid config", validate(tier.config).error);
+
+        // The device's rate unmeasured: nothing says it is the faster processor, and nothing moves.
+        HardwareProfile no_rate = slow_cores;
+        no_rate.devices[0].memory_bandwidth_gibs = 0.0;
+        no_rate.devices[0].expert_gibs = 0.0;
+        const Plan unpriced = plan_on(no_rate, half, PlanRequest{});
+        d = find(unpriced, "device-cache-mb");
+        check(d && d->value == "0" && unpriced.config.moe.device_cache_mb == 0 &&
+                  unpriced.config.buft_overrides.size() == 24,
+              "device tier, device rate unmeasured: the fitter's placement stands");
+
+        // A shared pool has no second tier: the stage says nothing and changes nothing.
+        HardwareProfile shared = slow_cores;
+        shared.devices[0].shares_host_memory = Tri::Yes;
+        const Plan on_shared = plan_on(shared, half, PlanRequest{});
+        check(on_shared.config.moe.device_cache_mb == 0, "device tier, shared memory: no device cache");
+
+        // With this model's own routing replayed, a cache holding half the expert set serves most of
+        // the routed bytes (91% at half the set on a 125B model measured on such a card): the cache
+        // wins on the same fast cores the linear credit lost on, and the plan says where its share came
+        // from.
+        ModelProfile routed = model;
+        routed.hit_curve.measured = true;
+        routed.hit_curve.decode_tokens = 256;
+        routed.hit_curve.points = {
+            {0, 0.0}, {model.expert_bytes / 4, 0.78}, {model.expert_bytes / 2, 0.91}, {model.expert_bytes, 1.0}};
+        const Plan curve = plan_run(base_cfg(), card, routed, half, PlanRequest{}, PlannerPolicy::defaults());
+        d = find(curve, "device-cache-mb");
+        check(d && curve.config.moe.device_cache_mb > 0 &&
+                  d->reason.find("from this model's own routing") != std::string::npos,
+              "device tier, measured routing: the share is the model's own", d ? d->reason : "none");
+        check(curve.config.buft_overrides.size() == model.n_layer,
+              "device tier, measured routing: every layer's experts on the host");
+        check(!curve.config.moe.record_unstreamed, "device tier, measured routing: nothing more to record");
+
+        // Where the cache's misses come from: the backend's own host memory where it measured faster
+        // past the margin and the host holds the copy, the file's mapping otherwise.
+        {
+            HardwareProfile hb = card;
+            hb.devices[0].upload_host_buffer_gibs = 48.0;
+            const Plan staged = plan_on(hb, half, PlanRequest{});
+            const Decision * e = find(staged, "expert-host-buffer");
+            check(staged.regime == Regime::Fits && staged.config.moe.expert_host_buffer == "discrete" && e &&
+                      e->source == Source::Measured,
+                  "expert host buffer: faster from the backend's host memory, and the copy fits",
+                  e ? e->reason : "no decision");
+            check(validate(staged.config).ok, "expert host buffer: a valid config", validate(staged.config).error);
+            hb.devices[0].upload_host_buffer_gibs = 25.0;
+            const Plan level_hb = plan_on(hb, half, PlanRequest{});
+            check(level_hb.config.moe.expert_host_buffer.empty(),
+                  "expert host buffer: inside the margin, the mapping stays");
+            hb.devices[0].upload_host_buffer_gibs = 48.0;
+            hb.residency_budget = model.file_bytes + model.expert_bytes / 2;
+            const Plan tight = plan_on(hb, half, PlanRequest{});
+            check(tight.config.moe.expert_host_buffer.empty(),
+                  "expert host buffer: a copy the host cannot hold is not made");
+        }
+
+        // The caller's placement is the caller's.
+        PlanRequest pinned;
+        pinned.pinned = {"gpu-layers"};
+        const Plan kept = plan_on(slow_cores, half, pinned);
+        check(kept.config.moe.device_cache_mb == 0, "device tier, gpu-layers pinned: left alone");
+    }
+
+    // ── a device expert cache keeps the prefill device off ─────────────────────────
+    {
+        HardwareProfile fast = phone();
+        fast.host_wide_matmul_gibs = 200.0;
+        fast.wide_batch = 128;
+        fast.devices[0].wide_matmul_gibs = 1500.0;
+        fast.devices[0].wide_identity_ok = Tri::Yes;
+        fast.devices[0].identity_ok = Tri::Yes;
+        RunConfig c = base_cfg();
+        c.moe.device_cache_mb = 2000;
+        const Plan p = plan_run(c, fast, model, PlanRequest{});
+        const Decision * d = find(p, "prefill-device");
+        check(!p.config.prefill.enabled() && d && d->value == "off",
+              "device expert cache set: no prefill device beside it");
+    }
+
+    // ── the device crossing, priced: a device's dense-only layers come home, or stay ─────────────
+    // A card with memory of its own, every layer's dense part on it and only the first eight layers
+    // whole (the fitter's order on one device: whole layers first, then dense-only ones), the experts
+    // of the other forty on the host and streamed. Each of those forty crosses twice a token.
+    {
+        ModelProfile m = model;
+        m.largest_expert_layer_bytes = 384 * MiB;
+        m.largest_layer_dense_bytes = 42 * MiB;
+        HardwareProfile h = desktop();
+        h.host_bandwidth_gibs = 40.0;
+        ComputeDevice & gpu = h.devices[0];
+        gpu.usable = Tri::Yes;
+        gpu.identity_ok = Tri::Yes;
+        gpu.memory_bandwidth_gibs = 300.0;
+        gpu.split_seconds = 20e-6;
+        Placement split;
+        split.fitted = true;
+        split.n_gpu_layers = (int32_t) m.n_layer + 1;
+        split.device_split = {{"discrete", m.n_layer + 1}};
+        for (uint32_t il = 8; il < m.n_layer; ++il)
+            split.host_expert_layers.push_back(il);
+        for (uint32_t il = 0; il < m.n_layer; ++il)
+            split.all_expert_patterns.push_back("blk\\." + std::to_string(il) + "\\.ffn_(up|down|gate)_exps");
+        split.override_patterns.assign(split.all_expert_patterns.begin() + 8, split.all_expert_patterns.end());
+        split.device_bytes = 6 * GiB;
+        split.device_context_bytes = 512 * MiB;
+        split.host_resident_bytes = 1 * GiB;
+        split.raw_host_context_bytes = 64 * MiB;
+        split.raw_host_compute_bytes = 300 * MiB;
+        const auto plan_on = [&](const HardwareProfile & hw, const PlanRequest & r) {
+            return plan_run(base_cfg(), hw, m, split, r, PlannerPolicy::defaults());
+        };
+
+        // A fast link: the device's dense rate saves more than the crossings cost, and the split stands.
+        const Plan fast = plan_on(h, PlanRequest{});
+        const Decision * d = find(fast, "device-layers");
+        check(d && d->value == "40 split" && d->source == Source::Measured &&
+                  d->reason.find("so the split stands") != std::string::npos,
+              "device crossing, fast link: the dense-only layers stay on the device, priced", d ? d->reason : "none");
+        check(fast.config.n_gpu_layers == split.n_gpu_layers && fast.config.buft_overrides.size() == 40,
+              "device crossing, fast link: the fitter's placement is applied unchanged");
+
+        // A slow link (a crossing of 2 ms, as across a network): forty layers cost 160 ms a token in
+        // crossings alone. They come home whole, the card keeps its eight whole layers and the head at
+        // the top, and the plan is made again from that placement.
+        HardwareProfile slow = h;
+        slow.devices[0].split_seconds = 2e-3;
+        const Plan home = plan_on(slow, PlanRequest{});
+        d = find(home, "device-layers");
+        check(d && d->value == "40 home" && d->source == Source::Measured,
+              "device crossing, slow link: the dense-only layers come home", d ? d->reason : "none");
+        check(home.config.n_gpu_layers == 9 && home.config.buft_overrides.empty() &&
+                  home.config.device_split.size() == 1 && home.config.device_split[0].second == 9,
+              "device crossing, slow link: the card keeps its whole layers at the top, nothing overridden",
+              std::to_string(home.config.n_gpu_layers));
+        check(home.placement.host_expert_layers.size() == 40 && home.placement.host_expert_layers.back() == 39,
+              "device crossing, slow link: the forty layers below the card are the host's, experts and all");
+        check(home.placement.host_resident_bytes == split.host_resident_bytes + 40 * 42 * MiB + 512 * MiB,
+              "device crossing, slow link: the host is charged their dense part and, bounded, the context");
+        check(validate(home.config).ok, "device crossing, slow link: a valid config", validate(home.config).error);
+        int n_layers_notes = 0;
+        for (const Decision & x : home.decisions)
+            if (x.knob == "device-layers") ++n_layers_notes;
+        check(n_layers_notes == 1, "device crossing, slow link: said once, in the plan made again");
+
+        // The same saving, and no room for what it costs: the ranking leaves the layers where they are.
+        HardwareProfile tight = slow;
+        tight.residency_budget = 2 * GiB;
+        const Plan kept = plan_on(tight, PlanRequest{});
+        d = find(kept, "device-layers");
+        check(d && d->value == "40 split" && kept.config.n_gpu_layers == split.n_gpu_layers,
+              "device crossing, no room: the layers stay split", d ? d->reason : "none");
+
+        // Unmeasured, nothing moves, and the plan says what it was owed.
+        HardwareProfile blind = slow;
+        blind.devices[0].split_seconds = 0.0;
+        const Plan unpriced = plan_on(blind, PlanRequest{});
+        d = find(unpriced, "device-layers");
+        check(d && d->source == Source::Unprobed && unpriced.config.n_gpu_layers == split.n_gpu_layers &&
+                  unpriced.config.buft_overrides.size() == 40,
+              "device crossing, unmeasured: the fitter's placement stands", d ? d->reason : "none");
+
+        // The card keeps as many whole layers, but they become the top ones: where the largest layer the
+        // file has would not fit eight times in its free memory, nothing is moved.
+        HardwareProfile small = slow;
+        small.devices[0].memory_free = 2 * GiB;
+        const Plan refused = plan_on(small, PlanRequest{});
+        d = find(refused, "device-layers");
+        check(d && d->value == "40 split" && d->reason.find("could not be shown") != std::string::npos &&
+                  refused.config.n_gpu_layers == split.n_gpu_layers,
+              "device crossing, card too small to be sure: the split stands", d ? d->reason : "none");
+
+        // The caller's placement is the caller's.
+        PlanRequest pinned;
+        pinned.pinned = {"gpu-layers"};
+        const Plan as_set = plan_on(slow, pinned);
+        check(!find(as_set, "device-layers") && as_set.config.buft_overrides.size() == 40,
+              "device crossing, gpu-layers pinned: left alone");
+
+        // The dense rates are the real layer's where host and device were both measured on it: a card
+        // whose matrices run slower than the host's on the model's own shapes loses the layers even
+        // on the fast link the synthetic GEMV would have kept them on.
+        HardwareProfile real = h;
+        real.host_dense_gibs = 30.0;
+        real.devices[0].dense_gibs = 15.0;
+        const Plan real_home = plan_on(real, PlanRequest{});
+        d = find(real_home, "device-layers");
+        check(d && d->value == "40 home", "device crossing, real layer: slower on its shapes, the layers come home",
+              d ? d->reason : "none");
+        // Measured on one side only, the pair falls back to the GEMV on both, and the split stands.
+        HardwareProfile half_real = h;
+        half_real.host_dense_gibs = 30.0;
+        const Plan one_side = plan_on(half_real, PlanRequest{});
+        d = find(one_side, "device-layers");
+        check(d && d->value == "40 split", "device crossing, one side measured: the same experiment on both");
+    }
+
+    // ── the device tier reads the host's rate on the real expert block ──────────────────────────
+    // The synthetic GEMV read a 48-core host at 77 GiB/s while the decode's experts ran at about 12:
+    // priced on the real layer, the cores are slow against the card and the cache wins.
+    {
+        HardwareProfile card = desktop();
+        card.residency_budget = 80 * GiB;
+        card.memory_total = 125 * GiB;
+        card.host_bandwidth_gibs = 66.0;
+        ComputeDevice & gpu = card.devices[0];
+        gpu.memory_total = 24 * GiB;
+        gpu.memory_free = 23 * GiB;
+        gpu.usable = Tri::Yes;
+        gpu.runs_expert_op = Tri::Yes;
+        gpu.identity_ok = Tri::Yes;
+        gpu.memory_bandwidth_gibs = 881.0;
+        gpu.upload_gibs = 24.0;
+        gpu.split_seconds = 20e-6;
+        Placement half;
+        half.fitted = true;
+        half.n_gpu_layers = (int32_t) model.n_layer + 1;
+        for (uint32_t il = 0; il < 24; ++il)
+            half.host_expert_layers.push_back(il);
+        for (uint32_t il = 0; il < model.n_layer; ++il)
+            half.all_expert_patterns.push_back("blk\\." + std::to_string(il) + "\\.ffn_(up|down|gate)_exps");
+        half.override_patterns.assign(half.all_expert_patterns.begin(), half.all_expert_patterns.begin() + 24);
+        half.device_bytes = 9 * GiB + 3 * GiB;
+        HardwareProfile real = card;
+        real.host_expert_gibs = 4.0;
+        real.devices[0].expert_gibs = 881.0;
+        const Plan tier = plan_run(base_cfg(), real, model, half, PlanRequest{}, PlannerPolicy::defaults());
+        const Decision * d = find(tier, "device-cache-mb");
+        check(d && tier.config.moe.device_cache_mb > 0 &&
+                  d->reason.find("measured on this model's own expert block") != std::string::npos,
+              "device tier, real layer: the host's own expert rate prices the split", d ? d->reason : "none");
+        HardwareProfile host_only = card;
+        host_only.host_expert_gibs = 4.0;
+        const Plan gemv = plan_run(base_cfg(), host_only, model, half, PlanRequest{}, PlannerPolicy::defaults());
+        const Decision * g = find(gemv, "device-cache-mb");
+        check(gemv.config.moe.device_cache_mb > 0 && g &&
+                  g->reason.find("measured on this model's own expert block") == std::string::npos,
+              "device tier, real layer on the host only: both sides from the GEMV, never one of each",
+              g ? g->reason : "none");
+    }
+
+    // ── one card, two backends: the faster one drives it ────────────────────────────────────────
+    // CUDA and Vulkan on one board register a device each, with the same PCI id. The first
+    // registered is what llama.cpp keeps; another replaces it only where it measured faster.
+    {
+        HardwareProfile two = desktop();
+        ComputeDevice & a = two.devices[0];
+        a.name = "CUDA0";
+        a.physical_id = "0000:c1:00.0";
+        a.expert_gibs = 489.0;
+        ComputeDevice b = a;
+        b.name = "Vulkan0";
+        b.expert_gibs = 300.0;
+        two.devices.push_back(b);
+        check(choose_backends(two, 0.10).left_out.empty(), "backends: the first registered holds when it is faster");
+        two.devices.back().expert_gibs = 520.0;
+        check(choose_backends(two, 0.10).left_out.empty(), "backends: inside the margin, the first holds");
+        two.devices.back().expert_gibs = 640.0;
+        const BackendChoice won = choose_backends(two, 0.10);
+        check(won.left_out == std::vector<std::string>{"CUDA0"} && won.keep == std::vector<std::string>{"Vulkan0"},
+              "backends: the faster one past the margin replaces the first");
+        const Plan pl = plan_run(base_cfg(), two, model, PlanRequest{});
+        const Decision * d = find(pl, "device-list");
+        check(pl.config.device_list == std::vector<std::string>{"Vulkan0"} && d && d->source == Source::Measured,
+              "backends: the plan lists it and says why", d ? d->reason : "no decision");
+        HardwareProfile unknown = two;
+        for (ComputeDevice & dv : unknown.devices)
+            if (!dv.is_cpu) dv.physical_id.clear();
+        check(choose_backends(unknown, 0.10).left_out.empty(),
+              "backends: devices of unknown identity are never taken for one card");
+        HardwareProfile mixed = two;
+        mixed.devices.back().expert_gibs = 0.0;
+        mixed.devices.back().memory_bandwidth_gibs = 900.0;
+        mixed.devices[0].memory_bandwidth_gibs = 0.0;
+        check(choose_backends(mixed, 0.10).left_out.empty(), "backends: figures of different kinds are not compared");
+        PlanRequest pinned;
+        pinned.pinned = {"devices"};
+        check(plan_run(base_cfg(), two, model, pinned).config.device_list.empty(),
+              "backends: the caller's devices are the caller's");
+    }
+
+    // ── no device of its own: the new facts change nothing they do not measure ──────────────────
+    // On a machine with no device, and on one whose devices share its memory, the real layer's rates
+    // (here equal to the GEMV's) and a measured crossing leave the plan byte for byte what it was:
+    // no layer is priced onto or off a device, and no flag moves.
+    {
+        HardwareProfile cpu_only = desktop();
+        cpu_only.devices.clear();
+        ComputeDevice host;
+        host.name = "CPU";
+        host.is_cpu = true;
+        cpu_only.devices.push_back(host);
+        cpu_only.host_bandwidth_gibs = 40.0;
+        HardwareProfile phone_m = phone();
+        phone_m.host_bandwidth_gibs = 20.0;
+        phone_m.devices[0].memory_bandwidth_gibs = 35.0;
+        phone_m.devices[0].identity_ok = Tri::Yes;
+        HardwareProfile unified_m = unified();
+        unified_m.host_bandwidth_gibs = 60.0;
+        unified_m.devices[1].memory_bandwidth_gibs = 90.0;
+        unified_m.devices[1].identity_ok = Tri::Yes;
+        const std::pair<const char *, HardwareProfile> machines[] = {
+            {"cpu only", cpu_only},           {"phone", phone()},
+            {"phone, measured", phone_m},     {"unified", unified()},
+            {"unified, measured", unified_m}, {"hard cap", hard_capped()}};
+        for (const auto & mc : machines) {
+            HardwareProfile with = mc.second;
+            with.host_expert_gibs = with.host_bandwidth_gibs;
+            with.host_dense_gibs = with.host_bandwidth_gibs;
+            for (ComputeDevice & dv : with.devices) {
+                dv.expert_gibs = dv.memory_bandwidth_gibs;
+                dv.dense_gibs = dv.memory_bandwidth_gibs;
+            }
+            HardwareProfile crossing = with;
+            for (ComputeDevice & dv : crossing.devices)
+                if (!dv.is_cpu) dv.split_seconds = 1e-3;
+            const Plan before = plan_run(base_cfg(), mc.second, model, PlanRequest{});
+            const Plan after = plan_run(base_cfg(), with, model, PlanRequest{});
+            check(before.explain() == after.explain() && before.to_flags() == after.to_flags(),
+                  std::string("no device of its own, ") + mc.first + ": the plan is unchanged by the real layer");
+            // A measured crossing may change what a note says about a device; it moves no layer.
+            const Plan crossed = plan_run(base_cfg(), crossing, model, PlanRequest{});
+            check(!find(crossed, "device-layers") && crossed.to_flags() == before.to_flags(),
+                  std::string("no device of its own, ") + mc.first + ": a measured crossing moves no layer");
+        }
+    }
+
     return failures ? 1 : 0;
 }

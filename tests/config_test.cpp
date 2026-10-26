@@ -385,7 +385,13 @@ int main() {
         c.moe.row_stream = false;
         c.moe.enabled = false;
         c.spec.source = DraftSource::ngram;
-        expect_fail("prefill device with speculation breaks the width invariant", c);
+        c.spec.draft_max = 3;
+        expect_ok("prefill device with speculation, verify narrower than the device's narrowest piece", c);
+        const int min_tokens = c.prefill.min_tokens;
+        c.prefill.min_tokens = c.spec.draft_max + 1;
+        expect_fail("prefill device with a verify as wide as the device's narrowest piece", c);
+        c.prefill.min_tokens = min_tokens;
+        c.spec.draft_max = SpecConfig{}.draft_max;
         c.spec.source = DraftSource::none;
         c.decide.enabled = true;
         expect_ok("prefill device with decide, prefix cache auto (resolved off)", c);
@@ -406,6 +412,44 @@ int main() {
         c.moe.enabled = true;
         expect_ok("decide probe on a streamed session", c);
         c.decide = DecideConfig{};
+    }
+
+    // The knob trial: candidates that could have been the run's own setting, and overlap only where
+    // it can be switched with the session open.
+    {
+        RunConfig c = ok_moe();
+        c.n_threads = 4;
+        c.trial.threads = {2, 8};
+        c.trial.overlap = true;
+        expect_ok("trial: two thread counts and overlap on a streamed run", c);
+        c.trial.threads = {2, 6, 8};
+        expect_fail("trial: three thread candidates", c);
+        c.trial.threads = {4};
+        expect_fail("trial: the incumbent as a candidate", c);
+        c.trial.threads = {2, 2};
+        expect_fail("trial: a candidate listed twice", c);
+        c.trial.threads = {0};
+        expect_fail("trial: zero threads", c);
+        c.trial.threads = {2};
+        c.trial.window_tokens = 0;
+        expect_fail("trial: an empty window", c);
+        c.trial.window_tokens = 8;
+        c.n_gpu_layers = 12;
+        expect_fail("trial: overlap with layers on a device (the context's offload is fixed at creation)", c);
+        c.n_gpu_layers = 0;
+        c.moe.overlap = true;
+        c.moe.cache_auto = true;
+        c.moe.io_two_wave = true;
+        expect_fail("trial: overlap with two-wave reads, which need it on throughout", c);
+        c.moe.io_two_wave = false;
+        expect_ok("trial: overlap on, measured against off", c);
+        RunConfig d = ok_base();
+        d.trial.overlap = true;
+        expect_fail("trial: overlap without streaming", d);
+        d.trial.overlap = false;
+        d.n_threads = 4;
+        d.trial.threads = {8};
+        expect_ok("trial: the thread count alone needs no streaming", d);
     }
 
     if (failures == 0) {

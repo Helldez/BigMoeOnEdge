@@ -68,7 +68,9 @@ renders it back into tokens that need not be the ones sampled, and on a hybrid m
 diverged inside the recurrent state on most requests. Nothing asks what kind of model this is: a memory
 that cuts anywhere has no partial state, keeps no checkpoint and never needs one. The cost is memory, the
 size of that state per checkpoint; the first one of a session logs it (`context checkpoints: X MiB each`),
-and `--ctx-checkpoints 0` turns them off. A restored state is the state the same tokens computed, so it
+and `--ctx-checkpoints 0` turns them off. The plan charges that memory before it sizes the expert cache
+(`checkpoint-budget`, [hardware-planning.md](hardware-planning.md#the-memory-ledger)), so a chat that
+fills its checkpoints does not take it from what the cache already holds. A restored state is the state the same tokens computed, so it
 is lossless; gate G22 checks it on the three memory kinds the tiny models cover.
 
 **Fallbacks and costs.** With no checkpoint to restore (none taken yet, or off), a memory that refuses

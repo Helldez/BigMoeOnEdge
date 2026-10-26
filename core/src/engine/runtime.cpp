@@ -37,11 +37,14 @@ SessionConfig session_config_from(const RunConfig & cfg) {
     sc.n_ubatch = cfg.n_ubatch; // 0 = follow n_batch; smaller trades prefill speed for memory
     sc.ctx_checkpoints = cfg.ctx_checkpoints;
     sc.checkpoint_min_step = cfg.checkpoint_min_step;
+    sc.cache_type_k = cfg.cache_type_k;
+    sc.cache_type_v = cfg.cache_type_v;
     sc.chatml = cfg.chatml;
     sc.n_expert_used = cfg.n_expert_used; // active-expert (top-k) override; 0 = model default
     sc.n_gpu_layers = cfg.n_gpu_layers;   // the first stage's placement; 0 = everything on the host
     sc.buft_overrides = cfg.buft_overrides;
     sc.device_split = cfg.device_split;
+    sc.device_list = cfg.device_list;
     sc.device_use = cfg.device_use;
     sc.n_threads_batch = cfg.n_threads_batch;
     sc.sampling = cfg.sampling; // greedy by default; opt-in stochastic decoding
@@ -49,6 +52,7 @@ SessionConfig session_config_from(const RunConfig & cfg) {
     sc.spec = cfg.spec;       // self-speculation (MTP head or n-gram lookup); off by default
     sc.prefill = cfg.prefill; // prefill on an accelerator; off by default
     sc.decide = cfg.decide;
+    sc.trial = cfg.trial;
     sc.llama_debug_log = cfg.llama_debug_log;
     return sc;
 }
@@ -86,7 +90,10 @@ RunResult run(const RunConfig & cfg, const RunOutputs & out) {
     // per-token answer for them would be O(n²) of nothing.
     req.render_text = out.render_text;
 
-    return session->generate(req, out.on_token, out.sink);
+    RunResult r = session->generate(req, out.on_token, out.sink);
+    r.routing = session->routing_record();
+    r.knobs = session->measured_knobs();
+    return r;
 }
 
 } // namespace bmoe

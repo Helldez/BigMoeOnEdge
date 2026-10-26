@@ -176,8 +176,16 @@ phone and on the Windows laptop with the fixed streaming settings the protocol u
 | Phone, 12 GB RAM, Snapdragon class | UFS 4.x (~2300 MiB/s) | Gemma-4-26B-A4B Q4_K_M | 8 | 4000 MiB | 4.1 | n/a | n/a | 144 MiB | 82% | 0.21.0 | maintainer |
 | Phone, 12 GB RAM, Snapdragon class | UFS 4.x (~2300 MiB/s) | gpt-oss-120b Q4_K_M | 2 | 2000 MiB | 2.2 | n/a | n/a | 590 MiB | 32% | 0.21.0 | maintainer |
 | Laptop, x86 8 cores, 16 GB DDR4 | NVMe | Qwen3.6-35B-A3B Q4_K_M | 8 | auto | 7.3 | n/a | n/a | 24 MiB | 92% | 0.21.0 | maintainer (`--drop-cold-experts 0.75`) |
+| Desktop, x86 16 cores, 60 GB DDR5, two 16 GB discrete GPUs | PCIe NVMe (4273-4392 MiB/s) | DeepSeek V4 Flash 0731 UD-IQ2_M (85 GiB, 1.4x RAM) | 6 | 41892 MiB, memlock raised | 8.7 | 5.1 | 0.000 | 87 MiB | 91.1% | 0.33.3 | [jordimarsal](https://github.com/Helldez/BigMoeOnEdge/issues/321) (layers split over the two cards, experts streamed) |
+| Desktop, x86 16 cores, 60 GB DDR5, two 16 GB discrete GPUs | PCIe NVMe (4273-4392 MiB/s) | DeepSeek V4 Flash 0731 UD-IQ2_M | 6 | 7342 MiB, default memlock | 4.4 | n/a | n/a | n/a | 72.7% | 0.33.3 | [jordimarsal](https://github.com/Helldez/BigMoeOnEdge/issues/321) (same box: the cache bounded by `RLIMIT_MEMLOCK`) |
+| Desktop, x86 16 cores, 60 GB DDR5, two 16 GB discrete GPUs | PCIe NVMe (4273-4392 MiB/s) | DeepSeek V4 Flash 0731 UD-IQ2_M | 6 | 41092 MiB | 1.0 | 1.4 | 0.036 | 120 MiB | 90.0% | 0.32.0 | [jordimarsal](https://github.com/Helldez/BigMoeOnEdge/issues/321) (CPU only, the protocol before `--auto`; 7284 majflt/tok) |
+| Desktop, x86 16 cores, 60 GB DDR5, two 16 GB discrete GPUs | PCIe NVMe (4273-4392 MiB/s) | Qwen3-30B-A3B Q4_K_M | 8 | resident on the cards | 245.8 | 242.9 | 0.000 | 0 MiB | n/a | 0.33.3 | [jordimarsal](https://github.com/Helldez/BigMoeOnEdge/issues/321) |
+| Desktop, x86 16 cores, 60 GB DDR5, two 16 GB discrete GPUs | PCIe NVMe (4273-4392 MiB/s) | MiniCPM-V-4.7-35B-A3B Q4_K_M | 8 | resident on the cards | 220.5 | 201.3 | 0.000 | 0 MiB | n/a | 0.33.1 | [jordimarsal](https://github.com/Helldez/BigMoeOnEdge/issues/321) |
+| Laptop, Apple silicon 10 cores, 16 GB unified | NVMe (6358 MiB/s, F_NOCACHE) | Qwen3.6-35B-A3B Q4_K_M | 8 | 4713 MiB | 17.4 | 24.5 | 0.000 | 91 MiB | 81.3% | 0.36.0 | maintainer (`--auto`; prefill on Metal, decode on the cores; the 30-token protocol prompt makes the prefill column mostly load) |
 
-Columns the README rows never recorded are `n/a`; rows from `bench-report.sh` fill all of them.
+Columns the README rows never recorded are `n/a`; rows from `bench-report.sh` fill all of them. A
+resident row (the model fit on the cards) has no cache and no flash column: it measures the engine's
+compute ceiling on that machine, which is the number a streamed row on the same box is short of.
 The maintainer rows predate `--ubatch 512` in the protocol, so their compute-buffer reservation was
 wider than a fresh row's.
 Per-token CSVs for the maintainer rows are under `docs/bench-data/`.

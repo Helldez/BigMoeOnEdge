@@ -1107,6 +1107,44 @@ void RouterHook::end_trace_batch() {
     flush_pending();
 }
 
+void RouterHook::set_routing_record(int max_tokens, RoutingTrace shape) {
+    rec_max_ = max_tokens > 0 ? max_tokens : 0;
+    rec_on_ = rec_decode_ = rec_in_prompt_ = false;
+    rec_chunks_.clear();
+    rec_ = std::move(shape);
+    rec_.batches.clear();
+    rec_.prefill_tokens = rec_.decode_tokens = 0;
+}
+
+void RouterHook::begin_record_batch(int phase, int n_tokens) {
+    rec_on_ = false;
+    if (rec_max_ <= 0 || n_tokens <= 0 || rec_.decode_tokens >= (uint32_t) rec_max_) return;
+    rec_on_ = true;
+    if (phase == 1) {
+        rec_decode_ = true;
+        rec_in_prompt_ = false;
+        rec_.decode_tokens += (uint32_t) n_tokens;
+        return;
+    }
+    rec_decode_ = false;
+    if (!rec_in_prompt_) {
+        rec_in_prompt_ = true;
+        rec_chunks_.clear();
+    }
+    rec_chunks_.emplace_back(rec_.batches.size(), n_tokens);
+    rec_.prefill_tokens += (uint32_t) n_tokens;
+    // Over the bound, this prompt's oldest chunks go: the cache a decode starts from holds the
+    // prompt's tail, so the tail is the part a replay needs. The chunk starting now always stays.
+    while (rec_.prefill_tokens > (uint32_t) rec_max_ && rec_chunks_.size() > 1) {
+        const size_t from = rec_chunks_[0].first, to = rec_chunks_[1].first;
+        rec_.batches.erase(rec_.batches.begin() + (ptrdiff_t) from, rec_.batches.begin() + (ptrdiff_t) to);
+        rec_.prefill_tokens -= (uint32_t) rec_chunks_[0].second;
+        rec_chunks_.erase(rec_chunks_.begin());
+        for (auto & c : rec_chunks_)
+            c.first -= to - from;
+    }
+}
+
 // Turn the pending layer's (ids, weights, residency) into one row per routed expert.
 void RouterHook::flush_pending() {
     PendingLayer & P = pending_;
@@ -1409,6 +1447,9 @@ void RouterHook::on_topk(ggml_tensor * t, int il) {
         source_->query_residency(il, gathered_.data(), (int) gathered_.size(), pending_.residency.data());
     }
 
+    // The routing record keeps what this layer is about to ask the cache for, in the cache's own unit.
+    if (rec_on_ && il >= 0) rec_.batches.push_back({(uint32_t) il, rec_decode_, gathered_});
+
     // Count what the ROUTER selected, here rather than inside apply_drop: a layer that is not
     // deferred yet (the first graph, or a phase the policy is not armed for) still routed these
     // experts, and a denominator that skipped them would report the drop rate as a fraction of
@@ -1556,7 +1597,10 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
         // as the prefetch does — the isolated variant measured ~+0.04 s/token of pure barrier and
         // GEMV tax on the host. What makes that safe for a COMMITTED consumer is the watchdog in
         // route_ahead_submit plus the passthrough default, not a barrier.
-        return ctrace_iso || is_topk || weights_iso || (is_logits && predict_log_) || probe_ask;
+        // Without a streamer the routing nodes are wanted only while the routing record is still
+        // open: each is a barrier, and once the record is full a run that does not stream pays none.
+        const bool want_topk = is_topk && (source_ || recording());
+        return ctrace_iso || want_topk || weights_iso || (is_logits && predict_log_) || probe_ask;
     }
 
     // The probe attaches to the gate matmul rather than to the topk node because this is where the
@@ -1581,8 +1625,32 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
             apply_drop(t);
     }
 
-    if (source_ && is_topk && t->data && t->type == GGML_TYPE_I32) on_topk(t, il);
+    if (is_topk && t->data && t->type == GGML_TYPE_I32) {
+        if (source_)
+            on_topk(t, il);
+        else if (rec_on_)
+            record_topk(t, il);
+    }
     return true;
+}
+
+// A run with no streamer still records its routing when asked to (the plan does, to price a cache
+// it cannot price yet): the ids are read where they lie, or from a host copy when the routing ran
+// on a device, and nothing else the streamer's path does happens here.
+void RouterHook::record_topk(ggml_tensor * t, int il) {
+    if (il < 0) return;
+    const int nu = (int) t->ne[0], nt = (int) t->ne[1];
+    const char * ids = (const char *) t->data;
+    if (!host_readable(t)) {
+        staged_ids_.resize(ggml_nbytes(t));
+        ggml_backend_tensor_get(t, staged_ids_.data(), 0, staged_ids_.size());
+        ids = staged_ids_.data();
+    }
+    gathered_.clear();
+    for (int j = 0; j < nt; ++j)
+        for (int k = 0; k < nu; ++k)
+            gathered_.push_back(*(const int32_t *) (ids + (size_t) j * t->nb[1] + (size_t) k * t->nb[0]));
+    rec_.batches.push_back({(uint32_t) il, rec_decode_, gathered_});
 }
 
 } // namespace bmoe

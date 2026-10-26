@@ -51,6 +51,30 @@ bool parse_prefix_cache_mode(const std::string & s, PrefixCacheMode & out) {
     return false;
 }
 
+const char * kv_cache_type_name(KvCacheType t) {
+    switch (t) {
+    case KvCacheType::F16:
+        return "f16";
+    case KvCacheType::BF16:
+        return "bf16";
+    case KvCacheType::F32:
+        return "f32";
+    case KvCacheType::Q8_0:
+        return "q8_0";
+    case KvCacheType::Q5_1:
+        return "q5_1";
+    case KvCacheType::Q5_0:
+        return "q5_0";
+    case KvCacheType::Q4_1:
+        return "q4_1";
+    case KvCacheType::Q4_0:
+        return "q4_0";
+    case KvCacheType::IQ4_NL:
+        return "iq4_nl";
+    }
+    return "f16";
+}
+
 ValidationResult validate(const RunConfig & cfg) {
     ValidationResult r;
     auto fail = [&](std::string msg) {
@@ -88,6 +112,9 @@ ValidationResult validate(const RunConfig & cfg) {
     if (cfg.n_expert_used < 0) {
         return fail("n_expert_used must be >= 0 (0 = model default)");
     }
+    if (!cfg.moe.expert_host_buffer.empty() && (cfg.moe.device_cache_mb <= 0 || cfg.moe.enabled))
+        return fail("moe.expert_host_buffer is where a device cache uploads resident experts from: it needs "
+                    "--device-cache-mb and experts that are not streamed");
 
     // Sampling ranges are enforced only when sampling is actually on (temp > 0). With temp <= 0
     // the engine takes the argmax path and the other knobs are inert, so a caller that leaves them
@@ -189,9 +216,15 @@ ValidationResult validate(const RunConfig & cfg) {
         if (cfg.moe.row_stream)
             return fail("prefill.device does not combine with moe.row_stream: the tables it serves are "
                         "gathered on the host, inside a graph that would run on the device");
-        // Speculation widens CPU graphs past one token and runs a second context over the same
-        // weights; both would break the width invariant the rebind relies on.
-        if (cfg.spec.enabled()) return fail("prefill.device does not combine with speculative decoding");
+        // A verify batch is a host graph a few positions wide. llama.cpp reuses a graph of the same
+        // shape without scheduling it again, so it must never be as wide as a graph the device runs:
+        // narrower than the narrowest piece the device is handed, it can only reuse host graphs.
+        if (cfg.spec.enabled() && cfg.spec.draft_max + 1 >= cfg.prefill.min_tokens)
+            return fail(
+                "spec.draft_max=" + std::to_string(cfg.spec.draft_max) + " verifies " +
+                std::to_string(cfg.spec.draft_max + 1) +
+                " positions at once, as wide as prefill.min_tokens=" + std::to_string(cfg.prefill.min_tokens) +
+                ": a verify graph would reuse one the device ran. Draft fewer, or hand the device wider pieces.");
         // llama.cpp saves and restores a sequence through views of the KV cache it made once, over the
         // buffer the state was allocated in; the move rebinds the cache tensors, not those views, so a
         // saved or restored state would be read from and written to memory the model no longer uses.
@@ -262,6 +295,10 @@ ValidationResult validate(const RunConfig & cfg) {
         if (m.prefetch_layers < 0 || m.prefetch_layers > MoeStreamConfig::prefetch_layers_max) {
             return fail("moe.prefetch_layers must be in [0, " + std::to_string(MoeStreamConfig::prefetch_layers_max) +
                         "]");
+        }
+        if (m.routing_record_tokens < 0 || m.routing_record_tokens > MoeStreamConfig::routing_record_tokens_max) {
+            return fail("moe.routing_record_tokens must be in [0, " +
+                        std::to_string(MoeStreamConfig::routing_record_tokens_max) + "]");
         }
         if (m.cache_auto && m.cache_mb > 0) {
             return fail("moe.cache_auto and an explicit moe.cache_mb are mutually exclusive: choose "
@@ -351,6 +388,33 @@ ValidationResult validate(const RunConfig & cfg) {
                         "outranks every non-resident one whatever their scores, which is the strongest "
                         "preference the margin can express.");
         }
+    }
+
+    // The knob trial: each candidate is a knob value this run could equally have started with.
+    const KnobTrialConfig & t = cfg.trial;
+    if ((int) t.threads.size() > KnobTrialConfig::threads_max_candidates)
+        return fail("trial.threads takes at most " + std::to_string(KnobTrialConfig::threads_max_candidates) +
+                    " candidates: every one costs its rounds of the first answer");
+    for (size_t i = 0; i < t.threads.size(); ++i) {
+        const int n = t.threads[i];
+        if (n <= 0 || n > RunConfig::threads_max)
+            return fail("trial.threads: " + std::to_string(n) + " is not a thread count");
+        if (n == cfg.n_threads)
+            return fail("trial.threads: " + std::to_string(n) + " is the incumbent (n_threads) and measures nothing");
+        for (size_t j = 0; j < i; ++j)
+            if (t.threads[j] == n) return fail("trial.threads: " + std::to_string(n) + " is listed twice");
+    }
+    if (t.window_tokens < 1 || t.window_tokens > KnobTrialConfig::window_tokens_max)
+        return fail("trial.window_tokens must be in [1, " + std::to_string(KnobTrialConfig::window_tokens_max) + "]");
+    if (t.overlap) {
+        if (!cfg.moe.enabled) return fail("trial.overlap requires moe.enabled: overlap gates the streamer's own reads");
+        if (cfg.moe.io_two_wave)
+            return fail("trial.overlap cannot run with moe.io_two_wave, which requires overlap on throughout");
+        if (cfg.moe.prefetch_sync)
+            return fail("trial.overlap cannot run with moe.prefetch_sync, a serial-only test mode");
+        if (cfg.n_gpu_layers != 0)
+            return fail("trial.overlap needs every layer on the host: with one on a device, overlap changes how the "
+                        "context offloads, which is fixed when the context is created");
     }
 
     return r;

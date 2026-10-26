@@ -167,6 +167,14 @@ target_link_libraries(bmoe_csv_memory_test PRIVATE bmoe_core)
 target_include_directories(bmoe_csv_memory_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/metrics)
 add_test(NAME csv_memory COMMAND bmoe_csv_memory_test)
 
+# The control-group remainder over fake hierarchies; plain files, so it runs on every POSIX host.
+if(NOT WIN32)
+    add_executable(bmoe_cgroup_memory_test cgroup_memory_test.cpp)
+    target_link_libraries(bmoe_cgroup_memory_test PRIVATE bmoe_core)
+    target_include_directories(bmoe_cgroup_memory_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/io)
+    add_test(NAME cgroup_memory COMMAND bmoe_cgroup_memory_test)
+endif()
+
 if(APPLE AND NOT IOS)
     add_executable(bmoe_process_memory_test process_memory_test.cpp ../core/src/io/platform_io.cpp)
     target_include_directories(bmoe_process_memory_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/io)
@@ -246,6 +254,14 @@ add_executable(bmoe_planner_test planner_test.cpp)
 target_link_libraries(bmoe_planner_test PRIVATE bmoe_core)
 add_test(NAME planner COMMAND bmoe_planner_test)
 
+# The routing trace the planner prices the cache from: its LRU replay against scripts/route-replay.py
+# on the archived phone traces, the curve, the hottest experts and the text form. Pure policy.
+add_executable(bmoe_routing_test routing_test.cpp)
+target_link_libraries(bmoe_routing_test PRIVATE bmoe_core)
+target_compile_definitions(bmoe_routing_test PRIVATE
+    BMOE_ROUTE_TRACE_DIR="${CMAKE_SOURCE_DIR}/docs/bench-data/2026-07-15-route-trace")
+add_test(NAME routing COMMAND bmoe_routing_test)
+
 add_executable(bmoe_memory_topology_test memory_topology_test.cpp)
 target_link_libraries(bmoe_memory_topology_test PRIVATE bmoe_core)
 target_include_directories(bmoe_memory_topology_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/plan)
@@ -258,3 +274,10 @@ add_test(NAME memory_topology COMMAND bmoe_memory_topology_test)
 add_executable(bmoe_cache_brake_test cache_brake_test.cpp)
 target_link_libraries(bmoe_cache_brake_test PRIVATE bmoe_core)
 add_test(NAME cache_brake COMMAND bmoe_cache_brake_test)
+
+# The knob trial's A/B policy (core/src/engine/knob_trial.h) on synthetic decode steps - noise, a real
+# win, a tie inside the margin, drift, an outlier window, the cache settling - and the record its
+# verdict is kept as (bmoe/measured_knobs.h). Pure policy, no model.
+add_executable(bmoe_knob_trial_test knob_trial_test.cpp)
+target_link_libraries(bmoe_knob_trial_test PRIVATE bmoe_core)
+add_test(NAME knob_trial COMMAND bmoe_knob_trial_test)
