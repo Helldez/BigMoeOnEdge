@@ -53,6 +53,27 @@ Semantic Versioning.
   tensor too large, and llama.cpp's lazy prefetch of such a table stays off. Nothing names a tensor
   or a size; a small table the allocation finds worth a resident copy is copied as before.
 
+### Changed
+- **The benchmark script measures the plan the planner learns, not only the first load.**
+  `scripts/bench-report.sh` ran `--auto` once with nowhere to keep the model's routing record or
+  the lossless knobs' verdicts, so its row was always a cold plan: the cache priced by a coefficient
+  rather than the model's own hit curve, `--overlap` never armed, the thread verdict lost. The app
+  and the server keep both, so a community row and an app row measured two different plans. The
+  script now keeps the record under its output folder (`--routing-dir`) and runs twice: the first
+  load records and measures, the second plans on the record and is the row for the table. Both are
+  printed, each with its `mode:` line and its `plan: predicted ... measured` line, so a row also
+  says how far the planner was from the machine. `BENCH_RUNS=1` reports the first load alone.
+  The script waits between the runs (`BENCH_SETTLE`, 30 s): the kernel returns the first run's
+  locked memory in the seconds after it exits, and a plan made before that sized a cache half the
+  right one on a 16 GB laptop; when the second plan still saw much less memory than the first, the
+  output says so. Numbers it prints are in the C locale, a decimal point in every language.
+- **The plan prints the storage curve it priced on.** `--plan-explain` adds a `plan: storage:`
+  line: whether uncached reads were in effect and the measured rate at each request size and lane
+  count, with the refault price when measured. On macOS a shell cannot bypass the page cache, so the
+  benchmark script's storage column there is this probe's one-lane rate at the engine's request size
+  (read with `F_NOCACHE`), labelled as such, instead of a `dd` through the cache; the drive's name
+  comes from `diskutil`. The Linux column stays the `O_DIRECT` `dd` probe.
+
 ## [0.37.1] - 2026-10-26
 
 ### Fixed
