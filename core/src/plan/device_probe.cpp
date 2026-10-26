@@ -172,7 +172,9 @@ double measure_crossing(ggml_backend_dev_t dev, int64_t n_embd) {
 // neither the link's nominal width nor a pinned-memory benchmark: on a rented card the two differ.
 constexpr uint64_t k_upload_buffer = 64ull << 20;
 
-double measure_upload(ggml_backend_dev_t dev, uint64_t granule) {
+// `from_host_buffer`: the source is a buffer of the device's own host buffer type instead of
+// ordinary memory; 0 where the device has no such type.
+double measure_upload(ggml_backend_dev_t dev, uint64_t granule, bool from_host_buffer) {
     ggml_backend_buffer_type_t buft = ggml_backend_dev_buffer_type(dev);
     ggml_backend_t backend = buft ? ggml_backend_dev_init(dev, nullptr) : nullptr;
     if (!backend) return 0.0;
@@ -185,23 +187,36 @@ double measure_upload(ggml_backend_dev_t dev, uint64_t granule) {
     ggml_context * ctx = ggml_init(ip);
     ggml_tensor * t = ctx ? ggml_new_tensor_1d(ctx, GGML_TYPE_I8, (int64_t) k_upload_buffer) : nullptr;
     ggml_backend_buffer_t buf = t ? ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft) : nullptr;
-    std::vector<uint8_t> host(k_upload_buffer, 1);
-    if (buf) {
+    std::vector<uint8_t> pageable;
+    uint8_t * src = nullptr;
+    ggml_backend_buffer_t src_buf = nullptr;
+    if (from_host_buffer) {
+        ggml_backend_buffer_type_t host_buft = ggml_backend_dev_host_buffer_type(dev);
+        src_buf = host_buft ? ggml_backend_buft_alloc_buffer(host_buft, k_upload_buffer) : nullptr;
+        src = src_buf ? (uint8_t *) ggml_backend_buffer_get_base(src_buf) : nullptr;
+        if (src) std::fill(src, src + k_upload_buffer, (uint8_t) 1);
+    } else {
+        pageable.assign(k_upload_buffer, 1);
+        src = pageable.data();
+    }
+    if (buf && src) {
+        uint8_t * host = src;
         const uint64_t n_pieces = k_upload_buffer / piece;
         uint64_t moved = 0, i = 0;
-        ggml_backend_tensor_set(t, host.data(), 0, piece); // the first copy pays for setting up the path
+        ggml_backend_tensor_set(t, host, 0, piece); // the first copy pays for setting up the path
         ggml_backend_synchronize(backend);
         const auto t0 = clock_t_::now();
         while (seconds_since(t0) < k_sample_seconds) {
             const uint64_t off = (i++ % n_pieces) * piece;
-            ggml_backend_tensor_set(t, host.data() + off, off, piece);
+            ggml_backend_tensor_set(t, host + off, off, piece);
             moved += piece;
         }
         ggml_backend_synchronize(backend);
         const double secs = seconds_since(t0);
         if (secs > 0.0 && moved > 0) gibs = (double) moved / secs / (double) (1ull << 30);
-        ggml_backend_buffer_free(buf);
     }
+    if (buf) ggml_backend_buffer_free(buf);
+    if (src_buf) ggml_backend_buffer_free(src_buf);
     if (ctx) ggml_free(ctx);
     ggml_backend_free(backend);
     return gibs;
@@ -231,7 +246,10 @@ void probe_device_costs(HardwareProfile & hw, const ModelProfile & model) {
         if (per_crossing > 0.0) d.split_seconds = per_crossing;
         // Only where there is a second pool to reach: on a shared one a miss is a copy within it.
         const uint64_t expert = model.expert_slice_bytes * std::max<uint32_t>(1, model.n_expert_projections);
-        if (d.has_own_memory() && expert > 0) d.upload_gibs = measure_upload(dev, expert);
+        if (d.has_own_memory() && expert > 0) {
+            d.upload_gibs = measure_upload(dev, expert, false);
+            d.upload_host_buffer_gibs = measure_upload(dev, expert, true);
+        }
     }
 }
 

@@ -295,6 +295,10 @@ struct Session::Impl {
     std::unique_ptr<llama_model, void (*)(llama_model *)> model{nullptr, llama_model_free};
     std::unique_ptr<llama_context, void (*)(llama_context *)> ctx{nullptr, llama_free};
     std::unique_ptr<RouterHook> hook; // heap: its address is baked into cparams.cb_eval_user_data
+    // The experts' copy in a device backend's host memory (MoeStreamConfig::expert_host_buffer):
+    // the expert tensors point into it, so it outlives the contexts and the model.
+    std::unique_ptr<ggml_backend_buffer, void (*)(ggml_backend_buffer_t)> expert_host_buf{nullptr,
+                                                                                          ggml_backend_buffer_free};
     ExpertStreamSource source;
     // Kept per session, not per turn: the reference it measures stalls against is this machine's,
     // and a later turn of a chat is compared with what the earlier ones settled to.
@@ -481,6 +485,7 @@ struct Session::Impl {
     void install_abort_callback();
     bool init_speculation(Opening & o);
     bool init_mtp_driver(Opening & o);
+    bool stage_experts_in_host_buffer(Opening & o);
     bool bind_streaming(Opening & o);
     bool capture_warmup(Opening & o);
     bool arm_device_cache(Opening & o);
@@ -523,6 +528,7 @@ struct Session::Impl {
         ctx.reset();
         hook.reset();
         model.reset();
+        expert_host_buf.reset();
         mapping_placeholders.release();
         if (backend_inited) llama_backend_free();
     }
@@ -1004,6 +1010,10 @@ bool Session::Impl::read_model(Opening & o) {
         if (!o.layout.ok)
             return o.fail("not a MoE this engine streams: " + o.layout.error +
                           " (docs/which-models-stream.md; without --moe-stream the file runs as plain mmap)");
+    } else if (!cfg.moe.expert_host_buffer.empty()) {
+        // The copy into a device's host memory needs only to know which tensors are experts; a file
+        // it cannot read that way is simply not copied.
+        o.layout = discover_expert_layout(o.meta().offsets.extents, o.gguf().n_expert);
     }
 
     // Chat templates are model-bound: initialise once here, apply per prompt in generate().
@@ -1082,8 +1092,11 @@ bool Session::Impl::create_contexts(Opening & o) {
     // The streamer needs the callback to see routing; the compute trace needs it to time nodes.
     // Installing it for the trace alone is what lets a NON-streamed run be measured — the dense
     // mmap baseline the streamed numbers are argued against.
-    // The prefill device needs it once, for the capture that finds the layer weights.
-    if (cfg.moe.enabled || o.compute_trace || prefill || records_unstreamed(cfg)) {
+    // The prefill device needs it once, for the capture that finds the layer weights, and so does
+    // the copy of the experts into a device's host memory.
+    // The copy captures on the context the device cache then makes again, which needs no callback.
+    const bool copy_capture = !cfg.moe.expert_host_buffer.empty() && !device_cache_armed;
+    if (cfg.moe.enabled || o.compute_trace || prefill || records_unstreamed(cfg) || copy_capture) {
         cparams.cb_eval = &RouterHook::c_eval;
         cparams.cb_eval_user_data = hook.get();
     }
@@ -1523,6 +1536,59 @@ bool Session::Impl::arm_device_cache(Opening & o) {
     if (!create_contexts(o)) return false;
     install_abort_callback();
     return !had_mtp || init_mtp_driver(o);
+}
+
+// The experts a device cache uploads from, copied into a buffer of the device backend's own host
+// type (MoeStreamConfig::expert_host_buffer): the same bytes in the same layout, and the expert
+// tensors pointed at the copy, as the streamer points them at its slots. The device is the one the
+// plan named. A device with no host type of its own, or a copy that cannot be allocated, leaves the
+// mapping where it is: the copy changes how fast a miss arrives, never what. It runs before the
+// device cache is armed, whose context is made again without the callback the capture needs.
+bool Session::Impl::stage_experts_in_host_buffer(Opening & o) {
+    // The hook holds a slot per layer from the start; a capture is what binds them.
+    const std::vector<LayerExperts> & seen = hook->captured();
+    const bool captured_here = std::none_of(seen.begin(), seen.end(), [](const LayerExperts & L) { return L.bound; });
+    if (captured_here && !capture_warmup(o)) return false;
+    ggml_backend_dev_t dev = ggml_backend_dev_by_name(o.cfg.moe.expert_host_buffer.c_str());
+    ggml_backend_buffer_type_t buft = dev ? ggml_backend_dev_host_buffer_type(dev) : nullptr;
+    std::vector<ggml_tensor *> experts;
+    for (const LayerExperts & L : hook->captured())
+        for (const ExpertTensorRef & p : L.proj)
+            if (p.tensor && std::find(experts.begin(), experts.end(), p.tensor) == experts.end())
+                experts.push_back(p.tensor);
+    if (!buft || experts.empty()) {
+        log_printf(LogLevel::Warn, "expert host buffer: %s; the cache uploads from the file's mapping",
+                   !dev    ? "no device of that name"
+                   : !buft ? "the device's backend has no host memory of its own"
+                           : "no expert tensor was found");
+        if (captured_here) clear_memory(ctx.get());
+        return true;
+    }
+    const size_t align = ggml_backend_buft_get_alignment(buft);
+    size_t total = 0;
+    for (ggml_tensor * t : experts)
+        total += GGML_PAD(ggml_nbytes(t), align);
+    ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(buft, total);
+    if (!buf) {
+        log_printf(LogLevel::Warn,
+                   "expert host buffer: %s could not allocate %.0f MiB; the cache uploads from the "
+                   "file's mapping",
+                   ggml_backend_buft_name(buft), (double) total / (1024.0 * 1024.0));
+        if (captured_here) clear_memory(ctx.get());
+        return true;
+    }
+    uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(buf);
+    size_t off = 0;
+    for (ggml_tensor * t : experts) {
+        std::memcpy(base + off, t->data, ggml_nbytes(t));
+        t->data = base + off;
+        off += GGML_PAD(ggml_nbytes(t), align);
+    }
+    expert_host_buf.reset(buf);
+    log_printf(LogLevel::Info, "expert host buffer: %zu expert tensors, %.0f MiB, copied into %s", experts.size(),
+               (double) total / (1024.0 * 1024.0), ggml_backend_buft_name(buft));
+    if (captured_here) clear_memory(ctx.get()); // discard the capture's KV
+    return true;
 }
 
 // Everything streaming adds to a loaded model: capture the expert tensors, place them in the file,
@@ -2027,6 +2093,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     if (!im.init_speculation(o)) return nullptr;
     if (cfg.moe.enabled && !im.bind_streaming(o)) return nullptr;
     if (records_unstreamed(cfg) && !im.arm_unstreamed_record(o)) return nullptr;
+    if (!cfg.moe.expert_host_buffer.empty() && !im.stage_experts_in_host_buffer(o)) return nullptr;
     if (cfg.moe.device_cache_mb > 0 && !im.arm_device_cache(o)) return nullptr;
     if (im.prefill && !im.open_prefill_device(o)) return nullptr;
     if (im.prefill && cfg.prefill.verify && !im.confirm_prefill_device(o)) return nullptr;

@@ -1558,6 +1558,7 @@ int main() {
         src.wide_identity_ok = Tri::Yes;
         src.buffers_locked = Tri::Yes;
         src.upload_gibs = 24.25;
+        src.upload_host_buffer_gibs = 25.5;
         src.expert_gibs = 12.5;
         src.dense_gibs = 33.25;
         ComputeDevice dst;
@@ -1569,8 +1570,8 @@ int main() {
                   dst.needs_repack == Tri::No && dst.memory_bandwidth_gibs == 63.5 && dst.identity_ok == Tri::Yes &&
                   dst.host_ptr_verified == Tri::No && dst.split_seconds == 0.000125 && dst.graph_splits == 96 &&
                   dst.wide_matmul_gibs == 1502.25 && dst.wide_identity_ok == Tri::Yes &&
-                  dst.buffers_locked == Tri::Yes && dst.upload_gibs == 24.25 && dst.expert_gibs == 12.5 &&
-                  dst.dense_gibs == 33.25,
+                  dst.buffers_locked == Tri::Yes && dst.upload_gibs == 24.25 && dst.upload_host_buffer_gibs == 25.5 &&
+                  dst.expert_gibs == 12.5 && dst.dense_gibs == 33.25,
               "isolated: and every one of them is what was sent");
         // A line cut short - a child that died while printing - is applied not at all.
         ComputeDevice untouched;
@@ -1579,7 +1580,7 @@ int main() {
                   untouched.memory_bandwidth_gibs == 7.0,
               "isolated: half a line changes nothing");
         std::string old_line = line;
-        old_line.replace(old_line.find("v=2"), 3, "v=1");
+        old_line.replace(old_line.find("v=3"), 3, "v=2");
         check(!device_facts_from_text(old_line, untouched), "isolated: a line of another version is not applied");
         check(!device_facts_from_text("", untouched) && !device_facts_from_text("garbage in the stream", untouched),
               "isolated: nor does noise");
@@ -2070,6 +2071,29 @@ int main() {
         check(curve.config.buft_overrides.size() == model.n_layer,
               "device tier, measured routing: every layer's experts on the host");
         check(!curve.config.moe.record_unstreamed, "device tier, measured routing: nothing more to record");
+
+        // Where the cache's misses come from: the backend's own host memory where it measured faster
+        // past the margin and the host holds the copy, the file's mapping otherwise.
+        {
+            HardwareProfile hb = card;
+            hb.devices[0].upload_host_buffer_gibs = 48.0;
+            const Plan staged = plan_on(hb, half, PlanRequest{});
+            const Decision * e = find(staged, "expert-host-buffer");
+            check(staged.regime == Regime::Fits && staged.config.moe.expert_host_buffer == "discrete" && e &&
+                      e->source == Source::Measured,
+                  "expert host buffer: faster from the backend's host memory, and the copy fits",
+                  e ? e->reason : "no decision");
+            check(validate(staged.config).ok, "expert host buffer: a valid config", validate(staged.config).error);
+            hb.devices[0].upload_host_buffer_gibs = 25.0;
+            const Plan level_hb = plan_on(hb, half, PlanRequest{});
+            check(level_hb.config.moe.expert_host_buffer.empty(),
+                  "expert host buffer: inside the margin, the mapping stays");
+            hb.devices[0].upload_host_buffer_gibs = 48.0;
+            hb.residency_budget = model.file_bytes + model.expert_bytes / 2;
+            const Plan tight = plan_on(hb, half, PlanRequest{});
+            check(tight.config.moe.expert_host_buffer.empty(),
+                  "expert host buffer: a copy the host cannot hold is not made");
+        }
 
         // The caller's placement is the caller's.
         PlanRequest pinned;
