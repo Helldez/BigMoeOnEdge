@@ -1589,6 +1589,30 @@ void settle_dense_pin(Planning & s, bool pin_candidate, const Allocation & alloc
                "part that was refused, so it is held whole as ordinary memory");
 }
 
+// The plan and the run must agree about the embedding tables too. The allocation prices the
+// Embedding group on its own lane, and where that lane is not residency - left mapped or
+// row-streamed, because the graph gathers rows from it - the run's dense policy must leave the
+// tables where they are: Anonymous and Pinned copy every dense tensor they are handed, and a
+// per-layer table of tens of GB that "fits" by the kernel's count was copied beside the cache the
+// ledger had sized without it, and the control group ended the run (#424). The names come from
+// the file's own grouping; the run holds back exactly those, as it holds back a tensor too large.
+void settle_mapped_tables(Planning & s, const Allocation & alloc) {
+    RunConfig & c = s.p.config;
+    if (s.req.is_pinned("dense-mapped")) return;
+    c.moe.dense_mapped.clear();
+    const GroupPlacement & emb = alloc.at(WeightGroup::Embedding);
+    const bool copies =
+        c.moe.dense_weights == DenseWeightsMode::Anonymous || c.moe.dense_weights == DenseWeightsMode::Pinned;
+    if (!copies || emb.lane == Lane::Resident || emb.lane == Lane::Pinned || s.model.embedding_tensors.empty()) return;
+    c.moe.dense_mapped = s.model.embedding_tensors;
+    const uint64_t bytes = s.model.group(WeightGroup::Embedding).bytes;
+    s.note("dense-mapped", u64s(c.moe.dense_mapped.size()) + " table(s)", Source::Derived,
+           "The embedding tables (" + size_brief(bytes) + ") stay mapped: the graph gathers rows from them.",
+           "the allocation priced the embedding group as " + std::string(lane_name(emb.lane)) + " (" + emb.reason +
+               "), and the " + dense_weights_mode_name(c.moe.dense_weights) + " policy would otherwise copy its " +
+               u64s(mib(bytes)) + " MiB into memory the ledger did not charge");
+}
+
 // The plan and the run must agree about the cache's lock. Where the ledger sized it to what can be
 // locked, the run is told to keep it there if the platform stops short; where it could not be
 // locked at all, the run is told not to try - a lock that is granted for part of an ordinary cache
@@ -2428,6 +2452,7 @@ Plan plan_from(const RunConfig & base,
     }
     p.allocation = alloc;
     settle_dense_pin(s, pin_candidate, alloc, ai);
+    settle_mapped_tables(s, alloc);
     settle_cache_lock(s, alloc);
     charge_caller_cache(s);
     note_ledger(s, alloc);

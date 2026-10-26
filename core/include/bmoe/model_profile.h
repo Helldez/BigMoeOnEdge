@@ -133,6 +133,9 @@ struct ModelProfile {
     // The MTP head file's size, where the run names one (SpecConfig::mtp_head): what placing the
     // head on a device costs that device. 0 where there is no file or it cannot be read.
     uint64_t mtp_head_bytes = 0;
+    // The tensors of the Embedding group, by name: what a plan that prices the group as left
+    // mapped hands the run (MoeStreamConfig::dense_mapped), so the run leaves exactly those.
+    std::vector<std::string> embedding_tensors;
 
     // The file that holds the most routed-expert bytes: where the streamer's reads land, so where a
     // storage probe has to read. A model in one file names that file. A split one does not name

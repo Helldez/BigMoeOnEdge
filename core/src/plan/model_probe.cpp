@@ -139,6 +139,7 @@ ModelProfile probe_model(const char * model_path) {
             g = WeightGroup::Experts;
         } else if (!in_block && is_embedding_table(name)) {
             g = WeightGroup::Embedding;
+            m.embedding_tensors.push_back(name);
             // A table whose row count the file does not state cannot be turned into a per-token
             // demand, and guessing one is how a plan claims a saving it cannot collect.
             const auto r = meta.offsets.rows_by_name.find(name);

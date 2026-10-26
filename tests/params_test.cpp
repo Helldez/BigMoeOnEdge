@@ -239,6 +239,9 @@ int main() {
     // The planner's placement knobs, carried by the table so an applied plan keeps them.
     expect_flag({"--gpu-layers", "12"}, [](const RunConfig & c) { return c.n_gpu_layers == 12; });
     expect_flag({"--devices", "cpu"}, [](const RunConfig & c) { return c.device_use == bmoe::DeviceUse::CpuOnly; });
+    expect_flag({"--dense-mapped", "token_embd.weight;per_layer_token_embd.weight"}, [](const RunConfig & c) {
+        return c.moe.dense_mapped == std::vector<std::string>{"token_embd.weight", "per_layer_token_embd.weight"};
+    });
     expect_flag({"--tensor-overrides", "blk\\.1\\..*_exps;blk\\.2\\..*_exps"}, [](const RunConfig & c) {
         return c.buft_overrides.size() == 2 && c.buft_overrides[1] == "blk\\.2\\..*_exps";
     });

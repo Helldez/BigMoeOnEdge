@@ -324,7 +324,12 @@ and `BMOE_*` env overrides both count as the caller speaking.
    `dense-oversized`.
 3. `fits` **declines streaming and says so**: on that machine reading experts from flash only adds
    reads that resident weights do not need.
-4. **Dense policy**, from what a reclaim costs here.
+4. **Dense policy**, from what a reclaim costs here. The tables the allocation priced as left
+   mapped (the embedding group, where the graph gathers rows from it and a copy would buy bytes
+   nothing reads) are handed to the run by name (`dense-mapped`), so the `anon`/`pinned` policy
+   holds them back as it holds back a tensor too large: measured why on a 12 GB card, where a
+   28.8 GB per-layer table that "fits" by the kernel's count was copied beside the cache and the
+   control group ended the run.
 5. **The memory ledger**: one account for everything the run holds — context and compute buffers,
    a chat run's context checkpoints, an armed device, the dense set, the expert cache — against two ceilings, what can be held and
    what can be held reclaim-exempt. The cache is what is left under both, capped at the experts'

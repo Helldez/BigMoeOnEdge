@@ -194,6 +194,15 @@ struct MoeStreamConfig {
     bool row_stream = false;
     int row_stream_mb = 64; // resident window across all row-streamed tables, in MiB
 
+    // ── tables the plan leaves mapped ─────────────────────────────────────────────────
+    // Tensor names the hardware planner priced as left mapped: the graph gathers rows from them,
+    // so a resident copy buys bytes nothing reads. Under Anonymous/Pinned they stay mapped, as a
+    // tensor too large to hold does; every other mode is unchanged. The names are read off the
+    // file by the planner's own grouping, never written here. Measured why it matters: a 28.8 GB
+    // per-layer table that "fits" by the kernel's count was copied beside a 25.8 GB expert cache
+    // on a 42.6 GiB control group and the run was killed at 43 GB.
+    std::vector<std::string> dense_mapped;
+
     // ── release the model file's mapping after load (Windows) ─────────────────────────
     // llama.cpp keeps the gguf mapped for the model's lifetime, and on Windows a live section of
     // the file serialises the streamer's concurrent unbuffered reads: four lanes deliver one

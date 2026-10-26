@@ -216,6 +216,37 @@ int main() {
         check(d && d->source == Source::Measured, "desktop: release-mmap is a measured decision");
     }
 
+    // ── the embedding tables the allocation prices as left mapped reach the run ─────
+    // A per-layer table of tens of GB is gathered by row, so the plan leaves it mapped; the run's
+    // Anonymous policy would copy it whole and the control group would end the run (#424). The names
+    // come from the file's grouping, and the run is handed exactly those.
+    {
+        ModelProfile tabled = model;
+        tabled.embedding_tensors = {"token_embd.weight", "per_layer_token_embd.weight"};
+        tabled.group(WeightGroup::Embedding).bytes = 28 * GiB;
+        tabled.dense_bytes += 28 * GiB - 344 * MiB;
+        tabled.file_bytes += 28 * GiB - 344 * MiB;
+        tabled.largest_dense_tensor = 28 * GiB;
+        const Plan p = plan_run(base_cfg(), desktop(), tabled, PlanRequest{});
+        const Lane lane = p.allocation.at(WeightGroup::Embedding).lane;
+        check(lane != Lane::Resident && lane != Lane::Pinned, "tables: the plan does not make a 28 GB table resident",
+              lane_name(lane));
+        check(p.config.moe.dense_weights == DenseWeightsMode::Anonymous, "tables: the dense policy still copies");
+        check(p.config.moe.dense_mapped == tabled.embedding_tensors,
+              "tables: the run is handed the embedding tables the plan priced as mapped");
+        check(find(p, "dense-mapped") != nullptr, "tables: the decision is recorded");
+        check(validate(p.config).ok, "tables: the plan is a valid config", validate(p.config).error);
+
+        // A caller who pinned the list keeps it, whatever the allocation says.
+        PlanRequest pinned;
+        pinned.pinned.push_back("dense-mapped");
+        RunConfig keep = base_cfg();
+        keep.moe.dense_mapped = {"token_embd.weight"};
+        const Plan q = plan_run(keep, desktop(), tabled, pinned);
+        check(q.config.moe.dense_mapped == std::vector<std::string>{"token_embd.weight"},
+              "tables: a pinned list is the caller's");
+    }
+
     // ── phone ───────────────────────────────────────────────────────────────────────
     {
         const Plan p = plan_run(base_cfg(), phone(), model, PlanRequest{});
