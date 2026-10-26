@@ -154,6 +154,12 @@ bool read_layer(const ModelProfile & model, Layer & L) {
         if (name.find("nextn") != std::string::npos) skip_blocks.push_back(il);
         if (!ends_with(name, ".weight")) continue;
         if (ggml_blck_size(t->type) <= 0) continue;
+        // A matmul reads a weight as floats: F32 itself, or a type ggml converts (its to_float). A
+        // block can also hold an integer table named like a weight (a token-to-expert index map,
+        // 2-D and ".weight" in one file): the graph gathers rows from it and no kernel multiplies
+        // it, and the CPU backend answers supports_op for such a matmul and then calls no kernel.
+        const bool floats = t->type == GGML_TYPE_F32 || ggml_get_type_traits(t->type)->to_float != nullptr;
+        if (!floats) continue;
         // A routed expert weight is a block's 3-D weight indexed by the declared expert count
         // (bmoe/expert_layout.h); every other 2-D weight of the block is one of its dense matrices.
         const bool expert = ggml_n_dims(t) == 3 && t->ne[2] == (int64_t) model.n_expert;

@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **The real-layer probe leaves integer tables out of the layer's matmuls.** A block's 2-D
+  `.weight` tensor can be an integer index map (DeepSeek V4 Flash's token-to-expert table, `I32`):
+  the graph gathers rows from it, no kernel multiplies it, and the CPU backend answers `supports_op`
+  for such a matmul and then calls no kernel, so `--auto` and `bmoe-server` crashed at the probe on
+  every DeepSeek V4 Flash file. A weight the probe prices is now one a matmul reads as floats, by
+  ggml's own type traits.
+
 ## [0.37.0] - 2026-10-26
 
 ### Added
