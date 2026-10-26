@@ -1399,22 +1399,23 @@ bool size_cache(Planning & s, const Allocation & alloc) {
 // inside the placement's rationale. On a long context it is the larger of the two, and a reader
 // deciding whether to shorten the prompt deserves to see the trade rather than infer it. Nothing is
 // DECIDED here: llama.cpp's own defaults already pick flash attention when the build supports it,
-// which costs no quality, and the one lever that would free real memory - quantizing the K and V
-// caches - changes the output. That makes it lossy by this planner's definition, and lossy levers
-// are the caller's to arm, never a plan's.
+// which costs no quality, and the K/V caches' type is the engine's default or the caller's (lossy
+// either way below f16), never a plan's.
 void note_kv_budget(Planning & s) {
     const Placement & placement = s.placement;
     if (!placement.fitted || placement.raw_host_context_bytes == 0) return;
     const uint64_t kv = placement.raw_host_context_bytes;
     const uint64_t compute = placement.raw_host_compute_bytes;
+    const std::string types =
+        std::string(kv_cache_type_name(s.p.config.cache_type_k)) + "/" + kv_cache_type_name(s.p.config.cache_type_v);
     s.note("kv-budget", u64s(mib(kv)) + " MiB", Source::Measured,
-           "The context takes " + size_brief(kv) + "; a shorter one would give that to the cache.",
-           "the context reserves " + u64s(mib(kv)) + " MiB on the host and its compute buffers another " +
-               u64s(mib(compute)) + ", against " + u64s(mib(s.p.cache_budget_bytes)) +
+           "The context takes " + size_brief(kv) + " (K/V " + types + "); a shorter one would give that to the cache.",
+           "the context reserves " + u64s(mib(kv)) + " MiB on the host at K/V " + types +
+               " and its compute buffers another " + u64s(mib(compute)) + ", against " +
+               u64s(mib(s.p.cache_budget_bytes)) +
                " MiB left for the expert cache: the two come out of the same memory, and a shorter context "
-               "is the caller's cheapest way to buy cache. Quantizing the K/V caches (--cache-type-k / "
-               "--cache-type-v q8_0) would buy more and changes the output, so it stays a lever this plan "
-               "will not pull");
+               "is the caller's cheapest way to buy cache. The cache type is set by --cache-type-k / "
+               "--cache-type-v, never by this plan: f16 is lossless, q8_0 (the default) halves the bytes");
 }
 
 // ── the I/O policy: from the machine's own rate curve, never from a class name ──
