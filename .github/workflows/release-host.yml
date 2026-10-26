@@ -50,10 +50,11 @@ jobs:
   # libraries it loads beside. It links ROCm's libraries and does not carry them: a machine with an
   # AMD card that runs ROCm has them installed system-wide (/opt/rocm/lib, also in its search
   # path), and on one without, the module is not loaded. The GPU targets: RDNA 2, 3 and 4 and the
-  # Instinct parts llama.cpp's own builds name.
+  # Instinct parts llama.cpp's own builds name. ROCm 7, as llama.cpp's HIP CI: its kernels use the
+  # warp-sync builtins older HIP headers lack, and the module needs that major version installed.
   hip-module:
     runs-on: ubuntu-22.04
-    container: rocm/dev-ubuntu-22.04:6.4.1
+    container: rocm/dev-ubuntu-22.04:7.2.1
     steps:
       - name: Tools
         run: apt-get update -q && apt-get install -y -q git cmake ninja-build python3 hipblas-dev rocblas-dev
