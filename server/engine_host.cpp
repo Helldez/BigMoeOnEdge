@@ -48,6 +48,7 @@ public:
     int n_expert_used() const override { return s_->n_expert_used(); }
     ThinkControl think_control() const override { return s_->think_control(); }
     double load_seconds() const override { return s_->load_seconds(); }
+    RoutingTrace routing_record() const override { return s_->routing_record(); }
 
 private:
     std::unique_ptr<Session> s_;
@@ -150,6 +151,7 @@ std::string EngineHost::load(const RunConfig & effective, const RunConfig & requ
                 error_ = error.empty() ? "the model failed to load" : error;
             } else {
                 session_ = s;
+                routing_kept_ = 0; // a new session records afresh
                 state_ = State::Ready;
                 model_ = json{{"path", effective.model_path},
                               {"name", std::filesystem::u8path(effective.model_path).filename().u8string()},
@@ -368,12 +370,25 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
     // A cancelled turn is no measurement: it stopped at a moment the person chose, often mid-load.
     if (!out.result.cancelled && sum.n_generated > 0 && sum.s_per_token > 0) {
         std::lock_guard<std::mutex> lk(m_);
-        last_turn_ =
-            json{{"s_per_token", sum.s_per_token}, {"cache_hit_pct", sum.cache_hit_pct}, {"tokens", sum.n_generated}};
+        // The decode's own hit rate, the figure the plan credits; the session-cumulative one also
+        // counts every prompt and earlier turn.
+        const double hit = sum.cache_hit_decode_pct >= 0.0 ? sum.cache_hit_decode_pct : sum.cache_hit_pct;
+        last_turn_ = json{{"s_per_token", sum.s_per_token}, {"cache_hit_pct", hit}, {"tokens", sum.n_generated}};
     }
     bus_.publish("done", summary_json(out.result.summary, out.result.cancelled));
     publish_state();
+    keep_routing(*s);
     return out;
+}
+
+// The record grows over a session's first turns and then stops: handed on each time it grew, still
+// inside the turn's lock, so the session is not read while another turn runs on it.
+void EngineHost::keep_routing(const HostedSession & s) {
+    if (!routing_sink_) return;
+    RoutingTrace rec = s.routing_record();
+    if (rec.decode_tokens <= routing_kept_) return;
+    routing_kept_ = rec.decode_tokens;
+    routing_sink_(model_path(), rec);
 }
 
 DecideOutcome EngineHost::decide(const DecideRequest & req, const std::function<bool()> & still_wanted) {

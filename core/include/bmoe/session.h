@@ -226,6 +226,12 @@ public:
     // 1/top-k. 0 when the model is not MoE or the count could not be read.
     int n_expert_used() const;
 
+    // The routing this session recorded so far (MoeStreamConfig::routing_record_tokens), as a value
+    // for the front-end to keep against the model's fingerprint and hand to the next plan
+    // (AutoPlanOptions::routing): the hit curve the cache is priced on (bmoe/routing.h). Empty
+    // without streaming or with the record off. Call it between generations.
+    RoutingTrace routing_record() const;
+
     // Which thinking-off mechanism this model supports (probed at open()). Report it to the user
     // rather than leaving a Thinking toggle that silently does nothing. Always Template when chat
     // mode is off, where no template is rendered and the question does not arise.

@@ -76,6 +76,11 @@ public:
     void set_planner_available(bool available) { planner_available_ = available; }
     // Bound beyond loopback: the clients a short context refuses are there to be warned about.
     void set_serves_network(bool on) { serves_network_ = on; }
+    // Where the loaded model's recorded routing goes after a turn that added to it (the model's file
+    // and the record), for the next plan of that file to price its cache on. Set before any load.
+    void set_routing_sink(std::function<void(const std::string & model_path, const RoutingTrace & rec)> sink) {
+        routing_sink_ = std::move(sink);
+    }
 
     // A load in auto mode measures the machine before it loads, for tens of seconds on a phone,
     // with nothing loaded meanwhile: `state` reads "planning" between these two calls, so a UI can
@@ -140,6 +145,11 @@ private:
     // A request refused with context_full: logged, and marked in the advice so a UI warns even
     // after the warning was dismissed (the client itself may show the refusal as an unknown error).
     void note_context_full(int n_ctx);
+    // Hand the session's routing record to the sink when it grew. Called inside a turn (gen_m_).
+    void keep_routing(const HostedSession & s);
+
+    std::function<void(const std::string &, const RoutingTrace &)> routing_sink_;
+    uint32_t routing_kept_ = 0; // decoded tokens of the record last handed on; under gen_m_
 
     EventBus & bus_;
     const SessionOpener open_;

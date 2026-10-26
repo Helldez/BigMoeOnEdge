@@ -1107,6 +1107,44 @@ void RouterHook::end_trace_batch() {
     flush_pending();
 }
 
+void RouterHook::set_routing_record(int max_tokens, RoutingTrace shape) {
+    rec_max_ = max_tokens > 0 ? max_tokens : 0;
+    rec_on_ = rec_decode_ = rec_in_prompt_ = false;
+    rec_chunks_.clear();
+    rec_ = std::move(shape);
+    rec_.batches.clear();
+    rec_.prefill_tokens = rec_.decode_tokens = 0;
+}
+
+void RouterHook::begin_record_batch(int phase, int n_tokens) {
+    rec_on_ = false;
+    if (rec_max_ <= 0 || n_tokens <= 0 || rec_.decode_tokens >= (uint32_t) rec_max_) return;
+    rec_on_ = true;
+    if (phase == 1) {
+        rec_decode_ = true;
+        rec_in_prompt_ = false;
+        rec_.decode_tokens += (uint32_t) n_tokens;
+        return;
+    }
+    rec_decode_ = false;
+    if (!rec_in_prompt_) {
+        rec_in_prompt_ = true;
+        rec_chunks_.clear();
+    }
+    rec_chunks_.emplace_back(rec_.batches.size(), n_tokens);
+    rec_.prefill_tokens += (uint32_t) n_tokens;
+    // Over the bound, this prompt's oldest chunks go: the cache a decode starts from holds the
+    // prompt's tail, so the tail is the part a replay needs. The chunk starting now always stays.
+    while (rec_.prefill_tokens > (uint32_t) rec_max_ && rec_chunks_.size() > 1) {
+        const size_t from = rec_chunks_[0].first, to = rec_chunks_[1].first;
+        rec_.batches.erase(rec_.batches.begin() + (ptrdiff_t) from, rec_.batches.begin() + (ptrdiff_t) to);
+        rec_.prefill_tokens -= (uint32_t) rec_chunks_[0].second;
+        rec_chunks_.erase(rec_chunks_.begin());
+        for (auto & c : rec_chunks_)
+            c.first -= to - from;
+    }
+}
+
 // Turn the pending layer's (ids, weights, residency) into one row per routed expert.
 void RouterHook::flush_pending() {
     PendingLayer & P = pending_;
@@ -1408,6 +1446,9 @@ void RouterHook::on_topk(ggml_tensor * t, int il) {
         pending_.residency.assign(gathered_.size(), (uint8_t) 0);
         source_->query_residency(il, gathered_.data(), (int) gathered_.size(), pending_.residency.data());
     }
+
+    // The routing record keeps what this layer is about to ask the cache for, in the cache's own unit.
+    if (rec_on_ && il >= 0) rec_.batches.push_back({(uint32_t) il, rec_decode_, gathered_});
 
     // Count what the ROUTER selected, here rather than inside apply_drop: a layer that is not
     // deferred yet (the first graph, or a phase the policy is not armed for) still routed these

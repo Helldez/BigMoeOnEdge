@@ -175,12 +175,46 @@ about performance was learned by A/B-ing one lever at a time. Any flag typed by 
 planner may not touch.
 
 At the end of a run the plan's prediction is compared against what happened, with the credited cache
-hit rate beside the measured one. That comparison is what makes the coefficients correctable rather
-than believed: hits are credited **linearly** in the fraction of the expert set held, while routing
-has strong temporal locality — one measurement on record is a cache holding 13% of the set serving
-61.9% of the reads — so the prediction is pessimistic by roughly that factor. Fitting a curve to a
-single point would be inventing the shape, so the shape stays linear and the coefficient is what the
-loop corrects.
+hit rate beside the measured one (`plan: predicted P s/token, measured M (E%); cache hits credited
+C% from this model's routing, measured D% in decode (A% with the prompt)`; without a curve the
+"from this model's routing" is absent). Both hit figures are for decode, which is what a token is
+priced at.
+
+### The cache priced on the model's own routing
+
+What a cache hits is decided by routing, and routing is a property of the model and of the kind of
+prompt, not of the machine. So the plan prices the cache on the model's own **hit curve** when it has
+one ([measured-planning.md](measured-planning.md#step-1-the-cache-sized-from-the-models-own-routing)):
+
+- **The record.** A streamed session keeps the experts each MoE layer asked the cache for during its
+  first tokens (`--routing-record`, default 256 decoded tokens and the last 256 of the prompt). It
+  asks the graph for nothing and stops by itself. `Session::routing_record()` returns it as a value
+  (`bmoe/routing.h`).
+- **Where it lives** is the front-end's decision: `bmoe-cli --routing-dir DIR`, and `bmoe-server` in
+  its data folder under `routing/`, one file per model named by `model_fingerprint()` (a hash of the
+  file's size and of bytes sampled across its content, so a copied or renamed file keeps its record
+  and two models of one shape do not share one).
+- **The curve.** The next `--auto` hands the record back (`AutoPlanOptions::routing`); `attach_routing`
+  checks it is this model at this top-k (same experts, same blocks, same expert bytes, at least
+  `k_routing_min_decode_tokens` decoded) and replays it through the engine's own LRU at
+  `k_hit_curve_points` sizes from nothing to the whole expert set. The result is
+  `ModelProfile::hit_curve`, a monotone `hit_share(bytes)` over the whole set. The replay is the
+  engine's accounting, checked two ways: on the archived phone traces it matches
+  `scripts/route-replay.py` to the third decimal, and in the gates (`G2r`) it reproduces the hit rate
+  a real streamed session measured.
+- **The ranking.** With a curve, the cache enters the ranking as pieces of the curve's upper concave
+  hull, densest first, so it walks the curve from the floor as far as each next byte is worth more
+  than a resident group; the credited hit rate is the curve at the size it gets, tagged
+  `[measured on this model]`, with a `cache-hits` decision saying what it was replayed from. A host
+  cache that serves only part of the set (the fitter placed some layers' experts on a device) is read
+  at the whole-set size it stands for.
+- **Without a record** (the first load of a model, or one that does not fit: another model, another
+  top-k), hits are credited linearly in the fraction of the expert set held, as before, and the plan
+  is byte for byte the one it was before the curve existed (a rejected record adds one `cache-hits`
+  line saying why).
+
+`bmoe::hottest_experts(trace)` ranks the same record's (block, expert) pairs by use, for a later step
+that warms a device-side cache at start; nothing reads it yet.
 
 ## Backends this build can even see
 

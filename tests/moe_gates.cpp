@@ -474,6 +474,48 @@ int main(int argc, char ** argv) {
     int fails = hook_missing; // --require-hook with the hook absent: one failure before any gate
     fails += check("G1 resident == streaming(cache off)", s_res, s_s0);
     fails += check("G2 streaming(cache off) == streaming(LRU cache)", s_s0, s_sc);
+
+    // G2r — the routing record the planner prices the cache from is the engine's own: replayed
+    // through the planner's LRU (bmoe/routing.h) at the run's budget, it must give the hit rate the
+    // engine's cache measured, prompt included and decode alone. Bounded by the record's own limit.
+    {
+        RunResult r = run(streamc);
+        const RoutingTrace & rec = r.routing;
+        const ReplayCounts rp = replay_lru(rec, (uint64_t) streamc.moe.cache_mb << 20);
+        RoutingTrace back;
+        std::string perr;
+        const bool round = parse_routing_trace(format_routing_trace(rec), back, perr) &&
+                           replay_lru(back, (uint64_t) streamc.moe.cache_mb << 20).hits == rp.hits;
+        const double cum = 100.0 * rp.hit(), dec = 100.0 * rp.decode_hit();
+        if (!r || rec.empty() || rec.decode_tokens == 0 || rec.decode_tokens > (uint32_t) r.summary.n_generated ||
+            rec.prefill_tokens == 0 || std::fabs(cum - r.summary.cache_hit_pct) > 0.05 ||
+            std::fabs(dec - r.summary.cache_hit_decode_pct) > 0.05 || !round) {
+            std::printf("[FAIL] G2r routing record replays to the measured hit rate: %u prompt + %u decode tokens, "
+                        "replay %.2f%% / %.2f%% decode, engine %.2f%% / %.2f%%%s\n",
+                        rec.prefill_tokens, rec.decode_tokens, cum, dec, r.summary.cache_hit_pct,
+                        r.summary.cache_hit_decode_pct, round ? "" : ", and it does not read back");
+            ++fails;
+        } else {
+            std::printf("[PASS] G2r routing record (%u prompt + %u decode tokens) replays to the engine's "
+                        "%.2f%% (%.2f%% decode)\n",
+                        rec.prefill_tokens, rec.decode_tokens, r.summary.cache_hit_pct, r.summary.cache_hit_decode_pct);
+        }
+        RunConfig capped = streamc;
+        capped.moe.routing_record_tokens = 4;
+        RunConfig off = streamc;
+        off.moe.routing_record_tokens = 0;
+        const RunResult rc = run(capped);
+        const RunResult ro = run(off);
+        if (!rc || !ro || rc.routing.decode_tokens != 4 || !ro.routing.empty() ||
+            rc.generated_text != r.generated_text || ro.generated_text != r.generated_text) {
+            std::printf("[FAIL] G2r' the record stops at its bound, is off at 0, and changes no output (%u decode "
+                        "tokens at a bound of 4, %zu batches off)\n",
+                        rc.routing.decode_tokens, ro.routing.batches.size());
+            ++fails;
+        } else {
+            std::printf("[PASS] G2r' the record stops at its bound, is off at 0, and changes no output\n");
+        }
+    }
     fails += check("G3 streaming(selective) == streaming(load-all)", s_s0, s_all);
     // G6: rebinding the dense weights onto O_DIRECT anon buffers must not change a byte — same
     // bytes, same offsets, so identical output to the mmap-resident reference. This is the

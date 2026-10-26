@@ -1264,6 +1264,37 @@ void note_ledger(Planning & s, const Allocation & alloc) {
         s.note(n.topic.c_str(), n.value, Source::Derived, n.brief, n.detail);
 }
 
+// Where the cache's credited hit rate came from. With the model's own routing it is a measurement,
+// and says so; a trace that was offered and did not fit says why the plan fell back to the linear
+// credit. Without a trace there is nothing to say, and the plan is the one it always was.
+void note_hit_curve(Planning & s, const Allocation & alloc) {
+    const HitCurve & curve = s.model.hit_curve;
+    if (curve.measured && alloc.cache_bytes > 0) {
+        char value[16];
+        std::snprintf(value, sizeof(value), "%.0f%%", 100.0 * alloc.cache_hit_credited);
+        const double linear = s.host_expert_bytes
+                                  ? std::min(1.0, (double) s.pol.cache_hit_optimism * (double) alloc.cache_bytes /
+                                                      (double) s.host_expert_bytes)
+                                  : 0.0;
+        char linear_pct[16];
+        std::snprintf(linear_pct, sizeof(linear_pct), "%.0f%%", 100.0 * linear);
+        s.note("cache-hits", value, Source::Measured,
+               "Cache hits are priced from this model's own routing: " + std::string(value) + " at " +
+                   size_brief(alloc.cache_bytes) + ".",
+               "measured on this model: an LRU replay of the routing it recorded on an earlier run (" +
+                   u64s(curve.decode_tokens) + " decoded and " + u64s(curve.prefill_tokens) +
+                   " prompt tokens) at every cache size up to the whole expert set; at " +
+                   u64s(mib(alloc.cache_bytes)) + " MiB it serves " + value +
+                   " of the decode lookups, where the linear credit would have said " + linear_pct);
+    } else if (!curve.rejected.empty()) {
+        s.note("cache-hits", "linear", Source::Policy,
+               "Cache hits are credited linearly: the stored routing is not this run's.",
+               "a routing trace was offered and not used (" + curve.rejected +
+                   "), so the cache is credited linearly in the share of the expert set it holds, as on a first "
+                   "load");
+    }
+}
+
 // Name the one lever that closes the gap, and do not pull it. The KV reservation is the cheapest
 // memory on this machine to give back, and the first stage shrinks the context only until the model
 // FITS - which can stop well short of where streaming becomes possible. Measured: a 26B model with a
@@ -1812,6 +1843,7 @@ Plan plan_run(const RunConfig & base,
     settle_cache_lock(s, alloc);
     charge_caller_cache(s);
     note_ledger(s, alloc);
+    note_hit_curve(s, alloc);
     if (!size_cache(s, alloc)) return p;
     note_kv_budget(s);
     note_checkpoint_budget(s);

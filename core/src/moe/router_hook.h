@@ -31,6 +31,7 @@
 #include "bmoe/route_trace.h"
 #include "bmoe/decode_trace.h"
 #include "bmoe/predict_stats.h"
+#include "bmoe/routing.h"
 #include "bmoe/row_source.h"
 #include "expert_stream_source.h"
 
@@ -304,6 +305,20 @@ public:
     void end_trace_batch(); // flush the last layer, which has no successor to trigger it
 
     std::vector<RouteTraceRow> & trace_rows() { return trace_rows_; }
+
+    // ── routing record (the planner's input; see bmoe/routing.h) ─────────────────────
+    // Unlike the route trace this asks the graph for nothing: it keeps the ids each layer hands
+    // load_layer, which the hook gathers on every routing anyway, so it costs a copy of a few ints per
+    // layer per token and stops by itself. `shape` carries the record's static facts (blocks, experts,
+    // top-k, each block's expert bytes); `max_tokens` bounds the decoded tokens kept and, separately,
+    // the prompt tokens: a prompt longer than that keeps its tail, which is what the cache holds when
+    // the decode starts. 0 records nothing.
+    void set_routing_record(int max_tokens, RoutingTrace shape);
+    // Frame one llama_decode (0 = prompt chunk, 1 = decode), as begin_trace_batch does for the trace;
+    // end_record_batch closes it, so a graph run outside a generation is never recorded.
+    void begin_record_batch(int phase, int n_tokens);
+    void end_record_batch() { rec_on_ = false; }
+    const RoutingTrace & routing_record() const { return rec_; }
 
 private:
     // The eval callback, and the jobs it dispatches to in the order it runs them. Each job is only
@@ -580,6 +595,15 @@ private:
     PendingLayer pending_;
     std::vector<RouteTraceRow> trace_rows_;
     std::unordered_set<int32_t> charged_; // per-flush scratch: experts already charged for a read
+
+    // Routing record. Inert unless rec_max_ > 0, and once the decoded tokens reach it.
+    int rec_max_ = 0;
+    bool rec_on_ = false;     // the current llama_decode is being recorded
+    bool rec_decode_ = false; // ... and it is a decode, not a prompt chunk
+    bool rec_in_prompt_ = false;
+    // The prompt chunks of the current prompt: the index of each one's first batch, and its tokens.
+    std::vector<std::pair<size_t, int>> rec_chunks_;
+    RoutingTrace rec_;
 
     // Compute trace. All of this is inert unless ctrace_on_. `ctrace_mark_` is the previous
     // isolation boundary: the node reported by the next callback is charged the wall since it.

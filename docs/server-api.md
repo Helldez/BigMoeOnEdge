@@ -902,7 +902,9 @@ so a stage or a role the server adds reaches every UI with no UI change:
   tokens lane beside the host).
 - `predicted` is decode as the plan priced it, the figures `bmoe-cli --auto` prints after a run:
   `s_per_token`; `cache_hit_pct` where there is a cache, the hit rate the cost model credited the
-  cache with (`Allocation::cache_hit_credited`), not the cache's share of the experts; and
+  cache with (`Allocation::cache_hit_credited`), not the cache's share of the experts: read off
+  the model's own hit curve when the server kept a routing record for that file (`routing/` in the
+  data folder, one file per model; see `docs/hardware-planning.md`), else the linear credit; and
   `s_per_token_worst`, the same token with nothing resident and every byte read again, a bound
   beside the prediction and never divided into it. Each is absent when not predicted.
 - `memory.pools` is the ledger the plan charged: the host's pool (`name` `host`; `cap_bytes`
@@ -933,7 +935,8 @@ decided that the table cannot hold (a tensor-placement pattern, say), so it is s
 silently dropped.
 With a model loaded that an auto load planned, `GET /api/plan` answers at once with that plan and
 `"from_last_load": true`, without measuring, and once the model has answered, `measured`: what
-its last complete turn measured for decode (`s_per_token`, `cache_hit_pct`, -1 without a cache,
+its last complete turn measured for decode (`s_per_token`, `cache_hit_pct` over that turn's decode
+alone, -1 without a cache,
 and `tokens`), to set beside `predicted`; a cancelled turn does not count. `GET /api/plan?cached=1`
 never measures: with no model loaded it answers the last plan this server holds (the last
 measurement, else the last load's) with `"cached": true`, or `{"available": true, "none": true}`

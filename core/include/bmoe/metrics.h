@@ -170,6 +170,10 @@ struct RunSummary {
     // under overlap.
     double moe_flash_wait_s_per_token = 0.0;
     double cache_hit_pct = -1.0; // -1 when no cache
+    // The same, over this generation's decode alone: the figure a plan's credited hit rate prices
+    // (a decoded token), where cache_hit_pct also counts the prompt and every earlier turn. -1 when
+    // no cache or nothing was decoded.
+    double cache_hit_decode_pct = -1.0;
 
     // Compute decomposition, generation phase only (measured whether or not streaming is on, since
     // dense-weight faults appear in the mmap baseline too). majflt_per_token ≫ 0 flags a residency

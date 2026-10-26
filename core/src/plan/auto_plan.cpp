@@ -6,6 +6,7 @@
 
 #include "bmoe/planner.h"
 #include "bmoe/probe.h"
+#include "bmoe/routing.h"
 #include "../metrics/memory_snapshot.h"
 
 #include "../engine/llama_log.h"
@@ -42,6 +43,10 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
         probe_devices_isolated(r.hw, self_process_runner(opt.isolated_probe_args, opt.isolated_probe_seconds));
     starting(); // model
     r.model = probe_model(path);
+    // The model's own routing, from an earlier run the front-end kept: what its cache will hit.
+    if (opt.routing)
+        attach_routing(r.model, *opt.routing,
+                       cfg.n_expert_used > 0 ? (uint32_t) cfg.n_expert_used : r.model.n_expert_used);
     probe_device_support(r.hw, r.model);
     detail::log_memory_snapshot("auto-device-support");
     llama_backend_init();

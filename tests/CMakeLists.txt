@@ -254,6 +254,14 @@ add_executable(bmoe_planner_test planner_test.cpp)
 target_link_libraries(bmoe_planner_test PRIVATE bmoe_core)
 add_test(NAME planner COMMAND bmoe_planner_test)
 
+# The routing trace the planner prices the cache from: its LRU replay against scripts/route-replay.py
+# on the archived phone traces, the curve, the hottest experts and the text form. Pure policy.
+add_executable(bmoe_routing_test routing_test.cpp)
+target_link_libraries(bmoe_routing_test PRIVATE bmoe_core)
+target_compile_definitions(bmoe_routing_test PRIVATE
+    BMOE_ROUTE_TRACE_DIR="${CMAKE_SOURCE_DIR}/docs/bench-data/2026-07-15-route-trace")
+add_test(NAME routing COMMAND bmoe_routing_test)
+
 add_executable(bmoe_memory_topology_test memory_topology_test.cpp)
 target_link_libraries(bmoe_memory_topology_test PRIVATE bmoe_core)
 target_include_directories(bmoe_memory_topology_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/plan)

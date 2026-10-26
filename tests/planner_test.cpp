@@ -17,6 +17,7 @@
 #include "bmoe/planner.h"
 #include "bmoe/probe.h"
 
+#include <cmath>
 #include <cstdio>
 #include <string>
 
@@ -1668,6 +1669,129 @@ int main() {
             }
             check(!pl.second.decisions.empty() && bad.empty(),
                   std::string(pl.first) + ": every decision has a plain one-line brief", bad);
+        }
+    }
+
+    // ── the cache priced on the model's own hit curve (docs/measured-planning.md, Step 1) ──────
+    {
+        auto measured_machine = [&]() {
+            HardwareProfile h = desktop();
+            h.host_bandwidth_gibs = 100.0;
+            h.storage.refault_mibs = 24.0;
+            h.devices.clear();
+            return h;
+        };
+        // A curve shaped like the archived phone traces: little under one token cycle, most of the
+        // reads served by a small share of the set, the rest bought slowly.
+        auto curve_model = [&](std::vector<std::pair<double, double>> shape) {
+            ModelProfile m = model;
+            m.hit_curve.measured = true;
+            m.hit_curve.decode_tokens = 256;
+            m.hit_curve.prefill_tokens = 28;
+            m.hit_curve.points.push_back({0, 0.0});
+            for (const auto & sh : shape)
+                m.hit_curve.points.push_back({(uint64_t) ((double) m.expert_bytes * sh.first), sh.second});
+            return m;
+        };
+        const ModelProfile steep = curve_model({{0.02, 0.0}, {0.05, 0.40}, {0.13, 0.75}, {0.25, 0.85}, {1.0, 1.0}});
+
+        // No trace: the plan is today's. Pinned to the figures this fixture produced before the curve
+        // existed (and its whole rationale was diffed byte for byte against that build): the linear
+        // credit, the cache it sized and the cost it predicted.
+        {
+            const Plan p = plan_run(base_cfg(), measured_machine(), model, PlanRequest{});
+            const GroupPlacement & e = p.allocation.at(WeightGroup::Experts);
+            check(p.allocation.cache_bytes == 9147777024ull, "no trace: the cache is the linear credit's",
+                  std::to_string(p.allocation.cache_bytes));
+            check(std::fabs(p.allocation.cache_hit_credited - 0.473307) < 1e-6, "no trace: credited linearly",
+                  std::to_string(p.allocation.cache_hit_credited));
+            check(std::fabs(p.allocation.seconds_per_token - 0.160544713) < 1e-9, "no trace: the same prediction",
+                  std::to_string(p.allocation.seconds_per_token));
+            check(e.reason == "streamed with a 8724 MiB cache, 47% of the expert set; credited hit rate 47%, which is "
+                              "conservative on purpose and is the coefficient a run's own counters correct",
+                  "no trace: the experts' rationale is word for word today's", e.reason);
+            check(!find(p, "cache-hits"), "no trace: nothing is said about a curve there is none of");
+
+            // A trace that is not this model's is the same plan, plus the one line saying why.
+            ModelProfile rejected = model;
+            rejected.hit_curve.rejected = "the trace was recorded at top-6 and this run routes top-8";
+            const Plan r = plan_run(base_cfg(), measured_machine(), rejected, PlanRequest{});
+            std::string without;
+            std::string reasons;
+            for (const Decision & d : r.decisions)
+                if (d.knob != "cache-hits") without += d.knob + "=" + d.value + ":" + d.reason + "|" + d.brief + "\n";
+            for (const Decision & d : p.decisions)
+                reasons += d.knob + "=" + d.value + ":" + d.reason + "|" + d.brief + "\n";
+            check(without == reasons && r.allocation.cache_bytes == p.allocation.cache_bytes &&
+                      r.allocation.seconds_per_token == p.allocation.seconds_per_token,
+                  "a rejected trace leaves the plan as it is without one");
+            const Decision * why = find(r, "cache-hits");
+            check(why && why->source == Source::Policy && why->reason.find("top-6") != std::string::npos,
+                  "a rejected trace says why it was not used");
+        }
+
+        // With the curve: the credit is the curve at the size chosen, and the plan says so.
+        {
+            const Plan p = plan_run(base_cfg(), measured_machine(), steep, PlanRequest{});
+            const GroupPlacement & e = p.allocation.at(WeightGroup::Experts);
+            const double expect = steep.hit_curve.hit_share(p.allocation.cache_bytes);
+            check(p.allocation.cache_bytes > 0 && std::fabs(p.allocation.cache_hit_credited - expect) < 1e-12,
+                  "with a curve: the credited hit rate is the curve at the cache's size",
+                  std::to_string(p.allocation.cache_hit_credited) + " vs " + std::to_string(expect));
+            check(e.reason.find("[measured on this model]") != std::string::npos,
+                  "with a curve: the experts' rationale names its source", e.reason);
+            const Decision * d = find(p, "cache-hits");
+            check(d && d->source == Source::Measured && d->reason.find("256 decoded") != std::string::npos,
+                  "with a curve: a measured decision states the hit rate and what it was replayed from");
+            const Plan lin = plan_run(base_cfg(), measured_machine(), model, PlanRequest{});
+            check(p.allocation.seconds_per_token < lin.allocation.seconds_per_token,
+                  "with a steep curve the same cache is priced cheaper than the linear credit says");
+        }
+
+        // The ranking walks the curve: where the cache competes with a read-whole group for the same
+        // bytes, a curve that serves most reads from a small cache keeps the cache at its knee and
+        // gives the rest to the group, and one that rises late takes more for the cache.
+        {
+            const HardwareProfile h = measured_machine();
+            const PlannerPolicy pol = PlannerPolicy::defaults();
+            AllocationInputs in;
+            in.budget_bytes = 6 * GiB;
+            in.cacheable_bytes = model.expert_bytes;
+            const Allocation lin = allocate(h, model, in, pol);
+            const Allocation cur = allocate(h, steep, in, pol);
+            check(cur.cache_bytes >= model.token_cycle_bytes && cur.cache_bytes <= in.budget_bytes,
+                  "with a curve: the cache is sized above its floor, inside the budget",
+                  std::to_string(cur.cache_bytes >> 20) + " MiB");
+            check(std::fabs(cur.cache_hit_credited - steep.hit_curve.hit_share(cur.cache_bytes)) < 1e-12,
+                  "allocate credits the curve at the size it chose");
+            check(cur.seconds_per_token <= lin.seconds_per_token + 1e-12,
+                  "a curve above the linear credit never prices the token higher");
+
+            // A curve flat above its knee: past 5% of the set nothing more is served, so the ranking
+            // stops the cache there however much budget remains.
+            const ModelProfile knee = curve_model({{0.05, 0.6}, {1.0, 0.6}});
+            in.budget_bytes = 12 * GiB;
+            const Allocation k = allocate(h, knee, in, pol);
+            const uint64_t at_knee = (uint64_t) ((double) model.expert_bytes * 0.05);
+            check(k.cache_bytes <= at_knee && k.cache_bytes + (1ull << 20) >= at_knee,
+                  "a curve that stops rising stops the cache where it does",
+                  std::to_string(k.cache_bytes >> 20) + " MiB against " + std::to_string(at_knee >> 20));
+
+            // The floor still holds: a budget under one token cycle is no cache, curve or not.
+            AllocationInputs tight = in;
+            tight.budget_bytes = 3 * GiB;
+            tight.reserved_bytes = 3 * GiB - (100 * MiB);
+            check(allocate(h, steep, tight, pol).cache_bytes == 0, "with a curve: under the floor there is no cache");
+
+            // The host's share: where the first stage placed half the layers' experts on a device, a
+            // host cache of C is read as a whole-set cache of 2C.
+            AllocationInputs half = in;
+            half.budget_bytes = 6 * GiB;
+            half.cacheable_bytes = model.expert_bytes / 2;
+            const Allocation hh = allocate(h, steep, half, pol);
+            check(hh.cache_bytes > 0 &&
+                      std::fabs(hh.cache_hit_credited - steep.hit_curve.hit_share(2 * hh.cache_bytes)) < 1e-6,
+                  "a cache for the host's half is credited at the whole-set size it stands for");
         }
     }
 

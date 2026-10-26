@@ -15,6 +15,7 @@ add_library(bmoe_core STATIC
     src/plan/plan.cpp
     src/plan/allocate.cpp
     src/plan/planner.cpp
+    src/plan/routing.cpp
     src/engine/logits.cpp
     src/engine/cache_brake.cpp
     src/engine/decide/prompt_split.cpp

@@ -42,9 +42,11 @@ int run_device_probe_child(const std::string & model_path, const std::string & d
 PlanOutcome make_plan(const RunConfig & cfg,
                       const std::vector<std::string> & pinned,
                       bool isolated_probes,
-                      const PlanStepFn & on_step) {
+                      const PlanStepFn & on_step,
+                      const RoutingTrace * routing) {
     PlanOutcome o;
 #if !defined(BMOE_HAVE_PLANNER)
+    (void) routing;
     (void) cfg;
     (void) pinned;
     (void) isolated_probes;
@@ -67,6 +69,7 @@ PlanOutcome make_plan(const RunConfig & cfg,
     AutoPlanOptions opt;
     opt.probe_io = true;
     opt.probe_mem = false;
+    opt.routing = routing;
     if (isolated_probes) {
         const std::string model = cfg.model_path;
         opt.isolated_probe_args = [model](const std::string & dev) {

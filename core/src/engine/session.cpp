@@ -458,6 +458,7 @@ struct Session::Impl {
     void
     release_mapping(const SessionConfig & cfg, const GgufOffsets & offs, const std::vector<std::string> & unaccounted);
     void arm_route_trace(Opening & o, int n_expert, std::vector<uint64_t> dense_bytes);
+    void arm_routing_record(Opening & o, int n_expert);
     bool open_prefill_device(Opening & o);
     void hand_back_prefill(const std::string & why);
     bool confirm_prefill_device(Opening & o);
@@ -505,6 +506,9 @@ int Session::n_ctx() const {
 }
 int Session::n_expert_used() const {
     return impl_->n_expert_used;
+}
+RoutingTrace Session::routing_record() const {
+    return impl_->hook ? impl_->hook->routing_record() : RoutingTrace{};
 }
 ThinkControl Session::think_control() const {
     return impl_->think_ctl;
@@ -1406,6 +1410,25 @@ void Session::Impl::arm_route_trace(Opening & o, int n_expert, std::vector<uint6
     o.route_trace->on_static(st);
 }
 
+// The routing record's static facts, in the streamer's own units: what the cache charges per expert of
+// each block, and the top-k the routing runs at. The record itself fills during the first tokens.
+void Session::Impl::arm_routing_record(Opening & o, int n_expert) {
+    const SessionConfig & cfg = o.cfg;
+    RoutingTrace shape;
+    shape.n_layer = (uint32_t) o.n_layer_streamed;
+    shape.n_expert = (uint32_t) n_expert;
+    int k = cfg.n_expert_used;
+    if (k <= 0) {
+        const GgufModelInfo & info = o.gguf();
+        k = info.ok ? info.n_expert_used : 0;
+    }
+    shape.n_expert_used = (uint32_t) std::max(0, k);
+    shape.expert_bytes.resize((size_t) o.n_layer_streamed);
+    for (int il = 0; il < o.n_layer_streamed; ++il)
+        shape.expert_bytes[(size_t) il] = source.expert_bytes(il);
+    hook->set_routing_record(cfg.moe.routing_record_tokens, std::move(shape));
+}
+
 // Everything streaming adds to a loaded model: capture the expert tensors, place them in the file,
 // hand the dense weights and the row tables to their policies, start the expert source, and arm
 // what watches it. Ends with the warm-up's KV discarded.
@@ -1441,6 +1464,7 @@ bool Session::Impl::bind_streaming(Opening & o) {
     release_mapping(cfg, offs, unaccounted);
 
     if (o.route_trace) arm_route_trace(o, n_expert, std::move(dense_bytes));
+    arm_routing_record(o, n_expert);
 
     if (o.io_trace) {
         io_trace = o.io_trace;
@@ -1863,6 +1887,7 @@ struct Session::Impl::Turn {
     double last_compute_s = 0.0; // the last decode's compute, what the cache brake reads
     GenTally tally;
     long long prev_spec_bytes = 0, prev_spec_experts = 0, prev_spec_useful = 0;
+    long long prev_cache_lookups = 0, prev_cache_hits = 0; // at the start of the decode
     long long prev_routed = 0, prev_dropped = 0, prev_reranked = 0, prev_substituted = 0;
     long long prev_ra_issue_ns = 0, prev_ra_wd_ns = 0;
     clock_t_::time_point loop_mark;
@@ -2103,6 +2128,7 @@ struct Session::Impl::Turn {
         // unless armed for prefill, so it has to be told which phase this batch is.
         im.hook->set_batch_phase(phase);
         if (im.route_trace) im.hook->begin_trace_batch(base_pos, n_tokens, phase, im.turn);
+        im.hook->begin_record_batch(phase, n_tokens);
         // A node is computed once for the whole batch, not per token, so a prefill chunk's graph is
         // attributed to its last position rather than pretending to split across the chunk.
         if (im.compute_trace) im.hook->begin_compute_batch(base_pos + n_tokens - 1, phase, im.turn);
@@ -2114,6 +2140,7 @@ struct Session::Impl::Turn {
         // is charged the wall since the last boundary, and everything trace_flush does before the
         // close would be billed to the LM head.
         if (im.compute_trace) im.hook->end_compute_batch();
+        im.hook->end_record_batch();
         if (im.route_trace) {
             im.hook->end_trace_batch();
             std::vector<RouteTraceRow> & rows = im.hook->trace_rows();
@@ -2244,6 +2271,8 @@ struct Session::Impl::Turn {
         prev_spec_bytes = (long long) st_spec0.spec_read_bytes;
         prev_spec_experts = st_spec0.spec_experts;
         prev_spec_useful = st_spec0.spec_useful;
+        prev_cache_lookups = st_spec0.cache_lookups;
+        prev_cache_hits = st_spec0.cache_hits;
         // Taken after prefill, so the drop counters describe generation — the phase the policy is
         // armed for and the one the tok/s number is about.
         prev_routed = im.hook->experts_routed();
@@ -2663,6 +2692,9 @@ struct Session::Impl::Turn {
             s.moe_compute_s_per_token = s.s_per_token - s.moe_flash_wait_s_per_token - s.moe_mgmt_s_per_token;
             if (s.moe_compute_s_per_token < 0) s.moe_compute_s_per_token = 0;
             s.cache_hit_pct = st.cache_lookups > 0 ? 100.0 * st.cache_hits / st.cache_lookups : -1.0;
+            const long long dec_lookups = st.cache_lookups - prev_cache_lookups;
+            s.cache_hit_decode_pct =
+                dec_lookups > 0 ? 100.0 * (double) (st.cache_hits - prev_cache_hits) / (double) dec_lookups : -1.0;
             s.cache_resident_mib = st.cache_resident_bytes / (1024.0 * 1024.0);
             s.cache_budget_mib = st.cache_budget_bytes / (1024.0 * 1024.0);
             s.cache_resizes = st.cache_resizes;
