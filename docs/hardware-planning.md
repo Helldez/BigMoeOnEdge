@@ -218,7 +218,8 @@ itself, which is worth more than a plan that invented values for them.
 
 **Nothing lossy arms itself.** Expert dropping, substitution and route-ahead change the output and
 make a run irreproducible. They are never turned on by a plan, at any quality budget, on any
-machine. A caller that arms one keeps it, attributed to `[operator]`.
+machine. A caller that arms one keeps it, attributed to `[operator]`. The KV cache's type is the one
+lossy default, and it is the engine's, not the plan's: `q8_0` unless the caller says otherwise.
 
 Inside a lossy lever the caller armed, the planner still settles what is only a matter of cost.
 Route-ahead's prediction ranks experts with one gate GEMV per layer per token, over the gate's own
@@ -245,7 +246,7 @@ and `BMOE_*` env overrides both count as the caller speaking.
    reads that resident weights do not need.
 4. **Dense policy**, from what a reclaim costs here.
 5. **The memory ledger**: one account for everything the run holds — context and compute buffers,
-   an armed device, the dense set, the expert cache — against two ceilings, what can be held and
+   a chat run's context checkpoints, an armed device, the dense set, the expert cache — against two ceilings, what can be held and
    what can be held reclaim-exempt. The cache is what is left under both, capped at the experts'
    own size and floored at the model's token cycle. See [The memory ledger](#the-memory-ledger).
 6. **I/O policy** from the storage facts.
@@ -406,6 +407,7 @@ alone is how a plan comes to ask for locks the machine stops granting part way.
 | row | from | charged to |
 |---|---|---|
 | context and compute buffers | llama.cpp's own projection for this model and context | holdable |
+| context checkpoints (a chat run) | `--ctx-checkpoints` copies of the context's fixed part: llama.cpp's projection at the context and at half of it, twice the half less the whole (a recurrent state, a sliding window; nothing for a context that is all attention) | holdable |
 | a device armed for prefill | two of the model's largest expert layer, plus the compute buffer llama.cpp projects for that device (none for one it never places layers on, such as an NPU) | holdable; lockable too where its buffers are |
 | dense set | the gguf | holdable; lockable if it is pinned |
 | expert cache | what is left | holdable; lockable for the part that can be locked in place |
@@ -1021,7 +1023,7 @@ Each row is a gap here paired with the public facility that closes it. None need
 | streamed experts computed on a device rather than on the CPU cores | **not** a buffer-type override — that route is closed, see below. The open one is `ggml_backend_dev_buffer_from_host_ptr` | on a backend that can wrap memory the caller already owns, the streamer's reservations could be handed over and the device could execute out of them. Who implements it is **not** what `caps.buffer_from_host_ptr` says — see "A capability that lies by omission" below |
 | prefill on the device over streamed experts (built as `--prefill-device`, see [npu-prefill.md](npu-prefill.md); the planner does not arm it yet) | `cparams.op_offload`, `offload_kqv`, the scheduler's batch threshold (`ggml_backend_dev_offload_op`) | per-op copy of host weights to the device above a batch size: the "batch amortises bytes over link bandwidth" rule |
 | ~~no thread rule~~ — **in**, from core classes rather than a core count | `n_threads_batch` distinct from `n_threads`, `llama_numa_init` | still open: different counts for decode and prefill, and NUMA on workstations |
-| KV and flash attention undecided | `flash_attn_type` (auto), `type_k` / `type_v`, `kv_unified`, `swa_full` | KV memory as a budget line instead of an ignored one |
+| KV and flash attention undecided — the KV is now a budget line (`kv-budget`), and `type_k` / `type_v` are **in** as `--cache-type-k` / `--cache-type-v`, `q8_0` by default (lossy, so never planned); the fitter projects the KV at the type the run allocates | `flash_attn_type` (auto), `type_k` / `type_v`, `kv_unified`, `swa_full` | still open: the plan choosing the context length and a cache type behind a measured quality bound |
 | device selection | `mparams.devices[]`, `split_mode`, `main_gpu` | tell the fitter which devices to use, e.g. exclude one that demands a repack |
 | ~~a unified-memory device looks discrete~~ — **accounted for** | native memory-topology facts, or the allocation-delta probe where no direct fact is available | a shared pool is not added to host capacity; the separate bandwidth measurement decides whether moving compute is worthwhile |
 | ~~the budget under a compressing reclaim~~ — **in** (`--probe-mem`, and a free estimate always) | nothing in llama.cpp: a kernel fact | the headroom probe stays ours, and is the one measurement no other engine takes |

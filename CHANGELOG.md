@@ -4,9 +4,38 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.36.0] - 2026-10-26
 
 ### Added
+- **Context checkpoints, as llama.cpp's server keeps them** (`--ctx-checkpoints N`, default 8, where the server keeps 32: Qwen3.6-35B-A3B's is 62.8 MiB and comes
+  out of the expert cache's memory;
+  `--checkpoint-min-step N`, default 8192). A chat turn whose prompt diverges from the cached one
+  inside a state that cannot be cut (a recurrent state, a sliding window) used to clear the context
+  and prefill the whole conversation again. It now restores the newest checkpoint before the
+  divergence: the part of the state that cannot be cut, copied at the end of every prompt through the
+  public state API into `common`'s `common_prompt_checkpoint`. It matters most for coding agents,
+  whose clients resend each answer as text: with Claude Code on Qwen3.6-35B-A3B, five requests of eight
+  re-prefilled their whole 12k-token prompt. A memory that cuts anywhere keeps no checkpoint. Gate G22
+  checks the restore is lossless on a recurrent model, and that a model that cuts anywhere is untouched.
+- **A quantized KV cache, with llama.cpp's flags** (`--cache-type-k` / `-ctk`, `--cache-type-v` /
+  `-ctv`: `f16`, `bf16`, `f32`, `q8_0`, `q5_1`, `q5_0`, `q4_1`, `q4_0`, `iq4_nl`). The types are
+  llama.cpp's own, through `llama_context_params`, which rotates a quantized cache's heads first.
+  `q8_0` halves the memory a long context takes and `q4_0` quarters it, and on this engine that memory
+  goes to the expert cache. **`q8_0` is the default**, where llama.cpp keeps `f16`: an 18-turn agent
+  chat to 60k tokens on Qwen3.6-35B-A3B (16 GB laptop) decoded in 281-303 s at `q8_0` against 442-490 s
+  at `f16`. Every type but `f16` changes the output, and the default was set without a quality
+  measurement; `-ctk f16 -ctv f16` is the lossless run. The plan never picks a type; the capacity
+  fitter projects the KV at the type the run allocates. The metrics CSV records both types in its
+  preamble. A quantized V cache needs flash attention: where llama.cpp's backend refuses it, V falls
+  back to `f16` with a warning instead of failing the run. Gate G23 checks streaming stays
+  byte-identical to resident with an `f16` cache; every other gate now runs at `q8_0`.
+- **The plan charges a chat run's context checkpoints before it sizes the expert cache**
+  (`checkpoint-budget`, a ledger row of its own). Each checkpoint copies the part of the context that does
+  not grow with its length. The placement probe reads that part off llama.cpp's own projection at the
+  context and at half of it, with nothing taken from the architecture: 62 MiB on Qwen3.6-35B-A3B against
+  the 62.8 a checkpoint measures, and nothing for a context that is all attention. Without the charge, a
+  chat filled up to 502 MiB of checkpoints out of memory the cache had already been given. A run that is
+  not a chat makes no checkpoints and is charged none.
 - **Desktop packages that open with a double-click** (part of #385). `release-host` builds one per
   OS from the same staged folder the `bmoe-desktop` archive carries, and the archives stay for
   scripted installs and the CLI. The scripts live under `packaging/`.
