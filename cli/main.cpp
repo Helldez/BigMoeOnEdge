@@ -1064,9 +1064,16 @@ int main(int argc, char ** argv) {
                     std::fprintf(stderr, "plan: device %s: UNUSABLE - %s\n", d.name.c_str(), d.unusable_reason.c_str());
                     continue;
                 }
-                std::fprintf(stderr, "plan: device %s%s: one token %.0f GiB/s (%s), %u tokens wide %.0f GiB/s (%s)%s\n",
+                // The real layer's halves and the crossing: the facts the device rules price with.
+                char layer[160] = "";
+                if (d.expert_gibs > 0.0 || d.dense_gibs > 0.0 || d.split_seconds > 0.0)
+                    std::snprintf(layer, sizeof(layer),
+                                  "; this model's layer: experts %.1f, dense %.1f GiB/s; crossing %.0f us",
+                                  d.expert_gibs, d.dense_gibs, 1e6 * d.split_seconds);
+                std::fprintf(stderr,
+                             "plan: device %s%s: one token %.0f GiB/s (%s), %u tokens wide %.0f GiB/s (%s)%s%s\n",
                              d.name.c_str(), d.is_cpu ? " (host)" : "", d.memory_bandwidth_gibs, verdict(d.identity_ok),
-                             hw.wide_batch, d.wide_matmul_gibs, verdict(d.wide_identity_ok),
+                             hw.wide_batch, d.wide_matmul_gibs, verdict(d.wide_identity_ok), layer,
                              d.probed_out_of_process ? ", probed in a process of its own" : "");
             }
             if (mp.ok) {

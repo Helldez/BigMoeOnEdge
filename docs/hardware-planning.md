@@ -155,8 +155,9 @@ with N=4 and N=8 faulting — while the I/O half of the trade did exactly what t
 (cache hits 48% → 73%, re-reads 84.5 → 5.2 per token). Merely *registering* a device cost 61
 crossings per token with nothing placed on it.
 
-So crossings are a priced term (`PlannerPolicy::device_split_seconds`), and **while their price is
-unmeasured no group is placed on a device** and the plan says which measurement it was owed. Two
+So crossings are a priced term (`ComputeDevice::split_seconds`, measured as one token's hidden state
+copied to the device, one op run there, and copied back), and **while their price is unmeasured no
+group is placed on a device** and the plan says which measurement it was owed. Two
 further costs a single-GEMV probe structurally cannot see were also paid on that machine: the offload
 disabled Flash Attention, and quantized kernel quality is not uniform — the fast path was name-gated
 on the expert tensors, so dense weights at 2–4 bit fell to generic kernels while the CPU had
@@ -246,7 +247,7 @@ measurement instead of a guess ([measured-planning.md](measured-planning.md#step
   and every layer on the host, since with one on a device overlap also changes how the context
   offloads, which is fixed when it is created. `--io-threads` is left out: it is already measured on
   the model's own file by the storage probe, and changing it would reopen every reader.
-- **Lossless, checked.** Gate `G21` decodes a 120-token answer while the trial switches threads
+- **Lossless, checked.** Gate `G24` decodes a 120-token answer while the trial switches threads
   (2, 1, 4) and overlap, and across four turns that each end inside a window, and every answer is the
   resident one.
 - **The verdict** stays for the rest of the session and is returned as a value
@@ -385,7 +386,9 @@ number it turns on as its value ("6.3 GB/s", "581 MiB") or `-`.
 | how much may be held reclaim-exempt in total, net of what already is | whether the dense set fits there whole, and what is left for the cache |
 | how much may be locked where it already sits | whether the cache is sized to what can be locked or to what can be held |
 | whether a device's buffers are held reclaim-exempt | whether arming it is charged to that total too |
-| the same matmul many tokens wide, on the host and on every device, with the result compared | `--prefill-device`: which device, if any, runs the prefill |
+| one real layer of the model, its expert block and its dense matrices, at one token, on the host and on every device, with the result compared | the device tier's and the cost model's compute prices; a device that disagrees is refused |
+| the same layer 128 tokens wide, with the result compared | `--prefill-device`: which device, if any, runs the prefill |
+| a crossing: one token's hidden state to a device and back | whether the layers the fitter split stay split (`device-layers`) |
 | model: the largest layer's experts, and its other weights | what a prefill device costs in memory |
 | compute buffers at the widest graph, and what a token of width adds | `--ubatch`: how wide a prompt is computed |
 | whether uncached reads work on this path | `--no-odirect` |
@@ -980,10 +983,37 @@ machine and model planned twice minutes apart produced 4.3 GB and 8.2 GB of avai
 therefore two different cache budgets. The plan quotes the number it used, which is what makes the
 difference visible rather than mysterious.
 
-Compute devices are enumerated through `ggml_backend_dev_*` and measured, and one rule reads them:
-the choice of the prefill device. No rule moves decode onto one. A device whose memory is host
-memory frees nothing when a tensor moves off it, which is why the capacity tier is nearly inert on
-an integrated GPU and only the bandwidth tier is left.
+Compute devices are enumerated through `ggml_backend_dev_*` and measured, and two rules read them:
+the choice of the prefill device, and the device tier of the expert cache. A device whose memory is
+host memory frees nothing when a tensor moves off it, which is why the capacity tier is nearly inert
+on an integrated GPU and only the bandwidth tier is left.
+
+The device tier (`choose_device_tier`, [measured-planning.md](measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache)):
+the experts used most live next to the fastest processor, as RAM holds what flash would read. Where
+every layer's dense part is on devices with memory of their own and a device computes the model's
+experts faster than the host by `min_backend_win`, the bytes the capacity fitter gave whole layers'
+experts hold a cache of the experts used most, from every layer, computed on the device: every
+layer's experts are kept on the host (resident or streamed, as the regime then says) and the bytes
+become `--device-cache-mb`. It needs no record of the routing, since the cache fills from use; with
+one, the plan says how much of a token it serves. Where the device is not faster, a fact is missing,
+or not every dense part fits, the fitter's placement stands and the plan says which. On a shared
+pool, or with the caller's own placement, it says nothing and changes nothing.
+
+The layers the fitter split (`price_layers_home`, [measured-planning.md](measured-planning.md#step-3-the-cost-of-a-device-measured-on-a-real-layer)):
+where the capacity fitter put the dense part of some layers on a device and left their experts on
+the host, each crosses twice a token. Those layers' dense matmuls on the device plus their crossings
+are priced against the same matmuls on the host, on the device's rate on this model's own dense
+matrices and its measured crossing. Where the host wins by `min_backend_win`, bringing those layers
+home whole is one more candidate in the ranking, its RAM their dense part and (bounded by all of it)
+the context, against the cache; funded, the plan is made again with the device keeping as many whole
+layers, at the top, and the rest on the host. A device that cannot be shown to hold them (the file's
+largest layer, as many times, in its free memory) keeps the fitter's placement.
+
+The compute facts come from one real layer of the model (`core/src/plan/layer_probe.cpp`): the
+block's expert matrices as `mul_mat_id`, top-k per token, and its other matrices as matmuls, from
+the file's own bytes, on the host and on every device. A host and a device are always compared on the
+same experiment: the real layer where both ran it, the synthetic GEMV (which also sweeps the thread
+count) otherwise.
 
 ## Architecture
 

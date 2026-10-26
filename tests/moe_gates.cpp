@@ -67,9 +67,14 @@
 //   G20 the fitter's placement for a model larger than the device: dense parts on a device with
 //       memory of its own, experts streamed from the host, == the same placement resident, serial
 //       (a) and under --overlap (b). The router's ids are then read through a host copy.
-//   G21 the knob trial switches the decode thread count and overlap between timed windows of the
+//   G24 the knob trial switches the decode thread count and overlap between timed windows of the
 //       answer it decodes: == resident over one long answer (a) and over four turns that each end
 //       inside a window (b), and the trial must have reached its verdicts.
+//   G25 the device tier: llama.cpp's device-side expert cache over resident experts (a), over
+//       streamed experts (b) and streamed under n-gram speculation (c), each == the resident
+//       placement.
+//   G26 the real-layer probe fills every device's facts and agrees with the host on the layer's
+//       matmuls; it is timed, not gated, on the tiny models.
 //
 // G15 needs no separate "did it do anything" check of the G10 kind: the tensor is bound to
 // RESERVED address space, so a row the policy fails to fetch is not a slightly wrong weight but
@@ -1606,7 +1611,7 @@ int main(int argc, char ** argv) {
             } else {
                 std::printf("[PASS] G20a the experts streamed from the host (%.3f MiB read)\n", read_mib);
             }
-            // G21 — the device tier: the same placement with llama.cpp's device-side expert cache in
+            // G25 — the device tier: the same placement with llama.cpp's device-side expert cache in
             // front of the host's experts, so every routed expert is computed on the device from a
             // slot the cache filled. a) the experts resident on the host, b) streamed to it. Both
             // must give the resident placement's bytes: a slot is the expert's own bytes, computed by
@@ -1618,21 +1623,21 @@ int main(int argc, char ** argv) {
                 cached_s.moe.device_cache_mb = 4;
                 std::string s_cached, s_cached_s;
                 if (!gen(cached, s_cached, err) || !gen(cached_s, s_cached_s, err)) {
-                    std::printf("[FAIL] G21 a device cache run failed: %s\n", err.c_str());
+                    std::printf("[FAIL] G25 a device cache run failed: %s\n", err.c_str());
                     ++fails;
                 } else {
-                    fails += check("G21a device cache over resident experts == resident experts", s_placed, s_cached);
-                    fails += check("G21b device cache over streamed experts == resident experts", s_placed, s_cached_s);
+                    fails += check("G25a device cache over resident experts == resident experts", s_placed, s_cached);
+                    fails += check("G25b device cache over streamed experts == resident experts", s_placed, s_cached_s);
                     // c) with speculation: a verify batch is a few positions wide, served by the same
                     // slots, and greedy drafting accepts only what the target would have produced.
                     RunConfig cached_spec = cached_s;
                     cached_spec.spec.source = DraftSource::ngram;
                     std::string s_cached_spec;
                     if (!gen(cached_spec, s_cached_spec, err)) {
-                        std::printf("[FAIL] G21c a device cache run with speculation failed: %s\n", err.c_str());
+                        std::printf("[FAIL] G25c a device cache run with speculation failed: %s\n", err.c_str());
                         ++fails;
                     } else {
-                        fails += check("G21c device cache, streamed, n-gram speculation == resident experts", s_placed,
+                        fails += check("G25c device cache, streamed, n-gram speculation == resident experts", s_placed,
                                        s_cached_spec);
                     }
                 }
@@ -1653,14 +1658,14 @@ int main(int argc, char ** argv) {
         }
     }
 
-    // ── G21: the knob trial (docs/measured-planning.md, Step 2) switches the decode thread count and
+    // ── G24: the knob trial (docs/measured-planning.md, Step 2) switches the decode thread count and
     // overlap between windows of the answer it is decoding: the answer must be the resident one. ──
     {
         RunConfig ref = resident;
         ref.n_predict = 120; // long enough for both knobs' rounds at a two-token window
         std::string s_ref;
         if (!gen(ref, s_ref, err)) {
-            std::fprintf(stderr, "G21 reference run failed: %s\n", err.c_str());
+            std::fprintf(stderr, "G24 reference run failed: %s\n", err.c_str());
             return 2;
         }
         RunConfig trial = streamc; // the cache settles, then the windows alternate
@@ -1670,21 +1675,21 @@ int main(int argc, char ** argv) {
         trial.trial.window_tokens = 2;
         const RunResult r = run(trial);
         if (!r) {
-            std::fprintf(stderr, "G21 run failed: %s\n", r.error.c_str());
+            std::fprintf(stderr, "G24 run failed: %s\n", r.error.c_str());
             return 2;
         }
-        fails += check("G21a knob trial (threads 2 vs 1 vs 4, then overlap) == resident", s_ref, r.generated_text);
+        fails += check("G24a knob trial (threads 2 vs 1 vs 4, then overlap) == resident", s_ref, r.generated_text);
         // Identity alone would pass a trial that never switched anything.
         const MeasuredKnobs & mk = r.knobs;
         const bool threads_ok = mk.threads > 0 && mk.threads_tried == std::vector<int>({2, 1, 4}) && mk.rounds > 0;
         const bool overlap_ok = !have_hook || (mk.overlap >= 0 && mk.overlap_incumbent == 0);
         if (!threads_ok || !overlap_ok) {
-            std::printf("[FAIL] G21a the trial did not reach its verdicts: threads %d (%zu tried), overlap %d, "
+            std::printf("[FAIL] G24a the trial did not reach its verdicts: threads %d (%zu tried), overlap %d, "
                         "%d rounds\n",
                         mk.threads, mk.threads_tried.size(), mk.overlap, mk.rounds);
             ++fails;
         } else {
-            std::printf("[PASS] G21a the trial reached its verdicts: %d threads (x%.2f), overlap %s, %d rounds\n",
+            std::printf("[PASS] G24a the trial reached its verdicts: %d threads (x%.2f), overlap %s, %d rounds\n",
                         mk.threads, mk.threads_gain,
                         mk.overlap < 0 ? "not measured"
                         : mk.overlap   ? "on"
@@ -1692,20 +1697,20 @@ int main(int argc, char ** argv) {
                         mk.rounds);
         }
 
-        // G21b: the trial spans turns. A request that ends inside a window drops it and the next one
+        // G24b: the trial spans turns. A request that ends inside a window drops it and the next one
         // takes up the trial where it stood; every answer is still the resident one.
         RunConfig ref_b = resident;
         ref_b.n_predict = 40;
         std::string s_ref_b;
         if (!gen(ref_b, s_ref_b, err)) {
-            std::fprintf(stderr, "G21b reference run failed: %s\n", err.c_str());
+            std::fprintf(stderr, "G24b reference run failed: %s\n", err.c_str());
             return 2;
         }
         RunConfig turns = trial;
         turns.n_predict = ref_b.n_predict;
         std::unique_ptr<Session> s = Session::open(session_config_from(turns), err);
         if (!s) {
-            std::fprintf(stderr, "G21b open failed: %s\n", err.c_str());
+            std::fprintf(stderr, "G24b open failed: %s\n", err.c_str());
             return 2;
         }
         GenerateRequest req;
@@ -1717,7 +1722,7 @@ int main(int argc, char ** argv) {
         for (int t = 0; t < 4; ++t) {
             const RunResult rt = s->generate(req);
             if (!rt) {
-                std::fprintf(stderr, "G21b turn %d failed: %s\n", t, rt.error.c_str());
+                std::fprintf(stderr, "G24b turn %d failed: %s\n", t, rt.error.c_str());
                 return 2;
             }
             if (rt.generated_text != s_ref_b) {
@@ -1725,13 +1730,13 @@ int main(int argc, char ** argv) {
                 differ = rt.generated_text;
             }
         }
-        fails += check("G21b knob trial across four turns == resident, every turn", s_ref_b, same ? s_ref_b : differ);
+        fails += check("G24b knob trial across four turns == resident, every turn", s_ref_b, same ? s_ref_b : differ);
         const MeasuredKnobs mt = s->measured_knobs();
         if (mt.threads <= 0) {
-            std::printf("[FAIL] G21b the trial reached no verdict across the turns\n");
+            std::printf("[FAIL] G24b the trial reached no verdict across the turns\n");
             ++fails;
         } else {
-            std::printf("[PASS] G21b the trial reached its verdict across the turns: %d threads, overlap %s\n",
+            std::printf("[PASS] G24b the trial reached its verdict across the turns: %d threads, overlap %s\n",
                         mt.threads,
                         mt.overlap < 0 ? "not measured"
                         : mt.overlap   ? "on"
@@ -1826,6 +1831,56 @@ int main(int argc, char ** argv) {
             return 2;
         }
         fails += check("G23 f16 KV cache: streaming == resident", r_q, s_q);
+    }
+
+    // ── G26: the real-layer probe (docs/measured-planning.md, Step 3) ─────────────────────────────
+    // The planner's compute probe on this model's own layer: built from the file's tensors, run on
+    // the host and on every device this build has - the loopback RPC device among them, whose buffers
+    // are not host memory - with the results compared to the host's, and the crossing timed. Not an
+    // identity gate on output: it holds that every device that runs the layer agrees with the host,
+    // and that every fact the rules read was filled. Its time is printed, not gated: the samples are
+    // bounded by duration, and what a sanitized build adds around them is the build's, not the probe's.
+    {
+        const std::string rpc = loopback_rpc_device(); // registered once per process; "" without RPC
+        HardwareProfile hw = probe_hardware(model.c_str());
+        const ModelProfile mp = probe_model(model.c_str());
+        probe_device_support(hw, mp);
+        const auto t0 = std::chrono::steady_clock::now();
+        probe_bandwidth(hw, mp);
+        const double t_layer = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        probe_device_costs(hw, mp);
+        const double t_all = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        bool ok = hw.host_expert_gibs > 0.0 && hw.host_dense_gibs > 0.0 && hw.host_wide_matmul_gibs > 0.0;
+        std::printf("       G26 host: experts %.2f GiB/s, dense %.2f GiB/s, %u wide %.2f GiB/s (GEMV %.2f)\n",
+                    hw.host_expert_gibs, hw.host_dense_gibs, hw.wide_batch, hw.host_wide_matmul_gibs,
+                    hw.host_bandwidth_gibs);
+        bool saw_rpc = rpc.empty();
+        for (const ComputeDevice & d : hw.devices) {
+            if (d.is_cpu) continue;
+            std::printf("       G26 %s: experts %.2f, dense %.2f, wide %.2f GiB/s, identity %s/%s, crossing %.1f us\n",
+                        d.name.c_str(), d.expert_gibs, d.dense_gibs, d.wide_matmul_gibs,
+                        d.identity_ok == Tri::Yes  ? "same"
+                        : d.identity_ok == Tri::No ? "WRONG"
+                                                   : "unknown",
+                        d.wide_identity_ok == Tri::Yes  ? "same"
+                        : d.wide_identity_ok == Tri::No ? "WRONG"
+                                                        : "unknown",
+                        1e6 * d.split_seconds);
+            if (d.identity_ok == Tri::No || d.wide_identity_ok == Tri::No) ok = false;
+            if (d.name == rpc) {
+                saw_rpc = true;
+                ok = ok && d.expert_gibs > 0.0 && d.dense_gibs > 0.0 && d.wide_matmul_gibs > 0.0 &&
+                     d.identity_ok == Tri::Yes && d.wide_identity_ok == Tri::Yes && d.split_seconds > 0.0;
+            }
+        }
+        if (!ok || !saw_rpc) {
+            std::printf("[FAIL] G26 the real-layer probe left a fact unfilled or disagreed (%.2f s)\n", t_all);
+            ++fails;
+        } else {
+            std::printf("[PASS] G26 real-layer probe: every device agrees with the host (%.2f s compute, %.2f s "
+                        "with the device costs)\n",
+                        t_layer, t_all);
+        }
     }
 
     if (fails == 0) std::printf("\nall MoE byte-identity gates passed\n");

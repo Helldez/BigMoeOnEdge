@@ -14,9 +14,8 @@
 // **What does one host/device boundary crossing cost?** This is the term a bandwidth ratio cannot
 // see and the one that decides an offload in practice: dense and expert halves alternate per layer,
 // so a split placement crosses twice per layer. A device measured at 20 GiB/s against a host's 12
-// still ran the move at 0.53x. Measured here by building a chain of cheap ops over a
-// hidden-state-sized tensor, running it once on the host and once with alternate ops pinned to the
-// device, asking the scheduler how many splits the second one really had, and dividing.
+// still ran the move at 0.53x. Measured here the way the graph crosses at a layer boundary: one
+// token's hidden state copied to the device, one op launched on it there, and copied back.
 //
 // Both are best-effort and both fail closed: where the measurement cannot be made the fact stays
 // Unknown or zero, and every rule above declines rather than assuming. Nothing here writes a
@@ -37,6 +36,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <exception>
 #include <vector>
 
 namespace bmoe {
@@ -101,120 +101,68 @@ Tri measure_shared_memory(ggml_backend_dev_t dev) {
 
 // ── what does one boundary crossing cost? ────────────────────────────────────────────────────
 //
-// A chain of elementwise ops over one hidden-state-sized tensor. The ops are deliberately trivial:
-// what is being priced is the CROSSING, so the arithmetic on either side has to be small enough
-// that it does not show up in the difference.
-constexpr int k_chain_ops = 32;
+// The way the graph crosses at a layer boundary: one token's hidden state copied from host memory
+// into the device, the device's work on it launched, and the result copied back, each leg waited
+// for. The op is trivial on purpose - what is priced is the CROSSING, so the arithmetic on the far
+// side must not show up in it - and it is real, because a crossing is a split the device has to be
+// told to run. Half the round trip is one crossing.
+//
+// This replaces a measurement that differenced a chain of ops run all on the host against the same
+// chain alternating between host and device, through the scheduler. It read zero on a discrete card
+// whose backend runs asynchronously: the mixed arm came out no slower than the host arm, so a
+// crossing that costs tens of microseconds went unpriced and the plan said so on every run. Timing
+// the copies themselves, with every leg synchronized, cannot read zero on a device that is there.
 constexpr double k_sample_seconds = 0.15;
-constexpr int k_reps_max = 4096;
+constexpr int k_reps_max = 100000;
 
-struct Chain {
-    ggml_context * ctx = nullptr;
-    ggml_cgraph * graph = nullptr;
-    std::vector<ggml_tensor *> nodes;
-    ggml_tensor * input = nullptr;
-};
-
-bool build_chain(Chain & c, int64_t n_embd) {
+double measure_crossing(ggml_backend_dev_t dev, int64_t n_embd) {
+    if (!dev || n_embd <= 0) return 0.0;
+    ggml_backend_t backend = nullptr;
+    try {
+        backend = ggml_backend_dev_init(dev, nullptr);
+    } catch (const std::exception &) {
+        backend = nullptr;
+    }
+    if (!backend) return 0.0;
+    double per_crossing = 0.0;
     ggml_init_params ip{};
-    ip.mem_size = ggml_tensor_overhead() * (k_chain_ops + 8) + ggml_graph_overhead();
-    ip.mem_buffer = nullptr;
+    ip.mem_size = ggml_tensor_overhead() * 4 + ggml_graph_overhead();
     ip.no_alloc = true;
-    c.ctx = ggml_init(ip);
-    if (!c.ctx) return false;
-
-    c.input = ggml_new_tensor_1d(c.ctx, GGML_TYPE_F32, n_embd);
-    if (!c.input) return false;
-    ggml_set_name(c.input, "x");
-
-    ggml_tensor * cur = c.input;
-    for (int i = 0; i < k_chain_ops; ++i) {
-        cur = ggml_scale(c.ctx, cur, 1.0f);
-        if (!cur) return false;
-        c.nodes.push_back(cur);
-    }
-    c.graph = ggml_new_graph(c.ctx);
-    if (!c.graph) return false;
-    ggml_build_forward_expand(c.graph, cur);
-    return true;
-}
-
-// Run a chain under a scheduler until the sample is long enough to mean something, and return
-// seconds per pass. Sized by duration for the same reason every other probe here is: a fixed
-// repetition count makes the sample shorter as the machine gets faster, and a two-millisecond
-// sample on a general-purpose OS reports scheduling noise.
-double time_chain(ggml_backend_sched_t sched, ggml_cgraph * graph) {
-    if (ggml_backend_sched_graph_compute(sched, graph) != GGML_STATUS_SUCCESS) return 0.0;
-    const auto t0 = clock_t_::now();
-    int reps = 0;
-    while (reps < k_reps_max) {
-        if (ggml_backend_sched_graph_compute(sched, graph) != GGML_STATUS_SUCCESS) return 0.0;
-        ++reps;
-        if (seconds_since(t0) >= k_sample_seconds) break;
-    }
-    const double secs = seconds_since(t0);
-    return reps > 0 && secs > 0.0 ? secs / reps : 0.0;
-}
-
-// The measurement. Returns seconds per crossing, and reports how many crossings the mixed graph
-// actually had — which is the scheduler's own count, not ours, because what it decides to split is
-// its business and a number we assumed would be a number we invented.
-double measure_split_cost(ggml_backend_dev_t dev, ggml_backend_dev_t cpu_dev, int64_t n_embd, uint32_t * splits_out) {
-    if (!dev || !cpu_dev || n_embd <= 0) return 0.0;
-
-    ggml_backend_t dev_backend = ggml_backend_dev_init(dev, nullptr);
-    ggml_backend_t cpu_backend = ggml_backend_dev_init(cpu_dev, nullptr);
-    if (!dev_backend || !cpu_backend) {
-        if (dev_backend) ggml_backend_free(dev_backend);
-        if (cpu_backend) ggml_backend_free(cpu_backend);
-        return 0.0;
-    }
-
-    double per_split = 0.0;
-    Chain host_chain, mixed_chain;
-
-    // Arm 1: everything on the host. One split, and the baseline the crossing is measured against.
-    ggml_backend_t only_cpu[1] = {cpu_backend};
-    ggml_backend_sched_t sched_host = ggml_backend_sched_new(only_cpu, nullptr, 1, k_chain_ops + 8, false, false);
-
-    // Arm 2: the same chain with alternate ops pinned to the device, so the scheduler has to hand
-    // the tensor across and back repeatedly. `op_offload` stays false: the question is what OUR
-    // placement costs, not what the scheduler would do left to itself.
-    ggml_backend_t both[2] = {dev_backend, cpu_backend};
-    ggml_backend_sched_t sched_mixed = ggml_backend_sched_new(both, nullptr, 2, k_chain_ops + 8, false, false);
-
-    if (sched_host && sched_mixed && build_chain(host_chain, n_embd) && build_chain(mixed_chain, n_embd)) {
-        // A device that cannot run this op is not slow at crossing, it simply never crosses; the
-        // scheduler would keep everything on the host and the two arms would be the same graph.
-        const bool supported = ggml_backend_dev_supports_op(dev, mixed_chain.nodes.front());
-
-        if (supported) {
-            for (size_t i = 0; i < mixed_chain.nodes.size(); i += 2)
-                ggml_backend_sched_set_tensor_backend(sched_mixed, mixed_chain.nodes[i], dev_backend);
-
-            if (ggml_backend_sched_reserve(sched_host, host_chain.graph) &&
-                ggml_backend_sched_reserve(sched_mixed, mixed_chain.graph)) {
-                const double t_host = time_chain(sched_host, host_chain.graph);
-                const double t_mixed = time_chain(sched_mixed, mixed_chain.graph);
-                const int n_splits = ggml_backend_sched_get_n_splits(sched_mixed);
-
-                // One split is a graph that never left its backend: the pinning did not take, and
-                // there is nothing here to divide by.
-                if (t_host > 0.0 && t_mixed > t_host && n_splits > 1) {
-                    if (splits_out) *splits_out = (uint32_t) n_splits;
-                    per_split = (t_mixed - t_host) / (double) (n_splits - 1);
-                }
+    ggml_context * ctx = ggml_init(ip);
+    ggml_tensor * x = ctx ? ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_embd) : nullptr;
+    ggml_tensor * y = x ? ggml_scale(ctx, x, 1.0f) : nullptr;
+    ggml_cgraph * gf = y ? ggml_new_graph(ctx) : nullptr;
+    // A device that cannot run the op never crosses this way, and is left unmeasured.
+    ggml_backend_buffer_t buf =
+        (gf && ggml_backend_dev_supports_op(dev, y)) ? ggml_backend_alloc_ctx_tensors(ctx, backend) : nullptr;
+    if (buf) {
+        ggml_build_forward_expand(gf, y);
+        std::vector<float> in((size_t) n_embd, 0.5f), out((size_t) n_embd, 0.0f);
+        const auto cross = [&] {
+            ggml_backend_tensor_set(x, in.data(), 0, ggml_nbytes(x));
+            const bool ok = ggml_backend_graph_compute(backend, gf) == GGML_STATUS_SUCCESS;
+            ggml_backend_synchronize(backend);
+            ggml_backend_tensor_get(y, out.data(), 0, ggml_nbytes(y));
+            return ok;
+        };
+        if (cross()) { // the first pays for setting up the path, untimed
+            const auto t0 = clock_t_::now();
+            int reps = 0;
+            bool ok = true;
+            while (ok && reps < k_reps_max) {
+                ok = cross();
+                ++reps;
+                if (seconds_since(t0) >= k_sample_seconds) break;
             }
+            const double secs = seconds_since(t0);
+            // The copy came back: a device that returned something else did not cross.
+            if (ok && reps > 0 && secs > 0.0 && out[0] == in[0]) per_crossing = secs / reps / 2.0;
         }
+        ggml_backend_buffer_free(buf);
     }
-
-    if (host_chain.ctx) ggml_free(host_chain.ctx);
-    if (mixed_chain.ctx) ggml_free(mixed_chain.ctx);
-    if (sched_host) ggml_backend_sched_free(sched_host);
-    if (sched_mixed) ggml_backend_sched_free(sched_mixed);
-    ggml_backend_free(dev_backend);
-    ggml_backend_free(cpu_backend);
-    return per_split;
+    if (ctx) ggml_free(ctx);
+    ggml_backend_free(backend);
+    return per_crossing;
 }
 
 // ── how fast does host memory reach the device's own? ───────────────────────────────────────
@@ -262,8 +210,6 @@ double measure_upload(ggml_backend_dev_t dev, uint64_t granule) {
 } // namespace
 
 void probe_device_costs(HardwareProfile & hw, const ModelProfile & model) {
-    ggml_backend_dev_t cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
-
     for (ComputeDevice & d : hw.devices) {
         if (d.is_cpu) continue;        // the host is not a device to cross to
         if (!d.probe_here()) continue; // asked in another process, or found unusable there
@@ -281,12 +227,8 @@ void probe_device_costs(HardwareProfile & hw, const ModelProfile & model) {
         // a crossing costs; the answer is worth having and it is not worth a failed allocation.
         if (d.has_own_memory() && d.memory_free && d.memory_free < k_probe_alloc * 4) continue;
 
-        uint32_t splits = 0;
-        const double per_split = measure_split_cost(dev, cpu_dev, (int64_t) model.n_embd, &splits);
-        if (per_split > 0.0) {
-            d.split_seconds = per_split;
-            d.graph_splits = splits;
-        }
+        const double per_crossing = measure_crossing(dev, (int64_t) model.n_embd);
+        if (per_crossing > 0.0) d.split_seconds = per_crossing;
         // Only where there is a second pool to reach: on a shared one a miss is a copy within it.
         const uint64_t expert = model.expert_slice_bytes * std::max<uint32_t>(1, model.n_expert_projections);
         if (d.has_own_memory() && expert > 0) d.upload_gibs = measure_upload(dev, expert);

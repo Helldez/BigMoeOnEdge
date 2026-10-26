@@ -118,7 +118,9 @@ core/
                 routing - the routing record's text form, the LRU replay over it, the hit curve
                   and the hottest experts (measured-planning.md, Step 1); pure as the rules
                 measured_knobs - the knob verdicts' text form and the hardware fingerprint (Step 2)
-                hardware_probe, model_probe, storage_probe, headroom_probe, bandwidth_probe, gate_probe,
+                hardware_probe, model_probe, storage_probe, headroom_probe, bandwidth_probe,
+                  layer_probe (one real layer of the model, its experts and its dense matrices, on
+                  every backend: measured-planning.md, Step 3), gate_probe,
                   device_probe, placement_probe, isolated_probe (a device asked in a second
                   process, so a driver that ends it ends only that) - the adapters that measure a
                   machine and read a gguf; the only place in the planner where a platform or

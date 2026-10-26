@@ -7,20 +7,40 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **The cost of a device measured on a real layer** (Step 3 of `docs/measured-planning.md`). The
+  planner's compute probe now builds one layer of the model from the file's own tensors and bytes
+  (the expert block as `mul_mat_id` over the layer's expert matrices, top-k per token, and the
+  block's other matrices as plain matmuls) and runs it on the host and on every device at decode
+  width and at prefill width, the result compared with the host's first: a device that disagrees is
+  refused. Four facts come out of it: each backend's rate on the expert block and on the dense
+  matrices at one token (`expert_gibs`, `dense_gibs`, the host's `host_expert_gibs` /
+  `host_dense_gibs`), and the whole layer at 128 tokens, which replaces the synthetic wide matmul
+  behind `--prefill-device` (kept for a file whose layer cannot be read). The synthetic GEMV stays
+  for the thread sweep and the figures that mean it. `--plan-explain` prints the new facts per
+  device.
+- **A crossing that is measured everywhere, and priced into the placement.** The crossing is now
+  timed the way the graph crosses at a layer boundary - one token's hidden state copied to the
+  device, one op run there, copied back, each leg waited for - instead of by differencing a chain of
+  ops through the scheduler, which read 0 on CUDA and left every discrete card's crossing unpriced.
+  With it, `--auto` prices the layers the capacity fitter split - dense part on a device, experts on
+  the host, two crossings a token each - against the same layers whole on the host, on the device's
+  measured dense rate and crossing, and enters the saving in the ranking against the expert cache
+  (`device-layers`, `device-crossing`). Where it is funded those layers come home and the device
+  keeps its whole layers at the top; where the device saves more than the hops cost, the fitter's
+  split stands and the plan says by how much.
 - **Device memory as a tier of the expert cache** (Step 4 of `docs/measured-planning.md`, closes
   #378, supersedes #381). `--device-cache-mb N` puts llama.cpp's device-side expert cache in front of
   the experts the host holds, resident or streamed: the experts used most are computed on the device
   from a cache in its own memory, and a miss is uploaded from the host. `--auto` arms it where a device
-  has memory of its own, every layer's dense part is on it, and the cache prices faster than the
-  capacity fitter's whole layers on the same bytes. The price reads three measured facts of the
-  device (its rate on the experts, a crossing, and a new one: the rate at which host memory reaches it
-  one expert at a time, `upload_gibs`, measured in its isolated probe) and the share of the routed
-  bytes the cache serves, from this model's recorded routing. Without a record the share is credited
-  linearly and the split stands; the run then records its routing even when it does not stream
-  (`--record-unstreamed`, which the plan sets), so the next plan of the file prices the cache. On a
+  has memory of its own, every layer's dense part is on it, and it computes the model's experts
+  faster than the host: the experts used most then live next to the fastest processor, as RAM holds
+  what flash would read, in place of the fitter's whole layers whose experts wait on the host every
+  token. The cache fills from use and needs no record of the routing; a recorded routing says in the
+  plan how much of a token it serves. The device's isolated probe also measures the rate at which
+  host memory reaches it one expert at a time (`upload_gibs`), printed with the plan. On a
   24 GB discrete card with a 125B model resident on the host, a 16 GB device cache decoded at 61.8 and
   62.8 tok/s over 256 tokens and 84-88 once settled, against 31.9 for the best whole-layer split and
-  18.9 with the experts on the cores. Speculation now works beside it. Gates G21a-c prove the cached
+  18.9 with the experts on the cores. Speculation now works beside it. Gates G25a-c prove the cached
   runs byte-identical to the resident placement (resident, streamed, streamed under n-gram
   speculation), and G2u that an unstreamed run's record is the routing a stream asks for.
 - **The cache is sized from the model's own routing** (Step 1 of `docs/measured-planning.md`). A
@@ -53,7 +73,7 @@ Semantic Versioning.
   front-ends keep it beside the routing record, a line per machine (`hardware_fingerprint()`) and
   engine version, and the next plan of the model starts from it, states `threads` and `overlap` as
   measured on this model, and measures nothing. `--io-threads` is left to the storage probe, which
-  already measures it on the model's own file. Gate `G21` holds the output byte-identical while the
+  already measures it on the model's own file. Gate `G24` holds the output byte-identical while the
   trial switches, within one answer and across turns; the policy has its own test (`knob_trial`).
   With nothing kept and the feature off, the plan is unchanged. The on-device runs this is judged by
   are owed.
@@ -65,6 +85,13 @@ Semantic Versioning.
   expert set against the cumulative rate. `bmoe-server`'s `/api/plan` `measured.cache_hit_pct` is
   likewise the last turn's decode now. `RunSummary::cache_hit_decode_pct` carries it;
   `BMOE_DONE`'s `cache_hit_pct` is unchanged.
+- **The device tier and the cost model read the real layer's rates.** `choose_device_tier` prices the
+  split's host layers at the host's rate on the model's own expert block, where host and device were
+  both measured on it (the synthetic GEMV read a 48-core host at 77 GiB/s while its decode's experts
+  ran at about 12), and the allocation prices the host's expert and dense compute each at its own
+  rate. Every comparison of a host with a device takes both figures from the same experiment, the
+  GEMV's where either side lacks the layer. The isolated device probe's facts line is `v=2`, with
+  `expert=` and `dense=`.
 ### Fixed
 - **A run reserves the logit rows its plan charged, with a prefill device or without one.** The
   context capped the rows a graph may return at 128 only when a device ran the prefill, while the

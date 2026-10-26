@@ -480,6 +480,7 @@ struct Session::Impl {
     void build_sampler(const SessionConfig & c);
     void install_abort_callback();
     bool init_speculation(Opening & o);
+    bool init_mtp_driver(Opening & o);
     bool bind_streaming(Opening & o);
     bool capture_warmup(Opening & o);
     bool arm_device_cache(Opening & o);
@@ -1203,27 +1204,33 @@ void Session::Impl::install_abort_callback() {
         this);
 }
 
+// The MTP speculative driver over the two contexts as they are now: it holds both, so a context made
+// again (the device cache's, arm_device_cache) needs a driver made again.
+bool Session::Impl::init_mtp_driver(Opening & o) {
+    const SessionConfig & cfg = o.cfg;
+    common_params_speculative sp;
+    sp.types = {COMMON_SPECULATIVE_TYPE_DRAFT_MTP};
+    sp.draft.n_max = cfg.spec.draft_max;
+    sp.draft.n_min = 0; // never skip a whole draft; width is bounded by n_max and p_min below
+    // The head's own confidence floor for continuing to draft. At 0 (the default) it drafts
+    // n_max tokens however unsure it is, which is what the host was measured at; above 0 the
+    // width becomes adaptive per step. See SpecConfig::draft_p_min for why that pays twice on a
+    // streamed device.
+    sp.draft.p_min = cfg.spec.draft_p_min;
+    sp.draft.ctx_tgt = ctx.get(); // self-speculation: one model, two contexts over it
+    sp.draft.ctx_dft = ctx_dft.get();
+    mtp.reset(common_speculative_init(sp, /*n_seq*/ 1));
+    if (!mtp) return o.fail("failed to initialise MTP speculative decoding");
+    return true;
+}
+
 // The speculative driver (MTP) and the verify batch every speculation source shares.
 bool Session::Impl::init_speculation(Opening & o) {
     const SessionConfig & cfg = o.cfg;
     // Built before the capture warm-up on purpose: the driver's constructor turns on nextn
     // extraction for both contexts, which is what the target graph looks like for the rest of the
     // session. Capturing the graph it actually runs beats capturing the one it briefly had.
-    if (cfg.spec.is_mtp()) {
-        common_params_speculative sp;
-        sp.types = {COMMON_SPECULATIVE_TYPE_DRAFT_MTP};
-        sp.draft.n_max = cfg.spec.draft_max;
-        sp.draft.n_min = 0; // never skip a whole draft; width is bounded by n_max and p_min below
-        // The head's own confidence floor for continuing to draft. At 0 (the default) it drafts
-        // n_max tokens however unsure it is, which is what the host was measured at; above 0 the
-        // width becomes adaptive per step. See SpecConfig::draft_p_min for why that pays twice on a
-        // streamed device.
-        sp.draft.p_min = cfg.spec.draft_p_min;
-        sp.draft.ctx_tgt = ctx.get(); // self-speculation: one model, two contexts over it
-        sp.draft.ctx_dft = ctx_dft.get();
-        mtp.reset(common_speculative_init(sp, /*n_seq*/ 1));
-        if (!mtp) return o.fail("failed to initialise MTP speculative decoding");
-    }
+    if (cfg.spec.is_mtp() && !init_mtp_driver(o)) return false;
 
     // The wide verify batch belongs to the loop, not to a source: whoever drafted, the target is
     // handed 1 + draft_max positions in one decode. Allocated for any speculation, which is what
@@ -1506,11 +1513,16 @@ bool Session::Impl::arm_device_cache(Opening & o) {
         return o.fail("--device-cache-mb computes the experts on the device; --overlap waits for them on the CPU");
     if (prefill) return o.fail("--device-cache-mb keeps the layers on their device; a prefill device moves them");
     if (cfg.n_gpu_layers == 0) return o.fail("--device-cache-mb needs the layers on a device (--gpu-layers)");
+    // The speculative driver holds both contexts, and both are made again: it goes first, and is
+    // made again over the new ones.
+    const bool had_mtp = mtp != nullptr;
+    mtp.reset();
+    ctx_dft.reset();
     ctx.reset();
     device_cache_armed = true;
     if (!create_contexts(o)) return false;
     install_abort_callback();
-    return true;
+    return !had_mtp || init_mtp_driver(o);
 }
 
 // Everything streaming adds to a loaded model: capture the expert tensors, place them in the file,

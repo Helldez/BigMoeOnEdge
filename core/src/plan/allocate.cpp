@@ -143,11 +143,12 @@ struct Pricing {
     const PlannerPolicy & pol;
     Allocation & a;
 
-    double host_gibs = 0.0;    // how fast the host consumes this model's own weight bytes
-    double refault_mibs = 0.0; // what a mapped group costs once pressure has dropped its pages
-    uint32_t slice = 0;        // this model's expert slice, the request size the expert lane issues
-    uint32_t lanes = 0;        // the lane count that reached the best rate at that size
-    double stream_mibs = 0.0;  // the rate the expert lane will really see
+    double host_gibs = 0.0;       // how fast the host consumes this model's expert bytes
+    double host_dense_gibs = 0.0; // and its dense ones: the real layer's two halves differ
+    double refault_mibs = 0.0;    // what a mapped group costs once pressure has dropped its pages
+    uint32_t slice = 0;           // this model's expert slice, the request size the expert lane issues
+    uint32_t lanes = 0;           // the lane count that reached the best rate at that size
+    double stream_mibs = 0.0;     // the rate the expert lane will really see
 
     uint64_t fixed = 0;     // the ledger's fixed lines: context, compute buffers, an armed device
     uint64_t spendable = 0; // what the ranking may spend once those are off the top
@@ -169,6 +170,9 @@ struct Candidate {
     // before was taken whole, since a hit further along the curve is only bought by holding the
     // bytes before it. -1 for every other candidate.
     int curve_piece = -1;
+    // The device's dense-only layers brought home (AllocationInputs::layers_home_*): RAM bought to
+    // remove crossings rather than reads. It places no group.
+    bool layers_home = false;
 };
 
 // The cache as pieces of this model's measured hit curve, for the ranking. Each piece is a stretch
@@ -222,7 +226,9 @@ void measure_rates(Pricing & c) {
     Allocation & a = c.a;
     // Compute: how fast the host consumes this model's own weight bytes. Not a raw bandwidth figure,
     // and the difference is the point — a quantized matmul carries dequantisation per byte.
-    c.host_gibs = hw.host_bandwidth_gibs;
+    // Measured on the model's own layer where it was, each half at its own rate.
+    c.host_gibs = hw.host_expert_rate();
+    c.host_dense_gibs = hw.host_dense_rate();
 
     // The refault price. What a mapped group costs once pressure has dropped its pages, paid one
     // page at a time. Measured separately because it is not a fraction of the sequential rate.
@@ -327,7 +333,8 @@ std::vector<Candidate> price_lanes(Pricing & c) {
         if (d.bytes == 0) continue;
         GroupPlacement & p = a.at(g);
 
-        const double compute = seconds_at_gibs(d.bytes_per_token, c.host_gibs);
+        const double compute =
+            seconds_at_gibs(d.bytes_per_token, g == WeightGroup::Experts ? c.host_gibs : c.host_dense_gibs);
         const double refault = seconds_at_mibs(d.bytes_per_token, c.refault_mibs);
 
         // The baseline: mapped, and refaulted. Both terms, because the bytes must be read AND
@@ -412,6 +419,20 @@ std::vector<Candidate> price_lanes(Pricing & c) {
         candidates.push_back(
             {g, resident_lane, d.bytes, saved, saved / (double) d.bytes, false, 0, "read whole, every token"});
     }
+
+    // The crossings a device's dense-only layers cost, against the RAM that brings them home.
+    if (c.in.layers_home_bytes > 0 && c.in.layers_home_saved > 0.0) {
+        Candidate k{WeightGroup::Other,
+                    Lane::Resident,
+                    c.in.layers_home_bytes,
+                    c.in.layers_home_saved,
+                    c.in.layers_home_saved / (double) c.in.layers_home_bytes,
+                    false,
+                    0,
+                    "layers home"};
+        k.layers_home = true;
+        candidates.push_back(k);
+    }
     return candidates;
 }
 
@@ -446,6 +467,30 @@ void spend_ranking(Pricing & c, std::vector<Candidate> & candidates) {
     uint64_t remaining = c.spendable;
     bool curve_open = true; // the next piece of the curve may still be taken
     for (const Candidate & k : candidates) {
+        if (k.layers_home) {
+            const std::string n = std::to_string(c.in.layers_home_count);
+            char saved[32];
+            std::snprintf(saved, sizeof(saved), "%.2f ms", 1e3 * k.saved);
+            if (k.bytes <= remaining) {
+                remaining -= k.bytes;
+                a.layers_home = true;
+                note(a, "device-crossing", saved,
+                     "The " + n + " layers whose experts stay on the CPU come home whole: the hop costs more.",
+                     "the " + n +
+                         " layers whose dense part is on a device and whose experts are on the host cross "
+                         "the boundary twice a token each; measured, those crossings cost " +
+                         saved + " a token more than the device saves on their dense matmuls, and the " +
+                         mibs(k.bytes) + " that brings them onto the host is worth more there than as cache");
+            } else {
+                note(a, "device-crossing", saved,
+                     "The " + n + " layers on the device stay there: bringing them home needs " + size_brief(k.bytes) +
+                         ".",
+                     "bringing the " + n + " dense-only device layers onto the host would save " + saved +
+                         " a token in crossings, and needs " + mibs(k.bytes) + " where " + mibs(remaining) +
+                         " was left at its place in the ranking");
+            }
+            continue;
+        }
         GroupPlacement & p = a.at(k.group);
         if (k.curve_piece > 0 && !curve_open) continue;
         if (k.fractional) {
@@ -667,13 +712,17 @@ void offer_devices(Pricing & c) {
         const bool resident = p.lane == Lane::Resident || p.lane == Lane::Pinned;
         if (!resident) continue;
 
-        const double t_host = seconds_at_gibs(d.bytes_per_token, c.host_gibs);
+        // Each device against the host on the same experiment (bmoe/hardware_profile.h, RatePair): the
+        // model's own dense matrices where both were measured on them, the synthetic GEMV otherwise.
         const ComputeDevice * best = nullptr;
-        double best_t = t_host;
+        double t_host = 0.0, best_t = 0.0, best_ratio = 1.0;
+        RatePair best_rates;
 
         for (size_t di = 0; di < hw.devices.size(); ++di) {
             const ComputeDevice & dev = hw.devices[di];
-            if (dev.is_cpu || dev.memory_bandwidth_gibs <= 0.0) continue;
+            if (dev.is_cpu) continue;
+            const RatePair r = dense_rates(hw, dev);
+            if (r.device <= 0.0 || r.host <= 0.0) continue;
             if (dev.identity_ok != Tri::Yes) continue; // correctness first, and it must be a fact
             if (dev.needs_repack == Tri::Yes) continue;
             // A device that cannot hold the group is not an option; and on a device whose memory IS
@@ -681,10 +730,14 @@ void offer_devices(Pricing & c) {
             // planner allocates memory that does not exist.
             if (dev.has_own_memory() && dev.memory_free && dev.memory_free < d.bytes) continue;
 
-            const double t = seconds_at_gibs(d.bytes_per_token, dev.memory_bandwidth_gibs);
-            if (t < best_t * (1.0 - c.pol.min_backend_win)) {
+            const double th = seconds_at_gibs(d.bytes_per_token, r.host);
+            const double t = seconds_at_gibs(d.bytes_per_token, r.device);
+            if (t < th * best_ratio * (1.0 - c.pol.min_backend_win)) {
                 best = &dev;
                 best_t = t;
+                t_host = th;
+                best_ratio = t / th;
+                best_rates = r;
             }
         }
         if (!best) continue;
@@ -694,8 +747,8 @@ void offer_devices(Pricing & c) {
         // group on each side, and the experts are always on the host today.
         const uint32_t crossings = 2 * std::max(1u, model.n_moe_layer);
         if (best->split_seconds <= 0.0) {
-            const std::string rates = std::to_string((int) std::lround(best->memory_bandwidth_gibs)) + " vs " +
-                                      std::to_string((int) std::lround(hw.host_bandwidth_gibs)) + " GiB/s";
+            const std::string rates = std::to_string((int) std::lround(best_rates.device)) + " vs " +
+                                      std::to_string((int) std::lround(best_rates.host)) + " GiB/s";
             note(a, "device-crossing", rates,
                  std::string("The ") + group_name((WeightGroup) i) +
                      " weights stay on the CPU: the device is faster, the hop to it "
@@ -721,7 +774,9 @@ void offer_devices(Pricing & c) {
         }
         for (size_t di = 0; di < hw.devices.size(); ++di)
             if (&hw.devices[di] == best) p.device = (int) di;
-        p.seconds_per_token -= (t_host - best_t) - split_cost;
+        // The saving at the ratio the pair measured, on the compute this group was priced with.
+        const double t_priced = seconds_at_gibs(d.bytes_per_token, c.host_dense_gibs);
+        p.seconds_per_token -= t_priced * (1.0 - best_ratio) - split_cost;
         p.reason += "; computed on " + best->name;
         any_device = true;
     }
