@@ -74,6 +74,14 @@ constexpr uint64_t k_outrun_bytes = 64ull << 20;
 // The most expert bytes, and the most dense bytes, the probe holds of the layer. A layer of a large
 // model is gigabytes; the probe needs a working set, not the layer.
 constexpr uint64_t k_hold_max_bytes = 256ull << 20;
+// A graph's size bounds its nodes AND its leafs together. Every node here is one matmul, whose weight,
+// input and (for the experts) selection are leafs of their own, so a graph of n of them holds up to
+// 4n entries: sized for nodes alone, a model whose layer needs many copies to outrun the last-level
+// cache (a 512-expert block measured on a 24 GB card) overflowed it and aborted the plan.
+size_t graph_size(size_t n_nodes) {
+    return n_nodes * 4 + 8;
+}
+
 // The most copies of a layer's matrices a pass reads, for a model so small that one copy sits in a
 // cache. Bounds the graph as well as the memory.
 constexpr int k_replicas_max = 16;
@@ -318,7 +326,7 @@ LayerRun run_layer(ggml_backend_dev_t dev, const Layer & L, int n_threads) {
     const size_t n_tensors =
         n_nodes * 2 + (size_t) L.replicas_e * n_ex + (size_t) L.replicas_d * n_de + (size_t) L.groups + 8;
     ggml_init_params ip{};
-    ip.mem_size = ggml_tensor_overhead() * n_tensors + ggml_graph_overhead_custom(n_nodes + 8, false) * 4;
+    ip.mem_size = ggml_tensor_overhead() * n_tensors + ggml_graph_overhead_custom(graph_size(n_nodes), false) * 4;
     ip.no_alloc = true;
     ggml_context * ctx = ggml_init(ip);
     if (!ctx) {
@@ -397,7 +405,7 @@ LayerRun run_layer(ggml_backend_dev_t dev, const Layer & L, int n_threads) {
 
     // A graph of the nodes this backend has a kernel for; the rest are counted, not run.
     const auto build = [&](std::vector<Node> & nodes, Part & part) -> ggml_cgraph * {
-        ggml_cgraph * gf = ggml_new_graph_custom(ctx, nodes.size() + 8, false);
+        ggml_cgraph * gf = ggml_new_graph_custom(ctx, graph_size(nodes.size()), false);
         bool any = false;
         part.out.assign(nodes.size(), {});
         for (Node & n : nodes) {

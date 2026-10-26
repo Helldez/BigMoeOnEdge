@@ -2367,6 +2367,10 @@ Plan plan_from(const RunConfig & base,
                                      "the fitter's placement stands";
             s.p.decisions.push_back(s.home.decision);
         }
+        // Resident, the cores still compute whatever the devices do not: the layers the fitter left on
+        // the host, or all of them. Leaving the count at its default here ran a 24 GB card's 21 host
+        // layers on 4 threads of a 32-core box, at 26 tok/s where 16 threads decoded at 47.5.
+        choose_threads(s);
         return p;
     }
 
