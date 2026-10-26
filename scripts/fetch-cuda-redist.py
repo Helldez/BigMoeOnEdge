@@ -92,6 +92,11 @@ def main():
             os.remove(archive)
             shutil.rmtree(unpacked)
             print("%s %s" % (comp, manifest[comp].get("version", "")), flush=True)
+    # The Linux archives put their libraries in lib, where the installer writes lib64 and nvcc's
+    # profile looks: the name it expects, pointing at the tree the archives wrote.
+    lib, lib64 = os.path.join(args.out, "lib"), os.path.join(args.out, "lib64")
+    if args.platform.startswith("linux") and os.path.isdir(lib) and not os.path.lexists(lib64):
+        os.symlink("lib", lib64)
 
 
 if __name__ == "__main__":

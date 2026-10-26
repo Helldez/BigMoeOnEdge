@@ -121,7 +121,9 @@ jobs:
           - os: macos-14
             target: macos-arm64
             cmake_extra: ""
-          - os: windows-latest
+          # Visual Studio 2022, not the latest image's 2026: CUDA 12 accepts host compilers up to
+          # 2022 only, as llama.cpp's own Windows CUDA builds run.
+          - os: windows-2022
             target: windows-x86_64
             cuda: 12.8.1
             # The shared C runtime: modules and the engine must share one heap, which a static
