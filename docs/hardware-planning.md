@@ -608,7 +608,8 @@ with two slots, 11.7 s with one, the same generated text, 448 MiB less. One slot
 with the routing already known and none from a prediction.
 
 Anything else in the run that cannot share a session with a device prefill - layers the fitter
-placed on devices, row streaming, speculative decoding, a kept prefix state - declines it with the
+placed on devices, row streaming, a speculative verify as wide as the device's narrowest piece, a
+kept prefix state - declines it with the
 reason, instead of producing a
 configuration that does not start. A device the caller named, or turned off, is left alone.
 

@@ -1154,6 +1154,46 @@ int main(int argc, char ** argv) {
             std::snprintf(b, sizeof(b), "%.17g/%d", p_dev.nll, p_dev.n_top1);
             fails += check("G16c perplexity with device prefill == all CPU (nll/top1, bit for bit)", a, b);
 
+            // G16d: speculation beside the prefill device. The verify batches are host graphs narrower
+            // than any piece the device is handed (validate() holds the two apart), so the run is the
+            // CPU one, and the n-gram source drafts from a prompt that repeats itself.
+            {
+                RunConfig ref = pref;
+                ref.n_ubatch = 8;
+                ref.prompt = "one two three four five six seven eight one two three four five six seven eight one "
+                             "two three four five six seven eight one two three four";
+                RunConfig dspec = ref;
+                dspec.prefill.device = dev;
+                dspec.prefill.min_tokens = 8;
+                dspec.spec.source = DraftSource::ngram;
+                dspec.spec.draft_max = 3;
+                std::string s_ref;
+                if (!gen(ref, s_ref, err)) {
+                    std::fprintf(stderr, "G16d reference run failed: %s\n", err.c_str());
+                    return 2;
+                }
+                const RunResult rd = run(dspec);
+                if (!rd) {
+                    std::printf("[FAIL] G16d prefill device with speculation failed: %s\n", rd.error.c_str());
+                    ++fails;
+                } else {
+                    fails += check("G16d prefill on device, n-gram speculation on the CPU == all CPU", s_ref,
+                                   rd.generated_text);
+                    if (rd.summary.prefill_device_tokens <= 0) {
+                        std::printf("[FAIL] G16d the device prefilled nothing\n");
+                        ++fails;
+                    }
+                    RunConfig wide = dspec;
+                    wide.spec.draft_max = 7;
+                    if (validate(wide).ok) {
+                        std::printf("[FAIL] G16d a verify as wide as the device's narrowest piece was accepted\n");
+                        ++fails;
+                    } else {
+                        std::printf("[PASS] G16d a verify as wide as the device's narrowest piece is refused\n");
+                    }
+                }
+            }
+
             // ── G17: streamed experts through the device arena ──
             // The model streams; the device prefill gets its experts from two slots refilled layer by
             // layer while decode keeps the streamer's cache. Same reference, same pieces. Variants: no

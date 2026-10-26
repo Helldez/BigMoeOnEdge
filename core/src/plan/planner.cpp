@@ -1348,8 +1348,9 @@ std::string prefill_conflict(const RunConfig & c) {
                "only device with none of its own";
     if (c.moe.row_stream)
         return "row-streamed tables are gathered on the host, inside a graph that would run on the device";
-    if (c.spec.enabled())
-        return "speculative decoding widens host graphs past the width that keeps the two placements apart";
+    if (c.spec.enabled() && c.spec.draft_max + 1 >= c.prefill.min_tokens)
+        return "a speculative verify is as wide as the narrowest piece a device is handed, so it would reuse a graph "
+               "the device ran";
     if (c.decide.enabled && c.decide.prefix_cache == PrefixCacheMode::On)
         return "a kept prefix state would be saved from where the model state was before it moved";
     if (c.n_ubatch > 0 && c.n_ubatch < c.prefill.min_tokens)

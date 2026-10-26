@@ -331,7 +331,9 @@ struct Session::Impl {
     std::unique_ptr<detail::PrefillPath> prefill;
 
     // Where the next graph actually goes: a device with no room right now leaves it on the host.
-    bool place_prefill(bool on_device) { return prefill ? prefill->place(on_device) : false; }
+    bool place_prefill(bool on_device, bool hold_slots = false) {
+        return prefill ? prefill->place(on_device, hold_slots) : false;
+    }
     int decode_placed(llama_context * c, const llama_batch & b) {
         return prefill ? prefill->decode(c, b) : llama_decode(c, b);
     }
@@ -2524,7 +2526,10 @@ struct Session::Impl::Turn {
             }
             trace_flush();
             // The draft context has to walk the prompt too: its KV must reach the last prompt position
-            // or the first draft is made from a hidden state that never saw the prompt.
+            // or the first draft is made from a hidden state that never saw the prompt. It is a second
+            // context on the host's backends, so the weights go home for its walk, slots kept, and the
+            // next wide chunk takes them out again.
+            if (mtp_on && im.prefill) im.place_prefill(false, /*hold_slots*/ true);
             if (mtp_on && !common_speculative_process(im.mtp.get(), to_common_batch(pf)))
                 return fail(RunError::Failed, "MTP draft context failed to process the prefill batch");
         }

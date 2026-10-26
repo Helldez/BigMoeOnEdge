@@ -216,9 +216,15 @@ ValidationResult validate(const RunConfig & cfg) {
         if (cfg.moe.row_stream)
             return fail("prefill.device does not combine with moe.row_stream: the tables it serves are "
                         "gathered on the host, inside a graph that would run on the device");
-        // Speculation widens CPU graphs past one token and runs a second context over the same
-        // weights; both would break the width invariant the rebind relies on.
-        if (cfg.spec.enabled()) return fail("prefill.device does not combine with speculative decoding");
+        // A verify batch is a host graph a few positions wide. llama.cpp reuses a graph of the same
+        // shape without scheduling it again, so it must never be as wide as a graph the device runs:
+        // narrower than the narrowest piece the device is handed, it can only reuse host graphs.
+        if (cfg.spec.enabled() && cfg.spec.draft_max + 1 >= cfg.prefill.min_tokens)
+            return fail(
+                "spec.draft_max=" + std::to_string(cfg.spec.draft_max) + " verifies " +
+                std::to_string(cfg.spec.draft_max + 1) +
+                " positions at once, as wide as prefill.min_tokens=" + std::to_string(cfg.prefill.min_tokens) +
+                ": a verify graph would reuse one the device ran. Draft fewer, or hand the device wider pieces.");
         // llama.cpp saves and restores a sequence through views of the KV cache it made once, over the
         // buffer the state was allocated in; the move rebinds the cache tensors, not those views, so a
         // saved or restored state would be read from and written to memory the model no longer uses.

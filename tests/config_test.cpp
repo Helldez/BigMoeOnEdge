@@ -385,7 +385,13 @@ int main() {
         c.moe.row_stream = false;
         c.moe.enabled = false;
         c.spec.source = DraftSource::ngram;
-        expect_fail("prefill device with speculation breaks the width invariant", c);
+        c.spec.draft_max = 3;
+        expect_ok("prefill device with speculation, verify narrower than the device's narrowest piece", c);
+        const int min_tokens = c.prefill.min_tokens;
+        c.prefill.min_tokens = c.spec.draft_max + 1;
+        expect_fail("prefill device with a verify as wide as the device's narrowest piece", c);
+        c.prefill.min_tokens = min_tokens;
+        c.spec.draft_max = SpecConfig{}.draft_max;
         c.spec.source = DraftSource::none;
         c.decide.enabled = true;
         expect_ok("prefill device with decide, prefix cache auto (resolved off)", c);
