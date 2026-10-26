@@ -1,0 +1,22 @@
+plan: machine 8 cores, 43204 MiB available of 64204 MiB, 15 GiB/s on this model's matmul
+plan: device CUDA0: one token 232 GiB/s (same result), 128 tokens wide 1801 GiB/s (same result); this model's layer: experts 180.8, dense 204.6 GiB/s; crossing 11 us, probed in a process of its own
+plan: device CPU (host): one token 15 GiB/s (same result), 128 tokens wide 45 GiB/s (same result); this model's layer: experts 12.7, dense 22.6 GiB/s; crossing 0 us
+plan: model qwen4exp, 512 experts top-10 over 48 of 48 blocks
+plan:   embedding    27726 MiB,       0 MiB/token  (row-gathered)
+plan:   attention      964 MiB,     964 MiB/token
+plan:   dense-ffn      221 MiB,     221 MiB/token
+plan:   experts      32400 MiB,     632 MiB/token  (streamable)
+plan:   output         416 MiB,     416 MiB/token
+plan:   other         1606 MiB,    1606 MiB/token
+plan: regime fits
+plan:   ubatch         0          [derived] a graph as wide as the context reserves 110 MiB of compute buffers, inside 10% of the 43204 MiB this process may hold: a prompt is computed in one pass
+plan:   placement      49 layers on devices [measured] the capacity fitter found a placement that is projected to fit; 41 of 48 MoE layers keep their experts on the host, host-resident 110 MiB, on devices 9471 MiB, context 2048 (fitter's host breakdown: model 55179, context 0, compute 110 MiB; file 63336, experts 32400)
+plan:   ctx-size       2048       [policy] the value this run was given, not a choice: the capacity fitter only picks a context when it is handed a zero and this planner always pins it, so nothing has weighed this number against what the memory it reserves would buy as expert cache
+plan:   regime         fits       [derived] on the host 27785 MiB (dense 110) against 34563 MiB usable, which is the 43204 MiB this process may hold (as reported available, unmeasured) less a 8640 MiB margin (the process is killed)
+plan:   moe-stream     off        [derived] the host residual fits: llama.cpp's placement is the whole plan
+plan:   threads        8          [measured] measured on this model: an earlier load's first answer decoded in alternating windows with 8 and 4 threads, 3 rounds each between two of the incumbent's; the best other count was -27%, inside the 10% margin, so 8 held
+plan:   declined: what is left on the host fits in this machine's residency budget; streaming it from flash would only add reads that resident weights do not need
+plan: reproduce with
+mtp: 164/273 drafts accepted (60.1%), 2.78 tokens per verify decode (92 decodes for 256 tokens)
+mtp: drafting costs 0.0350 s/token on top of decode → 9.93 tok/s effective (vs 15.22 reported)
+exit 0

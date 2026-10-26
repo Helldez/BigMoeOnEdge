@@ -505,3 +505,29 @@ On a 16 GB Apple-silicon laptop, the same model at a 16384 context with `--auto`
 22.4 tok/s, and a 10850-token prompt prefilled in 31.8 s. One machine.
 
 If the model fits in RAM, just run it resident.
+
+#### A discrete GPU
+
+Measured on 2026-10-26 on a rented 24 GB desktop card (RTX 4090 class, 31 usable cores, an 89 GiB
+memory control group, NVMe at 1.0 GB/s direct), engine 0.37.x, `--auto` and nothing else, 256
+greedy tokens ([bench-data/2026-10-26-rented-gpu](bench-data/2026-10-26-rented-gpu/README.md)):
+
+| Model | What `--auto` chose | Decode tok/s |
+|---|---|---:|
+| Qwen3.6-35B-A3B Q4_K_M (22 GB) | every layer on the card | **217** |
+| Qwen3.8-Flash-Next 125B Q2_0 (66 GB, 32 GB of experts) | experts in RAM, the 18 GB used most cached on the card | **70** |
+| DeepSeek V4 Flash 0731 UD-IQ2_M (85 GB of experts) | streamed from the drive: 66 GB cache in RAM, 13 GB on the card, 94% hits | **9.3** |
+
+And on a rented 12 GB card (RTX 3060 class, 7.7 usable cores, a 42.6 GiB control group), the class
+most people own, Qwen3.8-Flash-Next Q2_0: `--auto` armed a 6 GB device cache and the run was killed
+by the control group at 43 GB (the tier's host-side memory is not in the ledger, #424); with the
+tier pinned off the fitter put 6 GB of experts on the card and the rest resident in RAM at
+**15.5 tok/s**, and the MTP head drafting on those cores cost more than it saved (9.9 effective).
+Strata quotes 94 tok/s on this class with its experts and its drafting on the card: that gap is the
+work in front of the planner, not a ceiling of the card.
+
+On the last file llama.cpp's own offload (`-ngl 99 --n-cpu-moe 43`, every expert on the cores, the
+file memory-mapped) decoded at 18.5 tok/s from the same cold page cache: the whole file fits the
+control group's page cache, so it ran resident where our plan kept a fixed 18 GB margin and
+streamed (#419). A planner rule, not a ceiling of the engine: resident experts on this card are the
+217 and 70 above.
