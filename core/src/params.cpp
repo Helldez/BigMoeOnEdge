@@ -1,5 +1,6 @@
 #include "bmoe/params.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
@@ -211,6 +212,8 @@ constexpr int io_threads_lo = 2, io_threads_hi = 8;
 constexpr int cache_hi_mb = 8192;
 constexpr int cache_floor_lo_mb = 1024, cache_floor_hi_mb = 3072;
 constexpr int ubatch_lo = 512, ubatch_hi = 2048;
+constexpr int ctx_checkpoints_lo = 4, ctx_checkpoints_hi = 32;
+constexpr int checkpoint_step_lo = 2048, checkpoint_step_hi = 8192;
 constexpr int row_stream_lo_mb = 32, row_stream_hi_mb = 256;
 constexpr int prefill_min_tokens_hi = 128;
 constexpr int prefill_loaders_lo = 4, prefill_loaders_hi = 8;
@@ -290,6 +293,48 @@ std::vector<ParamDesc> build() {
         typical(d, usual::threads_batch_lo, usual::threads_batch_hi);
         special(d, "0", "same as the compute threads");
         bind_int(d, [](RunConfig & c) -> int & { return c.n_threads_batch; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("trial-threads", "Thread counts to measure", G::Generation, L::Experimental,
+                          "Decode thread counts to try against the compute threads on the first answer, one or two, "
+                          "comma-separated: decode windows alternate between them once the cache has settled, and "
+                          "one replaces the compute threads only if it decodes clearly faster. Changes no output; "
+                          "the plan sets it when the result is kept.");
+        d.type = ParamType::Text;
+        d.value_hint = "N[,M]";
+        d.get = [](const RunConfig & c) {
+            std::string s;
+            for (size_t i = 0; i < c.trial.threads.size(); ++i)
+                s += (i ? "," : "") + std::to_string(c.trial.threads[i]);
+            return s;
+        };
+        d.set = [](RunConfig & c, const std::string & s, std::string & err) {
+            std::vector<int> v;
+            size_t at = 0;
+            while (at < s.size()) {
+                const size_t comma = std::min(s.find(',', at), s.size());
+                long long n = 0;
+                if (!parse_int(s.substr(at, comma - at), 1, RunConfig::threads_max, n, err)) return false;
+                v.push_back((int) n);
+                at = comma + 1;
+                if (comma + 1 == s.size()) {
+                    err = "expects N or N,M, got '" + s + "'";
+                    return false;
+                }
+            }
+            c.trial.threads = std::move(v);
+            return true;
+        };
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("trial-window", "Tokens per measured window", G::Generation, L::Debug,
+                          "Decoded tokens in each timed window of the knob measurement. Small values are for "
+                          "tests: a window of one token times one token's noise.");
+        d.value_hint = "N";
+        bounds(d, 1, KnobTrialConfig::window_tokens_max, "tokens");
+        bind_int(d, [](RunConfig & c) -> int & { return c.trial.window_tokens; });
         t.push_back(d);
     }
     {
@@ -376,6 +421,16 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("expert-host-buffer", "Experts in a device's host memory", G::Cache, L::Experimental,
+                          "EXPERIMENTAL: With a device expert cache over resident experts, keep a copy of the experts "
+                          "in this device's own host memory (its backend's), which it uploads from faster where it "
+                          "can lock it. Takes the experts' size in RAM again. Empty is off.");
+        d.type = ParamType::Text;
+        d.value_hint = "DEVICE";
+        bind_string(d, [](RunConfig & c) -> std::string & { return c.moe.expert_host_buffer; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("io-threads", "Read lanes", G::Streaming, L::Advanced,
                           "Parallel expert-read lanes, including the calling thread. 1 is the serial baseline.");
         d.value_hint = "N";
@@ -411,6 +466,17 @@ std::vector<ParamDesc> build() {
         d.flag.clear();
         d.switches = {{"--io-two-wave", "true"}};
         bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.io_two_wave; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("trial-overlap", "Measure overlap", G::Streaming, L::Experimental,
+                          "Try the other overlap setting against this one on the first answer, in alternating "
+                          "decode windows, and keep it only if it decodes clearly faster. Changes no output; the "
+                          "plan sets it when the result is kept. Needs every layer on the host.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--trial-overlap", "true"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.trial.overlap; });
         t.push_back(d);
     }
     {
@@ -528,6 +594,31 @@ std::vector<ParamDesc> build() {
         typical(d, usual::ubatch_lo, usual::ubatch_hi);
         special(d, "0", "as wide as the context");
         bind_int(d, [](RunConfig & c) -> int & { return c.n_ubatch; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("ctx-checkpoints", "Context checkpoints", G::Memory, L::Advanced,
+                          "Copies of the context state that cannot be cut anywhere (a recurrent state, a "
+                          "sliding window), kept as llama.cpp's server keeps them. A follow-up whose prompt "
+                          "differs from the cached one inside that state restarts from the newest copy "
+                          "before the difference instead of from the beginning. Each takes memory; a model "
+                          "whose context cuts anywhere keeps none. 0 = off.");
+        d.value_hint = "N";
+        bounds(d, 0, RunConfig::ctx_checkpoints_max, "checkpoints");
+        typical(d, usual::ctx_checkpoints_lo, usual::ctx_checkpoints_hi);
+        special(d, "0", "off");
+        bind_int(d, [](RunConfig & c) -> int & { return c.ctx_checkpoints; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("checkpoint-min-step", "Checkpoint spacing", G::Memory, L::Debug,
+                          "Least distance between two context checkpoints inside one prompt prefilled in "
+                          "pieces. The end of every prompt gets one regardless. 0 = no minimum.");
+        d.value_hint = "N";
+        bounds(d, 0, RunConfig::tokens_max, "tokens");
+        typical(d, usual::checkpoint_step_lo, usual::checkpoint_step_hi);
+        special(d, "0", "no minimum");
+        bind_int(d, [](RunConfig & c) -> int & { return c.checkpoint_min_step; });
         t.push_back(d);
     }
     {
@@ -675,7 +766,8 @@ std::vector<ParamDesc> build() {
         ParamDesc d = row("prefill-device", "Prefill device", G::Prefill, L::Experimental,
                           "Run wide prefill graphs on this ggml device (e.g. HTP0, MTL0) while decode stays on "
                           "the CPU. With streaming the experts reach it through a two-layer arena. Not with "
-                          "speculation or row streaming. Empty is off.");
+                          "row streaming; with speculation, a verify narrower than --prefill-min-tokens. "
+                          "Empty is off.");
         d.type = ParamType::Text;
         d.value_hint = "D";
         bind_string(d, [](RunConfig & c) -> std::string & { return c.prefill.device; });
@@ -886,6 +978,33 @@ std::vector<ParamDesc> build() {
     }
 
     // ── lossy ────────────────────────────────────────────────────────────────────────
+    {
+        // llama.cpp's names and flags, so a command line written for llama-server reads the same here.
+        std::vector<std::pair<KvCacheType, ParamChoice>> kv_types;
+        for (KvCacheType k : k_kv_cache_types)
+            kv_types.push_back({k, {kv_cache_type_name(k), kv_cache_type_name(k)}});
+        const auto kv_row = [&](const char * key, const char * short_flag, const char * label, const char * help,
+                                Field<KvCacheType> field) {
+            ParamDesc d = row(key, label, G::Lossy, L::Advanced, help);
+            d.type = ParamType::Choice;
+            d.short_flag = short_flag;
+            d.value_hint = "TYPE";
+            d.lossy = true;
+            bind_choice<KvCacheType>(d, field, kv_types);
+            t.push_back(d);
+        };
+        kv_row("cache-type-k", "-ctk", "Key cache type",
+               "Element type of the attention keys kept for the context, as llama.cpp's flag of the same name. "
+               "q8_0, the default, halves the memory a long context takes against llama.cpp's f16, and q4_0 "
+               "quarters it, at a cost in quality that grows as the bits shrink. That memory goes to the "
+               "expert cache. f16 is lossless.",
+               [](RunConfig & c) -> KvCacheType & { return c.cache_type_k; });
+        kv_row("cache-type-v", "-ctv", "Value cache type",
+               "Element type of the attention values kept for the context, as llama.cpp's flag of the same name. "
+               "A quantized type needs flash attention, which llama.cpp uses where the backend has it; "
+               "where it has not, the run falls back to f16.",
+               [](RunConfig & c) -> KvCacheType & { return c.cache_type_v; });
+    }
     {
         ParamDesc d = row("n-expert-used", "Active experts", G::Lossy, L::Advanced,
                           "Override the experts routed per token (top-k). Lower is faster but changes the "

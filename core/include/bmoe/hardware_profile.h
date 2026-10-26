@@ -228,6 +228,13 @@ struct ComputeDevice {
     // one expert at a time. Measured at that granularity from pageable memory, the kind a streamed
     // or resident expert lives in, rather than read off the link's nominal width.
     double upload_gibs = 0.0;
+
+    // The same upload from a buffer of the device's own host buffer type
+    // (ggml_backend_dev_host_buffer_type), 0 where the device offers none or it was unmeasured. That
+    // type is host memory the device's backend allocates for itself to copy from, page-locked where
+    // the backend can lock it, so its copies skip the bounce through a staging buffer an ordinary page
+    // needs. What it is underneath is the backend's business; the rate is the fact.
+    double upload_host_buffer_gibs = 0.0;
 };
 
 // The measured read rate at one (request size, lane count) point. A curve of these is the only

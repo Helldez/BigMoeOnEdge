@@ -44,6 +44,10 @@ struct SessionConfig {
     // throughput for resident compute buffers, which on this engine compete with the expert cache.
     // See RunConfig::n_ubatch.
     int n_ubatch = 0;
+    int ctx_checkpoints = 8;                            // See RunConfig::ctx_checkpoints.
+    int checkpoint_min_step = 8192;                     // See RunConfig::checkpoint_min_step.
+    KvCacheType cache_type_k = k_default_kv_cache_type; // See RunConfig::cache_type_k.
+    KvCacheType cache_type_v = k_default_kv_cache_type;
     bool chatml = false;
     // Active-expert (top-k) override applied at load via a kv_override on the arch-prefixed
     // expert_used_count key. 0 = use the model's own count. See RunConfig::n_expert_used.
@@ -65,6 +69,7 @@ struct SessionConfig {
     // joins the scheduler at load. See RunConfig::prefill.
     PrefillDeviceConfig prefill;
     DecideConfig decide;          // decide()'s prefix-state policy. See RunConfig::decide.
+    KnobTrialConfig trial;        // lossless knobs measured on the first decodes. See RunConfig::trial.
     bool llama_debug_log = false; // See RunConfig::llama_debug_log.
 };
 
@@ -228,6 +233,13 @@ public:
     // (AutoPlanOptions::routing): the hit curve the cache is priced on (bmoe/routing.h). Empty
     // without streaming or with the record off. Call it between generations.
     RoutingTrace routing_record() const;
+
+    // What the knob trial (SessionConfig::trial) has settled so far, as a value for the front-end to
+    // keep against the model's fingerprint, stamped with this machine's hardware_fingerprint and the
+    // engine version (bmoe/measured_knobs.h), and hand to the next plan (AutoPlanOptions::knobs).
+    // Each knob appears once its verdict is in; empty with no trial or before the first verdict.
+    // Call it between generations.
+    MeasuredKnobs measured_knobs() const;
 
     // Which thinking-off mechanism this model supports (probed at open()). Report it to the user
     // rather than leaving a Thinking toggle that silently does nothing. Always Template when chat

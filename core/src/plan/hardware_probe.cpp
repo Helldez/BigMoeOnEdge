@@ -22,6 +22,9 @@
 #if defined(__APPLE__)
 #include <sys/sysctl.h>
 #endif
+#if defined(__linux__)
+#include <sched.h>
+#endif
 
 namespace bmoe {
 
@@ -48,12 +51,45 @@ Overflow probe_anon_overflow() {
 // wrong number: on one twenty-core machine the tenth thread is the last fast core and the eleventh
 // costs throughput. Where the classes cannot be read the vector stays empty, which every rule reads
 // as "this machine did not say" rather than as "every core is alike".
+#if defined(__linux__)
+// The CPUs this process may be scheduled on, by number; empty where the mask cannot be read.
+std::vector<uint32_t> affinity_cpus() {
+    std::vector<uint32_t> out;
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    if (sched_getaffinity(0, sizeof(set), &set) != 0) return out;
+    for (uint32_t cpu = 0; cpu < (uint32_t) CPU_SETSIZE; ++cpu)
+        if (CPU_ISSET(cpu, &set)) out.push_back(cpu);
+    return out;
+}
+#endif
+
+// The cores this process can keep busy: the CPUs it may be scheduled on, and no more than a
+// control group's quota lets it run at once. Either one leaves every core of the machine visible,
+// so the count of the machine is not the count of the process: a container given 32 CPUs of 128
+// sweeps to the wrong thread count and measures its rates in a burst it cannot sustain.
+uint32_t usable_cores() {
+    uint32_t n = std::thread::hardware_concurrency();
+#if defined(__linux__)
+    const size_t allowed = affinity_cpus().size();
+    if (allowed > 0 && (n == 0 || allowed < n)) n = (uint32_t) allowed;
+#endif
+    const uint32_t quota = pio::cgroup_cpu_limit();
+    return quota > 0 && (n == 0 || quota < n) ? quota : n;
+}
+
 void probe_core_classes(HardwareProfile & h) {
 #if defined(__linux__)
     // Group the CPUs by the maximum frequency the kernel reports for each. It is a fact about this
-    // machine, published per CPU, and it needs no table of processor names to interpret.
+    // machine, published per CPU, and it needs no table of processor names to interpret. The CPUs
+    // are the ones this process may run on, which a quota does not narrow: it bounds how many run
+    // at once, not which.
+    std::vector<uint32_t> cpus = affinity_cpus();
+    if (cpus.empty())
+        for (uint32_t cpu = 0; cpu < std::thread::hardware_concurrency(); ++cpu)
+            cpus.push_back(cpu);
     std::vector<uint64_t> khz;
-    for (uint32_t cpu = 0; cpu < h.n_cores; ++cpu) {
+    for (uint32_t cpu : cpus) {
         char path[128];
         std::snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%u/cpufreq/cpuinfo_max_freq", cpu);
         FILE * f = std::fopen(path, "re");
@@ -258,7 +294,7 @@ HardwareProfile probe_hardware(const char * model_path) {
     h.lockable_bytes_known = lockable.known;
     h.lock_in_place_bytes = in_place.bytes;
     h.lock_in_place_bytes_known = in_place.known;
-    h.n_cores = std::thread::hardware_concurrency();
+    h.n_cores = usable_cores();
     probe_core_classes(h);
 
     const BackendInventory inv = backend_inventory();

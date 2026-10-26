@@ -11,6 +11,7 @@
 #include "bmoe/config.h"
 #include "bmoe/probe.h"
 
+#include "../engine/kv_cache_type.h"
 #include "../moe/tensor_names.h"
 
 #include "fit.h"
@@ -29,6 +30,10 @@ namespace {
 // the buffer rather than the slope.
 constexpr uint32_t min_projection_width = 64;
 
+// The same for the context's length: under this, halving it can fall inside a sliding window, whose
+// cells stop shrinking with the context, and the fixed part read off the two points would be too big.
+constexpr uint32_t min_projection_ctx = 8192;
+
 // What the fitter leaves free on each device. Upstream's own default (`--fit-target`) rather than a
 // policy of ours: the second stage applies its own margin to the host budget separately, from what
 // a reclaim costs there, and a device margin of our choosing would be a number nothing measured.
@@ -45,6 +50,8 @@ Placement probe_placement(const char * model_path,
                           const HardwareProfile & hw,
                           uint32_t n_ctx,
                           uint32_t n_ubatch,
+                          KvCacheType type_k,
+                          KvCacheType type_v,
                           const std::vector<std::string> & devices) {
     Placement pl;
     if (!model_path || !*model_path || !model.ok) return pl;
@@ -79,6 +86,9 @@ Placement probe_placement(const char * model_path,
     // it reads one row. What is held is what is touched, so the projection is made with the row cap
     // the session itself sets when a device computes its prefill.
     cparams.n_outputs_max = (uint32_t) PrefillDeviceConfig::max_outputs;
+    // The cache's own element types, so the KV it projects is the one the run allocates.
+    cparams.type_k = detail::to_ggml_type(type_k);
+    cparams.type_v = detail::to_ggml_type(type_v);
 
     std::vector<float> tensor_split(llama_max_devices(), 0.0f);
     std::vector<llama_model_tensor_buft_override> overrides(llama_max_tensor_buft_overrides());
@@ -275,6 +285,29 @@ Placement probe_placement(const char * model_path,
                     pl.host_compute_per_token = (pl.raw_host_compute_bytes - host_half) / span;
                 if (pl.device_compute_bytes > dev_half)
                     pl.device_compute_per_token = (pl.device_compute_bytes - dev_half) / span;
+            }
+        }
+
+        // The same placement, at half the context: the context is a fixed part plus cells that grow
+        // with the length, so twice the half minus the whole is the part that does not grow. That is
+        // the state a context checkpoint copies (a recurrent state, a sliding window), measured on
+        // this model and these types with nothing read from the architecture.
+        if (cparams.n_ctx >= 2 * min_projection_ctx) {
+            llama_context_params half = cparams;
+            half.n_ctx = cparams.n_ctx / 2;
+            half.n_batch = half.n_ctx;
+            half.n_ubatch = std::min(cparams.n_ubatch, half.n_ctx);
+            std::vector<ggml_backend_dev_t> devs_half;
+            uint32_t a = 0, b = 0, c = 0;
+            const common_device_memory_data_vec hm =
+                common_get_device_memory_data(model_path, &mparams, &half, devs_half, a, b, c, GGML_LOG_LEVEL_WARN);
+            if (hm.size() == dm.size()) {
+                uint64_t whole = 0, halved = 0;
+                for (size_t i = 0; i < dm.size(); ++i) {
+                    whole += (uint64_t) dm[i].context;
+                    halved += (uint64_t) hm[i].context;
+                }
+                pl.context_fixed_bytes = 2 * halved > whole ? 2 * halved - whole : 0;
             }
         }
     }

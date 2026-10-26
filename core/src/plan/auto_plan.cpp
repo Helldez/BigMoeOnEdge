@@ -8,6 +8,8 @@
 #include "bmoe/planner.h"
 #include "bmoe/probe.h"
 #include "bmoe/routing.h"
+#include "bmoe/measured_knobs.h"
+#include "bmoe/version.h"
 #include "../metrics/memory_snapshot.h"
 
 #include "../engine/llama_log.h"
@@ -48,6 +50,10 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     if (opt.routing)
         attach_routing(r.model, *opt.routing,
                        cfg.n_expert_used > 0 ? (uint32_t) cfg.n_expert_used : r.model.n_expert_used);
+    // What an earlier load measured about the lossless knobs, when it was this machine and engine.
+    if (opt.knobs)
+        if (const MeasuredKnobs * k = find_measured_knobs(*opt.knobs, hardware_fingerprint(r.hw), version()))
+            r.model.knobs = *k;
     probe_device_support(r.hw, r.model);
     detail::log_memory_snapshot("auto-device-support");
     llama_backend_init();
@@ -76,8 +82,8 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     const BackendChoice backends = req.is_pinned("device-list") || req.is_pinned("devices")
                                        ? BackendChoice{}
                                        : choose_backends(r.hw, (double) PlannerPolicy::defaults().min_backend_win);
-    const Placement placement =
-        probe_placement(path, r.model, r.hw, (uint32_t) cfg.n_ctx, (uint32_t) cfg.n_ubatch, backends.keep);
+    const Placement placement = probe_placement(path, r.model, r.hw, (uint32_t) cfg.n_ctx, (uint32_t) cfg.n_ubatch,
+                                                cfg.cache_type_k, cfg.cache_type_v, backends.keep);
     detail::log_memory_snapshot("auto-probe-end");
     starting(); // rules
     r.plan = plan_run(cfg, r.hw, r.model, placement, req);

@@ -1,5 +1,6 @@
 // The control-group remainder (pio::cgroup_memory_left) over fake hierarchies: v2 and v1 layouts,
-// "max", an ancestor tighter than the group, reclaimable file pages, a group over its cap.
+// "max", an ancestor tighter than the group, reclaimable file pages, a group over its cap. And the
+// CPU quota (pio::cgroup_cpu_limit) over the same layouts.
 
 #include "platform_io.h"
 
@@ -94,6 +95,43 @@ int main() {
         const std::string d = fresh("none");
         check(cgroup_memory_left((d + "/fs").c_str(), (d + "/missing").c_str()) == 0,
               "no cgroup file: no limit, not an error");
+    }
+    using bmoe::pio::cgroup_cpu_limit;
+    {
+        // A container given 30.72 CPUs of the host's: a fraction still runs a thread.
+        const std::string d = fresh("cpu-v2");
+        put(d + "/self", "0::/\n");
+        put(d + "/fs/cpu.max", "3071999 100000\n");
+        check(cgroup_cpu_limit((d + "/fs").c_str(), (d + "/self").c_str()) == 31, "cpu v2: quota over period, up");
+    }
+    {
+        const std::string d = fresh("cpu-v2-ancestor");
+        put(d + "/self", "0::/box/job\n");
+        put(d + "/fs/box/job/cpu.max", "max 100000\n");
+        put(d + "/fs/box/cpu.max", "400000 100000\n");
+        check(cgroup_cpu_limit((d + "/fs").c_str(), (d + "/self").c_str()) == 4,
+              "cpu v2: \"max\" in the group, an ancestor's quota applies");
+    }
+    {
+        const std::string d = fresh("cpu-v2-max");
+        put(d + "/self", "0::/\n");
+        put(d + "/fs/cpu.max", "max 100000\n");
+        check(cgroup_cpu_limit((d + "/fs").c_str(), (d + "/self").c_str()) == 0, "cpu v2: \"max\" is no quota");
+    }
+    {
+        // v1 mounts the controller as "cpu,cpuacct"; -1 is its "no quota".
+        const std::string d = fresh("cpu-v1");
+        put(d + "/self", "12:cpu,cpuacct:/docker/abc\n4:memory:/docker/abc\n");
+        put(d + "/fs/cpu,cpuacct/docker/abc/cpu.cfs_quota_us", "150000\n");
+        put(d + "/fs/cpu,cpuacct/docker/abc/cpu.cfs_period_us", "100000\n");
+        put(d + "/fs/cpu,cpuacct/docker/cpu.cfs_quota_us", "-1\n");
+        put(d + "/fs/cpu,cpuacct/docker/cpu.cfs_period_us", "100000\n");
+        check(cgroup_cpu_limit((d + "/fs").c_str(), (d + "/self").c_str()) == 2,
+              "cpu v1: the cpu controller's quota, -1 ignored");
+    }
+    {
+        const std::string d = fresh("cpu-none");
+        check(cgroup_cpu_limit((d + "/fs").c_str(), (d + "/missing").c_str()) == 0, "cpu: no cgroup file, no quota");
     }
     std::string rm = "rm -rf " + tmp;
     (void) std::system(rm.c_str());

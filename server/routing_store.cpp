@@ -11,7 +11,7 @@ namespace fs = std::filesystem;
 
 namespace bmoe::server {
 
-std::string RoutingStore::path_for(const std::string & model_path) {
+std::string RoutingStore::path_for(const std::string & model_path, const char * ext) {
     if (dir_.empty() || model_path.empty()) return "";
     const fs::path p = fs::u8path(model_path);
     std::error_code ec;
@@ -32,7 +32,7 @@ std::string RoutingStore::path_for(const std::string & model_path) {
         std::lock_guard<std::mutex> lk(m_);
         fingerprints_[model_path] = {size, mtime, fp};
     }
-    return (fs::u8path(dir_) / (fp + ".routing")).u8string();
+    return (fs::u8path(dir_) / (fp + ext)).u8string();
 }
 
 bool RoutingStore::load(const std::string & model_path, RoutingTrace & out) {
@@ -54,6 +54,11 @@ void RoutingStore::keep(const std::string & model_path, const RoutingTrace & rec
     if (path.empty()) return;
     RoutingTrace old;
     if (load(model_path, old) && old.decode_tokens > rec.decode_tokens) return;
+    write(path, format_routing_trace(rec), "routing record");
+}
+
+// Written beside and renamed, so a reader never sees half of one.
+void RoutingStore::write(const std::string & path, const std::string & text, const char * what) {
     const fs::path p = fs::u8path(path);
     std::error_code ec;
     fs::create_directories(p.parent_path(), ec);
@@ -62,13 +67,37 @@ void RoutingStore::keep(const std::string & model_path, const RoutingTrace & rec
     {
         std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
         if (!f) {
-            log_printf(LogLevel::Warn, "cannot write the routing record %s", path.c_str());
+            log_printf(LogLevel::Warn, "cannot write the %s %s", what, path.c_str());
             return;
         }
-        f << format_routing_trace(rec);
+        f << text;
     }
     fs::rename(tmp, p, ec);
-    if (ec) log_printf(LogLevel::Warn, "cannot write the routing record %s", path.c_str());
+    if (ec) log_printf(LogLevel::Warn, "cannot write the %s %s", what, path.c_str());
+}
+
+bool RoutingStore::load_knobs(const std::string & model_path, std::vector<MeasuredKnobs> & out) {
+    out.clear();
+    const std::string path = path_for(model_path, ".knobs");
+    if (path.empty()) return false;
+    std::ifstream f(fs::u8path(path), std::ios::binary);
+    if (!f) return false;
+    std::ostringstream text;
+    text << f.rdbuf();
+    std::string err;
+    if (parse_measured_knobs(text.str(), out, err)) return true;
+    log_printf(LogLevel::Warn, "ignoring the knob measurements kept in %s: %s", path.c_str(), err.c_str());
+    return false;
+}
+
+void RoutingStore::keep_knobs(const std::string & model_path, const MeasuredKnobs & rec) {
+    if (rec.empty() || rec.hardware.empty() || rec.engine.empty()) return;
+    const std::string path = path_for(model_path, ".knobs");
+    if (path.empty()) return;
+    std::vector<MeasuredKnobs> all;
+    load_knobs(model_path, all);
+    keep_measured_knobs(all, rec);
+    write(path, format_measured_knobs(all), "knob measurements");
 }
 
 } // namespace bmoe::server
