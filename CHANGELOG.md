@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.37.0] - 2026-10-26
 
 ### Added
 - **CUDA and HIP in the releases.** x86_64 Linux and Windows releases get a CUDA pack
