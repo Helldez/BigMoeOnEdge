@@ -56,7 +56,7 @@ jobs:
     container: rocm/dev-ubuntu-22.04:6.4.1
     steps:
       - name: Tools
-        run: apt-get update -q && apt-get install -y -q git cmake ninja-build python3
+        run: apt-get update -q && apt-get install -y -q git cmake ninja-build python3 hipblas-dev rocblas-dev
       - name: Resolve ref
         id: tag
         shell: bash
