@@ -77,7 +77,8 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     probe_headroom(r.hw, opt.probe_mem, r.model.dense_bytes + (std::max)(r.model.token_cycle_bytes, guard));
     detail::log_memory_snapshot("auto-headroom");
     starting(); // placement
-    const Placement placement = probe_placement(path, r.model, r.hw, (uint32_t) cfg.n_ctx, (uint32_t) cfg.n_ubatch);
+    const Placement placement = probe_placement(path, r.model, r.hw, (uint32_t) cfg.n_ctx, (uint32_t) cfg.n_ubatch,
+                                                cfg.cache_type_k, cfg.cache_type_v);
     detail::log_memory_snapshot("auto-probe-end");
     starting(); // rules
     r.plan = plan_run(cfg, r.hw, r.model, placement, req);

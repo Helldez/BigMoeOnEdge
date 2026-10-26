@@ -297,7 +297,8 @@ itself, which is worth more than a plan that invented values for them.
 
 **Nothing lossy arms itself.** Expert dropping, substitution and route-ahead change the output and
 make a run irreproducible. They are never turned on by a plan, at any quality budget, on any
-machine. A caller that arms one keeps it, attributed to `[operator]`.
+machine. A caller that arms one keeps it, attributed to `[operator]`. The KV cache's type is the one
+lossy default, and it is the engine's, not the plan's: `q8_0` unless the caller says otherwise.
 
 Inside a lossy lever the caller armed, the planner still settles what is only a matter of cost.
 Route-ahead's prediction ranks experts with one gate GEMV per layer per token, over the gate's own
@@ -324,7 +325,7 @@ and `BMOE_*` env overrides both count as the caller speaking.
    reads that resident weights do not need.
 4. **Dense policy**, from what a reclaim costs here.
 5. **The memory ledger**: one account for everything the run holds — context and compute buffers,
-   an armed device, the dense set, the expert cache — against two ceilings, what can be held and
+   a chat run's context checkpoints, an armed device, the dense set, the expert cache — against two ceilings, what can be held and
    what can be held reclaim-exempt. The cache is what is left under both, capped at the experts'
    own size and floored at the model's token cycle. See [The memory ledger](#the-memory-ledger).
 6. **I/O policy** from the storage facts.
@@ -401,7 +402,8 @@ nobody here owns (`tests/planner_test.cpp`), and it is why the same rule that pi
 buffers on a desktop picks a pinned allocation on a phone: one rule, different facts, no branch.
 
 What happens to anonymous memory under pressure is read, not assumed: whether this process has a
-share of its own that it is ended for exceeding (Kill), whether the kernel compresses anonymous
+share of its own that it is ended for exceeding (Kill: an app's share where the platform keeps one,
+or a memory control group with a finite limit, as a container sets), whether the kernel compresses anonymous
 memory first (Compress), whether a swap exists (Swap) - a syscall or a counter each
 (`pio::reclaim_facts`), microseconds in all. A fatal limit widens the margin; it does not leave the
 dense set mapped. That used to be a branch of its own (clean file pages are not charged to the
@@ -485,6 +487,7 @@ alone is how a plan comes to ask for locks the machine stops granting part way.
 | row | from | charged to |
 |---|---|---|
 | context and compute buffers | llama.cpp's own projection for this model and context | holdable |
+| context checkpoints (a chat run) | `--ctx-checkpoints` copies of the context's fixed part: llama.cpp's projection at the context and at half of it, twice the half less the whole (a recurrent state, a sliding window; nothing for a context that is all attention) | holdable |
 | a device armed for prefill | two of the model's largest expert layer, plus the compute buffer llama.cpp projects for that device (none for one it never places layers on, such as an NPU) | holdable; lockable too where its buffers are |
 | dense set | the gguf | holdable; lockable if it is pinned |
 | expert cache | what is left | holdable; lockable for the part that can be locked in place |
@@ -764,8 +767,9 @@ and is the price of a figure that cannot overcommit.
 
 What it does not do: the capacity fitter still places weights on a device with memory of its own at
 the full width, so on such a machine a narrower graph leaves device memory the fitter thought was
-spoken for. And a session without a prefill device still reserves the logit rows the projection
-leaves out - untouched, so not held, but committed on a system that counts reservations.
+spoken for. The logit rows are capped at the projection's 128 on every session, with a prefill
+device or without one, so the run reserves what the plan charged: a CPU-only run of a 35B-A3B at
+2048 tokens reserved 2028 MiB of compute buffer against 436 projected, and reserves 312 now.
 
 ## A device is probed in a process of its own
 
@@ -946,11 +950,22 @@ on a compressing machine, which is why the two were one piece of work rather tha
   its experts through a slower store and the holdable figure is a quarter of the laptop's, so the
   rule will choose a narrower graph than the one a prefill was measured at there; a machine with no
   accelerator at all, where the prefill is the cores' and its cost per piece is not the device's; a
-  discrete GPU, whose buffers are not this pool's and are left out of the share; and a system where
-  reserved memory is committed whether or not it is touched, where the logit rows this projection
-  leaves out are charged all the same.
+  discrete GPU, whose buffers are not this pool's and are left out of the share.
 
-The residency budget is `MemAvailable` on every platform that reports it, and on a machine whose
+The residency budget is `MemAvailable` on every platform that reports it, capped by what this
+process's memory control group still lets it take (`pio::cgroup_memory_left`: the tightest limit of
+its group and every ancestor it can see, less what each holds, crediting its inactive file pages).
+A rented GPU box reported 103 GB available inside an 85 GiB group; a plan sized from the first
+figure would be ended by the second. The cores are read the same way (`usable_cores` in the hardware probe):
+the CPUs the process may be scheduled on (its affinity mask, which a phone narrows for an app it
+keeps in the background and `taskset` or a cpuset narrows anywhere) and no more than a CPU control
+group's quota lets it run at once (`pio::cgroup_cpu_limit`: `cpu.max` in v2, `cpu.cfs_quota_us`
+over `cpu.cfs_period_us` in v1, the tightest of the group and its ancestors, rounded up). Either
+one leaves every core of the machine visible to `hardware_concurrency`: a rented box showed 128
+cores under a quota of 30.7 CPUs, swept its threads over all 128, and measured its host expert
+rate at 77 GiB/s in bursts shorter than the quota's period, against 56 when the same probe was
+pinned to 32 CPUs. The count is now 31 there. A burst of a few milliseconds still runs on more
+cores than the quota sustains, so the rates measured under a quota stay an upper bound. On a machine whose
 reclaim *compresses* that is a floor rather than a cap: the phone held 3.8 GB of pinned dense set
 plus cache with 3.6 GB "available", because the kernel compressed other processes' idle memory to
 make room, and reported 5.6 GB available afterwards. The honest budget there is the compressible
@@ -1092,7 +1107,7 @@ Each row is a gap here paired with the public facility that closes it. None need
 | streamed experts computed on a device rather than on the CPU cores | **not** a buffer-type override — that route is closed, see below. The open one is `ggml_backend_dev_buffer_from_host_ptr` | on a backend that can wrap memory the caller already owns, the streamer's reservations could be handed over and the device could execute out of them. Who implements it is **not** what `caps.buffer_from_host_ptr` says — see "A capability that lies by omission" below |
 | prefill on the device over streamed experts (built as `--prefill-device`, see [npu-prefill.md](npu-prefill.md); the planner does not arm it yet) | `cparams.op_offload`, `offload_kqv`, the scheduler's batch threshold (`ggml_backend_dev_offload_op`) | per-op copy of host weights to the device above a batch size: the "batch amortises bytes over link bandwidth" rule |
 | ~~no thread rule~~ — **in**, from core classes rather than a core count | `n_threads_batch` distinct from `n_threads`, `llama_numa_init` | still open: different counts for decode and prefill, and NUMA on workstations |
-| KV and flash attention undecided | `flash_attn_type` (auto), `type_k` / `type_v`, `kv_unified`, `swa_full` | KV memory as a budget line instead of an ignored one |
+| KV and flash attention undecided — the KV is now a budget line (`kv-budget`), and `type_k` / `type_v` are **in** as `--cache-type-k` / `--cache-type-v`, `q8_0` by default (lossy, so never planned); the fitter projects the KV at the type the run allocates | `flash_attn_type` (auto), `type_k` / `type_v`, `kv_unified`, `swa_full` | still open: the plan choosing the context length and a cache type behind a measured quality bound |
 | device selection | `mparams.devices[]`, `split_mode`, `main_gpu` | tell the fitter which devices to use, e.g. exclude one that demands a repack |
 | ~~a unified-memory device looks discrete~~ — **accounted for** | native memory-topology facts, or the allocation-delta probe where no direct fact is available | a shared pool is not added to host capacity; the separate bandwidth measurement decides whether moving compute is worthwhile |
 | ~~the budget under a compressing reclaim~~ — **in** (`--probe-mem`, and a free estimate always) | nothing in llama.cpp: a kernel fact | the headroom probe stays ours, and is the one measurement no other engine takes |

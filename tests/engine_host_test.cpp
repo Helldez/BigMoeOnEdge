@@ -200,6 +200,10 @@ static std::string state(const EngineHost & h) {
     return h.info().value("state", "");
 }
 
+// Every test's bus and host live on the heap. libstdc++'s std::mutex destructor is trivial, so
+// ThreadSanitizer never sees one end: a later test's mutex placed in a stack frame at the same address
+// inherits an earlier one's lock-order edges, and two unrelated mutexes read as a deadlock cycle that
+// cannot happen (the bus of one test and the generation lock of the next). Freed memory resets them.
 // Wait until the host's state reads `want`, or give up.
 static bool wait_state(const EngineHost & h, const std::string & want, std::chrono::milliseconds limit = 5s) {
     const auto end = std::chrono::steady_clock::now() + limit;
@@ -222,9 +226,11 @@ static ChatRequest turn() {
 
 static void load_tests() {
     {
-        EventBus bus;
+        auto bus_owner = std::make_unique<EventBus>();
+        EventBus & bus = *bus_owner;
         Script script;
-        EngineHost host(bus, opener(script));
+        auto host_owner = std::make_unique<EngineHost>(bus, opener(script));
+        EngineHost & host = *host_owner;
         check(state(host) == "empty" && !host.ready(), "a new host holds nothing");
         const ChatOutcome none = host.chat(turn(), nullptr);
         check(none.status == 503 && none.code == error_code::no_model, "a turn with nothing loaded is a 503 no_model");
@@ -253,9 +259,12 @@ static void load_tests() {
         check(script.opened == 2 && script.alive == 1, "the replaced session is gone before the new one runs");
     }
     {
-        EventBus bus;
+        auto bus_owner = std::make_unique<EventBus>();
+        EventBus & bus = *bus_owner;
         Script script;
-        EngineHost host(bus, opener(script, nullptr, "failed to load model: models/fake.gguf"));
+        auto host_owner =
+            std::make_unique<EngineHost>(bus, opener(script, nullptr, "failed to load model: models/fake.gguf"));
+        EngineHost & host = *host_owner;
         host.load(config(), config());
         check(wait_state(host, "error") && !host.ready(), "a failed load ends in error");
         check(host.info().value("error", "") == "failed to load model: models/fake.gguf",
@@ -265,10 +274,12 @@ static void load_tests() {
 
 static void loading_tests() {
     {
-        EventBus bus;
+        auto bus_owner = std::make_unique<EventBus>();
+        EventBus & bus = *bus_owner;
         Script script;
         Gate hold;
-        EngineHost host(bus, opener(script, &hold));
+        auto host_owner = std::make_unique<EngineHost>(bus, opener(script, &hold));
+        EngineHost & host = *host_owner;
         host.load(config(), config());
         check(wait_state(host, "loading") && host.loaded_or_loading() && !host.ready(), "a held load reads loading");
         check(host.load(config(), config()) == "a model is already loading", "a load while loading is refused");
@@ -281,10 +292,12 @@ static void loading_tests() {
         check(out.status == 200 && out.result.generated_text == "hi", "then runs on the session the load made");
     }
     {
-        EventBus bus;
+        auto bus_owner = std::make_unique<EventBus>();
+        EventBus & bus = *bus_owner;
         Script script;
         Gate hold;
-        EngineHost host(bus, opener(script, &hold, "not a MoE this engine streams"));
+        auto host_owner = std::make_unique<EngineHost>(bus, opener(script, &hold, "not a MoE this engine streams"));
+        EngineHost & host = *host_owner;
         host.load(config(), config());
         wait_state(host, "loading");
         auto pending = std::async(std::launch::async, [&] { return host.chat(turn(), nullptr); });
@@ -296,9 +309,11 @@ static void loading_tests() {
 }
 
 static void request_tests() {
-    EventBus bus;
+    auto bus_owner = std::make_unique<EventBus>();
+    EventBus & bus = *bus_owner;
     Script script;
-    EngineHost host(bus, opener(script));
+    auto host_owner = std::make_unique<EngineHost>(bus, opener(script));
+    EngineHost & host = *host_owner;
     host.load(config(), config());
     check(wait_state(host, "ready"), "the request-mapping session is ready");
     ChatRequest constrained = turn();
@@ -330,10 +345,12 @@ static void request_tests() {
 
 static void cancel_tests() {
     {
-        EventBus bus;
+        auto bus_owner = std::make_unique<EventBus>();
+        EventBus & bus = *bus_owner;
         Script script;
         script.turn = Script::Turn::Block;
-        EngineHost host(bus, opener(script));
+        auto host_owner = std::make_unique<EngineHost>(bus, opener(script));
+        EngineHost & host = *host_owner;
         host.load(config(), config());
         wait_state(host, "ready");
         auto pending = std::async(std::launch::async, [&] { return host.chat(turn(), nullptr); });
@@ -345,10 +362,12 @@ static void cancel_tests() {
         check(host.ready() && !host.generating() && script.alive == 1, "and keeps the session");
     }
     {
-        EventBus bus;
+        auto bus_owner = std::make_unique<EventBus>();
+        EventBus & bus = *bus_owner;
         Script script;
         script.turn = Script::Turn::Block;
-        EngineHost host(bus, opener(script));
+        auto host_owner = std::make_unique<EngineHost>(bus, opener(script));
+        EngineHost & host = *host_owner;
         host.load(config(), config());
         wait_state(host, "ready");
         auto pending = std::async(std::launch::async, [&] { return host.chat(turn(), nullptr); });
@@ -363,10 +382,12 @@ static void cancel_tests() {
     }
     {
         // A client that goes away mid-answer: its on_token says so, and the host stops its turn.
-        EventBus bus;
+        auto bus_owner = std::make_unique<EventBus>();
+        EventBus & bus = *bus_owner;
         Script script;
         script.turn = Script::Turn::Stream;
-        EngineHost host(bus, opener(script));
+        auto host_owner = std::make_unique<EngineHost>(bus, opener(script));
+        EngineHost & host = *host_owner;
         host.load(config(), config());
         wait_state(host, "ready");
         int seen = 0;
@@ -378,10 +399,12 @@ static void cancel_tests() {
     {
         // Two clients: one answering, one waiting behind it. The waiting one leaves; the answering
         // one must not notice (#346: a failed keep-alive write used to cancel whatever ran).
-        EventBus bus;
+        auto bus_owner = std::make_unique<EventBus>();
+        EventBus & bus = *bus_owner;
         Script script;
         script.turn = Script::Turn::Stream;
-        EngineHost host(bus, opener(script));
+        auto host_owner = std::make_unique<EngineHost>(bus, opener(script));
+        EngineHost & host = *host_owner;
         host.load(config(), config());
         wait_state(host, "ready");
         auto running = std::async(std::launch::async,
@@ -409,9 +432,11 @@ static void cancel_tests() {
 // cancelled one does not, and a load clears it even when a turn of the old model ends after.
 static void measured_tests() {
     {
-        EventBus bus;
+        auto bus_owner = std::make_unique<EventBus>();
+        EventBus & bus = *bus_owner;
         Script script;
-        EngineHost host(bus, opener(script));
+        auto host_owner = std::make_unique<EngineHost>(bus, opener(script));
+        EngineHost & host = *host_owner;
         host.load(config(), config());
         wait_state(host, "ready");
         check(host.last_turn().is_null(), "a fresh load has no measured turn");
@@ -420,9 +445,11 @@ static void measured_tests() {
     }
     {
         // The routing record goes to the sink after each turn that added to it, with the model's file.
-        EventBus bus;
+        auto bus_owner = std::make_unique<EventBus>();
+        EventBus & bus = *bus_owner;
         Script script;
-        EngineHost host(bus, opener(script));
+        auto host_owner = std::make_unique<EngineHost>(bus, opener(script));
+        EngineHost & host = *host_owner;
         std::vector<uint32_t> kept;
         std::string kept_path;
         host.set_routing_sink([&](const std::string & path, const RoutingTrace & rec) {
@@ -438,9 +465,11 @@ static void measured_tests() {
     }
     {
         // The knob trial's verdicts go to their sink as each one comes in, and not again.
-        EventBus bus;
+        auto bus_owner = std::make_unique<EventBus>();
+        EventBus & bus = *bus_owner;
         Script script;
-        EngineHost host(bus, opener(script));
+        auto host_owner = std::make_unique<EngineHost>(bus, opener(script));
+        EngineHost & host = *host_owner;
         std::vector<int> verdicts;
         host.set_knobs_sink([&](const std::string & path, const MeasuredKnobs & k) {
             verdicts.push_back((k.threads > 0) + (k.overlap >= 0));
@@ -453,10 +482,12 @@ static void measured_tests() {
         check(verdicts == std::vector<int>{1, 2}, "a knob verdict is handed on when it comes in, once");
     }
     {
-        EventBus bus;
+        auto bus_owner = std::make_unique<EventBus>();
+        EventBus & bus = *bus_owner;
         Script script;
         script.turn = Script::Turn::Block;
-        EngineHost host(bus, opener(script));
+        auto host_owner = std::make_unique<EngineHost>(bus, opener(script));
+        EngineHost & host = *host_owner;
         host.load(config(), config());
         wait_state(host, "ready");
         auto pending = std::async(std::launch::async, [&] { return host.chat(turn(), nullptr); });
@@ -465,10 +496,12 @@ static void measured_tests() {
         check(pending.get().result.cancelled && host.last_turn().is_null(), "a cancelled turn is no measurement");
     }
     {
-        EventBus bus;
+        auto bus_owner = std::make_unique<EventBus>();
+        EventBus & bus = *bus_owner;
         Script script;
         script.turn = Script::Turn::Ok;
-        EngineHost host(bus, opener(script));
+        auto host_owner = std::make_unique<EngineHost>(bus, opener(script));
+        EngineHost & host = *host_owner;
         host.load(config(), config());
         wait_state(host, "ready");
         host.chat(turn(), nullptr);
@@ -487,10 +520,12 @@ static void failure_tests() {
               run_error_recoverable(RunError::InvalidOutput) && !run_error_recoverable(RunError::Failed),
           "invalid output has a stable recoverable code, distinct from a failed decode");
     {
-        EventBus bus;
+        auto bus_owner = std::make_unique<EventBus>();
+        EventBus & bus = *bus_owner;
         Script script;
         script.turn = Script::Turn::InvalidOutput;
-        EngineHost host(bus, opener(script));
+        auto host_owner = std::make_unique<EngineHost>(bus, opener(script));
+        EngineHost & host = *host_owner;
         host.load(config(), config());
         check(wait_state(host, "ready"), "the invalid-output session is ready");
         ChatRequest constrained = turn();
@@ -510,10 +545,12 @@ static void failure_tests() {
               "a constrained request also succeeds without reloading the session");
     }
     {
-        EventBus bus;
+        auto bus_owner = std::make_unique<EventBus>();
+        EventBus & bus = *bus_owner;
         Script script;
         script.turn = Script::Turn::ContextFull;
-        EngineHost host(bus, opener(script));
+        auto host_owner = std::make_unique<EngineHost>(bus, opener(script));
+        EngineHost & host = *host_owner;
         host.load(config(), config());
         wait_state(host, "ready");
         const ChatOutcome out = host.chat(turn(), nullptr);
@@ -521,10 +558,12 @@ static void failure_tests() {
         check(host.ready() && script.alive == 1, "and keeps the session");
     }
     {
-        EventBus bus;
+        auto bus_owner = std::make_unique<EventBus>();
+        EventBus & bus = *bus_owner;
         Script script;
         script.turn = Script::Turn::Fail;
-        EngineHost host(bus, opener(script));
+        auto host_owner = std::make_unique<EngineHost>(bus, opener(script));
+        EngineHost & host = *host_owner;
         host.load(config(), config());
         wait_state(host, "ready");
         const ChatOutcome out = host.chat(turn(), nullptr);
@@ -535,11 +574,13 @@ static void failure_tests() {
         check(host.chat(turn(), nullptr).status == 503, "the next turn finds no model");
     }
     {
-        EventBus bus;
+        auto bus_owner = std::make_unique<EventBus>();
+        EventBus & bus = *bus_owner;
         Script script;
         script.decide_result.error = "no choices";
         script.decide_result.error_kind = RunError::InvalidRequest;
-        EngineHost host(bus, opener(script));
+        auto host_owner = std::make_unique<EngineHost>(bus, opener(script));
+        EngineHost & host = *host_owner;
         host.load(config(), config());
         wait_state(host, "ready");
         const DecideOutcome refused = host.decide(DecideRequest{});
@@ -554,11 +595,12 @@ static void failure_tests() {
 }
 
 static void log_tests() {
-    EventBus bus;
+    auto bus_owner = std::make_unique<EventBus>();
+    EventBus & bus = *bus_owner;
     Script script;
     auto q = bus.subscribe();
     {
-        EngineHost host(bus, opener(script));
+        auto host_owner = std::make_unique<EngineHost>(bus, opener(script)); // its life is the sink's
         log_printf(LogLevel::Warn, "prefill stays on the %s", "CPU");
         std::string frame;
         bool seen = false;
@@ -588,10 +630,12 @@ static std::string log_with(EventBus::Queue & q, const std::string & needle) {
 static void context_tests() {
     const std::string recommended = std::to_string(RunConfig::ctx_for_clients);
     {
-        EventBus bus;
+        auto bus_owner = std::make_unique<EventBus>();
+        EventBus & bus = *bus_owner;
         auto q = bus.subscribe();
         Script script; // a 4096-token session, as the server's default makes
-        EngineHost host(bus, opener(script));
+        auto host_owner = std::make_unique<EngineHost>(bus, opener(script));
+        EngineHost & host = *host_owner;
         host.load(config(), config());
         wait_state(host, "ready");
         const json advice = host.info()["model"].value("ctx_advice", json::object());
@@ -617,9 +661,11 @@ static void context_tests() {
         bus.unsubscribe(q);
     }
     {
-        EventBus bus;
+        auto bus_owner = std::make_unique<EventBus>();
+        EventBus & bus = *bus_owner;
         Script script;
-        EngineHost host(bus, opener(script));
+        auto host_owner = std::make_unique<EngineHost>(bus, opener(script));
+        EngineHost & host = *host_owner;
         host.set_serves_network(true);
         host.load(config(), config());
         wait_state(host, "ready");
@@ -628,11 +674,13 @@ static void context_tests() {
               "served on the network, a short context asks a UI to warn");
     }
     {
-        EventBus bus;
+        auto bus_owner = std::make_unique<EventBus>();
+        EventBus & bus = *bus_owner;
         auto q = bus.subscribe();
         Script script;
         script.n_ctx = RunConfig::ctx_for_clients;
-        EngineHost host(bus, opener(script));
+        auto host_owner = std::make_unique<EngineHost>(bus, opener(script));
+        EngineHost & host = *host_owner;
         host.set_serves_network(true);
         host.load(config(), config());
         wait_state(host, "ready");

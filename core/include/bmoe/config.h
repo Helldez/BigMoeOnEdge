@@ -502,10 +502,11 @@ struct PrefillDeviceConfig {
 
     static constexpr int min_tokens_floor = 2; // decode is one token wide; this keeps the shapes apart
 
-    // Logit rows a graph may produce, with the device on. llama.cpp reserves compute memory for as many
-    // as the ubatch is wide, and a row is the whole vocabulary: 2048 rows of a 248k-token vocabulary
-    // were 2 GB of reservation (measured on a 35B-A3B), which starved decode into thrashing. A prompt
-    // needs one row; a perplexity pass is fed in pieces this wide instead.
+    // Logit rows a graph may produce, on every run and not only with the device on. llama.cpp
+    // reserves compute memory for as many as the ubatch is wide, and a row is the whole vocabulary:
+    // 2048 rows of a 248k-token vocabulary were 2 GB of reservation (measured on a 35B-A3B), which
+    // starved decode into thrashing. A prompt needs one row; a perplexity pass is fed in pieces this
+    // wide instead.
     static constexpr int max_outputs = 128;
 
     bool enabled() const { return !device.empty(); }
@@ -547,6 +548,23 @@ enum class DeviceUse {
     CpuOnly, // the CPU and nothing else
 };
 
+// The element type of the K and V caches, by llama.cpp's own names (its --cache-type-k and
+// --cache-type-v). F16 is llama.cpp's default. Every other type changes the output, the quantized
+// ones by storing the cache in fewer bits (llama.cpp rotates a quantized cache's heads first, which
+// is most of what keeps 4 bits usable). The planner never picks one; the default below is the one
+// lossy choice the engine makes for its caller.
+enum class KvCacheType { F16, BF16, F32, Q8_0, Q5_1, Q5_0, Q4_1, Q4_0, IQ4_NL };
+
+// Q8_0 by default, where llama.cpp keeps F16: on this engine the KV is memory the expert cache does
+// not get, and a long agent chat (18 turns to 60k on Qwen3.6-35B-A3B, 16 GB) decoded in 281-303 s
+// at Q8_0 against 442-490 s at F16. F16 is the lossless choice, one flag away.
+inline constexpr KvCacheType k_default_kv_cache_type = KvCacheType::Q8_0;
+// Every value, in declaration order, and its llama.cpp name: the one list both the parameter table
+// and the telemetry read.
+inline constexpr KvCacheType k_kv_cache_types[] = {KvCacheType::F16,  KvCacheType::BF16, KvCacheType::F32,
+                                                   KvCacheType::Q8_0, KvCacheType::Q5_1, KvCacheType::Q5_0,
+                                                   KvCacheType::Q4_1, KvCacheType::Q4_0, KvCacheType::IQ4_NL};
+const char * kv_cache_type_name(KvCacheType t);
 // Lossless knobs measured on the first real request (docs/measured-planning.md, Step 2). Empty by
 // default, and then nothing is measured: the plan arms it when the front-end keeps the result
 // (bmoe/measured_knobs.h), or a person does by hand. Once the cache's hit rate has settled, decode
@@ -600,6 +618,29 @@ struct RunConfig {
     // Decode is unaffected: a decode graph is one token wide whatever this says. The cost is
     // prefill throughput, which processes a long prompt in more, smaller passes.
     int n_ubatch = 0;
+
+    // Context checkpoints, as llama.cpp's server keeps them (--ctx-checkpoints and
+    // --checkpoint-min-step): copies of the part of the context's state that
+    // cannot be cut at an arbitrary position, so a chat turn whose prompt diverges from the cached
+    // one inside a recurrent state or a sliding window rolls back to the newest one before the
+    // divergence instead of prefilling the whole conversation again. One is taken at the end of
+    // every prompt, and inside a prompt prefilled in pieces every min_step tokens. A memory that can
+    // be cut anywhere has no such state, and keeps none. Lossless: a restored state is the state the
+    // same tokens computed.
+    //
+    // Fewer than the server's 32 by default: here every MiB they hold is a MiB the expert cache does
+    // not get, and Qwen3.6-35B-A3B's state is 62.8 MiB. An agent's request diverges at the end of the
+    // last prompt nearly always, which the newest checkpoint covers.
+    int ctx_checkpoints = 8;
+    int checkpoint_min_step = 8192;
+
+    // The K and V caches' element type (llama.cpp's --cache-type-k / --cache-type-v). A quantized
+    // cache holds a long context in a half or a quarter of the memory, which on this engine goes to
+    // the expert cache, at a cost in output quality: see KvCacheType. A quantized V cache needs flash
+    // attention, which llama.cpp turns on where the backend has it; where it has not, a quantized V
+    // falls back to F16 rather than failing the run.
+    KvCacheType cache_type_k = k_default_kv_cache_type;
+    KvCacheType cache_type_v = k_default_kv_cache_type;
     bool chatml = false; // wrap the prompt in the model family's chat turn (arch-aware)
 
     // Render the chat template with reasoning enabled. Passed to the template as the
@@ -673,6 +714,7 @@ struct RunConfig {
     static constexpr int threads_max = 256;    // n_threads and n_threads_batch
     static constexpr int n_expert_used_max = 256;
     static constexpr int n_gpu_layers_max = 1024;
+    static constexpr int ctx_checkpoints_max = 256;
 
     // The context a client of a server needs, below which a front-end warns before the first
     // request fails rather than after. Measured: opencode's first request, its system prompt and
