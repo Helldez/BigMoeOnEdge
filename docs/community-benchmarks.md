@@ -27,8 +27,9 @@ scripts/bench-report.sh /path/to/model.gguf
 ```
 
 It builds the CLI, records your CPU / RAM / drive, measures the drive at the request size the
-engine actually issues, runs the model once with `--auto` (see [the protocol](#the-protocol)),
-prints two markdown tables and the plan it chose. Paste all of it. Done.
+engine actually issues, runs the model three times with `--auto` (see [the protocol](#the-protocol)),
+prints two markdown tables, the plan each run chose and what it predicted against what it
+measured. Paste all of it. Done.
 
 - **No toolchain?** Every release attaches a prebuilt `bmoe-cli` (Linux x86_64 / aarch64, macOS
   arm64, Windows x86_64). Point the script at it: `BMOE_CLI=/path/to/bmoe-cli scripts/bench-report.sh model.gguf`.
@@ -60,8 +61,8 @@ empty unless you run the storage probe yourself.
 
 | | Status |
 |---|---|
-| **Mac**, Apple silicon or Intel | Works. A direct request is served with `F_NOCACHE` (Apple's uncached-descriptor mode — a caching hint, not Linux `O_DIRECT`: no alignment, no DMA promise), and `o_direct` reports what the open actually achieved. Uncached reads can sit below the buffered rate on the same drive, so a Mac row's flash column may read slower than the storage probe suggests; that is the honest number, not a malfunction. Say "macOS" in your report. A 64 or 128 GB Mac is still a row we want. |
-| **iPhone, iPad** | Unvalidated. iOS does not run command-line binaries, so [`examples/ios`](../examples/ios) builds `bmoe-cli` into a harness app you sign and sideload yourself. It has not been run on a device here: a row from one is welcome, run with `--auto --plan-explain` and with the plan it printed. |
+| **Mac**, Apple silicon or Intel | Works. A direct request is served with `F_NOCACHE` (Apple's uncached-descriptor mode — a caching hint, not Linux `O_DIRECT`: no alignment, no DMA promise), and `o_direct` reports what the open actually achieved. Uncached reads can sit below the buffered rate on the same drive, so a Mac row's flash column may read slower than the storage probe suggests; that is the honest number, not a malfunction. A shell cannot bypass the page cache on macOS, so the script's storage column there is the engine's own probe (the `plan: storage:` line, one lane at the engine's request size, read with `F_NOCACHE`), labelled as such. Say "macOS" in your report. A 64 or 128 GB Mac is still a row we want. |
+| **iPhone, iPad** | iOS does not run command-line binaries, so [`examples/ios`](../examples/ios) builds `bmoe-cli` into a harness app you sign and sideload yourself. It has run a 35B on a real iPhone ([#235](https://github.com/Helldez/BigMoeOnEdge/issues/235)); a row from yours is welcome, run with `--auto --plan-explain` and with the plan it printed. |
 
 ### What happens to your row
 
@@ -72,11 +73,28 @@ empty unless you run the storage probe yourself.
 
 ## The protocol
 
-One run, `--auto` and nothing else, 256 greedy tokens, the same prompt as every README table
+`--auto` and nothing else, 256 greedy tokens, the same prompt as every README table
 (`--plan-explain` only prints the plan it runs). That is what the engine does on *this* machine:
 the planner hands what fits to the GPUs the build carries, keeps a model that fits in RAM resident
 without streaming, and streams only the experts left over. It is the row to compare with other
 engines on the same hardware.
+
+The script runs it three times. Twice because the planner learns between the two
+([measured-planning.md](measured-planning.md)). The first load records what the model routed and
+measures the lossless knobs (threads, `--overlap`) on its first answer; the second plans on that
+record: the cache priced on the model's own hit curve, the knobs at their measured verdict. The
+second is the plan the app and the server run from their second load on, so **the second run is the
+row for the table**; the first says what a cold planner predicted, and the `plan: predicted ...
+measured ...` line under each run is the planner's error on your machine, which is the other thing a
+row is for. The third run is the second with `--overlap` pinned: overlap changes no output, the
+planner arms it only when its trial measured it 10% faster, and this row says what that margin left
+on your machine; it sits beside the table row, labelled, like any lossless-knob row. The record lives
+under the script's output folder (`--routing-dir`) and is cleared at each invocation, so a first
+load is always a first load. The script waits between the runs: the
+kernel returns a process's locked memory in the seconds after it exits, and a plan made before that
+sees a machine with gigabytes less than it has (on a 16 GB laptop, 3.4 GB available against 11 GB a
+minute later) and sizes a cache half the right one. When the second plan still saw much less memory
+than the first, the output says so under the table: run again with a longer `BENCH_SETTLE`.
 
 Settings are not part of the protocol: `--auto` chooses threads, cache, read lanes and device
 placement from what it measures, and the plan in the report says what it chose. A row with
@@ -87,6 +105,8 @@ Override with an environment variable, and say so in the issue:
 | Variable | Default | Change it if |
 |---|---|---|
 | `N_PREDICT` | 256 | never below 256, the cache is still warming |
+| `BENCH_RUNS` | 3 | 2 skips the `--overlap` row; 1 reports the first load alone (a model so large that one run is what the machine affords) |
+| `BENCH_SETTLE` | 30 | seconds between the runs; raise it when the note under the table says the second plan saw less memory than the first |
 
 Flags after the model path reach `bmoe-cli` verbatim: only the ones that change the model, not the
 engine (`--think` to measure a reasoning run, `--n-expert-used 6` for a turbo top-k row, which is lossy and

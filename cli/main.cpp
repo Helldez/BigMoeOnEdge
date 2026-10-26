@@ -1054,6 +1054,38 @@ int main(int argc, char ** argv) {
 
         if (plan_explain) {
             std::fprintf(stderr, "plan: machine %s\n", hw.label.c_str());
+            // The storage curve the plan priced streaming on: the rate at every request size and lane
+            // count it measured. A benchmark row carries this figure, the one the plan stood on, rather
+            // than a shell probe's: on macOS a shell cannot bypass the page cache, the engine can.
+            {
+                const StorageFacts & st = hw.storage;
+                const char * direct = st.direct_ok == Tri::Yes  ? "uncached reads in effect"
+                                      : st.direct_ok == Tri::No ? "uncached reads NOT in effect"
+                                                                : "uncached reads unverified";
+                std::string line = std::string("plan: storage: ") + direct + ";";
+                if (st.rate_curve.empty()) {
+                    line += " read rate not probed";
+                } else {
+                    uint32_t last_size = 0;
+                    for (const RateSample & r : st.rate_curve) {
+                        char buf[64];
+                        if (r.request_bytes != last_size) {
+                            std::snprintf(buf, sizeof(buf), "%s %u KiB:", last_size ? ";" : "", r.request_bytes >> 10);
+                            line += buf;
+                            last_size = r.request_bytes;
+                        }
+                        std::snprintf(buf, sizeof(buf), " %u lane%s %.0f MiB/s", r.lanes, r.lanes == 1 ? "" : "s",
+                                      r.mib_per_s);
+                        line += buf;
+                    }
+                    if (st.refault_mibs > 0.0) {
+                        char buf[48];
+                        std::snprintf(buf, sizeof(buf), "; refault %.0f MiB/s", st.refault_mibs);
+                        line += buf;
+                    }
+                }
+                std::fprintf(stderr, "%s\n", line.c_str());
+            }
             // Every device with what it measured, so a decision about one can be checked against
             // the figures it was made from. 0 is "not measured", never "slow".
             for (const ComputeDevice & d : hw.devices) {
