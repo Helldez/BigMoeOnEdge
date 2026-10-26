@@ -141,12 +141,12 @@ android {
 }
 
 dependencies {
-    implementation 'androidx.core:core-ktx:1.13.1'
+    implementation 'androidx.core:core-ktx:1.19.1'
     implementation 'androidx.activity:activity-compose:1.9.2'
     implementation 'androidx.lifecycle:lifecycle-runtime-compose:2.8.5'
     // In-app model downloader: a foreground CoroutineWorker that survives process death and
     // resumes multi-GB transfers (see DownloadWorker). Brings kotlinx-coroutines-android too.
-    implementation 'androidx.work:work-runtime-ktx:2.9.1'
+    implementation 'androidx.work:work-runtime-ktx:2.12.0'
 
     // Pure-Kotlin rules (the SSE parser, the chat protocol, the parameter table, the catalog
     // status, the conversation files) get JVM unit tests: ./gradlew testDevDebugUnitTest. The
