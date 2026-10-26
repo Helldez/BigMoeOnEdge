@@ -10,7 +10,12 @@
 # CMakeLists). A module whose driver library the machine lacks is not loaded and the engine runs on
 # the CPU, so the same archive serves a laptop with a GPU and a server without one. Vulkan rides in
 # the Linux and Windows archives; Metal in the macOS one; OpenCL in the Windows ARM64 one, for the
-# Adreno GPU of a Snapdragon laptop. The Hexagon NPU has archives of its own (windows-arm64-npu):
+# Adreno GPU of a Snapdragon laptop. CUDA has an x86_64 Linux and Windows archive of its own (the
+# CUDA pack), with the NVIDIA runtime and cuBLAS it links, which NVIDIA lets an application carry:
+# twenty times the rest, so only an NVIDIA machine downloads it, into the folder of an archive or
+# the installed app, where the engine loads it like the modules beside it; HIP in the x86_64 Linux
+# one without ROCm, which is gigabytes and installed system-wide where an AMD card runs it. Where one
+# card can be driven by more than one of them, the planner measures which drives it faster. The Hexagon NPU has archives of its own (windows-arm64-npu):
 # on Windows its driver runs DSP code only from a catalog signed by a certificate the machine
 # trusts, which the user sets up by hand, test-signing included (docs/npu-windows.md).
 #
@@ -42,7 +47,59 @@ permissions:
   contents: read
 
 jobs:
+  # The HIP backend as a module, built in AMD's ROCm image because the toolkit is gigabytes and the
+  # runner has none. Same checkout and flags as the Linux x86_64 build, so the module matches the
+  # libraries it loads beside. It links ROCm's libraries and does not carry them: a machine with an
+  # AMD card that runs ROCm has them installed system-wide (/opt/rocm/lib, also in its search
+  # path), and on one without, the module is not loaded. The GPU targets: RDNA 2, 3 and 4 and the
+  # Instinct parts llama.cpp's own builds name. ROCm 7, as llama.cpp's HIP CI: its kernels use the
+  # warp-sync builtins older HIP headers lack, and the module needs that major version installed.
+  hip-module:
+    runs-on: ubuntu-22.04
+    container: rocm/dev-ubuntu-22.04:7.2.1
+    steps:
+      - name: Tools
+        run: apt-get update -q && apt-get install -y -q git cmake ninja-build python3 hipblas-dev rocblas-dev
+      - name: Resolve ref
+        id: tag
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          case "$EVENT" in
+            release)           R="$RELEASE_TAG" ;;
+            workflow_dispatch) R="$INPUT_TAG" ;;
+            *)                 R="" ;;
+          esac
+          case "$R" in
+            *[!A-Za-z0-9._-]*) echo "not a plain tag name: '$R'"; exit 1 ;;
+          esac
+          echo "ref=$R" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.tag.outputs.ref }}
+          submodules: recursive
+      - name: Build the HIP module
+        shell: bash
+        run: |
+          git config --global --add safe.directory '*'
+          HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)" cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBMOE_BUILD_TESTS=OFF -DGGML_OPENMP=OFF -DLLAMA_CURL=OFF \
+            -DGGML_HIP=ON '-DGPU_TARGETS=gfx1030;gfx1100;gfx1101;gfx1102;gfx1200;gfx1201;gfx90a;gfx942' \
+            -DBMOE_EXTRA_RPATH=/opt/rocm/lib
+          cmake --build build -j --target ggml-hip
+          mkdir -p hip-module && cp -P build/bin/libggml-hip.so hip-module/
+          strip hip-module/libggml-hip.so || true
+          ls -la hip-module
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hip-module
+          path: hip-module
+
   cli:
+    needs: hip-module
     strategy:
       fail-fast: false
       matrix:
@@ -55,19 +112,31 @@ jobs:
           # does, and needs that glibc (2.38) or newer.
           - os: ubuntu-22.04
             target: linux-x86_64
-            cmake_extra: -DGGML_VULKAN=ON
+            cuda: 12.8.1
+            hip: true
+            cmake_extra: >-
+              -DGGML_VULKAN=ON -DGGML_CUDA=ON
+              '-DCMAKE_CUDA_ARCHITECTURES=75-virtual;80-virtual;86-real;89-real;120-real'
           - os: ubuntu-24.04-arm
             target: linux-aarch64
             cmake_extra: -DGGML_VULKAN=ON
           - os: macos-14
             target: macos-arm64
             cmake_extra: ""
-          - os: windows-latest
+          # Visual Studio 2022, not the latest image's 2026: CUDA 12 accepts host compilers up to
+          # 2022 only, as llama.cpp's own Windows CUDA builds run.
+          - os: windows-2022
             target: windows-x86_64
+            cuda: 12.8.1
             # The shared C runtime: modules and the engine must share one heap, which a static
             # runtime in each would not. Its DLLs travel in the archive (Package), so a machine
-            # without the redistributable installed still starts the binaries.
-            cmake_extra: -DGGML_VULKAN=ON
+            # without the redistributable installed still starts the binaries. Ninja with the
+            # MSVC environment rather than the Visual Studio generator: CUDA under the latter needs
+            # NVIDIA's Visual Studio integration installed, and the toolkit here is the
+            # redistributable archives, not the installer.
+            cmake_extra: >-
+              -G Ninja -DGGML_VULKAN=ON -DGGML_CUDA=ON
+              '-DCMAKE_CUDA_ARCHITECTURES=75-virtual;80-virtual;86-real;89-real;120-real'
           # Built natively on an ARM64 runner, so the smoke test runs what ships. llama.cpp's own
           # recipe for this target: clang with its toolchain file (one CPU library, for the cores
           # of a Snapdragon laptop; the top-level CMakeLists has ggml build no tiers here), the
@@ -169,14 +238,16 @@ jobs:
           Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\$v"
           Add-Content $env:GITHUB_PATH "C:\VulkanSDK\$v\bin"
 
-      # clang finds the MSVC libraries and the Windows SDK through the environment vcvarsall sets
-      # up, which a job step does not start with: carried into the steps after this one.
-      - name: The MSVC environment (Windows ARM64)
-        if: startsWith(matrix.target, 'windows-arm64')
+      # clang and nvcc find the MSVC compiler, its libraries and the Windows SDK through the
+      # environment vcvarsall sets up, which a job step does not start with: carried into the steps
+      # after this one.
+      - name: The MSVC environment (Windows)
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          $arch = if ("${{ matrix.target }}".StartsWith("windows-arm64")) { "arm64" } else { "x64" }
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
-          cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" arm64 >nul && set" | ForEach-Object {
+          cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" $arch >nul && set" | ForEach-Object {
             if ($_ -match '^([A-Za-z_][A-Za-z0-9_]*)=(.*)$') { Add-Content $env:GITHUB_ENV "$($matches[1])=$($matches[2])" }
           }
 
@@ -210,6 +281,35 @@ jobs:
           Add-Content $env:GITHUB_ENV "HEXAGON_SDK_ROOT=$($sdk.FullName -replace '\\', '/')"
           Add-Content $env:GITHUB_ENV "HEXAGON_TOOLS_ROOT=$($tools.FullName -replace '\\', '/')"
 
+      # The CUDA toolkit as NVIDIA's redistributable archives, each checked against the SHA-256 of
+      # the release's manifest: the compiler, the runtime, the C++ core libraries and cuBLAS, and
+      # nothing else (scripts/fetch-cuda-redist.py).
+      - name: Fetch the CUDA toolkit
+        if: matrix.cuda
+        shell: bash
+        env:
+          CUDA_VERSION: ${{ matrix.cuda }}
+        run: |
+          case "${{ runner.os }}" in
+            Windows) PLAT=windows-x86_64; PY=python ;;
+            *) PLAT=linux-x86_64; PY=python3 ;;
+          esac
+          CUDA="$RUNNER_TEMP/cuda"
+          $PY scripts/fetch-cuda-redist.py --version "$CUDA_VERSION" --platform "$PLAT" --out "$CUDA"
+          if [ "${{ runner.os }}" = "Windows" ]; then CUDA="$(cygpath -m "$CUDA")"; fi
+          echo "CUDAToolkit_ROOT=$CUDA" >> "$GITHUB_ENV"
+          echo "CUDA_PATH=$CUDA" >> "$GITHUB_ENV"
+          echo "CUDACXX=$CUDA/bin/nvcc" >> "$GITHUB_ENV"
+          echo "$CUDA/bin" >> "$GITHUB_PATH"
+
+      # The HIP module, built in the job below against ROCm, joins the modules of this archive.
+      - name: The HIP module
+        if: matrix.hip
+        uses: actions/download-artifact@v7
+        with:
+          name: hip-module
+          path: hip-module
+
       # The desktop app's web UI, built from the same checkout; the server build stages it beside
       # the binary (server/stage_assets.cmake).
       - uses: actions/setup-node@v7
@@ -231,6 +331,7 @@ jobs:
             -DLLAMA_CURL=OFF \
             ${{ matrix.cmake_extra }}
           cmake --build build --config Release -j --target bmoe-cli bmoe-server bmoe-server-assets ${{ matrix.extra_targets }}
+          if [ -d hip-module ]; then cp -P hip-module/* build/bin/; fi
 
       # The catalog the NPU driver checks, libggml-htp.cat, made by Inf2Cat from upstream's
       # libggml-htp.inf and signed with a certificate made here. Its private key never leaves this
@@ -311,6 +412,13 @@ jobs:
             case "${{ matrix.target }}" in
               windows-arm64*) ls "$1" | grep -q 'ggml-opencl' || { echo "no OpenCL backend module in $1"; exit 1; } ;;
             esac
+            # CUDA travels in an archive of its own (the CUDA pack, below): with the NVIDIA libraries
+            # it links it is about twenty times the rest, which a machine without an NVIDIA card
+            # would download for nothing.
+            if [ -n "${{ matrix.cuda }}" ]; then rm -f "$1"/ggml-cuda.dll "$1"/libggml-cuda.so*; fi
+            if [ "${{ matrix.hip }}" = "true" ]; then
+              ls "$1" | grep -q 'ggml-hip' || { echo "no HIP backend module in $1"; exit 1; }
+            fi
             # The NPU archives carry the Hexagon module, its DSP libraries, the signed catalog and
             # the certificate that signed it; the guide says what to do with them.
             if [ "${{ matrix.target }}" = windows-arm64-npu ]; then
@@ -393,6 +501,15 @@ jobs:
           EOF
             done
           fi
+          if [ -n "${{ matrix.cuda }}" ]; then
+            for f in "$NAME/README.txt" "$DESK/README.txt"; do
+              cat >> "$f" <<EOF
+
+          NVIDIA GPU: the CUDA backend is a download of its own, for its size:
+          bmoe-cuda-$TAG-${{ matrix.target }} on the same release page. Extract it into this folder.
+          EOF
+            done
+          fi
           # The binaries are ad-hoc signed, not notarised: a browser download is quarantined and
           # Gatekeeper refuses the first start. Say how to open them until a signed installer ships.
           if [ "${{ runner.os }}" = "macOS" ]; then
@@ -408,12 +525,50 @@ jobs:
           EOF
             done
           fi
+          # The CUDA pack: the module, the runtime and cuBLAS it links, and the licence they come
+          # under, unpacked by the user into the folder of either archive or of the installed app,
+          # where the engine loads modules from. The driver's own library (libcuda, nvcuda.dll) is
+          # the machine's, and is the only thing the module may find missing beside the rest of an
+          # archive: without it the module is not loaded and the rest runs.
+          if [ -n "${{ matrix.cuda }}" ]; then
+            PACK="bmoe-cuda-$TAG-${{ matrix.target }}"
+            mkdir -p "$PACK"
+            C="$(cygpath -u "$CUDAToolkit_ROOT" 2>/dev/null || echo "$CUDAToolkit_ROOT")"
+            if [ "${{ runner.os }}" = "Windows" ]; then
+              cp "$WB/ggml-cuda.dll" "$C"/bin/cudart64_12.dll "$C"/bin/cublas64_12.dll "$C"/bin/cublasLt64_12.dll "$PACK/"
+            else
+              cp -P build/bin/libggml-cuda.so* "$PACK/"
+              strip "$PACK"/libggml-cuda.so* || true
+              cp -P "$C"/lib/libcudart.so.12* "$C"/lib/libcublas.so.12* "$C"/lib/libcublasLt.so.12* "$PACK/"
+              # Resolved as it will be: the pack beside the archive's own libraries.
+              MISSING="$(LD_LIBRARY_PATH="$PWD/$DESK" ldd "$PACK"/libggml-cuda.so | grep 'not found' | grep -v 'libcuda\.so' || true)"
+              [ -z "$MISSING" ] || { echo "the CUDA module needs libraries neither archive carries:"; echo "$MISSING"; exit 1; }
+            fi
+            cp "$C/LICENSE" "$PACK/LICENSE-CUDA.txt"
+            cat > "$PACK/README-CUDA.txt" <<EOF
+          BigMoeOnEdge CUDA backend $TAG, ${{ matrix.target }}
+
+          The NVIDIA GPU backend, kept out of the main downloads for its size. Its files are at the
+          top of the archive: extract it into the folder of bmoe-cli or bmoe-desktop $TAG for
+          ${{ matrix.target }}, or of the installed app
+          (%LOCALAPPDATA%\\Programs\\BigMoeOnEdge on Windows), so these files sit beside the
+          program: it loads every backend it finds there at start-up, and the plan
+          (--auto --plan-explain, or the Plan page) then shows the NVIDIA card. It needs the NVIDIA
+          driver installed, and nothing else: the CUDA runtime and cuBLAS are here. The AppImage
+          is read-only and cannot take it; on Linux use the bmoe-desktop archive instead.
+
+          The NVIDIA libraries are NVIDIA's software, redistributed under LICENSE-CUDA.txt.
+          EOF
+          fi
           if [ "${{ runner.os }}" = "Windows" ]; then
             7z a -tzip "$NAME.zip" "$NAME" > /dev/null
             7z a -tzip "$DESK.zip" "$DESK" > /dev/null
+            # The pack's files at its top, no folder: extracted where the program is, they land beside it.
+            [ -z "${PACK:-}" ] || 7z a -tzip "$PACK.zip" "./$PACK/*" > /dev/null
           else
             tar czf "$NAME.tar.gz" "$NAME"
             tar czf "$DESK.tar.gz" "$DESK"
+            [ -z "${PACK:-}" ] || tar czf "$PACK.tar.gz" -C "$PACK" .
           fi
           echo "desk=$DESK" >> "$GITHUB_OUTPUT"
           # The packages, from the folder the archive was just made of. Windows builds its

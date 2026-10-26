@@ -7,6 +7,17 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **CUDA and HIP in the releases.** x86_64 Linux and Windows releases get a CUDA pack
+  (`bmoe-cuda-<tag>-<target>`): the CUDA backend module with the NVIDIA runtime and cuBLAS it links,
+  built from NVIDIA's redistributable archives checked against their SHA-256
+  (`scripts/fetch-cuda-redist.py`), for every NVIDIA generation from Turing on. It is a download of
+  its own, about twenty times the rest, so a machine without an NVIDIA card does not fetch it:
+  extracted into the folder of an archive or of the installed app, it is loaded with the other
+  modules (the read-only AppImage cannot take it; the Linux archive can). The x86_64 Linux archives
+  and packages also carry the HIP module, built in AMD's ROCm image for RDNA 2-4 and the Instinct parts, and
+  loaded only where ROCm 7 is installed. A module whose driver the machine lacks is not loaded, so the
+  same download still runs on a machine with any GPU or none. The Windows x86_64 build now uses Ninja
+  with the MSVC environment, which CUDA needs without NVIDIA's Visual Studio integration.
 - **A device cache's misses uploaded from the backend's own host memory** (`--expert-host-buffer
   DEVICE`). The device probe now also times an upload from a buffer of the device's own host buffer
   type (page-locked on CUDA, Vulkan and SYCL), and where it beats the file's mapping by the margin
