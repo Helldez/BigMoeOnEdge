@@ -159,12 +159,26 @@ struct ComputeDevice {
     // phone whose engine then ran the offload at 0.53x.
     double memory_bandwidth_gibs = 0.0;
 
-    // The same matmul many tokens wide, as weight bytes applied per second; 0 when unmeasured. It
+    // The same device on ONE REAL LAYER of the model (docs/measured-planning.md, Step 3), at decode
+    // width, in GiB/s of weight bytes applied; 0 when unmeasured. Two figures because the layer has
+    // two halves that run different kernels on different shapes: `expert_gibs` is the routed expert
+    // block (`mul_mat_id` over the layer's own expert tensors, top-k of them per token), `dense_gibs`
+    // the layer's other matrices (attention projections, router, shared experts) as plain matmuls.
+    // Built from the file's own tensors and bytes, so a kernel the format falls to, a shape that is
+    // small enough to be dominated by per-op cost, and a threading pattern that does not scale are
+    // all in the figure - which the synthetic GEMV above, one large matrix, cannot see: on one
+    // 48-core host it read 77 GiB/s while the decode's experts ran at about 12.
+    double expert_gibs = 0.0;
+    double dense_gibs = 0.0;
+
+    // The real layer many tokens wide, as weight bytes applied per second; 0 when unmeasured. It
     // is the figure a PREFILL placement turns on and it is not derivable from the one above: a
     // one-token graph is bound by reading weights and a wide one by computing on them, and a
-    // device can lose the first and win the second several times over. `wide_identity_ok` is
-    // whether it also reproduced the CPU's result at that width - asked separately, because a
-    // backend's batched kernel is not the kernel its one-token path runs.
+    // device can lose the first and win the second several times over. Measured on the same real
+    // layer as `expert_gibs` (the expert block at the per-expert batch a prompt of this width gives
+    // it, the dense matrices at the full width), or on a synthetic matmul in the model's format where
+    // no layer could be read. `wide_identity_ok` is whether it also reproduced the CPU's result at
+    // that width - asked separately, because a backend's batched kernel is not its one-token path.
     double wide_matmul_gibs = 0.0;
     Tri wide_identity_ok = Tri::Unknown;
 
@@ -185,13 +199,13 @@ struct ComputeDevice {
     // and unmeasured means no group may be placed here rather than that crossings are free.
     //
     // This is the term a bandwidth figure structurally cannot see, and the one that decides an
-    // offload in practice. It is measured rather than assumed: a chain of cheap ops over a
-    // hidden-state-sized tensor is run once on the host and once with alternate ops pinned to this
-    // device, the scheduler is asked how many splits the second one really had, and the difference
-    // is divided by them. See core/src/plan/device_probe.cpp.
+    // offload in practice. It is measured the way the graph crosses at a layer boundary: one token's
+    // hidden state copied from host memory into the device, one op run on it there, and copied back,
+    // each leg waited for, half of the round trip per crossing. See core/src/plan/device_probe.cpp.
     double split_seconds = 0.0;
 
-    // Boundary crossings this device adds to ONE token's graph, 0 when unmeasured. It is the term
+    // Boundary crossings this device adds to ONE token's graph, 0 when unmeasured (no probe fills
+    // it today; it is kept for the record and the facts line). It is the term
     // that decides an offload in practice and the one a bandwidth figure cannot see. Two measured
     // facts sit behind it. Dense and expert halves alternate per layer, so a split placement
     // crosses twice per layer — 96 crossings on a 48-layer model — and contiguous layer blocks,
@@ -202,6 +216,20 @@ struct ComputeDevice {
     // placed on it, which is why a device the plan does not use must be kept out of the run rather
     // than merely left empty.
     uint32_t graph_splits = 0;
+
+    // How fast this process's ordinary host memory reaches this device's own memory, in GiB/s, 0
+    // when unmeasured or when the device has no memory of its own. It is the price of a miss in a
+    // cache of experts kept on the device: the expert is uploaded from where the host holds it,
+    // one expert at a time. Measured at that granularity from pageable memory, the kind a streamed
+    // or resident expert lives in, rather than read off the link's nominal width.
+    double upload_gibs = 0.0;
+
+    // The same upload from a buffer of the device's own host buffer type
+    // (ggml_backend_dev_host_buffer_type), 0 where the device offers none or it was unmeasured. That
+    // type is host memory the device's backend allocates for itself to copy from, page-locked where
+    // the backend can lock it, so its copies skip the bounce through a staging buffer an ordinary page
+    // needs. What it is underneath is the backend's business; the rate is the fact.
+    double upload_host_buffer_gibs = 0.0;
 };
 
 // The measured read rate at one (request size, lane count) point. A curve of these is the only
@@ -333,6 +361,12 @@ struct HardwareProfile {
     // weights faster - which is what batch-1 decode is, every weight read once and multiplied once.
     double host_bandwidth_gibs = 0.0;
 
+    // The host on the real layer at decode width (see ComputeDevice::expert_gibs and dense_gibs), at
+    // `best_threads`; 0 when unmeasured, and a rule reading either then falls back to the figure
+    // above, which is what it read before the layer was measured.
+    double host_expert_gibs = 0.0;
+    double host_dense_gibs = 0.0;
+
     // The host on the wide matmul (see ComputeDevice::wide_matmul_gibs), and the width it was
     // measured at, for the rationale. 0 when unmeasured, and then no prefill device is armed.
     double host_wide_matmul_gibs = 0.0;
@@ -374,6 +408,28 @@ struct HardwareProfile {
     // capacity fitter can actually buy with, so it is also the test for whether that tier is worth
     // running at all on this machine.
     uint64_t device_local_memory() const;
+
+    // The host's rate on the expert block and on the dense matrices: the real layer where it was
+    // measured, the synthetic GEMV otherwise. For a rule pricing the host alone.
+    double host_expert_rate() const { return host_expert_gibs > 0.0 ? host_expert_gibs : host_bandwidth_gibs; }
+    double host_dense_rate() const { return host_dense_gibs > 0.0 ? host_dense_gibs : host_bandwidth_gibs; }
 };
+
+// The host's and a device's rate on the same half of the layer, from the SAME experiment: the real
+// layer where both were measured on it, the synthetic GEMV where either was not. A rule compares the
+// two, and a ratio between two different experiments would be a ratio between two questions.
+struct RatePair {
+    double host = 0.0;
+    double device = 0.0;
+    bool real_layer = false; // both from the model's own layer
+};
+inline RatePair expert_rates(const HardwareProfile & hw, const ComputeDevice & d) {
+    if (hw.host_expert_gibs > 0.0 && d.expert_gibs > 0.0) return {hw.host_expert_gibs, d.expert_gibs, true};
+    return {hw.host_bandwidth_gibs, d.memory_bandwidth_gibs, false};
+}
+inline RatePair dense_rates(const HardwareProfile & hw, const ComputeDevice & d) {
+    if (hw.host_dense_gibs > 0.0 && d.dense_gibs > 0.0) return {hw.host_dense_gibs, d.dense_gibs, true};
+    return {hw.host_bandwidth_gibs, d.memory_bandwidth_gibs, false};
+}
 
 } // namespace bmoe

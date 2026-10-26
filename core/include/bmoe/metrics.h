@@ -170,6 +170,10 @@ struct RunSummary {
     // under overlap.
     double moe_flash_wait_s_per_token = 0.0;
     double cache_hit_pct = -1.0; // -1 when no cache
+    // The same, over this generation's decode alone: the figure a plan's credited hit rate prices
+    // (a decoded token), where cache_hit_pct also counts the prompt and every earlier turn. -1 when
+    // no cache or nothing was decoded.
+    double cache_hit_decode_pct = -1.0;
 
     // Compute decomposition, generation phase only (measured whether or not streaming is on, since
     // dense-weight faults appear in the mmap baseline too). majflt_per_token ≫ 0 flags a residency
@@ -319,8 +323,10 @@ struct RunInfo {
     int n_expert_used = 0; // effective top-k, after any override
     int n_threads = 0;
     int n_ctx = 0;
-    int n_ubatch = 0;    // widest graph computed at once; 0 = follow n_batch. Sets the compute-buffer
-                         // reservation, so it moves the very memory columns these rows record.
+    int n_ubatch = 0;                 // widest graph computed at once; 0 = follow n_batch. Sets the compute-buffer
+                                      // reservation, so it moves the very memory columns these rows record.
+    std::string cache_type_k = "f16"; // the K and V caches' element types: a quantized one is lossy
+    std::string cache_type_v = "f16";
     bool chatml = false; // a chat-templated prompt is not the prompt that was typed
     // Deliberately absent: `think`. It is a property of a REQUEST, not of the session, so a session
     // preamble stating one value would be wrong for every turn that asked for the other. The `turn`

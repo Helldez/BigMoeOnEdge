@@ -178,6 +178,11 @@ from the file's tensor layout ([docs/which-models-stream.md](docs/which-models-s
 `ctest` checks that streamed output equals fully resident output across the cache, evictions,
 overlap, sessions and split models ([docs/architecture.md](docs/architecture.md)).
 
+Streaming only reads. The model file is mapped read-only and the expert cache is a region of RAM,
+never a file, so a streamed token costs flash reads and no flash writes: it does not wear the
+drive the way writes do. What the engine writes is explicit and small: a model you download, your
+settings, and a metrics CSV or routing record when asked for.
+
 ## The planner
 
 <p align="center">

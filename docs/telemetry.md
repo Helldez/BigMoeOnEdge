@@ -266,6 +266,7 @@ prints just the summary lines.
 ```
 # bmoe_metrics v2
 # engine=<ver>
+# cache_type_k=<f16|bf16|f32|q8_0|q5_1|q5_0|q4_1|q4_0|iq4_nl> cache_type_v=<same>
 # model=<file> arch=<arch> n_layer=<n> n_expert=<n> n_expert_used=<k> threads=<n>
   n_ctx=<n> n_ubatch=<n> chatml=<0|1>
 # moe_stream=<0|1> cache_mb=<n> cache_auto=<0|1> cache_floor_mb=<n> cache_ceil_mb=<n>
@@ -541,6 +542,64 @@ dominates the file; `--phase decode` is the usual lens.
 Real traces from Qwen3-30B-A3B, Gemma-4-26B-A4B and gpt-oss-120b on device, with the analysis they
 support, are archived in
 [bench-data/2026-07-15-route-trace/](bench-data/2026-07-15-route-trace/findings.md).
+
+A route trace also prices a plan: `bmoe::parse_routing_trace` reads one into the planner's routing
+record, rebuilding its cache requests the way `scripts/route-replay.py` does.
+
+## Routing record
+
+Not a trace and not opt-in: a streamed session keeps the experts each MoE layer asked the cache for
+during its first tokens (`--routing-record N`, default 256 decoded tokens and the last 256 of the
+prompt; `0` is off), for the planner to read the model's hit curve from
+([hardware-planning.md](hardware-planning.md#the-cache-priced-on-the-models-own-routing)). It asks
+the graph for nothing, so a run with it is a benchmark run. `bmoe-cli --routing-dir DIR` and
+`bmoe-server` (under `routing/` in its data folder) keep it as one text file per model,
+`<fingerprint>.routing`:
+
+```
+# bmoe routing v1
+# n_layer=<int> n_expert=<int> n_expert_used=<int> prefill_tokens=<int> decode_tokens=<int>
+# layer=<int> expert_bytes=<int>                           (one per block with streamed experts)
+p <layer> <expert> <expert> ...                            (a prompt chunk's request, token-major)
+d <layer> <expert> ...                                     (a decoded token's request)
+```
+
+One line is one request to the expert cache, in the order the engine made them: what a block
+routed for one llama_decode, every token of a prompt chunk on one line. Replayed through an LRU of
+the run's budget, the record gives the hit rate the run measured (gate `G2r`).
+
+`BMOE_DONE`'s `cache_hit_pct` stays the cumulative figure. The decode-only one is what the CLI's
+`plan: predicted ...` line and `bmoe-server`'s `/api/plan` `measured.cache_hit_pct` now set against
+the plan's credited hit rate, since that is the figure a decoded token is priced with.
+
+## Knob trial
+
+With `--trial-threads` or `--trial-overlap` (which `--auto` sets when the verdict is kept;
+[hardware-planning.md](hardware-planning.md#lossless-knobs-measured-on-the-first-answer)), the first
+answer's decode alternates the knob between timed windows, and the engine logs what it did:
+
+```
+bmoe: knob trial: the cache has settled; measuring the decode thread count
+bmoe: knob trial: <n> decode threads (against <n>): decoded <pct>% faster in the median of <r> rounds
+bmoe: knob trial: <n> decode threads (against <n>): held: the best candidate was <+pct>% in the median of <r> rounds, inside the 10% margin
+bmoe: knob trial: overlap <on|off> (against <on|off>): ...
+```
+
+Per-token metrics during the trial are of the setting each token ran under: when overlap switches,
+`io_ms` changes meaning with it (wall blocked serially, lane busy time under overlap, as above) and
+the cursor it is taken against moves to the new counter, so no token straddles the two. The `mode:`
+line and the CSV preamble's `threads=` and `overlap=` are the session's settings at load. The verdict
+(`Session::measured_knobs()`) is kept beside the routing record as `<fingerprint>.knobs`, one line per
+machine and engine:
+
+```
+bmoe-measured-knobs 1
+hardware=<16 hex> engine=<version> threads=<n> threads_tried=<incumbent,candidates> threads_gain=<f>
+  overlap=<-1|0|1> overlap_incumbent=<-1|0|1> overlap_gain=<f> rounds=<n>      (one line)
+```
+
+`threads=0` and `overlap=-1` mean not measured. A key the reader does not know is skipped, so a later
+engine may add one.
 
 ## Session mode
 
