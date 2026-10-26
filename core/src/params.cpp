@@ -874,12 +874,14 @@ std::vector<ParamDesc> build() {
         };
         kv_row("cache-type-k", "-ctk", "Key cache type",
                "Element type of the attention keys kept for the context, as llama.cpp's flag of the same name. "
-               "q8_0 halves the memory a long context takes and q4_0 quarters it, at a cost in quality that "
-               "grows as the bits shrink. That memory goes to the expert cache.",
+               "q8_0, the default, halves the memory a long context takes against llama.cpp's f16, and q4_0 "
+               "quarters it, at a cost in quality that grows as the bits shrink. That memory goes to the "
+               "expert cache. f16 is lossless.",
                [](RunConfig & c) -> KvCacheType & { return c.cache_type_k; });
         kv_row("cache-type-v", "-ctv", "Value cache type",
                "Element type of the attention values kept for the context, as llama.cpp's flag of the same name. "
-               "A quantized type needs flash attention, which llama.cpp uses where the backend has it.",
+               "A quantized type needs flash attention, which llama.cpp uses where the backend has it; "
+               "where it has not, the run falls back to f16.",
                [](RunConfig & c) -> KvCacheType & { return c.cache_type_v; });
     }
     {
