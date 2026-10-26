@@ -58,6 +58,12 @@ struct Placement {
     uint64_t device_compute_bytes = 0;
     uint64_t device_context_bytes = 0; // the context the fitter put on the devices, summed
 
+    // The part of the context, on every device and the host together, that does not grow with its
+    // length: a recurrent state, a sliding window. It is what one context checkpoint copies into host
+    // memory, read off two context lengths rather than off the architecture. Zero for a context that
+    // is all attention, or when not measured.
+    uint64_t context_fixed_bytes = 0;
+
     // Which devices those compute buffers were projected for, and each one's part, at the width
     // they were projected at. A device the fitter did not project for (one it never places layers
     // on) has no part: the sum above describes other devices' graphs, not its own.

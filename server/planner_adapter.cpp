@@ -43,10 +43,14 @@ PlanOutcome make_plan(const RunConfig & cfg,
                       const std::vector<std::string> & pinned,
                       bool isolated_probes,
                       const PlanStepFn & on_step,
-                      const RoutingTrace * routing) {
+                      const RoutingTrace * routing,
+                      const std::vector<MeasuredKnobs> * knobs,
+                      bool measure_knobs) {
     PlanOutcome o;
 #if !defined(BMOE_HAVE_PLANNER)
     (void) routing;
+    (void) knobs;
+    (void) measure_knobs;
     (void) cfg;
     (void) pinned;
     (void) isolated_probes;
@@ -60,6 +64,7 @@ PlanOutcome make_plan(const RunConfig & cfg,
     }
     PlanRequest req;
     req.pinned = pinned;
+    req.measure_knobs = measure_knobs;
 
     // The probe order is core's (probe_and_plan), the one bmoe-cli --auto runs. What the server
     // decides: the storage is measured, the headroom only ever estimated - never the intrusive
@@ -70,6 +75,7 @@ PlanOutcome make_plan(const RunConfig & cfg,
     opt.probe_io = true;
     opt.probe_mem = false;
     opt.routing = routing;
+    opt.knobs = knobs;
     if (isolated_probes) {
         const std::string model = cfg.model_path;
         opt.isolated_probe_args = [model](const std::string & dev) {
@@ -110,6 +116,7 @@ PlanOutcome make_plan(const RunConfig & cfg,
 
     o.ok = true;
     o.held_bytes = plan.allocation.ledger.held;
+    o.hardware = hardware_fingerprint(hw);
     o.body = json{{"available", true},
                   {"model", cfg.model_path},
                   {"machine", hw.label},

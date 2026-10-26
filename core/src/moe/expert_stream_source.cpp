@@ -243,28 +243,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     io_stop_ = false;
     io_err_.store(false);
 
-    if (overlap_) {
-        // One readiness cell per (projection, expert), and a map from each bound expert tensor
-        // (the persistent model weight, stable across decodes) back to its (layer, projection)
-        // so the hook can find the cell to wait on. Built after the rebind above.
-        ready_ = std::vector<ReadyFlag>((size_t) ExpertLayout::max_slots * (size_t) n_expert_);
-        async_gen_.store(0);
-        cur_il_.store(-1);
-        fatal_.store(false);
-        stall_union_.reset();
-        batch_flag_gen_ = 0;
-        staged_.reserve(n_expert_);
-        texp_.clear();
-        texp_.reserve((size_t) n_layer_ * ExpertLayout::max_slots);
-        for (int il = 0; il < n_layer_; ++il) {
-            const LayerExperts & L = layers_[il];
-            if (!L.bound) continue;
-            for (int p = 0; p < ExpertLayout::max_slots; ++p)
-                if (L.proj[p].tensor)
-                    texp_.emplace_back((const void *) L.proj[p].tensor, ((uint32_t) il << 8) | (uint32_t) p);
-        }
-        std::sort(texp_.begin(), texp_.end());
-    }
+    if (overlap_) build_ready_map();
 
     // Hand the dense (non-expert) weights to their policy module: it warms them into the page cache,
     // or reads them into anon buffers and rebinds, and owns the residency sensor — all on the caller's
@@ -294,13 +273,76 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     // Serial: lane 0 is the calling thread (it drains inline), workers own lanes 1..N-1.
     // Overlap: the caller never drains — every lane 0..N-1 gets a worker so reads proceed
     // while the compute threads run the FFN and block per expert on the readiness flags.
-    const int first_worker_lane = overlap_ ? 0 : 1;
-    for (int lane = first_worker_lane; lane < io_threads_; ++lane)
+    // Lane 0's worker is kept apart from the others, since a switch of mode starts or stops it alone.
+    for (int lane = 1; lane < io_threads_; ++lane)
         io_pool_.emplace_back(&ExpertStreamSource::io_worker, this, lane);
+    if (overlap_) lane0_worker_ = std::thread(&ExpertStreamSource::io_worker, this, 0);
 
     // effective_direct_ (set where the readers opened) is the run's o_direct fact — see above.
     log_printf(LogLevel::Info, "expert streaming ON  n_expert=%d o_direct=%d io_threads=%d cache=%zu MiB shards=%zu",
                n_expert_, (int) effective_direct_, io_threads_, cache_max_ >> 20, readers_.size());
+    return true;
+}
+
+// One readiness cell per (projection, expert), and a map from each bound expert tensor (the
+// persistent model weight, stable across decodes) back to its (layer, projection) so the hook can
+// find the cell to wait on. Built after the rebind, at init under overlap or at the first switch to
+// it (set_overlap), and never again: the tensors it maps do not move.
+void ExpertStreamSource::build_ready_map() {
+    ready_ = std::vector<ReadyFlag>((size_t) ExpertLayout::max_slots * (size_t) n_expert_);
+    async_gen_.store(0);
+    cur_il_.store(-1);
+    fatal_.store(false);
+    stall_union_.reset();
+    batch_flag_gen_ = 0;
+    staged_.reserve(n_expert_);
+    texp_.clear();
+    texp_.reserve((size_t) n_layer_ * ExpertLayout::max_slots);
+    for (int il = 0; il < n_layer_; ++il) {
+        const LayerExperts & L = layers_[il];
+        if (!L.bound) continue;
+        for (int p = 0; p < ExpertLayout::max_slots; ++p)
+            if (L.proj[p].tensor)
+                texp_.emplace_back((const void *) L.proj[p].tensor, ((uint32_t) il << 8) | (uint32_t) p);
+    }
+    std::sort(texp_.begin(), texp_.end());
+}
+
+// Serial and overlap differ in one thread. Serially the eval thread is lane 0 and reads its share
+// of a batch itself; under overlap it never reads, so lane 0 gets a worker of its own like the
+// others. Everything else - the readers, the cache, the jobs - is the same in both, so switching is
+// giving lane 0 its worker or taking it back, plus the hook the overlapped matmul waits through.
+// Between two decodes only: no layer is in flight, so the last batch is the only thing to wait for.
+bool ExpertStreamSource::set_overlap(bool on) {
+    if (!active_) return false;
+    if (on == overlap_) return true;
+    if (on) {
+        if (!hook_registered_ && !enable_overlap_hook()) return false;
+        if (ready_.empty()) build_ready_map();
+        {
+            std::lock_guard<std::mutex> lk(io_mtx_);
+            lane0_stop_ = false;
+        }
+        overlap_ = true;
+        prefetch_sync_ = false;
+        lane0_worker_ = std::thread(&ExpertStreamSource::io_worker, this, 0);
+        return true;
+    }
+    {
+        // The last overlapped batch: its reads may outlast the token whose last layer issued them
+        // only for load_all, whose surplus no matmul waits on. They are waited for, as the next
+        // overlapped load would have.
+        std::unique_lock<std::mutex> lk(io_mtx_);
+        io_cv_done_.wait(lk, [&] { return done_cnt_ == batch_njobs_ || io_stop_; });
+        lane0_stop_ = true;
+    }
+    io_cv_.notify_all();
+    if (lane0_worker_.joinable()) lane0_worker_.join();
+    if (hook_registered_ && set_hook_) {
+        set_hook_(nullptr, nullptr);
+        hook_registered_ = false;
+    }
+    overlap_ = false;
     return true;
 }
 
@@ -401,9 +443,10 @@ void ExpertStreamSource::io_worker(int lane) {
             // two-wave publish): a worker that drained wave one and left has seen == batch_gen_,
             // so the gen comparison alone would never bring it back for wave two.
             io_cv_.wait(lk, [&] {
-                return io_stop_ || batch_gen_ > seen || next_idx_ < batch_njobs_ || spec_next_ < spec_jobs_.size();
+                return io_stop_ || (lane == 0 && lane0_stop_) || batch_gen_ > seen || next_idx_ < batch_njobs_ ||
+                       spec_next_ < spec_jobs_.size();
             });
-            if (io_stop_) return;
+            if (io_stop_ || (lane == 0 && lane0_stop_)) return;
         }
         uint64_t g;
         {
@@ -538,7 +581,8 @@ void ExpertStreamSource::drain_spec(int lane, uint64_t worker_seen) {
         uint64_t g;
         {
             std::lock_guard<std::mutex> lk(io_mtx_);
-            if (io_stop_ || batch_gen_ > worker_seen) return; // shutting down, or real work waiting
+            // Shutting down, real work waiting, or lane 0 handed back to the eval thread.
+            if (io_stop_ || batch_gen_ > worker_seen || (lane == 0 && lane0_stop_)) return;
             if (spec_next_ >= spec_jobs_.size()) return;
             g = spec_gen_;
             j = spec_jobs_[spec_next_++];
@@ -1589,6 +1633,7 @@ void ExpertStreamSource::shutdown() {
     for (auto & t : io_pool_)
         if (t.joinable()) t.join();
     io_pool_.clear();
+    if (lane0_worker_.joinable()) lane0_worker_.join();
     spec_done_.clear();
     spec_done_pending_.store(0, std::memory_order_relaxed);
     spec_touched_.clear();

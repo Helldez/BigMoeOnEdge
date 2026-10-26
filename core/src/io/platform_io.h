@@ -273,6 +273,13 @@ uint64_t mem_available_bytes();
 // stand a fake hierarchy up; production reads the defaults.
 uint64_t cgroup_memory_left(const char * fs_root = "/sys/fs/cgroup", const char * self = "/proc/self/cgroup");
 
+// The CPUs a control group's quota lets this process use, rounded up: the tightest quota over
+// period of its group and every ancestor (v2 cpu.max, v1 cpu.cfs_quota_us / cpu.cfs_period_us). A
+// container capped this way still shows every core of the host, and a short burst runs on all of
+// them before the quota throttles it, so a probe of a few milliseconds measures a machine the
+// sustained decode does not have. 0 where no quota is set or none can be read.
+uint32_t cgroup_cpu_limit(const char * fs_root = "/sys/fs/cgroup", const char * self = "/proc/self/cgroup");
+
 // Physical memory this machine has, 0 where it cannot be read. Not a sizing signal on its own -
 // what a process may hold is `mem_available_bytes()` and what it may KEEP is a separate probe - but
 // it bounds both, and it is what a rationale needs to say how much of the machine a plan is asking

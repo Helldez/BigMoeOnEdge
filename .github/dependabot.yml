@@ -1,6 +1,8 @@
 # Keeps the pinned inputs moving on purpose, one reviewed PR per ecosystem a month, instead of a
 # sweep. The CI Python packages (scripts/requirements-ci.txt), the Vulkan SDK and the llama.cpp
 # submodule are bumped by hand: each needs its gates, its checksum or its seam check (AGENTS.md).
+# A major version of a UI or Android dependency is a migration (TypeScript 7, AGP 9 and Kotlin 2.4
+# each broke their job in a group), so the groups carry minors and patches only.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -17,6 +19,9 @@ updates:
     groups:
       ui:
         patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: gradle
     directory: /examples/android
     schedule:
@@ -24,3 +29,6 @@ updates:
     groups:
       android:
         patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]

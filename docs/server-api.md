@@ -933,6 +933,11 @@ through the parameter table; `args` are the arguments that reproduce the plan, o
 and unquoted, and empty when the plan declines streaming; `not_applicable` names anything the plan
 decided that the table cannot hold (a tensor-placement pattern, say), so it is shown rather than
 silently dropped.
+Until the model's lossless knobs are measured on this machine, a plan's `values` include
+`trial-threads` and `trial-overlap`: the first answer after the load decodes in alternating windows
+to measure them (`docs/hardware-planning.md`), and the server keeps the verdict beside the model's
+routing record under `routing/`. The next plan of that model reads it, its `threads` and `overlap`
+decisions say `measured on this model`, and those two values are gone.
 With a model loaded that an auto load planned, `GET /api/plan` answers at once with that plan and
 `"from_last_load": true`, without measuring, and once the model has answered, `measured`: what
 its last complete turn measured for decode (`s_per_token`, `cache_hit_pct` over that turn's decode
