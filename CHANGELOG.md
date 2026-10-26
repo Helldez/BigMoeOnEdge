@@ -6,6 +6,17 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Fixed
+- **The tables the plan leaves mapped stay mapped.** The allocation prices the embedding group on
+  its own lane, and where that lane is not residency (the graph gathers rows from it, so a copy buys
+  bytes nothing reads) the run's `anon`/`pinned` dense policy still copied every dense tensor it was
+  handed: a 28.8 GB per-layer table that "fits" by the kernel's count went into memory the ledger had
+  sized the expert cache without, and on a 12 GB card's 42.6 GiB control group the run was killed at
+  43 GB (#424). The plan now hands the run the tables it priced as mapped (`dense-mapped`, names read
+  off the file's own grouping, a `[derived]` decision), the run holds them back as it holds back a
+  tensor too large, and llama.cpp's lazy prefetch of such a table stays off. Nothing names a tensor
+  or a size; a small table the allocation finds worth a resident copy is copied as before.
+
 ### Added
 - **The stack measured on rented desktop GPUs** (`docs/bench-data/2026-10-26-rented-gpu/`,
   `docs/benchmarks.md`, `docs/community-benchmarks.md`). A 24 GB card, `--auto` only: Qwen3.6-35B

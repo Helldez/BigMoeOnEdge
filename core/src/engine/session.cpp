@@ -884,7 +884,11 @@ bool Session::Impl::load_model(Opening & o) {
     // mechanisms would be paging the same bytes by two different routes, each unaware of the
     // other's residency. Whichever is doing it, only one may: ours when it is asked for, theirs
     // otherwise. Inheriting the default silently is the one option that is never right.
-    mparams.lazy_mode = cfg.moe.row_stream ? LLAMA_LAZY_MODE_OFF : LLAMA_LAZY_MODE_AUTO;
+    // A table the plan leaves mapped (dense_mapped) is priced as rows faulted in as the graph asks,
+    // and llama.cpp's lazy mode would prefetch the whole of it at load into pages the plan did not
+    // charge: off for that case too.
+    mparams.lazy_mode =
+        cfg.moe.row_stream || !cfg.moe.dense_mapped.empty() ? LLAMA_LAZY_MODE_OFF : LLAMA_LAZY_MODE_AUTO;
     std::vector<llama_model_tensor_buft_override> buft_overrides;
     if (!cfg.buft_overrides.empty()) {
         buft_overrides.reserve(cfg.buft_overrides.size() + 1);
