@@ -129,6 +129,14 @@ Semantic Versioning.
   n-gram speculation byte-identical to the CPU's run.
 
 ### Fixed
+- **The real-layer probe sizes its graphs for their leafs as well as their nodes.** A graph's size
+  bounds nodes and leafs together, and every matmul of the probe brings its weight, input and
+  selection as leafs; sized for nodes alone, a block that needs many copies to outrun the last-level
+  cache overflowed it (`GGML_ASSERT n_leafs < size`) and aborted `--auto`, and `bmoe-server` with
+  it, on a 35B-A3B on a 16 GB laptop as on a 125B on a 24 GB card. The tiny models of the gates
+  never needed enough copies to show it. The thread count is now chosen on the resident path too:
+  a plan whose model fits returned before the thread rule, so the layers the fitter left on the host
+  kept the default count (4 threads of a 32-core box, 26 tok/s where 16 threads decoded at 47.5).
 - **A run reserves the logit rows its plan charged, with a prefill device or without one.** The
   context capped the rows a graph may return at 128 only when a device ran the prefill, while the
   planner projected every run at that cap. Without one, llama.cpp reserved a vocabulary-wide row
