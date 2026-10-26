@@ -1,0 +1,10 @@
+Mon Oct 26 16:20:38 2026       
+               total        used        free      shared  buff/cache   available
+Mem:              62           3          26           0          33          59
+Swap:              7           0           7
+16
+45700087808
+768000 100000
+Filesystem      Size  Used Avail Use% Mounted on
+overlay          90G  1.2M   90G   1% /
+ldd (Ubuntu GLIBC 2.35-0ubuntu3.8) 2.35

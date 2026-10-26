@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **The stack measured on rented desktop GPUs** (`docs/bench-data/2026-10-26-rented-gpu/`,
+  `docs/benchmarks.md`, `docs/community-benchmarks.md`). A 24 GB card, `--auto` only: Qwen3.6-35B
+  resident on the card at 217 tok/s, Flash-Next 125B with its hottest 18 GB of experts cached on the
+  card at 70, DeepSeek V4 Flash streamed from the drive at 9.3 with 94% hits. The same DeepSeek file
+  through llama.cpp's own offload decoded at 18.5 from the same cold page cache, which is the margin
+  rule of #419 and the control-group page cache of #418, both filed with the numbers. A 12 GB card
+  on a 42.6 GiB control group: `--auto` armed the device tier and was killed at 43 GB (its host-side
+  memory is not in the ledger, #424); with the tier off, Flash-Next ran resident at 15.5 tok/s, and
+  the MTP head drafting on 8 slow cores cost more than it saved. With CUDA and Vulkan built together,
+  the Vulkan device reported no PCI id, so the backends were not grouped and the tier priced the
+  slower one (#421).
+
 ## [0.37.1] - 2026-10-26
 
 ### Fixed

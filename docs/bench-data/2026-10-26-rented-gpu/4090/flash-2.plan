@@ -1,0 +1,5 @@
+plan:   experts      32400 MiB,     632 MiB/token  (streamable)
+plan:   device-cache-mb 18225      [measured] the experts used most live on the processor that computes them fastest, as the RAM cache holds what flas
+plan:   placement      49 layers on devices [measured] the capacity fitter found a placement that is projected to fit; 48 of 48 MoE layers keep their 
+plan:   regime         fits       [derived] on the host 32510 MiB (dense 110) against 35808 MiB usable, which is the 44760 MiB this process may hold (
+plan:   threads        16         [measured] measured on this model: an earlier load's first answer decoded in alternating windows with 16, 15 and 31 
