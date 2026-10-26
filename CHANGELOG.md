@@ -40,9 +40,115 @@ Semantic Versioning.
   host memory reaches it one expert at a time (`upload_gibs`), printed with the plan. On a
   24 GB discrete card with a 125B model resident on the host, a 16 GB device cache decoded at 61.8 and
   62.8 tok/s over 256 tokens and 84-88 once settled, against 31.9 for the best whole-layer split and
-  18.9 with the experts on the cores. Speculation now works beside it. Gates G21a-c prove the cached
+  18.9 with the experts on the cores. Speculation now works beside it. Gates G25a-c prove the cached
   runs byte-identical to the resident placement (resident, streamed, streamed under n-gram
   speculation), and G2u that an unstreamed run's record is the routing a stream asks for.
+- **The cache is sized from the model's own routing** (Step 1 of `docs/measured-planning.md`). A
+  streamed session keeps the experts each MoE layer asked the cache for during its first tokens
+  (`--routing-record`, default 256 decoded tokens and the prompt's last 256; it adds no graph nodes
+  and changes no output) and returns it as a value (`Session::routing_record()`, `bmoe/routing.h`).
+  `bmoe-cli --routing-dir DIR` and `bmoe-server` (under `routing/` in its data folder) keep it, one
+  file per model named by a content fingerprint of the file (`model_fingerprint()`). The next
+  `--auto` plan of that file replays it through the engine's LRU at every size up to the whole
+  expert set: the model's hit curve (`ModelProfile::hit_curve`). The cache is then ranked against
+  the resident groups along that curve and credited the hit rate it gives at the chosen size,
+  tagged `[measured on this model]` and with a `cache-hits` decision saying what it was replayed
+  from. Without a record, or with one for another model or top-k, the plan is unchanged: the
+  linear credit stays for a first load. The replay matches `scripts/route-replay.py` to the third
+  decimal on the archived phone traces (`routing` test), and a new gate (`G2r`) checks that a real
+  session's record replays to the hit rate its cache measured. The same record ranks the hottest
+  (block, expert) pairs (`hottest_experts()`), for a later device-side cache to warm from; nothing
+  reads it yet. The on-device runs this is judged by are owed.
+- **The thread count and overlap are measured on the first answer** (Step 2 of
+  `docs/measured-planning.md`; #294). Where the front-end keeps the verdict (`bmoe-cli --auto` with
+  `--routing-dir`, and `bmoe-server` always), the plan arms a trial instead of a guess:
+  `--trial-threads N[,M]`, the core-class boundaries nearest the incumbent, and `--trial-overlap`.
+  Once the cache's hit rate has settled, decode windows (`--trial-window`, 8 tokens) alternate
+  between the incumbent and each candidate, every candidate window between two of the incumbent's,
+  on the user's own answer; a candidate wins only if it decodes `min_backend_win` (10%) faster in the
+  median of its rounds. Both knobs switch with the session open: the thread count through
+  `llama_set_n_threads`, overlap by starting or stopping the streamer's first read lane worker and
+  the expert-ready hook between two decodes (it needs every layer on the host). The winner stays for
+  the session and is returned (`Session::measured_knobs()`, `bmoe/measured_knobs.h`); the
+  front-ends keep it beside the routing record, a line per machine (`hardware_fingerprint()`) and
+  engine version, and the next plan of the model starts from it, states `threads` and `overlap` as
+  measured on this model, and measures nothing. `--io-threads` is left to the storage probe, which
+  already measures it on the model's own file. Gate `G24` holds the output byte-identical while the
+  trial switches, within one answer and across turns; the policy has its own test (`knob_trial`).
+  With nothing kept and the feature off, the plan is unchanged. The on-device runs this is judged by
+  are owed.
+
+### Changed
+- **The plan's hit rate is set against the decode's.** The line `bmoe-cli --auto` prints after a run
+  compares the credited hit rate with the one measured over the decode alone (the figure a token is
+  priced with), with the prompt-inclusive one in brackets; it used to show the cache's share of the
+  expert set against the cumulative rate. `bmoe-server`'s `/api/plan` `measured.cache_hit_pct` is
+  likewise the last turn's decode now. `RunSummary::cache_hit_decode_pct` carries it;
+  `BMOE_DONE`'s `cache_hit_pct` is unchanged.
+- **The device tier and the cost model read the real layer's rates.** `choose_device_tier` prices the
+  split's host layers at the host's rate on the model's own expert block, where host and device were
+  both measured on it (the synthetic GEMV read a 48-core host at 77 GiB/s while its decode's experts
+  ran at about 12), and the allocation prices the host's expert and dense compute each at its own
+  rate. Every comparison of a host with a device takes both figures from the same experiment, the
+  GEMV's where either side lacks the layer. The isolated device probe's facts line is `v=2`, with
+  `expert=` and `dense=`.
+### Fixed
+- **A run reserves the logit rows its plan charged, with a prefill device or without one.** The
+  context capped the rows a graph may return at 128 only when a device ran the prefill, while the
+  planner projected every run at that cap. Without one, llama.cpp reserved a vocabulary-wide row
+  for every token of the ubatch, where the output layer is. On a 24 GB card holding most of a 125B
+  model's layers, `--auto` placed what the ledger allowed and then could not create the context:
+  2.1 GiB of output rows no longer fit in the card's memory. On a CPU-only run of a 35B-A3B at 2048
+  tokens the same rows were 2028 MiB of compute buffer against the 436 MiB planned (#304), 312 MiB
+  with the cap. The cap now holds on every session, and a perplexity pass is fed in pieces no wider
+  than it.
+
+- **A container's memory limit is the plan's limit.** Inside a memory control group with a finite
+  limit, the residency budget was the machine's `MemAvailable` (103 GB on a rented box whose group
+  allowed 85 GiB), so a plan could size itself past the point where the kernel ends the process.
+  The budget is now capped by what the group and every ancestor it can see still allow, less what
+  each holds and crediting its inactive file pages, for cgroup v2 and v1. A finite limit is also
+  read as a share the process is ended for exceeding, which widens the plan's margin the way an
+  app's own share does on a phone.
+- **The cores a process can keep busy, not the machine's.** The core count every thread rule and
+  sweep starts from was `hardware_concurrency`, which counts every core of the machine. It is now
+  the CPUs the process's affinity mask allows, capped by a CPU control group's quota (cgroup v2
+  `cpu.max`, v1 `cpu.cfs_quota_us`, rounded up). A container given 30.7 CPUs of 128 swept its
+  threads over 128 and probed its rates in bursts it could not sustain; the count is now 31. The
+  core classes are read over the CPUs the mask allows.
+
+## [0.36.0] - 2026-10-26
+
+### Added
+- **Context checkpoints, as llama.cpp's server keeps them** (`--ctx-checkpoints N`, default 8, where the server keeps 32: Qwen3.6-35B-A3B's is 62.8 MiB and comes
+  out of the expert cache's memory;
+  `--checkpoint-min-step N`, default 8192). A chat turn whose prompt diverges from the cached one
+  inside a state that cannot be cut (a recurrent state, a sliding window) used to clear the context
+  and prefill the whole conversation again. It now restores the newest checkpoint before the
+  divergence: the part of the state that cannot be cut, copied at the end of every prompt through the
+  public state API into `common`'s `common_prompt_checkpoint`. It matters most for coding agents,
+  whose clients resend each answer as text: with Claude Code on Qwen3.6-35B-A3B, five requests of eight
+  re-prefilled their whole 12k-token prompt. A memory that cuts anywhere keeps no checkpoint. Gate G22
+  checks the restore is lossless on a recurrent model, and that a model that cuts anywhere is untouched.
+- **A quantized KV cache, with llama.cpp's flags** (`--cache-type-k` / `-ctk`, `--cache-type-v` /
+  `-ctv`: `f16`, `bf16`, `f32`, `q8_0`, `q5_1`, `q5_0`, `q4_1`, `q4_0`, `iq4_nl`). The types are
+  llama.cpp's own, through `llama_context_params`, which rotates a quantized cache's heads first.
+  `q8_0` halves the memory a long context takes and `q4_0` quarters it, and on this engine that memory
+  goes to the expert cache. **`q8_0` is the default**, where llama.cpp keeps `f16`: an 18-turn agent
+  chat to 60k tokens on Qwen3.6-35B-A3B (16 GB laptop) decoded in 281-303 s at `q8_0` against 442-490 s
+  at `f16`. Every type but `f16` changes the output, and the default was set without a quality
+  measurement; `-ctk f16 -ctv f16` is the lossless run. The plan never picks a type; the capacity
+  fitter projects the KV at the type the run allocates. The metrics CSV records both types in its
+  preamble. A quantized V cache needs flash attention: where llama.cpp's backend refuses it, V falls
+  back to `f16` with a warning instead of failing the run. Gate G23 checks streaming stays
+  byte-identical to resident with an `f16` cache; every other gate now runs at `q8_0`.
+- **The plan charges a chat run's context checkpoints before it sizes the expert cache**
+  (`checkpoint-budget`, a ledger row of its own). Each checkpoint copies the part of the context that does
+  not grow with its length. The placement probe reads that part off llama.cpp's own projection at the
+  context and at half of it, with nothing taken from the architecture: 62 MiB on Qwen3.6-35B-A3B against
+  the 62.8 a checkpoint measures, and nothing for a context that is all attention. Without the charge, a
+  chat filled up to 502 MiB of checkpoints out of memory the cache had already been given. A run that is
+  not a chat makes no checkpoints and is charged none.
 - **Desktop packages that open with a double-click** (part of #385). `release-host` builds one per
   OS from the same staged folder the `bmoe-desktop` archive carries, and the archives stay for
   scripted installs and the CLI. The scripts live under `packaging/`.
@@ -87,62 +193,13 @@ Semantic Versioning.
   tools, `previous_response_id` and stored items are refused with `400`; Responses built-in tools
   are dropped. `count_tokens` is an estimate from the request's length. The README says how to
   point each agent at the server; `docs/server-api.md` has the reference.
-- **The cache is sized from the model's own routing** (Step 1 of `docs/measured-planning.md`). A
-  streamed session keeps the experts each MoE layer asked the cache for during its first tokens
-  (`--routing-record`, default 256 decoded tokens and the prompt's last 256; it adds no graph nodes
-  and changes no output) and returns it as a value (`Session::routing_record()`, `bmoe/routing.h`).
-  `bmoe-cli --routing-dir DIR` and `bmoe-server` (under `routing/` in its data folder) keep it, one
-  file per model named by a content fingerprint of the file (`model_fingerprint()`). The next
-  `--auto` plan of that file replays it through the engine's LRU at every size up to the whole
-  expert set: the model's hit curve (`ModelProfile::hit_curve`). The cache is then ranked against
-  the resident groups along that curve and credited the hit rate it gives at the chosen size,
-  tagged `[measured on this model]` and with a `cache-hits` decision saying what it was replayed
-  from. Without a record, or with one for another model or top-k, the plan is unchanged: the
-  linear credit stays for a first load. The replay matches `scripts/route-replay.py` to the third
-  decimal on the archived phone traces (`routing` test), and a new gate (`G2r`) checks that a real
-  session's record replays to the hit rate its cache measured. The same record ranks the hottest
-  (block, expert) pairs (`hottest_experts()`), for a later device-side cache to warm from; nothing
-  reads it yet. The on-device runs this is judged by are owed.
-
 ### Changed
-- **The device tier and the cost model read the real layer's rates.** `choose_device_tier` prices the
-  split's host layers at the host's rate on the model's own expert block, where host and device were
-  both measured on it (the synthetic GEMV read a 48-core host at 77 GiB/s while its decode's experts
-  ran at about 12), and the allocation prices the host's expert and dense compute each at its own
-  rate. Every comparison of a host with a device takes both figures from the same experiment, the
-  GEMV's where either side lacks the layer. The isolated device probe's facts line is `v=2`, with
-  `expert=` and `dense=`.
-- **The plan's hit rate is set against the decode's.** The line `bmoe-cli --auto` prints after a run
-  compares the credited hit rate with the one measured over the decode alone (the figure a token is
-  priced with), with the prompt-inclusive one in brackets; it used to show the cache's share of the
-  expert set against the cumulative rate. `bmoe-server`'s `/api/plan` `measured.cache_hit_pct` is
-  likewise the last turn's decode now. `RunSummary::cache_hit_decode_pct` carries it;
-  `BMOE_DONE`'s `cache_hit_pct` is unchanged.
 - **`--dense-weights pinned` is the name of the reclaim-exempt mode** that was `ahwb`. The mode
   runs on Android (a dma-buf) and on macOS (wired memory), and the name only described the first.
   `ahwb` still parses, on the command line and in saved settings, and is written back as `pinned`;
   the choice the UIs list, the plan, the logs and the telemetry (`dense <...>` in the perf block,
   `dense_weights=` in the CSV header) say `pinned`. The mode's spelling now lives in one function
   (`dense_weights_mode_name`) instead of four copies.
-
-### Fixed
-- **A run reserves the logit rows its plan charged, with a prefill device or without one.** The
-  context capped the rows a graph may return at 128 only when a device ran the prefill, while the
-  planner projected every run at that cap. Without one, llama.cpp reserved a vocabulary-wide row
-  for every token of the ubatch, where the output layer is. On a 24 GB card holding most of a 125B
-  model's layers, `--auto` placed what the ledger allowed and then could not create the context:
-  2.1 GiB of output rows no longer fit in the card's memory. On a CPU-only run of a 35B-A3B at 2048
-  tokens the same rows were 2028 MiB of compute buffer against the 436 MiB planned (#304), 312 MiB
-  with the cap. The cap now holds on every session, and a perplexity pass is fed in pieces no wider
-  than it.
-
-- **A container's memory limit is the plan's limit.** Inside a memory control group with a finite
-  limit, the residency budget was the machine's `MemAvailable` (103 GB on a rented box whose group
-  allowed 85 GiB), so a plan could size itself past the point where the kernel ends the process.
-  The budget is now capped by what the group and every ancestor it can see still allow, less what
-  each holds and crediting its inactive file pages, for cgroup v2 and v1. A finite limit is also
-  read as a share the process is ended for exceeding, which widens the plan's margin the way an
-  app's own share does on a phone.
 
 ## [0.35.1] - 2026-10-24
 

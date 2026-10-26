@@ -1317,6 +1317,22 @@ int main() {
               "ledger: context and compute are charged without a fitted placement");
         check(ph.cache_budget_bytes - fx.cache_budget_bytes == 600 * MiB, "ledger: and the cache is sized after them",
               mibs_of(ph.cache_budget_bytes) + " against " + mibs_of(fx.cache_budget_bytes));
+
+        // A chat run keeps context checkpoints, each a copy of the context's fixed part: a line of
+        // their own at the count kept, the cache sized after it, and nothing on a run that is not a chat.
+        Placement ck = pl;
+        ck.context_fixed_bytes = 50 * MiB;
+        RunConfig chat = base_cfg();
+        chat.chatml = true;
+        chat.ctx_checkpoints = 4;
+        const Plan cx = plan_run(chat, phone(), model, ck, PlanRequest{});
+        const LedgerRow * ck_row = ledger_row(cx, "context checkpoints");
+        check(ck_row && ck_row->bytes == 200 * MiB, "ledger: a chat run charges its checkpoints",
+              ck_row ? mibs_of(ck_row->bytes) : "no row");
+        check(fx.cache_budget_bytes - cx.cache_budget_bytes == 200 * MiB, "ledger: and the cache gives them up",
+              mibs_of(fx.cache_budget_bytes) + " against " + mibs_of(cx.cache_budget_bytes));
+        check(ledger_row(plan_run(base_cfg(), phone(), model, ck, PlanRequest{}), "context checkpoints") == nullptr,
+              "ledger: a run that is not a chat keeps no checkpoints");
     }
 
     // ── the prefill plan: a second placement, decided at prefill width ─────────────
@@ -1784,6 +1800,166 @@ int main() {
             check(hh.cache_bytes > 0 &&
                       std::fabs(hh.cache_hit_credited - steep.hit_curve.hit_share(2 * hh.cache_bytes)) < 1e-6,
                   "a cache for the host's half is credited at the whole-set size it stands for");
+        }
+    }
+
+    // ── lossless knobs measured on the first answer (docs/measured-planning.md, Step 2) ──────────
+    {
+        // Ten cores in two classes, a sweep that picked 8, nothing placed on a device.
+        HardwareProfile het = desktop();
+        het.devices.clear();
+        het.n_cores = 10;
+        het.core_classes = {4, 6};
+        het.best_threads = 8;
+        PlanRequest on;
+        on.measure_knobs = true;
+
+        // Off, nothing stored: the plan arms no measurement and says what it always said.
+        {
+            const Plan p = plan_run(base_cfg(), het, model, PlanRequest{});
+            check(!p.config.trial.enabled(), "knobs off: no trial is armed");
+            check(!find(p, "trial-threads"), "knobs off: no trial decision");
+            check(p.to_flags().find("trial") == std::string::npos, "knobs off: the command line names no trial",
+                  p.to_flags());
+            const Decision * ov = find(p, "overlap");
+            check(ov && ov->source == Source::Unprobed && ov->value == "off" &&
+                      ov->brief == "Off: it changes no output, but its gain here is unmeasured." &&
+                      ov->reason.find("pass --overlap") != std::string::npos,
+                  "knobs off: overlap is named and not armed, word for word as before", ov ? ov->reason : "none");
+            const Decision * th = find(p, "threads");
+            check(p.config.n_threads == 8 && p.config.n_threads_batch == 0 && th && th->source == Source::Measured &&
+                      th->reason.find("swept over") != std::string::npos,
+                  "knobs off: the sweep's count, as before");
+        }
+
+        // On, nothing stored: the first answer measures the counts nearest the incumbent and overlap.
+        const Plan armed = plan_run(base_cfg(), het, model, on);
+        {
+            check(armed.config.trial.threads == std::vector<int>({10, 4}),
+                  "knobs on: the class boundaries nearest the incumbent are tried, nearest first",
+                  armed.config.trial.threads.size() == 2 ? std::to_string(armed.config.trial.threads[0]) + "," +
+                                                               std::to_string(armed.config.trial.threads[1])
+                                                         : "size " + std::to_string(armed.config.trial.threads.size()));
+            check(armed.config.n_threads == 8 && !armed.config.moe.overlap, "knobs on: the incumbents are unchanged");
+            check(armed.config.trial.overlap, "knobs on: overlap is measured too");
+            check(validate(armed.config).ok, "knobs on: the armed plan is a valid config",
+                  validate(armed.config).error);
+            const Decision * t = find(armed, "trial-threads");
+            check(t && t->value == "10,4" && t->source == Source::Policy,
+                  "knobs on: the trial is a decision of its own");
+            const Decision * ov = find(armed, "overlap");
+            check(ov && ov->source == Source::Unprobed && ov->brief.find("until the first answer") != std::string::npos,
+                  "knobs on: overlap waits for the first answer");
+            check(armed.to_flags().find("--trial-threads 10,4") != std::string::npos &&
+                      armed.to_flags().find("--trial-overlap") != std::string::npos,
+                  "knobs on: the trial is part of the command line that reproduces the plan", armed.to_flags());
+        }
+
+        // A stored verdict: applied, stated as measured on this model, and nothing is measured again.
+        ModelProfile measured = model;
+        measured.knobs.hardware = "0123456789abcdef";
+        measured.knobs.engine = "test";
+        measured.knobs.threads = 4;
+        measured.knobs.threads_tried = {8, 10, 4};
+        measured.knobs.threads_gain = 1.15;
+        measured.knobs.overlap = 1;
+        measured.knobs.overlap_incumbent = 0;
+        measured.knobs.overlap_gain = 1.12;
+        measured.knobs.rounds = 3;
+        {
+            const Plan p = plan_run(base_cfg(), het, measured, on);
+            check(p.config.n_threads == 4, "stored: the measured count is the plan's");
+            check(p.config.n_threads_batch == 8, "stored: prefill keeps the count it would have had",
+                  std::to_string(p.config.n_threads_batch));
+            check(p.config.moe.overlap, "stored: overlap as measured");
+            check(!p.config.trial.enabled(), "stored: nothing is measured again");
+            const Decision * th = find(p, "threads");
+            check(th && th->source == Source::Measured && th->reason.rfind("measured on this model", 0) == 0 &&
+                      th->reason.find("+15%") != std::string::npos &&
+                      th->reason.find("prefill keeps 8") != std::string::npos,
+                  "stored: the count says it was measured on this model, and by how much", th ? th->reason : "none");
+            const Decision * ov = find(p, "overlap");
+            check(ov && ov->source == Source::Measured && ov->value == "on" &&
+                      ov->reason.rfind("measured on this model", 0) == 0 &&
+                      ov->reason.find("+12%") != std::string::npos,
+                  "stored: overlap says it was measured on this model", ov ? ov->reason : "none");
+            check(validate(p.config).ok, "stored: a valid config", validate(p.config).error);
+            // The same verdict with the feature off is applied all the same: it is a fact, not a trial.
+            const Plan q = plan_run(base_cfg(), het, measured, PlanRequest{});
+            check(q.config.n_threads == 4 && q.config.moe.overlap && !q.config.trial.enabled(),
+                  "stored, knobs off: the verdict still applies");
+        }
+        {
+            // A verdict that held: the incumbent stays, and the plan says the other was inside the margin.
+            ModelProfile held = measured;
+            held.knobs.threads = 8;
+            held.knobs.threads_gain = 1.04;
+            held.knobs.overlap = 0;
+            held.knobs.overlap_gain = 0.97;
+            const Plan p = plan_run(base_cfg(), het, held, on);
+            const Decision * th = find(p, "threads");
+            const Decision * ov = find(p, "overlap");
+            check(p.config.n_threads == 8 && p.config.n_threads_batch == 0 && !p.config.moe.overlap && th &&
+                      th->reason.find("inside the 10% margin, so 8 held") != std::string::npos && ov &&
+                      ov->source == Source::Measured && ov->reason.find("so off held") != std::string::npos,
+                  "stored, held: the incumbents stay, measured",
+                  (th ? th->reason : "") + " / " + (ov ? ov->reason : ""));
+        }
+        {
+            // Only the count was measured (overlap could not be switched then): the trial measures overlap alone.
+            ModelProfile half = measured;
+            half.knobs.overlap = -1;
+            half.knobs.overlap_incumbent = -1;
+            const Plan p = plan_run(base_cfg(), het, half, on);
+            check(p.config.n_threads == 4 && p.config.trial.threads.empty() && p.config.trial.overlap,
+                  "stored count only: overlap alone is measured");
+        }
+        {
+            // Pinned knobs are the caller's: neither a verdict nor a trial touches them.
+            RunConfig b = base_cfg();
+            b.n_threads = 6;
+            b.moe.enabled = true;
+            PlanRequest pinned = on;
+            pinned.pinned = {"threads", "overlap"};
+            const Plan p = plan_run(b, het, measured, pinned);
+            check(p.config.n_threads == 6 && !p.config.moe.overlap && !p.config.trial.enabled(),
+                  "pinned: the caller's count and overlap stand, nothing measured");
+        }
+        {
+            // With layers on a device overlap changes how the context offloads, fixed at creation: the trial
+            // cannot switch it, so it is neither measured nor taken from a verdict measured without them.
+            Placement pl;
+            pl.fitted = true;
+            pl.outcome = "synthetic";
+            pl.n_gpu_layers = 24;
+            pl.n_ctx = 4096;
+            for (uint32_t il = 0; il < 24; ++il)
+                pl.host_expert_layers.push_back(il);
+            pl.host_resident_bytes = 4 * GiB;
+            pl.device_bytes = 8 * GiB;
+            HardwareProfile dev = het;
+            dev.devices = desktop().devices;
+            const Plan p = plan_run(base_cfg(), dev, measured, pl, on);
+            check(p.config.n_gpu_layers == 24 && !p.config.moe.overlap && !p.config.trial.overlap,
+                  "layers on a device: overlap is not armed from a verdict nor measured");
+            check(validate(p.config).ok, "layers on a device: a valid config", validate(p.config).error);
+        }
+        {
+            // Every core alike: the whole count and half of it are the candidates.
+            HardwareProfile uni = het;
+            uni.n_cores = 16;
+            uni.core_classes = {16};
+            uni.best_threads = 0;
+            const Plan p = plan_run(base_cfg(), uni, model, on);
+            check(p.config.trial.threads == std::vector<int>({8, 16}),
+                  "alike cores: half and all of them are tried against the default");
+            // Nothing known about the cores: nothing to try.
+            HardwareProfile blind = het;
+            blind.n_cores = 0;
+            blind.core_classes.clear();
+            blind.best_threads = 0;
+            check(plan_run(base_cfg(), blind, model, on).config.trial.threads.empty(),
+                  "unknown cores: no thread trial");
         }
     }
 

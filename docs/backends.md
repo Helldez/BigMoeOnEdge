@@ -99,7 +99,7 @@ any device llama.cpp's cache accepts can take it. The capture warm-up runs on a 
 cache, because with it on the expert matmuls read its slots instead of the host tensors the capture
 looks for; the context is then made again with it. It is refused with `--overlap` (whose wait sits
 inside the CPU's expert matmul, which no longer runs) and with a prefill device (which moves the
-layers); speculation works beside it, with the draft's own head served from the host. Gates G21a-c
+layers); speculation works beside it, with the draft's own head served from the host. Gates G25a-c
 (`tests/moe_gates.cpp`) prove the cached runs give the resident placement's bytes, the experts
 resident, streamed, and streamed under n-gram speculation, on a device with memory of its own (the
 loopback RPC device).

@@ -95,6 +95,9 @@ struct AllocationInputs {
     // nothing here chooses them, but they come out of the same memory, so they are a line rather
     // than something the budget is assumed to have left room for.
     uint64_t fixed_bytes = 0;
+    // Held the same way, and filled as a chat goes rather than at load: the context checkpoints the
+    // run may keep. A line of its own, so a reader finds what a chat run costs over a one-shot one.
+    uint64_t checkpoint_bytes = 0;
 
     // What a device the run is ARMED to compute on costs this pool, and whether it is charged to
     // the lockable ceiling too. Zero where no device is armed or its memory is its own.

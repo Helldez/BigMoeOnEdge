@@ -178,6 +178,8 @@ int main() {
     expect_flag({"-c", "4096"}, [](const RunConfig & c) { return c.n_ctx == 4096; });
     expect_flag({"--ctx-size", "1024"}, [](const RunConfig & c) { return c.n_ctx == 1024; });
     expect_flag({"--ubatch", "256"}, [](const RunConfig & c) { return c.n_ubatch == 256; });
+    expect_flag({"-ctk", "f16"}, [](const RunConfig & c) { return c.cache_type_k == KvCacheType::F16; });
+    expect_flag({"--cache-type-v", "q4_0"}, [](const RunConfig & c) { return c.cache_type_v == KvCacheType::Q4_0; });
     expect_flag({"--n-expert-used", "4"}, [](const RunConfig & c) { return c.n_expert_used == 4; });
     expect_flag({"--temp", "0.7"}, [](const RunConfig & c) { return c.sampling.temp == 0.7f; });
     expect_flag({"--top-k", "20"}, [](const RunConfig & c) { return c.sampling.top_k == 20; });
@@ -308,6 +310,22 @@ int main() {
         c.moe.row_stream_mb = 16;
         expect_roundtrip("speculation + prefetch", c);
     }
+    {
+        RunConfig c;
+        c.moe.enabled = true;
+        c.trial.threads = {6, 10};
+        c.trial.overlap = true;
+        c.trial.window_tokens = 4;
+        expect_roundtrip("knob trial", c);
+    }
+    expect_flag({"--trial-threads", "6,10"},
+                [](const RunConfig & c) { return c.trial.threads == std::vector<int>({6, 10}); });
+    expect_flag({"--trial-threads", "12"},
+                [](const RunConfig & c) { return c.trial.threads == std::vector<int>({12}); });
+    expect_flag({"--trial-overlap"}, [](const RunConfig & c) { return c.trial.overlap; });
+    expect_reject({"--trial-threads", "6,"});
+    expect_reject({"--trial-threads", "6,,8"});
+    expect_reject({"--trial-threads", "x"});
     {
         // Deprecated switches parse but are never emitted.
         RunConfig c;

@@ -51,6 +51,30 @@ bool parse_prefix_cache_mode(const std::string & s, PrefixCacheMode & out) {
     return false;
 }
 
+const char * kv_cache_type_name(KvCacheType t) {
+    switch (t) {
+    case KvCacheType::F16:
+        return "f16";
+    case KvCacheType::BF16:
+        return "bf16";
+    case KvCacheType::F32:
+        return "f32";
+    case KvCacheType::Q8_0:
+        return "q8_0";
+    case KvCacheType::Q5_1:
+        return "q5_1";
+    case KvCacheType::Q5_0:
+        return "q5_0";
+    case KvCacheType::Q4_1:
+        return "q4_1";
+    case KvCacheType::Q4_0:
+        return "q4_0";
+    case KvCacheType::IQ4_NL:
+        return "iq4_nl";
+    }
+    return "f16";
+}
+
 ValidationResult validate(const RunConfig & cfg) {
     ValidationResult r;
     auto fail = [&](std::string msg) {
@@ -73,6 +97,8 @@ ValidationResult validate(const RunConfig & cfg) {
     }
     // 0 means "as wide as the context"; anything larger than the context would be reserved for a
     // batch that can never arrive, which is the opposite of what this knob is for.
+    if (cfg.ctx_checkpoints < 0) return fail("ctx_checkpoints must be >= 0 (0 = keep none)");
+    if (cfg.checkpoint_min_step < 0) return fail("checkpoint_min_step must be >= 0 (0 = no minimum spacing)");
     if (cfg.n_ubatch < 0) {
         return fail("n_ubatch must be >= 0 (0 = as wide as the context)");
     }
@@ -353,6 +379,33 @@ ValidationResult validate(const RunConfig & cfg) {
                         "outranks every non-resident one whatever their scores, which is the strongest "
                         "preference the margin can express.");
         }
+    }
+
+    // The knob trial: each candidate is a knob value this run could equally have started with.
+    const KnobTrialConfig & t = cfg.trial;
+    if ((int) t.threads.size() > KnobTrialConfig::threads_max_candidates)
+        return fail("trial.threads takes at most " + std::to_string(KnobTrialConfig::threads_max_candidates) +
+                    " candidates: every one costs its rounds of the first answer");
+    for (size_t i = 0; i < t.threads.size(); ++i) {
+        const int n = t.threads[i];
+        if (n <= 0 || n > RunConfig::threads_max)
+            return fail("trial.threads: " + std::to_string(n) + " is not a thread count");
+        if (n == cfg.n_threads)
+            return fail("trial.threads: " + std::to_string(n) + " is the incumbent (n_threads) and measures nothing");
+        for (size_t j = 0; j < i; ++j)
+            if (t.threads[j] == n) return fail("trial.threads: " + std::to_string(n) + " is listed twice");
+    }
+    if (t.window_tokens < 1 || t.window_tokens > KnobTrialConfig::window_tokens_max)
+        return fail("trial.window_tokens must be in [1, " + std::to_string(KnobTrialConfig::window_tokens_max) + "]");
+    if (t.overlap) {
+        if (!cfg.moe.enabled) return fail("trial.overlap requires moe.enabled: overlap gates the streamer's own reads");
+        if (cfg.moe.io_two_wave)
+            return fail("trial.overlap cannot run with moe.io_two_wave, which requires overlap on throughout");
+        if (cfg.moe.prefetch_sync)
+            return fail("trial.overlap cannot run with moe.prefetch_sync, a serial-only test mode");
+        if (cfg.n_gpu_layers != 0)
+            return fail("trial.overlap needs every layer on the host: with one on a device, overlap changes how the "
+                        "context offloads, which is fixed when the context is created");
     }
 
     return r;

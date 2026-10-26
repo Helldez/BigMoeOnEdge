@@ -33,6 +33,8 @@ public:
     virtual double load_seconds() const = 0;
     // As Session::routing_record: what the model routed so far, for the next plan. Between turns.
     virtual RoutingTrace routing_record() const { return {}; }
+    // As Session::measured_knobs: the knob trial's verdicts so far. Between turns.
+    virtual MeasuredKnobs measured_knobs() const { return {}; }
 };
 
 // Opens a session for `cfg`, or returns null and says why in `error`. Called on the loader thread.

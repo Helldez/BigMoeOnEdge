@@ -9,12 +9,14 @@
 // the model library already uses for what it reads from a file.
 #pragma once
 
+#include "bmoe/measured_knobs.h"
 #include "bmoe/routing.h"
 
 #include <cstdint>
 #include <map>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace bmoe::server {
 
@@ -30,9 +32,15 @@ public:
     void keep(const std::string & model_path, const RoutingTrace & rec);
 
     // The file a model's record lives in; "" when the model cannot be fingerprinted.
-    std::string path_for(const std::string & model_path);
+    std::string path_for(const std::string & model_path, const char * ext = ".routing");
+
+    // The knob trial's verdicts kept for the model, one per machine and engine (bmoe/measured_knobs.h),
+    // beside its routing. `keep_knobs` replaces the record of the machine and engine `rec` names.
+    bool load_knobs(const std::string & model_path, std::vector<MeasuredKnobs> & out);
+    void keep_knobs(const std::string & model_path, const MeasuredKnobs & rec);
 
 private:
+    void write(const std::string & path, const std::string & text, const char * what);
     struct Key {
         uint64_t size = 0;
         long long mtime = 0;
