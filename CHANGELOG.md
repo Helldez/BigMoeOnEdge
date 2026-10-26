@@ -19,6 +19,10 @@ Semantic Versioning.
   model file the head drafts for, where the converter's own table does not know the tokenizer yet.
   `docs/mtp.md` has the three commands. Measured on a 24 GB desktop GPU with Qwen3.8-Flash-Next:
   45.1 tok/s against 30.5-33.8 without the head.
+  Where the plan arms a device expert cache, the head follows the experts to that device
+  (`mtp-head-on-devices`, a measured decision) and takes its bytes from the cache, never from the
+  target's layers; on a 12 GB card with 8 slow cores the head drafting on the host cost 35 ms of a
+  65 ms token and lost to no head at all.
 
 ### Fixed
 - **Speculation's memory is in the placement.** The rollback snapshots speculation keeps in the

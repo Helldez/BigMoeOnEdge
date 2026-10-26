@@ -986,10 +986,12 @@ bool Session::Impl::load_model(Opening & o) {
     if (!m) return o.fail("failed to load model: " + cfg.model_path);
     model.reset(m);
     if (cfg.spec.is_mtp() && !cfg.spec.mtp_head.empty()) {
-        // The head on the host, whole and resident: one layer the streamer does not serve, small
-        // beside the model, and computed for a draft position at a time.
+        // The head whole and resident, where the plan put it: on the devices the target's layers
+        // are on (its bytes taken from the device expert cache) or on the host. One layer the
+        // streamer does not serve, small beside the model, computed for a draft position at a time.
         llama_model_params hp = llama_model_default_params();
-        hp.n_gpu_layers = 0;
+        hp.n_gpu_layers = cfg.spec.mtp_head_on_devices ? llama_model_default_params().n_gpu_layers : 0;
+        hp.devices = mparams.devices; // the same list, so the head cannot land on a device the plan left out
         hp.load_mtp = true;
         llama_model * h = llama_model_load_from_file(cfg.spec.mtp_head.c_str(), hp);
         if (!h) return o.fail("failed to load the MTP head: " + cfg.spec.mtp_head);

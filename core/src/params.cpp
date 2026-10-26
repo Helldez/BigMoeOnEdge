@@ -958,6 +958,17 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("mtp-head-on-devices", "MTP head on devices", G::Speculation, L::Advanced,
+                          "MTP with a head file: load the head on the devices the model's layers are on, "
+                          "instead of the host. Set by the hardware planner where the device computes the "
+                          "experts faster and the head fits beside the expert cache, whose bytes it takes.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--mtp-head-on-devices", "true"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.spec.mtp_head_on_devices; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("mtp-p-min", "MTP confidence floor", G::Speculation, L::Advanced,
                           "MTP only: stop drafting when the head's best candidate falls below this "
                           "probability (0 = always draft the full width).");

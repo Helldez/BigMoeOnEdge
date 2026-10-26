@@ -2016,6 +2016,33 @@ int main() {
         check(linear.config.buft_overrides.size() == model.n_layer && !linear.config.moe.record_unstreamed,
               "device tier, no record: every layer's experts on the host, nothing recorded for a price");
 
+        // The MTP head of a file of its own follows the experts to the device, out of the cache's
+        // bytes and never the fitter's layers; a head that does not fit drafts on the host.
+        {
+            ModelProfile headed = model;
+            headed.mtp_head_bytes = 2 * GiB;
+            RunConfig cfg = base_cfg();
+            cfg.spec.source = DraftSource::mtp;
+            cfg.spec.mtp_head = "head.gguf";
+            const Plan h = plan_run(cfg, card, headed, half, PlanRequest{}, PlannerPolicy::defaults());
+            const Decision * hd = find(h, "mtp-head-on-devices");
+            check(hd && hd->value == "true" && hd->source == Source::Measured && h.config.spec.mtp_head_on_devices &&
+                      h.config.moe.device_cache_mb == (int) (7 * 1024),
+                  "device tier, head file: the head goes on the device and the cache shrinks by its size",
+                  std::to_string(h.config.moe.device_cache_mb) + " MiB");
+            headed.mtp_head_bytes = 10 * GiB;
+            const Plan hh = plan_run(cfg, card, headed, half, PlanRequest{}, PlannerPolicy::defaults());
+            hd = find(hh, "mtp-head-on-devices");
+            check(hd && hd->value == "false" && !hh.config.spec.mtp_head_on_devices &&
+                      hh.config.moe.device_cache_mb == (int) (9 * 1024),
+                  "device tier, head too big for the cache: it drafts on the host and the cache is whole");
+            PlanRequest pinned;
+            pinned.pinned.push_back("mtp-head-on-devices");
+            const Plan hp = plan_run(cfg, card, headed, half, pinned, PlannerPolicy::defaults());
+            check(!find(hp, "mtp-head-on-devices") && hp.config.moe.device_cache_mb == (int) (9 * 1024),
+                  "device tier, head placement pinned: the caller's, and the cache is whole");
+        }
+
         // A device no faster at the experts than the host: the fastest processor is the host, and the
         // fitter's placement stands.
         HardwareProfile even = card;

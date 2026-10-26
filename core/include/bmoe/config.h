@@ -394,6 +394,13 @@ struct SpecConfig {
     // inside the model file. The head is opened as a model of its own and drafts in a context that
     // reads the target's hidden states, as llama.cpp's own speculative driver loads a draft head.
     std::string mtp_head;
+    // MTP only, with a head file: the head's weights on the devices the target's layers are on
+    // (true) or on the host (false). The planner sets it where a device computes this model's
+    // experts faster than the host by the margin - the head's block is one more expert block - and
+    // the head fits in the bytes the capacity fitter gave the experts, which it takes from the
+    // device expert cache; the target's own placement is untouched. Measured why: on a 12 GB card
+    // with 8 slow cores, drafting on the host cost 35 ms of a 65 ms token and lost to no head at all.
+    bool mtp_head_on_devices = false;
 
     // Tokens drafted per verify batch. The verify decode is 1 + draft_max positions wide, so this
     // sets both the ceiling on tokens-per-decode and the width of the read-set widening above.

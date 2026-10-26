@@ -130,6 +130,9 @@ struct ModelProfile {
     uint64_t expert_bytes = 0;         // every routed-expert tensor
     uint64_t dense_bytes = 0;          // everything else: embeddings, attention, norms, head
     uint64_t largest_dense_tensor = 0; // the one a residency policy may not be able to hold
+    // The MTP head file's size, where the run names one (SpecConfig::mtp_head): what placing the
+    // head on a device costs that device. 0 where there is no file or it cannot be read.
+    uint64_t mtp_head_bytes = 0;
 
     // The file that holds the most routed-expert bytes: where the streamer's reads land, so where a
     // storage probe has to read. A model in one file names that file. A split one does not name

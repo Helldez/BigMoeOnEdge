@@ -120,7 +120,7 @@ Placement probe_placement(const char * model_path,
     common_fit_extra_model draft{};
     if (mtp) {
         dmparams.load_mtp = true;
-        if (own_head) dmparams.n_gpu_layers = 0;
+        if (own_head) dmparams.n_gpu_layers = spec->mtp_head_on_devices ? llama_model_default_params().n_gpu_layers : 0;
         dcparams.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
         dcparams.moe_cache_size = 0;
         dcparams.n_rs_seq = 0;
