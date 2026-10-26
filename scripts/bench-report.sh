@@ -9,8 +9,8 @@
 #   2. records the machine: CPU, cores, RAM, kernel, the drive the model sits on and its
 #      measured O_DIRECT read rate at 512 KiB requests, straight from the model file — the same
 #      request size the expert stream issues, so the number is the ceiling this engine can see;
-#   3. runs the model twice with `--auto`, 256 greedy tokens each, with the same prompt every table
-#      in the README uses (docs/benchmark-method.md). `--auto` is the only protocol: the planner
+#   3. runs the model three times with `--auto`, 256 greedy tokens each, with the same prompt every
+#      table in the README uses (docs/benchmark-method.md). `--auto` is the only protocol: the planner
 #      places what fits on the GPUs the build carries, keeps a model that fits in RAM resident and
 #      streams only what is left, so the row is what the engine does on this machine and the
 #      number to compare with other engines. `--plan-explain` only prints the plan it runs.
@@ -18,10 +18,14 @@
 #      load records what the model routed and measures the lossless knobs on its first answer; the
 #      second plans on that record, which is the plan the app and the server run from their second
 #      load on. Both are reported; the second is the row for the table, the first says what a
-#      cold planner predicted. `--routing-dir` under BENCH_OUT is where the record is kept;
+#      cold planner predicted. The third is the second with `--overlap` pinned: overlap changes no
+#      output, the planner arms it only when its trial measured it 10% faster, and this row says
+#      what the margin left on this machine. `--routing-dir` under BENCH_OUT is where the record
+#      is kept;
 #   4. parses each CSV trailer and prints one markdown block, with the plan `--auto` chose.
 #
-# Env overrides: N_PREDICT (256), BENCH_RUNS (2; 1 reports the first load alone), BENCH_SETTLE
+# Env overrides: N_PREDICT (256), BENCH_RUNS (3; 2 skips the overlap row, 1 reports the first load
+# alone), BENCH_SETTLE
 # (30: seconds between the runs, see below), BENCH_OUT (.bench-report), BMOE_CLI (build/bin/bmoe-cli). Anything after the model path is passed to
 # bmoe-cli verbatim (e.g. --think for a reasoning row, --n-expert-used 6 for the turbo top-k rows).
 set -euo pipefail
@@ -38,7 +42,7 @@ readf() { cat "$1" 2>/dev/null || true; }   # optional sysfs/procfs files: absen
 OS="$(uname -s)"
 NPROC="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 N_PREDICT="${N_PREDICT:-256}"
-BENCH_RUNS="${BENCH_RUNS:-2}"
+BENCH_RUNS="${BENCH_RUNS:-3}"
 BENCH_SETTLE="${BENCH_SETTLE:-30}"
 BENCH_OUT="${BENCH_OUT:-$ROOT/.bench-report}"
 BMOE_CLI="${BMOE_CLI:-$ROOT/build/bin/bmoe-cli}"
@@ -145,18 +149,20 @@ TAG="$(basename "$MODEL" .gguf)"
 
 # The record of a previous invocation would make the "first load" a second one: start clean.
 rm -f "$BENCH_OUT/routing"/*.routing "$BENCH_OUT/routing"/*.knobs
-RUN_LABELS=("first load" "on the record")
+RUN_LABELS=("first load" "on the record" "on the record, --overlap")
+RUN_FLAGS=("" "" "--overlap")
 CSVS=(); LOGS=()
-for (( i = 1; i <= BENCH_RUNS && i <= 2; i++ )); do
+for (( i = 1; i <= BENCH_RUNS && i <= 3; i++ )); do
     # The kernel returns a process's locked memory after it exits, not at once: a plan made in the
     # seconds after the first run sees a machine with gigabytes less than it has (on a 16 GB laptop,
     # 3.4 GB available against 11 GB a minute later) and sizes a cache half the right one. Wait
     # for the memory to come back; the note under the table says if it had not.
-    [ "$i" -gt 1 ] && [ "$BENCH_SETTLE" -gt 0 ] && { echo "settling ${BENCH_SETTLE}s for the first run's memory to return" >&2; sleep "$BENCH_SETTLE"; }
+    [ "$i" -gt 1 ] && [ "$BENCH_SETTLE" -gt 0 ] && { echo "settling ${BENCH_SETTLE}s for the previous run's memory to return" >&2; sleep "$BENCH_SETTLE"; }
     CSV="$BENCH_OUT/$TAG.auto$i.csv"
     LOG="$BENCH_OUT/$TAG.auto$i.log"
     echo "running $i/$BENCH_RUNS: $TAG, --auto (${RUN_LABELS[i-1]}), $N_PREDICT tokens" >&2
-    "$BMOE_CLI" -m "$MODEL" --chatml -n "$N_PREDICT" --auto --plan-explain \
+    # shellcheck disable=SC2086 # the run's own flag is one word or none
+    "$BMOE_CLI" -m "$MODEL" --chatml -n "$N_PREDICT" --auto --plan-explain ${RUN_FLAGS[i-1]} \
         --routing-dir "$BENCH_OUT/routing" --csv "$CSV" "$@" -p "$PROMPT" > "$LOG" 2>&1 ||
         { echo "bmoe-cli failed, see $LOG" >&2; exit 1; }
     CSVS+=("$CSV"); LOGS+=("$LOG")
@@ -183,6 +189,7 @@ row() {
     key() { echo "$summary" | tr ' ' '\n' | sed -n "s|^$1=||p" | head -1; }
     hdr() { grep -o "[ #]$1=[^ ]*" "$csv" | head -1 | cut -d= -f2; }
     local streams="resident"; [ "$(hdr moe_stream)" = "1" ] && streams="streams"
+    [ "$(hdr overlap)" = "1" ] && streams="$streams, overlap"
     # n_ubatch=0 in the header is the engine's default, not a width of zero.
     local ubatch; ubatch="$(hdr n_ubatch)"; [ "${ubatch:-0}" != "0" ] || ubatch="default"
     local mib_per_tok
@@ -200,7 +207,7 @@ cat <<EOF
 |---|---:|---:|---|---:|---|
 | $CPU_MODEL | $NPROC | $RAM_GIB GiB | $DRIVE_MODEL | $READ_MIBS MiB/s | $KERNEL |
 
-**Run** — engine $ENGINE_VERSION ($GIT_REV), model \`$(basename "$MODEL")\` ($MODEL_GIB GiB, arch \`$ARCH\`), $N_PREDICT tokens per run. The table row is the last one; the first load is what a cold planner predicted.
+**Run** — engine $ENGINE_VERSION ($GIT_REV), model \`$(basename "$MODEL")\` ($MODEL_GIB GiB, arch \`$ARCH\`), $N_PREDICT tokens per run. The table row is "on the record"; the first load is what a cold planner predicted, and the \`--overlap\` row (lossless) says what the planner's margin left on this machine.
 
 | Mode | Threads | k | Cache | Lanes | ubatch | Decode tok/s | Prefill tok/s | Stall s/tok | Compute s/tok | Flash/token | Cache hit | majflt/tok | Load s | Experts dropped |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -218,16 +225,17 @@ for (( i = 0; i < ${#LOGS[@]}; i++ )); do
     grep -E '^(mode:|plan: predicted)' "${LOGS[i]}" || echo "(no mode or prediction line in the log)"
     echo '```'
 done
-# Each plan starts from the memory it saw; when the second saw much less than the first, the
-# first run's memory had not been returned yet and the second row measured a starved plan.
-if [ "${#LOGS[@]}" -eq 2 ]; then
-    avail() { sed -n 's/^plan: machine [0-9]* cores, \([0-9]*\) MiB available.*/\1/p' "$1" | head -1; }
-    A1="$(avail "${LOGS[0]}")"; A2="$(avail "${LOGS[1]}")"
-    if [ -n "$A1" ] && [ -n "$A2" ] && [ "$(( A2 * 10 ))" -lt "$(( A1 * 7 ))" ]; then
+# Each plan starts from the memory it saw; when a later one saw much less than the first, the
+# previous run's memory had not been returned yet and that row measured a starved plan.
+avail() { sed -n 's/^plan: machine [0-9]* cores, \([0-9]*\) MiB available.*/\1/p' "$1" | head -1; }
+A1="$(avail "${LOGS[0]}")"
+for (( i = 1; i < ${#LOGS[@]}; i++ )); do
+    AI="$(avail "${LOGS[i]}")"
+    if [ -n "$A1" ] && [ -n "$AI" ] && [ "$(( AI * 10 ))" -lt "$(( A1 * 7 ))" ]; then
         echo
-        echo "**Note:** the second plan saw $A2 MiB available where the first saw $A1: the first run's memory had not been returned when it planned, so its row is a starved plan. Run again with a longer \`BENCH_SETTLE\` (seconds between the runs, $BENCH_SETTLE here)."
+        echo "**Note:** run $((i+1)) planned on $AI MiB available where the first saw $A1: the previous run's memory had not been returned when it planned, so its row is a starved plan. Run again with a longer \`BENCH_SETTLE\` (seconds between the runs, $BENCH_SETTLE here)."
     fi
-fi
+done
 
 # The plan is what makes the row reproducible: the devices it used, what stayed resident, what
 # streamed. It names GPU models, never a path: the record's path is dropped and the model's is

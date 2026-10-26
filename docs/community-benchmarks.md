@@ -27,7 +27,7 @@ scripts/bench-report.sh /path/to/model.gguf
 ```
 
 It builds the CLI, records your CPU / RAM / drive, measures the drive at the request size the
-engine actually issues, runs the model twice with `--auto` (see [the protocol](#the-protocol)),
+engine actually issues, runs the model three times with `--auto` (see [the protocol](#the-protocol)),
 prints two markdown tables, the plan each run chose and what it predicted against what it
 measured. Paste all of it. Done.
 
@@ -79,15 +79,18 @@ the planner hands what fits to the GPUs the build carries, keeps a model that fi
 without streaming, and streams only the experts left over. It is the row to compare with other
 engines on the same hardware.
 
-The script runs it twice, because the planner learns between the two
+The script runs it three times. Twice because the planner learns between the two
 ([measured-planning.md](measured-planning.md)). The first load records what the model routed and
 measures the lossless knobs (threads, `--overlap`) on its first answer; the second plans on that
 record: the cache priced on the model's own hit curve, the knobs at their measured verdict. The
 second is the plan the app and the server run from their second load on, so **the second run is the
 row for the table**; the first says what a cold planner predicted, and the `plan: predicted ...
 measured ...` line under each run is the planner's error on your machine, which is the other thing a
-row is for. The record lives under the script's output folder (`--routing-dir`) and is cleared at
-each invocation, so a first load is always a first load. The script waits between the two runs: the
+row is for. The third run is the second with `--overlap` pinned: overlap changes no output, the
+planner arms it only when its trial measured it 10% faster, and this row says what that margin left
+on your machine; it sits beside the table row, labelled, like any lossless-knob row. The record lives
+under the script's output folder (`--routing-dir`) and is cleared at each invocation, so a first
+load is always a first load. The script waits between the runs: the
 kernel returns a process's locked memory in the seconds after it exits, and a plan made before that
 sees a machine with gigabytes less than it has (on a 16 GB laptop, 3.4 GB available against 11 GB a
 minute later) and sizes a cache half the right one. When the second plan still saw much less memory
@@ -102,7 +105,7 @@ Override with an environment variable, and say so in the issue:
 | Variable | Default | Change it if |
 |---|---|---|
 | `N_PREDICT` | 256 | never below 256, the cache is still warming |
-| `BENCH_RUNS` | 2 | 1 reports the first load alone (a model so large that one run is what the machine affords) |
+| `BENCH_RUNS` | 3 | 2 skips the `--overlap` row; 1 reports the first load alone (a model so large that one run is what the machine affords) |
 | `BENCH_SETTLE` | 30 | seconds between the runs; raise it when the note under the table says the second plan saw less memory than the first |
 
 Flags after the model path reach `bmoe-cli` verbatim: only the ones that change the model, not the

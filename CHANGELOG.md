@@ -62,7 +62,10 @@ Semantic Versioning.
   script now keeps the record under its output folder (`--routing-dir`) and runs twice: the first
   load records and measures, the second plans on the record and is the row for the table. Both are
   printed, each with its `mode:` line and its `plan: predicted ... measured` line, so a row also
-  says how far the planner was from the machine. `BENCH_RUNS=1` reports the first load alone.
+  says how far the planner was from the machine. A third run is the second with `--overlap`
+  pinned: overlap changes no output, the planner arms it only when its trial measured it 10% faster,
+  and the row says what that margin left on the machine. `BENCH_RUNS=2` skips it, `1` reports the
+  first load alone.
   The script waits between the runs (`BENCH_SETTLE`, 30 s): the kernel returns the first run's
   locked memory in the seconds after it exits, and a plan made before that sized a cache half the
   right one on a 16 GB laptop; when the second plan still saw much less memory than the first, the
