@@ -662,6 +662,31 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("dense-mapped", "Tables left mapped", G::Memory, L::Debug,
+                          "Dense tensors left memory-mapped whatever --dense-weights says, by name, separated by "
+                          "';': the tables the graph only gathers rows from, which the hardware planner priced as "
+                          "not worth a resident copy. Set by the planner; empty leaves the dense set whole.");
+        d.type = ParamType::Text;
+        d.value_hint = "NAMES";
+        d.get = [](const RunConfig & c) {
+            std::string s;
+            for (const std::string & n : c.moe.dense_mapped)
+                s += (s.empty() ? "" : ";") + n;
+            return s;
+        };
+        d.set = [](RunConfig & c, const std::string & s, std::string &) {
+            c.moe.dense_mapped.clear();
+            for (size_t a = 0; !s.empty();) {
+                const size_t b = s.find(';', a);
+                c.moe.dense_mapped.push_back(s.substr(a, b == std::string::npos ? std::string::npos : b - a));
+                if (b == std::string::npos) break;
+                a = b + 1;
+            }
+            return true;
+        };
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("tensor-overrides", "Tensor placement", G::Memory, L::Debug,
                           "The per-tensor placement llama.cpp's capacity fitter wrote: regex patterns over tensor "
                           "names, separated by ';', each kept on the host. Set by the hardware planner; empty "

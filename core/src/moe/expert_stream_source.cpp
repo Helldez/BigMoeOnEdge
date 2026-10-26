@@ -124,6 +124,10 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
             // cache to nothing.
             for (const DenseTensorRef & d : dense_tensors_) {
                 if (!d.tensor || d.size > avail) continue;
+                // Nor is a table the plan left mapped (dense_mapped): it is never converted.
+                if (std::find(cfg.dense_mapped.begin(), cfg.dense_mapped.end(), d.tensor->name) !=
+                    cfg.dense_mapped.end())
+                    continue;
                 // Nor is a row-gathered table converted: it costs its window, not its size, and
                 // reserving the difference would hand the cache back exactly what this policy freed.
                 bool row = false;
@@ -263,6 +267,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         for (size_t s = 0; s < readers_.size(); ++s)
             ranges[s] = DenseWeights::byte_ranges(std::move(exp[s]), readers_[s]->file_size());
         dense_.set_row_gathered(std::move(row_tensors_), row_budget_);
+        dense_.set_mapped(cfg.dense_mapped);
         if (!dense_.init(cfg.dense_weights, shard_paths, std::move(ranges), std::move(dense_tensors_))) {
             log_printf(LogLevel::Error, "dense-weights init failed");
             return false;

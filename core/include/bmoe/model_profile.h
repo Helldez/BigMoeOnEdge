@@ -130,6 +130,9 @@ struct ModelProfile {
     uint64_t expert_bytes = 0;         // every routed-expert tensor
     uint64_t dense_bytes = 0;          // everything else: embeddings, attention, norms, head
     uint64_t largest_dense_tensor = 0; // the one a residency policy may not be able to hold
+    // The tensors of the Embedding group, by name: what a plan that prices the group as left
+    // mapped hands the run (MoeStreamConfig::dense_mapped), so the run leaves exactly those.
+    std::vector<std::string> embedding_tensors;
 
     // The file that holds the most routed-expert bytes: where the streamer's reads land, so where a
     // storage probe has to read. A model in one file names that file. A split one does not name

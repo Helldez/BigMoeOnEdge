@@ -109,28 +109,42 @@ static void subtract_range(std::vector<std::pair<uint64_t, uint64_t>> & ranges, 
 // than reading it once sequentially at load (measured: token_embd left mmap'd lost 16 % decode).
 void DenseWeights::hold_back_oversized() {
     mapped_.clear();
-    const uint64_t avail = pio::mem_available_bytes();
-    if (!avail) return; // unmeasured on this platform: hold nothing back, as before
+    const uint64_t avail = pio::mem_available_bytes(); // 0 where unmeasured: nothing is oversized
+    const auto named = [this](const DenseTensorRef & d) {
+        if (!d.tensor) return false;
+        for (const std::string & n : mapped_names_)
+            if (n == d.tensor->name) return true;
+        return false;
+    };
     std::vector<DenseTensorRef> keep;
     keep.reserve(tensors_.size());
-    uint64_t held = 0;
+    uint64_t oversized = 0, by_plan = 0;
+    size_t n_oversized = 0, n_by_plan = 0;
     for (const DenseTensorRef & d : tensors_) {
-        if (d.size <= avail) {
+        const bool too_large = avail && d.size > avail;
+        const bool by_name = named(d);
+        if (!too_large && !by_name) {
             keep.push_back(d);
             continue;
         }
         mapped_.push_back(d);
-        held += d.size;
+        (too_large ? oversized : by_plan) += d.size;
+        (too_large ? n_oversized : n_by_plan) += 1;
         if (d.file_idx >= 0 && (size_t) d.file_idx < ranges_.size())
             subtract_range(ranges_[(size_t) d.file_idx], d.file_off, d.file_off + d.size);
     }
     tensors_ = std::move(keep);
-    if (held)
+    if (oversized)
         log_printf(LogLevel::Warn,
                    "dense-weights=%s — %llu MiB in %zu tensor(s) exceeds the %llu MiB available: left "
                    "mmap'd with random-access advice, outside the warm sweep and the residency sensor",
-                   dense_weights_mode_name(mode_), (unsigned long long) (held >> 20), mapped_.size(),
+                   dense_weights_mode_name(mode_), (unsigned long long) (oversized >> 20), n_oversized,
                    (unsigned long long) (avail >> 20));
+    if (by_plan)
+        log_printf(LogLevel::Info,
+                   "dense-weights=%s — %llu MiB in %zu table(s) left mmap'd as the plan priced them: the graph "
+                   "gathers rows from them, outside the warm sweep and the residency sensor",
+                   dense_weights_mode_name(mode_), (unsigned long long) (by_plan >> 20), n_by_plan);
 }
 
 void DenseWeights::set_row_gathered(std::vector<DenseTensorRef> tables, uint64_t budget_bytes) {
