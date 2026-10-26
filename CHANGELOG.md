@@ -89,6 +89,31 @@ Semantic Versioning.
   `dense_weights=` in the CSV header) say `pinned`. The mode's spelling now lives in one function
   (`dense_weights_mode_name`) instead of four copies.
 
+### Fixed
+- **A run reserves the logit rows its plan charged, with a prefill device or without one.** The
+  context capped the rows a graph may return at 128 only when a device ran the prefill, while the
+  planner projected every run at that cap. Without one, llama.cpp reserved a vocabulary-wide row
+  for every token of the ubatch, where the output layer is. On a 24 GB card holding most of a 125B
+  model's layers, `--auto` placed what the ledger allowed and then could not create the context:
+  2.1 GiB of output rows no longer fit in the card's memory. On a CPU-only run of a 35B-A3B at 2048
+  tokens the same rows were 2028 MiB of compute buffer against the 436 MiB planned (#304), 312 MiB
+  with the cap. The cap now holds on every session, and a perplexity pass is fed in pieces no wider
+  than it.
+
+- **A container's memory limit is the plan's limit.** Inside a memory control group with a finite
+  limit, the residency budget was the machine's `MemAvailable` (103 GB on a rented box whose group
+  allowed 85 GiB), so a plan could size itself past the point where the kernel ends the process.
+  The budget is now capped by what the group and every ancestor it can see still allow, less what
+  each holds and crediting its inactive file pages, for cgroup v2 and v1. A finite limit is also
+  read as a share the process is ended for exceeding, which widens the plan's margin the way an
+  app's own share does on a phone.
+- **The cores a process can keep busy, not the machine's.** The core count every thread rule and
+  sweep starts from was `hardware_concurrency`, which counts every core of the machine. It is now
+  the CPUs the process's affinity mask allows, capped by a CPU control group's quota (cgroup v2
+  `cpu.max`, v1 `cpu.cfs_quota_us`, rounded up). A container given 30.7 CPUs of 128 swept its
+  threads over 128 and probed its rates in bursts it could not sustain; the count is now 31. The
+  core classes are read over the CPUs the mask allows.
+
 ## [0.35.1] - 2026-10-24
 
 ### Changed
