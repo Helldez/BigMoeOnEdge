@@ -690,6 +690,10 @@ struct RunConfig {
     // How many of those layers each device takes, by name, in the fitter's device order (see
     // Placement::device_split). Empty leaves the split to llama.cpp, which divides by free memory.
     std::vector<std::pair<std::string, int>> device_split;
+    // The devices llama.cpp may use, by name, where the planner chose among backends that drive the
+    // same card (bmoe/backend_choice.h). Empty leaves the choice to llama.cpp, which keeps the first
+    // backend registered for a card.
+    std::vector<std::string> device_list;
 
     // Put the DENSE weights on an accelerator that shares this host's memory, leaving the routed
     // experts on the host for the streamer. On such a machine the move frees no memory - it is the

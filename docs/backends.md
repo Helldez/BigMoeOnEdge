@@ -199,5 +199,18 @@ faults no test had (one memory pool counted twice, an idle device taking graph n
 kernel compressed). The honest reading of "unknown" above is that the same should be expected of
 each of the others.
 
+**One card, several backends.** A card can be driven by more than one backend, and each registers a
+device of its own for it: CUDA and Vulkan on an NVIDIA board, HIP (AMD's ROCm) and Vulkan on an AMD
+one, SYCL and Vulkan on an Intel one. llama.cpp recognises them as one card by the PCI id the backend
+reports (`ggml_backend_dev_props::device_id`) and keeps the first registered, which is an order,
+not a measurement. The plan reads the same id (`ComputeDevice::physical_id`) and compares the
+backends of one card on the same measured rate: this model's expert block where the real-layer
+probe ran on all of them, the GEMV otherwise, never one of each. Another backend replaces the first
+only where it is faster by the planner's margin; the plan then names the devices in
+`--device-list`, the capacity fitter places on that list, and every rule after the choice sees one
+device per card (`core/src/plan/backend_choice.cpp`). A device whose id the backend does not report
+is never taken for another one's card. Nothing here knows which backend is usually faster where:
+the release archives carry the modules, and the machine answers.
+
 `scripts/rented-box.sh` is there for that: one session on a machine nobody here owns, which
 builds, plans, measures, and writes down what the plan predicted next to what the engine did.

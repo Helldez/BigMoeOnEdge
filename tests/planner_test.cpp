@@ -14,6 +14,7 @@
 
 #include "bmoe/config.h"
 #include "bmoe/allocate.h"
+#include "bmoe/backend_choice.h"
 #include "bmoe/planner.h"
 #include "bmoe/probe.h"
 
@@ -2277,6 +2278,46 @@ int main() {
                   g->reason.find("measured on this model's own expert block") == std::string::npos,
               "device tier, real layer on the host only: both sides from the GEMV, never one of each",
               g ? g->reason : "none");
+    }
+
+    // ── one card, two backends: the faster one drives it ────────────────────────────────────────
+    // CUDA and Vulkan on one board register a device each, with the same PCI id. The first
+    // registered is what llama.cpp keeps; another replaces it only where it measured faster.
+    {
+        HardwareProfile two = desktop();
+        ComputeDevice & a = two.devices[0];
+        a.name = "CUDA0";
+        a.physical_id = "0000:c1:00.0";
+        a.expert_gibs = 489.0;
+        ComputeDevice b = a;
+        b.name = "Vulkan0";
+        b.expert_gibs = 300.0;
+        two.devices.push_back(b);
+        check(choose_backends(two, 0.10).left_out.empty(), "backends: the first registered holds when it is faster");
+        two.devices.back().expert_gibs = 520.0;
+        check(choose_backends(two, 0.10).left_out.empty(), "backends: inside the margin, the first holds");
+        two.devices.back().expert_gibs = 640.0;
+        const BackendChoice won = choose_backends(two, 0.10);
+        check(won.left_out == std::vector<std::string>{"CUDA0"} && won.keep == std::vector<std::string>{"Vulkan0"},
+              "backends: the faster one past the margin replaces the first");
+        const Plan pl = plan_run(base_cfg(), two, model, PlanRequest{});
+        const Decision * d = find(pl, "device-list");
+        check(pl.config.device_list == std::vector<std::string>{"Vulkan0"} && d && d->source == Source::Measured,
+              "backends: the plan lists it and says why", d ? d->reason : "no decision");
+        HardwareProfile unknown = two;
+        for (ComputeDevice & dv : unknown.devices)
+            if (!dv.is_cpu) dv.physical_id.clear();
+        check(choose_backends(unknown, 0.10).left_out.empty(),
+              "backends: devices of unknown identity are never taken for one card");
+        HardwareProfile mixed = two;
+        mixed.devices.back().expert_gibs = 0.0;
+        mixed.devices.back().memory_bandwidth_gibs = 900.0;
+        mixed.devices[0].memory_bandwidth_gibs = 0.0;
+        check(choose_backends(mixed, 0.10).left_out.empty(), "backends: figures of different kinds are not compared");
+        PlanRequest pinned;
+        pinned.pinned = {"devices"};
+        check(plan_run(base_cfg(), two, model, pinned).config.device_list.empty(),
+              "backends: the caller's devices are the caller's");
     }
 
     // ── no device of its own: the new facts change nothing they do not measure ──────────────────

@@ -14,6 +14,13 @@ Semantic Versioning.
   memory at load, byte for byte, and points the expert tensors at it. On a 24 GB card,
   Qwen3.8-Flash-Next 125B: uploads 9.9 → 20.6 GiB/s, decode 63.5 → 72.6 tok/s, with MTP 75.5 → 89.4;
   the load takes 36 s instead of 4.4 for the copy.
+- **One backend per card, the faster measured** (`--device-list`). Where two backends drive the same
+  card (CUDA and Vulkan on an NVIDIA board, HIP and Vulkan on an AMD one), each registers a device of
+  its own and llama.cpp keeps the first registered. The plan now reads the PCI id each backend reports,
+  compares the backends of one card on the same measured rate (the model's own expert block where the
+  real-layer probe ran on them), and lists another one only where it is faster by the margin; the
+  fitter places on that list and every rule after it sees one device per card. A device of unknown
+  identity is never grouped with another, and a card with one backend plans exactly as before.
 - **The cost of a device measured on a real layer** (Step 3 of `docs/measured-planning.md`). The
   planner's compute probe now builds one layer of the model from the file's own tensors and bytes
   (the expert block as `mul_mat_id` over the layer's expert matrices, top-k per token, and the

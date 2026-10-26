@@ -3,6 +3,7 @@
 // every decision from plan_run().
 
 #include "bmoe/auto_plan.h"
+#include "bmoe/backend_choice.h"
 
 #include "bmoe/planner.h"
 #include "bmoe/probe.h"
@@ -77,8 +78,12 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     probe_headroom(r.hw, opt.probe_mem, r.model.dense_bytes + (std::max)(r.model.token_cycle_bytes, guard));
     detail::log_memory_snapshot("auto-headroom");
     starting(); // placement
+    // The fitter places on the backends the plan will choose, one per card.
+    const BackendChoice backends = req.is_pinned("device-list") || req.is_pinned("devices")
+                                       ? BackendChoice{}
+                                       : choose_backends(r.hw, (double) PlannerPolicy::defaults().min_backend_win);
     const Placement placement = probe_placement(path, r.model, r.hw, (uint32_t) cfg.n_ctx, (uint32_t) cfg.n_ubatch,
-                                                cfg.cache_type_k, cfg.cache_type_v);
+                                                cfg.cache_type_k, cfg.cache_type_v, backends.keep);
     detail::log_memory_snapshot("auto-probe-end");
     starting(); // rules
     r.plan = plan_run(cfg, r.hw, r.model, placement, req);

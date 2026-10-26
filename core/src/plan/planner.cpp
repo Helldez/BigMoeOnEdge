@@ -11,6 +11,7 @@
 // advising one that no longer parses.
 
 #include "bmoe/planner.h"
+#include "bmoe/backend_choice.h"
 
 #include "bmoe/params.h"
 
@@ -2428,7 +2429,26 @@ Plan plan_run(const RunConfig & base,
               const Placement & projected,
               const PlanRequest & req,
               const PlannerPolicy & pol) {
-    return plan_from(base, hw, model, projected, req, pol, nullptr);
+    // Which backend drives each card, before anything is weighed on the card: the rules below then
+    // see one device per card, the one that will run (bmoe/backend_choice.h).
+    if (req.is_pinned("device-list") || req.is_pinned("devices"))
+        return plan_from(base, hw, model, projected, req, pol, nullptr);
+    const BackendChoice choice = choose_backends(hw, (double) pol.min_backend_win);
+    if (choice.left_out.empty()) return plan_from(base, hw, model, projected, req, pol, nullptr);
+    Plan p = plan_from(base, without_left_out(hw, choice), model, projected, req, pol, nullptr);
+    p.config.device_list = choice.keep;
+    Decision d;
+    d.knob = "device-list";
+    for (const std::string & n : choice.keep)
+        d.value += (d.value.empty() ? "" : ",") + n;
+    d.source = Source::Measured;
+    d.brief = "One backend per card, the fastest measured: " + d.value + ".";
+    for (const std::string & w : choice.why)
+        d.reason += (d.reason.empty() ? "" : "; ") + w;
+    d.reason += "; on the same card the backend registered first is what llama.cpp keeps, and another replaces "
+                "it only where it measured faster by the margin";
+    p.decisions.insert(p.decisions.begin(), std::move(d));
+    return p;
 }
 
 } // namespace bmoe

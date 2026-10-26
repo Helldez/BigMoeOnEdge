@@ -722,6 +722,31 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("device-list", "Device backends", G::Memory, L::Advanced,
+                          "The devices llama.cpp may use, by name, separated by ','. Where two backends drive "
+                          "one card (CUDA and Vulkan, HIP and Vulkan), --auto lists the one it measured faster; "
+                          "empty leaves the choice to llama.cpp, which keeps the first registered.");
+        d.type = ParamType::Text;
+        d.value_hint = "NAMES";
+        d.get = [](const RunConfig & c) {
+            std::string s;
+            for (const std::string & n : c.device_list)
+                s += (s.empty() ? "" : ",") + n;
+            return s;
+        };
+        d.set = [](RunConfig & c, const std::string & s, std::string &) {
+            c.device_list.clear();
+            for (size_t a = 0; !s.empty();) {
+                const size_t b = s.find(',', a);
+                c.device_list.push_back(s.substr(a, b == std::string::npos ? std::string::npos : b - a));
+                if (b == std::string::npos) break;
+                a = b + 1;
+            }
+            return true;
+        };
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("devices", "Compute devices", G::Memory, L::Advanced,
                           "Which compute devices llama.cpp may use. auto gives it all of them when a layer is "
                           "placed on one and the CPU alone otherwise: a device left registered but unused "

@@ -56,6 +56,7 @@ struct SessionConfig {
     int n_gpu_layers = 0;
     std::vector<std::string> buft_overrides;
     std::vector<std::pair<std::string, int>> device_split; // See RunConfig::device_split.
+    std::vector<std::string> device_list;                  // See RunConfig::device_list.
     // See RunConfig::device_use.
     DeviceUse device_use = DeviceUse::Auto;
     SamplingConfig sampling; // fixed for the session; greedy by default (temp <= 0)

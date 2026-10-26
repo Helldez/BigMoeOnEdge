@@ -51,7 +51,8 @@ Placement probe_placement(const char * model_path,
                           uint32_t n_ctx,
                           uint32_t n_ubatch,
                           KvCacheType type_k,
-                          KvCacheType type_v) {
+                          KvCacheType type_v,
+                          const std::vector<std::string> & devices) {
     Placement pl;
     if (!model_path || !*model_path || !model.ok) return pl;
 
@@ -96,6 +97,13 @@ Placement probe_placement(const char * model_path,
         o.buft = nullptr;
     }
     std::vector<size_t> margins(llama_max_devices() + 1, fitter_device_margin_bytes);
+    std::vector<ggml_backend_dev_t> listed;
+    for (const std::string & n : devices)
+        if (ggml_backend_dev_t dev = ggml_backend_dev_by_name(n.c_str())) listed.push_back(dev);
+    if (!listed.empty()) {
+        listed.push_back(nullptr);
+        mparams.devices = listed.data();
+    }
 
     const common_params_fit_status st =
         common_fit_params(model_path, &mparams, &cparams, tensor_split.data(), overrides.data(), margins.data(),
