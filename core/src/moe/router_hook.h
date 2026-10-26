@@ -329,6 +329,9 @@ private:
     bool arena_eval(ggml_tensor * t, bool ask, bool probe_ask); // device prefill: the arena's pace
     void serve_rows(ggml_tensor * t);                           // row-gathered tables, before a node
     void on_topk(ggml_tensor * t, int il);                      // a routing node, ids materialized
+    void record_topk(ggml_tensor * t, int il);                  // the same node, recorded only: no streamer
+    // Whether the routing record still wants routing nodes: armed, and not yet full.
+    bool recording() const { return rec_max_ > 0 && rec_.decode_tokens < (uint32_t) rec_max_; }
 
     // Row-building state for the layer whose topk we last saw. A layer's weights arrive in a
     // LATER callback than its ids, so its rows can only be built once the whole weight chain has

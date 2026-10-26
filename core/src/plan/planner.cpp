@@ -330,6 +330,142 @@ void share_of_host(Planning & s) {
                               : s.model.expert_bytes;
 }
 
+// ── device memory as a tier of the expert cache (docs/measured-planning.md, Step 4) ──
+// The capacity fitter fills a device by layer: once the dense part of every layer is there, it turns
+// layers back into full device layers, front to back, while memory remains. The bytes it gives a
+// layer's experts can instead hold a cache of the experts that are used most, from every layer,
+// computed on the device; a miss is uploaded from where the host holds it. Same bytes, chosen by
+// use rather than by position. Which of the two is faster is a price on measured facts: the share of
+// the routed bytes each serves from the device, what the rest costs (the host's compute for the
+// split, an upload across the link for the cache), and the crossings each adds to a token.
+struct DeviceTier {
+    const ComputeDevice * dev = nullptr; // the device priced (the slowest link of those holding layers)
+    uint64_t cache_bytes = 0;            // the expert bytes the fitter placed on devices
+    double split_share = 0.0;            // share of the routed bytes the split serves from devices
+    double tier_share = 0.0;             // the same for the cache, at that size
+    bool tier_share_measured = false;
+    double split_seconds = 0.0; // the terms that differ, per token
+    double tier_seconds = 0.0;
+};
+
+// The share of a token's routed bytes a cache of `bytes` serves. From this model's own routing where
+// a record of it was replayed (Step 1): routing does not depend on where an expert is computed, so
+// the host's replay prices a device's cache as well. Otherwise credited linearly in the fraction of
+// the expert set it holds, the conservative credit the ledger uses too, under which the split and
+// the cache tie on share and the link decides.
+double expert_share_at(const ModelProfile & model, uint64_t bytes, bool * measured) {
+    *measured = model.hit_curve.measured;
+    if (model.hit_curve.measured) return model.hit_curve.hit_share(bytes);
+    if (model.expert_bytes == 0) return 0.0;
+    return std::min(1.0, (double) bytes / (double) model.expert_bytes);
+}
+
+// Whether every device the fitter put layers on can hold a cache of experts and compute them there,
+// and the one whose costs bound the rest. Nullptr, with the reason, where any fact is missing.
+const ComputeDevice * device_tier_device(const Planning & s, std::string & why) {
+    const ComputeDevice * worst = nullptr;
+    for (const ComputeDevice & d : s.hw.devices) {
+        if (d.is_cpu || d.usable == Tri::No) continue;
+        if (!d.has_own_memory()) continue; // a shared pool has no second tier to fill
+        if (d.runs_expert_op != Tri::Yes || d.identity_ok == Tri::No) {
+            why = d.name + " does not execute this model's expert matmul on its own layout";
+            return nullptr;
+        }
+        if (d.memory_bandwidth_gibs <= 0.0 || d.upload_gibs <= 0.0 || d.split_seconds <= 0.0) {
+            why = "what " + d.name + " costs per expert, per upload or per crossing is unmeasured";
+            return nullptr;
+        }
+        if (!worst || d.upload_gibs < worst->upload_gibs) worst = &d;
+    }
+    if (!worst) why = "no device here has memory of its own";
+    return worst;
+}
+
+void choose_device_tier(Planning & s) {
+    Placement & pl = s.placement;
+    const ModelProfile & m = s.model;
+    if (!pl.fitted || pl.n_gpu_layers <= 0 || !m.is_moe || m.n_moe_layer == 0) return;
+    for (const char * knob : {"device-cache-mb", "gpu-layers", "tensor-overrides"})
+        if (s.req.is_pinned(knob)) return; // the caller placed it; the fitter's or theirs stands
+    // The dense part of every layer must already be on the devices: the cache serves the experts
+    // of layers the device computes, and a layer left on the host would cross to reach it.
+    if ((uint32_t) pl.n_gpu_layers < m.n_layer) return;
+    const uint64_t on_devices = m.expert_bytes > s.host_expert_bytes ? m.expert_bytes - s.host_expert_bytes : 0;
+    if (on_devices == 0 || s.host_layers == 0) return; // all on the devices, or none: nothing to choose
+    if (pl.all_expert_patterns.empty()) return;        // no adapter said how to name them
+
+    const auto mib_s = [](uint64_t b) { return u64s(mib(b)); };
+    std::string why;
+    const ComputeDevice * dev = device_tier_device(s, why);
+    if (!dev || s.hw.host_bandwidth_gibs <= 0.0) {
+        s.note("device-cache-mb", "0", dev ? Source::Unprobed : Source::Derived,
+               "The device holds whole layers' experts, not a cache of the most used ones.",
+               "a cache of experts on the device could hold the " + mib_s(on_devices) +
+                   " MiB the capacity fitter gave whole layers' experts, but it is not priced here: " +
+                   (dev ? std::string("the host's own expert rate is unmeasured") : why));
+        return;
+    }
+
+    constexpr double gib = 1024.0 * 1024.0 * 1024.0;
+    const double routed = (double) m.group(WeightGroup::Experts).bytes_per_token;
+    DeviceTier t;
+    t.dev = dev;
+    t.cache_bytes = on_devices;
+    t.split_share = (double) on_devices / (double) m.expert_bytes;
+    t.tier_share = expert_share_at(m, on_devices, &t.tier_share_measured);
+    // Per token, only the terms that differ. The split computes its host layers' routed bytes on the
+    // cores and crosses twice for each of those layers; the cache computes everything on the device,
+    // uploads what it misses and synchronizes once per layer it serves to read the selection.
+    t.split_seconds = (1.0 - t.split_share) * routed / (s.hw.host_bandwidth_gibs * gib) +
+                      t.split_share * routed / (dev->memory_bandwidth_gibs * gib) +
+                      2.0 * (double) s.host_layers * dev->split_seconds;
+    t.tier_seconds = routed / (dev->memory_bandwidth_gibs * gib) +
+                     (1.0 - t.tier_share) * routed / (dev->upload_gibs * gib) +
+                     (double) m.n_moe_layer * dev->split_seconds;
+
+    char nums[320];
+    std::snprintf(nums, sizeof(nums),
+                  "by layer %.2f ms/token (%.0f%% of the routed bytes on the device, the rest at %.0f GiB/s "
+                  "on the cores), as a cache %.2f ms/token (%.0f%% %s, misses uploaded at %.1f GiB/s, %u "
+                  "crossings at %.0f us)",
+                  1e3 * t.split_seconds, 100.0 * t.split_share, s.hw.host_bandwidth_gibs, 1e3 * t.tier_seconds,
+                  100.0 * t.tier_share, t.tier_share_measured ? "from this model's own routing" : "credited linearly",
+                  dev->upload_gibs, m.n_moe_layer, 1e6 * dev->split_seconds);
+    const bool wins = t.tier_seconds * (1.0 + (double) s.pol.min_backend_win) < t.split_seconds;
+    if (!wins) {
+        // Unmeasured, the share is what decides, so the run records the routing that measures it
+        // and the next plan of this file prices the cache on it. On a run that streams it records
+        // anyway; on one that does not, until the record is full.
+        if (!t.tier_share_measured && !s.req.is_pinned("record-unstreamed")) s.p.config.moe.record_unstreamed = true;
+        s.note("device-cache-mb", "0", Source::Measured,
+               "The device holds whole layers' experts: a cache of the most used ones is not priced faster here.",
+               std::string("the ") + mib_s(on_devices) + " MiB of experts on the device priced " + nums +
+                   (t.tier_share_measured ? ""
+                                          : "; the cache's share is the linear credit until this model's own routing "
+                                            "has been recorded, which is where the cache's advantage lives, so this "
+                                            "run records it for the next plan"));
+        return;
+    }
+    // Every layer's experts back to the host, where the streamer or the resident set serves them, and
+    // the bytes the fitter gave them become the cache. The regime and the ledger below see the host
+    // holding the whole expert set, which is now what it holds.
+    pl.host_expert_layers = m.moe_layers;
+    if (pl.host_expert_layers.empty())
+        for (uint32_t il = 0; il < m.n_layer; ++il)
+            pl.host_expert_layers.push_back(il);
+    pl.override_patterns = pl.all_expert_patterns;
+    pl.device_bytes = pl.device_bytes > on_devices ? pl.device_bytes - on_devices : 0;
+    s.host_layers = s.n_moe_layer;
+    s.host_expert_bytes = m.expert_bytes;
+    s.p.config.moe.device_cache_mb = (int) mib(on_devices);
+    s.note("device-cache-mb", mib_s(on_devices), Source::Measured,
+           "A " + size_brief(on_devices) + " cache of the most used experts on " + dev->name +
+               ", in place of whole layers' experts.",
+           std::string("the bytes the capacity fitter gave whole layers' experts hold a cache of the experts "
+                       "used most, from every layer, computed on the device: ") +
+               nums);
+}
+
 // ── the regime: a ratio of the two profiles, never a property of either ─────────
 // The three inputs no plan can be made from. True when the plan has declined and is complete.
 bool declines_unplannable(Planning & s) {
@@ -1128,6 +1264,16 @@ Allocation plan_prefill(Planning & s, AllocationInputs & ai) {
     if (s.req.is_pinned("prefill-device")) {
         s.note("prefill-device", "off", Source::Operator, "Prompts run on the CPU, as you set it.",
                "set by the caller; the planner leaves it alone");
+        return alloc;
+    }
+    // A prefill device loads as the model's only device and moves layer weights onto it for a wide
+    // graph; computing the experts from a device cache needs the layers on their device for good.
+    // The session refuses the pair, so the plan does not arm one beside the other.
+    if (p.config.moe.device_cache_mb > 0) {
+        s.note("prefill-device", "off", Source::Derived,
+               "Prompts are not given a device of their own: the experts are computed on the layers' device.",
+               "a device expert cache is set, which keeps the layers on their device and computes the experts "
+               "there; a prefill device is not combined with it");
         return alloc;
     }
 
@@ -1979,6 +2125,7 @@ Plan plan_run(const RunConfig & base,
     // The machine and the model, against each other.
     share_of_host(s);
     if (declines_unplannable(s)) return p;
+    choose_device_tier(s);
     size_budget(s);
     choose_graph_width(s);
     classify_regime(s);

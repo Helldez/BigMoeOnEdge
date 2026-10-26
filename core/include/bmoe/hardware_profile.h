@@ -202,6 +202,13 @@ struct ComputeDevice {
     // placed on it, which is why a device the plan does not use must be kept out of the run rather
     // than merely left empty.
     uint32_t graph_splits = 0;
+
+    // How fast this process's ordinary host memory reaches this device's own memory, in GiB/s, 0
+    // when unmeasured or when the device has no memory of its own. It is the price of a miss in a
+    // cache of experts kept on the device: the expert is uploaded from where the host holds it,
+    // one expert at a time. Measured at that granularity from pageable memory, the kind a streamed
+    // or resident expert lives in, rather than read off the link's nominal width.
+    double upload_gibs = 0.0;
 };
 
 // The measured read rate at one (request size, lane count) point. A curve of these is the only

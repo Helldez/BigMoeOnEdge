@@ -276,6 +276,14 @@ constexpr const char * k_verify_text =
 
 // All native state lives here, behind the pimpl. Built once by Session::open(); every
 // generate() reuses the loaded model, the live context and the warm expert cache.
+namespace {
+// A run that does not stream keeps its routing only where it was asked to, and only for a MoE model.
+bool records_unstreamed(const SessionConfig & cfg) {
+    return !cfg.moe.enabled && cfg.moe.record_unstreamed && cfg.moe.routing_record_tokens > 0;
+}
+
+} // namespace
+
 struct Session::Impl {
     SessionConfig cfg;
     std::string arch;
@@ -474,6 +482,8 @@ struct Session::Impl {
     bool init_speculation(Opening & o);
     bool bind_streaming(Opening & o);
     bool capture_warmup(Opening & o);
+    bool arm_device_cache(Opening & o);
+    bool device_cache_armed = false;
     bool bind_expert_offsets(Opening & o, const GgufOffsets & offs, std::vector<LayerExperts> & layers, int & n_expert);
     void hand_over_dense_weights(const SessionConfig & cfg,
                                  const GgufOffsets & offs,
@@ -483,6 +493,7 @@ struct Session::Impl {
     release_mapping(const SessionConfig & cfg, const GgufOffsets & offs, const std::vector<std::string> & unaccounted);
     void arm_route_trace(Opening & o, int n_expert, std::vector<uint64_t> dense_bytes);
     void arm_routing_record(Opening & o, int n_expert);
+    bool arm_unstreamed_record(Opening & o);
     bool open_prefill_device(Opening & o);
     void hand_back_prefill(const std::string & why);
     bool confirm_prefill_device(Opening & o);
@@ -1071,7 +1082,7 @@ bool Session::Impl::create_contexts(Opening & o) {
     // Installing it for the trace alone is what lets a NON-streamed run be measured — the dense
     // mmap baseline the streamed numbers are argued against.
     // The prefill device needs it once, for the capture that finds the layer weights.
-    if (cfg.moe.enabled || o.compute_trace || prefill) {
+    if (cfg.moe.enabled || o.compute_trace || prefill || records_unstreamed(cfg)) {
         cparams.cb_eval = &RouterHook::c_eval;
         cparams.cb_eval_user_data = hook.get();
     }
@@ -1097,6 +1108,10 @@ bool Session::Impl::create_contexts(Opening & o) {
     // snapshots the rewind is a cheap restore; without them llama.cpp has to fall back to replaying
     // the sequence, which would hand back exactly the decode the speculation just saved.
     if (cfg.spec.enabled()) cparams.n_rs_seq = (uint32_t) cfg.spec.draft_max;
+    // The device-side expert cache is armed only on the second creation (see open()): with it on,
+    // the expert matmuls read its slots rather than the host tensors, so the capture warm-up, which
+    // finds those tensors by the nodes that read them, runs on a context without it.
+    if (device_cache_armed) cparams.moe_cache_size = (size_t) cfg.moe.device_cache_mb << 20;
 
     llama_context * c = llama_init_from_model(model.get(), cparams);
     // A quantized V cache needs flash attention, and whether a backend has it is only known by asking
@@ -1125,6 +1140,9 @@ bool Session::Impl::create_contexts(Opening & o) {
     if (cfg.spec.is_mtp()) {
         llama_context_params dparams = cparams;
         dparams.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
+        // One device cache, the target's: the draft's own expert layer is served from the host, and a
+        // second cache would take as much device memory again for a head that routes one position.
+        dparams.moe_cache_size = 0;
         dparams.n_rs_seq = 0;
         // The target's output cap is about the target's logits; the draft keeps llama.cpp's own,
         // which its narrow ubatch below already bounds.
@@ -1454,6 +1472,45 @@ void Session::Impl::arm_routing_record(Opening & o, int n_expert) {
     for (int il = 0; il < o.n_layer_streamed; ++il)
         shape.expert_bytes[(size_t) il] = source.expert_bytes(il);
     hook->set_routing_record(cfg.moe.routing_record_tokens, std::move(shape));
+}
+
+// The routing record of a run with no streamer: the same capture finds the expert tensors, whose
+// own strides give what one expert of each block costs a cache, and the hook then records the
+// routing nodes it sees until the record is full. Nothing is rebound and nothing is read.
+bool Session::Impl::arm_unstreamed_record(Opening & o) {
+    if (!capture_warmup(o)) return false;
+    const std::vector<LayerExperts> layers = hook->captured();
+    RoutingTrace shape;
+    shape.n_layer = (uint32_t) o.n_layer_streamed;
+    int k = o.cfg.n_expert_used;
+    if (k <= 0) k = o.gguf().ok ? o.gguf().n_expert_used : 0;
+    shape.n_expert_used = (uint32_t) std::max(0, k);
+    shape.n_expert = o.gguf().ok ? (uint32_t) o.gguf().n_expert : 0;
+    shape.expert_bytes.assign((size_t) o.n_layer_streamed, 0);
+    for (size_t il = 0; il < layers.size() && il < shape.expert_bytes.size(); ++il)
+        for (const ExpertTensorRef & p : layers[il].proj)
+            if (p.tensor) shape.expert_bytes[il] += (uint64_t) p.tensor->nb[2];
+    hook->set_routing_record(o.cfg.moe.routing_record_tokens, std::move(shape));
+    clear_memory(ctx.get()); // discard the capture's KV
+    return true;
+}
+
+// The streamed experts computed on the layers' device: the context is made again with llama.cpp's
+// device-side expert cache, which uploads each routed expert from the host tensor the streamer has
+// just filled. The tensors and the streamer are the model's and outlive the first context; the
+// warm-up's KV went with it. Serial streaming only: the overlap hook waits inside the CPU's matmul,
+// which no longer runs the experts.
+bool Session::Impl::arm_device_cache(Opening & o) {
+    const SessionConfig & cfg = o.cfg;
+    if (cfg.moe.overlap)
+        return o.fail("--device-cache-mb computes the experts on the device; --overlap waits for them on the CPU");
+    if (prefill) return o.fail("--device-cache-mb keeps the layers on their device; a prefill device moves them");
+    if (cfg.n_gpu_layers == 0) return o.fail("--device-cache-mb needs the layers on a device (--gpu-layers)");
+    ctx.reset();
+    device_cache_armed = true;
+    if (!create_contexts(o)) return false;
+    install_abort_callback();
+    return true;
 }
 
 // Everything streaming adds to a loaded model: capture the expert tensors, place them in the file,
@@ -1957,6 +2014,8 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     im.install_abort_callback();
     if (!im.init_speculation(o)) return nullptr;
     if (cfg.moe.enabled && !im.bind_streaming(o)) return nullptr;
+    if (records_unstreamed(cfg) && !im.arm_unstreamed_record(o)) return nullptr;
+    if (cfg.moe.device_cache_mb > 0 && !im.arm_device_cache(o)) return nullptr;
     if (im.prefill && !im.open_prefill_device(o)) return nullptr;
     if (im.prefill && cfg.prefill.verify && !im.confirm_prefill_device(o)) return nullptr;
     im.arm_decode_traces(o);

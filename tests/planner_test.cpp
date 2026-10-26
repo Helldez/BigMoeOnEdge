@@ -1557,6 +1557,7 @@ int main() {
         src.wide_matmul_gibs = 1502.25;
         src.wide_identity_ok = Tri::Yes;
         src.buffers_locked = Tri::Yes;
+        src.upload_gibs = 24.25;
         ComputeDevice dst;
         dst.name = "accel";
         const std::string line = device_facts_to_text(src);
@@ -1565,7 +1566,8 @@ int main() {
                   dst.async_copies == Tri::No && dst.rebindable && dst.runs_expert_op == Tri::Yes &&
                   dst.needs_repack == Tri::No && dst.memory_bandwidth_gibs == 63.5 && dst.identity_ok == Tri::Yes &&
                   dst.host_ptr_verified == Tri::No && dst.split_seconds == 0.000125 && dst.graph_splits == 96 &&
-                  dst.wide_matmul_gibs == 1502.25 && dst.wide_identity_ok == Tri::Yes && dst.buffers_locked == Tri::Yes,
+                  dst.wide_matmul_gibs == 1502.25 && dst.wide_identity_ok == Tri::Yes &&
+                  dst.buffers_locked == Tri::Yes && dst.upload_gibs == 24.25,
               "isolated: and every one of them is what was sent");
         // A line cut short - a child that died while printing - is applied not at all.
         ComputeDevice untouched;
@@ -1965,5 +1967,118 @@ int main() {
     }
 
     std::printf(failures ? "\n%d check(s) failed\n" : "\nall checks passed\n", failures);
+    // ── device memory as a tier of the expert cache ──────────────────────────────────
+    // A card with memory of its own, every layer's dense part on it, and the fitter's leftover
+    // device memory given to whole layers' experts: half the layers here. The plan prices the same
+    // bytes as a cache of the most used experts, and chooses on the measured facts alone.
+    {
+        HardwareProfile card = desktop();
+        card.residency_budget = 80 * GiB;
+        card.memory_total = 125 * GiB;
+        card.host_bandwidth_gibs = 66.0;
+        ComputeDevice & gpu = card.devices[0];
+        gpu.memory_total = 24 * GiB;
+        gpu.memory_free = 23 * GiB;
+        gpu.usable = Tri::Yes;
+        gpu.runs_expert_op = Tri::Yes;
+        gpu.identity_ok = Tri::Yes;
+        gpu.memory_bandwidth_gibs = 881.0;
+        gpu.upload_gibs = 24.0;
+        gpu.split_seconds = 20e-6;
+        Placement half;
+        half.fitted = true;
+        half.n_gpu_layers = (int32_t) model.n_layer + 1;
+        for (uint32_t il = 0; il < 24; ++il)
+            half.host_expert_layers.push_back(il);
+        for (uint32_t il = 0; il < model.n_layer; ++il)
+            half.all_expert_patterns.push_back("blk\\." + std::to_string(il) + "\\.ffn_(up|down|gate)_exps");
+        half.override_patterns.assign(half.all_expert_patterns.begin(), half.all_expert_patterns.begin() + 24);
+        half.device_bytes = 9 * GiB + 3 * GiB;
+        const auto plan_on = [&](const HardwareProfile & h, const Placement & pl, const PlanRequest & r) {
+            return plan_run(base_cfg(), h, model, pl, r, PlannerPolicy::defaults());
+        };
+
+        // Credited linearly, the cache and the split serve the same share from the device, and a miss
+        // uploaded across the link costs more than the cores computing it: the split stands.
+        const Plan linear = plan_on(card, half, PlanRequest{});
+        const Decision * d = find(linear, "device-cache-mb");
+        check(d && d->value == "0" && d->source == Source::Measured &&
+                  d->reason.find("credited linearly") != std::string::npos,
+              "device tier, linear credit: whole layers stay, and the plan says why", d ? d->reason : "no decision");
+        check(linear.config.moe.device_cache_mb == 0 && linear.config.buft_overrides.size() == 24,
+              "device tier, linear credit: the fitter's placement is applied unchanged");
+        check(linear.config.moe.record_unstreamed,
+              "device tier, linear credit: the run records the routing that would price it");
+
+        // Where the cores are slow against the link, the cache wins even on the linear credit: every
+        // layer's experts go to the host, and the bytes they held become the cache.
+        HardwareProfile slow_cores = card;
+        slow_cores.host_bandwidth_gibs = 4.0;
+        const Plan tier = plan_on(slow_cores, half, PlanRequest{});
+        d = find(tier, "device-cache-mb");
+        check(d && d->source == Source::Measured && tier.config.moe.device_cache_mb == (int) (9 * 1024),
+              "device tier, cache faster: the expert bytes the fitter placed become the cache",
+              std::to_string(tier.config.moe.device_cache_mb));
+        check(tier.config.buft_overrides.size() == model.n_layer && tier.config.n_gpu_layers == half.n_gpu_layers,
+              "device tier, cache faster: every layer stays on the card and every layer's experts on the host");
+        check(!tier.config.prefill.enabled(), "device tier, cache faster: no prefill device beside it");
+        check(validate(tier.config).ok, "device tier, cache faster: a valid config", validate(tier.config).error);
+
+        // A fact missing is a tier not priced, and nothing moves.
+        HardwareProfile no_upload = slow_cores;
+        no_upload.devices[0].upload_gibs = 0.0;
+        const Plan unpriced = plan_on(no_upload, half, PlanRequest{});
+        d = find(unpriced, "device-cache-mb");
+        check(d && d->value == "0" && unpriced.config.moe.device_cache_mb == 0 &&
+                  unpriced.config.buft_overrides.size() == 24,
+              "device tier, upload unmeasured: not priced, the fitter's placement stands");
+
+        // A shared pool has no second tier: the stage says nothing and changes nothing.
+        HardwareProfile shared = slow_cores;
+        shared.devices[0].shares_host_memory = Tri::Yes;
+        const Plan on_shared = plan_on(shared, half, PlanRequest{});
+        check(on_shared.config.moe.device_cache_mb == 0, "device tier, shared memory: no device cache");
+
+        // With this model's own routing replayed, a cache holding half the expert set serves most of
+        // the routed bytes (91% at half the set on a 125B model measured on such a card): the cache
+        // wins on the same fast cores the linear credit lost on, and the plan says where its share came
+        // from.
+        ModelProfile routed = model;
+        routed.hit_curve.measured = true;
+        routed.hit_curve.decode_tokens = 256;
+        routed.hit_curve.points = {
+            {0, 0.0}, {model.expert_bytes / 4, 0.78}, {model.expert_bytes / 2, 0.91}, {model.expert_bytes, 1.0}};
+        const Plan curve = plan_run(base_cfg(), card, routed, half, PlanRequest{}, PlannerPolicy::defaults());
+        d = find(curve, "device-cache-mb");
+        check(d && curve.config.moe.device_cache_mb > 0 &&
+                  d->reason.find("from this model's own routing") != std::string::npos,
+              "device tier, measured routing: the cache wins where the linear credit tied", d ? d->reason : "none");
+        check(curve.config.buft_overrides.size() == model.n_layer,
+              "device tier, measured routing: every layer's experts on the host");
+        check(!curve.config.moe.record_unstreamed, "device tier, measured routing: nothing more to record");
+
+        // The caller's placement is the caller's.
+        PlanRequest pinned;
+        pinned.pinned = {"gpu-layers"};
+        const Plan kept = plan_on(slow_cores, half, pinned);
+        check(kept.config.moe.device_cache_mb == 0, "device tier, gpu-layers pinned: left alone");
+    }
+
+    // ── a device expert cache keeps the prefill device off ─────────────────────────
+    {
+        HardwareProfile fast = phone();
+        fast.host_wide_matmul_gibs = 200.0;
+        fast.wide_batch = 128;
+        fast.devices[0].wide_matmul_gibs = 1500.0;
+        fast.devices[0].wide_identity_ok = Tri::Yes;
+        fast.devices[0].identity_ok = Tri::Yes;
+        RunConfig c = base_cfg();
+        c.moe.device_cache_mb = 2000;
+        const Plan p = plan_run(c, fast, model, PlanRequest{});
+        const Decision * d = find(p, "prefill-device");
+        check(!p.config.prefill.enabled() && d && d->value == "off",
+              "device expert cache set: no prefill device beside it");
+    }
+
     return failures ? 1 : 0;
 }

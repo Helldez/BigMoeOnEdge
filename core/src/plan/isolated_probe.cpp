@@ -34,7 +34,7 @@ bool tri_from(const std::string & v, Tri & out) {
 
 // How many fields a complete line carries. A line with fewer is a child that died while printing
 // or a different build's idea of the format, and neither may be half-applied.
-constexpr int k_fields = 15;
+constexpr int k_fields = 16;
 
 } // namespace
 
@@ -42,12 +42,12 @@ std::string device_facts_to_text(const ComputeDevice & d) {
     char b[512];
     std::snprintf(b, sizeof(b),
                   "v=1 shared=%c hostbuf=%c hostptr=%c async=%c rebind=%d runs=%c repack=%c bw=%.6g ident=%c "
-                  "hpok=%c split=%.9g splits=%u wide=%.6g wideok=%c locked=%c",
+                  "hpok=%c split=%.9g splits=%u wide=%.6g wideok=%c locked=%c up=%.6g",
                   tri_char(d.shares_host_memory), tri_char(d.host_buffer), tri_char(d.host_ptr_buffers),
                   tri_char(d.async_copies), d.rebindable ? 1 : 0, tri_char(d.runs_expert_op), tri_char(d.needs_repack),
                   d.memory_bandwidth_gibs, tri_char(d.identity_ok), tri_char(d.host_ptr_verified), d.split_seconds,
                   (unsigned) d.graph_splits, d.wide_matmul_gibs, tri_char(d.wide_identity_ok),
-                  tri_char(d.buffers_locked));
+                  tri_char(d.buffers_locked), d.upload_gibs);
     return b;
 }
 
@@ -95,6 +95,8 @@ bool device_facts_from_text(const std::string & text, ComputeDevice & d) {
             ok = tri_from(v, n.wide_identity_ok);
         else if (k == "locked")
             ok = tri_from(v, n.buffers_locked);
+        else if (k == "up")
+            n.upload_gibs = std::strtod(v.c_str(), nullptr);
         else
             return false;
         if (!ok) return false;

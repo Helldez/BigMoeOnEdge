@@ -4,6 +4,92 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **Device memory as a tier of the expert cache** (Step 4 of `docs/measured-planning.md`, closes
+  #378, supersedes #381). `--device-cache-mb N` puts llama.cpp's device-side expert cache in front of
+  the experts the host holds, resident or streamed: the experts used most are computed on the device
+  from a cache in its own memory, and a miss is uploaded from the host. `--auto` arms it where a device
+  has memory of its own, every layer's dense part is on it, and the cache prices faster than the
+  capacity fitter's whole layers on the same bytes. The price reads three measured facts of the
+  device (its rate on the experts, a crossing, and a new one: the rate at which host memory reaches it
+  one expert at a time, `upload_gibs`, measured in its isolated probe) and the share of the routed
+  bytes the cache serves, from this model's recorded routing. Without a record the share is credited
+  linearly and the split stands; the run then records its routing even when it does not stream
+  (`--record-unstreamed`, which the plan sets), so the next plan of the file prices the cache. On a
+  24 GB discrete card with a 125B model resident on the host, a 16 GB device cache decoded at 61.8 and
+  62.8 tok/s over 256 tokens and 84-88 once settled, against 31.9 for the best whole-layer split and
+  18.9 with the experts on the cores. Speculation now works beside it. Gates G21a-c prove the cached
+  runs byte-identical to the resident placement (resident, streamed, streamed under n-gram
+  speculation), and G2u that an unstreamed run's record is the routing a stream asks for.
+- **The cache is sized from the model's own routing** (Step 1 of `docs/measured-planning.md`). A
+  streamed session keeps the experts each MoE layer asked the cache for during its first tokens
+  (`--routing-record`, default 256 decoded tokens and the prompt's last 256; it adds no graph nodes
+  and changes no output) and returns it as a value (`Session::routing_record()`, `bmoe/routing.h`).
+  `bmoe-cli --routing-dir DIR` and `bmoe-server` (under `routing/` in its data folder) keep it, one
+  file per model named by a content fingerprint of the file (`model_fingerprint()`). The next
+  `--auto` plan of that file replays it through the engine's LRU at every size up to the whole
+  expert set: the model's hit curve (`ModelProfile::hit_curve`). The cache is then ranked against
+  the resident groups along that curve and credited the hit rate it gives at the chosen size,
+  tagged `[measured on this model]` and with a `cache-hits` decision saying what it was replayed
+  from. Without a record, or with one for another model or top-k, the plan is unchanged: the
+  linear credit stays for a first load. The replay matches `scripts/route-replay.py` to the third
+  decimal on the archived phone traces (`routing` test), and a new gate (`G2r`) checks that a real
+  session's record replays to the hit rate its cache measured. The same record ranks the hottest
+  (block, expert) pairs (`hottest_experts()`), for a later device-side cache to warm from; nothing
+  reads it yet. The on-device runs this is judged by are owed.
+- **The thread count and overlap are measured on the first answer** (Step 2 of
+  `docs/measured-planning.md`; #294). Where the front-end keeps the verdict (`bmoe-cli --auto` with
+  `--routing-dir`, and `bmoe-server` always), the plan arms a trial instead of a guess:
+  `--trial-threads N[,M]`, the core-class boundaries nearest the incumbent, and `--trial-overlap`.
+  Once the cache's hit rate has settled, decode windows (`--trial-window`, 8 tokens) alternate
+  between the incumbent and each candidate, every candidate window between two of the incumbent's,
+  on the user's own answer; a candidate wins only if it decodes `min_backend_win` (10%) faster in the
+  median of its rounds. Both knobs switch with the session open: the thread count through
+  `llama_set_n_threads`, overlap by starting or stopping the streamer's first read lane worker and
+  the expert-ready hook between two decodes (it needs every layer on the host). The winner stays for
+  the session and is returned (`Session::measured_knobs()`, `bmoe/measured_knobs.h`); the
+  front-ends keep it beside the routing record, a line per machine (`hardware_fingerprint()`) and
+  engine version, and the next plan of the model starts from it, states `threads` and `overlap` as
+  measured on this model, and measures nothing. `--io-threads` is left to the storage probe, which
+  already measures it on the model's own file. Gate `G21` holds the output byte-identical while the
+  trial switches, within one answer and across turns; the policy has its own test (`knob_trial`).
+  With nothing kept and the feature off, the plan is unchanged. The on-device runs this is judged by
+  are owed.
+
+### Changed
+- **The plan's hit rate is set against the decode's.** The line `bmoe-cli --auto` prints after a run
+  compares the credited hit rate with the one measured over the decode alone (the figure a token is
+  priced with), with the prompt-inclusive one in brackets; it used to show the cache's share of the
+  expert set against the cumulative rate. `bmoe-server`'s `/api/plan` `measured.cache_hit_pct` is
+  likewise the last turn's decode now. `RunSummary::cache_hit_decode_pct` carries it;
+  `BMOE_DONE`'s `cache_hit_pct` is unchanged.
+### Fixed
+- **A run reserves the logit rows its plan charged, with a prefill device or without one.** The
+  context capped the rows a graph may return at 128 only when a device ran the prefill, while the
+  planner projected every run at that cap. Without one, llama.cpp reserved a vocabulary-wide row
+  for every token of the ubatch, where the output layer is. On a 24 GB card holding most of a 125B
+  model's layers, `--auto` placed what the ledger allowed and then could not create the context:
+  2.1 GiB of output rows no longer fit in the card's memory. On a CPU-only run of a 35B-A3B at 2048
+  tokens the same rows were 2028 MiB of compute buffer against the 436 MiB planned (#304), 312 MiB
+  with the cap. The cap now holds on every session, and a perplexity pass is fed in pieces no wider
+  than it.
+
+- **A container's memory limit is the plan's limit.** Inside a memory control group with a finite
+  limit, the residency budget was the machine's `MemAvailable` (103 GB on a rented box whose group
+  allowed 85 GiB), so a plan could size itself past the point where the kernel ends the process.
+  The budget is now capped by what the group and every ancestor it can see still allow, less what
+  each holds and crediting its inactive file pages, for cgroup v2 and v1. A finite limit is also
+  read as a share the process is ended for exceeding, which widens the plan's margin the way an
+  app's own share does on a phone.
+- **The cores a process can keep busy, not the machine's.** The core count every thread rule and
+  sweep starts from was `hardware_concurrency`, which counts every core of the machine. It is now
+  the CPUs the process's affinity mask allows, capped by a CPU control group's quota (cgroup v2
+  `cpu.max`, v1 `cpu.cfs_quota_us`, rounded up). A container given 30.7 CPUs of 128 swept its
+  threads over 128 and probed its rates in bursts it could not sustain; the count is now 31. The
+  core classes are read over the CPUs the mask allows.
+
 ## [0.36.0] - 2026-10-26
 
 ### Added
@@ -80,79 +166,13 @@ Semantic Versioning.
   tools, `previous_response_id` and stored items are refused with `400`; Responses built-in tools
   are dropped. `count_tokens` is an estimate from the request's length. The README says how to
   point each agent at the server; `docs/server-api.md` has the reference.
-- **The cache is sized from the model's own routing** (Step 1 of `docs/measured-planning.md`). A
-  streamed session keeps the experts each MoE layer asked the cache for during its first tokens
-  (`--routing-record`, default 256 decoded tokens and the prompt's last 256; it adds no graph nodes
-  and changes no output) and returns it as a value (`Session::routing_record()`, `bmoe/routing.h`).
-  `bmoe-cli --routing-dir DIR` and `bmoe-server` (under `routing/` in its data folder) keep it, one
-  file per model named by a content fingerprint of the file (`model_fingerprint()`). The next
-  `--auto` plan of that file replays it through the engine's LRU at every size up to the whole
-  expert set: the model's hit curve (`ModelProfile::hit_curve`). The cache is then ranked against
-  the resident groups along that curve and credited the hit rate it gives at the chosen size,
-  tagged `[measured on this model]` and with a `cache-hits` decision saying what it was replayed
-  from. Without a record, or with one for another model or top-k, the plan is unchanged: the
-  linear credit stays for a first load. The replay matches `scripts/route-replay.py` to the third
-  decimal on the archived phone traces (`routing` test), and a new gate (`G2r`) checks that a real
-  session's record replays to the hit rate its cache measured. The same record ranks the hottest
-  (block, expert) pairs (`hottest_experts()`), for a later device-side cache to warm from; nothing
-  reads it yet. The on-device runs this is judged by are owed.
-- **The thread count and overlap are measured on the first answer** (Step 2 of
-  `docs/measured-planning.md`; #294). Where the front-end keeps the verdict (`bmoe-cli --auto` with
-  `--routing-dir`, and `bmoe-server` always), the plan arms a trial instead of a guess:
-  `--trial-threads N[,M]`, the core-class boundaries nearest the incumbent, and `--trial-overlap`.
-  Once the cache's hit rate has settled, decode windows (`--trial-window`, 8 tokens) alternate
-  between the incumbent and each candidate, every candidate window between two of the incumbent's,
-  on the user's own answer; a candidate wins only if it decodes `min_backend_win` (10%) faster in the
-  median of its rounds. Both knobs switch with the session open: the thread count through
-  `llama_set_n_threads`, overlap by starting or stopping the streamer's first read lane worker and
-  the expert-ready hook between two decodes (it needs every layer on the host). The winner stays for
-  the session and is returned (`Session::measured_knobs()`, `bmoe/measured_knobs.h`); the
-  front-ends keep it beside the routing record, a line per machine (`hardware_fingerprint()`) and
-  engine version, and the next plan of the model starts from it, states `threads` and `overlap` as
-  measured on this model, and measures nothing. `--io-threads` is left to the storage probe, which
-  already measures it on the model's own file. Gate `G21` holds the output byte-identical while the
-  trial switches, within one answer and across turns; the policy has its own test (`knob_trial`).
-  With nothing kept and the feature off, the plan is unchanged. The on-device runs this is judged by
-  are owed.
-
 ### Changed
-- **The plan's hit rate is set against the decode's.** The line `bmoe-cli --auto` prints after a run
-  compares the credited hit rate with the one measured over the decode alone (the figure a token is
-  priced with), with the prompt-inclusive one in brackets; it used to show the cache's share of the
-  expert set against the cumulative rate. `bmoe-server`'s `/api/plan` `measured.cache_hit_pct` is
-  likewise the last turn's decode now. `RunSummary::cache_hit_decode_pct` carries it;
-  `BMOE_DONE`'s `cache_hit_pct` is unchanged.
 - **`--dense-weights pinned` is the name of the reclaim-exempt mode** that was `ahwb`. The mode
   runs on Android (a dma-buf) and on macOS (wired memory), and the name only described the first.
   `ahwb` still parses, on the command line and in saved settings, and is written back as `pinned`;
   the choice the UIs list, the plan, the logs and the telemetry (`dense <...>` in the perf block,
   `dense_weights=` in the CSV header) say `pinned`. The mode's spelling now lives in one function
   (`dense_weights_mode_name`) instead of four copies.
-
-### Fixed
-- **A run reserves the logit rows its plan charged, with a prefill device or without one.** The
-  context capped the rows a graph may return at 128 only when a device ran the prefill, while the
-  planner projected every run at that cap. Without one, llama.cpp reserved a vocabulary-wide row
-  for every token of the ubatch, where the output layer is. On a 24 GB card holding most of a 125B
-  model's layers, `--auto` placed what the ledger allowed and then could not create the context:
-  2.1 GiB of output rows no longer fit in the card's memory. On a CPU-only run of a 35B-A3B at 2048
-  tokens the same rows were 2028 MiB of compute buffer against the 436 MiB planned (#304), 312 MiB
-  with the cap. The cap now holds on every session, and a perplexity pass is fed in pieces no wider
-  than it.
-
-- **A container's memory limit is the plan's limit.** Inside a memory control group with a finite
-  limit, the residency budget was the machine's `MemAvailable` (103 GB on a rented box whose group
-  allowed 85 GiB), so a plan could size itself past the point where the kernel ends the process.
-  The budget is now capped by what the group and every ancestor it can see still allow, less what
-  each holds and crediting its inactive file pages, for cgroup v2 and v1. A finite limit is also
-  read as a share the process is ended for exceeding, which widens the plan's margin the way an
-  app's own share does on a phone.
-- **The cores a process can keep busy, not the machine's.** The core count every thread rule and
-  sweep starts from was `hardware_concurrency`, which counts every core of the machine. It is now
-  the CPUs the process's affinity mask allows, capped by a CPU control group's quota (cgroup v2
-  `cpu.max`, v1 `cpu.cfs_quota_us`, rounded up). A container given 30.7 CPUs of 128 swept its
-  threads over 128 and probed its rates in bursts it could not sustain; the count is now 31. The
-  core classes are read over the CPUs the mask allows.
 
 ## [0.35.1] - 2026-10-24
 

@@ -74,6 +74,13 @@ struct MoeStreamConfig {
     // device whose free RAM it cannot know in advance; it does not chase memory pressure afterwards.
     // Mutually exclusive with an explicit cache_mb > 0. See docs/cache-sizing.md.
     bool cache_auto = false;
+
+    // Experts COMPUTED on a device, from a cache of them in its memory, in MiB; 0 is off. The
+    // layers go to the device and their experts stay in this streamer's host memory, and llama.cpp's
+    // device-side expert cache (llama_context_params::moe_cache_size) uploads a routed expert into
+    // its slots from where the streamer put it. On a device that shares the host's memory the upload
+    // is a copy within one pool; elsewhere it crosses the device's link. See docs/backends.md.
+    int device_cache_mb = 0;
     int cache_floor_mb = 1536; // RAM to leave free for the rest of the system when auto-sizing
     int cache_ceil_mb = 0;     // upper bound on the auto budget in MiB (0 = cap only at the full
                                // expert-set size); useful to keep the cache from taking all the
@@ -140,6 +147,12 @@ struct MoeStreamConfig {
     // nothing - the ids are gathered on every routing anyway - and stops by itself; 0 records nothing.
     // Lossless: it changes no output.
     int routing_record_tokens = 256;
+    // Record the routing on a run that does not stream as well. With no streamer the routing nodes
+    // are not otherwise observed, so recording them costs one barrier per MoE layer per token until
+    // the record is full, and nothing after. The planner sets it where a choice it has to make is
+    // priced by that record and none exists yet (the device tier); off, an unstreamed run records
+    // nothing, as before.
+    bool record_unstreamed = false;
 
     // How the dense (non-expert) weights are treated. The streamer only rebinds experts; the rest —
     // gguf header/metadata, embeddings, attention, norms, lm_head — is handled by one of three
