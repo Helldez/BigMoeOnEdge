@@ -29,6 +29,13 @@ Semantic Versioning.
   preamble. A quantized V cache needs flash attention: where llama.cpp's backend refuses it, V falls
   back to `f16` with a warning instead of failing the run. Gate G23 checks streaming stays
   byte-identical to resident with an `f16` cache; every other gate now runs at `q8_0`.
+- **The plan charges a chat run's context checkpoints before it sizes the expert cache**
+  (`checkpoint-budget`, a ledger row of its own). Each checkpoint copies the part of the context that does
+  not grow with its length. The placement probe reads that part off llama.cpp's own projection at the
+  context and at half of it, with nothing taken from the architecture: 62 MiB on Qwen3.6-35B-A3B against
+  the 62.8 a checkpoint measures, and nothing for a context that is all attention. Without the charge, a
+  chat filled up to 502 MiB of checkpoints out of memory the cache had already been given. A run that is
+  not a chat makes no checkpoints and is charged none.
 - **Desktop packages that open with a double-click** (part of #385). `release-host` builds one per
   OS from the same staged folder the `bmoe-desktop` archive carries, and the archives stay for
   scripted installs and the CLI. The scripts live under `packaging/`.

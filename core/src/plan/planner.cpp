@@ -268,6 +268,7 @@ struct Planning {
     bool devices_share_host_memory = false;
     uint64_t device_on_host = 0;
     uint64_t host_fixed = 0;
+    uint64_t checkpoint_bytes = 0; // the context checkpoints a chat run will keep (checkpoint_reserve)
     uint64_t host_all = 0;
     uint64_t host_dense = 0;
     uint64_t air = 0;
@@ -423,6 +424,15 @@ void choose_graph_width(Planning & s) {
 
 // The bytes that would have to be resident on the host if nothing were streamed, and the regime
 // they put the run in.
+//
+// The memory the context checkpoints will take: one copy of the context's fixed part per checkpoint
+// kept. Only a chat run makes them (the session keeps them at the end of a templated prompt), and a
+// context that is all attention has no fixed part, so both cost nothing.
+uint64_t checkpoint_reserve(const RunConfig & c, const Placement & placement) {
+    if (!c.chatml || c.ctx_checkpoints <= 0) return 0;
+    return placement.context_fixed_bytes * (uint64_t) c.ctx_checkpoints;
+}
+
 void classify_regime(Planning & s) {
     const Placement & placement = s.placement;
     // With a placement, what the fitter left here; without one, the whole file.
@@ -445,13 +455,17 @@ void classify_regime(Planning & s) {
     uint64_t host_fixed = placement.raw_host_context_bytes + placement.raw_host_compute_bytes;
     if (placement.shared_memory_placement) host_fixed += placement.device_context_bytes;
     if (placement.fitted) host_fixed = std::min(host_fixed, placement.host_resident_bytes);
+    // Context checkpoints are host memory the fitter never saw, and the run fills it as the chat
+    // goes: charged up front, at the count the run may keep, so the cache is not sized into it.
+    s.checkpoint_bytes = checkpoint_reserve(s.p.config, placement);
     s.host_fixed = host_fixed;
-    const uint64_t unfitted_fixed = placement.fitted ? 0 : host_fixed;
+    const uint64_t unfitted_fixed = placement.fitted ? 0 : host_fixed + s.checkpoint_bytes;
 
-    s.host_all = placement.fitted ? placement.host_resident_bytes + s.host_expert_bytes + s.device_on_host
-                                  : s.model.file_bytes + unfitted_fixed;
-    s.host_dense =
-        placement.fitted ? placement.host_resident_bytes + s.device_on_host : s.model.dense_bytes + unfitted_fixed;
+    s.host_all = placement.fitted
+                     ? placement.host_resident_bytes + s.host_expert_bytes + s.device_on_host + s.checkpoint_bytes
+                     : s.model.file_bytes + unfitted_fixed;
+    s.host_dense = placement.fitted ? placement.host_resident_bytes + s.device_on_host + s.checkpoint_bytes
+                                    : s.model.dense_bytes + unfitted_fixed;
     if (s.host_all <= s.usable) {
         s.p.regime = Regime::Fits;
     } else if (s.host_dense <= s.usable) {
@@ -828,7 +842,7 @@ bool choose_dense_policy(Planning & s) {
 uint64_t dense_pending_bytes(const Planning & s) {
     const DenseWeightsMode mode = s.p.config.moe.dense_weights;
     const bool converts_dense = mode == DenseWeightsMode::Anonymous || mode == DenseWeightsMode::Pinned;
-    uint64_t dense_pending = converts_dense ? s.host_dense - s.host_fixed : 0;
+    uint64_t dense_pending = converts_dense ? s.host_dense - s.host_fixed - s.checkpoint_bytes : 0;
     if (converts_dense && s.model.largest_dense_tensor > s.hw.residency_budget)
         dense_pending = dense_pending > s.model.largest_dense_tensor ? dense_pending - s.model.largest_dense_tensor : 0;
     return dense_pending;
@@ -866,6 +880,7 @@ AllocationInputs ledger_inputs(const Planning & s, uint64_t dense_pending) {
     ai.reserved_bytes = dense_pending;
     ai.cacheable_bytes = s.host_expert_bytes;
     ai.fixed_bytes = s.host_fixed;
+    ai.checkpoint_bytes = s.checkpoint_bytes;
     ai.cache_lock = c.moe.cache_pin;
     ai.holdable_bytes = s.holdable;
     ai.margin_frac = margin_frac(s.hw, s.pol);
@@ -1418,6 +1433,21 @@ void note_kv_budget(Planning & s) {
                "--cache-type-v, never by this plan: f16 is lossless, q8_0 (the default) halves the bytes");
 }
 
+// The checkpoints' charge, said where it was taken, so a reader who sees a smaller cache on a chat
+// run than on a one-shot one finds why. Measured on a fitted placement and an unfitted one alike: the
+// fixed part is read off the fitter's projection either way.
+void note_checkpoint_budget(Planning & s) {
+    if (s.checkpoint_bytes == 0) return;
+    const RunConfig & c = s.p.config;
+    s.note("checkpoint-budget", u64s(mib(s.checkpoint_bytes)) + " MiB", Source::Measured,
+           "Context checkpoints may take " + size_brief(s.checkpoint_bytes) + "; that is kept out of the cache.",
+           std::to_string(c.ctx_checkpoints) + " checkpoints (--ctx-checkpoints) of " +
+               u64s(mib(s.placement.context_fixed_bytes)) +
+               " MiB each, the part of the context that does not grow with its length (measured at two "
+               "lengths), charged before the cache is sized: a chat run fills them as it goes, and memory "
+               "the cache had already taken would have to come out of something else");
+}
+
 // ── the I/O policy: from the machine's own rate curve, never from a class name ──
 void choose_io_lanes(Planning & s) {
     MoeStreamConfig & moe = s.p.config.moe;
@@ -1784,6 +1814,7 @@ Plan plan_run(const RunConfig & base,
     note_ledger(s, alloc);
     if (!size_cache(s, alloc)) return p;
     note_kv_budget(s);
+    note_checkpoint_budget(s);
 
     // The knobs each settled by one fact.
     choose_io_lanes(s);
