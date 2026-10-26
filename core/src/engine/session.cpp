@@ -21,6 +21,8 @@
 #include "../moe/gguf_offsets.h"
 #include "../moe/tensor_names.h"
 #include "cache_brake.h"
+#include "context_checkpoints.h"
+#include "kv_cache_type.h"
 #include "../io/platform_io.h"
 #include "../io/mapping_release.h"
 #include "../metrics/memory_snapshot.h"
@@ -371,6 +373,28 @@ struct Session::Impl {
     // and prefill only the diverging suffix instead of re-running the whole conversation.
     std::vector<common_chat_msg> chat_history;
     std::vector<llama_token> kv_tokens;
+    // What a refused cut of the KV rolls back to (context_checkpoints.h). They describe a prefix of
+    // kv_tokens, so they go wherever it goes.
+    detail::ContextCheckpoints checkpoints;
+    bool checkpoint_size_logged = false; // the size is the model's, so said once per session
+    detail::CheckpointContexts checkpoint_contexts() { return {ctx.get(), ctx_dft.get(), mtp.get()}; }
+    void forget_kv_tokens() {
+        kv_tokens.clear();
+        checkpoints.clear();
+    }
+    // Keep the first n tokens of the KV and drop the rest. Where the memory refuses the cut, the
+    // newest checkpoint at or before n stands in for it; returns how many tokens are still held,
+    // 0 with the context cleared when no checkpoint helps.
+    size_t keep_kv_prefix(size_t n) {
+        size_t kept = n;
+        if (!llama_memory_seq_rm(llama_get_memory(ctx.get()), 0, (llama_pos) n, -1)) {
+            kept = (size_t) checkpoints.restore(checkpoint_contexts(), (int64_t) n);
+            if (kept == 0) clear_memory(ctx.get());
+        }
+        kv_tokens.resize(std::min(kept, kv_tokens.size()));
+        checkpoints.drop_after((int64_t) kept);
+        return kept;
+    }
 
     // decide()'s kept prefix state. Chosen at the first decide() (the policy needs the backend's
     // answer on prefill cost), null when the policy keeps none.
@@ -520,7 +544,7 @@ PplResult Session::perplexity(const PplRequest & req) {
     r.n_tokens = n;
 
     im.clear_memory(ctx);
-    im.kv_tokens.clear();
+    im.forget_kv_tokens();
 
     // Warm-up graph, discarded. Both routing policies decide at the terminal node of each layer's
     // weight chain, and which node that is gets LEARNED from the first graph of a run — so on a
@@ -597,9 +621,9 @@ PplResult Session::perplexity(const PplRequest & req) {
         // Same placement rule as generate()'s prefill, so --ppl scores exactly the numerics a prompt
         // gets: wide pieces on the prefill device, a narrow tail on the CPU.
         // Every row here wants its logits, so a piece is also capped by the output rows the context
-        // reserved (PrefillDeviceConfig::max_outputs).
+        // reserved (PrefillDeviceConfig::max_outputs), with or without a device.
         const int step =
-            im.prefill ? std::min(prefill_piece(im.cfg), PrefillDeviceConfig::max_outputs) : im.cfg.n_batch;
+            std::min(im.prefill ? prefill_piece(im.cfg) : im.cfg.n_batch, PrefillDeviceConfig::max_outputs);
         Impl::PlacementGuard placement_guard{im};
         for (int i = 0; i < n; i += step) {
             const int chunk = std::min(step, n - i);
@@ -671,7 +695,7 @@ DecideResult Session::decide(const DecideRequest & req) {
     // A decision is not a conversation turn: whatever generate() was continuing is gone once the
     // context is overwritten, so forget it rather than let a later turn diff against stale tokens.
     im.chat_history.clear();
-    im.kv_tokens.clear();
+    im.forget_kv_tokens();
 
     detail::LlamaDecideDeps deps;
     deps.ctx = im.ctx.get();
@@ -1014,6 +1038,8 @@ bool Session::Impl::create_contexts(Opening & o) {
     // buffers — the memory this engine is always short of. 0 keeps the historical behaviour
     // (one graph as wide as the batch); a smaller value chunks prefill to buy that memory back.
     cparams.n_ubatch = cfg.n_ubatch > 0 ? (uint32_t) cfg.n_ubatch : (uint32_t) cfg.n_batch;
+    cparams.type_k = detail::to_ggml_type(cfg.cache_type_k);
+    cparams.type_v = detail::to_ggml_type(cfg.cache_type_v);
     // The streamer needs the callback to see routing; the compute trace needs it to time nodes.
     // Installing it for the trace alone is what lets a NON-streamed run be measured — the dense
     // mmap baseline the streamed numbers are argued against.
@@ -1024,10 +1050,7 @@ bool Session::Impl::create_contexts(Opening & o) {
     }
     // Placement is decided here, by moving weights; a backend's own offload heuristic would move
     // ops of CPU-resident weights to the device on its own (GPU backends do for wide batches).
-    if (prefill) {
-        cparams.op_offload = false;
-        cparams.n_outputs_max = (uint32_t) PrefillDeviceConfig::max_outputs;
-    }
+    if (prefill) cparams.op_offload = false;
     // Under overlap a streamed expert is waited for inside the CPU's expert matmul, as it is read.
     // With layers on a device, a wide graph's host-weight matmuls are offered to that device, which
     // copies the expert tensor before the reads land: a Metal run with 12 layers placed and a
@@ -1035,13 +1058,33 @@ bool Session::Impl::create_contexts(Opening & o) {
     // streaming has every routed expert in place before the matmul's split starts, so only overlap
     // gives the offload up; the decode's one-token graphs are never offloaded either way.
     if (cfg.moe.enabled && cfg.moe.overlap && cfg.n_gpu_layers != 0) cparams.op_offload = false;
+    // Logit rows are reserved for as many outputs as a graph may return, and left at llama.cpp's
+    // default that is the whole ubatch. A row is the whole vocabulary, and the reservation goes where
+    // the output layer is: on a CPU-only run of a 35B-A3B at 2048 tokens it was 1.7 GiB of compute
+    // buffer for rows a prompt never reads, and on a 24 GB card holding a 125B model's layers it was
+    // the 2.1 GiB that no longer fit, so the context could not be created. The planner projects
+    // every run at this cap, and leaving it to the prefill device made the run reserve 2028 MiB where
+    // the ledger had 436.
+    cparams.n_outputs_max = (uint32_t) PrefillDeviceConfig::max_outputs;
     // Rejecting a draft means rewinding the KV to the last accepted position. With recurrent-state
     // snapshots the rewind is a cheap restore; without them llama.cpp has to fall back to replaying
     // the sequence, which would hand back exactly the decode the speculation just saved.
     if (cfg.spec.enabled()) cparams.n_rs_seq = (uint32_t) cfg.spec.draft_max;
 
     llama_context * c = llama_init_from_model(model.get(), cparams);
-    if (!c) return o.fail("failed to create context");
+    // A quantized V cache needs flash attention, and whether a backend has it is only known by asking
+    // llama.cpp for the context. The default is quantized, so a backend without it must not lose the
+    // run: V goes back to F16 (K stays, it needs nothing). The fitter charged the smaller V, which is
+    // why the fallback is said out loud.
+    if (!c && ggml_is_quantized(cparams.type_v)) {
+        log_printf(LogLevel::Warn,
+                   "a %s V cache needs flash attention, which this backend refused; V falls back to f16",
+                   kv_cache_type_name(cfg.cache_type_v));
+        cparams.type_v = GGML_TYPE_F16;
+        c = llama_init_from_model(model.get(), cparams);
+        if (c) this->cfg.cache_type_v = KvCacheType::F16;
+    }
+    if (!c) return o.fail("failed to create context"); // llama.cpp's own log says why
     ctx.reset(c);
     // Decode and prefill get their own counts. They are different workloads: prefill is compute-bound
     // and scales with cores, a streamed decode waits on flash. 0 means "the same", which is what
@@ -1056,6 +1099,9 @@ bool Session::Impl::create_contexts(Opening & o) {
         llama_context_params dparams = cparams;
         dparams.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
         dparams.n_rs_seq = 0;
+        // The target's output cap is about the target's logits; the draft keeps llama.cpp's own,
+        // which its narrow ubatch below already bounds.
+        dparams.n_outputs_max = 0;
         // Compute buffers are reserved for the WIDEST ubatch, and left at the target's width the
         // draft context reserves gigabytes for a graph it never runs: the widest thing it ever
         // computes is a prefill chunk, and at decode time it is 1 + draft_max positions. On this
@@ -1143,6 +1189,7 @@ bool Session::Impl::init_speculation(Opening & o) {
         mtp_batch_owned = true;
         draft_buf.reserve((size_t) cfg.spec.draft_max);
     }
+    checkpoints.configure(cfg.ctx_checkpoints, cfg.checkpoint_min_step, llama_model_n_swa(model.get()));
     return true;
 }
 
@@ -1619,6 +1666,8 @@ void Session::Impl::describe_run(Opening & o) {
         ri.n_threads = cfg.n_threads;
         ri.n_ctx = cfg.n_ctx;
         ri.n_ubatch = cfg.n_ubatch;
+        ri.cache_type_k = kv_cache_type_name(this->cfg.cache_type_k); // what was allocated, after any fallback
+        ri.cache_type_v = kv_cache_type_name(this->cfg.cache_type_v);
         ri.chatml = cfg.chatml;
         ri.compute_trace_layers = compute_trace && compute_trace->layers_only();
         ri.spec = cfg.spec.is_mtp() ? "mtp" : cfg.spec.is_ngram() ? "ngram" : "off";
@@ -1778,7 +1827,7 @@ void Session::Impl::begin_generate(const GenerateRequest & req, IMetricsSink * s
         // draft of the new conversation is conditioned on the previous one.
         if (ctx_dft) llama_memory_clear(llama_get_memory(ctx_dft.get()), true);
         chat_history.clear();
-        kv_tokens.clear();
+        forget_kv_tokens();
         // A new chat resets the sampler RNG, so a fixed seed reproduces the same transcript from a
         // fresh conversation. A continued turn (clear_kv=false) keeps the stream going, matching the
         // KV it decodes against.
@@ -2035,15 +2084,9 @@ struct Session::Impl::Turn {
         const size_t max_common = tokens.size() > 0 ? tokens.size() - 1 : 0;
         while (n_common < im.kv_tokens.size() && n_common < max_common && im.kv_tokens[n_common] == tokens[n_common])
             ++n_common;
-        if (n_common < im.kv_tokens.size()) {
-            // SWA-style memory (e.g. Gemma) can refuse a partial removal; fall back to a full
-            // re-prefill in that case rather than continuing from an inconsistent cache.
-            if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, (llama_pos) n_common, -1)) {
-                im.clear_memory(ctx);
-                n_common = 0;
-            }
-            im.kv_tokens.resize(n_common);
-        }
+        // A memory that cannot be cut here (a recurrent state, a sliding window) goes back to the
+        // newest checkpoint before the divergence, and only a context with none starts again.
+        if (n_common < im.kv_tokens.size()) n_common = im.keep_kv_prefix(n_common);
         // The draft context mirrors the target's positions, so it has to be rewound to the SAME
         // point — including when n_common did not move, since the previous turn left it holding
         // everything it generated. Miss this and the first prefill batch of the turn starts at a
@@ -2057,11 +2100,8 @@ struct Session::Impl::Turn {
     // tokens we fed, and un-append the user message. Used on cancel so prior turns stay usable.
     void rollback_turn() {
         if (chat_on) {
-            if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, (llama_pos) n_common, -1)) {
-                im.clear_memory(ctx);
-                n_common = 0; // a full clear cannot leave a reusable prefix in the bookkeeping
-            }
-            im.kv_tokens.resize(n_common);
+            // A cleared context cannot leave a reusable prefix in the bookkeeping: n_common follows it.
+            n_common = im.keep_kv_prefix(n_common);
             undo_history();
         } else {
             im.clear_memory(ctx);
@@ -2074,7 +2114,7 @@ struct Session::Impl::Turn {
                 llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
                 // Both contexts must resume at the same prefix after an aborted turn.
                 im.clear_memory(ctx);
-                im.kv_tokens.clear();
+                im.forget_kv_tokens();
                 n_common = 0;
             }
         }
@@ -2147,6 +2187,9 @@ struct Session::Impl::Turn {
         const long long device_nodes0 = im.hook->device_nodes();
         for (int i = (int) n_common; i < n_prompt; i += pf_step) {
             const int chunk = std::min(pf_step, n_prompt - i);
+            // A long prompt prefilled in pieces leaves checkpoints inside it too, min_step apart.
+            if (chat_on && i > (int) n_common && im.checkpoints.wanted(i, /*prompt_end*/ false))
+                im.checkpoints.create(im.checkpoint_contexts(), i);
             if (im.prefill) {
                 const bool on_dev = im.place_prefill(chunk >= im.cfg.prefill.min_tokens);
                 if (on_dev) prefill_device_tokens += chunk;
@@ -2184,6 +2227,14 @@ struct Session::Impl::Turn {
         if (chat_on)
             for (int i = (int) n_common; i < n_prompt; ++i)
                 im.kv_tokens.push_back(tokens[i]);
+        // The end of this prompt is where the next request most often diverges: a client sends the
+        // answer back as text, and the template's tokens for it need not be the ones sampled.
+        if (chat_on && im.checkpoints.create(im.checkpoint_contexts(), n_prompt) && !im.checkpoint_size_logged) {
+            im.checkpoint_size_logged = true;
+            log_printf(LogLevel::Info, "context checkpoints: %.1f MiB each, up to %d kept",
+                       (double) im.checkpoints.bytes() / im.checkpoints.count() / (1024.0 * 1024.0),
+                       im.cfg.ctx_checkpoints);
+        }
         // Announced only once the prompt is in both contexts: begin() checks how far the draft context
         // has actually got, so calling it before prefill would warn about a gap that is about to close.
         if (mtp_on) common_speculative_begin(im.mtp.get(), /*seq_id*/ 0, tokens);
@@ -2590,12 +2641,9 @@ struct Session::Impl::Turn {
     void trim_speculative_kv() {
         if (!spec_on) return;
         const llama_pos emitted_end = (llama_pos) n_prompt + n_gen;
-        if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, emitted_end, -1)) {
-            // Nothing survives that we can still describe, so say so rather than leave kv_tokens
-            // asserting a prefix the context no longer holds. The next turn re-prefills in full.
-            im.clear_memory(ctx);
-            im.kv_tokens.clear();
-        }
+        // A memory that refuses the cut keeps what a checkpoint still describes, at worst nothing,
+        // rather than leave kv_tokens asserting a prefix the context no longer holds.
+        im.keep_kv_prefix((size_t) emitted_end);
         // The draft context mirrors the target's positions (process() decodes the same batches into
         // it), so it is trimmed to the same point — not cleared, or a continued chat turn would
         // feed it only the new suffix and draft from a state that never saw the conversation.

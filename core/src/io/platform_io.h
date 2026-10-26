@@ -264,6 +264,22 @@ bool file_mapped_regions(const char * basename, std::vector<MappedRegion> & out)
 // size the expert cache to the device (--cache-mb auto); the budget is fixed for the run thereafter.
 uint64_t mem_available_bytes();
 
+// What a memory control group still lets this process take, in bytes: the tightest of its group
+// and every ancestor it can see, each as the limit less what the group holds, plus the group's own
+// inactive file pages, which the kernel drops before it would end anything. A container caps a
+// process this way whatever the machine has free, and exceeding the cap ends the process, so it is
+// the same kind of fact as a phone app's own share. 0 where no finite limit is set or none can be
+// read (no cgroups, an unlimited group, another kernel). The paths are parameters so a test can
+// stand a fake hierarchy up; production reads the defaults.
+uint64_t cgroup_memory_left(const char * fs_root = "/sys/fs/cgroup", const char * self = "/proc/self/cgroup");
+
+// The CPUs a control group's quota lets this process use, rounded up: the tightest quota over
+// period of its group and every ancestor (v2 cpu.max, v1 cpu.cfs_quota_us / cpu.cfs_period_us). A
+// container capped this way still shows every core of the host, and a short burst runs on all of
+// them before the quota throttles it, so a probe of a few milliseconds measures a machine the
+// sustained decode does not have. 0 where no quota is set or none can be read.
+uint32_t cgroup_cpu_limit(const char * fs_root = "/sys/fs/cgroup", const char * self = "/proc/self/cgroup");
+
 // Physical memory this machine has, 0 where it cannot be read. Not a sizing signal on its own -
 // what a process may hold is `mem_available_bytes()` and what it may KEEP is a separate probe - but
 // it bounds both, and it is what a rationale needs to say how much of the machine a plan is asking

@@ -29,6 +29,7 @@ public:
         // "# model=", so prefixing that line with anything would have cost every already-installed
         // build its run titles. A new key on a new line is invisible to a parser that ignores it.
         std::fprintf(f_, "# engine=%s\n", r.engine_version.c_str());
+        std::fprintf(f_, "# cache_type_k=%s cache_type_v=%s\n", r.cache_type_k.c_str(), r.cache_type_v.c_str());
         std::fprintf(f_,
                      "# model=%s arch=%s n_layer=%d n_expert=%d n_expert_used=%d threads=%d "
                      "n_ctx=%d n_ubatch=%d chatml=%d\n",
