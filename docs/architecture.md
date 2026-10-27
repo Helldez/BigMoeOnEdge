@@ -23,7 +23,13 @@ server/         bmoe-server: the application framework every UI speaks to (docs/
                 what a catalog file's name, URL and digest may be, the protocols curl may use),
                 sha256 (the digest a finished download is checked against),
                 url_entry (which direct gguf links are taken and the catalog entry they become),
-                model_delete (which files deleting a listed model removes, inside the models folder):
+                model_delete (which files deleting a listed model removes, inside the models folder),
+                the agent's rules (docs/agent.md): agent_tools (path confinement, the read-only
+                command classifier, diffs, web pages as text, search results), agent_skills,
+                agent_schedule (a task's next run), agent_store (conversations, workspaces, tasks,
+                providers and their keys, on disk), provider_protocol (an OpenAI-compatible
+                service's request and streamed answer), connect (a client's settings, written with a
+                backup):
                 pure policy (bmoe_server_core), with curl_fetch beside it, the system curl behind the
                 HttpFetch port: the library's one adapter, there so its no-curl answer is tested
                 engine_host: the one Session, loads, the turn line, over the HostedSession seam
@@ -31,11 +37,16 @@ server/         bmoe-server: the application framework every UI speaks to (docs/
                 downloads; planner_adapter: /api/plan when the planner is built in; routing_store:
                 each model's routing record and knob verdicts, kept by content fingerprint for the
                 next plan;
-                access: who may reach the API (host, origin, key, content type), pure and tested;
+                agent: the agent's runs (one thread each, approvals, stop, helpers) and its task
+                scheduler, over EngineHost::chat or a provider; agent_routes: its HTTP routes;
+                access: who may reach the API (host, origin, key, content type, which routes answer
+                to loopback only), pure and tested;
                 platform: the only file with platform #ifs; http_server: the HTTP routes and
                 run(); the whole is the bmoe_server library, main.cpp the process around it
 ui/             the web UI (Svelte + TypeScript); settings rendered from the parameter table
-catalog/        models.json: the curated model catalog, as data
+catalog/        models.json: the curated model catalog, as data; clients.json: the apps the server can
+                serve and their settings (GET /api/connect)
+skills/         the agent's bundled skills (SKILL.md each), staged beside bmoe-server
 packaging/      the desktop packages release-host builds from the staged bmoe-desktop folder:
                 macos/ BigMoeOnEdge.app (a launcher that starts and stops bmoe-server) and its .dmg,
                 windows/ the Inno Setup script of the per-user installer, linux/ the AppImage

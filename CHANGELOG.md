@@ -4,6 +4,40 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **The agent, in the server** (`docs/agent.md`, `docs/server-api.md#agent`). A conversation held
+  by the server can work in a folder a person adds (a workspace): list, read, search, write and edit
+  its files, run commands, read web pages and search the web, follow skills, and hand parts of a job
+  to helper conversations. Three modes say what it may do without asking (`ask`, `read_only`,
+  `full`); an approval card carries the diff an edit will make, and nothing has run when it
+  appears. Paths are confined to the workspace after resolving `..` and links; a command runs in
+  the workspace with a time limit as one process group, killed on a stop; a short list of programs
+  that only read runs without asking. A run goes on in the server with no page open and reports on
+  `/api/events` (`conversation`, `item`, `delta`); rounds wait in the engine's turn line like any
+  chat, and keep the prompt the KV holds. A context that runs short shortens the oldest tool
+  results, and says so. Conversations, workspaces, tasks, skills' switches and providers are kept
+  in `<data>/agent/`; a UI can import the conversations it kept before.
+- **Skills**: `SKILL.md` folders shipped beside the server (`review-change`, `write-tests`,
+  `summarize-document`, `web-research`, `explain-codebase`), written in the app, or kept in a
+  workspace's `.bmoe/skills/`; switched on and off per name.
+- **Tasks**: a prompt that runs on a schedule (once, every so many minutes, daily, weekly, in local
+  time) as a conversation, read-only unless chosen otherwise, with approvals refused at once and
+  reported.
+- **Providers**: a conversation can run on any OpenAI-compatible chat service, streamed, with the
+  tools as OpenAI tools. The key is stored in `<data>/credentials.json`, readable by its owner only,
+  and never returned, logged or put on a command line.
+- **Connecting other apps** (`GET /api/connect`, `POST /api/connect/<id>`, `catalog/clients.json`):
+  the settings for Claude Code, Codex CLI, OpenCode, an OpenAI SDK program and Open WebUI, filled in
+  for this server; the server writes Codex CLI's and OpenCode's settings files with a backup.
+- `--skills-dir PATH` names the folder of bundled skills, for a package that keeps them elsewhere.
+
+### Security
+- The agent's routes that reach this computer's files, processes or keys answer only to a
+  connection from loopback, whatever `--host` and key (`403`, `code: "local_only"`); a message from
+  the network runs with no web tools.
+
 ## [0.38.0] - 2026-10-27
 
 ### Added

@@ -114,6 +114,17 @@ other software, or other people, on that machine or on a network it was told to 
   turn and 16 waiting behind it (the next gets `503` with `code: "busy"`). That leaves 7 workers for
   everything else, the UI's own requests included. Connections that arrive while every worker is
   busy wait in a queue of 64; past that the server closes the next one at once.
+- The agent's routes that reach this computer's files, processes or secrets answer only to a
+  connection from loopback, whatever `--host` and whatever key: adding or removing a workspace, a
+  message or an edit in a conversation that has a workspace or a provider route, a workspace
+  file's preview, an approval, writing or switching a skill, creating, changing or running a task,
+  saving a provider, writing a client's settings. From the network they get `403` with
+  `code: "local_only"`. A message from the network to a conversation without a workspace runs, with
+  no web tools, so a client elsewhere cannot have this machine fetch addresses on its network. The
+  agent's file tools resolve every path inside the workspace (`..` and links resolved, dangling
+  links refused); its commands run in the workspace through the platform's shell, as one process
+  group killed at the time limit or a stop; provider keys never appear in a listing, a log or a
+  command line ([agent.md](agent.md#who-may-use-it)).
 - `--open` starts the system's opener (`open` on macOS, `xdg-open` elsewhere; the shell's own call
   on Windows) directly, with the URL as one argument: no shell is involved.
 
@@ -578,6 +589,44 @@ The keys are the CLI's `BMOE_DECIDE` keys; `POST /api/cancel` stops a decision b
 chunks, and the answer then carries `cancelled: true`. The `decide` parameter (on by default in
 the server) is what lets a session accept these; off, every decision is refused.
 
+## Agent
+
+The agent's conversations, workspaces, skills, tasks, providers and client settings
+([agent.md](agent.md), which is the contract: concepts, modes, tools, item and event shapes, the
+route table). What follows is what a client needs beyond it on the wire.
+
+**State.** The server keeps it in `<data>/agent/` (`conversations/<id>.json`, `workspaces.json`,
+`tasks.json`, `providers.json`, `skills.json`), each written to a temporary file and renamed, and
+provider keys in `<data>/credentials.json`, created readable by its owner only. A person's skills
+are folders in `<data>/skills/`; the bundled ones are `skills/` beside the binary (`--skills-dir`
+names another folder). The client catalog is `clients.json` beside the model catalog.
+
+**Runs.** `POST /api/conversations/<id>/messages` answers `202 {item}` as soon as the person's item
+is stored; everything after that arrives on `/api/events` (`conversation`, `item`, `delta`) and is
+in the stored conversation. A UI that reconnects reads `GET /api/conversations/<id>`. An approval
+card is a `tool` item in state `waiting`, answered with `POST .../approval` on the conversation (or
+the helper's conversation) it appears in. `POST .../stop` answers once the run has ended.
+
+**Errors.** `{"error", "code"}`, with these codes:
+
+| status | `code` | when |
+|---|---|---|
+| 400 | `invalid_request` | a field of the wrong type or value (a mode, a route naming no saved provider, a schedule that cannot run, an imported item that is not `user` / `assistant`) |
+| 400 | `not_a_folder` | `POST /api/workspaces` with a path that is not an absolute, existing folder |
+| 400 | `unsupported` | a message with `images` |
+| 403 | `local_only` | a route that reaches this computer, from a client not on loopback (below) |
+| 403 | `outside_workspace` | a preview path that resolves outside the workspace |
+| 404 | `not_found` | no such conversation, workspace, skill, task, provider or client; an approval for an item that is not waiting |
+| 409 | `busy` | a message, an edit, a delete, or a change of workspace or route while the conversation runs; a task run while it runs; a message to a helper's conversation |
+| 409 | `exists` | `POST /api/skills` with the name of one of the person's skills |
+| 409 | `conflict` | `POST /api/connect/<id>` with no model loaded, or a settings file the server will not overwrite (JSON that does not parse, an unclosed block) |
+| 413 | `too_large` | a preview of a file over 16 MiB |
+| 503 | `stopping` | a message while the server stops |
+
+A run's own failures are not HTTP errors: they arrive as `notice` items (no model loaded, a context
+that no longer fits, a provider that answered with an error) and leave the conversation in state
+`error`.
+
 ## Live events
 
 ### `GET /api/events`
@@ -608,6 +657,10 @@ limit.
 | `download` | a download's progress: `id`, `file`, `received`, `total`, `state` (`running`, `done`, `error`, `cancelled`), `error` (with `running`: why the last attempt failed while the server waits to resume) |
 | `config` | the `GET /api/config` object, after any change |
 | `plan_progress` | a measurement (`GET /api/plan?measure=1`, or an auto load) entering a stage: `step` (`devices`, `model`, `compute`, `storage`, `memory`, `placement`, `rules`), its words `label`, `index` from 0 and `count`; then `{"step": "done"}` when it ends. A UI shows `label`; `step` is the protocol |
+| `conversation` | an agent conversation's `{id, title, state, updated, parent}`, whenever one of those changes ([agent.md](agent.md#events)) |
+| `item` | `{conversation, item}`: an agent item added or changed, whole |
+| `delta` | `{conversation, item, text?, reasoning?}`: what a streaming assistant item adds |
+| `task` | an agent task, after it is saved and after a run of it starts or ends |
 | `log` | one engine diagnostic (`bmoe/log.h`): `level` (`info`, `warn`, `error`) and `message`, the line the server also writes to stderr after `bmoe: `. For a person to read; a client decides nothing on its wording |
 
 `flash_wait_ms` (per token) and `flash_wait_s_tok` (the run's average) are the flash term that is a

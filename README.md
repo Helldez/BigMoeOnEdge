@@ -166,6 +166,16 @@ wire_api = "responses"
 env_key = "BMOE_API_KEY"   # export BMOE_API_KEY=local, or the server's --api-key
 ```
 
+### The agent
+
+The server also runs an agent: a conversation that works in a folder you add, reads and edits its
+files, runs commands, searches and reads the web, follows skills, hands parts of a job to helpers
+and runs on a schedule. Changes wait for your approval unless you choose otherwise, and the
+conversation lives in the server, so a run goes on with the page closed. It works with the loaded
+model or any OpenAI-compatible service you save. The server also writes the settings that connect
+Codex CLI or OpenCode to it, and shows the ones for Claude Code and other clients. See
+[docs/agent.md](docs/agent.md).
+
 ## How it works
 
 <p align="center">
