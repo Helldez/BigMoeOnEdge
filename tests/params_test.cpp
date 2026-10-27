@@ -187,6 +187,7 @@ int main() {
     expect_flag({"--seed", "42"}, [](const RunConfig & c) { return c.sampling.seed == 42u; });
     expect_flag({"--seed", "4294967295"}, [](const RunConfig & c) { return c.sampling.seed == 0xFFFFFFFFu; });
     expect_flag({"--mtp"}, [](const RunConfig & c) { return c.spec.source == DraftSource::mtp; });
+    expect_flag({"--mtp-head-on-devices"}, [](const RunConfig & c) { return c.spec.mtp_head_on_devices; });
     expect_flag({"--ngram"}, [](const RunConfig & c) { return c.spec.source == DraftSource::ngram; });
     expect_flag({"--draft", "5"}, [](const RunConfig & c) { return c.spec.draft_max == 5; });
     expect_flag({"--mtp-p-min", "0.6"}, [](const RunConfig & c) { return c.spec.draft_p_min == 0.6f; });
@@ -238,6 +239,9 @@ int main() {
     // The planner's placement knobs, carried by the table so an applied plan keeps them.
     expect_flag({"--gpu-layers", "12"}, [](const RunConfig & c) { return c.n_gpu_layers == 12; });
     expect_flag({"--devices", "cpu"}, [](const RunConfig & c) { return c.device_use == bmoe::DeviceUse::CpuOnly; });
+    expect_flag({"--dense-mapped", "token_embd.weight;per_layer_token_embd.weight"}, [](const RunConfig & c) {
+        return c.moe.dense_mapped == std::vector<std::string>{"token_embd.weight", "per_layer_token_embd.weight"};
+    });
     expect_flag({"--tensor-overrides", "blk\\.1\\..*_exps;blk\\.2\\..*_exps"}, [](const RunConfig & c) {
         return c.buft_overrides.size() == 2 && c.buft_overrides[1] == "blk\\.2\\..*_exps";
     });

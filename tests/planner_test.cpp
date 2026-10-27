@@ -216,6 +216,37 @@ int main() {
         check(d && d->source == Source::Measured, "desktop: release-mmap is a measured decision");
     }
 
+    // ── the embedding tables the allocation prices as left mapped reach the run ─────
+    // A per-layer table of tens of GB is gathered by row, so the plan leaves it mapped; the run's
+    // Anonymous policy would copy it whole and the control group would end the run (#424). The names
+    // come from the file's grouping, and the run is handed exactly those.
+    {
+        ModelProfile tabled = model;
+        tabled.embedding_tensors = {"token_embd.weight", "per_layer_token_embd.weight"};
+        tabled.group(WeightGroup::Embedding).bytes = 28 * GiB;
+        tabled.dense_bytes += 28 * GiB - 344 * MiB;
+        tabled.file_bytes += 28 * GiB - 344 * MiB;
+        tabled.largest_dense_tensor = 28 * GiB;
+        const Plan p = plan_run(base_cfg(), desktop(), tabled, PlanRequest{});
+        const Lane lane = p.allocation.at(WeightGroup::Embedding).lane;
+        check(lane != Lane::Resident && lane != Lane::Pinned, "tables: the plan does not make a 28 GB table resident",
+              lane_name(lane));
+        check(p.config.moe.dense_weights == DenseWeightsMode::Anonymous, "tables: the dense policy still copies");
+        check(p.config.moe.dense_mapped == tabled.embedding_tensors,
+              "tables: the run is handed the embedding tables the plan priced as mapped");
+        check(find(p, "dense-mapped") != nullptr, "tables: the decision is recorded");
+        check(validate(p.config).ok, "tables: the plan is a valid config", validate(p.config).error);
+
+        // A caller who pinned the list keeps it, whatever the allocation says.
+        PlanRequest pinned;
+        pinned.pinned.push_back("dense-mapped");
+        RunConfig keep = base_cfg();
+        keep.moe.dense_mapped = {"token_embd.weight"};
+        const Plan q = plan_run(keep, desktop(), tabled, pinned);
+        check(q.config.moe.dense_mapped == std::vector<std::string>{"token_embd.weight"},
+              "tables: a pinned list is the caller's");
+    }
+
     // ── phone ───────────────────────────────────────────────────────────────────────
     {
         const Plan p = plan_run(base_cfg(), phone(), model, PlanRequest{});
@@ -2015,6 +2046,33 @@ int main() {
               "device tier, no record: the cache is on the faster processor all the same", d ? d->reason : "none");
         check(linear.config.buft_overrides.size() == model.n_layer && !linear.config.moe.record_unstreamed,
               "device tier, no record: every layer's experts on the host, nothing recorded for a price");
+
+        // The MTP head of a file of its own follows the experts to the device, out of the cache's
+        // bytes and never the fitter's layers; a head that does not fit drafts on the host.
+        {
+            ModelProfile headed = model;
+            headed.mtp_head_bytes = 2 * GiB;
+            RunConfig cfg = base_cfg();
+            cfg.spec.source = DraftSource::mtp;
+            cfg.spec.mtp_head = "head.gguf";
+            const Plan h = plan_run(cfg, card, headed, half, PlanRequest{}, PlannerPolicy::defaults());
+            const Decision * hd = find(h, "mtp-head-on-devices");
+            check(hd && hd->value == "true" && hd->source == Source::Measured && h.config.spec.mtp_head_on_devices &&
+                      h.config.moe.device_cache_mb == (int) (7 * 1024),
+                  "device tier, head file: the head goes on the device and the cache shrinks by its size",
+                  std::to_string(h.config.moe.device_cache_mb) + " MiB");
+            headed.mtp_head_bytes = 10 * GiB;
+            const Plan hh = plan_run(cfg, card, headed, half, PlanRequest{}, PlannerPolicy::defaults());
+            hd = find(hh, "mtp-head-on-devices");
+            check(hd && hd->value == "false" && !hh.config.spec.mtp_head_on_devices &&
+                      hh.config.moe.device_cache_mb == (int) (9 * 1024),
+                  "device tier, head too big for the cache: it drafts on the host and the cache is whole");
+            PlanRequest pinned;
+            pinned.pinned.push_back("mtp-head-on-devices");
+            const Plan hp = plan_run(cfg, card, headed, half, pinned, PlannerPolicy::defaults());
+            check(!find(hp, "mtp-head-on-devices") && hp.config.moe.device_cache_mb == (int) (9 * 1024),
+                  "device tier, head placement pinned: the caller's, and the cache is whole");
+        }
 
         // A device no faster at the experts than the host: the fastest processor is the host, and the
         // fitter's placement stands.

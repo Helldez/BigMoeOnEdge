@@ -1,0 +1,21 @@
+plan: machine 8 cores, 43199 MiB available of 64204 MiB, 16 GiB/s on this model's matmul
+plan: device CUDA0: one token 232 GiB/s (same result), 128 tokens wide 1792 GiB/s (same result); this model's layer: experts 179.3, dense 200.4 GiB/s; crossing 11 us, probed in a process of its own
+plan: device CPU (host): one token 16 GiB/s (same result), 128 tokens wide 45 GiB/s (same result); this model's layer: experts 14.0, dense 22.3 GiB/s; crossing 0 us
+plan: model qwen4exp, 512 experts top-10 over 48 of 48 blocks
+plan:   embedding    27726 MiB,       0 MiB/token  (row-gathered)
+plan:   attention      964 MiB,     964 MiB/token
+plan:   dense-ffn      221 MiB,     221 MiB/token
+plan:   experts      32400 MiB,     632 MiB/token  (streamable)
+plan:   output         416 MiB,     416 MiB/token
+plan:   other         1606 MiB,    1606 MiB/token
+plan: regime fits
+plan:   ubatch         0          [derived] a graph as wide as the context reserves 110 MiB of compute buffers, inside 10% of the 43199 MiB this process may hold: a prompt is computed in one pass
+plan:   placement      49 layers on devices [measured] the capacity fitter found a placement that is projected to fit; 39 of 48 MoE layers keep their experts on the host, host-resident 110 MiB, on devices 10483 MiB, context 2048 (fitter's host breakdown: model 53830, context 0, compute 110 MiB; file 63336, experts 32400)
+plan:   ctx-size       2048       [policy] the value this run was given, not a choice: the capacity fitter only picks a context when it is handed a zero and this planner always pins it, so nothing has weighed this number against what the memory it reserves would buy as expert cache
+plan:   regime         fits       [derived] on the host 26435 MiB (dense 110) against 34559 MiB usable, which is the 43199 MiB this process may hold (as reported available, unmeasured) less a 8639 MiB margin (the process is killed)
+plan:   moe-stream     off        [derived] the host residual fits: llama.cpp's placement is the whole plan
+plan:   threads        8          [measured] swept over the thread counts this machine has, on a matmul in this model's own quantized format, which is the material that matters: a sweep in F32 can pick a count the quantized kernels are much slower at
+plan:   trial-threads  4          [policy] the thread count changes no output and which one decodes fastest is this machine's answer, not a rule's: once the cache has settled the first real request alternates decode windows between 8 and 4 (where a slower class of core starts, every core, or half of them where all are alike), and switches only to a count 10% faster in the median of its rounds; the next load starts from the verdict
+plan:   declined: what is left on the host fits in this machine's residency budget; streaming it from flash would only add reads that resident weights do not need
+plan: reproduce with
+exit 0

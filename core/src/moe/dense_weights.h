@@ -85,6 +85,10 @@ public:
     // for: this is a residency optimisation, never a reason for a run not to start.
     void set_row_gathered(std::vector<DenseTensorRef> tables, uint64_t budget_bytes);
 
+    // Tensors the plan leaves mapped, by name (MoeStreamConfig::dense_mapped): held back from the
+    // resident set exactly as an oversized tensor is, under every mode. Call BEFORE init.
+    void set_mapped(std::vector<std::string> names) { mapped_names_ = std::move(names); }
+
     // The row policy, once init has run: null when no table qualified or the takeover failed. The
     // engine's graph adapter needs it to make rows present before a gather node runs.
     IRowSource * row_source() const;
@@ -116,9 +120,11 @@ public:
 
 private:
     // A dense tensor larger than the memory the kernel says is available cannot be resident under
-    // any mode. Moves such tensors from `tensors_` to `mapped_`, carves their bytes out of `ranges_`
-    // (so neither the warm sweep nor the sensor treats them as dense the run could hold), and says so.
+    // any mode, and one the plan named stays mapped by decision. Moves such tensors from `tensors_`
+    // to `mapped_`, carves their bytes out of `ranges_` (so neither the warm sweep nor the sensor
+    // treats them as dense the run could hold), and says so.
     void hold_back_oversized();
+    std::vector<std::string> mapped_names_;
     // Hand the qualifying tables to the row policy and take them out of the resident dense set.
     void take_row_gathered();
     // Random-access advice on the mmap of every held-back tensor: a fault brings in one page, not a

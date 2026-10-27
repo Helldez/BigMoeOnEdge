@@ -17,6 +17,7 @@
 #include "llama.h"
 
 #include <algorithm>
+#include <filesystem>
 
 namespace bmoe {
 
@@ -46,6 +47,12 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
         probe_devices_isolated(r.hw, self_process_runner(opt.isolated_probe_args, opt.isolated_probe_seconds));
     starting(); // model
     r.model = probe_model(path);
+    // The head of a file of its own is a file like the model: its size is what placing it costs.
+    if (!cfg.spec.mtp_head.empty()) {
+        std::error_code ec;
+        const auto head_size = std::filesystem::file_size(cfg.spec.mtp_head, ec);
+        if (!ec) r.model.mtp_head_bytes = (uint64_t) head_size;
+    }
     // The model's own routing, from an earlier run the front-end kept: what its cache will hit.
     if (opt.routing)
         attach_routing(r.model, *opt.routing,
@@ -83,7 +90,7 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
                                        ? BackendChoice{}
                                        : choose_backends(r.hw, (double) PlannerPolicy::defaults().min_backend_win);
     const Placement placement = probe_placement(path, r.model, r.hw, (uint32_t) cfg.n_ctx, (uint32_t) cfg.n_ubatch,
-                                                cfg.cache_type_k, cfg.cache_type_v, backends.keep);
+                                                cfg.cache_type_k, cfg.cache_type_v, backends.keep, &cfg.spec);
     detail::log_memory_snapshot("auto-probe-end");
     starting(); // rules
     r.plan = plan_run(cfg, r.hw, r.model, placement, req);

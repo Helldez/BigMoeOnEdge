@@ -194,6 +194,15 @@ struct MoeStreamConfig {
     bool row_stream = false;
     int row_stream_mb = 64; // resident window across all row-streamed tables, in MiB
 
+    // ── tables the plan leaves mapped ─────────────────────────────────────────────────
+    // Tensor names the hardware planner priced as left mapped: the graph gathers rows from them,
+    // so a resident copy buys bytes nothing reads. Under Anonymous/Pinned they stay mapped, as a
+    // tensor too large to hold does; every other mode is unchanged. The names are read off the
+    // file by the planner's own grouping, never written here. Measured why it matters: a 28.8 GB
+    // per-layer table that "fits" by the kernel's count was copied beside a 25.8 GB expert cache
+    // on a 42.6 GiB control group and the run was killed at 43 GB.
+    std::vector<std::string> dense_mapped;
+
     // ── release the model file's mapping after load (Windows) ─────────────────────────
     // llama.cpp keeps the gguf mapped for the model's lifetime, and on Windows a live section of
     // the file serialises the streamer's concurrent unbuffered reads: four lanes deliver one
@@ -389,11 +398,28 @@ enum class DraftSource {
 struct SpecConfig {
     DraftSource source = DraftSource::none;
 
+    // MTP only. A GGUF holding the model's trained MTP head on its own, for a model file that ships
+    // without it: llama.cpp's converter writes one (convert_hf_to_gguf.py --mtp). Empty uses the head
+    // inside the model file. The head is opened as a model of its own and drafts in a context that
+    // reads the target's hidden states, as llama.cpp's own speculative driver loads a draft head.
+    std::string mtp_head;
+    // MTP only, with a head file: the head's weights on the devices the target's layers are on
+    // (true) or on the host (false). The planner sets it where a device computes this model's
+    // experts faster than the host by the margin - the head's block is one more expert block - and
+    // the head fits in the bytes the capacity fitter gave the experts, which it takes from the
+    // device expert cache; the target's own placement is untouched. Measured why: on a 12 GB card
+    // with 8 slow cores, drafting on the host cost 35 ms of a 65 ms token and lost to no head at all.
+    bool mtp_head_on_devices = false;
+
     // Tokens drafted per verify batch. The verify decode is 1 + draft_max positions wide, so this
     // sets both the ceiling on tokens-per-decode and the width of the read-set widening above.
     // Past the source's acceptance horizon the extra drafts are rejected and paid for anyway, which
     // is why the useful range is small; 3 is upstream's default for a single trained head.
     int draft_max = 3;
+    // The narrowest ubatch an MTP draft context is reserved at: it computes 1 + draft_max positions
+    // at decode, a prompt chunk in pieces this wide at prefill (Session::open, and the placement
+    // probe that fits it beside the target).
+    static constexpr int mtp_draft_ubatch = 32;
 
     // MTP only. Confidence floor for continuing to draft, as the head's own probability for the
     // token it is proposing. At 0 the head is asked for draft_max tokens unconditionally, however
