@@ -1,32 +1,12 @@
 <script lang="ts">
   // The loaded session's `streaming`, as the server reports it. Before a load there is nothing to
   // say: whether a model streams is decided at load (a dense model, a plan that declines).
+  import { t } from '../stores/prefs.svelte';
   let { streaming }: { streaming: boolean } = $props();
 </script>
 
 {#if streaming}
-  <span class="stream on" title="Experts are streamed from flash by the engine">Streaming ON</span>
+  <span class="badge ok" title={t('streaming.on.hint')}>{t('streaming.on')}</span>
 {:else}
-  <span class="stream off" title="Plain llama.cpp on mmap, without expert streaming">
-    Streaming OFF (plain mmap baseline)
-  </span>
+  <span class="badge warn" title={t('streaming.off.hint')}>{t('streaming.off')}</span>
 {/if}
-
-<style>
-  .stream {
-    font-weight: 700;
-    font-size: 0.85rem;
-    padding: 0.15rem 0.6rem;
-    border-radius: 999px;
-    white-space: nowrap;
-  }
-  .on {
-    background: var(--ok-tint);
-    color: var(--ok);
-  }
-  .off {
-    background: var(--warn-tint);
-    color: var(--warn);
-    border: 1px solid var(--warn);
-  }
-</style>

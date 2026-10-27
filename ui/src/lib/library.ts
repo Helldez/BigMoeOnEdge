@@ -139,3 +139,17 @@ export function fitTone(fit: string | undefined): 'ok' | 'warn' | 'err' | '' {
       return '';
   }
 }
+
+/**
+ * The catalog entry a first run suggests for a machine with `ramBytes` of memory: the largest one
+ * that fits in it, so the experts that stream do so from a cache that holds most of them; with
+ * none that fits, the smallest, which streams the most gently. Entries added by the person are not
+ * suggestions. Null when the catalog offers nothing.
+ */
+export function recommendedEntry(catalog: readonly CatalogEntry[], ramBytes: number): CatalogEntry | null {
+  const offered = catalog.filter((e) => !e.added && e.bytes > 0);
+  if (offered.length === 0) return null;
+  const fits = offered.filter((e) => e.bytes <= ramBytes).sort((a, b) => b.bytes - a.bytes);
+  if (fits.length) return fits[0];
+  return offered.slice().sort((a, b) => a.bytes - b.bytes)[0];
+}

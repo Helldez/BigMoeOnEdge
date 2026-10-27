@@ -1,20 +1,21 @@
 <script lang="ts">
   import { tick } from 'svelte';
-  import ParamField from '../components/settings/ParamField.svelte';
-  import { api } from '../lib/api';
-  import { commandLine } from '../lib/format';
-  import { decisionsByKnob, planDecisions } from '../lib/plan';
-  import { ALL_LEVELS, isDefault, levelCounts, levelOf, levelRank, resettableKeys, settingsCards } from '../lib/schema';
-  import { router } from '../stores/router.svelte';
-  import { server } from '../stores/server.svelte';
-  import { settings } from '../stores/settings.svelte';
+  import ParamField from './ParamField.svelte';
+  import { api } from '../../lib/api';
+  import { commandLine } from '../../lib/format';
+  import { decisionsByKnob, planDecisions } from '../../lib/plan';
+  import { ALL_LEVELS, isDefault, levelCounts, levelOf, levelRank, resettableKeys, settingsCards } from '../../lib/schema';
+  import { router } from '../../stores/router.svelte';
+  import { server } from '../../stores/server.svelte';
+  import { settings } from '../../stores/settings.svelte';
+  import { t, tp } from '../../stores/prefs.svelte';
 
   // What a level means, in a line under its fold: the four levels are the table's enum, the rows in
   // them are the server's.
   const LEVEL_HINT: Record<string, string> = {
-    advanced: 'Measured levers with a known trade-off.',
-    experimental: 'Measured once or on one device: they can slow a run down.',
-    debug: 'Tests, diagnostics and A/B baselines; never a speed setting.',
+    advanced: 'settings.level.advanced.hint',
+    experimental: 'settings.level.experimental.hint',
+    debug: 'settings.level.debug.hint',
   };
   const LEVEL_KEY = 'bmoe.settings.level';
 
@@ -117,58 +118,58 @@
     await settings.reset(...resettable);
   }
 
-  const levelName = (l: string) => l.charAt(0).toUpperCase() + l.slice(1);
+  const levelName = (l: string) => t(`settings.level.${l}`);
 </script>
 
 <div class="head">
-  <h1>Settings</h1>
-  <span class="muted saving" aria-live="polite">{settings.saving ? 'Saving...' : ''}</span>
+  <p class="muted lead">{t('settings.engine.lead')}</p>
+  <span class="muted saving" aria-live="polite">{settings.saving ? t('settings.saving') : ''}</span>
   {#if resettable.length > 0}
     {#if confirmReset}
-      <span class="muted">Remove your {resettable.length} {resettable.length === 1 ? 'value' : 'values'}?</span>
-      <button type="button" class="primary" onclick={resetAll}>Reset</button>
-      <button type="button" onclick={() => (confirmReset = false)}>Keep</button>
+      <span class="muted">{tp('settings.reset.confirm', resettable.length)}</span>
+      <button type="button" class="primary" onclick={resetAll}>{t('settings.reset')}</button>
+      <button type="button" onclick={() => (confirmReset = false)}>{t('action.keep')}</button>
     {:else}
-      <button type="button" onclick={() => (confirmReset = true)}>Reset all my values</button>
+      <button type="button" onclick={() => (confirmReset = true)}>{t('settings.reset.all')}</button>
     {/if}
   {/if}
-  <button type="button" onclick={copy} disabled={!config}>Copy as command</button>
+  <button type="button" onclick={copy} disabled={!config}>{t('settings.copyCommand')}</button>
 </div>
 
 {#if copied === 'ok'}
-  <p class="banner ok" role="status">Command copied.</p>
+  <p class="banner ok" role="status">{t('settings.copied')}</p>
 {:else if copied === 'failed'}
   <div class="banner warn">
-    <span>The clipboard is not available here. Copy the command by hand:</span>
+    <span>{t('settings.copyByHand')}</span>
     <pre class="cmd">{command}</pre>
   </div>
 {/if}
 
 {#if server.paramsError}
-  <p class="banner error" role="alert">Could not read the parameter schema: {server.paramsError}</p>
+  <p class="banner error" role="alert">{t('settings.schemaFailed')} {server.paramsError}</p>
 {/if}
 {#if settings.requestError}
-  <p class="banner error" role="alert">Saving failed: {settings.requestError}</p>
+  <p class="banner error" role="alert">{t('settings.saveFailed')} {settings.requestError}</p>
 {/if}
 {#if config && !config.valid}
   <p class="banner error" role="alert">This configuration does not validate{config.error ? `: ${config.error}` : ''}. Loading a model is refused until it is fixed.</p>
 {/if}
 {#if config?.reload_required && server.ready}
   <div class="banner warn">
-    <span>Some changes only take effect after the model is reloaded.</span>
-    <button type="button" class="primary" onclick={reload} disabled={!config.valid}>Reload model to apply</button>
+    <span>{t('settings.reloadNeeded')}</span>
+    <button type="button" class="primary" onclick={reload} disabled={!config.valid}>{t('settings.reload')}</button>
   </div>
 {/if}
 {#if reloadError}
-  <p class="banner error" role="alert">Reload failed: {reloadError}</p>
+  <p class="banner error" role="alert">{t('settings.reloadFailed')} {reloadError}</p>
 {/if}
 
 {#if !server.params || !config}
-  <p class="muted">Loading settings...</p>
+  <div class="skel" aria-hidden="true">{#each [0, 1, 2] as i (i)}<span class="skeleton card-skel"></span>{/each}</div>
 {:else}
   <div class="tools">
-    <input type="search" placeholder="Search settings" aria-label="Search settings" bind:value={query} />
-    <div class="levels" role="radiogroup" aria-label="Show settings up to this level">
+    <input type="search" placeholder={t('settings.search')} aria-label={t('settings.search')} bind:value={query} />
+    <div class="levels" role="radiogroup" aria-label={t('settings.levels')}>
       {#each ALL_LEVELS as l (l)}
         <button
           type="button"
@@ -184,7 +185,7 @@
     </div>
   </div>
   {#if searching}
-    <p class="muted hint">{cards.length ? 'Every level is searched.' : 'No setting matches.'}</p>
+    <p class="muted hint">{cards.length ? t('settings.searchAll') : t('settings.noMatch')}</p>
   {/if}
 
   {#each cards as c (c.group)}
@@ -218,7 +219,7 @@
           {#each c.more as m (m.level)}
             <div class="level">
               <h3>{levelName(m.level)}</h3>
-              {#if LEVEL_HINT[m.level]}<p class="muted hint">{LEVEL_HINT[m.level]}</p>{/if}
+              {#if LEVEL_HINT[m.level]}<p class="muted hint">{t(LEVEL_HINT[m.level])}</p>{/if}
               {#each m.params as spec (spec.key)}
                 <ParamField
                   {spec}
@@ -241,7 +242,7 @@
               if (!searching) openFolds = { ...openFolds, [c.group]: (e.currentTarget as HTMLDetailsElement).open };
             }}
           >
-            <summary>{moreCount} more in {c.label}: {c.more.map((m) => m.level).join(', ')}</summary>
+            <summary>{t('settings.more', { n: moreCount, group: c.label, levels: c.more.map((m) => levelName(m.level)).join(', ') })}</summary>
             {@render levels()}
           </details>
         {:else}
@@ -249,7 +250,7 @@
         {/if}
       {/if}
       {#if c.hidden > 0 && !searching}
-        <p class="muted hint hidden">{c.hidden} more at a deeper level: widen the filter above to see {c.hidden === 1 ? 'it' : 'them'}.</p>
+        <p class="muted hint hidden">{tp('settings.hidden', c.hidden)}</p>
       {/if}
     </details>
   {/each}
@@ -259,23 +260,29 @@
   .head {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
+    gap: var(--s2);
     flex-wrap: wrap;
-    margin-bottom: 0.75rem;
+    margin-bottom: var(--s4);
   }
-  .head h1 {
-    margin: 0;
+  .lead {
+    flex-basis: 100%;
+    margin: 0 0 var(--s2);
   }
   .saving {
     margin-right: auto;
-    font-size: 0.85rem;
+    font-size: 0.8125rem;
   }
   .tools {
+    position: sticky;
+    top: 0;
+    z-index: 2;
     display: flex;
-    gap: 0.75rem;
+    gap: var(--s3);
     flex-wrap: wrap;
     align-items: center;
-    margin-bottom: 0.75rem;
+    padding: var(--s2) 0;
+    margin-bottom: var(--s3);
+    background: var(--bg);
   }
   .tools input[type='search'] {
     flex: 1 1 14rem;
@@ -284,52 +291,66 @@
   .levels {
     display: inline-flex;
     flex-wrap: wrap;
-    gap: 0.3rem;
+    gap: 2px;
+    padding: 2px;
+    border: var(--edge) solid var(--line);
+    border-radius: var(--radius);
+    background: var(--surface-2);
+  }
+  .levels button {
+    min-height: 2rem;
+    border: none;
+    box-shadow: none;
+    background: transparent;
+    font-size: 0.8125rem;
+    border-radius: var(--radius-sm);
   }
   .levels button.on {
-    border-color: var(--accent);
+    color: var(--accent-ink);
   }
   .levels button[aria-checked='true'] {
-    font-weight: 700;
+    background: var(--surface);
+    box-shadow: var(--shadow-sm);
   }
   .group {
-    margin-bottom: 1rem;
+    margin-bottom: var(--s3);
   }
   .group > summary {
     cursor: pointer;
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
-    gap: 0.3rem 0.75rem;
+    gap: var(--s1) var(--s3);
   }
   .group[open] > summary {
-    margin-bottom: 0.5rem;
+    margin-bottom: var(--s2);
   }
   .title {
-    font-size: 1.15rem;
-    font-weight: 700;
+    font-size: 1.0625rem;
+    font-weight: 650;
   }
   .ghelp {
     flex-basis: 100%;
-    font-size: 0.85rem;
+    font-size: 0.8125rem;
   }
   .more {
-    margin-top: 0.75rem;
+    margin-top: var(--s3);
   }
   .more > summary {
     cursor: pointer;
     color: var(--muted);
+    font-size: 0.875rem;
   }
   .level h3 {
-    margin: 1rem 0 0;
-    font-size: 0.95rem;
+    margin: var(--s4) 0 0;
+    font-size: 0.9375rem;
   }
   .hint {
-    margin: 0.2rem 0 0.4rem;
-    font-size: 0.85rem;
+    margin: var(--s1) 0 var(--s2);
+    font-size: 0.8125rem;
   }
   .hidden {
-    margin-top: 0.6rem;
+    margin-top: var(--s2);
   }
   .cmd {
     width: 100%;
@@ -337,5 +358,14 @@
     overflow-wrap: anywhere;
     user-select: all;
     margin: 0;
+  }
+  .skel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s3);
+  }
+  .card-skel {
+    height: 7rem;
+    border-radius: var(--radius);
   }
 </style>

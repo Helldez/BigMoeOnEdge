@@ -84,9 +84,14 @@
     setTimeout(() => (diag = diag === 'ok' ? 'idle' : diag), 2000);
   }
   const PLANNING_DOC = 'https://github.com/Helldez/BigMoeOnEdge/blob/main/docs/hardware-planning.md';
+  import { t } from '../stores/prefs.svelte';
 </script>
 
-<h1>Plan</h1>
+<div class="page-col">
+<div class="page-head">
+  <h1>{t('nav.plan')}</h1>
+  <p>{t('plan.lead')}</p>
+</div>
 
 {#if shownError}
   <div class="banner error" role="alert">
@@ -100,7 +105,7 @@
 {/if}
 
 {#if !plan}
-  {#if !shownError && !showProgress}<p class="muted">Reading the plan...</p>{/if}
+  {#if !shownError && !showProgress}<div class="skel" aria-hidden="true"><span class="skeleton"></span><span class="skeleton"></span></div>{/if}
 {:else if !plan.available}
   <div class="card">
     <p><strong>The automatic hardware planner is not in this build.</strong></p>
@@ -111,6 +116,8 @@
   <label class="auto">
     <input
       type="checkbox"
+      class="switch"
+      role="switch"
       checked={server.config?.auto_plan ?? false}
       disabled={savingAuto}
       onchange={(e) => setAuto((e.currentTarget as HTMLInputElement).checked)}
@@ -263,6 +270,8 @@
   <PlanDecisions decisions={carried} />
 {/if}
 
+</div>
+
 <style>
   .auto {
     display: flex;
@@ -271,7 +280,16 @@
     margin-bottom: 1rem;
   }
   .auto input {
-    margin-top: 0.25rem;
+    margin-top: 0.125rem;
+  }
+  .skel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s3);
+  }
+  .skel .skeleton {
+    height: 9rem;
+    border-radius: var(--radius);
   }
   .summary {
     display: flex;
@@ -281,8 +299,10 @@
   }
   .sentence {
     margin: 0;
-    font-size: 1.6rem;
-    line-height: 1.2;
+    font-size: 1.375rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1.25;
     max-width: 34ch;
   }
   .machine {
@@ -297,6 +317,7 @@
   .tile {
     background: var(--bg);
     border: var(--edge) solid var(--line);
+    border-radius: var(--radius);
     padding: 0.75rem;
     display: flex;
     flex-direction: column;
@@ -312,13 +333,14 @@
   }
   .hits {
     position: relative;
-    height: 10px;
-    border: var(--edge) solid var(--line);
+    height: 8px;
+    border-radius: var(--pill);
     background: var(--surface-2);
   }
   .hits span {
     display: block;
     height: 100%;
+    border-radius: var(--pill);
     background: var(--accent);
   }
   .hits i {
@@ -335,7 +357,7 @@
     gap: 0.3rem 1.25rem;
   }
   .lanes .figure {
-    color: var(--accent);
+    color: var(--accent-ink);
     overflow-wrap: anywhere;
   }
   .doc {

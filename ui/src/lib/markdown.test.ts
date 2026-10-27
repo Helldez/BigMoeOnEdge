@@ -98,9 +98,11 @@ describe('renderMarkdown', () => {
     expect(renderMarkdown('**bold** and *em* and `code`')).toBe(
       '<p><strong>bold</strong> and <em>em</em> and <code>code</code></p>\n',
     );
+    // A code block is highlighted into class-only spans; what it holds stays text.
     expect(renderMarkdown('```js\nconst a = "<b>";\n```')).toBe(
-      '<pre><code class="language-js">const a = "&lt;b&gt;";\n</code></pre>\n',
+      '<pre><code class="language-js"><span class="hl-k">const</span> a = <span class="hl-s">"&lt;b&gt;"</span>;</code></pre>\n',
     );
+    expect(renderMarkdown('```<img src=x onerror=alert(1)>\nx\n```')).not.toContain('<img');
     const list = dom('- one\n- two\n\n1. first\n2. second');
     expect([...list.querySelectorAll('ul > li')].map((li) => li.textContent)).toEqual(['one', 'two']);
     expect([...list.querySelectorAll('ol > li')].map((li) => li.textContent)).toEqual(['first', 'second']);

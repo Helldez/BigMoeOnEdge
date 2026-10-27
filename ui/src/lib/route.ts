@@ -1,7 +1,7 @@
 // Hash routes. The server serves static files only, with no SPA fallback, so the route lives
 // after the '#'.
 
-export const ROUTES = ['chat', 'models', 'plan', 'settings', 'metrics'] as const;
+export const ROUTES = ['chat', 'models', 'plan', 'settings', 'metrics', 'skills', 'tasks', 'connect', 'setup'] as const;
 export type Route = (typeof ROUTES)[number];
 
 export const DEFAULT_ROUTE: Route = 'chat';

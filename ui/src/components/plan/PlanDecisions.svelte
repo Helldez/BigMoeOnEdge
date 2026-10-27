@@ -110,7 +110,7 @@
     font-size: 0.85rem;
   }
   .why > summary {
-    color: var(--accent);
+    color: var(--accent-ink);
     margin-bottom: 0.3rem;
   }
 </style>

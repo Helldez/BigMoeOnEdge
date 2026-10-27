@@ -1,106 +1,171 @@
 <script lang="ts">
+  // The live figures: speed, disk reads, memory and the expert cache, each with its recent history,
+  // then where a token's time goes and the last answer's account. Every figure comes from the
+  // `token` and `done` events; a dash is "not measured yet", never a zero.
   import DoneSummary from './DoneSummary.svelte';
   import Sparkline from './Sparkline.svelte';
   import { formatMib, formatNum, formatPct } from '../lib/format';
   import { server } from '../stores/server.svelte';
+  import { t } from '../stores/prefs.svelte';
 
   let m = $derived(server.metrics);
   let last = $derived(m.last);
   let done = $derived(server.lastDone);
+  let memFrac = $derived(last && last.rss_mib > 0 && last.mem_available_mib > 0 ? last.rss_mib / (last.rss_mib + last.mem_available_mib) : null);
+
+  // A token's wall time in the four terms the engine measures or leaves unclaimed (telemetry.md).
+  let split = $derived.by(() => {
+    if (!done || done.tok_s <= 0) return null;
+    const wall = 1 / done.tok_s;
+    const compute = Math.max(0, done.compute_s_tok);
+    const disk = Math.max(0, done.flash_wait_s_tok ?? 0);
+    const mgmt = Math.max(0, done.mgmt_s_tok);
+    const other = Math.max(0, wall - compute - disk - mgmt);
+    const total = compute + disk + mgmt + other;
+    if (total <= 0) return null;
+    return [
+      { key: 'compute', frac: compute / total },
+      { key: 'disk', frac: disk / total },
+      { key: 'mgmt', frac: mgmt / total },
+      { key: 'other', frac: other / total },
+    ];
+  });
 </script>
 
-<section class="panel card" aria-label="Live metrics">
-  <h2>Live metrics</h2>
-  {#if !last && !done}
-    <p class="muted">Metrics appear while the model generates.</p>
-  {/if}
-  <dl class="grid">
-    <div>
-      <dt>Decode</dt>
-      <dd>{formatNum(m.tokS, 2)} <small>tok/s</small></dd>
+<div class="tiles">
+  <section class="card tile" aria-labelledby="tile-speed">
+    <h2 id="tile-speed" title={t('live.speed.hint')}>{t('metrics.speed')}</h2>
+    <p class="value figure">{formatNum(m.tokS, 1)} <small>tok/s</small></p>
+    <Sparkline values={m.tokHistory} label={t('metrics.speed.history')} />
+    <p class="note muted">{done ? t('metrics.speed.avg', { rate: formatNum(done.tok_s, 1) }) : t('metrics.waiting')}</p>
+  </section>
+  <section class="card tile" aria-labelledby="tile-disk">
+    <h2 id="tile-disk" title={t('live.disk.hint')}>{t('metrics.disk')}</h2>
+    <p class="value figure">{formatNum(m.readMibS, 0)} <small>MiB/s</small></p>
+    <Sparkline values={m.readHistory} label={t('metrics.disk.history')} />
+    <p class="note muted">{m.flashWait === null ? t('metrics.waiting') : t('metrics.disk.wait', { pct: formatPct(m.flashWait) })}</p>
+  </section>
+  <section class="card tile" aria-labelledby="tile-mem">
+    <h2 id="tile-mem">{t('metrics.memory')}</h2>
+    <!-- 0 is "the platform cannot report it" (the engine's convention), not an empty process. -->
+    <p class="value figure">{last && last.rss_mib > 0 ? formatMib(last.rss_mib) : '–'}</p>
+    {#if memFrac !== null}<meter min="0" max="1" value={memFrac} aria-label={t('metrics.memory')}></meter>{/if}
+    <p class="note muted">{last ? t('metrics.memory.free', { free: formatMib(last.mem_available_mib) }) : t('metrics.waiting')}</p>
+  </section>
+  <section class="card tile" aria-labelledby="tile-cache">
+    <h2 id="tile-cache" title={t('live.cache.hint')}>{t('metrics.cache')}</h2>
+    <p class="value figure">{!last ? '–' : last.cache_hit_pct < 0 ? t('metrics.cache.none') : `${formatNum(last.cache_hit_pct, 0)}%`}</p>
+    {#if last && last.cache_hit_pct >= 0}<meter min="0" max="100" value={last.cache_hit_pct} aria-label={t('metrics.cache')}></meter>{/if}
+    <p class="note muted">{last && last.cache_budget_mib > 0 ? t('metrics.cache.budget', { size: formatMib(last.cache_budget_mib) }) : t('metrics.waiting')}</p>
+  </section>
+</div>
+
+{#if split}
+  <section class="card block" aria-labelledby="split-title">
+    <h2 id="split-title">{t('metrics.split')}</h2>
+    <div class="bar" role="img" aria-label={split.map((s) => `${t(`metrics.split.${s.key}`)} ${Math.round(s.frac * 100)}%`).join(', ')}>
+      {#each split as s (s.key)}<span class="seg {s.key}" style:width="{(s.frac * 100).toFixed(2)}%"></span>{/each}
     </div>
-    <div>
-      <dt>Flash read</dt>
-      <dd>{formatNum(m.readMibS, 0)} <small>MiB/s</small></dd>
-    </div>
-    <div>
-      <dt>Flash wait</dt>
-      <dd>{m.flashWait === null ? '-' : formatPct(m.flashWait)}</dd>
-    </div>
-    <div>
-      <dt>Cache hit</dt>
-      <dd>{!last ? '-' : last.cache_hit_pct < 0 ? 'no cache' : `${formatNum(last.cache_hit_pct, 1)}%`}</dd>
-    </div>
-    <div>
-      <dt>TTFT</dt>
-      <dd>{done ? `${formatNum(done.ttft_s, 2)} s` : '-'}</dd>
-    </div>
-    <div>
-      <dt>Prefill</dt>
-      <dd>{done ? `${formatNum(done.prefill_s, 2)} s` : '-'}</dd>
-    </div>
-    <div>
-      <dt>Cache budget</dt>
-      <dd>{last ? formatMib(last.cache_budget_mib) : '-'}</dd>
-    </div>
-    <div>
-      <dt>RSS</dt>
-      <!-- 0 is "the platform cannot report it" (the engine's convention), not an empty process. -->
-      <dd>{last && last.rss_mib > 0 ? formatMib(last.rss_mib) : '-'}</dd>
-    </div>
-    <div>
-      <dt>Available memory</dt>
-      <dd>{last ? formatMib(last.mem_available_mib) : '-'}</dd>
-    </div>
-    <div>
-      <dt>Step</dt>
-      <dd>{last ? `${last.step} / ${last.steps}` : '-'}</dd>
-    </div>
-  </dl>
-  <div class="spark">
-    <span class="muted">tok/s</span>
-    <Sparkline values={m.tokHistory} label="Tokens per second, recent tokens" />
-  </div>
-  <div class="spark">
-    <span class="muted">read MiB/s</span>
-    <Sparkline values={m.readHistory} label="Flash read MiB per second, recent tokens" />
-  </div>
-  {#if done}
-    <h3>Last generation</h3>
+    <ul class="legend">
+      {#each split as s (s.key)}
+        <li title={t(`metrics.split.${s.key}.hint`)}><span class="swatch {s.key}"></span>{t(`metrics.split.${s.key}`)} <span class="figure muted">{Math.round(s.frac * 100)}%</span></li>
+      {/each}
+    </ul>
+  </section>
+{/if}
+
+{#if done}
+  <section class="card block" aria-labelledby="last-title">
+    <h2 id="last-title">{t('metrics.last')}</h2>
     <DoneSummary {done} />
-  {/if}
-</section>
+  </section>
+{/if}
 
 <style>
-  .panel h2 {
-    margin-top: 0;
-  }
-  h3 {
-    font-size: 0.95rem;
-    margin: 1rem 0 0.4rem;
-  }
-  .grid {
+  .tiles {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.5rem 0.75rem;
-    margin: 0 0 0.75rem;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr));
+    gap: var(--s3);
+    margin-bottom: var(--s3);
   }
-  dt {
-    font-size: 0.75rem;
-    color: var(--muted);
+  .tile {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s2);
   }
-  dd {
+  .tile h2,
+  .block h2 {
     margin: 0;
-    font-size: 1.1rem;
+    font-size: 0.8125rem;
     font-weight: 600;
-    font-variant-numeric: tabular-nums;
-  }
-  small {
-    font-weight: 400;
     color: var(--muted);
   }
-  .spark {
-    margin-bottom: 0.5rem;
+  .value {
+    margin: 0;
+    font-size: 1.75rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+  .value small {
+    font-size: 0.875rem;
+    color: var(--muted);
+    font-weight: 500;
+  }
+  .note {
+    margin: 0;
     font-size: 0.75rem;
+  }
+  meter {
+    width: 100%;
+  }
+  .block {
+    margin-bottom: var(--s3);
+  }
+  .block h2 {
+    margin-bottom: var(--s3);
+  }
+  .bar {
+    display: flex;
+    height: 0.75rem;
+    border-radius: var(--pill);
+    overflow: hidden;
+    background: var(--surface-2);
+    gap: 2px;
+  }
+  .seg {
+    display: block;
+    height: 100%;
+  }
+  .compute {
+    background: var(--accent);
+  }
+  .disk {
+    background: var(--warn);
+  }
+  .mgmt {
+    background: var(--ok);
+  }
+  .other {
+    background: var(--line-strong);
+  }
+  .legend {
+    list-style: none;
+    display: flex;
+    gap: var(--s4);
+    flex-wrap: wrap;
+    padding: 0;
+    margin: var(--s3) 0 0;
+    font-size: 0.8125rem;
+  }
+  .legend li {
+    display: flex;
+    align-items: center;
+    gap: var(--s1);
+    cursor: help;
+  }
+  .swatch {
+    width: 0.625rem;
+    height: 0.625rem;
+    border-radius: 2px;
   }
 </style>

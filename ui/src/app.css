@@ -704,3 +704,56 @@ th {
 .hl-n {
   color: var(--warn);
 }
+
+/* A settings section: a card with a title, then rows of a setting's words and its control. */
+.section {
+  margin-bottom: var(--s4);
+}
+.section > h2 {
+  margin: 0 0 var(--s2);
+  font-size: 1.0625rem;
+}
+.setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2) var(--s4);
+  flex-wrap: wrap;
+  padding: var(--s3) 0;
+  border-top: var(--edge) solid var(--line);
+}
+.setting .what {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+.setting .label {
+  font-weight: 550;
+}
+/* A label over its field, in a form. */
+.field-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  margin-bottom: var(--s3);
+}
+.field-row > label,
+.field-row > .label {
+  font-weight: 550;
+  font-size: 0.875rem;
+}
+.field-row input,
+.field-row textarea,
+.field-row select {
+  width: 100%;
+}
+.field-row .hint {
+  font-size: 0.8125rem;
+  color: var(--muted);
+  margin: 0;
+}
+.err-text {
+  color: var(--err);
+}

@@ -1,8 +1,8 @@
-import { readFileSync } from 'node:fs';
+import css from '../app.css?raw';
 import { describe, expect, it } from 'vitest';
 import { AA_LARGE, AA_TEXT, contrastRatio, readTokens } from './contrast';
 
-const css = readFileSync(new URL('../app.css', import.meta.url), 'utf8');
+
 const themes = { light: readTokens(css, 'light'), dark: readTokens(css, 'dark') };
 
 // Every pair the UI draws words on: [foreground, background].

@@ -100,6 +100,7 @@
         <input
           id={id}
           type="checkbox"
+          class="switch"
           role="switch"
           checked={value === true}
           onchange={(e) => commit(e.currentTarget.checked)}
@@ -188,8 +189,8 @@
   .field {
     padding: 0.65rem 0;
     border-bottom: 1px solid var(--line);
-    border-left: 3px solid transparent;
-    padding-left: 0.6rem;
+    border-left: 2px solid transparent;
+    padding-left: var(--s3);
   }
   .field.modified {
     border-left-color: var(--accent);
@@ -208,11 +209,6 @@
     align-items: center;
     gap: 0.5rem;
     cursor: pointer;
-  }
-  .toggle input {
-    width: 1.1rem;
-    height: 1.1rem;
-    accent-color: var(--accent);
   }
   .badges {
     display: inline-flex;
@@ -266,12 +262,11 @@
   .flag {
     font-size: 0.8rem;
   }
-  .badge.source.default {
-    opacity: 0.7;
-  }
-  .badge.source.you {
-    border-color: var(--accent);
-    color: var(--accent);
+  .badge.source.you,
+  .badge.source.plan {
+    background: var(--accent-tint);
+    border-color: transparent;
+    color: var(--accent-ink);
   }
   .readonly {
     overflow-wrap: anywhere;
