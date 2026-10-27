@@ -45,6 +45,14 @@ Semantic Versioning.
   22 GB held 96% and decoded 20.7 (27.5 over the last 256 tokens). The ranking still prices the cache
   on the curve against the resident groups; what none of them wanted now goes to the cache, with a
   `cache-remainder` decision. The planner test that asserted the old stop is updated.
+- **The model files' read-ahead is handed back after load.** llama.cpp asks for the whole mapping to
+  be read ahead when it loads (every non-lazy range), so a streamed model filled the page cache with
+  bytes the run reads otherwise: on a 30 GiB box, 23 GB of one shard and 21 GB of the other. Under
+  pressure the kernel swapped the expert cache out beside them, and the cache brake halved it twice
+  (20.7 GB to 5.2 GB, the last 256 tokens of 1024 at 9.8 tok/s against 27.4 without). Where the dense
+  set is held apart from the mapping (`--dense-weights anon` or `pinned`), the session now advises the
+  kernel that the files' cached pages are not needed (`posix_fadvise DONTNEED`; a page still mapped
+  stays). A no-op on Windows and Darwin.
 - **Speculation's memory is in the placement.** The rollback snapshots speculation keeps in the
   target's context, and the MTP draft context's own state and compute buffers, were not in what
   llama.cpp's capacity fitter placed the model against, so on a card the fitter had filled the

@@ -215,6 +215,13 @@ void vm_release(void * p, size_t sz);
 // VirtualFree-able, and the host build never streams). The range must be page-aligned by the caller.
 void vm_drop_file_pages(void * p, size_t sz);
 
+// Hand the system's cache of a FILE's pages back: the kernel keeps what was read through it (the
+// readahead llama.cpp asks for over the whole mapping at load) until pressure takes it, and under a
+// pressure with swap the kernel takes anonymous memory as well, the expert cache among it. Drops
+// clean pages only; a page any process still maps stays. A no-op where the platform offers no such
+// advice (Windows, Darwin: neither has posix_fadvise).
+void drop_file_cache(const char * path);
+
 // Drop the resident pages of an ANONYMOUS range someone else allocated and still owns, keeping the
 // range valid: the next touch maps a zero page instead of faulting. For memory whose contents moved
 // elsewhere but whose allocation cannot be freed from here (a llama.cpp buffer a tensor no longer

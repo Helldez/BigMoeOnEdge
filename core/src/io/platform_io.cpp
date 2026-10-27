@@ -145,6 +145,9 @@ void vm_drop_file_pages(void * /*p*/, size_t /*sz*/) {
     // File-backed views cannot be decommitted (MEM_DECOMMIT is only valid for VirtualAlloc'd pages),
     // and the host build never mmaps the model for streaming — so there is nothing to drop.
 }
+void drop_file_cache(const char * /*path*/) {
+    // No posix_fadvise; the standby list is the system's to trim.
+}
 void vm_drop_anon_pages(void * /*p*/, size_t /*sz*/) {
     // MEM_DECOMMIT would turn the owner's next write into an access violation, and MEM_RESET is only
     // defined for VirtualAlloc'd regions, which a heap allocation need not be. The host build has no
@@ -350,6 +353,16 @@ void vm_drop_file_pages(void * p, size_t sz) {
     // next access refaults them from the file. The tensor was rebound onto its anon copy, so nothing
     // touches this range again — the drop just reclaims the double residency, it does not lose data.
     if (sz) madvise(p, sz, MADV_DONTNEED);
+}
+void drop_file_cache(const char * path) {
+#if defined(__APPLE__)
+    (void) path; // no posix_fadvise on Darwin
+#else
+    const int fd = ::open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return;
+    posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED); // advice only: a failure keeps the pages
+    ::close(fd);
+#endif
 }
 void vm_drop_anon_pages(void * p, size_t sz) {
     // On private anonymous memory MADV_DONTNEED frees the pages and leaves the range mapped: a later

@@ -1666,6 +1666,19 @@ bool Session::Impl::bind_streaming(Opening & o) {
     hook->set_row_source(source.row_source());
 
     release_mapping(cfg, offs, unaccounted);
+    // llama.cpp asks for the whole mapping to be read ahead at load (init_mappings prefetches every
+    // non-lazy range), so the model files fill the system's page cache with bytes this run reads
+    // otherwise: the experts through the streamer's direct reads, the dense set from its own copy, the
+    // tables row by row. Left there, the kernel under pressure swapped the expert cache out beside
+    // them, and the cache brake then halved it twice (a 30 GiB box with swap, Qwen3.8-Flash-Next:
+    // 23 GB of one shard and 21 GB of the other cached at load). Only where the dense set is held
+    // apart from the mapping; under `mmap` the page cache IS the dense set.
+    if (cfg.moe.dense_weights == DenseWeightsMode::Anonymous || cfg.moe.dense_weights == DenseWeightsMode::Pinned) {
+        for (const std::string & path : offs.shard_paths)
+            pio::drop_file_cache(path.c_str());
+        log_printf(LogLevel::Info, "page cache: the model files' read-ahead handed back (%zu file(s))",
+                   offs.shard_paths.size());
+    }
 
     if (o.route_trace) arm_route_trace(o, n_expert, std::move(dense_bytes));
     arm_routing_record(o, n_expert);
