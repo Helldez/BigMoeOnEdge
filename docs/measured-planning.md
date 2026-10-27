@@ -115,6 +115,13 @@ cache size moves, and the cache is lossless.
 - The cache then enters the ranking as pieces of the curve's concave hull, and is credited the curve
   at the size it gets, tagged `[measured on this model]`. The predicted-against-measured line sets
   that credit against the decode's own measured hit rate, the figure it prices.
+- **What the ranking leaves unspent is the cache's too** (`cache-remainder`). The record is a few
+  hundred tokens, so its curve is flat past the experts those tokens touched and prices a byte past
+  them at nothing; a longer answer routes to experts the record never saw, and RAM left idle saves
+  nothing. The first version stopped the cache at the curve's knee: on a 16 GB card with 30 GiB of
+  RAM and Qwen3.8-Flash-Next, the plan's 15.7 GB cache held 83% of the routed experts over 1024
+  tokens and decoded 11.6 tok/s, where 22 GB held 96% and decoded 20.7 (27.5 over the last 256
+  tokens).
 - **Not removed:** `cache_hit_optimism` and the linear credit stay as what a first load, with no
   record yet, is priced with, and a plan without a record is byte for byte the plan before this step
   (asserted in `planner`). They go when every front-end ships with a record for every model it
@@ -347,7 +354,9 @@ without a device of their own, an unchanged plan.
   experiment: the real layer where both were measured on it, the GEMV otherwise), the card's memory
   past its dense part holds a cache of the experts used most, from every layer, and every layer's
   experts go back to the host, resident or streamed. A miss is uploaded from there as a miss in RAM
-  is read from flash.
+  is read from flash. The cache fills from use, so it needs no record of the routing; a record only
+  says, in the plan's line, how much of a token it serves. Where the device is not faster, its rate is
+  unmeasured, or the dense parts did not all fit, the fitter's placement stands.
 - **Sized as the RAM cache is (#428).** The first version took exactly the bytes the fitter gave whole
   layers' experts, so it inherited the fitter's granularity: the memory under one more whole layer was
   never used, and a card whose dense part fit with no whole layer beside it got no cache at all. The
@@ -355,9 +364,7 @@ without a device of their own, an unchanged plan.
   placement probe off the same free figure the fitter planned against; on several cards, the largest
   budget whose share (llama.cpp splits it by layers) fits every card. Its floor is one token cycle,
   the RAM cache's floor for the same reason; under it, the fitter's placement stands. llama.cpp's
-  cache is an SLRU and the replayed hit curve an LRU's, so the plan's share for it is an estimate. The cache fills from use, so it needs no record of the routing;
-  a record only says, in the plan's line, how much of a token it serves. Where the device is not
-  faster, its rate is unmeasured, or the dense parts did not all fit, the fitter's placement stands.
+  cache is an SLRU and the replayed hit curve an LRU's, so the plan's share for it is an estimate.
 - **Why not a price.** The first version priced the two per token (the split's host layers at the
   host's rate and its crossings, against the cache's misses at the measured upload rate) and armed
   the cache only where it won. On the second rented card of the runs below it called them a tie

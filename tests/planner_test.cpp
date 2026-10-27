@@ -1822,15 +1822,20 @@ int main() {
             check(cur.seconds_per_token <= lin.seconds_per_token + 1e-12,
                   "a curve above the linear credit never prices the token higher");
 
-            // A curve flat above its knee: past 5% of the set nothing more is served, so the ranking
-            // stops the cache there however much budget remains.
+            // A curve flat above its knee: past 5% of the set the record shows nothing more served, so
+            // the ranking prices the cache there; the RAM nothing else wanted is the cache's all the
+            // same, since a record is a few hundred tokens and a longer answer routes past what it saw.
+            // Measured: 15.7 GB at the curve's knee held 83% over 1024 tokens, 22 GB held 96%.
             const ModelProfile knee = curve_model({{0.05, 0.6}, {1.0, 0.6}});
             in.budget_bytes = 12 * GiB;
             const Allocation k = allocate(h, knee, in, pol);
             const uint64_t at_knee = (uint64_t) ((double) model.expert_bytes * 0.05);
-            check(k.cache_bytes <= at_knee && k.cache_bytes + (1ull << 20) >= at_knee,
-                  "a curve that stops rising stops the cache where it does",
-                  std::to_string(k.cache_bytes >> 20) + " MiB against " + std::to_string(at_knee >> 20));
+            bool remainder = false;
+            for (const AllocationNote & n : k.notes)
+                remainder = remainder || n.topic == "cache-remainder";
+            check(k.cache_bytes > at_knee + GiB && k.cache_bytes <= in.budget_bytes && remainder,
+                  "a curve that stops rising prices the cache at its knee, and the idle rest is the cache's too",
+                  std::to_string(k.cache_bytes >> 20) + " MiB against a knee at " + std::to_string(at_knee >> 20));
 
             // The floor still holds: a budget under one token cycle is no cache, curve or not.
             AllocationInputs tight = in;

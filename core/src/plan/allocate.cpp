@@ -153,6 +153,7 @@ struct Pricing {
     uint64_t fixed = 0;     // the ledger's fixed lines: context, compute buffers, an armed device
     uint64_t spendable = 0; // what the ranking may spend once those are off the top
     uint64_t locked = 0;    // what is already charged to the lockable total
+    uint64_t unspent = 0;   // what the ranking left once every candidate had its turn
 };
 
 // A group in a lane, as the ranking sees it.
@@ -544,6 +545,7 @@ void spend_ranking(Pricing & c, std::vector<Candidate> & candidates) {
         p.seconds_per_token = p.seconds_worst_case - k.saved;
         p.reason = std::string(k.lane == Lane::Pinned ? "pinned: " : "resident: ") + k.why;
     }
+    c.unspent = remaining;
 }
 
 // The cache, sized against what the loader will actually leave. Two paths, and which one ran is the
@@ -630,8 +632,22 @@ void bound_cache(Pricing & c) {
 
     if (priced > 0) {
         // What the ranking priced was priced under the caller's ceiling; where the ceiling was raised
-        // for a locked cache, the cache is what the difference is for.
-        sized = std::min(priced + (holdable_cap - in.budget_bytes), sized);
+        // for a locked cache, the cache is what the difference is for. And what the ranking left
+        // unspent goes to the cache too: the curve it priced on is a short record's, flat past the
+        // experts those few tokens touched, so it calls a byte past them worth nothing, while a longer
+        // answer routes to experts the record never saw and a byte left idle saves nothing at all.
+        // Measured on a 16 GB card with 30 GiB of RAM, Qwen3.8-Flash-Next over 1024 tokens: the
+        // curve's 15.7 GB cache held 83% and decoded 11.6 tok/s, 22 GB held 96% and decoded 20.7.
+        const uint64_t raised = holdable_cap - in.budget_bytes;
+        const uint64_t want = (priced + c.unspent + raised) & ~((1ull << 20) - 1);
+        if (want > std::min(priced + raised, sized) && sized > priced + raised)
+            note(a, "cache-remainder", size_brief(std::min(want, sized) - priced),
+                 "The cache also takes the " + size_brief(std::min(want, sized) - priced) +
+                     " nothing else wanted: idle RAM serves nothing.",
+                 "this model's routing record prices the cache at " + mibs(priced) +
+                     ", where its curve stops rising; a record is a few hundred tokens, and a longer answer routes to "
+                     "experts it never saw, so the memory the ranking left unspent is the cache's too");
+        sized = std::min(want, sized);
     } else if (sized > 0) {
         note(a, "cache-unpriced", size_brief(sized),
              "The cache gets what is left, " + size_brief(sized) + ": storage speed was not measured.",
