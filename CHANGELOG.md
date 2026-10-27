@@ -37,6 +37,19 @@ Semantic Versioning.
   slower one (#421).
 
 ### Fixed
+- **`--auto --overlap` no longer refuses to start when the plan does not stream.** Asking for
+  `--overlap` keeps the capacity fitter's whole layers on the card instead of the device cache, and
+  where what is then left on the host fits in RAM the plan turns streaming off, leaving `--overlap`
+  set: the run stopped with `moe.overlap requires moe.enabled` (a 16 GB card with 30 GiB of RAM and
+  Qwen3.8-Flash-Next). Every knob that acts only on the streamer's reads (`--overlap`,
+  `--row-stream`, `--route-ahead`, `--predict-log`, `--predict-prefetch`, the overlap trial) is now
+  turned off with a decision saying why wherever the plan does not stream.
+- **`bmoe-server` loads a model the plan gives a device expert cache.** The server arms `--overlap`
+  by default, and the device tier left it on beside the cache it armed, which the session refuses
+  (`--device-cache-mb computes the experts on the device; --overlap waits for them on the CPU`): on a
+  16 GB card every server load of Qwen3.8-Flash-Next failed where the CLI ran. The device tier now
+  turns a default overlap off with a decision where it arms the cache; one the caller asked for
+  still keeps the fitter's placement, as before.
 - **Speculation's memory is in the placement.** The rollback snapshots speculation keeps in the
   target's context, and the MTP draft context's own state and compute buffers, were not in what
   llama.cpp's capacity fitter placed the model against, so on a card the fitter had filled the
