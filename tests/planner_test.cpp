@@ -288,6 +288,20 @@ int main() {
         check(p.regime == Regime::Fits, "roomy machine: regime is fits");
         check(!p.config.moe.enabled, "roomy machine: streaming off");
         check(p.streaming_declined && !p.decline_reason.empty(), "roomy machine: the refusal is explained");
+
+        // Knobs that act only on the streamer's reads, set by the caller, are turned off with a note
+        // where nothing is streamed: before, `--auto --overlap` on a model that fits refused to start
+        // (`moe.overlap requires moe.enabled`), measured on a 16 GB card with 30 GiB of RAM.
+        RunConfig asked = base_cfg();
+        asked.moe.overlap = true;
+        asked.moe.row_stream = true;
+        PlanRequest pin;
+        pin.pinned = {"overlap", "row-stream"};
+        const Plan q = plan_run(asked, big, model, pin);
+        const Decision * o = find(q, "overlap");
+        check(q.regime == Regime::Fits && !q.config.moe.overlap && !q.config.moe.row_stream && o && o->value == "off",
+              "roomy machine, overlap asked: off with a note, not a refusal", o ? o->reason : "no decision");
+        check(validate(q.config).ok, "roomy machine, overlap asked: a valid config", validate(q.config).error);
     }
 
     // ── the budget is what we can KEEP, not what is reported available ──────────────
@@ -2100,6 +2114,17 @@ int main() {
         check(tier.config.buft_overrides.size() == model.n_layer && tier.config.n_gpu_layers == half.n_gpu_layers,
               "device tier, cache faster: every layer stays on the card and every layer's experts on the host");
         check(!tier.config.prefill.enabled(), "device tier, cache faster: no prefill device beside it");
+        // The server's own default overlap, not asked for, is turned off where the cache is armed:
+        // left on, the session refused the pair and every server load failed (a 16 GB card).
+        {
+            RunConfig srv = base_cfg();
+            srv.moe.overlap = true;
+            const Plan sp = plan_run(srv, slow_cores, model, half, PlanRequest{}, PlannerPolicy::defaults());
+            const Decision * od = find(sp, "overlap");
+            check(sp.config.moe.device_cache_mb > 0 && !sp.config.moe.overlap && od && od->value == "off" &&
+                      validate(sp.config).ok,
+                  "device tier, a front-end's default overlap: off beside the cache", od ? od->reason : "none");
+        }
         check(validate(tier.config).ok, "device tier, cache faster: a valid config", validate(tier.config).error);
 
         // The device's rate unmeasured: nothing says it is the faster processor, and nothing moves.
