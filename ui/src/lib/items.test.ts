@@ -109,6 +109,20 @@ describe('runs of tool calls', () => {
     expect(b[1].kind === 'run' && b[1].items).toHaveLength(5);
   });
 
+  it('keeps a run whole across the empty turns that only called tools', () => {
+    const items: Item[] = [
+      { id: 'u', kind: 'user', text: 'go' },
+      { id: 'e1', kind: 'assistant', text: '', reasoning: '' },
+      run[0],
+      { id: 'e2', kind: 'assistant', text: '  ', reasoning: '' },
+      run[1],
+      { id: 's', kind: 'assistant', text: '', reasoning: '', streaming: true },
+    ];
+    const b = blocks(items);
+    expect(b.map((x) => x.kind)).toEqual(['item', 'run', 'item']);
+    expect(b[1].kind === 'run' && b[1].items).toHaveLength(2);
+  });
+
   it('counts files touched once each, and lines changed', () => {
     expect(diffStat(diff)).toEqual({ added: 2, removed: 1 });
     const s = runSummary(run);

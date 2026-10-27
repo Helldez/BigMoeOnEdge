@@ -89,6 +89,9 @@ export function blocks(items: readonly Item[]): Block[] {
       run.push(it);
       continue;
     }
+    // The turn that only called tools leaves an assistant item with nothing to read once it has
+    // finished: it is not drawn, so the calls around it stay one run.
+    if (it.kind === 'assistant' && !it.streaming && !it.text?.trim() && !it.reasoning?.trim()) continue;
     flush();
     out.push({ kind: 'item', item: it });
   }
