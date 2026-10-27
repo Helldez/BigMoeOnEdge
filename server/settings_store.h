@@ -1,6 +1,6 @@
 // The server's configuration, in layers.
 //
-//   server defaults  <  plan  <  launch flags  <  user
+//   server defaults  <  plan  <  user  <  launch flags
 //
 // Each layer holds parameter values as the strings the parameter table reads, keyed by parameter
 // key, and the config is rebuilt by applying them in that order onto the defaults. Keeping the
@@ -9,7 +9,8 @@
 // pinned set: the launch and user layers are the operator's, and a plan never overrides them.
 //
 // Only the user layer is persisted (settings.json in the data directory). Launch flags hold for
-// the process that was given them; setting the same key from the UI moves it to the user layer.
+// the process that was given them, over a value saved by an earlier run: a model or context typed
+// at start is the one that loads. Setting the same key from the UI moves it to the user layer.
 #pragma once
 
 #include "json_util.h"
@@ -41,7 +42,7 @@ public:
     void apply_plan(std::map<std::string, std::string> values, json decisions);
 
     RunConfig config() const;
-    // The configuration with the plan layer left out (defaults < launch < user): what a plan is
+    // The configuration with the plan layer left out (defaults < user < launch): what a plan is
     // made from and measured against. A plan made from the config that holds the previous plan
     // would see its own earlier choices as already there, leave them out of its values, and
     // apply_plan would then drop them along with the layer it replaces.
