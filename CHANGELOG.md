@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **An answer cut by a full context is said in the server's log** (#436). A request that fits is
+  served with only the room its prompt left; an agent that summarizes its conversation near the limit
+  then got a cut or empty summary and reported only that compaction failed, while the server logged
+  nothing. It now logs a `warn` line with the tokens asked and given and the parameter that raises
+  the context. The README and `docs/server-api.md` size an agent's context from its first request:
+  measured on a 16 GB Mac, an agent whose first request is ~17k tokens failed to compact at 32768 and
+  answered ten consecutive questions at 65536.
+
 ## [0.38.0] - 2026-10-27
 
 ### Added

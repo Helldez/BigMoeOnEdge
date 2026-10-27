@@ -425,7 +425,14 @@ request alone is 9911 tokens, so at 4096 every request it makes is refused with 
 `context_full` before it has done anything, and some clients show that only as an unknown error.
 Load the model with at least 16384 tokens (`-c 16384` on the server's command line, or the Context
 setting) for an agent; a long agent session grows past that, and one six-step opencode run that
-fixed two bugs fit in 32768. The cost is memory: the KV cache and the compute buffers are reserved
+fixed two bugs fit in 32768. An agent also needs room at the end of the context: when its
+conversation nears the limit it asks for a summary of it, and that request is served with only the
+tokens the prompt left, so a context sized to the prompt alone gives a cut or empty summary and an
+agent that compacts again and again. A client whose first request is ~17k tokens failed that way at
+32768 on every question after its first, and answered ten consecutive questions over three
+compactions at 65536. Size the context to a few times the agent's first request. When an answer
+stops because the context ran out before the budget it asked for, the server logs a `warn` line
+(on stderr and as a `log` event) with both numbers, so the person at the server sees why. The cost is memory: the KV cache and the compute buffers are reserved
 for the whole context, and they come out of the same RAM as the expert cache, so a larger context
 leaves a smaller cache and a slower decode on a machine that is short of memory. The plan's
 `kv-budget` note (`GET /api/plan`) says what the loaded context takes. `ctx_advice` in
