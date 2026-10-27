@@ -2109,6 +2109,17 @@ int main() {
         check(tier.config.buft_overrides.size() == model.n_layer && tier.config.n_gpu_layers == half.n_gpu_layers,
               "device tier, cache faster: every layer stays on the card and every layer's experts on the host");
         check(!tier.config.prefill.enabled(), "device tier, cache faster: no prefill device beside it");
+        // The server's own default overlap, not asked for, is turned off where the cache is armed:
+        // left on, the session refused the pair and every server load failed (a 16 GB card).
+        {
+            RunConfig srv = base_cfg();
+            srv.moe.overlap = true;
+            const Plan sp = plan_run(srv, slow_cores, model, half, PlanRequest{}, PlannerPolicy::defaults());
+            const Decision * od = find(sp, "overlap");
+            check(sp.config.moe.device_cache_mb > 0 && !sp.config.moe.overlap && od && od->value == "off" &&
+                      validate(sp.config).ok,
+                  "device tier, a front-end's default overlap: off beside the cache", od ? od->reason : "none");
+        }
         check(validate(tier.config).ok, "device tier, cache faster: a valid config", validate(tier.config).error);
 
         // The device's rate unmeasured: nothing says it is the faster processor, and nothing moves.

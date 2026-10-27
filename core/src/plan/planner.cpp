@@ -537,6 +537,18 @@ void choose_device_tier(Planning & s) {
         }
     }
     s.p.config.moe.device_cache_mb = (int) mib(cache_bytes);
+    // A front-end's own default overlap (the server arms it wherever the hook is available) waits for
+    // the experts inside the CPU's matmul, which no longer computes them: the session refuses the pair,
+    // and a server left with both failed every load. A caller who asked for it never reaches here.
+    MoeStreamConfig & moe = s.p.config.moe;
+    if (moe.overlap || moe.io_two_wave || s.p.config.trial.overlap) {
+        moe.overlap = moe.io_two_wave = false;
+        s.p.config.trial.overlap = false;
+        s.note("overlap", "off", Source::Derived, "Off: the experts are computed on the device, beside its cache.",
+               "overlap hides the CPU's expert compute behind the streamer's reads, and with the device expert "
+               "cache armed the experts are computed on " +
+                   dev->name + ", so there is nothing on the CPU for it to hide");
+    }
     s.note("device-cache-mb", mib_s(cache_bytes), Source::Measured,
            "A " + size_brief(cache_bytes) + " cache of the most used experts on " + dev->name +
                ", in place of whole layers' experts.",
@@ -2246,6 +2258,7 @@ std::string margin_pct(const Planning & s) {
 
 void note_overlap(Planning & s) {
     if (s.req.is_pinned("overlap")) return;
+    if (s.p.config.moe.device_cache_mb > 0) return; // the device tier decided it, and said so
     RunConfig & c = s.p.config;
     const MeasuredKnobs & mk = s.model.knobs;
     if (mk.overlap >= 0 && overlap_switchable(c)) {
