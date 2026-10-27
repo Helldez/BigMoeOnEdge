@@ -75,6 +75,18 @@ bool read_api_key_file(const std::string & path, std::string & key, std::string 
 // Unlike is_loopback_host() this is the socket's own address, which a client cannot choose.
 bool is_loopback_peer(const std::string & remote_addr);
 
+// The agent's routes that reach this computer's files, processes or secrets answer only to a client
+// whose connection comes from this machine, whatever --host says (docs/agent.md, "Who may use it").
+// `Always`: the route itself does (a workspace added, an approval, a skill, a task, a provider, a
+// client's settings written). `IfConversationReaches`: it does when the conversation it names has a
+// workspace or sends to a saved provider, which only the handler can look up. The apps reach the
+// server on loopback, so every route stays theirs.
+enum class Locality { Anywhere, Always, IfConversationReaches };
+Locality agent_route_locality(const std::string & method, const std::string & path);
+
+// The code a local-only refusal carries (403).
+inline constexpr const char * k_local_only_code = "local_only";
+
 // The model path a client named, as the path the engine will open: canonical, symbolic links and
 // `..` resolved, and inside one of `roots` - the folders whose models the server lists. A relative
 // path is taken relative to the first root, the models folder. False, with the reason, for a path

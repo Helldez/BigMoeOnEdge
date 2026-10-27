@@ -93,6 +93,13 @@ if(TARGET bmoe_server)
     add_executable(bmoe_engine_host_test engine_host_test.cpp)
     target_link_libraries(bmoe_engine_host_test PRIVATE bmoe_server)
     add_test(NAME engine_host COMMAND bmoe_engine_host_test)
+
+    # The agent: its run loop over the engine host with a scripted session (approvals, denials, modes,
+    # stop, the round limit, a short context, helpers, tasks), and the rules of its tools and stores.
+    # No model, no network.
+    add_executable(bmoe_agent_test agent_test.cpp)
+    target_link_libraries(bmoe_agent_test PRIVATE bmoe_server)
+    add_test(NAME agent COMMAND bmoe_agent_test)
 endif()
 
 # release_file_mappings: on Windows it must find and drop this process's own view + section of a

@@ -8,6 +8,9 @@
 #include "server.h"
 
 #include "access.h"
+#include "agent.h"
+#include "agent_routes.h"
+#include "agent_store.h"
 #include "anthropic_messages.h"
 #include "decide_protocol.h"
 #include "engine_host.h"
@@ -41,6 +44,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <set>
 #include <string>
@@ -118,6 +122,7 @@ struct Options {
     std::string host = kDefaultHost;
     int port = kDefaultPort;
     std::string ui_dir, models_dir, data_dir, catalog;
+    std::string skills_dir;             // the agent's bundled skills; default skills/ beside this binary
     std::vector<std::string> scan_dirs; // more directories whose models are listed, never written
     std::vector<std::string> allow_origins;
     std::string api_key;
@@ -159,7 +164,9 @@ void print_usage(const char * argv0) {
                 "                       loaded in place (repeatable; one level deep, links to folders skipped)\n"
                 "  --data-dir PATH      settings and models (default: the per-user application data folder)\n"
                 "  --ui-dir PATH        the built web UI (default: ui/ beside this binary)\n"
-                "  --catalog PATH       the model catalog (default: catalog/models.json beside this binary)\n"
+                "  --catalog PATH       the model catalog (default: catalog/models.json beside this binary);\n"
+                "                       the client catalog (clients.json) is read from the same folder\n"
+                "  --skills-dir PATH    the agent's bundled skills (default: skills/ beside this binary)\n"
                 "  --allow-origin URL   also accept requests from this browser origin (a UI dev server)\n"
                 "  --api-key KEY        require this key on the API (Authorization: Bearer KEY); needed\n"
                 "                       with a --host beyond loopback. Other local users can read a\n"
@@ -212,6 +219,8 @@ int parse_args(int argc, char ** argv, Options & o) {
             o.ui_dir = next();
         else if (a == "--catalog")
             o.catalog = next();
+        else if (a == "--skills-dir")
+            o.skills_dir = next();
         else if (a == "--allow-origin")
             o.allow_origins.push_back(next());
         else if (a == "--api-key")
@@ -396,6 +405,12 @@ struct App {
 
     // Each model's recorded routing, kept for the next plan of that file (routing_store.h).
     RoutingStore routing;
+
+    // The agent (docs/agent.md): what it keeps, its runs and scheduler, and what its routes reach.
+    // Declared after the host, so it is destroyed, and its runs stopped and joined, before the host.
+    std::unique_ptr<agent::AgentStore> agent_store;
+    std::unique_ptr<agent::Agent> agent;
+    AgentRouteDeps agent_routes;
 
     json config_object(const json * rejected = nullptr) {
         const RunConfig cfg = store.config();
@@ -1220,10 +1235,19 @@ void register_guards(httplib::Server & svr, const Options & o) {
         f.content_type = req.get_header_value("Content-Type");
         f.authorization = req.get_header_value("Authorization");
         f.x_api_key = req.get_header_value("X-Api-Key");
-        const AccessDecision d = check_access(policy, f);
+        AccessDecision d = check_access(policy, f);
+        // What reaches this computer's files, processes or keys answers to this computer only, key
+        // or no key (docs/agent.md). A route that depends on its conversation checks in its handler.
+        std::string code;
+        if (d.allowed() && agent_route_locality(req.method, req.path) == Locality::Always &&
+            !is_loopback_peer(req.remote_addr)) {
+            d = {403,
+                 "only a client on this computer may do this: it reaches this computer's files, processes or keys"};
+            code = k_local_only_code;
+        }
         if (d.allowed()) return httplib::Server::HandlerResponse::Unhandled;
         if (d.status == 401) res.set_header("WWW-Authenticate", "Bearer realm=\"bmoe-server\"");
-        send_path_error(req.path, res, d.status, d.error);
+        send_path_error(req.path, res, d.status, d.error, code);
         return httplib::Server::HandlerResponse::Handled;
     });
     // On every response, the refusals above and the UI's files alike.
@@ -1310,6 +1334,45 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     app.host.set_planner_available(planner_available());
     app.host.set_serves_network(!is_loopback_host(o.host));
 
+    app.agent_store = std::make_unique<agent::AgentStore>(data_dir);
+    for (const std::string & w : app.agent_store->load())
+        std::fprintf(stderr, "warning: %s\n", w.c_str());
+    {
+        agent::AgentDeps deps;
+        deps.bus = &app.bus;
+        deps.store = app.agent_store.get();
+        deps.local_chat = [&app](const ChatRequest & req, const std::function<bool(const TokenMetrics &)> & on_token,
+                                 const std::function<bool()> & still_wanted) {
+            return app.host.chat(req, on_token, still_wanted);
+        };
+        deps.config = [&app] { return app.store.config(); };
+        deps.net = app.net.get();
+        deps.bundled_skills_dir = o.skills_dir.empty() ? (exe / "skills").u8string() : o.skills_dir;
+        deps.user_skills_dir = (fs::u8path(data_dir) / "skills").u8string();
+        deps.can_run_commands = platform::can_run_commands();
+        deps.os_name = platform::os_name();
+        app.agent = std::make_unique<agent::Agent>(std::move(deps));
+    }
+    app.agent_routes.agent = app.agent.get();
+    app.agent_routes.store = app.agent_store.get();
+    app.agent_routes.host = &app.host;
+    app.agent_routes.bus = &app.bus;
+    app.agent_routes.user_skills_dir = (fs::u8path(data_dir) / "skills").u8string();
+    app.agent_routes.has_key = !o.api_key.empty();
+    app.agent_routes.home = platform::home_dir();
+    {
+        // The clients a person can connect, beside the model catalog; a server without it lists none.
+        const fs::path clients = fs::u8path(catalog).parent_path() / "clients.json";
+        std::ifstream in(clients, std::ios::binary);
+        if (in) {
+            try {
+                app.agent_routes.clients = json::parse(in);
+            } catch (const std::exception & e) {
+                std::fprintf(stderr, "warning: %s does not parse: %s\n", clients.u8string().c_str(), e.what());
+            }
+        }
+    }
+
     httplib::Server svr;
     // A worker is held for a request's whole life, and a connection past the queue is closed at
     // once instead of waiting with no bound behind workers that may not come free.
@@ -1320,6 +1383,7 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     svr.set_payload_max_length(8ull << 20);
     register_guards(svr, o);
     register_routes(svr, app);
+    register_agent_routes(svr, app.agent_routes);
     if (!ui_dir.empty()) {
         // no-cache means "revalidate", not "never store": the browser keeps the files and asks with
         // the ETag each time, so a rebuilt UI is picked up on the next load instead of whenever the
@@ -1339,6 +1403,12 @@ int run(int argc, char ** argv, const Embedding & embedding) {
         return 1;
     }
     const std::string url = browse_url(o.host, o.port);
+    {
+        std::string origin = url;
+        if (!origin.empty() && origin.back() == '/') origin.pop_back();
+        app.agent_routes.origin = origin;
+    }
+    app.agent->start_scheduler();
     std::printf("bmoe-server %s listening on %s\n", version(), url.c_str());
     std::printf("  data: %s\n  models: %s\n  ui: %s\n", data_dir.c_str(), models_dir.c_str(),
                 ui_dir.empty() ? "(not built)" : ui_dir.c_str());
@@ -1362,11 +1432,14 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     if (embedding.listening)
         embedding.listening([&svr, &app] {
             app.host.cancel();
+            app.agent->shutdown();
             app.bus.close_all();
             svr.stop();
         });
     svr.listen_after_bind();
     if (embedding.listening) embedding.listening(nullptr);
+    // Every run and the scheduler end here, before the host they ask goes away.
+    app.agent->shutdown();
     app.bus.close_all();
     return 0;
 }

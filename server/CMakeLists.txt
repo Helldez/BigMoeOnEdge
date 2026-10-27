@@ -32,6 +32,12 @@ add_library(bmoe_server_core STATIC
     model_delete.cpp
     settings_store.cpp
     plan_view.cpp
+    agent_tools.cpp
+    agent_skills.cpp
+    agent_schedule.cpp
+    agent_store.cpp
+    provider_protocol.cpp
+    connect.cpp
 )
 target_link_libraries(bmoe_server_core PUBLIC bmoe_core)
 target_include_directories(bmoe_server_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -50,6 +56,8 @@ add_library(bmoe_server STATIC
     planner_adapter.cpp
     platform.cpp
     routing_store.cpp
+    agent.cpp
+    agent_routes.cpp
 )
 target_link_libraries(bmoe_server PUBLIC bmoe_server_core PRIVATE cpp-httplib)
 target_include_directories(bmoe_server PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

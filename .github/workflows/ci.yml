@@ -148,8 +148,9 @@ jobs:
 
   tsan:
     # ThreadSanitizer over the tests that run threads: the engine host (loads, turns, cancel and
-    # unload across threads), the server's turn queue and event fan-out, and the byte-identity gates,
-    # which drive the streamer's I/O lanes and --overlap's expert-ready hook. llama.cpp is
+    # unload across threads), the agent (runs, approvals, stop, tasks), the server's turn queue and
+    # event fan-out, and the byte-identity gates, which drive the streamer's I/O lanes and
+    # --overlap's expert-ready hook. llama.cpp is
     # instrumented too (BMOE_SANITIZE is the whole build) and runs on its own threadpool rather than
     # OpenMP, whose runtime TSan cannot see into.
     needs: changes
@@ -176,7 +177,7 @@ jobs:
       - name: Threaded tests, sanitized
         env:
           TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
-        run: cd build-tsan && ctest -j 2 --output-on-failure -R '^(engine_host|server_logic|moe_gates_.*)$'
+        run: cd build-tsan && ctest -j 2 --output-on-failure -R '^(engine_host|server_logic|agent|moe_gates_.*)$'
 
   ui:
     # The web UI's unit tests (ui/src/lib). release-host runs them too, but only once a release is

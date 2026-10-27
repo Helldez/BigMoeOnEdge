@@ -251,10 +251,12 @@ if(BMOE_HAVE_LLAMA AND NOT IOS AND (TARGET bmoe-cli OR TARGET bmoe-server))
         install(DIRECTORY "${_bmoe_bin_dir}/" DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT bmoe
                 USE_SOURCE_PERMISSIONS
                 FILES_MATCHING PATTERN "*.so" PATTERN "*.so.*" PATTERN "*.dylib" PATTERN "*.dll"
-                PATTERN "ui" EXCLUDE PATTERN "catalog" EXCLUDE)
+                PATTERN "ui" EXCLUDE PATTERN "catalog" EXCLUDE PATTERN "skills" EXCLUDE)
     endif()
     if(TARGET bmoe-server)
-        install(FILES catalog/models.json DESTINATION ${CMAKE_INSTALL_BINDIR}/catalog COMPONENT bmoe)
+        install(FILES catalog/models.json catalog/clients.json DESTINATION ${CMAKE_INSTALL_BINDIR}/catalog COMPONENT bmoe)
+        # The agent's bundled skills (docs/agent.md), found beside the server like the catalog.
+        install(DIRECTORY skills/ DESTINATION ${CMAKE_INSTALL_BINDIR}/skills COMPONENT bmoe)
         # The web UI is built outside CMake (cd ui && npm ci && npm run build); installed when built.
         install(DIRECTORY ui/dist/ DESTINATION ${CMAKE_INSTALL_BINDIR}/ui COMPONENT bmoe OPTIONAL)
     endif()

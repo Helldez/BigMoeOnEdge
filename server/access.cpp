@@ -130,6 +130,25 @@ bool is_loopback_peer(const std::string & remote_addr) {
     return a == "::1" || a.compare(0, 4, "127.") == 0;
 }
 
+Locality agent_route_locality(const std::string & method, const std::string & path) {
+    const auto under = [&](const char * prefix) {
+        const std::string p = prefix;
+        return path == p || path.compare(0, p.size() + 1, p + "/") == 0;
+    };
+    const bool read = method == "GET" || method == "HEAD";
+    if (under("/api/workspaces") || under("/api/skills") || under("/api/tasks") || under("/api/providers") ||
+        under("/api/connect"))
+        return read ? Locality::Anywhere : Locality::Always;
+    static const std::string conv = "/api/conversations/";
+    if (path.compare(0, conv.size(), conv) == 0) {
+        const size_t slash = path.find('/', conv.size());
+        const std::string tail = slash == std::string::npos ? "" : path.substr(slash + 1);
+        if (tail == "approval") return Locality::Always;
+        if (tail == "messages" || tail == "edit" || tail == "file") return Locality::IfConversationReaches;
+    }
+    return Locality::Anywhere;
+}
+
 bool confine_model_path(const std::string & requested,
                         const std::vector<std::string> & roots,
                         std::string & out,
