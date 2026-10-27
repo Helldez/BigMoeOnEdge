@@ -81,14 +81,14 @@
     gap: 1.5rem;
     flex-wrap: wrap;
     padding: 0.5rem 1rem;
-    border-bottom: var(--edge) solid var(--border);
+    border-bottom: var(--edge) solid var(--line);
     background: var(--surface);
   }
   .brand {
     display: inline-flex;
     align-items: center;
     gap: 0.5rem;
-    font-family: var(--pixel);
+    font-family: var(--ui);
     font-weight: 700;
     font-size: 1.15rem;
     letter-spacing: 0.01em;
@@ -112,8 +112,8 @@
     gap: 0.75rem;
     width: min(24rem, calc(100vw - 2rem));
     padding: 1.25rem;
-    border: var(--edge) solid var(--border);
-    box-shadow: 4px 4px 0 var(--shadow);
+    border: var(--edge) solid var(--line);
+    box-shadow: var(--shadow-sm);
     background: var(--surface);
   }
   .key h2 {

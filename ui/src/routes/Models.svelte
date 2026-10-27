@@ -373,11 +373,11 @@
     gap: 0.5rem 1rem;
     align-items: center;
     padding: 0.6rem 0.75rem;
-    border: var(--edge) solid var(--border);
+    border: var(--edge) solid var(--line);
     background: var(--surface);
   }
   .row.loaded {
-    background: var(--ok-bg);
+    background: var(--ok-tint);
   }
   .row.followed {
     border-color: var(--accent);

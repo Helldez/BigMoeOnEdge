@@ -79,20 +79,20 @@
   .user {
     align-self: flex-end;
     background: var(--surface-2);
-    border: var(--edge) solid var(--border);
+    border: var(--edge) solid var(--line);
     max-width: 85%;
   }
   .assistant {
     background: var(--surface);
-    border: var(--edge) solid var(--border);
-    box-shadow: 4px 4px 0 var(--shadow);
+    border: var(--edge) solid var(--line);
+    box-shadow: var(--shadow-sm);
   }
   .user-text {
     white-space: pre-wrap;
   }
   .thinking {
     margin-bottom: 0.5rem;
-    border-left: 4px solid var(--accent-2);
+    border-left: 4px solid var(--accent);
     padding-left: 0.6rem;
     color: var(--muted);
   }

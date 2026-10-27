@@ -296,7 +296,7 @@
   }
   .tile {
     background: var(--bg);
-    border: var(--edge) solid var(--border);
+    border: var(--edge) solid var(--line);
     padding: 0.75rem;
     display: flex;
     flex-direction: column;
@@ -313,7 +313,7 @@
   .hits {
     position: relative;
     height: 10px;
-    border: var(--edge) solid var(--border);
+    border: var(--edge) solid var(--line);
     background: var(--surface-2);
   }
   .hits span {

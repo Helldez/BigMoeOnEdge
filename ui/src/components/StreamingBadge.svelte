@@ -21,11 +21,11 @@
     white-space: nowrap;
   }
   .on {
-    background: var(--ok-bg);
+    background: var(--ok-tint);
     color: var(--ok);
   }
   .off {
-    background: var(--warn-bg);
+    background: var(--warn-tint);
     color: var(--warn);
     border: 1px solid var(--warn);
   }

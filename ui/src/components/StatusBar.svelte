@@ -61,7 +61,7 @@
     gap: 0.6rem;
     flex-wrap: wrap;
     padding: 0.4rem 1rem;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--line);
     background: var(--surface);
     font-size: 0.9rem;
   }

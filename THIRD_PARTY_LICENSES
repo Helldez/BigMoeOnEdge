@@ -14,8 +14,9 @@ own license, reproduced here as those licenses require.
 - The web UI's JavaScript runtime, bundled into ui/ in the desktop archive: Svelte (MIT), clsx
   (MIT), marked (MIT; it carries Markdown's BSD-style notice) and DOMPurify, dual-licensed
   MPL-2.0 or Apache-2.0 and used here under the Apache License 2.0.
-- Oxanium and Pixelify Sans: the fonts of the web UI and the Android app. SIL Open Font License,
-  Version 1.1.
+- Inter and JetBrains Mono: the fonts of the web UI (ui/public/fonts, each with its licence file).
+  SIL Open Font License, Version 1.1.
+- Oxanium and Pixelify Sans: the fonts of the Android app. SIL Open Font License, Version 1.1.
 - The NVIDIA CUDA runtime and cuBLAS (libcudart, libcublas, libcublasLt; cudart64_12, cublas64_12
   and cublasLt64_12 on Windows), in the x86_64 Linux and Windows CUDA packs beside the CUDA
   backend module that links them. Redistributed as the NVIDIA CUDA Toolkit End User License
@@ -191,6 +192,16 @@ DOMPurify is dual-licensed under the Mozilla Public License 2.0 or the Apache Li
 It is used here under the Apache License 2.0, whose text is the LICENSE file shipped
 beside this one.
 
+
+----------------------------------------------------------------------------------------------------
+Inter and JetBrains Mono
+----------------------------------------------------------------------------------------------------
+
+Copyright (c) 2016 The Inter Project Authors (https://github.com/rsms/inter)
+Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1, whose full text
+follows under Oxanium and Pixelify Sans below and travels beside each font file.
 
 ----------------------------------------------------------------------------------------------------
 Oxanium and Pixelify Sans

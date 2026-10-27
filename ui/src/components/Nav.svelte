@@ -33,13 +33,13 @@
   }
   a:hover {
     color: var(--text);
-    border-color: var(--border);
+    border-color: var(--line);
   }
   a[aria-current='page'] {
-    color: var(--accent-text);
+    color: var(--on-accent);
     background: var(--accent);
     border-color: var(--shadow);
-    box-shadow: 3px 3px 0 var(--shadow);
+    box-shadow: var(--shadow-sm);
     font-weight: 700;
   }
 </style>
