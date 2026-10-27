@@ -194,12 +194,42 @@ const std::vector<std::pair<std::string, std::string>> & security_headers() {
     // visibly in the browser console, which is where it should be noticed. form-action 'none' costs
     // nothing: the UI's forms are handled in script and never submitted.
     static const std::vector<std::pair<std::string, std::string>> h = {
-        {"Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
-                                    "font-src 'self'; connect-src 'self'; media-src 'none'; object-src 'none'; "
-                                    "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"},
+        {"Content-Security-Policy",
+         "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+         "font-src 'self'; connect-src 'self'; media-src 'none'; object-src 'none'; "
+         "frame-src 'self' blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"},
         {"X-Content-Type-Options", "nosniff"},
         {"Referrer-Policy", "no-referrer"},
         {"X-Frame-Options", "DENY"},
+    };
+    return h;
+}
+
+bool is_preview_path(const std::string & path) {
+    // /api/conversations/<id>/file, with exactly one segment for the id.
+    static const std::string head = "/api/conversations/";
+    static const std::string tail = "/file";
+    if (path.size() <= head.size() + tail.size()) return false;
+    if (path.compare(0, head.size(), head) != 0) return false;
+    if (path.compare(path.size() - tail.size(), tail.size(), tail) != 0) return false;
+    const std::string id = path.substr(head.size(), path.size() - head.size() - tail.size());
+    return !id.empty() && id.find('/') == std::string::npos;
+}
+
+const std::vector<std::pair<std::string, std::string>> & preview_headers() {
+    // A workspace file is the agent's work, not this UI: an HTML page or an SVG it wrote may carry
+    // script. The policy itself sandboxes the document (an opaque origin, whatever frame shows it),
+    // lets its own inline script and styles run so a page the agent built can be tried, and lets it
+    // load nothing from anywhere: no request to this server's API, no other host, no form. Only the
+    // UI's own page may frame it.
+    static const std::vector<std::pair<std::string, std::string>> h = {
+        {"Content-Security-Policy", "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; "
+                                    "style-src 'unsafe-inline'; img-src data: blob:; font-src data:; "
+                                    "media-src data: blob:; connect-src 'none'; object-src 'none'; base-uri 'none'; "
+                                    "form-action 'none'; frame-ancestors 'self'"},
+        {"X-Content-Type-Options", "nosniff"},
+        {"Referrer-Policy", "no-referrer"},
+        {"X-Frame-Options", "SAMEORIGIN"},
     };
     return h;
 }

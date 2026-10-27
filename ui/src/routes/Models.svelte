@@ -4,6 +4,7 @@
   import UrlImport from '../components/models/UrlImport.svelte';
   import PlanProgress from '../components/plan/PlanProgress.svelte';
   import ProgressBar from '../components/ProgressBar.svelte';
+  import StreamingBadge from '../components/StreamingBadge.svelte';
   import { api } from '../lib/api';
   import { formatBytes, resumeLabel } from '../lib/format';
   import { libraryRows, type LibraryRow, type RowState } from '../lib/library';
@@ -159,9 +160,14 @@
     loaded: 'ok',
     incomplete: 'err',
   };
+  import { t } from '../stores/prefs.svelte';
 </script>
 
-<h1>Models</h1>
+<div class="page-col">
+<div class="page-head">
+  <h1>{t('nav.models')}</h1>
+  <p>{t('models.lead')}</p>
+</div>
 
 {#if error}
   <p class="banner error" role="alert">Could not list models: {error} <button type="button" onclick={refresh}>Retry</button></p>
@@ -175,7 +181,8 @@
 
 {#if server.info?.model}
   <div class="banner info">
-    <span>Loaded: <strong>{server.info.model.name}</strong> ({server.info.model.arch}, {server.info.model.load_s.toFixed(1)} s load)</span>
+    <span>{t('models.loaded')} <strong>{server.info.model.name}</strong> ({server.info.model.arch}, {t('models.loadTime', { s: server.info.model.load_s.toFixed(1) })})</span>
+    <StreamingBadge streaming={server.info.model.streaming} />
     {#if !rows.some((r) => r.state === 'loaded')}
       <!-- A model opened from outside the listed folders has no row to carry these. -->
       <button type="button" onclick={() => act('unload', api.unload)} disabled={pending.unload}>Unload</button>
@@ -352,8 +359,10 @@
     </p>
   </details>
 {:else if !error}
-  <p class="muted">Loading...</p>
+  <div class="skel" aria-hidden="true">{#each [0, 1, 2] as i (i)}<span class="skeleton"></span>{/each}</div>
 {/if}
+
+</div>
 
 <style>
   .name {
@@ -370,14 +379,25 @@
   .row {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.5rem 1rem;
+    gap: var(--s2) var(--s4);
     align-items: center;
-    padding: 0.6rem 0.75rem;
-    border: var(--edge) solid var(--border);
+    padding: var(--s3) var(--s4);
+    border: var(--edge) solid var(--line);
+    border-radius: var(--radius);
     background: var(--surface);
+    box-shadow: var(--shadow-sm);
+  }
+  .skel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s2);
+  }
+  .skel .skeleton {
+    height: 4.5rem;
+    border-radius: var(--radius);
   }
   .row.loaded {
-    background: var(--ok-bg);
+    border-color: var(--ok);
   }
   .row.followed {
     border-color: var(--accent);

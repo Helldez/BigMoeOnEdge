@@ -71,7 +71,7 @@
     font-size: 1.05rem;
   }
   .row {
-    border-top: var(--edge) solid var(--border);
+    border-top: var(--edge) solid var(--line);
   }
   .row > summary {
     padding: 0.6rem 1rem;
@@ -110,7 +110,7 @@
     font-size: 0.85rem;
   }
   .why > summary {
-    color: var(--accent);
+    color: var(--accent-ink);
     margin-bottom: 0.3rem;
   }
 </style>

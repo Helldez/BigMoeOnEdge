@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { downloadSummary, fitTone, libraryRows } from './library';
+import { downloadSummary, fitTone, libraryRows, recommendedEntry } from './library';
 import type { CatalogEntry, DownloadEvent, LocalModel } from './types';
 
 // Made-up names and sizes: nothing here depends on a real model.
@@ -148,5 +148,20 @@ describe('the verdict colour', () => {
     expect(fitTone('will_not_fit')).toBe('err');
     expect(fitTone('something new')).toBe('');
     expect(fitTone(undefined)).toBe('');
+  });
+});
+
+describe('recommendedEntry', () => {
+  const e = (id: string, bytes: number, added = false) =>
+    ({ id, title: id, quant: '', file: `${id}.gguf`, bytes, blurb: '', status: 'available', note: '', added }) as CatalogEntry;
+  const GB = 1024 ** 3;
+  it('picks the largest model that fits the memory', () => {
+    expect(recommendedEntry([e('small', 14 * GB), e('big', 20 * GB)], 32 * GB)?.id).toBe('big');
+    expect(recommendedEntry([e('small', 14 * GB), e('big', 20 * GB)], 16 * GB)?.id).toBe('small');
+  });
+  it('picks the smallest when none fits, and never one the person added', () => {
+    expect(recommendedEntry([e('small', 14 * GB), e('big', 20 * GB)], 8 * GB)?.id).toBe('small');
+    expect(recommendedEntry([e('mine', 1 * GB, true), e('big', 20 * GB)], 8 * GB)?.id).toBe('big');
+    expect(recommendedEntry([], 8 * GB)).toBeNull();
   });
 });

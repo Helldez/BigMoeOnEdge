@@ -1,12 +1,13 @@
 <script lang="ts">
-  import StreamingBadge from './StreamingBadge.svelte';
+  // What the engine's state asks a person to know, over every screen: an unreachable server, a load
+  // under way or failed, a context too small for the clients the server serves. The everyday state
+  // (the model, ready, generating, a download) lives in the sidebar's model card.
+  import Icon from './Icon.svelte';
   import { contextAdvice, dismissContextWarning, dismissedContextWarning, warningText } from '../lib/context';
-  import { downloadSummary } from '../lib/library';
   import { href } from '../lib/route';
   import { server } from '../stores/server.svelte';
+  import { t } from '../stores/prefs.svelte';
 
-  const stateClass: Record<string, string> = { empty: '', planning: 'warn', loading: 'warn', ready: 'ok', error: 'err' };
-  const stateText: Record<string, string> = { planning: 'Measuring the machine, then loading' };
   let info = $derived(server.info);
   let ctx = $derived(contextAdvice(info?.model, server.params));
   let dismissed = $state(dismissedContextWarning());
@@ -14,80 +15,50 @@
     dismissContextWarning(key);
     dismissed = key;
   }
-  let downloads = $derived(downloadSummary(server.downloads));
 </script>
 
-<div class="status" role="status" aria-live="polite">
-  {#if !server.connected}
-    <span class="badge err">Server unreachable, reconnecting</span>
+<div class="notices" role="status" aria-live="polite">
+  {#if !server.connected && server.everConnected}
+    <p class="banner error"><Icon name="alert" size={16} />{t('status.unreachable.long')}</p>
+  {:else if !server.connected && !info}
+    <p class="banner info"><span class="skeleton spin"></span>{t('status.connecting')}</p>
   {/if}
-  {#if info}
-    <span class="badge {stateClass[info.state] ?? ''}">State: {stateText[info.state] ?? info.state}</span>
-    {#if info.state === 'error' && info.error}
-      <span class="error-text">{info.error}</span>
-    {/if}
-    {#if info.model}
-      <span class="model" title={info.model.path}>{info.model.name}</span>
-      <span class="muted">{info.model.arch}</span>
-      <StreamingBadge streaming={info.model.streaming} />
-      {#if ctx?.warn && ctx.dismissKey !== dismissed}
-        <span class="badge warn ctx" title="A coding agent's first request (system prompt and tools) needs about {ctx.recommended} tokens; a request that does not fit is refused.">
-          {warningText(ctx)}
-          <a href={ctx.href}>Raise {ctx.label}</a>
-          <button type="button" class="dismiss" aria-label="Dismiss the context warning" title="Dismiss" onclick={() => ctx && dismiss(ctx.dismissKey)}>×</button>
-        </span>
-      {/if}
-    {:else if info.state === 'empty'}
-      <span class="muted">No model loaded</span>
-    {/if}
-    {#if info.generating}
-      <span class="badge info">Generating</span>
-    {/if}
-    {#if downloads}
-      <a class="badge info downloads" href={href('models')} title="Downloads run on the server; follow them in Models">
-        {downloads.count === 1 ? 'Downloading' : `${downloads.count} downloads`}{downloads.fraction !== null ? ` ${(downloads.fraction * 100).toFixed(0)}%` : ''}
-      </a>
-    {/if}
-    <span class="version muted">v{info.version}</span>
-  {:else}
-    <span class="muted">Connecting to server...</span>
+  {#if info?.state === 'planning' || info?.state === 'loading'}
+    <p class="banner info">
+      <span class="skeleton spin"></span>{info.state === 'planning' ? t('status.planning.long') : t('status.loading.long')}
+    </p>
+  {:else if info?.state === 'error'}
+    <p class="banner error">
+      <Icon name="alert" size={16} /><span>{t('status.error.long')}{info.error ? `: ${info.error}` : ''}</span>
+      <a class="button small" href={href('models')}>{t('status.error.next')}</a>
+    </p>
+  {/if}
+  {#if ctx?.warn && ctx.dismissKey !== dismissed}
+    <p class="banner warn ctx">
+      <Icon name="info" size={16} />
+      <span class="grow">{warningText(ctx)}</span>
+      <a class="button small" href={ctx.href}>{t('context.raise', { label: ctx.label })}</a>
+      <button type="button" class="ghost icon small" aria-label={t('context.dismiss')} title={t('action.dismiss')} onclick={() => ctx && dismiss(ctx.dismissKey)}>
+        <Icon name="close" size={16} />
+      </button>
+    </p>
   {/if}
 </div>
 
 <style>
-  .status {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    flex-wrap: wrap;
-    padding: 0.4rem 1rem;
-    border-bottom: 1px solid var(--border);
-    background: var(--surface);
-    font-size: 0.9rem;
+  .notices .banner {
+    margin: var(--s3) var(--s4) 0;
+    font-size: 0.875rem;
+    padding: var(--s2) var(--s3);
   }
-  .model {
-    font-weight: 600;
-    overflow-wrap: anywhere;
+  .grow {
+    flex: 1;
+    min-width: 12rem;
   }
-  .ctx {
-    white-space: normal;
-  }
-  .dismiss {
-    margin-left: 0.4rem;
-    min-width: 1.75rem;
-    min-height: 1.75rem;
-    padding: 0;
-    font-size: 1rem;
-    line-height: 1;
-  }
-  .error-text {
-    color: var(--err);
-    overflow-wrap: anywhere;
-  }
-  .downloads {
-    text-decoration: none;
-  }
-  .version {
-    margin-left: auto;
+  .spin {
+    width: 1rem;
+    height: 1rem;
+    min-height: 1rem;
+    border-radius: 50%;
   }
 </style>

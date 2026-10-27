@@ -7,7 +7,7 @@
 
   let { pools }: { pools: PlanMemoryPool[] } = $props();
 
-  const COLOURS = ['var(--accent-2)', 'var(--accent)', 'var(--muted)', 'var(--ok)', 'var(--warn)'];
+  const COLOURS = ['var(--accent)', 'var(--accent)', 'var(--muted)', 'var(--ok)', 'var(--warn)'];
   const colour = (slot: number) => (slot < 0 ? 'var(--surface-2)' : COLOURS[slot % COLOURS.length]);
 </script>
 
@@ -66,7 +66,7 @@
   .bar {
     display: flex;
     height: 28px;
-    border: var(--edge) solid var(--border);
+    border: var(--edge) solid var(--line);
     background: var(--surface-2);
     overflow: hidden;
   }
@@ -89,7 +89,7 @@
   .swatch {
     flex: 0 0 12px;
     height: 12px;
-    border: 1px solid var(--border);
+    border: 1px solid var(--line);
   }
   .note {
     margin: 0;
