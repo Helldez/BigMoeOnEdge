@@ -7,6 +7,8 @@
 #include "sheredom/subprocess.h"
 #endif
 
+#include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -29,6 +31,15 @@
 #include <sstream>
 #include <unistd.h>
 #include <climits>
+#endif
+
+#if !defined(_WIN32)
+#include <cerrno>
+#include <csignal>
+#include <fcntl.h>
+#include <poll.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -196,6 +207,226 @@ void open_url(const std::string & url) {
         subprocess_destroy(proc);
         delete proc;
     }).detach();
+#endif
+}
+
+std::string home_dir() {
+#if defined(_WIN32)
+    PWSTR w = nullptr;
+    std::string home;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Profile, 0, nullptr, &w))) home = narrow(w);
+    CoTaskMemFree(w);
+    return home;
+#elif defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IPHONE)
+    return "";
+#else
+    const char * home = std::getenv("HOME");
+    return home ? home : "";
+#endif
+}
+
+const char * os_name() {
+#if defined(_WIN32)
+    return "Windows";
+#elif defined(__ANDROID__)
+    return "Android";
+#elif defined(__APPLE__) && TARGET_OS_IPHONE
+    return "iOS";
+#elif defined(__APPLE__)
+    return "macOS";
+#else
+    return "Linux";
+#endif
+}
+
+bool can_run_commands() {
+#if defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IPHONE)
+    return false;
+#else
+    return true;
+#endif
+}
+
+namespace {
+// How often a running command is looked at for its deadline and a stop while it writes nothing.
+constexpr int kCommandPollMs = 50;
+
+void keep_output(CommandResult & r, const char * data, size_t n, size_t max_output) {
+    const size_t room = r.output.size() < max_output ? max_output - r.output.size() : 0;
+    if (n > room) r.truncated = true;
+    r.output.append(data, n < room ? n : room);
+}
+} // namespace
+
+CommandResult run_command(const std::string & command,
+                          const std::string & cwd,
+                          int timeout_s,
+                          size_t max_output,
+                          const std::atomic<bool> & stop) {
+    CommandResult r;
+    if (!can_run_commands()) {
+        r.error = "this platform does not let the server start a command";
+        return r;
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_s);
+    const auto overdue = [&] {
+        if (stop.load())
+            r.stopped = true;
+        else if (std::chrono::steady_clock::now() >= deadline)
+            r.timed_out = true;
+        return r.stopped || r.timed_out;
+    };
+#if defined(_WIN32)
+    SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
+    HANDLE rd = nullptr, wr = nullptr;
+    if (!CreatePipe(&rd, &wr, &sa, 0)) {
+        r.error = "could not create a pipe for the command";
+        return r;
+    }
+    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+    HANDLE nul = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = nul;
+    si.hStdOutput = wr;
+    si.hStdError = wr;
+    PROCESS_INFORMATION pi{};
+    // /d skips AutoRun, /s keeps the quoting of the command as written.
+    std::wstring line = L"cmd.exe /d /s /c \"" + widen(command) + L"\"";
+    const std::wstring wcwd = widen(cwd);
+    // A job holds the command and everything it starts, so a timeout or a stop ends them all.
+    HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION lim{};
+    lim.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (job) SetInformationJobObject(job, JobObjectExtendedLimitInformation, &lim, sizeof(lim));
+    const BOOL ok = CreateProcessW(nullptr, line.data(), nullptr, nullptr, TRUE, CREATE_SUSPENDED | CREATE_NO_WINDOW,
+                                   nullptr, wcwd.c_str(), &si, &pi);
+    CloseHandle(wr);
+    if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
+    if (!ok) {
+        CloseHandle(rd);
+        if (job) CloseHandle(job);
+        r.error = "could not start cmd.exe";
+        return r;
+    }
+    if (job) AssignProcessToJobObject(job, pi.hProcess);
+    ResumeThread(pi.hThread);
+    CloseHandle(pi.hThread);
+    r.started = true;
+    char buf[4096];
+    for (;;) {
+        DWORD avail = 0;
+        if (!PeekNamedPipe(rd, nullptr, 0, nullptr, &avail, nullptr)) break; // every writer closed it
+        if (avail > 0) {
+            DWORD n = 0;
+            if (!ReadFile(rd, buf, (DWORD) std::min<size_t>(sizeof(buf), avail), &n, nullptr) || n == 0) break;
+            keep_output(r, buf, n, max_output);
+            continue;
+        }
+        if (overdue()) break;
+        if (WaitForSingleObject(pi.hProcess, kCommandPollMs) == WAIT_OBJECT_0) {
+            // Ended: read what is left, without waiting on a child it left holding the pipe.
+            while (PeekNamedPipe(rd, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) {
+                DWORD n = 0;
+                if (!ReadFile(rd, buf, (DWORD) std::min<size_t>(sizeof(buf), avail), &n, nullptr) || n == 0) break;
+                keep_output(r, buf, n, max_output);
+            }
+            break;
+        }
+    }
+    if (r.stopped || r.timed_out) {
+        if (job)
+            TerminateJobObject(job, 1);
+        else
+            TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, INFINITE);
+    } else {
+        DWORD code = 0;
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        if (GetExitCodeProcess(pi.hProcess, &code)) r.exit_code = (int) code;
+    }
+    CloseHandle(pi.hProcess);
+    CloseHandle(rd);
+    if (job) CloseHandle(job); // KILL_ON_JOB_CLOSE: whatever the command left running ends here
+    return r;
+#else
+#if defined(__ANDROID__)
+    const char * shell = "/system/bin/sh";
+#else
+    const char * shell = "/bin/sh";
+#endif
+    int fds[2];
+    if (pipe(fds) != 0) {
+        r.error = "could not create a pipe for the command";
+        return r;
+    }
+    fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+    // Everything the child needs is made before fork: between fork and exec it may only make calls
+    // that are safe in a copy of a threaded process.
+    const char * c_cwd = cwd.c_str();
+    const char * c_cmd = command.c_str();
+    const pid_t pid = fork();
+    if (pid < 0) {
+        close(fds[0]);
+        close(fds[1]);
+        r.error = "could not start a process";
+        return r;
+    }
+    if (pid == 0) {
+        setpgid(0, 0);
+        if (chdir(c_cwd) != 0) _exit(126);
+        const int in = open("/dev/null", O_RDONLY);
+        if (in >= 0) dup2(in, 0);
+        dup2(fds[1], 1);
+        dup2(fds[1], 2);
+        execl(shell, "sh", "-c", c_cmd, (char *) nullptr);
+        _exit(127);
+    }
+    setpgid(pid, pid); // also here: whichever of the two runs first, the group exists before a kill
+    close(fds[1]);
+    fcntl(fds[0], F_SETFL, fcntl(fds[0], F_GETFL) | O_NONBLOCK);
+    r.started = true;
+    char buf[4096];
+    bool eof = false;
+    int status = 0;
+    bool reaped = false;
+    while (!eof || !reaped) {
+        if (overdue()) break;
+        if (!eof) {
+            pollfd p{fds[0], POLLIN, 0};
+            const int pr = poll(&p, 1, kCommandPollMs);
+            if (pr > 0) {
+                const ssize_t n = read(fds[0], buf, sizeof(buf));
+                if (n > 0)
+                    keep_output(r, buf, (size_t) n, max_output);
+                else if (n == 0 || (errno != EAGAIN && errno != EINTR))
+                    eof = true;
+            }
+        }
+        if (!reaped) {
+            const pid_t w = waitpid(pid, &status, WNOHANG);
+            if (w == pid)
+                reaped = true;
+            else if (eof)
+                std::this_thread::sleep_for(std::chrono::milliseconds(kCommandPollMs));
+        }
+        // The shell is gone and the pipe is still open: a background child holds it. The command
+        // has answered; what it left running is ended below with its group.
+        if (reaped && !eof) {
+            ssize_t n;
+            while ((n = read(fds[0], buf, sizeof(buf))) > 0)
+                keep_output(r, buf, (size_t) n, max_output);
+            break;
+        }
+    }
+    close(fds[0]);
+    // The whole group, whatever happened: a command never outlives its tool call.
+    kill(-pid, SIGKILL);
+    if (!reaped) waitpid(pid, &status, 0);
+    if (!r.stopped && !r.timed_out && WIFEXITED(status)) r.exit_code = WEXITSTATUS(status);
+    return r;
 #endif
 }
 

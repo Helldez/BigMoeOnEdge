@@ -4,7 +4,9 @@
 // downloads already use it (model_library.h): no TLS stack in the server, certificates the OS's.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -32,6 +34,37 @@ public:
         (void) error;
         bytes = 0;
         return true;
+    }
+
+    // One request whose answer is read as it arrives: the agent's web tools and a provider's
+    // streamed chat (agent.h). `on_data` sees each piece of the body and returns false to end the
+    // transfer there (enough has been read, or the run was stopped). `status` is the HTTP status of
+    // the last response (after redirects); a 4xx or 5xx still delivers its body, which says why.
+    // `token` goes as a bearer token, by the same rule as get(): never on a command line or in a log.
+    struct Request {
+        std::string method = "GET";
+        std::string url;
+        std::string token;
+        std::string body;         // sent as is, for a POST
+        std::string content_type; // of `body`
+        std::string accept;       // the Accept header, when set
+        int timeout_s = 60;       // the whole transfer
+        // Plain http is fetched too (a provider on this machine or the local network); otherwise
+        // https only, on every redirect.
+        bool allow_http = false;
+    };
+    // False with the reason when the request could not be made at all (no network adapter, curl
+    // missing, a scheme refused); true once a response was read, whatever its status. This default
+    // is an adapter that cannot make one.
+    virtual bool stream(const Request & req,
+                        const std::function<bool(const char * data, size_t n)> & on_data,
+                        int & status,
+                        std::string & error) {
+        (void) req;
+        (void) on_data;
+        status = 0;
+        error = "this server cannot make web requests";
+        return false;
     }
 };
 
