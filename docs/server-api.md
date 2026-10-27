@@ -94,6 +94,13 @@ other software, or other people, on that machine or on a network it was told to 
   its own scan of the models directory groups under that name, a split set whole. Never a file in a
   scan directory, never the model loaded or loading (`409`), never a file a running download is
   writing (`409`); a link is removed as the link, its target kept.
+- Some routes answer only a client whose connection comes from this machine, whatever `--host`
+  and the key say: they install software, read the network on the person's behalf, or change
+  files. They are one list, `local_only_routes()` in `server/access.h`, enforced before routing
+  (`403`, `code: "local_only"`): deleting a model, adding one from a link, and the backend-pack and
+  update routes ([Backend packs and updates](#backend-packs-and-updates)).
+- A server started by an app with `--parent-pid PID` stops when that process ends, so an app that
+  crashes leaves no server holding the port and a model's memory.
 - Over the API a client may name one file to open, the model, and it is only read (what it may delete is a model as the listing names it, above). Parameters that make
   the engine write a file are set at launch and are refused over `PUT /api/config`.
 - A client on the network (a connection whose peer address is not loopback) may name a model only
@@ -606,6 +613,8 @@ limit.
 | `done` | per generation, the CLI's `BMOE_DONE` keys (`docs/telemetry.md`): `cancelled`, `tokens`, `tok_s`, `load_s`, `prefill_s`, `prefill_tps`, `prefill_read_mib`, `prefill_dev_tokens`, `n_prompt`, `n_past`, `cache_hit_pct`, `read_mib`, `io_s_tok`, `compute_s_tok`, `stall_s_tok`, `flash_wait_s_tok`, `mgmt_s_tok`, `majflt_tok`, `cpu_s_tok`, `loop_overhead_s_tok`, `cache_resident_mib`, `cache_budget_mib`, `cache_evictions`, `cache_rereads`, `token_demand_mib`, `mtp_drafted`, `mtp_accepted`, `mtp_decodes`, `drafted_steps`, `mtp_draft_s_tok`, `ttft_s` |
 | `decide` | per decision: the `POST /api/decide` answer |
 | `download` | a download's progress: `id`, `file`, `received`, `total`, `state` (`running`, `done`, `error`, `cancelled`), `error` (with `running`: why the last attempt failed while the server waits to resume) |
+| `backend` | a backend pack's install: `id` (the pack), `kind` (`backend`), `file`, `received`, `total`, `state` (`running`, `done`, `error`, `cancelled`), `error` (with `running`: the step, such as `unpacking`); with `done`, `restart_required` and `in_place` (false when the pack replaces one in use and takes its place at the next start) |
+| `update` | the installer's download: the same fields with `id` `update`, and with `done` its `path` and `version` |
 | `config` | the `GET /api/config` object, after any change |
 | `plan_progress` | a measurement (`GET /api/plan?measure=1`, or an auto load) entering a stage: `step` (`devices`, `model`, `compute`, `storage`, `memory`, `placement`, `rules`), its words `label`, `index` from 0 and `count`; then `{"step": "done"}` when it ends. A UI shows `label`; `step` is the protocol |
 | `log` | one engine diagnostic (`bmoe/log.h`): `level` (`info`, `warn`, `error`) and `message`, the line the server also writes to stderr after `bmoe: `. For a person to read; a client decides nothing on its wording |
@@ -959,3 +968,52 @@ Applies the current plan's `values` to the config without adding them to `user_k
 the decisions so `GET /api/config` returns them under `plan`. Returns the config object. A plan is
 made from the configuration without the plan layer (defaults, launch flags, the person's values),
 so its `values` are complete on their own and replace the previous plan whole.
+
+## Backend packs and updates
+
+The desktop app's side of the release ([desktop-app.md](desktop-app.md)): the signed feed, read
+when a person asks and never otherwise, backend packs installed into `<data>/backends/<id>/`, and
+the installer of a newer release. Every route here answers a local client only (`403`,
+`code: "local_only"` from the network). A build that carries no feed key answers `503` with
+`code: "no_feed_key"` where it would read the feed. `--feed-url URL` (https) reads the feed from
+elsewhere, for testing.
+
+### `GET /api/backends`
+
+`{registered, target, feed, packs, installed, restart_required, feed_error?}`. `registered` is every
+backend that registered at start (`CPU`, `MTL`, `Vulkan`, ...); `target` the build's
+(`macos-arm64`, ...); `feed` `{version, published}` of the verified feed known, or `null`. `packs`
+is that feed's packs for this target: `{id, title, size, applies, installed, installed_version,
+current}`, `applies` when one of the pack's driver libraries loads here, `current` when the
+installed copy is this feed's file. `installed` lists every pack on disk (`{id, version, offered}`).
+`restart_required` is true once a pack was installed since the server started. With `?refresh=1`
+the feed is read from the network first; a feed that cannot be read or does not verify is said in
+`feed_error`, and the rest of the answer stands. Without it, the feed kept from the last read
+answers (checked again), or none.
+
+### `POST /api/backends/<id>/install`
+
+Body `{}` or `{"force": true}` (install a pack that does not apply here). Downloads the pack of the
+last feed read, checks its size and SHA-256, lists the archive with the system's `tar` and refuses
+it if an entry would leave the folder (an absolute path, a drive, a backslash, `..`, a hard link, a
+device, an entry under a link), unpacks it into a staging folder, checks the files again (every link
+points inside), and moves it to `<data>/backends/<id>/` with a `pack.json` marker. The answer comes
+when it is done: `200` with `{ok, id, restart_required: true}`; progress meanwhile as `backend`
+events. `409` with `no_feed` (no feed read yet), `not_applicable` (no driver library loads; `force`
+overrides), `busy` (another download runs); `404` `not_found` (no such pack for this target); `502`
+`failed` with the reason when the download, the checks or the unpacking fail, in which case nothing
+is installed. The engine loads the pack at the next start of the server.
+
+### `GET /api/update`
+
+Reads the feed and answers `{current, latest, available, notes, published, target, installer}`:
+`available` when the feed's version is newer than this server's and has an installer for this
+target, `installer` `{url, sha256, size, file}` or `null`. `502` `feed` when the feed cannot be read
+or does not verify.
+
+### `POST /api/update/download`
+
+Downloads the installer of the feed last read into `<data>/updates/`, checks its size and SHA-256,
+and answers once it is there: `200` with `{ok, version, path}`; progress as `update` events. The
+desktop app runs `path` (`bmoeDesktop.applyUpdate`), which accepts nothing outside that folder.
+`409` with `no_feed` or `up_to_date`, or `busy`; `502` `failed` when it does not arrive whole.

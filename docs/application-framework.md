@@ -18,7 +18,7 @@ project speaks that API, and nothing else:
 
 | Platform | How the UI reaches the server | Why that way |
 |---|---|---|
-| Windows, macOS, Linux | `bmoe-server` as its own process; the web UI and any OpenAI client over HTTP on loopback, or on the network with `--api-key` | A process of its own is the crash boundary: a driver that ends the engine does not end the UI |
+| Windows, macOS, Linux | `bmoe-server` as its own process, started by the desktop app (`bmoe-desktop`, the web UI in a native window, [desktop-app.md](desktop-app.md)) or on its own; the web UI and any OpenAI client over HTTP on loopback, or on the network with `--api-key` | A process of its own is the crash boundary: a driver that ends the engine does not end the window |
 | Android | The same binary, shipped in the APK as `libbmoe-server.so` and started by the app as a child process, the way the CLI is today; the app is an HTTP client of loopback, always with a key (on a phone every installed app reaches loopback) | Same crash boundary, same API, and the phone serves the network with the same flag the desktop uses |
 | iOS | An app may not start a process: the app links `bmoe_server` and calls `run()` on a thread, then speaks to loopback inside its own process | The one platform without the boundary still gets the one API, with no second implementation |
 

@@ -199,6 +199,22 @@ faults no test had (one memory pool counted twice, an idle device taking graph n
 kernel compressed). The honest reading of "unknown" above is that the same should be expected of
 each of the others.
 
+**Backends installed after the program.** A backend that needs a vendor's runtime (CUDA with the
+NVIDIA runtime and cuBLAS, HIP against ROCm) is not in the installers but a pack of its own, which
+the desktop app installs where it applies ([desktop-app.md](desktop-app.md)). The server installs
+it into `<data>/backends/<id>/`, and at start-up the engine loads modules from each folder under
+`<data>/backends/` after the executable's own: `core/` does not know the data folder, so
+`register_backends()` takes the folders from its front-end (the server; the CLI passes none and
+loads from its own folder only). A folder adds a module only for a backend no folder before it
+had, the executable's first, so no device registers twice; within a folder the module named after
+its backend alone is taken over a variant, and a file named like one beside the executable
+(ggml's own base library) is never loaded twice (`extra_backend_modules`, `bmoe/probe.h`). On
+Windows a module loaded by its path does not look in its own folder for the libraries it links, so
+the server loads each pack module first with that folder searched
+(`platform::prepare_backend_modules`); elsewhere the module's run path (`$ORIGIN`) finds them. A
+pack's module is then a module like the others: if its driver library is missing it fails to load
+and is not there.
+
 **One card, several backends.** A card can be driven by more than one backend, and each registers a
 device of its own for it: CUDA and Vulkan on an NVIDIA board, HIP (AMD's ROCm) and Vulkan on an AMD
 one, SYCL and Vulkan on an Intel one. llama.cpp recognises them as one card by the PCI id the backend
