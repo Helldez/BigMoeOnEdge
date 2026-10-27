@@ -25,12 +25,12 @@ The machines are described generically on purpose.
 | | Android (arm64) | macOS (arm64) | Linux (x86_64, aarch64) | Windows (x86_64, arm64) | iOS |
 |---|---|---|---|---|---|
 | **Engine and `bmoe-cli`** | Shipped, in the APK | Shipped | Shipped | Shipped | Built, compiled into the harness app |
-| **`bmoe-server` and the web UI** | Shipped, in the APK as a child process of the app | Shipped: `BigMoeOnEdge.app` in a `.dmg`, and the desktop archive | Shipped: an AppImage, and the desktop archive | Shipped: a per-user installer (the `-npu` build: archive only), and the desktop archive | Built into the app, run on a thread of its own (no web UI: the app is the UI) |
-| **Native app** | Measured: the Compose app, a client of the server | - (web UI in the browser) | - (web UI in the browser) | - (web UI in the browser) | Built: the SwiftUI app, a client of the server in its own process; run in the simulator only |
+| **`bmoe-server` and the web UI** | Shipped, in the APK as a child process of the app | Shipped: in `BigMoeOnEdge.app` (a `.dmg`), and in the CLI archive | Shipped: in the AppImage, and in the CLI archive | Shipped: in a per-user installer (the `-npu` build: its archive only), and in the CLI archive | Built into the app, run on a thread of its own (no web UI: the app is the UI) |
+| **Native app** | Measured: the Compose app, a client of the server | Run: `bmoe-desktop`, the web UI in a native window over the server ([desktop-app.md](desktop-app.md)) | Built: `bmoe-desktop` over WebKitGTK 4.1; owed a run on a desktop | Built: `bmoe-desktop` over WebView2; owed a run | Built: the SwiftUI app, a client of the server in its own process; run in the simulator only |
 | **Planner (`--auto`)** | Measured, in the app's load path | Measured on one laptop | Built, not run on Linux hardware | Owed: one documented run | Run through the harness on one 12 GB phone by a contributor (#235); its dense policy corrected in #304 |
 | **Device probes in a process of their own** | Yes | Yes | Yes | Yes, built; owed a run | - (no second process) |
 | **CI** | Engine cross-compiled and the APK packaged, on PRs and tags | Compiled and smoke-tested, on PRs and tags | Built, byte-identity gates and UI tests, on every push | Compiled only, on PRs and tags; arm64 on an ARM64 runner, smoke-tested there | App and harness compiled for the simulator and the app's client package tested, on PRs and tags; the harness packaged by the release workflow |
-| **Release artifact** | Signed APK, built by CI, with the Hexagon, Vulkan and OpenCL backends as modules; Obtainium follows the releases | `.dmg` (ad-hoc signed, not notarised), CLI and desktop archives, with Metal | AppImage, CLI and desktop archives, both architectures, with Vulkan | Installer `.exe` (unsigned), CLI and desktop archives, both architectures, with Vulkan; arm64 adds OpenCL for the Adreno GPU | Harness app for the simulator, unsigned, built by CI |
+| **Release artifact** | Signed APK, built by CI, with the Hexagon, Vulkan and OpenCL backends as modules; Obtainium follows the releases | `.dmg` (ad-hoc signed, not notarised) and the CLI archive, with Metal | AppImage and the CLI archive, both architectures, with Vulkan; x86_64 the CUDA and HIP packs | Installer `.exe` (unsigned) and the CLI archive, both architectures, with Vulkan; arm64 adds OpenCL for the Adreno GPU; x86_64 the CUDA pack. All in the signed `feed.json` | Harness app for the simulator, unsigned, built by CI |
 | **Run on hardware** | Measured: a 12 GB phone, Snapdragon class, UFS 4.x | Measured: a 16 GB Apple-silicon laptop | Owed: the gates only, no throughput run | Measured: an x86 laptop, 8 cores, 16 GB, NVMe. arm64: owed, never run on a Snapdragon laptop | Measured by a contributor: a 12 GB phone, a 35B-A3B streamed at 1.2 tok/s before #304 |
 
 Sources: [application-framework.md](application-framework.md) for the server on each platform,
@@ -51,20 +51,22 @@ what each use of a device asks of one. This table is the subset that has been bu
 | **Metal** | - | Measured, on in every macOS build | - | - | Prefill on the GPU, decode on the CPU ([npu-prefill.md](npu-prefill.md)) |
 | **OpenCL** | Measured on a Snapdragon-class phone, in the release APK: fast at prefill width and wrong, so the plan refuses it; the dense weights on a phone GPU lost 27 % in July | - | Not built | Shipped in the arm64 archive, with the Adreno kernels; never run | Nothing yet: refused on correctness on the phone; on a laptop the probe decides ([npu-prefill.md](npu-prefill.md)) |
 | **Vulkan** | Measured on a Snapdragon-class phone, in the release APK: no faster than the cores at prefill width, not armed; on one 2020 phone its driver ended the probe, which the isolated probe contains | Not built | Shipped, a module in the release archives; never run | Shipped, as Linux; never run | Nothing yet: not a win on the phone measured ([npu-prefill.md](npu-prefill.md)) |
-| **CUDA** | - | - | Shipped for x86_64 as a pack of its own with the NVIDIA runtime and cuBLAS it links, extracted beside an archive's binaries (not the AppImage, which is read-only); measured on rented 24 GB cards with builds from source | Shipped for x86_64 as Linux, extracted beside an archive's binaries or the installed app | Every role a device with memory of its own takes ([backends.md](backends.md)) |
-| **HIP** (AMD ROCm) | - | - | Shipped in the x86_64 archives and packages as the module alone: it loads where ROCm 7 is installed and is skipped where it is not; never run | Not built | As CUDA |
+| **CUDA** | - | - | Shipped for x86_64 as a pack of its own with the NVIDIA runtime and cuBLAS it links, which the app installs into its data folder (the AppImage too) or which is extracted beside `bmoe-cli`; measured on rented 24 GB cards with builds from source | Shipped for x86_64 as Linux | Every role a device with memory of its own takes ([backends.md](backends.md)) |
+| **HIP** (AMD ROCm) | - | - | Shipped for x86_64 as a pack, the module alone: the app installs it where ROCm 7's runtime loads; never run | Not built | As CUDA |
 | **SYCL** | - | - | Not built: a module built with the toolchain and dropped beside the binary is loaded like the shipped ones | Same as Linux | Nothing |
 | **RPC** | - | - | Test fixture for the gates | - | Nothing a front-end can select |
 
 Every release has the same shape: the engine and, beside it, one module per backend and one CPU
 module per instruction-set tier, loaded at start-up ([backends.md](backends.md)). The APK carries
-Vulkan and OpenCL beside Hexagon, the Linux and Windows archives carry Vulkan (Linux x86_64 also
-HIP, without ROCm, which an AMD machine installs system-wide), the Windows arm64
+Vulkan and OpenCL beside Hexagon, the Linux and Windows archives carry Vulkan, the Windows arm64
 archive OpenCL as well (its `-npu` twin Hexagon too), the macOS archive Metal. A module whose driver library the machine lacks is not loaded, so the same archive serves
 a laptop with a GPU and a server without one, and the planner finds whichever devices registered.
-CUDA is the exception to "in the archive": with the NVIDIA runtime and cuBLAS its module is about
-twenty times the rest, so x86_64 releases carry it as a pack of its own (`bmoe-cuda-<tag>-<target>`)
-whose files go beside the binaries, where the loader finds them as it finds the others.
+CUDA and HIP are the exceptions to "in the archive": with the NVIDIA runtime and cuBLAS the CUDA
+module is about twenty times the rest, and HIP needs ROCm installed system-wide, so x86_64 releases
+carry each as a pack of its own (`bmoe-pack-cuda-<tag>-<target>`, `bmoe-pack-hip-<tag>-<target>`),
+which the desktop app installs into its data folder where it applies and the engine loads from
+there ([desktop-app.md](desktop-app.md)); extracted beside `bmoe-cli`, its files load as the
+others do.
 
 Computing the streamed experts on a GPU, rather than on the CPU cores, is half built on every
 platform: the device is measured, and the streamer's own memory is not yet handed to it

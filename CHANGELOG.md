@@ -64,6 +64,34 @@ Semantic Versioning.
   approval is waiting or a run ended while the app is away. `docs/screens.md` has the phone's
   differences.
 
+- **`bmoe-desktop`, the app's own window** (`desktop/`, `docs/desktop-app.md`). The web UI in the
+  system's web view (the `webview` library, a pinned submodule: WKWebView, WebView2, WebKitGTK 4.1),
+  with `bmoe-server` as its child process: started on the port of the app's preferences (the next
+  free one when it is taken, said in a notification), restarted when it ends on its own, stopped on
+  Quit, and stopping by itself when the app is gone (`--parent-pid`). `window.bmoeDesktop` gives
+  the UI `info`, `pickFolder`, `notify`, `openExternal`, `setPrefs`, `restartServer` and
+  `applyUpdate`, answered for the server's own pages only. A tray or menu-bar item (Open, Restart
+  Server, Quit) with close to it on macOS and Windows, and on Linux where libayatana-appindicator3
+  is found at build time; notifications, the system's folder dialog, one instance per user.
+- **Backend packs** (`GET /api/backends`, `POST /api/backends/<id>/install`). CUDA and HIP leave the
+  installers for packs of their own, which the app installs where one of a pack's driver libraries
+  loads: downloaded, size and SHA-256 checked, the archive refused if an entry would leave its
+  folder, unpacked into `<data>/backends/<id>/`. The engine loads modules from each folder there
+  after the executable's (`register_backends` takes the folders; `docs/backends.md`), so a
+  read-only install takes packs too.
+- **Updates on request** (`GET /api/update`, `POST /api/update/download`): the installer of a newer
+  release, checked, for the app to run. Nothing reaches the network unless a person asked.
+- **A signed release feed.** Every release carries `feed.json` (`scripts/make-feed.py`, packs from
+  `packaging/packs.json`) and its Ed25519 signature, made with the repository's `FEED_SIGNING_KEY`;
+  the server checks it against the key compiled in (`server/feed_key.h`, Monocypher vendored for
+  the check) before it believes a byte of it. The release does not go out with an unsigned feed.
+- **One installer per OS runs the app**: `BigMoeOnEdge.app` (its main executable `bmoe-desktop`, the
+  Swift launcher gone), the Windows setup and the AppImage (`--server` for the server alone).
+- **One-line install of the command-line tools**: `scripts/install.sh` and `scripts/install.ps1`,
+  attached to each release, install `bmoe-cli` and `bmoe-server` with its UI into the user's folder
+  and onto `PATH`, the archive checked against the feed. The `bmoe-cli` archives now carry the
+  server and the web UI; the separate desktop archive remains for the NPU build only.
+
 ### Changed
 - **A new visual language** (`docs/design.md`): slate surfaces with one cyan accent, light and dark
   following the system or the person's choice, Inter for words and JetBrains Mono for code (both SIL
@@ -90,6 +118,10 @@ Semantic Versioning.
   edit-and-resend and Stop, and a composer that picks the mode (Ask first, Read only, Full access),
   the model (the phone's or a provider's) and the folder. The conversations the apps kept on the
   phone are handed to the server once and deleted only when every message arrived.
+
+- **Local-only routes are one list** (`local_only_routes()`, `server/access.h`), enforced before
+  routing with `403` and `code: "local_only"`; deleting a model and adding one from a link moved
+  onto it, with the pack and update routes.
 
 ### Security
 - The agent's routes that reach this computer's files, processes or keys answer only to a

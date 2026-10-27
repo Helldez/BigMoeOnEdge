@@ -1,10 +1,10 @@
-; The per-user Windows installer, built by the release workflow from the staged bmoe-desktop folder
-; the archive also carries (bmoe-server.exe, its DLLs and backend modules, the C++ runtime, ui\,
-; catalog\, the licenses and README.txt). No administrator rights: it installs under the user's
-; local app data and adds a Start-menu entry that starts bmoe-server.exe, which opens the app in the
-; browser when started without a terminal of its own (platform::started_by_double_click); closing
-; its console window stops it. Settings and models stay in the server's data folder
-; (%LOCALAPPDATA%\BigMoeOnEdge), which an uninstall leaves alone.
+; The per-user Windows installer, built by the release workflow from its staged app folder
+; (bmoe-desktop.exe, bmoe-server.exe, their DLLs and backend modules, the C++ runtime, ui\, catalog\,
+; skills\ when there is one, the licenses). No administrator rights: it installs under the user's
+; local app data and adds a Start-menu entry that starts bmoe-desktop.exe, the app's window, which
+; starts bmoe-server.exe beside it and keeps an icon in the notification area. Settings, models and
+; backend packs stay in the server's data folder (%LOCALAPPDATA%\BigMoeOnEdge), which an uninstall
+; leaves alone. The app's update runs this same installer over the installed copy.
 ;
 ;   ISCC.exe /DAppVersion=0.35.1 /DSourceDir=<staged folder> /DOutputDir=<dir>
 ;            /DOutputBaseName=BigMoeOnEdge-<tag>-<target>-setup /DArch=x64compatible|arm64
@@ -42,14 +42,14 @@ DisableProgramGroupPage=yes
 ArchitecturesAllowed={#Arch}
 ArchitecturesInstallIn64BitMode={#Arch}
 LicenseFile={#SourceDir}\LICENSE
-UninstallDisplayIcon={app}\bmoe-server.exe
+UninstallDisplayIcon={app}\bmoe-desktop.exe
 UninstallDisplayName=BigMoeOnEdge
 OutputDir={#OutputDir}
 OutputBaseFilename={#OutputBaseName}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
-; An update installs over a running server: the installer asks to close it first.
+; An update installs over a running app: the installer asks to close it (and its server) first.
 CloseApplications=yes
 
 [Tasks]
@@ -62,10 +62,11 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs 
 ; The staged folder is the whole app: files an older version had and this one does not go.
 Type: filesandordirs; Name: "{app}\ui"
 Type: filesandordirs; Name: "{app}\catalog"
+Type: filesandordirs; Name: "{app}\skills"
 
 [Icons]
-Name: "{autoprograms}\BigMoeOnEdge"; Filename: "{app}\bmoe-server.exe"; WorkingDir: "{app}"; Comment: "Start BigMoeOnEdge and open it in the browser"
-Name: "{autodesktop}\BigMoeOnEdge"; Filename: "{app}\bmoe-server.exe"; WorkingDir: "{app}"; Comment: "Start BigMoeOnEdge and open it in the browser"; Tasks: desktopicon
+Name: "{autoprograms}\BigMoeOnEdge"; Filename: "{app}\bmoe-desktop.exe"; WorkingDir: "{app}"; Comment: "Run mixture-of-experts language models on this machine"
+Name: "{autodesktop}\BigMoeOnEdge"; Filename: "{app}\bmoe-desktop.exe"; WorkingDir: "{app}"; Comment: "Run mixture-of-experts language models on this machine"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\bmoe-server.exe"; Description: "Start BigMoeOnEdge now"; WorkingDir: "{app}"; Flags: postinstall nowait skipifsilent
+Filename: "{app}\bmoe-desktop.exe"; Description: "Start BigMoeOnEdge now"; WorkingDir: "{app}"; Flags: postinstall nowait skipifsilent

@@ -84,6 +84,21 @@ if(TARGET bmoe_server_core)
     add_executable(bmoe_server_test server_test.cpp)
     target_link_libraries(bmoe_server_test PRIVATE bmoe_server_core)
     add_test(NAME server_logic COMMAND bmoe_server_test)
+
+    # The desktop app's server side: the signed release feed, backend packs, archives that would
+    # leave their folder, the local-only routes, and the modules loaded from the pack folders. No
+    # network, no driver; the install case runs the system's tar.
+    add_executable(bmoe_feed_test feed_test.cpp)
+    target_link_libraries(bmoe_feed_test PRIVATE bmoe_server_core bmoe_monocypher)
+    add_test(NAME feed_and_packs COMMAND bmoe_feed_test)
+endif()
+
+# The desktop app's rules (desktop/app_core.h): preferences, port, server arguments, which pages the
+# bridge answers, which file runs as an update. No window, no server.
+if(TARGET bmoe_desktop_core)
+    add_executable(bmoe_desktop_test desktop_test.cpp)
+    target_link_libraries(bmoe_desktop_test PRIVATE bmoe_desktop_core)
+    add_test(NAME desktop_rules COMMAND bmoe_desktop_test)
 endif()
 
 # bmoe-server's engine host: loads, turns, cancel and unload across threads, and which failures

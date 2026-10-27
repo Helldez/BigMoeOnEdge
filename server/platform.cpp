@@ -40,6 +40,8 @@
 #include <poll.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <dlfcn.h>
+#include <unistd.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -170,6 +172,64 @@ void prepare_compute_backends(const std::string & data_dir) {
     // Hexagon backend is not built in. setenv with overwrite 0 leaves a value someone set alone.
     set_env_default("GGML_HEXAGON_OPPOLL", "1");
     set_env_default("GGML_HEXAGON_HOSTBUF", "1");
+#endif
+}
+
+const char * build_target() {
+#if defined(BMOE_BUILD_TARGET)
+    return BMOE_BUILD_TARGET;
+#else
+    return "";
+#endif
+}
+
+bool library_loads(const std::string & name) {
+    if (name.empty()) return false;
+#if defined(_WIN32)
+    // The system's own folders only: a driver's library is installed there, and a file of that
+    // name beside the program or in the working directory is not the driver.
+    HMODULE h = LoadLibraryExW(widen(name).c_str(), nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!h) return false;
+    FreeLibrary(h);
+    return true;
+#else
+    void * h = dlopen(name.c_str(), RTLD_LAZY | RTLD_LOCAL);
+    if (!h) return false;
+    dlclose(h);
+    return true;
+#endif
+}
+
+void prepare_backend_modules(const std::vector<std::string> & module_paths) {
+#if defined(_WIN32)
+    // Loaded with its own folder searched for what it links (the vendor runtime the pack carries),
+    // and kept loaded: ggml's own load of the same path then finds it in the process.
+    for (const std::string & p : module_paths)
+        LoadLibraryExW(fs::u8path(p).wstring().c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+#else
+    (void) module_paths;
+#endif
+}
+
+long current_pid() {
+#if defined(_WIN32)
+    return (long) GetCurrentProcessId();
+#else
+    return (long) getpid();
+#endif
+}
+
+bool process_alive(long pid) {
+    if (pid <= 0) return false;
+#if defined(_WIN32)
+    HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, (DWORD) pid);
+    if (!h) return false;
+    const bool alive = WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
+    CloseHandle(h);
+    return alive;
+#else
+    // A process of another user answers EPERM: it is there.
+    return kill((pid_t) pid, 0) == 0 || errno == EPERM;
 #endif
 }
 

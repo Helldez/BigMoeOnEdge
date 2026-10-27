@@ -29,7 +29,10 @@ server/         bmoe-server: the application framework every UI speaks to (docs/
                 agent_schedule (a task's next run), agent_store (conversations, workspaces, tasks,
                 providers and their keys, on disk), provider_protocol (an OpenAI-compatible
                 service's request and streamed answer), connect (a client's settings, written with a
-                backup):
+                backup),
+                feed (the signed release feed: Ed25519 over Monocypher, its shape held to its rules),
+                backend_packs (which packs apply, where installed ones live, which archives may be
+                unpacked), update_service (packs and updates downloaded, checked, put in place):
                 pure policy (bmoe_server_core), with curl_fetch beside it, the system curl behind the
                 HttpFetch port: the library's one adapter, there so its no-curl answer is tested
                 engine_host: the one Session, loads, the turn line, over the HostedSession seam
@@ -39,17 +42,25 @@ server/         bmoe-server: the application framework every UI speaks to (docs/
                 next plan;
                 agent: the agent's runs (one thread each, approvals, stop, helpers) and its task
                 scheduler, over EngineHost::chat or a provider; agent_routes: its HTTP routes;
-                access: who may reach the API (host, origin, key, content type, which routes answer
-                to loopback only), pure and tested;
-                platform: the only file with platform #ifs; http_server: the HTTP routes and
+                access: who may reach the API (host, origin, key, content type, the local-only
+                routes), pure and tested;
+                platform: the only file with platform #ifs, a library of its own
+                (bmoe_server_platform) the desktop app links too; http_server: the HTTP routes and
                 run(); the whole is the bmoe_server library, main.cpp the process around it
+desktop/        bmoe-desktop (docs/desktop-app.md): the native window over the system's web view
+                (third_party/webview), bmoe-server as its child process (supervisor), the app's
+                rules apart from any window (app_core: preferences, port, bridge guard, update
+                file), and os.h with one file per system (os_macos.mm, os_windows.cpp,
+                os_linux.cpp): tray, notifications, folder dialog, close-to-tray, one instance
 ui/             the web UI (Svelte + TypeScript); settings rendered from the parameter table
 catalog/        models.json: the curated model catalog, as data; clients.json: the apps the server can
                 serve and their settings (GET /api/connect)
 skills/         the agent's bundled skills (SKILL.md each), staged beside bmoe-server
-packaging/      the desktop packages release-host builds from the staged bmoe-desktop folder:
-                macos/ BigMoeOnEdge.app (a launcher that starts and stops bmoe-server) and its .dmg,
-                windows/ the Inno Setup script of the per-user installer, linux/ the AppImage
+packaging/      the installers release-host builds from the staged app folder: macos/
+                BigMoeOnEdge.app (bmoe-desktop its main executable) and its .dmg, windows/ the Inno
+                Setup script of the per-user installer, linux/ the AppImage (bmoe-desktop its entry);
+                packs.json, the backend packs as data, which scripts/make-feed.py writes into the
+                release's signed feed.json
 core/
   include/bmoe/ ports (interfaces) + config, pure policy, no llama.cpp dependency
     config.h        RunConfig + validate()

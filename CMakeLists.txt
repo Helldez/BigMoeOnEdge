@@ -41,6 +41,9 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 option(BMOE_BUILD_TESTS "Build byte-identity gates and unit tests" ON)
 option(BMOE_BUILD_CLI   "Build the bmoe-cli host tool"              ON)
 option(BMOE_BUILD_SERVER "Build bmoe-server, the engine behind the local web UI" ON)
+# The native window around the web UI (docs/desktop-app.md), where the system's web view can be
+# built against; it needs the server.
+option(BMOE_BUILD_DESKTOP "Build bmoe-desktop, the app window that runs bmoe-server" ON)
 # Off by default: diagnostics, not part of the product. They need no llama.cpp, so they can be
 # configured and cross-compiled on their own without building the engine.
 option(BMOE_BUILD_TOOLS "Build standalone diagnostic tools (bmoe-iobench)" OFF)
@@ -188,6 +191,9 @@ add_subdirectory(core)
 
 if(BMOE_BUILD_SERVER AND BMOE_HAVE_LLAMA)
     add_subdirectory(server)
+    if(BMOE_BUILD_DESKTOP AND NOT IOS AND NOT ANDROID)
+        add_subdirectory(desktop)
+    endif()
 endif()
 
 # An app is the only thing that runs on iOS, so there the CLI and the server are built into apps:
@@ -238,7 +244,7 @@ bmoe_apply_warnings(${CMAKE_CURRENT_SOURCE_DIR})
 # (headers, its libraries under lib/) are not this layout: `cmake --install build --component bmoe`.
 if(BMOE_HAVE_LLAMA AND NOT IOS AND (TARGET bmoe-cli OR TARGET bmoe-server))
     include(GNUInstallDirs)
-    foreach(_exe bmoe-cli bmoe-server)
+    foreach(_exe bmoe-cli bmoe-server bmoe-desktop)
         if(TARGET ${_exe})
             install(TARGETS ${_exe} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT bmoe)
             set(_bmoe_bin_dir "$<TARGET_FILE_DIR:${_exe}>")

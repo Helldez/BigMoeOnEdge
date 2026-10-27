@@ -66,6 +66,22 @@ public:
         error = "this server cannot make web requests";
         return false;
     }
+
+    // GET `url` into the file at `dest` (UTF-8), whole, replacing it. `progress` is told the bytes
+    // received so far, every half second or so, and stops the transfer by returning false. https
+    // only, on every redirect too. False, with the reason, when the file did not arrive whole. An
+    // adapter that cannot write files (this default) says so: the server then offers no download
+    // of a pack or an update.
+    virtual bool download(const std::string & url,
+                          const std::string & dest,
+                          const std::function<bool(uint64_t received)> & progress,
+                          std::string & error) {
+        (void) url;
+        (void) dest;
+        (void) progress;
+        error = "this build's network adapter does not download files";
+        return false;
+    }
 };
 
 // The system's curl. `scratch_dir` is a writable folder for the bytes in flight (created on
