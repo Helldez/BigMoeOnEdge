@@ -288,6 +288,20 @@ int main() {
         check(p.regime == Regime::Fits, "roomy machine: regime is fits");
         check(!p.config.moe.enabled, "roomy machine: streaming off");
         check(p.streaming_declined && !p.decline_reason.empty(), "roomy machine: the refusal is explained");
+
+        // Knobs that act only on the streamer's reads, set by the caller, are turned off with a note
+        // where nothing is streamed: before, `--auto --overlap` on a model that fits refused to start
+        // (`moe.overlap requires moe.enabled`), measured on a 16 GB card with 30 GiB of RAM.
+        RunConfig asked = base_cfg();
+        asked.moe.overlap = true;
+        asked.moe.row_stream = true;
+        PlanRequest pin;
+        pin.pinned = {"overlap", "row-stream"};
+        const Plan q = plan_run(asked, big, model, pin);
+        const Decision * o = find(q, "overlap");
+        check(q.regime == Regime::Fits && !q.config.moe.overlap && !q.config.moe.row_stream && o && o->value == "off",
+              "roomy machine, overlap asked: off with a note, not a refusal", o ? o->reason : "no decision");
+        check(validate(q.config).ok, "roomy machine, overlap asked: a valid config", validate(q.config).error);
     }
 
     // ── the budget is what we can KEEP, not what is reported available ──────────────
