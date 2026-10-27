@@ -344,10 +344,18 @@ without a device of their own, an unchanged plan.
   RAM already follow, one level up. Where every layer's dense part is on devices with memory of their
   own (the fitter gives the dense part, read by every token, the first claim on them) and a device
   computes the model's experts faster than the host by `min_backend_win` (both rates from the same
-  experiment: the real layer where both were measured on it, the GEMV otherwise), the bytes the
-  fitter gave whole layers' experts hold a cache of the experts used most, from every layer, and
-  every layer's experts go back to the host, resident or streamed. A miss is uploaded from there as
-  a miss in RAM is read from flash. The cache fills from use, so it needs no record of the routing;
+  experiment: the real layer where both were measured on it, the GEMV otherwise), the card's memory
+  past its dense part holds a cache of the experts used most, from every layer, and every layer's
+  experts go back to the host, resident or streamed. A miss is uploaded from there as a miss in RAM
+  is read from flash.
+- **Sized as the RAM cache is (#428).** The first version took exactly the bytes the fitter gave whole
+  layers' experts, so it inherited the fitter's granularity: the memory under one more whole layer was
+  never used, and a card whose dense part fit with no whole layer beside it got no cache at all. The
+  cache now takes those bytes plus what the fitter left free past its margin, per card, read in the
+  placement probe off the same free figure the fitter planned against; on several cards, the largest
+  budget whose share (llama.cpp splits it by layers) fits every card. Its floor is one token cycle,
+  the RAM cache's floor for the same reason; under it, the fitter's placement stands. llama.cpp's
+  cache is an SLRU and the replayed hit curve an LRU's, so the plan's share for it is an estimate. The cache fills from use, so it needs no record of the routing;
   a record only says, in the plan's line, how much of a token it serves. Where the device is not
   faster, its rate is unmeasured, or the dense parts did not all fit, the fitter's placement stands.
 - **Why not a price.** The first version priced the two per token (the split's host layers at the

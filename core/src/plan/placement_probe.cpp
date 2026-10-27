@@ -283,7 +283,19 @@ Placement probe_placement(const char * model_path,
                     : model.dense_bytes;
         pl.host_resident_bytes = dense_on_host + (uint64_t) cpu.context + (uint64_t) cpu.compute;
         for (size_t i = 0; i + 1 < dm.size(); ++i) {
-            pl.device_bytes += (uint64_t) dm[i].model + (uint64_t) dm[i].context + (uint64_t) dm[i].compute;
+            const uint64_t used = (uint64_t) dm[i].model + (uint64_t) dm[i].context + (uint64_t) dm[i].compute;
+            pl.device_bytes += used;
+            // The remainder of a card the fitter placed layers on: its free memory, as the fitter
+            // read it, less the placement and the fitter's own margin.
+            if (pl.n_gpu_layers > 0 && i < devs.size() && used > 0) {
+                const char * name = ggml_backend_dev_name(devs[i]);
+                const bool placed = name && std::any_of(pl.device_split.begin(), pl.device_split.end(),
+                                                        [&](const auto & e) { return e.first == name; });
+                size_t free = 0, total = 0;
+                if (placed) ggml_backend_dev_memory(devs[i], &free, &total);
+                if (placed && free > used + fitter_device_margin_bytes)
+                    pl.device_spare.emplace_back(name, (uint64_t) free - used - fitter_device_margin_bytes);
+            }
             pl.device_compute_bytes += (uint64_t) dm[i].compute;
             pl.device_context_bytes += (uint64_t) dm[i].context;
             if (dm[i].compute && i < devs.size() && ggml_backend_dev_name(devs[i])) {

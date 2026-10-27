@@ -997,13 +997,20 @@ on an integrated GPU and only the bandwidth tier is left.
 The device tier (`choose_device_tier`, [measured-planning.md](measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache)):
 the experts used most live next to the fastest processor, as RAM holds what flash would read. Where
 every layer's dense part is on devices with memory of their own and a device computes the model's
-experts faster than the host by `min_backend_win`, the bytes the capacity fitter gave whole layers'
-experts hold a cache of the experts used most, from every layer, computed on the device: every
-layer's experts are kept on the host (resident or streamed, as the regime then says) and the bytes
-become `--device-cache-mb`. It needs no record of the routing, since the cache fills from use; with
-one, the plan says how much of a token it serves. Where the device is not faster, a fact is missing,
-or not every dense part fits, the fitter's placement stands and the plan says which. On a shared
-pool, or with the caller's own placement, it says nothing and changes nothing.
+experts faster than the host by `min_backend_win`, the card's free memory past its dense part holds
+a cache of the experts used most, from every layer, computed on the device: every layer's experts
+are kept on the host (resident or streamed, as the regime then says) and the bytes become
+`--device-cache-mb`. Those bytes are what the capacity fitter gave whole layers' experts plus what it
+left free under one more whole layer (`Placement::device_spare`, read off the free figure the fitter
+planned against, less its margin): the fitter fills a card by the layer, a cache by the expert, so a
+small card whose dense part fits and no whole layer does still gets its cache. With several cards
+the budget is one figure llama.cpp splits as it splits the layers, so it is the largest whose every
+card's share fits that card. The floor is the RAM cache's, one token cycle: under it a cache evicts
+an expert before the same token needs it again, and the fitter's placement stands. It needs no
+record of the routing, since the cache fills from use; with one, the plan says how much of a token
+it serves. Where the device is not faster, a fact is missing, or not every dense part fits, the
+fitter's placement stands and the plan says which. On a shared pool, or with the caller's own
+placement, it says nothing and changes nothing.
 
 The layers the fitter split (`price_layers_home`, [measured-planning.md](measured-planning.md#step-3-the-cost-of-a-device-measured-on-a-real-layer)):
 where the capacity fitter put the dense part of some layers on a device and left their experts on

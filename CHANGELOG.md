@@ -54,6 +54,18 @@ Semantic Versioning.
   or a size; a small table the allocation finds worth a resident copy is copied as before.
 
 ### Changed
+- **The device expert cache is sized from the card's free memory, not from the fitter's whole
+  layers** (#428). `--auto` used to turn exactly the bytes llama.cpp's capacity fitter gave whole
+  layers' experts into `--device-cache-mb`, so the cache inherited the fitter's granularity: the
+  memory left under one more whole layer was never used, and a card whose dense part fit with no
+  whole layer beside it (the 8-12 GB class) got no cache at all. The placement probe now reads what
+  the fitter left free on each card past its margin, off the same free figure the fitter planned
+  against, and the cache takes it beside the experts' bytes. On several cards the budget is the
+  largest whose share, split by layers as llama.cpp splits it, fits every card. The floor is the RAM
+  cache's: one token cycle, under which a cache evicts an expert before the same token needs it
+  again; below it the fitter's placement stands, and an MTP head on the device never takes the cache
+  under it. Planner tests for the remainder, a card with no whole layer, a card under one cycle and
+  two cards. Not yet run on a card.
 - **The benchmark script measures the plan the planner learns, not only the first load.**
   `scripts/bench-report.sh` ran `--auto` once with nowhere to keep the model's routing record or
   the lossless knobs' verdicts, so its row was always a cold plan: the cache priced by a coefficient

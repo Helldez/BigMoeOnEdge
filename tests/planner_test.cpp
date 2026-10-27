@@ -2154,6 +2154,58 @@ int main() {
                   "expert host buffer: a copy the host cannot hold is not made");
         }
 
+        // The cache is sized from the card's free memory, not from the fitter's whole layers: what the
+        // fitter left free under one more layer joins the bytes it gave the experts.
+        {
+            Placement spare = half;
+            spare.device_split = {{"discrete", (uint32_t) model.n_layer + 1}};
+            spare.device_spare = {{"discrete", 2 * GiB}};
+            const Plan more = plan_on(slow_cores, spare, PlanRequest{});
+            const Decision * e = find(more, "device-cache-mb");
+            check(e && more.config.moe.device_cache_mb == (int) (11 * 1024) &&
+                      e->reason.find("left free under one more whole layer") != std::string::npos,
+                  "device tier, spare memory: the cache takes the whole layers' experts and the remainder",
+                  std::to_string(more.config.moe.device_cache_mb) + " MiB");
+
+            // A small card: every dense part fits and not one whole layer does. The cache is armed
+            // all the same, on what the dense part left free; before, the card stayed half empty.
+            Placement dense_only = spare;
+            dense_only.host_expert_layers.clear();
+            for (uint32_t il = 0; il < model.n_layer; ++il)
+                dense_only.host_expert_layers.push_back(il);
+            dense_only.override_patterns = dense_only.all_expert_patterns;
+            dense_only.device_bytes = 3 * GiB;
+            dense_only.device_spare = {{"discrete", 6 * GiB}};
+            const Plan small = plan_on(slow_cores, dense_only, PlanRequest{});
+            e = find(small, "device-cache-mb");
+            check(e && e->source == Source::Measured && small.config.moe.device_cache_mb == (int) (6 * 1024) &&
+                      small.config.buft_overrides.size() == model.n_layer,
+                  "device tier, no whole layer fits: the cache takes what the dense part left", e ? e->reason : "none");
+            check(validate(small.config).ok, "device tier, no whole layer fits: a valid config",
+                  validate(small.config).error);
+
+            // Under one token cycle a cache returns no hits: nothing is armed and the fitter's
+            // placement stands, as the RAM cache refuses the same.
+            Placement tiny = dense_only;
+            tiny.device_spare = {{"discrete", model.token_cycle_bytes / 2}};
+            const Plan under = plan_on(slow_cores, tiny, PlanRequest{});
+            e = find(under, "device-cache-mb");
+            check(e && e->value == "0" && under.config.moe.device_cache_mb == 0 &&
+                      e->reason.find("token cycle") != std::string::npos,
+                  "device tier, under one token cycle: no cache", e ? e->reason : "none");
+
+            // Two cards: llama.cpp hands each a share of one budget by its layers, so the budget is
+            // what the card with the least spare per layer can take its share of.
+            Placement two = half;
+            two.device_split = {{"discrete", 37}, {"second", 12}};
+            two.device_spare = {{"discrete", 6 * GiB}, {"second", 1 * GiB}};
+            const Plan pair = plan_on(slow_cores, two, PlanRequest{});
+            const uint64_t want = 9 * GiB + (uint64_t) ((double) GiB * 49.0 / 12.0);
+            check(pair.config.moe.device_cache_mb == (int) (want / MiB),
+                  "device tier, two cards: the budget each card can take its share of",
+                  std::to_string(pair.config.moe.device_cache_mb) + " MiB, want " + std::to_string(want / MiB));
+        }
+
         // The caller's placement is the caller's.
         PlanRequest pinned;
         pinned.pinned = {"gpu-layers"};

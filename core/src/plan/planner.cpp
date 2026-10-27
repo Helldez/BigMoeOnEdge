@@ -373,6 +373,28 @@ double expert_share_at(const ModelProfile & model, uint64_t bytes, bool * measur
 // Whether every device the fitter put layers on can hold a cache of experts and compute them there,
 // and the slowest of them at the experts, which bounds the rest. Nullptr, with the reason, where a
 // device cannot or its rate is unmeasured.
+// What the cards' spare memory adds to the cache, as ONE budget: llama.cpp splits `moe_cache_size`
+// among the cards as it splits the layers (by the tensor split the plan passes), so a card with a
+// tenth of the layers is handed a tenth of the budget whatever it has free. The budget is the
+// largest one whose every card's share fits that card's spare beside the expert bytes it already
+// held, taken pro rata to its layers like the share itself; one card is simply its spare.
+uint64_t device_spare_budget(const Placement & pl) {
+    if (pl.device_spare.empty() || pl.device_split.empty()) return 0;
+    uint64_t layers = 0;
+    for (const auto & e : pl.device_split)
+        layers += e.second;
+    if (layers == 0) return 0;
+    uint64_t budget = UINT64_MAX;
+    for (const auto & e : pl.device_split) {
+        if (e.second == 0) continue;
+        uint64_t spare = 0; // a card the probe read no spare for has none to give
+        for (const auto & sp : pl.device_spare)
+            if (sp.first == e.first) spare = sp.second;
+        budget = std::min(budget, (uint64_t) ((double) spare * (double) layers / (double) e.second));
+    }
+    return budget == UINT64_MAX ? 0 : budget;
+}
+
 const ComputeDevice * device_tier_device(const Planning & s, std::string & why) {
     const ComputeDevice * worst = nullptr;
     for (const ComputeDevice & d : s.hw.devices) {
@@ -406,11 +428,20 @@ void choose_device_tier(Planning & s) {
     // has the first claim on the fast memory, and the fitter gives it that claim before any expert.
     // A layer whose dense part is left on the host would cross to reach a cache on the device.
     if ((uint32_t) pl.n_gpu_layers < m.n_layer) return;
+    if (s.host_layers == 0) return;             // every expert on the devices: the model fits there
+    if (pl.all_expert_patterns.empty()) return; // no adapter said how to name them
     const uint64_t on_devices = m.expert_bytes > s.host_expert_bytes ? m.expert_bytes - s.host_expert_bytes : 0;
-    if (on_devices == 0 || s.host_layers == 0) return; // all on the devices, or none: nothing to choose
-    if (pl.all_expert_patterns.empty()) return;        // no adapter said how to name them
+    // The cache is not bound to the fitter's granularity: it takes the experts' bytes AND what the
+    // fitter left free under one more whole layer, which on a small card is everything past the dense
+    // part. The same budget as the RAM cache's: what the memory can hold, floored at one token cycle.
+    const uint64_t spare = device_spare_budget(pl);
+    const uint64_t budget = on_devices + spare;
+    if (budget == 0) return;
 
     const auto mib_s = [](uint64_t b) { return u64s(mib(b)); };
+    const std::string held = mib_s(budget) + " MiB (" + mib_s(on_devices) + " the capacity fitter gave " +
+                             u64s(s.n_moe_layer - s.host_layers) + " of " + u64s(s.n_moe_layer) + " layers' experts, " +
+                             mib_s(spare) + " it left free under one more whole layer)";
     std::string why;
     const ComputeDevice * dev = device_tier_device(s, why);
     // The host and the device on the same experiment: the model's own expert block where both were
@@ -419,20 +450,30 @@ void choose_device_tier(Planning & s) {
     if (!dev || rates.host <= 0.0) {
         s.note("device-cache-mb", "0", dev ? Source::Unprobed : Source::Derived,
                "The device holds whole layers' experts, not a cache of the most used ones.",
-               "a cache of experts on the device could hold the " + mib_s(on_devices) +
-                   " MiB the capacity fitter gave whole layers' experts, but " +
+               "a cache of experts on the device could hold " + held + ", but " +
                    (dev ? std::string("the host's own expert rate is unmeasured") : why));
         return;
     }
+    // Below one token cycle an LRU evicts an expert before the same token needs it again: the cache
+    // costs its memory and returns no hits. The RAM cache's floor, for the same reason.
+    if (budget < m.token_cycle_bytes) {
+        s.note("device-cache-mb", "0", Source::Derived,
+               "The device has less room than one token's experts: it keeps the fitter's whole layers.",
+               "a cache of experts on " + dev->name + " could hold " + held + ", under this model's token cycle of " +
+                   mib_s(m.token_cycle_bytes) +
+                   " MiB, below which a cache evicts an expert before the same token "
+                   "needs it again");
+        return;
+    }
     bool share_measured = false;
-    const double share = expert_share_at(m, on_devices, &share_measured);
-    char nums[320];
+    const double share = expert_share_at(m, budget, &share_measured);
+    char nums[400];
     std::snprintf(nums, sizeof(nums),
-                  "%s computes this model's experts at %.0f GiB/s against the host's %.0f%s; the %s MiB the "
-                  "fitter gave %u of %u layers' experts serve %.0f%% of a token's routed bytes as a cache (%s)",
+                  "%s computes this model's experts at %.0f GiB/s against the host's %.0f%s; a cache of %s "
+                  "serves %.0f%% of a token's routed bytes (%s)",
                   dev->name.c_str(), rates.device, rates.host,
-                  rates.real_layer ? ", both measured on this model's own expert block" : "", mib_s(on_devices).c_str(),
-                  s.n_moe_layer - s.host_layers, s.n_moe_layer, 100.0 * share,
+                  rates.real_layer ? ", both measured on this model's own expert block" : "", held.c_str(),
+                  100.0 * share,
                   share_measured ? "from this model's own routing" : "the fraction of the expert set it holds");
     if (rates.device <= rates.host * (1.0 + (double) s.pol.min_backend_win)) {
         s.note("device-cache-mb", "0", Source::Measured,
@@ -442,8 +483,8 @@ void choose_device_tier(Planning & s) {
         return;
     }
     // Every layer's experts back to the host, where the streamer or the resident set serves them, and
-    // the bytes the fitter gave them become the cache. The regime and the ledger below see the host
-    // holding the whole expert set, which is now what it holds.
+    // the bytes the fitter gave them, with what it left free, become the cache. The regime and the
+    // ledger below see the host holding the whole expert set, which is now what it holds.
     pl.host_expert_layers = m.moe_layers;
     if (pl.host_expert_layers.empty())
         for (uint32_t il = 0; il < m.n_layer; ++il)
@@ -456,12 +497,13 @@ void choose_device_tier(Planning & s) {
     // fastest: its block is one more expert block, and drafting on a slower processor was measured
     // losing (35 ms of a 65 ms token on 8 slow cores, against no head at all). It takes its bytes
     // from the cache, never from the fitter's layers, so the target keeps the placement it was
-    // fitted; where it does not fit, it drafts on the host and the plan says so.
-    uint64_t cache_bytes = on_devices;
+    // fitted, and never below the cache's floor; where it does not fit, it drafts on the host and the
+    // plan says so.
+    uint64_t cache_bytes = budget;
     RunConfig & c = s.p.config;
     if (c.spec.is_mtp() && !c.spec.mtp_head.empty() && !s.req.is_pinned("mtp-head-on-devices")) {
         const uint64_t head = m.mtp_head_bytes;
-        c.spec.mtp_head_on_devices = head > 0 && head < cache_bytes;
+        c.spec.mtp_head_on_devices = head > 0 && head + std::max<uint64_t>(m.token_cycle_bytes, 1) <= cache_bytes;
         if (c.spec.mtp_head_on_devices) {
             cache_bytes -= head;
             pl.device_bytes += head;
@@ -469,12 +511,12 @@ void choose_device_tier(Planning & s) {
                    "The MTP head (" + size_brief(head) + ") is loaded on " + dev->name + ", beside the expert cache.",
                    "the head's block is an expert block, and " + dev->name +
                        " computes this model's experts faster than the host by the margin; its " + mib_s(head) +
-                       " MiB come out of the " + mib_s(on_devices) + " MiB the fitter gave the experts");
+                       " MiB come out of the cache's " + mib_s(budget) + " MiB");
         } else {
             s.note("mtp-head-on-devices", "false", Source::Derived, "The MTP head drafts on the host.",
                    head == 0 ? "the head file's size is unknown"
-                             : "the head's " + mib_s(head) + " MiB do not fit in the " + mib_s(on_devices) +
-                                   " MiB the fitter gave the experts on " + dev->name);
+                             : "the head's " + mib_s(head) + " MiB do not fit in the cache's " + mib_s(budget) +
+                                   " MiB on " + dev->name + " above one token cycle");
         }
     }
     s.p.config.moe.device_cache_mb = (int) mib(cache_bytes);
