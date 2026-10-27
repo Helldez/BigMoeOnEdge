@@ -9,6 +9,18 @@ Semantic Versioning.
 Experimental and in draft. These entries move into a dated section, with the version bump, if they
 land.
 
+### Added
+- **A device cache's misses computed on the CPU** (`--device-cache-cpu N`, experimental). With
+  `--device-cache-mb`, a routed expert the device does not hold is computed on the CPU from the
+  host's copy instead of being uploaded over the device's link. At most `N` misses per layer and
+  token are still uploaded so the cache keeps learning, and `-1`, the default, uploads them all as
+  before. It needs a third fork commit (`moe_cache_cpu`, draft Helldez/llama.cpp#2). llama.cpp builds
+  the layer's experts twice, on the device from the cache and on the CPU from the host, each weighted
+  only for the experts it holds, so every routed expert is computed once and the sum is row for row
+  one of the two (`docs/seam.md` section 5). Gate G25e gives the resident placement's bytes over
+  resident and streamed experts. llama.cpp's scheduler runs the CPU's part after the device's, not
+  beside it: this takes the upload off the token's path, but does not overlap the two.
+
 ### Changed
 - **The streamer leaves the experts the device cache holds to it.** With `--device-cache-mb`, every
   routed expert used to be made resident in RAM before llama.cpp's device cache uploaded the misses,

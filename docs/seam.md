@@ -113,9 +113,9 @@ is affected, and it fails with a clear runtime error instead of silently falling
 server's default for overlap and the `overlap_available` it reports are read from the backend
 that loaded, not from a build flag.
 
-**Sunset condition.** The fork exists for this hook and the accessor of section 4. The moment
-upstream ships an equivalent per-expert readiness/residency callback, and a way to read the device
-cache's slots, the branch is dropped and the submodule bumps straight back to `ggml-org/llama.cpp`.
+**Sunset condition.** The fork exists for this hook and the device-cache commits of sections 4 and 5. The moment
+upstream ships an equivalent per-expert readiness/residency callback, a way to read the device
+cache's slots, and a CPU path for its misses, the branch is dropped and the submodule bumps straight back to `ggml-org/llama.cpp`.
 It is a tide-me-over until the wait point is public, not a divergence we intend to maintain.
 
 ## 4. The device cache's slot map (fork extension, experimental)
@@ -171,6 +171,55 @@ in its first three weeks. A cherry-pick onto the upstream master of 2026-10-27 c
 upstream's 2026-10-26 commit had changed the cache's constructor next to the accessor's lines, and
 the conflict resolved mechanically. The hook commit applied cleanly onto the same master. The
 accessor is small, but it sits in code upstream is still shaping, so expect a conflict on most bumps.
+
+## 5. Misses computed on the CPU (fork extension, experimental)
+
+The third fork commit (`bmoe/moe-cache-cpu-misses`, draft Helldez/llama.cpp#2) adds
+`llama_context_params::moe_cache_cpu`. It defaults to `-1`, which uploads every miss as before.
+`--device-cache-cpu N` sets it to `N >= 0`, and the experts a batch routes outside the device cache
+are then computed on the CPU from the host's copy instead of uploaded. At most `N` of them per layer
+and batch are still uploaded, the best scored first, so the cache keeps learning. `LLAMA_HAS_MOE_CACHE_CPU`
+marks a llama.cpp that has it. On another one the flag is refused.
+
+**How the graph expresses it.** `build_moe_ffn` builds the layer's experts twice: once on the device,
+reading the cache's bank through the slot map, and once on the CPU, reading the host tensors (the
+CPU `mul_mat_id` is pinned to the CPU backend). The copy callback plans the layer and then writes
+four maps, which are looked up on the device:
+
+- the slot map, with slot 0 for an expert the device does not hold, so the device computes it with
+  some weights;
+- `cpu_ids`, with `-1` for an expert the device holds, which the CPU's `mul_mat_id` skips and writes
+  as a zero row;
+- `dev_mask` and `cpu_mask`, `1.0` or `0.0` per expert.
+
+Each pass multiplies the router's weights by its own mask, and the two weighted results are summed
+row by row before llama.cpp's own sum over the experts. A row is therefore `x + 0`: the device's
+expert or the CPU's, never a mix, and the order of the experts' sum is unchanged. Biases and norms
+apply to both passes, and the zero weight removes them from the pass that does not own the row. The
+four lookups depend on the copy, so every read of the maps comes after the plan. The streamer's
+skip (section 4) is a superset of what the CPU reads. Llama 4 weights the experts' input instead of
+their output, so it keeps the uploads.
+
+**What it does not do.** `ggml_backend_sched` runs the CPU pass after the device pass, not alongside
+it. With an eval callback installed (the streamer always installs one), `compute_splits`
+synchronizes the backend after every sub-graph, and even without one, a split with no inputs
+synchronizes the previous backend before it starts. What the change removes is the PCIe upload
+from the critical path. An engine that overlaps the CPU's experts with the device's (Strata does)
+needs either its own threads outside the scheduler or a scheduler that lets a CPU split run while a
+device split is in flight. The second is a change to `ggml-backend.cpp`, larger and harder to
+argue correct than this one.
+
+**Cost to a bump.** 187 lines added and 32 removed in eight files: `llama-graph.{h,cpp}` (the second
+pass, as a loop around the existing body, left unindented to keep the diff small),
+`llama-moe-cache.{h,cpp}`, `llama-context.cpp`, `llama-cparams.h`, `llama.h`, and an 8-line hunk in
+ggml-cpu's `mul_mat_id`. Upstream changed `llama-graph.cpp` 54 times and `llama-graph.h` 28 times in
+the three months to 2026-10-27. A cherry-pick onto that day's master conflicted in four files: the
+cache's constructor again, and the ggml-cpu hunk. Upstream's #26631 of 2026-10-24 gives
+`MUL_MAT_ID` the same "`-1` is no expert, a zero row" meaning on the CPU, Metal, Vulkan, OpenCL, SYCL
+and WebGPU, though not yet CUDA. On a bump that hunk is dropped for upstream's, and the device pass
+could then skip the CPU's experts outright instead of computing them on slot 0, except on CUDA. This
+is the heavier of the fork's commits: it edits the body of `build_moe_ffn`, the most-edited function
+on the path, so expect a conflict on most bumps.
 
 ## The chat glue: llama.cpp `common` (not the streaming seam)
 
@@ -348,8 +397,9 @@ except where noted:
 
 ## Upgrading llama.cpp
 
-Because the submodule pins a fork branch (sections 3 and 4), a bump rebases its commits (the hook,
-then the slot-map accessor) onto the new upstream tag, re-pushes it, and re-pins:
+Because the submodule pins a fork branch (sections 3 to 5), a bump rebases its commits (the hook,
+the slot-map accessor, then the misses on the CPU) onto the new upstream tag, re-pushes it, and
+re-pins:
 
 ```bash
 # in a Helldez/llama.cpp checkout: rebase the fork's commits onto the new tag
@@ -375,7 +425,8 @@ instead of silently corrupting output. Each expert layout has a gate to keep gre
 If a future release moves the two hooks (a stable expert-residency API, say) upstream,
 this seam shrinks further or disappears — `core/` does not change.
 
-Pinned submodule at the time of writing: `Helldez/llama.cpp` branch `bmoe/moe-cache-slots`,
+Pinned submodule at the time of writing: `Helldez/llama.cpp` branch `bmoe/moe-cache-cpu-misses`,
+commit `b5c1f7b`: the misses on the CPU (section 5) on top of branch `bmoe/moe-cache-slots`,
 commit `a09c1dd`: the slot-map accessor (section 4) on top of branch
 `bmoe/expert-ready-hook-2210-dl`, commit `ad98071`, the expert-ready-hook commit (section 3) in the variant that also answers the CPU registry's `get_proc_address` so a build that
 loads the CPU backend as a module reaches it, on top of upstream `ggml-org/llama.cpp` master

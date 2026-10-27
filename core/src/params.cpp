@@ -421,6 +421,17 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("device-cache-cpu", "Misses on the CPU", G::Cache, L::Experimental,
+                          "EXPERIMENTAL: With a device expert cache, compute the routed experts it does not hold on "
+                          "the CPU instead of uploading them, and upload at most this many of them per layer and "
+                          "token so the cache still learns. Needs a llama.cpp that supports it.");
+        d.value_hint = "N";
+        at_least(d, MoeStreamConfig::device_cache_cpu_off);
+        special(d, std::to_string(MoeStreamConfig::device_cache_cpu_off), "off: upload every miss");
+        bind_int(d, [](RunConfig & c) -> int & { return c.moe.device_cache_cpu; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("expert-host-buffer", "Experts in a device's host memory", G::Cache, L::Experimental,
                           "EXPERIMENTAL: With a device expert cache over resident experts, keep a copy of the experts "
                           "in this device's own host memory (its backend's), which it uploads from faster where it "
