@@ -542,6 +542,18 @@ static void confinement_tests() {
           "a path is shown relative to the workspace");
 }
 
+static void private_host_tests() {
+    for (const char * u :
+         {"https://localhost/x", "https://127.0.0.1:8765/api/info", "https://10.0.0.1", "https://192.168.1.1/admin",
+          "https://172.20.3.4", "https://169.254.169.254/latest", "https://[::1]/", "https://[fd00::1]/",
+          "https://[::ffff:127.0.0.1]/", "https://router.lan/", "https://printer.local", "https://2130706433/",
+          "https://0x7f000001/", "https://0177.0.0.1/", "https://user@127.0.0.1/", "https://LOCALHOST./"})
+        check(url_names_private_host(u), std::string("private: ") + u);
+    for (const char * u : {"https://example.com/", "https://8.8.8.8/", "https://cafe.com", "https://[2606:4700::1]/",
+                           "https://172.32.0.1/", "https://en.wikipedia.org/wiki/Local"})
+        check(!url_names_private_host(u), std::string("public: ") + u);
+}
+
 static void classifier_tests() {
     for (const char * c :
          {"ls -la", "git status", "git log --oneline -5", "cat a.txt | grep -n foo | head -3", "find . -name '*.cpp'",
@@ -574,6 +586,10 @@ static void classifier_tests() {
                            "date -s 2020",
                            "sed -n 1p a"})
         check(!is_read_only_command(c), std::string("may change something: ") + c);
+    // A read that may leave the workspace asks, like a change.
+    for (const char * c : {"cat ~/.ssh/id_rsa", "cat /etc/passwd", "ls ../other", "grep -r key C:\\Users",
+                           "rg --ignore-file=/etc/x key", "head -c 10 ~"})
+        check(!is_read_only_command(c), std::string("may read outside the workspace: ") + c);
 }
 
 static void diff_tests() {
@@ -922,6 +938,7 @@ static void access_tests() {
 int main() {
     confinement_tests();
     classifier_tests();
+    private_host_tests();
     diff_tests();
     web_tests();
     skill_tests();

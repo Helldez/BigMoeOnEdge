@@ -318,6 +318,8 @@ bool plan_change(const std::string & ws,
 ToolOutput fetch_url(HttpFetch * net, const json & a, const std::atomic<bool> & stop) {
     const std::string url = arg(a, "url");
     if (!net) return fail("this server cannot make web requests");
+    if (url_names_private_host(url))
+        return fail("the agent reads the public web only: " + url + " is this computer or a private network");
     HttpFetch::Request r;
     r.url = url;
     r.timeout_s = k_web_timeout_s;

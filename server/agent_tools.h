@@ -74,6 +74,12 @@ std::string cap_text(const std::string & text, size_t max);
 // A NUL in the first bytes: a file a text tool must not read.
 bool looks_binary(const std::string & bytes);
 
+// Whether `url` names this machine or a private network by itself: localhost, a `.local` or
+// `.internal` name, or an address literal that is loopback, private, link-local or unspecified. The
+// agent's web tools are for the public web; a page it reads must not steer it at a router or at
+// this server. A public name that resolves to a private address is not caught here.
+bool url_names_private_host(const std::string & url);
+
 // `s` with %XX and '+' decoded, as a query string writes it.
 std::string url_decode(const std::string & s);
 std::string url_encode(const std::string & s);

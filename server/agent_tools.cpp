@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <set>
@@ -123,6 +124,12 @@ bool stage_reads_only(const std::vector<std::string> & w) {
         return false;
     for (size_t i = 1; i < w.size(); ++i) {
         const std::string & a = w[i];
+        // The command runs in the workspace, but its arguments can name any file: one that may lead
+        // out of it (absolute, home, parent, drive) asks, so a read that skips the question stays
+        // inside the folder the file tools are confined to.
+        if (starts(a, "/") || starts(a, "~") || a.find("..") != std::string::npos || (a.size() >= 2 && a[1] == ':') ||
+            a.find("=/") != std::string::npos || a.find("=~") != std::string::npos)
+            return false;
         if (prog == "find" && (a == "-exec" || a == "-execdir" || a == "-ok" || a == "-okdir" || a == "-delete" ||
                                starts(a, "-fprint") || a == "-fls"))
             return false;
@@ -511,6 +518,50 @@ std::string url_encode(const std::string & s) {
         }
     }
     return out;
+}
+
+bool url_names_private_host(const std::string & url) {
+    size_t at = url.find("://");
+    std::string host = url.substr(at == std::string::npos ? 0 : at + 3);
+    host = host.substr(0, host.find_first_of("/?#"));
+    const size_t cred = host.rfind('@');
+    if (cred != std::string::npos) host = host.substr(cred + 1);
+    if (!host.empty() && host[0] == '[') {
+        // An IPv6 literal: loopback, unspecified, unique-local (fc00::/7), link-local (fe80::/10),
+        // or an IPv4 address mapped into it.
+        host = lower(host.substr(1, host.find(']') - 1));
+        if (host == "::1" || host == "::" || starts(host, "fc") || starts(host, "fd") || starts(host, "fe8") ||
+            starts(host, "fe9") || starts(host, "fea") || starts(host, "feb"))
+            return true;
+        if (starts(host, "::ffff:"))
+            host = host.substr(7);
+        else
+            return false;
+    } else {
+        host = lower(host.substr(0, host.find(':')));
+    }
+    while (!host.empty() && host.back() == '.')
+        host.pop_back();
+    const auto ends = [&](const char * s) {
+        const size_t n = std::strlen(s);
+        return host.size() >= n && host.compare(host.size() - n, n, s) == 0;
+    };
+    if (host.empty() || host == "localhost" || ends(".localhost") || ends(".local") || ends(".internal") ||
+        ends(".lan") || ends(".home.arpa"))
+        return true;
+    unsigned a[4];
+    char tail = 0;
+    if (std::sscanf(host.c_str(), "%u.%u.%u.%u%c", &a[0], &a[1], &a[2], &a[3], &tail) != 4) {
+        // A bare number is an address to curl too (2130706433 and 0x7f000001 are 127.0.0.1).
+        return host.find_first_not_of("0123456789") == std::string::npos ||
+               (starts(host, "0x") && host.find_first_not_of("0123456789abcdef", 2) == std::string::npos);
+    }
+    // An octet written with a leading zero is octal to some resolvers: not a form a public page uses.
+    for (size_t i = 0; i + 1 < host.size(); ++i)
+        if (host[i] == '0' && (i == 0 || host[i - 1] == '.') && std::isdigit((unsigned char) host[i + 1])) return true;
+    return a[0] == 0 || a[0] == 10 || a[0] == 127 || (a[0] == 169 && a[1] == 254) ||
+           (a[0] == 172 && a[1] >= 16 && a[1] <= 31) || (a[0] == 192 && a[1] == 168) ||
+           (a[0] == 100 && a[1] >= 64 && a[1] <= 127);
 }
 
 } // namespace bmoe::server::agent

@@ -40,8 +40,10 @@ scripted session and checks every rule below without a model.
   A command counts as a change unless the server can tell it only reads: every stage of a pipeline
   is a program on a short list (`ls`, `cat`, `head`, `tail`, `wc`, `grep`, `rg`, `find`, `git status`
   and the other read-only `git` subcommands, ...) with no option that writes or runs something
-  (`find -exec`/`-delete`, `sort -o`, `rg --pre`, `git -c`, ...), and the line has no redirection,
-  substitution, separator or background job. Anything it cannot tell asks. A `git` command runs
+  (`find -exec`/`-delete`, `sort -o`, `rg --pre`, `git -c`, ...) and no argument that may lead out
+  of the workspace (absolute, `~`, `..`, a drive), and the line has no redirection, substitution,
+  separator or background job. Anything it cannot tell asks, so a read that skips the question
+  stays inside the folder the file tools are confined to. A `git` command runs
   with the repository's own configuration, which is trusted like the folder itself. An edit's
   approval card carries the diff the edit will make, computed before the card is shown; after a
   yes the edit is computed again, so a file that changed meanwhile is never overwritten blind.
@@ -96,7 +98,7 @@ error notice ("No model is loaded ...") and the conversation in state `error`. S
 | `write_file` | create or replace a file | workspace, a change |
 | `edit_file` | replace one exact passage of a file (it must appear exactly once) | workspace, a change |
 | `run_command` | a command in the workspace (`/bin/sh -c`, `cmd /c` on Windows), with a 120 s limit and capped output | workspace, a change, a platform that may start a process |
-| `fetch_url` | a web page (https), as text (2 MiB read at most) | web |
+| `fetch_url` | a web page (https), as text (2 MiB read at most); never this computer or a private network named by its address or a local name | web |
 | `web_search` | result titles, links and snippets, from a keyless search page | web |
 | `use_skill` | a skill's instructions | a skill that is switched on |
 | `delegate` | a helper conversation with its own task; its final answer comes back | not inside a helper |
