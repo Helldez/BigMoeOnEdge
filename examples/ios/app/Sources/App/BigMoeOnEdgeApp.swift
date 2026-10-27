@@ -4,18 +4,19 @@ import UIKit
 /// The app: five screens over the one engine, the five every UI of this project has (chat, models,
 /// plan, settings, metrics), each a client of bmoe-server, which runs inside this app on loopback
 /// (docs/application-framework.md). The server starts with the app; the model it holds is loaded
-/// from Models.
+/// from Models; the chat is the server's agent, whose workspaces, skills, tasks and providers are
+/// reached from Settings.
 @main
 struct BigMoeOnEdgeApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var engine: Engine
-    @StateObject private var chat: ChatModel
+    @StateObject private var agent: AgentModel
     @StateObject private var nav = Navigator()
 
     init() {
         let engine = Engine()
         _engine = StateObject(wrappedValue: engine)
-        _chat = StateObject(wrappedValue: ChatModel(engine: engine))
+        _agent = StateObject(wrappedValue: AgentModel(engine: engine))
         AppDelegate.engine = engine
     }
 
@@ -24,7 +25,7 @@ struct BigMoeOnEdgeApp: App {
             RootView()
                 .environmentObject(engine)
                 .environmentObject(engine.preferences)
-                .environmentObject(chat)
+                .environmentObject(agent)
                 .environmentObject(nav)
                 .task { engine.start() }
         }

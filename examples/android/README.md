@@ -1,12 +1,14 @@
 # BigMoeOnEdge for Android
 
 The phone app: chat with a mixture-of-experts model larger than the phone's memory, streamed from
-storage, and hand the phone's hardware to any OpenAI-compatible client on the network.
+storage, let it work on files in a folder of the phone as an agent, and hand the phone's hardware to
+any OpenAI-compatible client on the network.
 
 It is a client of `bmoe-server`, the same engine process the desktop runs
 ([docs/application-framework.md](../../docs/application-framework.md)). The APK carries the server
 as `libbmoe-server.so`; a foreground service starts it on loopback with the app's data directory,
-and the five screens (Chat, Models, Plan, Settings, Metrics) speak its HTTP API
+and the five screens (Chat, Models, Plan, Settings, Metrics), with the agent's pages (Workspaces,
+Skills, Tasks, Providers) opened over them, speak its HTTP API
 ([docs/server-api.md](../../docs/server-api.md)), exactly as the web UI does on a laptop. A process
 of its own is the crash boundary: a driver that ends the engine does not end the app.
 
@@ -72,7 +74,8 @@ previous one. Two ways to get it:
 
    The app's pure-Kotlin rules (the event-stream parser, the chat protocol, the parameter table,
    the settings form, the catalog status, the merged model list, the plan's figures, the context
-   warning, the conversation files) have JVM unit tests under `app/src/test`; CI runs
+   warning, the agent's transcript and run summaries, task schedules, the agent's JSON shapes and
+   the one-time move of the conversations the app used to keep) have JVM unit tests under `app/src/test`; CI runs
    them, and so does `./gradlew testDevDebugUnitTest`.
 
    Published sideload builds are signed with a stable key instead, so an update installs over
@@ -202,6 +205,67 @@ The same line stays under "Serve on the network" in Settings. A chat refused for
 full context offers the same link beside New chat. The number and the setting come from the
 server (`model.ctx_advice`).
 
+## The agent
+
+The chat is the server's agent ([docs/agent.md](../../docs/agent.md)): a conversation is held by
+the engine process, not by the app, so a run goes on while the app is in the background, and the
+same conversations are there for any client of the phone's server. The drawer lists them (newest
+first, with a mark on one that runs or waits for you) beside the way to Workspaces, Skills and
+Tasks; long-press a row's menu to rename or delete one.
+
+- **The transcript.** Your messages on the right; long-press one to copy it or to edit it and send
+  it again (everything after it is dropped). The model's answers as Markdown, its thinking folded
+  above them. Each tool call is a card with its title in plain words ("Read src/main.cpp") and its
+  state; two or more in a row fold under one line that counts them ("Read 3 files, edited 2 files").
+  An edit shows its diff. A change the agent wants to make in **Ask first** mode is an approval card,
+  nothing run yet: Approve or Deny. A helper the agent handed part of the job to is a row that opens
+  its own conversation; a notice says, in words, why something did not happen. Stop ends the run and
+  its helpers.
+- **The composer.** Three chips above the prompt: the mode (**Ask first**, the default: reads freely,
+  asks before a change; **Read only**; **Full access**), the model (this phone's, or a provider's),
+  and the folder. The + beside the prompt holds **Choose from options** (below).
+- **Workspaces.** The server needs a real folder, and on a phone the one place the app may write
+  freely is its own storage: Workspaces makes and names folders there (under the app's files
+  directory), brings files in through the system picker (**Import**, copied in) and sends one out
+  through the share sheet. Forgetting a folder leaves its files. The agent has no shell on a phone:
+  the server does not offer commands where it cannot start a process for them, and the app shows
+  none.
+- **File preview.** A file the agent wrote or changed opens in a sheet from its card: text and code
+  in the mono face, Markdown rendered, images drawn, HTML in a web view sandboxed from the app (its
+  script runs inside the page only: no bridge to the app, no file or content access, no navigation
+  away). A file in one of the app's folders can be shared from there.
+- **Skills** (drawer, or Settings > Agent): every skill with where it comes from, a switch for each,
+  and your own written and edited here (a kebab-case name, a description the agent reads to decide
+  when to use it, the instructions).
+- **Tasks** (drawer, or Settings > Agent): a prompt that runs once, every N minutes, daily or on
+  chosen weekdays, in a folder or none, in **Read only** unless you pick another mode, with **Run
+  now**. The schedule is the server's, so a task runs only while the app's engine runs (it does in
+  the background while its notification is shown); one that came due while the engine was stopped
+  runs when it is back. Nobody is at the screen when a task runs, so anything that would ask is
+  answered no, and the run's conversation says what was not done.
+- **Providers** (Settings > Agent): an OpenAI-compatible service a conversation can answer from
+  instead of the phone's model. The key is written once and never shown again; the page only says
+  that one is saved.
+- **Connect apps** is the desktop's: on the phone, **Serve on the network** (below) is the address
+  and key a client needs.
+- **Notifications.** When a conversation starts waiting for an approval, or a run ends, while no
+  screen of the app is shown, a notification on its own **Agent** channel says so and opens that
+  conversation. Android 13 and later ask for the notification permission at the first launch.
+
+The conversations earlier versions kept on the phone are handed to the server once, on the first
+launch that reaches it: each becomes a server conversation with its messages, and the phone's copy
+is deleted only once the server's answer shows every message arrived (an older server that ignored
+them keeps nothing and the phone keeps its copy).
+
+## The look
+
+Slate and cyan, light and dark following the system, Material 3 with an 8 dp corner, 1 dp lines and
+a soft shadow on cards. The colour values sit in one place, `ui/Theme.kt` (`LightTokens`,
+`DarkTokens`), mapped onto Material's colour roles. Text is set in Inter and code in JetBrains Mono,
+static instances bundled in `res/font`, both under the SIL Open Font License (its text is in
+`THIRD_PARTY_LICENSES`, which the APK carries). The pixel logo is the one mark that keeps its own
+style.
+
 ## Settings
 
 Every engine tunable comes from the engine's parameter table (`GET /api/params`): the groups, the
@@ -220,7 +284,8 @@ special value and the usual range. "Needs reload" marks only a row whose value d
 loaded model's, and a banner offers the Reload. A link from the Plan screen or the context warning
 lands on its row.
 
-The app's own settings close the page:
+An **Agent** card leads to Providers, Skills, Tasks and Workspaces. The app's own settings close
+the page:
 
 - **Serve on the network**: the engine listens on every interface with a key the page shows, and
   the page shows the phone's address on its Wi-Fi or Ethernet network, `http://<phone IP>:8765/v1`,
@@ -272,9 +337,11 @@ the procedure and the cache/thread sweep; `../../README.md` has the table across
 
 ## Choose from options
 
-The switch above the prompt turns it into a question and adds a field for options, one per line.
+**Choose from options**, in the + menu beside the prompt, turns it into a question and adds a field
+for options, one per line.
 The model picks one without writing an answer: the options are lettered, the whole request is one
 prefill with no decode (`POST /api/decide`), and each option comes back with the probability the
 model put on it (they need not add up to 100%; the rest is the model being unsure). A decision is
-kept in the conversation but never sent back to the model as history. The engine side is
+not a conversation turn: its answer stays on the chat screen until dismissed and is never sent to
+the agent's conversation. The engine side is
 [docs/decide.md](../../docs/decide.md).

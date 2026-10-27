@@ -7,7 +7,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -64,9 +63,9 @@ fun EngineStatusLine(onOpenModels: () -> Unit, onOpenSetting: (String) -> Unit) 
             // The denial is the one status a person must read whole to act on: it may wrap.
             Text(text, fontSize = 12.sp, maxLines = if (engine.networkDenied) 3 else 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             if (downloads != null) {
-                TextButton(shape = RectangleShape, onClick = onOpenModels, contentPadding = PaddingValues(horizontal = 8.dp)) { Text(downloads.text, fontSize = 12.sp) }
+                TextButton(shape = Corner, onClick = onOpenModels, contentPadding = PaddingValues(horizontal = 8.dp)) { Text(downloads.text, fontSize = 12.sp) }
             }
-            if (action != null) TextButton(shape = RectangleShape, onClick = action.second, contentPadding = PaddingValues(horizontal = 8.dp)) { Text(action.first, fontSize = 12.sp) }
+            if (action != null) TextButton(shape = Corner, onClick = action.second, contentPadding = PaddingValues(horizontal = 8.dp)) { Text(action.first, fontSize = 12.sp) }
         }
     }
     val ctx = contextWarning(info?.model.takeIf { engine.serverUp && info?.ready == true }, engine.params)
@@ -75,7 +74,7 @@ fun EngineStatusLine(onOpenModels: () -> Unit, onOpenSetting: (String) -> Unit) 
         Surface(color = warnColor().copy(alpha = 0.15f), modifier = Modifier.fillMaxWidth()) {
             Row(Modifier.padding(horizontal = 16.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(ctx.text(), fontSize = 12.sp, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                TextButton(shape = RectangleShape, onClick = { onOpenSetting(ctx.key) }, contentPadding = PaddingValues(horizontal = 8.dp)) {
+                TextButton(shape = Corner, onClick = { onOpenSetting(ctx.key) }, contentPadding = PaddingValues(horizontal = 8.dp)) {
                     Text("Raise ${ctx.label}", fontSize = 12.sp)
                 }
                 IconButton(onClick = {

@@ -23,7 +23,7 @@ struct LoadStages: View {
                         ProgressView().tint(Palette.accent)
                         Text((planning ? "Measuring this device, then loading" : "Loading the model")
                             + " · \(max(0, Int(t.date.timeIntervalSince(started)))) s")
-                            .font(.subheadline).foregroundStyle(Palette.text).monospacedDigit()
+                            .font(.ui(15)).foregroundStyle(Palette.text).monospacedDigit()
                     }
                 }
                 if planning { PlanProgressCard(progress: progress) }

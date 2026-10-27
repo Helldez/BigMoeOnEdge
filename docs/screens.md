@@ -369,3 +369,26 @@ Models; a model loaded without streaming says which figures it cannot have.
 - **A model editor.** The catalog is data in the repository; a model is a file.
 - **An engine console.** What the engine prints goes to the server's log; the UI shows the
   state, the error and the figures, which is what a person acts on.
+
+## The agent on a phone: where the apps differ
+
+The Android and iOS apps show the agent ([agent.md](agent.md)) as the desktop does, with the
+differences a phone imposes, and only these:
+
+- **Workspaces live in the app's own storage.** The server needs a real folder path, and the one
+  place a phone app may write freely is its own: a workspace is a folder the app makes and names
+  there (Android: under the app's files directory; iOS: the app's Documents folder, which the Files
+  app shows). Files come in through the system picker and go out through the share sheet; there is
+  no folder picker for the rest of the phone.
+- **No shell.** The server offers no command tool where it cannot start a process, and the apps
+  show none.
+- **Tasks run only while the app's server runs.** The scheduler is the server's, and on a phone the
+  server is the app's: on Android it keeps running in the background with the engine's
+  notification; on iOS the app is suspended in the background. A task that came due meanwhile runs
+  when the server is back, and the Tasks screen says so in those words.
+- **Connect apps** shows the address and key of "Serve on the network", which is what a client of
+  the phone needs; there is no client configuration to write on a phone.
+- **Notifications.** An approval the agent waits for, or a run that ended, while the app is not on
+  the screen, is a system notification that opens that conversation.
+- **The conversations the apps used to keep** are handed to the server once, on the first launch
+  that reaches it, and the local copy is deleted only once the server's answer holds every message.

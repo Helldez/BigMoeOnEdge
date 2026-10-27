@@ -27,19 +27,20 @@ struct SettingsView: View {
         ScrollViewReader { proxy in
             Page {
                 banners
+                AgentLinksSection()
                 // While the engine is down (a sharing change restarts it) the rows stay where they are, so
                 // the page keeps its length and its scroll; a line above says why a change waits.
                 if !engine.serverUp || engine.params.isEmpty {
                     Text(engine.params.isEmpty ? (engine.serverUp ? "Reading the parameter table…" : "The engine is not running.")
                         : "The engine is not running; changes apply once it is back.")
-                        .font(.subheadline).foregroundStyle(Palette.muted)
+                        .font(.ui(15)).foregroundStyle(Palette.muted)
                 }
                 if !engine.params.isEmpty {
                     tools
                     let cards = SettingsForm.cards(engine.params, upTo: level, query: query,
                                                    pinned: SettingsForm.pinned(engine.params, config: engine.config))
                     if searching {
-                        Text(cards.isEmpty ? "No setting matches." : "Every level is searched.").font(.caption).foregroundStyle(Palette.muted)
+                        Text(cards.isEmpty ? "No setting matches." : "Every level is searched.").font(.ui(12)).foregroundStyle(Palette.muted)
                     }
                     ForEach(cards) { c in card(c) }
                 }
@@ -78,13 +79,13 @@ struct SettingsView: View {
             if !c.valid { Banner(text: "This configuration does not validate, and a load is refused until it does: \(c.error)", color: Palette.err) }
             if c.reloadRequired, engine.ready {
                 Banner(text: "Some changes apply when the model is loaded again: the rows marked needs reload.") {
-                    Button("Reload") { reload() }.buttonStyle(.pixelPrimary).disabled(!c.valid)
+                    Button("Reload") { reload() }.buttonStyle(.appPrimary).disabled(!c.valid)
                 }
             }
         }
         if let failure {
             Banner(text: failure, color: Palette.err) {
-                Button("Dismiss") { self.failure = nil }.buttonStyle(.pixel)
+                Button("Dismiss") { self.failure = nil }.buttonStyle(.appSecondary)
             }
         }
     }
@@ -93,7 +94,7 @@ struct SettingsView: View {
     private var tools: some View {
         let counts = SettingsForm.levelCounts(engine.params)
         return VStack(alignment: .leading, spacing: Grid.s) {
-            PixelField(placeholder: "Search settings", text: $query)
+            AppField(placeholder: "Search settings", text: $query)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
             ScrollView(.horizontal, showsIndicators: false) {
@@ -105,11 +106,10 @@ struct SettingsView: View {
                             storedLevel = l.rawValue
                         } label: {
                             Text("\(l.rawValue.capitalized) \(counts[l] ?? 0)")
-                                .font(.pixel(13, bold: l == level))
-                                .foregroundStyle(l == level ? Palette.accentText : Palette.text)
-                                .padding(.horizontal, 8).padding(.vertical, 4)
-                                .background(l == level ? Palette.accent : .clear)
-                                .overlay(Rectangle().strokeBorder(shown ? Palette.accent : Palette.border, lineWidth: Grid.edge))
+                                .font(.ui(13, bold: l == level))
+                                .foregroundStyle(l == level ? Palette.onAccent : Palette.text)
+                                .padding(.horizontal, 10).padding(.vertical, 5)
+                                .background(Capsule().fill(l == level ? Palette.accentInk : shown ? Palette.accentTint : Palette.surface2))
                         }
                         .buttonStyle(.plain)
                         .accessibilityAddTraits(l == level ? .isSelected : [])
@@ -120,7 +120,7 @@ struct SettingsView: View {
             .disabled(searching)
             .opacity(searching ? 0.45 : 1)
             if !resettable.isEmpty {
-                Button("Reset all my values (\(resettable.count))") { confirmReset = true }.buttonStyle(.pixel)
+                Button("Reset all my values (\(resettable.count))") { confirmReset = true }.buttonStyle(.appSecondary)
             }
         }
     }
@@ -134,7 +134,7 @@ struct SettingsView: View {
                 closedCards[c.group] = open
             } label: {
                 HStack(alignment: .firstTextBaseline, spacing: Grid.s) {
-                    Text(c.label).font(.pixel(18, bold: true)).foregroundStyle(Palette.accent2)
+                    Text(c.label).font(.ui(18, bold: true)).foregroundStyle(Palette.accentInk)
                     if c.basic.isEmpty { Badge(text: "\(c.moreCount)") }
                     Spacer()
                     Image(systemName: open ? "chevron.up" : "chevron.down").foregroundStyle(Palette.muted)
@@ -144,7 +144,7 @@ struct SettingsView: View {
             .buttonStyle(.plain)
             .disabled(searching)
             if !c.help.isEmpty {
-                Text(c.help).font(.caption).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
+                Text(c.help).font(.ui(12)).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
             }
             if open {
                 rows(c.basic, c)
@@ -161,7 +161,7 @@ struct SettingsView: View {
                 }
                 if c.hidden > 0, !searching {
                     Text("\(c.hidden) more at a deeper level: widen the filter above to see \(c.hidden == 1 ? "it" : "them").")
-                        .font(.caption).foregroundStyle(Palette.muted)
+                        .font(.ui(12)).foregroundStyle(Palette.muted)
                 }
             }
         }
@@ -171,9 +171,9 @@ struct SettingsView: View {
     private func levels(_ c: SettingsForm.Card) -> some View {
         ForEach(c.more, id: \.level) { m in
             VStack(alignment: .leading, spacing: 2) {
-                Text(m.level.rawValue.capitalized).font(.pixel(15, bold: true)).foregroundStyle(Palette.text).padding(.top, Grid.s)
+                Text(m.level.rawValue.capitalized).font(.ui(15, bold: true)).foregroundStyle(Palette.text).padding(.top, Grid.s)
                 let hint = SettingsForm.levelHint(m.level)
-                if !hint.isEmpty { Text(hint).font(.caption).foregroundStyle(Palette.muted) }
+                if !hint.isEmpty { Text(hint).font(.ui(12)).foregroundStyle(Palette.muted) }
                 rows(m.rows, c)
             }
         }
@@ -184,7 +184,7 @@ struct SettingsView: View {
         let reload = Set(engine.config?.reloadKeys ?? [])
         return VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(specs.enumerated()), id: \.element.key) { i, spec in
-                if i > 0 { Rectangle().fill(Palette.border).frame(height: 1) }
+                if i > 0 { Rectangle().fill(Palette.line).frame(height: 1) }
                 ParamRow(spec: spec, readOnly: c.readOnly, decision: decisions[spec.key], needsReload: reload.contains(spec.key),
                          focusRequest: focusKey == spec.key, onError: { failure = $0 })
                     .id("param-\(spec.key)")
@@ -256,19 +256,19 @@ struct ParamRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: Grid.s) {
-                Text(spec.label).font(.body).foregroundStyle(Palette.text)
+                Text(spec.label).font(.ui(17)).foregroundStyle(Palette.text)
                 Spacer(minLength: Grid.s)
                 if spec.kind == .bool, !readOnly { toggle }
             }
             if readOnly {
-                Text(readOnlyText).font(.pixel(15)).foregroundStyle(Palette.text).lineLimit(2)
+                Text(readOnlyText).font(.ui(15)).foregroundStyle(Palette.text).lineLimit(2)
             } else if spec.kind != .bool {
                 control
             }
             if let rejected {
                 // The limits appear only here, beside a value the server refused.
                 Text([rejected, spec.rangeText.map { "accepted: \($0)" }].compactMap { $0 }.joined(separator: " · "))
-                    .font(.caption).foregroundStyle(Palette.err)
+                    .font(.ui(12)).foregroundStyle(Palette.err)
             }
             help
             marks
@@ -300,16 +300,16 @@ struct ParamRow: View {
                      spec.special.isEmpty ? nil : spec.special.map { "\($0.value) = \($0.label)" }.joined(separator: "; ")]
             .compactMap { $0 }
         if !parts.lead.isEmpty {
-            Text(parts.lead).font(.caption).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
+            Text(parts.lead).font(.ui(12)).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
         }
         if !extra.isEmpty {
             if more {
                 ForEach(extra, id: \.self) {
-                    Text($0).font(.caption).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
+                    Text($0).font(.ui(12)).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
                 }
             }
             Button(more ? "Less" : "More") { more.toggle() }
-                .font(.pixel(13)).foregroundStyle(Palette.accent).buttonStyle(.borderless)
+                .font(.ui(13)).foregroundStyle(Palette.accentInk).buttonStyle(.borderless)
         }
     }
 
@@ -339,7 +339,7 @@ struct ParamRow: View {
         default:
             HStack(spacing: Grid.s) {
                 TextField(spec.acceptsAuto ? "auto" : spec.label, text: $text)
-                    .font(.pixel(15))
+                    .font(.ui(15))
                     .keyboardType(spec.kind == .text ? .default : spec.acceptsAuto ? .asciiCapable : .numbersAndPunctuation)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -348,19 +348,19 @@ struct ParamRow: View {
                     .onChange(of: focused) { f in if !f { commit() } }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
-                    .overlay(Rectangle().strokeBorder(focused ? Palette.accent : Palette.border, lineWidth: Grid.edge))
-                if let unit = spec.unit { Text(unit).font(.pixel(14)).foregroundStyle(Palette.muted) }
+                    .overlay(RoundedRectangle(cornerRadius: Grid.radius, style: .continuous).strokeBorder(focused ? Palette.accent : Palette.line, lineWidth: Grid.line))
+                if let unit = spec.unit { Text(unit).font(.ui(14)).foregroundStyle(Palette.muted) }
                 if spec.acceptsAuto && value.string != "auto" {
-                    Button("auto") { set(.string("auto")) }.buttonStyle(.pixel)
+                    Button("auto") { set(.string("auto")) }.buttonStyle(.appSecondary)
                 }
             }
             // Under the number: what the value means (0 = off), and what is usual. Never the type's limit.
             if spec.kind == .int || spec.kind == .float {
                 HStack(spacing: Grid.s) {
                     if let named = spec.specialLabel(value) {
-                        Text("= \(named)").font(.caption.weight(.semibold)).foregroundStyle(Palette.text)
+                        Text("= \(named)").font(.ui(12, weight: .semibold)).foregroundStyle(Palette.text)
                     }
-                    if let usually = spec.typicalText { Text(usually).font(.caption).foregroundStyle(Palette.muted) }
+                    if let usually = spec.typicalText { Text(usually).font(.ui(12)).foregroundStyle(Palette.muted) }
                 }
             }
         }
@@ -375,7 +375,7 @@ struct ParamRow: View {
                     Badge(text: source.text, color: source == .you ? Palette.accent : source == .plan ? Palette.ok : Palette.muted)
                 }
                 if spec.lossy { Badge(text: "changes the reply", color: Palette.warn) }
-                if spec.scope == .request { Badge(text: "per message", color: Palette.accent2) }
+                if spec.scope == .request { Badge(text: "per message", color: Palette.accentInk) }
                 if needsReload { Badge(text: "needs reload", color: Palette.warn) }
             }
             if userSet, !readOnly {
@@ -392,7 +392,7 @@ struct ParamRow: View {
     }
 
     private func link(_ title: String) -> some View {
-        Button(title) { reset() }.font(.pixel(13)).foregroundStyle(Palette.accent).buttonStyle(.borderless)
+        Button(title) { reset() }.font(.ui(13)).foregroundStyle(Palette.accentInk).buttonStyle(.borderless)
     }
 
     private func commit() {
@@ -418,6 +418,48 @@ struct ParamRow: View {
     }
 }
 
+/// The agent's own pages: what it may work in, the instructions it can follow, what runs on a
+/// schedule, and the services a conversation can run on instead of this phone's model.
+struct AgentLinksSection: View {
+    @EnvironmentObject private var agent: AgentModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Grid.s) {
+            SectionTitle("Agent")
+            VStack(spacing: 0) {
+                link("Workspaces", icon: "folder", detail: count(agent.workspaces.count, "folder")) { WorkspacesView() }
+                Divider().padding(.leading, 44)
+                link("Skills", icon: "book", detail: count(agent.skills.filter(\.enabled).count, "on", plural: "on")) { SkillsView() }
+                Divider().padding(.leading, 44)
+                link("Tasks", icon: "clock", detail: count(agent.tasks.count, "task")) { TasksView() }
+                Divider().padding(.leading, 44)
+                link("Providers", icon: "network", detail: count(agent.providers.count, "service")) { ProvidersView() }
+            }
+            .box()
+        }
+    }
+
+    private func count(_ n: Int, _ one: String, plural: String? = nil) -> String {
+        n == 0 ? "" : "\(n) \(n == 1 ? one : plural ?? one + "s")"
+    }
+
+    private func link<D: View>(_ title: String, icon: String, detail: String, @ViewBuilder destination: @escaping () -> D) -> some View {
+        NavigationLink(destination: destination) {
+            HStack(spacing: 12) {
+                Image(systemName: icon).foregroundStyle(Palette.accent).frame(width: 20)
+                Text(title).font(.ui(16)).foregroundStyle(Palette.text)
+                Spacer()
+                Text(detail).font(.ui(14)).foregroundStyle(Palette.muted)
+                Image(systemName: "chevron.right").font(.caption.bold()).foregroundStyle(Palette.muted)
+            }
+            .padding(.horizontal, Grid.m)
+            .padding(.vertical, 12)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 /// The settings that are the app's own (docs/screens.md): serving the network with the key shown,
 /// the metrics files, starting and stopping the engine. Never an engine parameter.
 struct AppSettingsSection: View {
@@ -438,7 +480,7 @@ struct AppSettingsSection: View {
                         Text("Serve on the network").foregroundStyle(Palette.text)
                         Text("Other devices on this network use the engine through its OpenAI-compatible endpoint, with the key, "
                             + "while this app is open. Prompts and answers travel in clear.")
-                            .font(.caption).foregroundStyle(Palette.muted)
+                            .font(.ui(12)).foregroundStyle(Palette.muted)
                     }
                 }
                 .tint(Palette.accent)
@@ -448,11 +490,11 @@ struct AppSettingsSection: View {
                     // the status line's warning was dismissed.
                     if engine.ready, let ctx = engine.contextAdvice, ctx.short {
                         HStack(alignment: .center, spacing: Grid.s) {
-                            Text(ctx.warning).font(.caption).foregroundStyle(Palette.warn)
+                            Text(ctx.warning).font(.ui(12)).foregroundStyle(Palette.warn)
                                 .fixedSize(horizontal: false, vertical: true)
                             Spacer(minLength: 0)
                             Button("Raise \(ctx.label)") { nav.openSetting(ctx.key) }
-                                .font(.pixel(13, bold: true)).foregroundStyle(Palette.accent).buttonStyle(.borderless)
+                                .font(.ui(13, bold: true)).foregroundStyle(Palette.accentInk).buttonStyle(.borderless)
                         }
                     }
                 }
@@ -460,18 +502,18 @@ struct AppSettingsSection: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Metrics CSV").foregroundStyle(Palette.text)
                         Text("A per-token file for every loaded model, in Metrics and in the app's folder.")
-                            .font(.caption).foregroundStyle(Palette.muted)
+                            .font(.ui(12)).foregroundStyle(Palette.muted)
                     }
                 }
                 .tint(Palette.accent)
                 HStack(spacing: Grid.s) {
                     if engine.serverUp {
-                        Button("Stop engine") { engine.stop() }.buttonStyle(.pixelDestructive)
+                        Button("Stop engine") { engine.stop() }.buttonStyle(.appDestructive)
                     } else {
-                        Button("Start engine") { engine.start() }.buttonStyle(.pixelPrimary)
+                        Button("Start engine") { engine.start() }.buttonStyle(.appPrimary)
                     }
                     Spacer()
-                    if let v = engine.info?.version { Text("engine \(v)").font(.pixel(13)).foregroundStyle(Palette.muted) }
+                    if let v = engine.info?.version { Text("engine \(v)").font(.ui(13)).foregroundStyle(Palette.muted) }
                 }
             }
             .card()
@@ -481,22 +523,22 @@ struct AppSettingsSection: View {
     private var endpoint: some View {
         let address = NetworkAddress.local()
         return VStack(alignment: .leading, spacing: 6) {
-            Text("Base URL").font(.pixel(13)).foregroundStyle(Palette.muted)
+            Text("Base URL").font(.ui(13)).foregroundStyle(Palette.muted)
             if let address {
                 Text("http://\(address):\(EngineServer.port)/v1").font(.code).foregroundStyle(Palette.text).textSelection(.enabled)
             } else {
                 Text("Not on a Wi-Fi or wired network: no other device can reach the engine until this one joins one.")
-                    .font(.caption).foregroundStyle(Palette.err)
+                    .font(.ui(12)).foregroundStyle(Palette.err)
             }
-            Text("Key").font(.pixel(13)).foregroundStyle(Palette.muted)
+            Text("Key").font(.ui(13)).foregroundStyle(Palette.muted)
             Text(engine.networkKey).font(.code).foregroundStyle(Palette.text).textSelection(.enabled)
             Button(copied ? "Copied" : "Copy key") {
                 UIPasteboard.general.string = engine.networkKey
                 copied = true
             }
-            .buttonStyle(.pixel)
+            .buttonStyle(.appSecondary)
         }
         .padding(12)
-        .pixelBox(fill: Palette.bg, shadow: false)
+        .box(fill: Palette.bg, lifted: false)
     }
 }

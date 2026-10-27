@@ -44,7 +44,7 @@ struct ModelsView: View {
             Page {
                 if let failure {
                     Banner(text: failure, color: Palette.err) {
-                        Button("Dismiss") { self.failure = nil }.buttonStyle(.pixel)
+                        Button("Dismiss") { self.failure = nil }.buttonStyle(.appSecondary)
                     }
                 }
                 if engine.info?.state == .error, let why = engine.info?.error, !why.isEmpty {
@@ -54,7 +54,7 @@ struct ModelsView: View {
                 loadedElsewhere(rows)
                 if !engine.modelsListed {
                     Text(engine.serverUp ? "Reading the models…" : "The engine is not running.")
-                        .font(.subheadline).foregroundStyle(Palette.muted)
+                        .font(.ui(15)).foregroundStyle(Palette.muted)
                 } else if yours.isEmpty, companions.isEmpty {
                     firstModel(suggested)
                 } else {
@@ -106,8 +106,8 @@ struct ModelsView: View {
         if let m = engine.info?.model, !rows.contains(where: { $0.state == .loaded }) {
             Banner(text: "Loaded: \(m.name)", color: Palette.ok) {
                 HStack(spacing: Grid.s) {
-                    Button("Unload") { run("unload") { try await engine.unload() } }.buttonStyle(.pixel)
-                    Button("Go to Chat") { nav.open(.chat) }.buttonStyle(.pixelPrimary)
+                    Button("Unload") { run("unload") { try await engine.unload() } }.buttonStyle(.appSecondary)
+                    Button("Go to Chat") { nav.open(.chat) }.buttonStyle(.appPrimary)
                 }
             }
         }
@@ -118,7 +118,7 @@ struct ModelsView: View {
     /// With nothing on the device and nothing coming: the three steps to a first model.
     private func firstModel(_ suggested: [Library.Row]) -> some View {
         VStack(alignment: .leading, spacing: Grid.m) {
-            Text("Get your first model").font(.pixel(22, bold: true)).foregroundStyle(Palette.text)
+            Text("Get your first model").font(.ui(22, bold: true)).foregroundStyle(Palette.text)
             VStack(alignment: .leading, spacing: 6) {
                 step(1, "Find a model", "search by name, or paste a repository.")
                 step(2, "Check it fits here", "the server reads its header and sets it against this device, before any download.")
@@ -126,18 +126,18 @@ struct ModelsView: View {
             }
             HuggingFaceSection(onAdded: follow)
             if !suggested.isEmpty {
-                Text("Or start from a suggestion").font(.pixel(16, bold: true)).foregroundStyle(Palette.text)
+                Text("Or start from a suggestion").font(.ui(16, bold: true)).foregroundStyle(Palette.text)
                 ForEach(suggested) { r in
                     if let e = r.entry {
                         Button("Download \(e.title)\(e.quant.isEmpty ? "" : " (\(e.quant))"), \(ByteText.gb(e.bytes))") {
                             download(e)
                         }
-                        .buttonStyle(.pixel)
+                        .buttonStyle(.appSecondary)
                         // A suggestion whose download failed before a byte landed is still one: its
                         // failure is said beside the button that started it.
                         if case let .failed(why) = engine.downloads[e.id]?.state {
                             Banner(text: "\(e.title): \(why)", color: Palette.err) {
-                                Button("Dismiss") { engine.dismissDownload(e.id) }.buttonStyle(.pixel)
+                                Button("Dismiss") { engine.dismissDownload(e.id) }.buttonStyle(.appSecondary)
                             }
                         }
                     }
@@ -149,8 +149,8 @@ struct ModelsView: View {
 
     private func step(_ n: Int, _ what: String, _ how: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: Grid.s) {
-            Text("\(n)").font(.pixel(16, bold: true)).foregroundStyle(Palette.accent)
-            (Text(what).bold() + Text(": " + how)).font(.subheadline).foregroundStyle(Palette.text)
+            Text("\(n)").font(.ui(16, bold: true)).foregroundStyle(Palette.accentInk)
+            (Text(what).bold() + Text(": " + how)).font(.ui(15)).foregroundStyle(Palette.text)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -174,7 +174,7 @@ struct ModelsView: View {
         let (label, colour) = stateText(r.state)
         let meta = metaLine(r)
         return VStack(alignment: .leading, spacing: Grid.s) {
-            Text(r.title).font(.headline).foregroundStyle(Palette.text).lineLimit(2)
+            Text(r.title).font(.ui(17, weight: .semibold)).foregroundStyle(Palette.text).lineLimit(2)
             HStack(spacing: 6) {
                 if let q = e?.quant, !q.isEmpty { Badge(text: q) }
                 Badge(text: label, color: colour)
@@ -183,26 +183,26 @@ struct ModelsView: View {
                 }
                 if e?.added == true { Badge(text: "added") }
             }
-            Text(meta).font(.pixel(13)).foregroundStyle(Palette.muted).lineLimit(3)
-            if let blurb = e?.blurb, !blurb.isEmpty, m == nil { Text(blurb).font(.subheadline).foregroundStyle(Palette.muted) }
+            Text(meta).font(.ui(13)).foregroundStyle(Palette.muted).lineLimit(3)
+            if let blurb = e?.blurb, !blurb.isEmpty, m == nil { Text(blurb).font(.ui(15)).foregroundStyle(Palette.muted) }
             if r.state == .downloading, let p = progress {
                 Meter(fraction: p.fraction)
                 Text(p.checking ? "Checking the file against the catalog's SHA-256…"
                     : p.total > 0 ? "\(ByteText.gb(p.received)) of \(ByteText.gb(p.total))" : ByteText.gb(p.received))
-                    .font(.pixel(13)).foregroundStyle(Palette.muted)
+                    .font(.ui(13)).foregroundStyle(Palette.muted)
             } else if r.state == .partial, let got = r.partialBytes, let e, e.bytes > 0 {
                 // Stopped by a failure, a cancel or a relaunch: what is on the device already.
                 Meter(fraction: min(1, Double(got) / Double(e.bytes)))
             }
             if let e, case let .failed(why) = progress?.state {
                 Banner(text: why, color: Palette.err) {
-                    Button("Dismiss") { engine.dismissDownload(e.id) }.buttonStyle(.pixel)
+                    Button("Dismiss") { engine.dismissDownload(e.id) }.buttonStyle(.appSecondary)
                 }
             }
             actions(r)
         }
         .card()
-        .overlay(Rectangle().strokeBorder(e != nil && e?.id == followed ? Palette.accent : .clear, lineWidth: Grid.edge))
+        .overlay(RoundedRectangle(cornerRadius: Grid.radius, style: .continuous).strokeBorder(e != nil && e?.id == followed ? Palette.accent : .clear, lineWidth: Grid.line))
     }
 
     /// Size, architecture, shards, the file's own name where the title is another, and where it sits.
@@ -226,23 +226,23 @@ struct ModelsView: View {
                 switch r.state {
                 case .loaded:
                     if let m {
-                        Button("Reload") { run("load:\(m.path)") { try await engine.load(m.path) } }.buttonStyle(.pixel)
+                        Button("Reload") { run("load:\(m.path)") { try await engine.load(m.path) } }.buttonStyle(.appSecondary)
                             .disabled(engine.loading)
                     }
-                    Button("Unload") { run("unload") { try await engine.unload() } }.buttonStyle(.pixel)
-                    Button("Go to Chat") { nav.open(.chat) }.buttonStyle(.pixelPrimary)
+                    Button("Unload") { run("unload") { try await engine.unload() } }.buttonStyle(.appSecondary)
+                    Button("Go to Chat") { nav.open(.chat) }.buttonStyle(.appPrimary)
                 case .onDevice:
                     if let m {
                         Button("Load") { run("load:\(m.path)") { try await engine.load(m.path) } }
-                            .buttonStyle(.pixelPrimary)
+                            .buttonStyle(.appPrimary)
                             .disabled(engine.loading || !engine.serverUp || busy.contains("load:\(m.path)"))
                     }
                 case .downloading:
-                    if let e { Button("Cancel") { engine.cancelDownload(e.id) }.buttonStyle(.pixelDestructive) }
+                    if let e { Button("Cancel") { engine.cancelDownload(e.id) }.buttonStyle(.appDestructive) }
                 case .partial, .available, .incomplete:
                     if let e {
                         Button(r.partialBytes.map { ByteText.resume(received: $0, total: e.bytes) } ?? "Download") { download(e) }
-                            .buttonStyle(.pixelPrimary)
+                            .buttonStyle(.appPrimary)
                     }
                 }
             }
@@ -250,17 +250,17 @@ struct ModelsView: View {
                 if r.partialBytes != nil, r.state == .partial, let e {
                     // The one action that throws the bytes away: Cancel keeps them.
                     Button("Delete partial") { run("part:\(e.id)") { try await engine.deletePartial(e) } }
-                        .buttonStyle(.pixelDestructive)
+                        .buttonStyle(.appDestructive)
                 }
                 if let name = r.deleteName, let m, r.state != .loaded, r.state != .downloading {
                     Button("Delete…") {
                         confirmDelete = PendingDelete(name: name, title: r.title, files: m.files.count, bytes: m.bytes)
                     }
-                    .buttonStyle(.pixelDestructive)
+                    .buttonStyle(.appDestructive)
                 }
                 if let e, e.added, r.state != .downloading {
                     // Off the list; the files stay.
-                    Button("Forget") { run("rm:\(e.id)") { try await engine.removeAdded(e.id) } }.buttonStyle(.pixel)
+                    Button("Forget") { run("rm:\(e.id)") { try await engine.removeAdded(e.id) } }.buttonStyle(.appSecondary)
                 }
             }
         }
@@ -281,16 +281,16 @@ struct ModelsView: View {
             ForEach(companions) { m in
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(alignment: .firstTextBaseline) {
-                        Text(m.name).font(.subheadline.weight(.semibold)).foregroundStyle(Palette.text).lineLimit(2)
+                        Text(m.name).font(.ui(15, weight: .semibold)).foregroundStyle(Palette.text).lineLimit(2)
                         Spacer()
                         Badge(text: FileRole.label(m.role))
                     }
                     Text([ByteText.gb(m.bytes), m.arch, m.folder.isEmpty ? "" : "in \(m.folder)"].filter { !$0.isEmpty }
                         .joined(separator: " · "))
-                        .font(.pixel(13)).foregroundStyle(Palette.muted)
+                        .font(.ui(13)).foregroundStyle(Palette.muted)
                     if let name = Library.deleteName(m, modelsDir: engine.models.modelsDir) {
                         Button("Delete…") { confirmDelete = PendingDelete(name: name, title: m.name, files: m.files.count, bytes: m.bytes) }
-                            .buttonStyle(.pixelDestructive).disabled(!busy.isEmpty)
+                            .buttonStyle(.appDestructive).disabled(!busy.isEmpty)
                     }
                 }
                 .padding(.vertical, 6)
@@ -300,11 +300,11 @@ struct ModelsView: View {
 
     private var otherModel: some View {
         VStack(alignment: .leading, spacing: Grid.m) {
-            Text("Any other model").font(.pixel(16, bold: true)).foregroundStyle(Palette.text)
+            Text("Any other model").font(.ui(16, bold: true)).foregroundStyle(Palette.text)
             UrlImportSection(onAdded: follow)
             Text("Or a .gguf already on this device, in Files or iCloud Drive, copied into the app's folder.")
-                .font(.subheadline).foregroundStyle(Palette.muted)
-            Button("Import a file") { importing = true }.buttonStyle(.pixel).disabled(!busy.isEmpty)
+                .font(.ui(15)).foregroundStyle(Palette.muted)
+            Button("Import a file") { importing = true }.buttonStyle(.appSecondary).disabled(!busy.isEmpty)
         }
         .card()
     }
@@ -315,10 +315,10 @@ struct ModelsView: View {
             VStack(alignment: .leading, spacing: Grid.s) {
                 Text("Downloads land in the app's folder, which the Files app and the Finder show; a .gguf copied there "
                     + "(or into a folder directly inside it) is listed too.")
-                    .font(.caption).foregroundStyle(Palette.muted)
+                    .font(.ui(12)).foregroundStyle(Palette.muted)
                 if !list.modelsDir.isEmpty { Text(list.modelsDir).font(.code).foregroundStyle(Palette.text).textSelection(.enabled) }
                 if !list.scanDirs.isEmpty {
-                    Text("Also listed, and loaded in place:").font(.caption).foregroundStyle(Palette.muted)
+                    Text("Also listed, and loaded in place:").font(.ui(12)).foregroundStyle(Palette.muted)
                     ForEach(list.scanDirs, id: \.self) { Text($0).font(.code).foregroundStyle(Palette.text).textSelection(.enabled) }
                 }
             }
@@ -346,19 +346,19 @@ struct UrlImportSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Grid.s) {
-            PixelField(placeholder: "https://.../model.gguf", text: $url, mono: true)
+            AppField(placeholder: "https://.../model.gguf", text: $url, mono: true)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .keyboardType(.URL)
                 .onSubmit(add)
             HStack(spacing: Grid.s) {
-                Button(working ? "Checking the link…" : "Download", action: add).buttonStyle(.pixelPrimary)
+                Button(working ? "Checking the link…" : "Download", action: add).buttonStyle(.appPrimary)
                     .disabled(url.trimmingCharacters(in: .whitespaces).isEmpty || working || !engine.serverUp)
                 if working { ProgressView().tint(Palette.accent) }
             }
             Text("A link to one file, or to any shard of a split set (the other shards are fetched beside it). It is "
                 + "added to Your models and downloads like any other.")
-                .font(.caption).foregroundStyle(Palette.muted)
+                .font(.ui(12)).foregroundStyle(Palette.muted)
             if let failure { Banner(text: failure, color: Palette.err) }
         }
     }
@@ -410,27 +410,27 @@ struct HuggingFaceSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Grid.m) {
-            Text("From Hugging Face").font(.pixel(16, bold: true)).foregroundStyle(Palette.text)
+            Text("From Hugging Face").font(.ui(16, bold: true)).foregroundStyle(Palette.text)
             Steps(labels: Self.steps, current: step)
             Text("A model's name to search for, or a repository id or URL. The server lists the repository's gguf files, "
                 + "reads the header of the one you pick before any download, and says whether it fits here.")
-                .font(.caption).foregroundStyle(Palette.muted)
-            PixelField(placeholder: "A model's name, owner/repo, or its URL", text: $query, mono: true)
+                .font(.ui(12)).foregroundStyle(Palette.muted)
+            AppField(placeholder: "A model's name, owner/repo, or its URL", text: $query, mono: true)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .onSubmit(find)
             HStack(spacing: Grid.s) {
-                Button(working == "find" ? "Looking…" : "Find", action: find).buttonStyle(.pixelPrimary)
+                Button(working == "find" ? "Looking…" : "Find", action: find).buttonStyle(.appPrimary)
                     .disabled(query.trimmingCharacters(in: .whitespaces).isEmpty || working != nil || !engine.serverUp)
-                Button(showToken ? "Hide token" : "Token") { showToken.toggle() }.buttonStyle(.pixel)
+                Button(showToken ? "Hide token" : "Token") { showToken.toggle() }.buttonStyle(.appSecondary)
                 if working != nil { ProgressView().tint(Palette.accent) }
             }
             if showToken {
                 SecureField("Token for a gated or private repository", text: $token)
                     .font(.code)
                     .padding(10)
-                    .pixelBox(shadow: false)
-                Text("Used for these requests and kept nowhere.").font(.caption).foregroundStyle(Palette.muted)
+                    .box(lifted: false)
+                Text("Used for these requests and kept nowhere.").font(.ui(12)).foregroundStyle(Palette.muted)
             }
             if let failure { Banner(text: failure, color: Palette.err) }
             if let hits, listing == nil { repos(hits) }
@@ -443,7 +443,7 @@ struct HuggingFaceSection: View {
     private func repos(_ s: HFSearch) -> some View {
         VStack(alignment: .leading, spacing: Grid.s) {
             Text(s.repos.isEmpty ? "No repository with gguf files matches." : "Repositories, the most downloaded first")
-                .font(.pixel(13)).foregroundStyle(Palette.muted)
+                .font(.ui(13)).foregroundStyle(Palette.muted)
             ForEach(s.repos) { r in
                 Button { open(r.id) } label: {
                     HStack {
@@ -451,10 +451,10 @@ struct HuggingFaceSection: View {
                         Spacer()
                         if r.gated { Badge(text: "gated", color: Palette.warn) }
                         let updated = FileRole.isoDate(r.modified)
-                        Text(updated.isEmpty ? "\(r.downloads)↓" : "\(r.downloads)↓ · \(updated)").font(.pixel(13)).foregroundStyle(Palette.muted)
+                        Text(updated.isEmpty ? "\(r.downloads)↓" : "\(r.downloads)↓ · \(updated)").font(.ui(13)).foregroundStyle(Palette.muted)
                     }
                     .padding(10)
-                    .pixelBox(shadow: false)
+                    .box(lifted: false)
                 }
             }
         }
@@ -465,9 +465,9 @@ struct HuggingFaceSection: View {
             HStack {
                 Text(l.repo).font(.code).foregroundStyle(Palette.text)
                 Spacer()
-                if hits != nil { Button("Back") { listing = nil; facts = nil; selected = "" }.buttonStyle(.pixel) }
+                if hits != nil { Button("Back") { listing = nil; facts = nil; selected = "" }.buttonStyle(.appSecondary) }
             }
-            if l.models.isEmpty { Text("This repository holds no gguf.").font(.subheadline).foregroundStyle(Palette.muted) }
+            if l.models.isEmpty { Text("This repository holds no gguf.").font(.ui(15)).foregroundStyle(Palette.muted) }
             // Files whose names suggest a projector or a draft head go after the models, folded: the
             // name is only a hint, so they can still be checked, and the header then decides.
             let parts = FileRole.split(l.models) { $0.role }
@@ -480,7 +480,7 @@ struct HuggingFaceSection: View {
                     HStack(alignment: .firstTextBaseline) {
                         Text("\(companions.count) companion \(companions.count == 1 ? "file" : "files") (projectors, draft heads, "
                             + "going by their names; Check reads the header)")
-                            .font(.caption).foregroundStyle(Palette.muted).multilineTextAlignment(.leading)
+                            .font(.ui(12)).foregroundStyle(Palette.muted).multilineTextAlignment(.leading)
                         Spacer()
                         Image(systemName: companionsOpen ? "chevron.up" : "chevron.down").foregroundStyle(Palette.muted)
                     }
@@ -490,9 +490,9 @@ struct HuggingFaceSection: View {
             if !l.models.isEmpty {
                 HStack(spacing: Grid.s) {
                     Button(working == "check" ? "Reading the header…" : "Check it fits here") { check(l.repo) }
-                        .buttonStyle(.pixelPrimary)
+                        .buttonStyle(.appPrimary)
                         .disabled(selected.isEmpty || working != nil)
-                    if selected.isEmpty { Text("Pick a model above first.").font(.caption).foregroundStyle(Palette.muted) }
+                    if selected.isEmpty { Text("Pick a model above first.").font(.ui(12)).foregroundStyle(Palette.muted) }
                 }
             }
         }
@@ -509,20 +509,20 @@ struct HuggingFaceSection: View {
             HStack(alignment: .firstTextBaseline, spacing: Grid.s) {
                 Image(systemName: picked ? "largecircle.fill.circle" : "circle").foregroundStyle(picked ? Palette.accent : Palette.muted)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(m.name).font(.subheadline.weight(.semibold)).foregroundStyle(Palette.text).lineLimit(2)
+                    Text(m.name).font(.ui(15, weight: .semibold)).foregroundStyle(Palette.text).lineLimit(2)
                         .multilineTextAlignment(.leading)
                     HStack(spacing: 6) {
                         Text([m.quant, ByteText.gb(m.bytes), m.count > 1 ? "\(m.count) shards" : ""].filter { !$0.isEmpty }
                             .joined(separator: " · "))
-                            .font(.pixel(13)).foregroundStyle(Palette.muted)
+                            .font(.ui(13)).foregroundStyle(Palette.muted)
                         if !m.complete { Badge(text: "incomplete", color: Palette.err) }
                     }
                 }
                 Spacer(minLength: 0)
             }
             .padding(10)
-            .background(picked ? Palette.tint(Palette.accent) : .clear)
-            .overlay(Rectangle().strokeBorder(picked ? Palette.accent : Palette.border, lineWidth: 1))
+            .background(RoundedRectangle(cornerRadius: Grid.radius, style: .continuous).fill(picked ? Palette.accentTint : .clear))
+            .overlay(RoundedRectangle(cornerRadius: Grid.radius, style: .continuous).strokeBorder(picked ? Palette.accent : Palette.line, lineWidth: 1))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -532,7 +532,7 @@ struct HuggingFaceSection: View {
     private func verdict(_ f: HFFacts, _ m: HFModel) -> some View {
         let tone = f.tone.color
         return VStack(alignment: .leading, spacing: Grid.s) {
-            Text(f.headline.isEmpty ? f.mode : f.headline).font(.pixel(18, bold: true)).foregroundStyle(tone ?? Palette.text)
+            Text(f.headline.isEmpty ? f.mode : f.headline).font(.ui(18, bold: true)).foregroundStyle(tone ?? Palette.text)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: Grid.s) {
                 Badge(text: f.mode, color: tone ?? Palette.muted)
@@ -548,33 +548,33 @@ struct HuggingFaceSection: View {
                 }
                 fact("On disk", Bytes.label(f.bytes) + (f.files > 1 ? " in \(f.files) files" : ""))
             }
-            if !f.refusal.isEmpty { Text(f.refusal).font(.caption).foregroundStyle(Palette.warn) }
-            if !f.memory.isEmpty { Text(f.memory).font(.caption).foregroundStyle(Palette.muted) }
-            if !f.disk.isEmpty { Text(f.disk).font(.caption).foregroundStyle(f.downloadable ? Palette.muted : Palette.err) }
+            if !f.refusal.isEmpty { Text(f.refusal).font(.ui(12)).foregroundStyle(Palette.warn) }
+            if !f.memory.isEmpty { Text(f.memory).font(.ui(12)).foregroundStyle(Palette.muted) }
+            if !f.disk.isEmpty { Text(f.disk).font(.ui(12)).foregroundStyle(f.downloadable ? Palette.muted : Palette.err) }
             if !added.isEmpty {
                 HStack(spacing: Grid.s) {
                     Badge(text: "Downloading", color: Palette.ok)
-                    Text("Follow it in Your models; Load appears on its row when it is done.").font(.caption).foregroundStyle(Palette.muted)
+                    Text("Follow it in Your models; Load appears on its row when it is done.").font(.ui(12)).foregroundStyle(Palette.muted)
                 }
             } else {
                 Button(working == "add" ? "Starting…" : "Download") { add(listing?.repo ?? "", m.name) }
-                    .buttonStyle(.pixelPrimary)
+                    .buttonStyle(.appPrimary)
                     .disabled(!f.downloadable || !m.complete || working != nil)
                 if !m.complete {
-                    Text("Shards are missing from the repository: it cannot be downloaded whole.").font(.caption).foregroundStyle(Palette.muted)
+                    Text("Shards are missing from the repository: it cannot be downloaded whole.").font(.ui(12)).foregroundStyle(Palette.muted)
                 }
             }
         }
         .padding(12)
-        .pixelBox(fill: Palette.bg, edge: tone ?? Palette.border, shadow: false)
+        .box(fill: Palette.bg, edge: tone ?? Palette.line, lifted: false)
         .fixedSize(horizontal: false, vertical: true)
     }
 
     private func fact(_ k: String, _ v: String) -> some View {
         HStack(alignment: .firstTextBaseline) {
-            Text(k).font(.caption).foregroundStyle(Palette.muted)
+            Text(k).font(.ui(12)).foregroundStyle(Palette.muted)
             Spacer()
-            Text(v).font(.pixel(13)).foregroundStyle(Palette.text).multilineTextAlignment(.trailing)
+            Text(v).font(.ui(13)).foregroundStyle(Palette.text).multilineTextAlignment(.trailing)
         }
     }
 

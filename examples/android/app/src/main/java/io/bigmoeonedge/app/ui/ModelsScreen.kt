@@ -1,5 +1,8 @@
 package io.bigmoeonedge.app.ui
 
+import androidx.compose.ui.draw.shadow
+import androidx.compose.foundation.background
+
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -15,7 +18,6 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -143,7 +145,7 @@ fun ModelsScreen(modifier: Modifier = Modifier, onOpenChat: () -> Unit = {}) {
             TopAppBar(
                 title = { Text("Models") },
                 navigationIcon = { Box(Modifier.padding(start = 16.dp)) { BrandMark(wordmark = false) } },
-                actions = { TextButton(shape = RectangleShape, onClick = { requestSharedStorageAccess(context); refreshKey++ }) { Text("Refresh") } },
+                actions = { TextButton(shape = Corner, onClick = { requestSharedStorageAccess(context); refreshKey++ }) { Text("Refresh") } },
             )
         },
         snackbarHost = { SnackbarHost(snackbar) },
@@ -180,8 +182,8 @@ fun ModelsScreen(modifier: Modifier = Modifier, onOpenChat: () -> Unit = {}) {
                 if (rows.none { it.state == RowState.LOADED }) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("Loaded: ${m.name}", fontSize = 13.sp, modifier = Modifier.weight(1f))
-                        TextButton(shape = RectangleShape, onClick = { scope.launch { Engine.unload() } }) { Text("Unload") }
-                        TextButton(shape = RectangleShape, onClick = onOpenChat) { Text("Go to Chat") }
+                        TextButton(shape = Corner, onClick = { scope.launch { Engine.unload() } }) { Text("Unload") }
+                        TextButton(shape = Corner, onClick = onOpenChat) { Text("Go to Chat") }
                     }
                 }
             }
@@ -226,14 +228,14 @@ fun ModelsScreen(modifier: Modifier = Modifier, onOpenChat: () -> Unit = {}) {
                         Text("Or start from a suggestion", fontWeight = FontWeight.Medium, fontSize = 14.sp)
                         suggested.forEach { r ->
                             val e = r.entry ?: return@forEach
-                            OutlinedButton(shape = RectangleShape, onClick = { download(e) }, modifier = Modifier.fillMaxWidth()) {
+                            OutlinedButton(shape = Corner, onClick = { download(e) }, modifier = Modifier.fillMaxWidth()) {
                                 Text("Download ${e.title}" + (if (e.quant.isNotEmpty()) " (${e.quant})" else "") + ", ${gbLabel(e.bytes)}", maxLines = 2)
                             }
                         }
                     }
                     Text("Or a direct link to a gguf", fontWeight = FontWeight.Medium, fontSize = 14.sp)
                     LinkImport(onAdded = { e -> startEntry(e) })
-                    OutlinedButton(shape = RectangleShape, onClick = { picker.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth()) { Text("Or pick a gguf on the phone") }
+                    OutlinedButton(shape = Corner, onClick = { picker.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth()) { Text("Or pick a gguf on the phone") }
                 }
                 else -> {
                     Section("Your models")
@@ -256,12 +258,12 @@ fun ModelsScreen(modifier: Modifier = Modifier, onOpenChat: () -> Unit = {}) {
                     HorizontalDivider()
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("Any other model", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
-                        TextButton(shape = RectangleShape, onClick = { otherOpen = !otherOpen }) { Text(if (otherOpen) "Hide" else "Show") }
+                        TextButton(shape = Corner, onClick = { otherOpen = !otherOpen }) { Text(if (otherOpen) "Hide" else "Show") }
                     }
                     if (otherOpen) {
                         Hint("A direct link to a gguf, or a file already on the phone.")
                         LinkImport(onAdded = { e -> startEntry(e) })
-                        OutlinedButton(shape = RectangleShape, onClick = { picker.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth()) { Text("Pick a file") }
+                        OutlinedButton(shape = Corner, onClick = { picker.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth()) { Text("Pick a file") }
                     }
                 }
             }
@@ -279,10 +281,10 @@ fun ModelsScreen(modifier: Modifier = Modifier, onOpenChat: () -> Unit = {}) {
                 )
                 if (whereOpen) {
                     Hint("Downloads and imports land in this app's own storage, where streamed reads run fastest:")
-                    Text(m.modelsDir, fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                    Text(m.modelsDir, fontFamily = CodeFont, fontSize = 11.sp)
                     if (m.scanDirs.isNotEmpty()) {
                         Hint("Also listed, and loaded in place:")
-                        m.scanDirs.forEach { Text(it, fontFamily = FontFamily.Monospace, fontSize = 11.sp) }
+                        m.scanDirs.forEach { Text(it, fontFamily = CodeFont, fontSize = 11.sp) }
                     }
                     Hint(ModelManager.pushHint())
                 }
@@ -304,7 +306,7 @@ fun ModelsScreen(modifier: Modifier = Modifier, onOpenChat: () -> Unit = {}) {
             },
             confirmButton = {
                 TextButton(
-                    shape = RectangleShape,
+                    shape = Corner,
                     onClick = {
                         scope.launch {
                             val name = t.serverName
@@ -321,7 +323,7 @@ fun ModelsScreen(modifier: Modifier = Modifier, onOpenChat: () -> Unit = {}) {
                     enabled = !isLoaded,
                 ) { Text("Delete") }
             },
-            dismissButton = { TextButton(shape = RectangleShape, onClick = { deleteTarget = null }) { Text("Keep") } },
+            dismissButton = { TextButton(shape = Corner, onClick = { deleteTarget = null }) { Text("Keep") } },
         )
     }
 }
@@ -385,9 +387,9 @@ private fun ModelRow(
     val bring = remember { BringIntoViewRequester() }
     // The followed row is scrolled to when it is started and again when it changes state (lands, fails).
     LaunchedEffect(followed, r.state) { if (followed) runCatching { bring.bringIntoView() } }
-    val edge = if (followed || r.state == RowState.LOADED) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+    val edge = if (followed || r.state == RowState.LOADED) tokens.accent else tokens.line
     Column(
-        Modifier.fillMaxWidth().bringIntoViewRequester(bring).border(2.dp, edge).padding(10.dp),
+        Modifier.fillMaxWidth().bringIntoViewRequester(bring).shadow(1.dp, Corner).background(tokens.surface, Corner).border(1.dp, edge, Corner).padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -421,24 +423,24 @@ private fun ModelRow(
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             when {
                 r.state == RowState.LOADED && m != null -> {
-                    OutlinedButton(shape = RectangleShape, onClick = { onLoad(m.path) }, enabled = canLoad) { Text("Reload") }
-                    OutlinedButton(shape = RectangleShape, onClick = onUnload) { Text("Unload") }
-                    Button(shape = RectangleShape, onClick = onOpenChat) { Text("Go to Chat") }
+                    OutlinedButton(shape = Corner, onClick = { onLoad(m.path) }, enabled = canLoad) { Text("Reload") }
+                    OutlinedButton(shape = Corner, onClick = onUnload) { Text("Unload") }
+                    Button(shape = Corner, onClick = onOpenChat) { Text("Go to Chat") }
                 }
-                r.state == RowState.ON_DEVICE && m != null -> Button(shape = RectangleShape, onClick = { onLoad(m.path) }, enabled = canLoad) { Text("Load") }
-                r.state == RowState.DOWNLOADING && e != null -> OutlinedButton(shape = RectangleShape, onClick = { onCancel(e) }) { Text("Cancel") }
+                r.state == RowState.ON_DEVICE && m != null -> Button(shape = Corner, onClick = { onLoad(m.path) }, enabled = canLoad) { Text("Load") }
+                r.state == RowState.DOWNLOADING && e != null -> OutlinedButton(shape = Corner, onClick = { onCancel(e) }) { Text("Cancel") }
                 e != null && r.state in setOf(RowState.AVAILABLE, RowState.PARTIAL, RowState.INCOMPLETE) -> {
-                    Button(shape = RectangleShape, onClick = { onDownload(e) }) {
+                    Button(shape = Corner, onClick = { onDownload(e) }) {
                         Text(if (e.partial) resumeLabel(e.received, e.bytes) else "Download", maxLines = 1, softWrap = false)
                     }
-                    if (e.partial) TextButton(shape = RectangleShape, onClick = { onDeletePartial(e) }) { Text("Delete partial") }
+                    if (e.partial) TextButton(shape = Corner, onClick = { onDeletePartial(e) }) { Text("Delete partial") }
                 }
             }
             if (onDelete != null && r.state != RowState.LOADED && r.state != RowState.DOWNLOADING) {
-                TextButton(shape = RectangleShape, onClick = onDelete) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+                TextButton(shape = Corner, onClick = onDelete) { Text("Delete", color = MaterialTheme.colorScheme.error) }
             }
             if (e != null && e.added && r.state != RowState.DOWNLOADING) {
-                TextButton(shape = RectangleShape, onClick = { onForget(e) }) { Text("Forget") }
+                TextButton(shape = Corner, onClick = { onForget(e) }) { Text("Forget") }
             }
         }
     }
@@ -452,7 +454,7 @@ private fun CompanionRow(m: LocalModel, onDelete: (() -> Unit)?) {
             Text(m.name, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Hint(listOfNotNull(FileRole.label(m.role), gbLabel(m.bytes), m.arch.ifEmpty { null }, m.folder.ifEmpty { null }?.let { "in $it" }).joinToString(" · "))
         }
-        if (onDelete != null) TextButton(shape = RectangleShape, onClick = onDelete) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+        if (onDelete != null) TextButton(shape = Corner, onClick = onDelete) { Text("Delete", color = MaterialTheme.colorScheme.error) }
     }
 }
 
@@ -483,7 +485,7 @@ private fun LinkImport(onAdded: suspend (CatalogEntry) -> Unit) {
             label = { Text("https://…/model.gguf") },
             singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
-        Button(shape = RectangleShape, onClick = { add() }, enabled = url.isNotBlank() && !busy, modifier = Modifier.fillMaxWidth()) {
+        Button(shape = Corner, onClick = { add() }, enabled = url.isNotBlank() && !busy, modifier = Modifier.fillMaxWidth()) {
             Text(if (busy) "Checking the link…" else "Download")
         }
         Hint("A link to one file, or to any shard of a split set (the other shards are fetched beside it). It is added to Your models and downloads like any other.")
@@ -506,7 +508,7 @@ private fun DownloadProgress(p: ModelDownloader.Progress, onCancel: (() -> Unit)
     )
     if (pct != null) LinearProgressIndicator(progress = { pct }, modifier = Modifier.fillMaxWidth())
     else LinearProgressIndicator(Modifier.fillMaxWidth())
-    onCancel?.let { TextButton(shape = RectangleShape, onClick = it) { Text("Cancel") } }
+    onCancel?.let { TextButton(shape = Corner, onClick = it) { Text("Cancel") } }
 }
 
 /**
