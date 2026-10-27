@@ -526,6 +526,16 @@ tier pinned off the fitter put 6 GB of experts on the card and the rest resident
 Strata quotes 94 tok/s on this class with its experts and its drafting on the card: that gap is the
 work in front of the planner, not a ceiling of the card.
 
+On a rented 16 GB card with 30 GiB of RAM (a 6-core desktop CPU, NVMe at 2.2 GB/s), the class of a
+home PC with a mid-range card, Qwen3.8-Flash-Next Q2_0 streams: `--auto` put the dense part and a
+10 GB cache of the experts used most on the card (#429) and the rest behind a RAM cache
+([bench-data/2026-10-27-rented-16gb](bench-data/2026-10-27-rented-16gb/README.md)). Over 1024 tokens,
+with #431 (the RAM cache takes the RAM the plan left idle, and llama.cpp's load-time read-ahead is
+handed back so the kernel does not swap the cache out): **19.3-20.8 tok/s**, 27 from the 768th token,
+97% hits. On the same box llama.cpp's own offload decoded 16.6-18.9 over 256 tokens, and Strata,
+with its expert profile and its drafting, 36-67 (50-66 over 1024): it computes the experts its card
+does not hold on the CPU, where this engine uploads each one over the bus.
+
 On the last file llama.cpp's own offload (`-ngl 99 --n-cpu-moe 43`, every expert on the cores, the
 file memory-mapped) decoded at 18.5 tok/s from the same cold page cache: the whole file fits the
 control group's page cache, so it ran resident where our plan kept a fixed 18 GB margin and

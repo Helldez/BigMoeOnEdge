@@ -80,6 +80,9 @@ hardware runs faster.
 | Qwen3.6-35B-A3B | 21 GB | 16 GB Apple-silicon laptop | 1.3× | 18-24 tok/s |
 | Qwen3-Coder-30B-A3B | 18.6 GB | 16 GB Apple-silicon laptop | 1.2× | 23 tok/s; 7-9 inside opencode |
 | Qwen3.6-35B-A3B | 21 GB | 16 GB Windows laptop | 1.3× | 4.8 tok/s |
+| Qwen3.8-Flash-Next 125B | 66 GB | 16 GB desktop GPU, 32 GB RAM | 2.1× | 19-21 tok/s; 27 from the 768th token |
+| Qwen3.8-Flash-Next 125B | 66 GB | 24 GB desktop GPU, 89 GiB RAM | 0.7× | 70 tok/s |
+| Qwen3.6-35B-A3B | 21 GB | 24 GB desktop GPU | resident | 217 tok/s |
 
 Configurations and method: [docs/benchmarks.md](docs/benchmarks.md). To add a machine, run
 `scripts/bench-report.sh /path/to/model.gguf` and paste the table into a
