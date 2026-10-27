@@ -61,7 +61,7 @@ AccessDecision check_access(const AccessPolicy & policy, const RequestFacts & r)
     // A loopback server answers only to loopback names: a DNS-rebinding page cannot reach it
     // through a host name of its own.
     if (policy.loopback && !r.host.empty() && !is_loopback_host(r.host))
-        return {403, "this server only answers to loopback host names"};
+        return {403, "this server only answers to loopback host names", ""};
 
     // A browser request must come from the UI's own origin, on every method: a GET here can measure
     // the machine or hold a worker, and a page can issue one with an image tag. A cross-origin write
@@ -77,7 +77,7 @@ AccessDecision check_access(const AccessPolicy & policy, const RequestFacts & r)
         !r.sec_fetch_site.empty() && r.sec_fetch_site != "same-origin" && r.sec_fetch_site != "none";
     const bool foreign = r.has_origin ? policy.origins.count(r.origin) == 0 : fetched_from_elsewhere;
     if ((api || write) && foreign)
-        return {403, "cross-origin request refused (start the server with --allow-origin to permit one)"};
+        return {403, "cross-origin request refused (start the server with --allow-origin to permit one)", ""};
 
     // The key, where one is set, gates the engine and not the UI's files: a page is nothing without
     // the API behind it, and a client on the network has no page.
@@ -85,15 +85,69 @@ AccessDecision check_access(const AccessPolicy & policy, const RequestFacts & r)
     // Anthropic clients do.
     if (api && !policy.api_key.empty() && !bearer_matches(r.authorization, policy.api_key) &&
         !key_matches(r.x_api_key, policy.api_key))
-        return {401, "an API key is required: send it as Authorization: Bearer <key> (or X-Api-Key: <key>)"};
+        return {401, "an API key is required: send it as Authorization: Bearer <key> (or X-Api-Key: <key>)", ""};
 
     // The UI's origin is trusted only as far as its script: the page also shows model output, and
     // markup in it is same-origin. A form can post text that parses as JSON but cannot name the
     // type, so every write must.
     if (api && write && !is_json_content_type(r.content_type))
-        return {415, "requests that change something must be sent as Content-Type: application/json"};
+        return {415, "requests that change something must be sent as Content-Type: application/json", ""};
+
+    // Last: a client on the network that passed every rule above, key included, is still not the
+    // person at this machine.
+    if (const LocalOnlyRoute * l = local_only_route(r.method, r.path))
+        if (!is_loopback_peer(r.remote_addr))
+            return {403, std::string("only a client on this machine may ") + l->what, "local_only"};
 
     return {};
+}
+
+const std::vector<LocalOnlyRoute> & local_only_routes() {
+    static const std::vector<LocalOnlyRoute> routes = {
+        {"DELETE", "/api/models/local/**", "delete a model"},
+        {"POST", "/api/models/url", "add a model from a link"},
+        {"GET", "/api/backends", "list the backend packs"},
+        {"POST", "/api/backends/*/install", "install a backend pack"},
+        {"GET", "/api/update", "check for an update"},
+        {"POST", "/api/update/download", "download an update"},
+    };
+    return routes;
+}
+
+namespace {
+
+std::vector<std::string> path_segments(const std::string & path) {
+    std::vector<std::string> out;
+    size_t i = 0;
+    while (i <= path.size()) {
+        const size_t j = path.find('/', i);
+        const size_t end = j == std::string::npos ? path.size() : j;
+        if (end > i) out.push_back(path.substr(i, end - i));
+        if (j == std::string::npos) break;
+        i = j + 1;
+    }
+    return out;
+}
+
+bool pattern_matches(const std::string & pattern, const std::string & path) {
+    const std::vector<std::string> p = path_segments(pattern);
+    const std::vector<std::string> s = path_segments(path);
+    for (size_t i = 0; i < p.size(); ++i) {
+        if (p[i] == "**") return s.size() > i; // at least one segment below the prefix
+        if (i >= s.size()) return false;
+        if (p[i] != "*" && p[i] != s[i]) return false;
+    }
+    return p.size() == s.size();
+}
+
+} // namespace
+
+const LocalOnlyRoute * local_only_route(const std::string & method, const std::string & path) {
+    // HEAD is answered by a GET route's handler, so it is held to that route's rule.
+    const std::string m = method == "HEAD" ? "GET" : method;
+    for (const LocalOnlyRoute & r : local_only_routes())
+        if ((std::string(r.method) == "*" || m == r.method) && pattern_matches(r.path, path)) return &r;
+    return nullptr;
 }
 
 std::string launch_refusal(const std::string & bind_host, const std::string & api_key, bool no_api_key) {

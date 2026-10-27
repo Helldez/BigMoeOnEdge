@@ -14,6 +14,8 @@
 #include "openai_chat.h"
 #include "openai_responses.h"
 #include "event_bus.h"
+#include "feed.h"
+#include "feed_key.h"
 #include "hf_repo.h"
 #include "http_fetch.h"
 #include "json_util.h"
@@ -24,6 +26,7 @@
 #include "platform.h"
 #include "routing_store.h"
 #include "settings_store.h"
+#include "update_service.h"
 #include "url_entry.h"
 
 #include "bmoe/config.h"
@@ -41,9 +44,11 @@
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
+#include <limits>
 #include <map>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -75,6 +80,8 @@ constexpr std::chrono::seconds kEventPingInterval{15};
 // that reloads takes a new one at once: a client that closed its connection must not hold the old
 // one until the next ping. The same second a waiting chat turn looks with (TurnQueue::enter).
 constexpr std::chrono::seconds kEventLivenessPoll{1};
+// How often a server started by an app (--parent-pid) looks for it.
+constexpr std::chrono::seconds kParentPollInterval{1};
 // A client that vanishes without closing (a phone that drops off Wi-Fi) is invisible to the checks
 // above: nothing comes back to read, and pings that small never fill the send buffer, so without a
 // bound from TCP its stream would keep one of the few places until the stack's own retransmission
@@ -127,6 +134,8 @@ struct Options {
     bool open_browser = false;
     bool isolated_probes = true;                  // the planner asks each device in a child process first
     std::string hf_endpoint = kDefaultHfEndpoint; // where repositories are listed and fetched from
+    std::string feed_url = kFeedUrl;              // the release feed, read only when a person asks
+    long parent_pid = 0;                          // --parent-pid: stop when that process is gone
     std::string probe_device;                     // internal: this process IS such a child; probe this device and exit
     std::map<std::string, std::string> launch;    // engine parameters given on the command line
 };
@@ -170,6 +179,9 @@ void print_usage(const char * argv0) {
                 "                       are listed from (clients on the network always are)\n"
                 "  --no-isolated-probes the planner probes compute devices in this process instead of a child each\n"
                 "  --hf-endpoint URL    where Hugging Face repositories are read from (default %s; a mirror)\n"
+                "  --feed-url URL       the signed release feed backend packs and updates are read from\n"
+                "                       (https; default: this project's latest release)\n"
+                "  --parent-pid PID     stop when process PID ends (the app that started this server)\n"
                 "  -h, --help           this text\n"
                 "      --version        print the engine version\n"
                 "\n"
@@ -232,6 +244,20 @@ int parse_args(int argc, char ** argv, Options & o) {
                 o.hf_endpoint.pop_back();
             if (o.hf_endpoint.compare(0, 8, "https://") != 0 && o.hf_endpoint.compare(0, 7, "http://") != 0) {
                 std::fprintf(stderr, "bmoe-server: --hf-endpoint must be an http(s) URL\n");
+                return 2;
+            }
+        } else if (a == "--parent-pid") {
+            long long pid = 0;
+            std::string err;
+            if (!parse_int_strict(next(), 1, std::numeric_limits<int>::max(), pid, err)) {
+                std::fprintf(stderr, "bmoe-server: --parent-pid %s\n", err.c_str());
+                return 2;
+            }
+            o.parent_pid = (long) pid;
+        } else if (a == "--feed-url") {
+            o.feed_url = next();
+            if (o.feed_url.compare(0, 8, "https://") != 0) {
+                std::fprintf(stderr, "bmoe-server: --feed-url must be an https URL\n");
                 return 2;
             }
         } else if (a == "-h" || a == "--help") {
@@ -361,6 +387,9 @@ struct App {
     // The network, for reading a repository (http_fetch.h), and where its bytes in flight go.
     std::unique_ptr<HttpFetch> net;
     std::string scratch_dir;
+    // The release feed, backend packs and updates (update_service.h); made once the backends are
+    // known.
+    std::unique_ptr<UpdateService> updates;
 
     App(Options o,
         std::string settings_path,
@@ -995,10 +1024,9 @@ void register_routes(httplib::Server & svr, App & app) {
 
     // A model of the models folder, named as the listing names it (`folder/name`), never a path:
     // the library deletes the files the folder's own scan groups under that name (model_delete.h).
-    // Only the person at this machine deletes files: a client on the network, key or not, may not.
+    // Only the person at this machine deletes files: a client on the network, key or not, may not
+    // (local_only_routes, access.h, refuses it before routing).
     svr.Delete(R"(/api/models/local/(.+))", [&](const httplib::Request & req, httplib::Response & res) {
-        if (!is_loopback_peer(req.remote_addr))
-            return send_error(res, 403, "only a client on this machine may delete a model", "local_only");
         // Under the load lock: a load cannot start on the file between the check and the delete.
         std::lock_guard<std::mutex> load(app.load_m);
         const std::string loaded = app.host.loaded_or_loading() ? app.host.model_path() : "";
@@ -1009,10 +1037,8 @@ void register_routes(httplib::Server & svr, App & app) {
     });
 
     // A direct link to a gguf becomes a catalog entry (url_entry.h), and its download is then the
-    // catalog's, by id. The server fetches what a client named here, so only a local client may.
+    // catalog's, by id. The server fetches what a client named here, so only a local client may (local_only_routes).
     svr.Post("/api/models/url", [&](const httplib::Request & req, httplib::Response & res) {
-        if (!is_loopback_peer(req.remote_addr))
-            return send_error(res, 403, "only a client on this machine may add a model from a link", "local_only");
         json body;
         if (!parse_body(req, res, body)) return;
         if (!body.contains("url") || !body["url"].is_string())
@@ -1198,6 +1224,25 @@ void register_routes(httplib::Server & svr, App & app) {
         send_json(res, app.config_object());
         app.publish_config();
     });
+
+    // ── backend packs and updates (update_service.h; local clients only, access.h) ──
+    const auto reply = [](httplib::Response & res, const UpdateService::Reply & r) {
+        send_json(res, r.body, r.status);
+    };
+    svr.Get("/api/backends", [&, reply](const httplib::Request & req, httplib::Response & res) {
+        reply(res, app.updates->backends(req.get_param_value("refresh") == "1"));
+    });
+    svr.Post(R"(/api/backends/([^/]+)/install)", [&, reply](const httplib::Request & req, httplib::Response & res) {
+        json body;
+        if (!parse_body(req, res, body)) return;
+        const bool force = body.contains("force") && body["force"].is_boolean() && body["force"].get<bool>();
+        reply(res, app.updates->install_pack(req.matches[1].str(), force));
+    });
+    svr.Get("/api/update",
+            [&, reply](const httplib::Request &, httplib::Response & res) { reply(res, app.updates->update()); });
+    svr.Post("/api/update/download", [&, reply](const httplib::Request &, httplib::Response & res) {
+        reply(res, app.updates->download_update());
+    });
 }
 
 // Every rule about who may reach the API lives in access.h; here the request is read into the
@@ -1220,10 +1265,11 @@ void register_guards(httplib::Server & svr, const Options & o) {
         f.content_type = req.get_header_value("Content-Type");
         f.authorization = req.get_header_value("Authorization");
         f.x_api_key = req.get_header_value("X-Api-Key");
+        f.remote_addr = req.remote_addr;
         const AccessDecision d = check_access(policy, f);
         if (d.allowed()) return httplib::Server::HandlerResponse::Unhandled;
         if (d.status == 401) res.set_header("WWW-Authenticate", "Bearer realm=\"bmoe-server\"");
-        send_path_error(req.path, res, d.status, d.error);
+        send_path_error(req.path, res, d.status, d.error, d.code);
         return httplib::Server::HandlerResponse::Handled;
     });
     // On every response, the refusals above and the UI's files alike.
@@ -1261,8 +1307,14 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     const std::string data_dir = o.data_dir.empty() ? platform::default_data_dir() : o.data_dir;
     // What a backend reads from its environment, set before any backend is loaded.
     platform::prepare_compute_backends(data_dir);
-    // Every backend beside the executable, before anything asks ggml about devices or defaults.
-    register_backends();
+    // Every backend beside the executable, then the packs installed into the data folder (a pack
+    // replaced while in use is moved into place first), before anything asks ggml about devices.
+    const std::string backends_root = (fs::u8path(data_dir) / "backends").u8string();
+    for (const std::string & w : finish_pending_packs(backends_root))
+        std::fprintf(stderr, "warning: %s\n", w.c_str());
+    const std::vector<std::string> pack_dirs = backend_pack_dirs(backends_root);
+    platform::prepare_backend_modules(extra_backend_modules(platform::executable_dir(), pack_dirs));
+    register_backends(pack_dirs);
     // The child of an isolated device probe: one device, its facts on one line, nothing else. If
     // the driver ends this process, or it never returns, that is the parent's answer about the device.
     if (!o.probe_device.empty()) {
@@ -1309,6 +1361,17 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     app.host.set_host_info(platform::host_info);
     app.host.set_planner_available(planner_available());
     app.host.set_serves_network(!is_loopback_host(o.host));
+    {
+        UpdateConfig uc;
+        uc.data_dir = data_dir;
+        uc.feed_url = o.feed_url;
+        uc.public_key = kFeedPublicKey;
+        uc.target = platform::build_target();
+        uc.version = version();
+        uc.registered = backend_inventory().names;
+        uc.library_loads = platform::library_loads;
+        app.updates = std::make_unique<UpdateService>(app.bus, *app.net, uc);
+    }
 
     httplib::Server svr;
     // A worker is held for a request's whole life, and a connection past the queue is closed at
@@ -1359,13 +1422,32 @@ int run(int argc, char ** argv, const Embedding & embedding) {
 
     // A stop ends what keeps a worker busy first (a generation, every event stream), since the
     // server's stop waits for its workers.
-    if (embedding.listening)
-        embedding.listening([&svr, &app] {
-            app.host.cancel();
-            app.bus.close_all();
-            svr.stop();
+    const auto stop = [&svr, &app] {
+        app.host.cancel();
+        app.updates->cancel();
+        app.bus.close_all();
+        svr.stop();
+    };
+    if (embedding.listening) embedding.listening(stop);
+    // The app that started this server is looked for every second; once it is gone, so is the
+    // server, whatever ended the app.
+    std::atomic<bool> listening_done{false};
+    std::thread parent_watch;
+    if (o.parent_pid > 0)
+        parent_watch = std::thread([&] {
+            while (!listening_done) {
+                if (!platform::process_alive(o.parent_pid)) {
+                    std::fprintf(stderr, "bmoe-server: the process that started it (%ld) ended; stopping\n",
+                                 o.parent_pid);
+                    stop();
+                    return;
+                }
+                std::this_thread::sleep_for(kParentPollInterval);
+            }
         });
     svr.listen_after_bind();
+    listening_done = true;
+    if (parent_watch.joinable()) parent_watch.join();
     if (embedding.listening) embedding.listening(nullptr);
     app.bus.close_all();
     return 0;

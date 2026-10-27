@@ -32,13 +32,15 @@ struct RequestFacts {
     std::string sec_fetch_site;
     std::string content_type;
     std::string authorization;
-    std::string x_api_key; // the X-Api-Key header: how Anthropic clients send a key
+    std::string x_api_key;   // the X-Api-Key header: how Anthropic clients send a key
+    std::string remote_addr; // the connection's peer address, which a client cannot choose
 };
 
 // status 0 when the request may proceed; otherwise the status to answer with, and why.
 struct AccessDecision {
     int status = 0;
     std::string error;
+    std::string code; // what a client decides on, when the refusal has one ("local_only")
     bool allowed() const { return status == 0; }
 };
 
@@ -58,6 +60,22 @@ bool bearer_matches(const std::string & authorization, const std::string & key);
 
 // `token` is `key`, compared in constant time. An empty key matches nothing.
 bool key_matches(const std::string & token, const std::string & key);
+
+// A route only the person at this machine may use, whatever the server's --host and key: it
+// installs software, reads the network on the person's behalf, or changes files. `path` is matched
+// segment by segment: `*` is any one segment, a final `**` any number of them.
+struct LocalOnlyRoute {
+    const char * method; // "GET", "POST", ...; "*" for any
+    const char * path;
+    const char * what; // finishes "only a client on this machine may ..."
+};
+
+// Every such route. The one list: a route is made local-only by adding a row here, and the guard
+// in front of every request refuses it from the network (403, code "local_only") before routing.
+const std::vector<LocalOnlyRoute> & local_only_routes();
+
+// The row of local_only_routes() that `method` and `path` fall under, or nullptr.
+const LocalOnlyRoute * local_only_route(const std::string & method, const std::string & path);
 
 AccessDecision check_access(const AccessPolicy & policy, const RequestFacts & req);
 

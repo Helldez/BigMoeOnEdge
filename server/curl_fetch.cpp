@@ -8,10 +8,12 @@
 #include "sheredom/subprocess.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <thread>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -144,6 +146,84 @@ public:
         // No answer at all (a host that refuses HEAD, a network that drops it) leaves the size
         // unknown rather than the link refused: the download then says whether the file is there.
         if (rc == 0 && a.status >= 200 && a.status < 300) bytes = a.length;
+        return true;
+    }
+
+    bool download(const std::string & url,
+                  const std::string & dest,
+                  const std::function<bool(uint64_t)> & progress,
+                  std::string & error) override {
+        // The feed's files are https, and so is every hop to them: no mirror rule applies here.
+        const std::string protos = curl_protocols(url, "");
+        if (protos.empty()) {
+            error = "not an https URL";
+            return false;
+        }
+        const fs::path out = fs::u8path(dest);
+        std::error_code ec;
+        fs::create_directories(out.parent_path(), ec);
+        fs::remove(out, ec);
+        const std::string out_s = out.string();
+        // No --max-time: a pack is hundreds of megabytes. A transfer that stalls for a minute is
+        // given up instead (--speed-limit/--speed-time), and curl retries what it can on its own.
+        const char * cmd[] = {"curl",
+                              "-sS",
+                              "-L",
+                              "--fail",
+                              "--retry",
+                              "3",
+                              "--proto",
+                              protos.c_str(),
+                              "--proto-redir",
+                              protos.c_str(),
+                              "--speed-limit",
+                              "1",
+                              "--speed-time",
+                              "60",
+                              "-o",
+                              out_s.c_str(),
+                              "--",
+                              url.c_str(),
+                              nullptr};
+        subprocess_s proc;
+        const int opts = subprocess_option_search_user_path | subprocess_option_inherit_environment |
+                         subprocess_option_no_window | subprocess_option_combined_stdout_stderr;
+        if (subprocess_create(cmd, opts, &proc) != 0) {
+            error = "could not start curl: is it installed and on PATH?";
+            return false;
+        }
+        bool stopped = false;
+        while (subprocess_alive(&proc)) {
+            std::error_code sec;
+            const uintmax_t got = fs::file_size(out, sec);
+            if (progress && !progress(sec ? 0 : (uint64_t) got)) {
+                subprocess_terminate(&proc);
+                stopped = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+        int rc = 0;
+        subprocess_join(&proc, &rc);
+        std::string output;
+        if (FILE * o = subprocess_stdout(&proc)) {
+            char buf[256];
+            while (std::fgets(buf, sizeof(buf), o))
+                output += buf;
+        }
+        subprocess_destroy(&proc);
+        while (!output.empty() && (output.back() == '\n' || output.back() == '\r'))
+            output.pop_back();
+        if (stopped) {
+            fs::remove(out, ec);
+            error = "stopped";
+            return false;
+        }
+        if (rc != 0) {
+            fs::remove(out, ec);
+            error = "curl exited with " + std::to_string(rc) + (output.empty() ? "" : ": " + output);
+            return false;
+        }
         return true;
     }
 
