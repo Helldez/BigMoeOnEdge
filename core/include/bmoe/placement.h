@@ -101,6 +101,13 @@ struct Placement {
     // layers the fitter had spread over both onto whichever had more room (#321). Empty when nothing
     // is placed.
     std::vector<std::pair<std::string, uint32_t>> device_split;
+
+    // What each device in `device_split` has free beyond what the fitter projects for it and the
+    // margin it leaves, by device name: the remainder no further whole layer fitted in. The fitter
+    // fills a card in whole layers, so this is memory it never uses; a device expert cache can, since
+    // it fills by the expert rather than by the layer. Read off the same free figure the fitter
+    // planned against, in the same call. Empty when nothing is placed.
+    std::vector<std::pair<std::string, uint64_t>> device_spare;
 };
 
 } // namespace bmoe
