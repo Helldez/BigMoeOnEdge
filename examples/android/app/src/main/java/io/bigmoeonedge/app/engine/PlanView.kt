@@ -3,7 +3,7 @@ package io.bigmoeonedge.app.engine
 /**
  * The Plan screen's figures, worked out from what `GET /api/plan` and the parameter table say:
  * decode expected against measured, the cache hit rate credited against measured, the memory held
- * against what the process may hold, the worst case, and what Apply changed. Nothing here names a
+ * against what the process may hold, and what Apply changed. Nothing here names a
  * device or a knob. Same rules as the web UI (ui/src/lib/plan.ts).
  */
 data class PlanFigures(
@@ -17,9 +17,6 @@ data class PlanFigures(
     /** The pool of what this process may hold, when the plan charged one. */
     val heldBytes: Long?,
     val capBytes: Long?,
-    /** Milliseconds a token takes with nothing held in memory, and the expected one beside it. */
-    val worstMs: Double?,
-    val expectedMs: Double?,
 )
 
 fun planFigures(p: PlanResult): PlanFigures {
@@ -34,8 +31,6 @@ fun planFigures(p: PlanResult): PlanFigures {
         measuredHitPct = p.measured?.cacheHitPct?.takeIf { it >= 0 },
         heldBytes = host?.takeIf { it.capBytes > 0 }?.heldBytes,
         capBytes = host?.capBytes?.takeIf { it > 0 },
-        worstMs = p.predictedWorstSPerToken.takeIf { it > 0 }?.let { it * 1000 },
-        expectedMs = ps?.let { it * 1000 },
     )
 }
 

@@ -334,4 +334,12 @@ std::string plan_step_label(const std::string & step) {
     return sentence_case(step);
 }
 
+HeldPlan held_plan(const PlanRead & r) {
+    if (r.model.empty()) return HeldPlan::None;
+    const bool runs = r.load_seq > 0 && r.load_model == r.model && (r.last_seq == 0 || r.last_seq == r.load_seq);
+    if (runs) return HeldPlan::Runs;
+    if (r.want_cached && r.last_seq > 0 && r.last_model == r.model) return HeldPlan::Last;
+    return HeldPlan::None;
+}
+
 } // namespace bmoe::server

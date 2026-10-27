@@ -29,7 +29,7 @@ app/
     Engine/     the server's life in the app: paths, launch, key, the state the screens observe
     Chat/       conversations, the turn in flight, Markdown, choose-from-options
     Models/     one list of what is here and what the catalog offers, Hugging Face, a link, a file
-    Plan/       the verdict and its four figures, the planner's measurements and decisions
+    Plan/       the verdict and its three figures, the planner's measurements and decisions
     Settings/   every engine parameter, one card per group of GET /api/params, and the app's own
     Metrics/    the live card, the recorded runs, the engine's log
     Design/     the visual language (docs/design.md): palette, type, boxes, the logo
@@ -49,7 +49,7 @@ server (`DELETE /api/models/local/<name>`), which removes a split set whole. The
 the running downloads and, when the context is below what a client of the server sends and the
 server serves the network or has refused a request, a warning with a link that lands on that
 setting and a ✕ that dismisses it for that model and context (a refusal brings it back); the same
-line stays under "Serve on the network". Plan opens on its verdict and four figures with Apply and
+line stays under "Serve on the network". Plan opens on its verdict and three figures with Apply and
 Measure again; Settings is one card per group with a remembered level filter, a search, a chip per
 row for where its value came from, and links from Plan land on a row.
 

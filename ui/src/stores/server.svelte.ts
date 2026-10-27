@@ -4,7 +4,7 @@ import { auth } from '../lib/auth';
 import type { SseEvent } from '../lib/sse';
 import { isConfig, isDoneSummary, isDownloadEvent, isInfo, isPlanProgress, isTokenEvent } from '../lib/guards';
 import { ema, mibPerSec, pushSample, tokPerSec, wallShare } from '../lib/metrics';
-import type { Config, DoneSummary, DownloadEvent, Info, ParamSpec, PlanProgress, TokenEvent } from '../lib/types';
+import type { Config, DoneSummary, DownloadEvent, Info, ParamSpec, Plan, PlanProgress, TokenEvent } from '../lib/types';
 
 const HISTORY = 120;
 const RECONNECT_MIN_MS = 1000;
@@ -34,6 +34,15 @@ class ServerStore {
   lastDone = $state<DoneSummary | null>(null);
   /** The stage a measurement is in, null when none runs (a `done` stage clears it). */
   planProgress = $state<PlanProgress | null>(null);
+  /**
+   * The plan the server holds for the chosen model (`GET /api/plan?cached=1`, never a measurement):
+   * read when the server is reached, when a session opens and when a turn ends, so the Plan page
+   * opens on it at once and its measured figures land when the answer does, whichever page is open.
+   */
+  plan = $state<Plan | null>(null);
+  planError = $state('');
+  /** A measurement asked for (`?measure=1`) is in flight: the person's tap, never automatic. */
+  measuring = $state(false);
   downloads = $state<Record<string, DownloadEvent>>({});
   /** Bumped when a download ends, so the Models page knows to refresh its list. */
   downloadsFinished = $state(0);
@@ -73,6 +82,32 @@ class ServerStore {
   refreshStatic(): void {
     this.loadParams();
     this.loadConfig();
+    this.refreshPlan();
+  }
+
+  /** The plan held, without measuring; skipped while a measurement runs, which answers instead. */
+  async refreshPlan(): Promise<void> {
+    if (this.measuring) return;
+    try {
+      this.plan = await api.plan('cached');
+      this.planError = '';
+    } catch (e) {
+      this.planError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  /** Measure the machine for the chosen model: the probes run, and the plan shown is the new one. */
+  async measurePlan(): Promise<void> {
+    if (this.measuring) return;
+    this.measuring = true;
+    this.planError = '';
+    try {
+      this.plan = await api.plan('measure');
+    } catch (e) {
+      this.planError = e instanceof Error ? e.message : String(e);
+    } finally {
+      this.measuring = false;
+    }
   }
 
   async loadConfig(): Promise<void> {
@@ -131,7 +166,7 @@ class ServerStore {
   private onEvent(ev: SseEvent): void {
     switch (ev.event) {
       case 'state':
-        this.onJson<Info>(ev, isInfo, (d) => (this.info = d));
+        this.onJson<Info>(ev, isInfo, (d) => this.onInfo(d));
         break;
       case 'config':
         this.onJson<Config>(ev, isConfig, (d) => (this.config = d));
@@ -140,7 +175,11 @@ class ServerStore {
         this.onJson<TokenEvent>(ev, isTokenEvent, (d) => this.onToken(d));
         break;
       case 'done':
-        this.onJson<DoneSummary>(ev, isDoneSummary, (d) => (this.lastDone = d));
+        this.onJson<DoneSummary>(ev, isDoneSummary, (d) => {
+          this.lastDone = d;
+          // A finished turn is a new measurement beside the plan the model runs with.
+          if (this.info?.model) this.refreshPlan();
+        });
         break;
       case 'download':
         this.onJson<DownloadEvent>(ev, isDownloadEvent, (d) => this.onDownload(d));
@@ -170,6 +209,14 @@ class ServerStore {
       return; // a malformed event is dropped; the next one carries full state again
     }
     if (guard(data)) apply(data); // and so is one that is not the shape the UI reads
+  }
+
+  private onInfo(d: Info): void {
+    const before = this.info;
+    this.info = d;
+    // A new session runs a plan of its own (an auto load's, or the settings as they were).
+    const opened = d.state === 'ready' && d.model !== null && (before?.model?.path !== d.model.path || before?.model?.load_s !== d.model.load_s);
+    if (opened) this.refreshPlan();
   }
 
   private onToken(t: TokenEvent): void {

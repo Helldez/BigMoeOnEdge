@@ -33,6 +33,9 @@ struct PlanOutcome {
     // The machine the plan measured (hardware_fingerprint): what a knob verdict measured under this
     // plan is kept against.
     std::string hardware;
+    // Its place in the order this server measured plans in (0: no plan): the load's plan is the one
+    // the model runs with only while no measurement followed it (plan_view.h, held_plan).
+    uint64_t seq = 0;
 };
 
 bool planner_available();

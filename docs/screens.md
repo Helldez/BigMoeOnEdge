@@ -151,19 +151,27 @@ position. Every word on the screen, down to a badge and a stage of the measureme
 server beside a code; a UI reads the code for a colour and shows the word, so the three UIs say
 the same thing and a stage or role added later reaches them all unchanged.
 
-- **Opening it measures nothing.** The screen reads the plan the loaded model runs with, else the
-  last one the server holds (`GET /api/plan?cached=1`), and shows it in this same layout, marked as
-  the last measured; with none it says so, with Measure. Measuring is always the person's tap.
-- **Auto-plan.** A switch: plan before every load. Off, a load uses the settings as they are.
-- **Summary, first.** The plan's verdict (`summary.sentence`: "Experts stream from flash, with a
+- **Opening it measures nothing.** The plan lives in the UI's engine state, not in the screen:
+  read (`GET /api/plan?cached=1`) when the server is reached, again when a session opens and
+  again when a turn ends, whichever screen is open. So the screen opens on the plan the loaded
+  model runs with, else the last one the server holds, marked as the last measured, and its
+  measured figures land when the answer does; with none it says so, with Measure. Measuring is
+  always the person's tap.
+- **One banner for what went wrong**, first: a failed read, a failed Apply, or a plan the server
+  could not make, with Measure again beside it. Then the stages of a running measurement.
+- **Auto-plan.** A switch, above the plan: plan before every load. Off, a load uses the settings
+  as they are.
+- **Summary.** The plan's verdict (`summary.sentence`: "Experts stream from flash, with a
   7.1 GiB cache"), the machine line, the lanes (which device computes the prompt and which the
-  tokens) in one line, and four figures: decode speed, expected from `predicted` and, once the
-  loaded model has answered, measured from `measured` with the difference (`+26%`); the cache hit
-  rate the plan credited (`predicted.cache_hit_pct`, the cost model's own), measured with a mark at
-  the credited one; the memory held against what the process may hold (the host pool of
-  `memory.pools`); and the worst case, milliseconds per token with nothing held in memory
-  (`predicted.s_per_token_worst`), beside the expected. Apply and Measure again sit together under
-  them, and Apply lists what it changed, each row linked to its setting. A plan measured with a
+  tokens) in one line, and three figures: decode speed, expected from `predicted` and, once the
+  loaded model has answered, measured from `measured`, with the difference (`+26%`) when the model
+  runs this plan (`from_last_load`) and the expected figure as a plain line otherwise (the last plan
+  measured by hand is not the one running); the cache hit rate the plan credited
+  (`predicted.cache_hit_pct`, the cost model's own), measured with a mark at the credited one; and
+  the memory held against what the process may hold (the host pool of `memory.pools`). The API's
+  `predicted.s_per_token_worst`, the cost model's bound with nothing resident, is not drawn: it is
+  in the diagnostic. Apply and Measure again sit together under the figures, the only place they
+  are, and Apply lists what it changed, each row linked to its setting. A plan measured with a
   model loaded carries the server's warning: it is sized for a smaller machine.
 - **Memory.** One bar per pool (`memory.pools`): every row the ledger holds, then what is free,
   against what the process may hold; each row named, sized and marked when locked. A row held in
@@ -183,13 +191,13 @@ the same thing and a stage or role added later reaches them all unchanged.
   open, the field focused). The two folded groups say in a line what they hold.
 - **Measuring.** While the probes run (Measure, or an auto load), the stages from `plan_progress`:
   done, running, how many to go. Never a blind wait.
-- **Actions.** Measure again, also beside an error so a failed plan can be retried (the probes
-  run again: storage reads, a matmul on every device; on a phone it takes a while and never starts
-  on its own), Apply (the plan's values go to the settings
+- **Actions.** Measure again (the probes run again: storage reads, a matmul on every device; on a
+  phone it takes a while and never starts on its own), Apply (the plan's values go to the settings
   without becoming the person's), the command line, and Copy diagnostic: the command and the
   planner's whole account (`explain`) on the clipboard, for a bug report. The account is not shown:
-  every line of it has a worded twin on the screen. A link leads to how the planner decides
-  ([hardware-planning.md](hardware-planning.md)).
+  every line of it has a worded twin on the screen. Beside it, a link to how the planner decides
+  ([hardware-planning.md](hardware-planning.md)). With nothing loaded and no plan to show, the
+  decisions the settings carry from the last applied plan, grouped the same way.
 - **With nothing loaded**, the decisions the configuration carries from the last applied plan are
   shown, grouped the same way, so the screen is never empty after a plan has been made.
 
