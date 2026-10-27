@@ -2,7 +2,7 @@
 Type=Application
 Name=BigMoeOnEdge
 Comment=Run mixture-of-experts language models on this machine
-Exec=bmoe-server
+Exec=bmoe-desktop
 Icon=bigmoeonedge
 Categories=Development;
 Terminal=false
