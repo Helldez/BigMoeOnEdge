@@ -2,9 +2,10 @@ package io.bigmoeonedge.app.ui
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -14,6 +15,9 @@ import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -27,155 +31,191 @@ import androidx.compose.ui.unit.sp
 import io.bigmoeonedge.app.R
 
 /**
- * The visual language (docs/design.md), as Material 3 reads it: the logo's palette as a colour
- * scheme, Pixelify Sans for the product's own voice (titles, labels, figures), the system face for
- * prose, and every corner square. Material's ripple and elevation stay: a phone's touch feedback
- * is what the toolkit is for.
+ * The design tokens (docs/design.md, "Slate + cyan"), the one place this app keeps colour values.
+ * Every pair of words over a fill was checked for WCAG AA (4.5:1); the derived tokens exist because
+ * the chosen light accent is a fill colour and too light for words: [accentInk] carries it as text
+ * and as a filled button, [edge] gives a control's outline 3:1 against its surface.
  */
-object Palette {
-    val Bg = Color(0xFF0A0512)
-    val Surface = Color(0xFF160B2A)
-    val Surface2 = Color(0xFF2A1150)
-    val Border = Color(0xFF3B2A63)
-    val Text = Color(0xFFF2ECFF)
-    val Muted = Color(0xFFB9A9E6)
-    val Accent = Color(0xFF21E6FF)
-    val AccentText = Color(0xFF0A0512)
-    val Accent2 = Color(0xFF6C5AA8)
-    val Warn = Color(0xFFFFC53D)
-    val Ok = Color(0xFF7CE0B0)
-    val Err = Color(0xFFFF6B8B)
+@Immutable
+data class Tokens(
+    val bg: Color,
+    val surface: Color,
+    val surface2: Color,
+    val line: Color,
+    val edge: Color,
+    val text: Color,
+    val muted: Color,
+    val accent: Color,
+    val accentInk: Color,
+    val onAccent: Color,
+    val accentTint: Color,
+    val ok: Color,
+    val okTint: Color,
+    val warn: Color,
+    val warnTint: Color,
+    val err: Color,
+    val errTint: Color,
+)
 
-    val LightBg = Color(0xFFF2ECFF)
-    val LightSurface = Color(0xFFFFFFFF)
-    val LightSurface2 = Color(0xFFE6DCFF)
-    val LightText = Color(0xFF0A0512)
-    val LightMuted = Color(0xFF4B3A7A)
-    val LightAccent = Color(0xFF0FA8C2)
-    val LightWarn = Color(0xFF8A5A00)
-    val LightOk = Color(0xFF1D7A46)
-    val LightErr = Color(0xFFB42318)
-}
+val LightTokens = Tokens(
+    bg = Color(0xFFF6F8F9),
+    surface = Color(0xFFFFFFFF),
+    surface2 = Color(0xFFEEF2F4),
+    line = Color(0xFFDFE5E9),
+    edge = Color(0xFF7D8A95),
+    text = Color(0xFF111820),
+    muted = Color(0xFF56636E),
+    accent = Color(0xFF0891B2),
+    accentInk = Color(0xFF0E7490),
+    onAccent = Color(0xFFFFFFFF),
+    accentTint = Color(0xFFE1F2F6),
+    ok = Color(0xFF166534),
+    okTint = Color(0xFFE3EDE7),
+    warn = Color(0xFF92400E),
+    warnTint = Color(0xFFF2E8E2),
+    err = Color(0xFFB91C1C),
+    errTint = Color(0xFFF7E4E4),
+)
 
-/** The wordmark's face; nothing else is set in it, because pixel text is hard to read small. */
-private val PixelFont = FontFamily(Font(R.font.pixelify_sans, FontWeight.Normal), Font(R.font.pixelify_sans, FontWeight.Bold))
+val DarkTokens = Tokens(
+    bg = Color(0xFF0B1014),
+    surface = Color(0xFF131A20),
+    surface2 = Color(0xFF1A232B),
+    line = Color(0xFF222C34),
+    edge = Color(0xFF5A6873),
+    text = Color(0xFFE6EDF2),
+    muted = Color(0xFF93A1AC),
+    accent = Color(0xFF22B8D6),
+    accentInk = Color(0xFF22B8D6),
+    onAccent = Color(0xFF0B1014),
+    accentTint = Color(0xFF15333D),
+    ok = Color(0xFF34D399),
+    okTint = Color(0xFF183833),
+    warn = Color(0xFFFBBF24),
+    warnTint = Color(0xFF383421),
+    err = Color(0xFFF87171),
+    errTint = Color(0xFF38282D),
+)
 
-/** Every word the app shows, the person's and the model's included. */
+/** The tokens of the current appearance, for what Material's colour roles do not name. */
+val LocalTokens = staticCompositionLocalOf { LightTokens }
+
+/** Inter: every word the app shows. Static instances, bundled with their licence. */
 val UiFont = FontFamily(
-    Font(R.font.oxanium_regular, FontWeight.Normal),
-    Font(R.font.oxanium_semibold, FontWeight.SemiBold),
-    Font(R.font.oxanium_bold, FontWeight.Bold),
+    Font(R.font.inter_regular, FontWeight.Normal),
+    Font(R.font.inter_medium, FontWeight.Medium),
+    Font(R.font.inter_semibold, FontWeight.SemiBold),
+    Font(R.font.inter_bold, FontWeight.Bold),
 )
 
-private val DarkScheme: ColorScheme = darkColorScheme(
-    primary = Palette.Accent,
-    onPrimary = Palette.AccentText,
-    primaryContainer = Palette.Surface2,
-    onPrimaryContainer = Palette.Text,
-    secondary = Palette.Accent2,
-    onSecondary = Palette.Text,
-    secondaryContainer = Palette.Surface2,
-    onSecondaryContainer = Palette.Text,
-    tertiary = Palette.Warn,
-    onTertiary = Palette.AccentText,
-    tertiaryContainer = Color(0xFF3D2E0C),
-    onTertiaryContainer = Palette.Warn,
-    background = Palette.Bg,
-    onBackground = Palette.Text,
-    surface = Palette.Bg,
-    onSurface = Palette.Text,
-    surfaceVariant = Palette.Surface,
-    onSurfaceVariant = Palette.Muted,
-    surfaceContainer = Palette.Surface,
-    surfaceContainerHigh = Palette.Surface2,
-    surfaceContainerHighest = Palette.Surface2,
-    outline = Palette.Border,
-    outlineVariant = Palette.Border,
-    error = Palette.Err,
-    onError = Palette.AccentText,
-    errorContainer = Color(0xFF3F1424),
-    onErrorContainer = Palette.Err,
+/** JetBrains Mono: anything a person may paste or a machine wrote (code, a path, a key, a diff). */
+val CodeFont = FontFamily(
+    Font(R.font.jetbrains_mono_regular, FontWeight.Normal),
+    Font(R.font.jetbrains_mono_bold, FontWeight.Bold),
 )
 
-private val LightScheme: ColorScheme = lightColorScheme(
-    primary = Palette.LightAccent,
-    onPrimary = Palette.LightSurface,
-    primaryContainer = Palette.LightSurface2,
-    onPrimaryContainer = Palette.LightText,
-    secondary = Palette.Accent2,
-    onSecondary = Palette.LightSurface,
-    secondaryContainer = Palette.LightSurface2,
-    onSecondaryContainer = Palette.LightText,
-    tertiary = Palette.LightWarn,
-    onTertiary = Palette.LightSurface,
-    tertiaryContainer = Color(0xFFFFF3D6),
-    onTertiaryContainer = Palette.LightWarn,
-    background = Palette.LightBg,
-    onBackground = Palette.LightText,
-    surface = Palette.LightBg,
-    onSurface = Palette.LightText,
-    surfaceVariant = Palette.LightSurface,
-    onSurfaceVariant = Palette.LightMuted,
-    surfaceContainer = Palette.LightSurface,
-    surfaceContainerHigh = Palette.LightSurface2,
-    surfaceContainerHighest = Palette.LightSurface2,
-    outline = Palette.Accent2,
-    outlineVariant = Palette.LightSurface2,
-    error = Palette.LightErr,
-    onError = Palette.LightSurface,
-    errorContainer = Color(0xFFFDE8E6),
-    onErrorContainer = Palette.LightErr,
-)
-
-private val UiTypography = Typography().let { t ->
-    t.copy(
-        displayLarge = t.displayLarge.copy(fontFamily = UiFont),
-        displayMedium = t.displayMedium.copy(fontFamily = UiFont),
-        displaySmall = t.displaySmall.copy(fontFamily = UiFont),
-        headlineLarge = t.headlineLarge.copy(fontFamily = UiFont, fontWeight = FontWeight.Bold),
-        headlineMedium = t.headlineMedium.copy(fontFamily = UiFont, fontWeight = FontWeight.Bold),
-        headlineSmall = t.headlineSmall.copy(fontFamily = UiFont, fontWeight = FontWeight.Bold),
-        titleLarge = t.titleLarge.copy(fontFamily = UiFont, fontWeight = FontWeight.Bold),
-        titleMedium = t.titleMedium.copy(fontFamily = UiFont, fontWeight = FontWeight.Bold),
-        titleSmall = t.titleSmall.copy(fontFamily = UiFont, fontWeight = FontWeight.SemiBold),
-        bodyLarge = t.bodyLarge.copy(fontFamily = UiFont),
-        bodyMedium = t.bodyMedium.copy(fontFamily = UiFont),
-        bodySmall = t.bodySmall.copy(fontFamily = UiFont),
-        labelLarge = t.labelLarge.copy(fontFamily = UiFont, fontWeight = FontWeight.SemiBold),
-        labelMedium = t.labelMedium.copy(fontFamily = UiFont),
-        labelSmall = t.labelSmall.copy(fontFamily = UiFont),
+private fun scheme(t: Tokens, dark: Boolean): ColorScheme {
+    val base = if (dark) darkColorScheme() else lightColorScheme()
+    return base.copy(
+        primary = t.accentInk,
+        onPrimary = t.onAccent,
+        primaryContainer = t.accentTint,
+        onPrimaryContainer = t.text,
+        inversePrimary = t.accent,
+        secondary = t.muted,
+        onSecondary = t.surface,
+        secondaryContainer = t.accentTint,
+        onSecondaryContainer = t.text,
+        tertiary = t.warn,
+        onTertiary = t.surface,
+        tertiaryContainer = t.warnTint,
+        onTertiaryContainer = t.text,
+        background = t.bg,
+        onBackground = t.text,
+        surface = t.bg,
+        onSurface = t.text,
+        surfaceVariant = t.surface2,
+        onSurfaceVariant = t.muted,
+        surfaceTint = Color.Transparent, // elevation is a shadow here, never a tinted surface
+        surfaceBright = t.surface,
+        surfaceDim = t.bg,
+        surfaceContainerLowest = t.surface,
+        surfaceContainerLow = t.surface,
+        surfaceContainer = t.surface,
+        surfaceContainerHigh = t.surface2,
+        surfaceContainerHighest = t.surface2,
+        outline = t.edge,
+        outlineVariant = t.line,
+        error = t.err,
+        onError = t.surface,
+        errorContainer = t.errTint,
+        onErrorContainer = t.text,
     )
 }
 
-private val SquareShapes = Shapes(
-    extraSmall = androidx.compose.foundation.shape.RoundedCornerShape(0.dp),
-    small = androidx.compose.foundation.shape.RoundedCornerShape(0.dp),
-    medium = androidx.compose.foundation.shape.RoundedCornerShape(0.dp),
-    large = androidx.compose.foundation.shape.RoundedCornerShape(0.dp),
-    extraLarge = androidx.compose.foundation.shape.RoundedCornerShape(0.dp),
+private val UiTypography = Typography().let { t ->
+    fun TextStyle.ui(weight: FontWeight? = null) = copy(fontFamily = UiFont, fontWeight = weight ?: fontWeight)
+    t.copy(
+        displayLarge = t.displayLarge.ui(),
+        displayMedium = t.displayMedium.ui(),
+        displaySmall = t.displaySmall.ui(),
+        headlineLarge = t.headlineLarge.ui(FontWeight.SemiBold),
+        headlineMedium = t.headlineMedium.ui(FontWeight.SemiBold),
+        headlineSmall = t.headlineSmall.ui(FontWeight.SemiBold),
+        titleLarge = t.titleLarge.ui(FontWeight.SemiBold),
+        titleMedium = t.titleMedium.ui(FontWeight.SemiBold),
+        titleSmall = t.titleSmall.ui(FontWeight.SemiBold),
+        bodyLarge = t.bodyLarge.ui(),
+        bodyMedium = t.bodyMedium.ui(),
+        bodySmall = t.bodySmall.ui(),
+        labelLarge = t.labelLarge.ui(FontWeight.Medium),
+        labelMedium = t.labelMedium.ui(FontWeight.Medium),
+        labelSmall = t.labelSmall.ui(FontWeight.Medium),
+    )
+}
+
+/** The corner radius of every box: cards, fields, buttons, chips, sheets' top corners. */
+val Corner = RoundedCornerShape(8.dp)
+
+private val UiShapes = Shapes(
+    extraSmall = RoundedCornerShape(4.dp),
+    small = Corner,
+    medium = Corner,
+    large = Corner,
+    extraLarge = RoundedCornerShape(16.dp), // sheets and dialogs: Material's own proportion
 )
 
 @Composable
 fun BmoeTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = if (isSystemInDarkTheme()) DarkScheme else LightScheme,
-        typography = UiTypography,
-        shapes = SquareShapes,
-        content = content,
-    )
+    val dark = isSystemInDarkTheme()
+    val tokens = if (dark) DarkTokens else LightTokens
+    CompositionLocalProvider(LocalTokens provides tokens) {
+        MaterialTheme(
+            colorScheme = scheme(tokens, dark),
+            typography = UiTypography,
+            shapes = UiShapes,
+            content = content,
+        )
+    }
 }
+
+/** The tokens of the current appearance. */
+val tokens: Tokens @Composable get() = LocalTokens.current
 
 /** A figure the engine reports: digits of one width, so a live value does not jitter. */
 val FigureStyle: TextStyle @Composable get() = TextStyle(fontFamily = UiFont, fontSize = 13.sp, fontFeatureSettings = "tnum")
 
-/** The mark: the chip beside the wordmark, as the design has it in a bar. */
+/** Code, paths, keys and diffs. */
+val CodeStyle: TextStyle @Composable get() = TextStyle(fontFamily = CodeFont, fontSize = 13.sp, lineHeight = 18.sp)
+
+/** The mark: the pixel chip (unchanged) beside the wordmark. */
 @Composable
 fun BrandMark(wordmark: Boolean = true) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Icon(painterResource(R.drawable.ic_logo), contentDescription = "BigMoeOnEdge", tint = Color.Unspecified, modifier = Modifier.size(24.dp))
         if (wordmark) {
             Spacer(Modifier.width(8.dp))
-            Text("BigMoeOnEdge", fontFamily = PixelFont, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = MaterialTheme.colorScheme.onSurface)
+            Text("BigMoeOnEdge", fontFamily = UiFont, fontWeight = FontWeight.Bold, fontSize = 17.sp, color = MaterialTheme.colorScheme.onSurface)
         }
     }
 }

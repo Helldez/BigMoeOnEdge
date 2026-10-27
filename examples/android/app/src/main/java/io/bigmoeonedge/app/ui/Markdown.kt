@@ -94,7 +94,7 @@ fun MarkdownText(text: String, modifier: Modifier = Modifier, fontSize: TextUnit
                         Text(
                             block.code,
                             Modifier.horizontalScroll(rememberScrollState()),
-                            fontFamily = FontFamily.Monospace,
+                            fontFamily = CodeFont,
                             fontSize = fontSize * 0.85f,
                         )
                     }
@@ -228,7 +228,7 @@ private fun AnnotatedString.Builder.appendInline(src: String, codeBg: Color) {
                 if (end < 0) {
                     append(c); i++
                 } else {
-                    withStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = codeBg)) {
+                    withStyle(SpanStyle(fontFamily = CodeFont, background = codeBg)) {
                         append(src.substring(i + 1, end))
                     }
                     i = end + 1

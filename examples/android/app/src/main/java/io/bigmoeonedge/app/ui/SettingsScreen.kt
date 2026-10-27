@@ -16,7 +16,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -72,7 +71,7 @@ private fun levelName(l: String) = l.replaceFirstChar { it.uppercase() }
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded: () -> Unit = {}) {
+fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded: () -> Unit = {}, onOpenAgent: (AgentPage) -> Unit = {}) {
     val context = LocalContext.current
     val engine by Engine.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
@@ -131,7 +130,7 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
                     Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text("Some changes only take effect after the model is reloaded.", fontSize = 13.sp, modifier = Modifier.weight(1f))
                         TextButton(
-                            shape = RectangleShape, enabled = cfg.valid,
+                            shape = Corner, enabled = cfg.valid,
                             onClick = { scope.launch { Engine.load(null).onFailure { snackbar.showSnackbar(it.message ?: "reload failed") } } },
                         ) { Text("Reload") }
                     }
@@ -170,14 +169,14 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
                                 selected = ParamSpec.levelRank(l) <= ParamSpec.levelRank(upTo),
                                 onClick = { upTo = l; AppPrefs.setSettingsLevel(context, l) },
                                 enabled = !searching,
-                                shape = RectangleShape,
+                                shape = Corner,
                                 label = { Text("${levelName(l)} ${counts[l] ?: 0}", fontSize = 11.sp, maxLines = 1) },
                             )
                         }
                     }
                     if (searching) Hint(if (cards.isEmpty()) "No setting matches." else "Every level is searched.")
                     if (resettable.isNotEmpty()) {
-                        TextButton(shape = RectangleShape, onClick = { confirmReset = true }, contentPadding = PaddingValues(horizontal = 0.dp)) {
+                        TextButton(shape = Corner, onClick = { confirmReset = true }, contentPadding = PaddingValues(horizontal = 0.dp)) {
                             Text("Reset all my values (${resettable.size})", fontSize = 13.sp)
                         }
                     }
@@ -192,8 +191,8 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
                                     fontSize = 13.sp,
                                 )
                             },
-                            confirmButton = { TextButton(shape = RectangleShape, onClick = { confirmReset = false; reset(resettable) }) { Text("Reset") } },
-                            dismissButton = { TextButton(shape = RectangleShape, onClick = { confirmReset = false }) { Text("Keep") } },
+                            confirmButton = { TextButton(shape = Corner, onClick = { confirmReset = false; reset(resettable) }) { Text("Reset") } },
+                            dismissButton = { TextButton(shape = Corner, onClick = { confirmReset = false }) { Text("Keep") } },
                         )
                     }
 
@@ -214,7 +213,8 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
                 }
             }
 
-            HorizontalDivider()
+            AgentSettingsCard(onOpenAgent)
+            HorizontalDivider(color = tokens.line)
             val ctx = contextWarning(engine.info?.model.takeIf { engine.serverUp && engine.info?.ready == true }, params)
             AppSettings(engine.serverUp, ctx) { jump = it }
             engine.info?.let { Text("Engine ${it.version}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -233,10 +233,7 @@ private fun GroupCard(
     onToggleFold: () -> Unit,
     row: @Composable (ParamSpec) -> Unit,
 ) {
-    Column(
-        Modifier.fillMaxWidth().border(2.dp, MaterialTheme.colorScheme.outline).padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
+    BmoeCard(padding = 12.dp) {
         Column(Modifier.fillMaxWidth().clickable(onClick = onToggle)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(c.label, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
@@ -246,7 +243,7 @@ private fun GroupCard(
             }
             if (c.help.isNotEmpty()) Hint(c.help)
         }
-        if (!open) return@Column
+        if (!open) return@BmoeCard
         c.basic.forEach { row(it) }
         if (c.more.isNotEmpty()) {
             val foldable = c.basic.isNotEmpty()
@@ -303,8 +300,8 @@ private fun AppSettings(serverUp: Boolean, ctx: ContextWarning?, onRaise: (Strin
             lan.forEach { ip ->
                 val url = LanAddress.url(ip)
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(url, fontFamily = FontFamily.Monospace, fontSize = 13.sp, modifier = Modifier.weight(1f))
-                    TextButton(shape = RectangleShape, onClick = { clipboard.setText(AnnotatedString(url)) }) { Text("Copy") }
+                    Text(url, fontFamily = CodeFont, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                    TextButton(shape = Corner, onClick = { clipboard.setText(AnnotatedString(url)) }) { Text("Copy") }
                 }
             }
         }
@@ -313,14 +310,14 @@ private fun AppSettings(serverUp: Boolean, ctx: ContextWarning?, onRaise: (Strin
         if (ctx?.short == true) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(ctx.text(), fontSize = 12.sp, color = warnColor(), modifier = Modifier.weight(1f))
-                TextButton(shape = RectangleShape, onClick = { onRaise(ctx.key) }) { Text("Raise ${ctx.label}") }
+                TextButton(shape = Corner, onClick = { onRaise(ctx.key) }) { Text("Raise ${ctx.label}") }
             }
         }
         Text("Key:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(key, fontFamily = FontFamily.Monospace, fontSize = 13.sp, modifier = Modifier.weight(1f))
-            TextButton(shape = RectangleShape, onClick = { clipboard.setText(AnnotatedString(key)) }) { Text("Copy") }
-            TextButton(shape = RectangleShape, onClick = { key = AppPrefs.regenerateApiKey(context); Engine.restart(context) }) { Text("New key") }
+            Text(key, fontFamily = CodeFont, fontSize = 13.sp, modifier = Modifier.weight(1f))
+            TextButton(shape = Corner, onClick = { clipboard.setText(AnnotatedString(key)) }) { Text("Copy") }
+            TextButton(shape = Corner, onClick = { key = AppPrefs.regenerateApiKey(context); Engine.restart(context) }) { Text("New key") }
         }
     }
     var csv by remember { mutableStateOf(AppPrefs.metricsCsv(context)) }
@@ -331,8 +328,8 @@ private fun AppSettings(serverUp: Boolean, ctx: ContextWarning?, onRaise: (Strin
         csv,
     ) { on -> csv = on; AppPrefs.setMetricsCsv(context, on) }
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        OutlinedButton(shape = RectangleShape, onClick = { Engine.stop(context) }, enabled = serverUp, modifier = Modifier.weight(1f)) { Text("Stop engine") }
-        OutlinedButton(shape = RectangleShape, onClick = { Engine.start(context) }, enabled = !serverUp, modifier = Modifier.weight(1f)) { Text("Start engine") }
+        OutlinedButton(shape = Corner, onClick = { Engine.stop(context) }, enabled = serverUp, modifier = Modifier.weight(1f)) { Text("Stop engine") }
+        OutlinedButton(shape = Corner, onClick = { Engine.start(context) }, enabled = !serverUp, modifier = Modifier.weight(1f)) { Text("Start engine") }
     }
 }
 
@@ -365,7 +362,7 @@ private fun ParamRow(
         if (!readOnly && spec.type != "bool" && spec.type != "choice") runCatching { focus.requestFocus() }
     }
     var mod = Modifier.fillMaxWidth().bringIntoViewRequester(bring)
-    if (landing) mod = mod.border(2.dp, MaterialTheme.colorScheme.primary).padding(6.dp)
+    if (landing) mod = mod.border(1.dp, tokens.accent, Corner).padding(6.dp)
     Column(mod, verticalArrangement = Arrangement.spacedBy(2.dp)) {
         when {
             readOnly -> {
@@ -407,7 +404,7 @@ private fun ParamRow(
                     source == ValueSource.YOU && decision != null && decision.group.ifEmpty { "set" } == "set" -> "Let the plan set it"
                     else -> "Reset"
                 }
-                TextButton(shape = RectangleShape, onClick = onReset, contentPadding = PaddingValues(horizontal = 8.dp)) { Text(label, fontSize = 12.sp) }
+                TextButton(shape = Corner, onClick = onReset, contentPadding = PaddingValues(horizontal = 8.dp)) { Text(label, fontSize = 12.sp) }
             }
         }
     }

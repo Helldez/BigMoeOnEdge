@@ -14,7 +14,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -109,11 +108,11 @@ fun MetricsScreen(modifier: Modifier = Modifier) {
                 },
                 actions = {
                     if (view == View.FILE) {
-                        TextButton(shape = RectangleShape, onClick = { view = View.CORRELATE }) { Text("Correlate") }
-                        picked?.let { f -> TextButton(shape = RectangleShape, onClick = { shareCsv(context, listOf(f)) }) { Text("Share") } }
+                        TextButton(shape = Corner, onClick = { view = View.CORRELATE }) { Text("Correlate") }
+                        picked?.let { f -> TextButton(shape = Corner, onClick = { shareCsv(context, listOf(f)) }) { Text("Share") } }
                     }
                     if (view == View.LIST || view == View.FILE || view == View.COMPARE) {
-                        TextButton(shape = RectangleShape, onClick = { view = View.GLOSSARY }) { Text("?") }
+                        TextButton(shape = Corner, onClick = { view = View.GLOSSARY }) { Text("?") }
                     }
                 },
             )
@@ -123,8 +122,8 @@ fun MetricsScreen(modifier: Modifier = Modifier) {
                 BottomAppBar {
                     Spacer(Modifier.width(12.dp))
                     Text("${selection.size} selected", modifier = Modifier.weight(1f), fontSize = 13.sp)
-                    TextButton(shape = RectangleShape, onClick = { shareCsv(context, selection) }) { Text("Share") }
-                    TextButton(shape = RectangleShape, 
+                    TextButton(shape = Corner, onClick = { shareCsv(context, selection) }) { Text("Share") }
+                    TextButton(shape = Corner,
                         onClick = { view = View.COMPARE },
                         enabled = selection.size == 2,
                     ) { Text("Compare") }
@@ -203,7 +202,7 @@ private fun FileList(
                         fontSize = 11.sp, maxLines = 1,
                     )
                 },
-                trailingContent = { TextButton(shape = RectangleShape, onClick = { onDelete(f) }) { Text("Delete") } },
+                trailingContent = { TextButton(shape = Corner, onClick = { onDelete(f) }) { Text("Delete") } },
                 modifier = Modifier.clickable(onClick = { onPick(f) }),
             )
             HorizontalDivider()
@@ -251,7 +250,7 @@ private fun CsvView(file: File, modifier: Modifier) {
                         // otherwise. Everything the file says is one tap away, and stays one tap
                         // away as the engine grows knobs. See #136.
                         val rows = remember(csv, glossary) { glossary.rows(csv.info) }
-                        TextButton(shape = RectangleShape, 
+                        TextButton(shape = Corner,
                             onClick = { showConfig = !showConfig },
                             contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
                         ) {
@@ -271,7 +270,7 @@ private fun CsvView(file: File, modifier: Modifier) {
             Surface(color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
                 Text(
                     s.removePrefix("# summary ").replace(" ", "   "),
-                    fontFamily = FontFamily.Monospace, fontSize = 11.sp,
+                    fontFamily = CodeFont, fontSize = 11.sp,
                     modifier = Modifier.padding(10.dp),
                 )
             }
@@ -307,7 +306,7 @@ private fun CsvView(file: File, modifier: Modifier) {
 private fun Cell(text: String, bold: Boolean = false) {
     Text(
         text,
-        fontFamily = FontFamily.Monospace,
+        fontFamily = CodeFont,
         fontSize = 11.sp,
         fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal,
         maxLines = 1,
@@ -347,11 +346,11 @@ private fun CompareView(fa: File, fb: File, modifier: Modifier) {
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Box {
-            OutlinedButton(shape = RectangleShape, onClick = { expanded = true }) { Text(metric.ifEmpty { "pick a column" }) }
+            OutlinedButton(shape = Corner, onClick = { expanded = true }) { Text(metric.ifEmpty { "pick a column" }) }
             DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                 metrics.forEach { m ->
                     DropdownMenuItem(
-                        text = { Text(m, fontFamily = FontFamily.Monospace, fontSize = 13.sp) },
+                        text = { Text(m, fontFamily = CodeFont, fontSize = 13.sp) },
                         onClick = { metric = m; expanded = false },
                     )
                 }
@@ -387,7 +386,7 @@ private fun Legend(name: String, label: String, color: Color, series: List<Float
             // The configuration first, the file name second: which run this is matters more than
             // what it happens to be called.
             if (label.isNotEmpty()) Text(label, fontSize = 11.sp, fontWeight = FontWeight.Medium)
-            Text(name, fontFamily = FontFamily.Monospace, fontSize = 10.sp, maxLines = 1,
+            Text(name, fontFamily = CodeFont, fontSize = 10.sp, maxLines = 1,
                  color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(
                 if (vals.isEmpty()) "no data" else
@@ -443,7 +442,7 @@ private fun ConfigRows(rows: List<Triple<String, String, String>>, accent: Color
             Text(
                 value,
                 fontSize = 11.sp,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = CodeFont,
                 // A changed setting is the reason to be here; make it the thing the eye lands on.
                 fontWeight = if (isChanged) FontWeight.Bold else FontWeight.Normal,
                 color = if (isChanged) accent else MaterialTheme.colorScheme.onSurface,
@@ -550,7 +549,7 @@ private fun GlossaryView(modifier: Modifier) {
         items(MetricFields.all) { f ->
             Column(Modifier.padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(f.name, fontFamily = FontFamily.Monospace, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Text(f.name, fontFamily = CodeFont, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     BetterBadge(f.better)
                 }
                 Text(f.short, fontSize = 12.sp, fontWeight = FontWeight.Medium)
@@ -592,7 +591,7 @@ private fun GlossaryView(modifier: Modifier) {
 @Composable
 private fun GlossaryEntry(key: String, label: String, what: String) {
     Column(Modifier.padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(key, fontFamily = FontFamily.Monospace, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        Text(key, fontFamily = CodeFont, fontSize = 13.sp, fontWeight = FontWeight.Bold)
         Text(label, fontSize = 12.sp, fontWeight = FontWeight.Medium)
         if (what.isNotEmpty()) Text(what, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
@@ -654,7 +653,7 @@ private fun CorrelateView(file: File, modifier: Modifier) {
         if (csv.info.isNotEmpty()) Text(csv.label(rememberGlossary()), fontSize = 12.sp, fontWeight = FontWeight.Medium)
 
         Box {
-            OutlinedButton(shape = RectangleShape, onClick = { expanded = true }) { Text("Fields (${chosen.size})") }
+            OutlinedButton(shape = Corner, onClick = { expanded = true }) { Text("Fields (${chosen.size})") }
             DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                 cols.forEach { c ->
                     DropdownMenuItem(
@@ -662,7 +661,7 @@ private fun CorrelateView(file: File, modifier: Modifier) {
                             Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                                 Checkbox(checked = c in chosen, onCheckedChange = null)
                                 Spacer(Modifier.width(6.dp))
-                                Text(c, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                                Text(c, fontFamily = CodeFont, fontSize = 13.sp)
                             }
                         },
                         // Cap at the palette size: more lines than colours is not a chart, it is a knot.
@@ -689,7 +688,7 @@ private fun CorrelateView(file: File, modifier: Modifier) {
                 Canvas(Modifier.size(12.dp).padding(top = 3.dp)) { drawRect(palette[i % palette.size]) }
                 Column {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(name, fontFamily = FontFamily.Monospace, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text(name, fontFamily = CodeFont, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         if (i == 0) Text("pivot", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
                         else if (r != null) Text("r=${fmt(r)} ${corrWord(r)}", fontSize = 11.sp, fontWeight = FontWeight.Medium)
                     }

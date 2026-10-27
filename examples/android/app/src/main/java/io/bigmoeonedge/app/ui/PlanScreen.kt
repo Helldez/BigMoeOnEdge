@@ -1,5 +1,10 @@
 package io.bigmoeonedge.app.ui
 
+import androidx.compose.ui.text.font.FontWeight
+
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.shape.CircleShape
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -12,7 +17,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
@@ -142,7 +146,7 @@ fun PlanScreen(modifier: Modifier = Modifier, onOpenSetting: (key: String) -> Un
 
 @Composable
 private fun PrimaryAction(text: String, enabled: Boolean, onClick: () -> Unit) {
-    Button(shape = RectangleShape, onClick = onClick, enabled = enabled, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+    Button(shape = Corner, onClick = onClick, enabled = enabled, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
         Text(text, fontSize = 16.sp)
     }
 }
@@ -160,7 +164,7 @@ private fun AutoPlanSwitch(checked: Boolean, enabled: Boolean, onChange: (Boolea
 private fun RetryLine(error: String, canMeasure: Boolean, onMeasure: () -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(error, color = MaterialTheme.colorScheme.error, fontSize = 13.sp, modifier = Modifier.weight(1f))
-        OutlinedButton(shape = RectangleShape, onClick = onMeasure, enabled = canMeasure) { Text("Measure again") }
+        OutlinedButton(shape = Corner, onClick = onMeasure, enabled = canMeasure) { Text("Measure again") }
     }
 }
 
@@ -207,8 +211,8 @@ private fun PlanBody(
             Text("Decided, but not a setting this app can hold: ${p.notApplicable.joinToString("; ")}", fontSize = 12.sp, color = MaterialTheme.colorScheme.tertiary)
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(shape = RectangleShape, onClick = onApply, enabled = canApply, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text("Apply plan") }
-            OutlinedButton(shape = RectangleShape, onClick = onMeasure, enabled = canMeasure, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
+            Button(shape = Corner, onClick = onApply, enabled = canApply, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text("Apply plan") }
+            OutlinedButton(shape = Corner, onClick = onMeasure, enabled = canMeasure, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
                 Text(if (measuring) "Measuring..." else "Measure again")
             }
         }
@@ -243,17 +247,17 @@ private fun PlanBody(
     Decisions(p.decisions, onOpenSetting)
 
     if (p.args.isNotEmpty()) Folded("Command") {
-        SelectionContainer { Text("bmoe-cli " + p.args.joinToString(" "), fontFamily = FontFamily.Monospace, fontSize = 11.sp) }
+        SelectionContainer { Text("bmoe-cli " + p.args.joinToString(" "), fontFamily = CodeFont, fontSize = 11.sp) }
     }
     // The planner's whole account is not shown (every line of it has a worded twin above); it goes on
     // the clipboard with the command, for a bug report.
     val clipboard = LocalClipboardManager.current
     val uri = LocalUriHandler.current
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedButton(shape = RectangleShape, onClick = { clipboard.setText(AnnotatedString(diagnosticText(p.args, p.explain))); onCopied() }, modifier = Modifier.weight(1f)) {
+        OutlinedButton(shape = Corner, onClick = { clipboard.setText(AnnotatedString(diagnosticText(p.args, p.explain))); onCopied() }, modifier = Modifier.weight(1f)) {
             Text("Copy diagnostic")
         }
-        TextButton(shape = RectangleShape, onClick = { runCatching { uri.openUri(PLANNING_DOC) } }, modifier = Modifier.weight(1f)) { Text("How the planner decides") }
+        TextButton(shape = Corner, onClick = { runCatching { uri.openUri(PLANNING_DOC) } }, modifier = Modifier.weight(1f)) { Text("How the planner decides") }
     }
 }
 
@@ -333,7 +337,7 @@ private fun MemoryPool(pool: PlanPool) {
             Text(pool.label + if (pool.estimated) " (an even share of the devices' sum)" else "", fontSize = 14.sp)
             if (pool.capBytes > 0) Text("of " + bytesLabel(pool.capBytes), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Row(Modifier.fillMaxWidth().height(28.dp).border(2.dp, MaterialTheme.colorScheme.outline).background(MaterialTheme.colorScheme.surfaceContainerHigh)) {
+        Row(Modifier.fillMaxWidth().height(24.dp).clip(Corner).background(MaterialTheme.colorScheme.surfaceContainerHigh)) {
             held.forEachIndexed { i, r ->
                 val w = r.bytes.toFloat() / whole
                 if (w > 0f) Box(Modifier.fillMaxHeight().weight(w).background(colours[i % colours.size]))
@@ -342,7 +346,7 @@ private fun MemoryPool(pool: PlanPool) {
         }
         held.forEachIndexed { i, r ->
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Box(Modifier.size(12.dp).background(colours[i % colours.size]))
+                Box(Modifier.size(12.dp).clip(MaterialTheme.shapes.extraSmall).background(colours[i % colours.size]))
                 Text(r.label, fontSize = 14.sp, modifier = Modifier.weight(1f))
                 if (r.locked) StatusBadge("locked", MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(bytesLabel(r.bytes), fontSize = 14.sp)
@@ -350,7 +354,7 @@ private fun MemoryPool(pool: PlanPool) {
         }
         if (free > 0) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Box(Modifier.size(12.dp).border(2.dp, MaterialTheme.colorScheme.outline))
+                Box(Modifier.size(12.dp).border(1.dp, MaterialTheme.colorScheme.outline, MaterialTheme.shapes.extraSmall))
                 Text("Free", fontSize = 14.sp, modifier = Modifier.weight(1f))
                 Text(bytesLabel(free), fontSize = 14.sp)
             }
@@ -451,21 +455,17 @@ private fun StepLine(state: String, colour: Color, label: String) {
     }
 }
 
-// ── small pieces, in the pixel language: square, 2 dp edges, no rounding ──
+// ── small pieces: the card, the well, the meter, the badge (docs/design.md) ──
 
 @Composable
 private fun Tile(content: @Composable ColumnScope.() -> Unit) {
-    Column(
-        Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceContainer).border(2.dp, MaterialTheme.colorScheme.outline).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-        content = content,
-    )
+    BmoeCard(content = content)
 }
 
 @Composable
 private fun Well(modifier: Modifier, content: @Composable ColumnScope.() -> Unit) {
     Column(
-        modifier.background(MaterialTheme.colorScheme.background).border(2.dp, MaterialTheme.colorScheme.outline).padding(10.dp),
+        modifier.background(tokens.surface2, Corner).padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
         content = content,
     )
@@ -501,7 +501,7 @@ private fun Figure(value: String, unit: String) {
 
 @Composable
 private fun Meter(fraction: Float, colour: Color, mark: Float? = null) {
-    Box(Modifier.fillMaxWidth().height(10.dp).border(2.dp, MaterialTheme.colorScheme.outline).background(MaterialTheme.colorScheme.surfaceContainerHigh)) {
+    Box(Modifier.fillMaxWidth().height(8.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceContainerHigh)) {
         Box(Modifier.fillMaxHeight().fillMaxWidth(fraction.coerceIn(0f, 1f)).background(colour))
         mark?.let { m ->
             Row(Modifier.fillMaxSize()) {
@@ -515,8 +515,8 @@ private fun Meter(fraction: Float, colour: Color, mark: Float? = null) {
 
 @Composable
 private fun StatusBadge(text: String, colour: Color) {
-    Surface(color = colour.copy(alpha = 0.18f), shape = RectangleShape, modifier = Modifier.border(2.dp, colour)) {
-        Text(text, fontSize = 12.sp, color = colour, modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp))
+    Surface(color = tintFor(colour), shape = MaterialTheme.shapes.extraSmall) {
+        Text(text, fontSize = 12.sp, fontWeight = FontWeight.Medium, color = colour, modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp))
     }
 }
 
