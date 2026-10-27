@@ -1,39 +1,44 @@
 import BmoeKit
 import SwiftUI
 
-/// Chat (docs/screens.md): a conversation with the loaded model, kept on the device, with the
-/// model's reasoning visible and every answer's cost visible.
+/// Chat (docs/screens.md, docs/agent.md): a conversation held by the server, with its items as
+/// the run builds them (messages, the model's thinking, tool calls folded into what they did, the
+/// approvals it waits on, helpers and notices), and the composer that says what the agent may do,
+/// on which model, in which folder.
 struct ChatView: View {
     @EnvironmentObject private var engine: Engine
-    @EnvironmentObject private var chat: ChatModel
+    @EnvironmentObject private var agent: AgentModel
     @EnvironmentObject private var nav: Navigator
     var openModels: () -> Void
 
-    @State private var input = ""
-    @State private var choosing = false
-    @State private var options = ""
     @State private var showConversations = false
-    @FocusState private var focused: Bool
+    @State private var preview: String?
+    @State private var editing: AgentItem?
 
     var body: some View {
         VStack(spacing: 0) {
             transcript
-            composer
+            Composer()
         }
         .background(Palette.bg)
         .toolbar {
             ToolbarItem(placement: .navigationBarLeading) {
-                Button { showConversations = true } label: { Image(systemName: "list.bullet") }
+                Button { showConversations = true } label: { Image(systemName: "sidebar.left") }
                     .accessibilityLabel("Conversations")
             }
             ToolbarItem(placement: .navigationBarTrailing) {
-                Button { chat.newConversation() } label: { Image(systemName: "square.and.pencil") }
-                    .disabled(chat.streaming)
+                Button { agent.newChat() } label: { Image(systemName: "square.and.pencil") }
                     .accessibilityLabel("New chat")
             }
         }
         .sheet(isPresented: $showConversations) {
             ConversationsView().presentationDetents([.medium, .large])
+        }
+        .sheet(item: Binding(get: { preview.map(PreviewTarget.init) }, set: { preview = $0?.path })) { t in
+            FilePreviewSheet(path: t.path)
+        }
+        .sheet(item: $editing) { item in
+            EditMessageSheet(item: item)
         }
     }
 
@@ -43,23 +48,40 @@ struct ChatView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: Grid.m) {
-                    if chat.current.messages.isEmpty && !chat.streaming { empty }
-                    ForEach(chat.current.messages) { m in
-                        MessageView(message: m, isLast: m.id == chat.current.messages.last?.id)
+                    if let note = agent.migrationNote {
+                        Banner(text: note, color: Palette.accent) {
+                            Button("Dismiss") { agent.migrationNote = nil }.buttonStyle(.appSecondary)
+                        }
                     }
-                    if chat.streaming { streamingTurn }
-                    if let e = chat.error { errorBanner(e) }
+                    if agent.items.isEmpty && !agent.running && agent.decisions.isEmpty {
+                        if agent.loadingConversation { ProgressView().frame(maxWidth: .infinity).padding(.top, Grid.xl) } else { empty }
+                    }
+                    ForEach(RunSummary.rows(agent.items)) { row in
+                        ItemRow(row: row, openFile: { preview = $0 }, edit: { editing = $0 })
+                    }
+                    if agent.running && !(agent.items.last?.streaming ?? false) && agent.items.last?.isWaiting != true {
+                        HStack(spacing: Grid.s) {
+                            ProgressView().controlSize(.small)
+                            Text(agent.items.last?.kind == .user ? "Reading the prompt…" : "Working…")
+                                .font(.ui(14)).foregroundStyle(Palette.muted)
+                        }
+                    }
+                    ForEach(agent.decisions) { DecisionView(card: $0) }
+                    if agent.deciding {
+                        HStack(spacing: Grid.s) {
+                            ProgressView().controlSize(.small)
+                            Text("Reading the options…").font(.ui(14)).foregroundStyle(Palette.muted)
+                        }
+                    }
+                    if agent.running || agent.deciding { LiveLine() }
+                    if let e = agent.error { errorBanner(e) }
                     Color.clear.frame(height: 1).id(Self.bottom)
                 }
                 .padding(Grid.m)
-                .padding(.trailing, Grid.shadow)
             }
             .scrollDismissesKeyboard(.interactively)
-            .onChange(of: chat.answer) { _ in proxy.scrollTo(Self.bottom, anchor: .bottom) }
-            .onChange(of: chat.reasoning) { _ in proxy.scrollTo(Self.bottom, anchor: .bottom) }
-            .onChange(of: chat.current.messages.count) { _ in
-                withAnimation { proxy.scrollTo(Self.bottom, anchor: .bottom) }
-            }
+            .onChange(of: agent.items) { _ in proxy.scrollTo(Self.bottom, anchor: .bottom) }
+            .onChange(of: agent.decisions.count) { _ in withAnimation { proxy.scrollTo(Self.bottom, anchor: .bottom) } }
         }
     }
 
@@ -68,179 +90,176 @@ struct ChatView: View {
     private var empty: some View {
         VStack(alignment: .leading, spacing: Grid.s) {
             Logo(size: 48)
-            Text(engine.ready ? "Ask anything." : "Load a model to start.").font(.pixel(20, bold: true))
-                .foregroundStyle(Palette.text)
-            Text("The conversation stays on this device. A follow-up costs only its own message: the engine keeps "
-                + "what it has already read.")
-                .font(.subheadline).foregroundStyle(Palette.muted)
-            if !engine.ready { Button("Models", action: openModels).buttonStyle(.pixelPrimary).padding(.top, Grid.s) }
+            Text(engine.ready || agent.route != AgentRoute.local ? "Ask anything." : "Load a model to start.")
+                .font(.ui(22, weight: .semibold)).foregroundStyle(Palette.text)
+            Text(agent.workspace == nil
+                ? "Pick a workspace below and the agent can read and change the files in it, as the mode allows."
+                : "The agent works in \(agent.workspace?.name ?? "the folder"): it reads freely and, in Ask first, asks before it changes a file.")
+                .font(.ui(15)).foregroundStyle(Palette.muted)
+            if !engine.ready && agent.route == AgentRoute.local {
+                Button("Models", action: openModels).buttonStyle(.appPrimary).padding(.top, Grid.s)
+            }
         }
         .padding(.top, Grid.xl)
     }
 
-    private var streamingTurn: some View {
-        VStack(alignment: .leading, spacing: Grid.s) {
-            if !chat.reasoning.isEmpty { ThinkingView(text: chat.reasoning, streaming: true) }
-            if chat.answer.isEmpty {
-                Text(chat.reasoning.isEmpty ? "Reading the prompt…" : "Thinking…")
-                    .font(.pixel(14)).foregroundStyle(Palette.muted)
-            } else {
-                MarkdownText(source: chat.answer).foregroundStyle(Palette.text)
-            }
-            LiveLine()
-        }
-        .modifier(AssistantBubble())
-    }
-
     /// Decided on by the error's code, never its wording (docs/server-api.md).
     private func errorBanner(_ e: TurnError) -> some View {
-        // A full context is fixed by a new chat or a larger context; the server says which setting that is.
         let ctx = e.code == APIError.contextFull ? engine.contextAdvice : nil
         return Banner(text: ctx?.fullText ?? e.message, color: Palette.err) {
             HStack(spacing: Grid.s) {
                 switch e.code {
                 case APIError.contextFull:
-                    Button("New chat") { chat.newConversation() }.buttonStyle(.pixelPrimary)
-                    if let ctx { Button("Raise \(ctx.label)") { nav.openSetting(ctx.key) }.buttonStyle(.pixel) }
+                    Button("New chat") { agent.newChat() }.buttonStyle(.appPrimary)
+                    if let ctx { Button("Raise \(ctx.label)") { nav.openSetting(ctx.key) }.buttonStyle(.appSecondary) }
                 case APIError.noModel:
-                    Button("Models", action: openModels).buttonStyle(.pixelPrimary)
+                    Button("Models", action: openModels).buttonStyle(.appPrimary)
                 default:
                     EmptyView()
                 }
-                if chat.canRetry && e.code != APIError.contextFull {
-                    Button("Send again") { chat.retry() }.buttonStyle(.pixel)
+                Button("Dismiss") { agent.error = nil }.buttonStyle(.appSecondary)
+            }
+        }
+    }
+}
+
+private struct PreviewTarget: Identifiable {
+    let path: String
+    var id: String { path }
+}
+
+/// The composer: what the agent may do, on which model, in which folder, then the message.
+struct Composer: View {
+    @EnvironmentObject private var engine: Engine
+    @EnvironmentObject private var agent: AgentModel
+    @State private var input = ""
+    @State private var choosing = false
+    @State private var options = ""
+    @State private var managing = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Grid.s) {
+            controls
+            if choosing {
+                Text("Choose: the model picks one option, scored from one read of the prompt")
+                    .font(.ui(13)).foregroundStyle(Palette.muted)
+                AppField(placeholder: "Options, one per line", text: $options, axis: .vertical)
+                    .lineLimit(2...6)
+            }
+            HStack(alignment: .bottom, spacing: Grid.s) {
+                AppField(placeholder: choosing ? "The question" : "Message", text: $input, axis: .vertical)
+                    .lineLimit(1...6)
+                if agent.running {
+                    Button { agent.stop() } label: { Image(systemName: "stop.fill").frame(width: 22, height: 22) }
+                        .buttonStyle(.appDestructive)
+                        .accessibilityLabel("Stop")
+                } else {
+                    Button(action: submit) { Image(systemName: "arrow.up").frame(width: 22, height: 22) }
+                        .buttonStyle(.appPrimary)
+                        .disabled(!canSubmit)
+                        .accessibilityLabel(choosing ? "Choose" : "Send")
                 }
-                Button("Dismiss") { chat.error = nil }.buttonStyle(.pixel)
+            }
+        }
+        .padding(.horizontal, Grid.m)
+        .padding(.vertical, 12)
+        .background(Palette.surface)
+        .overlay(alignment: .top) { Rectangle().fill(Palette.line).frame(height: Grid.line) }
+        .sheet(isPresented: $managing) { NavigationStack { WorkspacesView(showsDone: true) } }
+    }
+
+    /// Three chips: the mode, the model route, the workspace. Each a native menu.
+    private var controls: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: Grid.s) {
+                Menu {
+                    Picker("Mode", selection: Binding(get: { agent.mode }, set: { agent.setMode($0) })) {
+                        ForEach(AgentMode.allCases) { m in
+                            Label { Text(m.label); Text(m.help) } icon: { Image(systemName: icon(m)) }.tag(m)
+                        }
+                    }
+                } label: { chip(agent.mode.label, icon: icon(agent.mode)) }
+
+                Menu {
+                    Picker("Model", selection: Binding(get: { agent.route }, set: { agent.setRoute($0) })) {
+                        Text("This phone").tag(AgentRoute.local)
+                        ForEach(agent.providers) { p in
+                            ForEach(p.routes, id: \.route) { r in Text(r.label).tag(r.route) }
+                        }
+                    }
+                } label: { chip(AgentRoute.label(agent.route, providers: agent.providers), icon: "cpu") }
+
+                Menu {
+                    Picker("Workspace", selection: Binding(get: { agent.workspaceID }, set: { agent.setWorkspace($0) })) {
+                        Text("No workspace").tag("")
+                        ForEach(agent.workspaces) { w in Text(w.name).tag(w.id) }
+                    }
+                    Divider()
+                    Button { managing = true } label: { Label("Manage workspaces…", systemImage: "folder.badge.gearshape") }
+                } label: { chip(agent.workspace?.name ?? "No workspace", icon: "folder") }
+
+                Button { choosing.toggle() } label: {
+                    chip(choosing ? "Choosing" : "Choose", icon: choosing ? "checklist.checked" : "checklist", on: choosing)
+                }
+                .accessibilityLabel(choosing ? "Back to chat" : "Choose from options")
             }
         }
     }
 
-    // MARK: the composer
-
-    private var composer: some View {
-        VStack(alignment: .leading, spacing: Grid.s) {
-            if choosing {
-                Text("CHOOSE: the model picks one option, scored from one read of the prompt")
-                    .font(.pixel(13)).foregroundStyle(Palette.muted)
-                PixelField(placeholder: "Options, one per line", text: $options, axis: .vertical)
-                    .lineLimit(2...6)
-            }
-            HStack(alignment: .bottom, spacing: Grid.s) {
-                Button { choosing.toggle() } label: {
-                    Image(systemName: choosing ? "checklist.checked" : "checklist")
-                        .frame(width: 22, height: 22)
-                }
-                .buttonStyle(.pixel)
-                .accessibilityLabel(choosing ? "Back to chat" : "Choose from options")
-
-                PixelField(placeholder: choosing ? "The question" : "Message", text: $input, axis: .vertical)
-                    .lineLimit(1...6)
-                    .focused($focused)
-
-                if chat.streaming {
-                    Button("Stop") { chat.stop() }.buttonStyle(.pixelDestructive)
-                } else {
-                    Button(choosing ? "Choose" : "Send", action: submit)
-                        .buttonStyle(.pixelPrimary)
-                        .disabled(!canSubmit)
-                }
-            }
+    private func icon(_ m: AgentMode) -> String {
+        switch m {
+        case .ask: return "hand.raised"
+        case .readOnly: return "eye"
+        case .full: return "bolt"
         }
-        .padding(Grid.m)
-        .padding(.trailing, Grid.shadow)
-        .background(Palette.surface)
-        .overlay(alignment: .top) { Rectangle().fill(Palette.border).frame(height: Grid.edge) }
+    }
+
+    private func chip(_ text: String, icon: String, on: Bool = false) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon).font(.ui(12))
+            Text(text).font(.ui(13, weight: .medium)).lineLimit(1)
+            Image(systemName: "chevron.down").font(.ui(11)).opacity(on ? 0 : 0.6)
+        }
+        .foregroundStyle(on ? Palette.accentInk : Palette.text)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Capsule().fill(on ? Palette.accentTint : Palette.surface2))
     }
 
     private var canSubmit: Bool {
         let hasText = !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return engine.ready && hasText && (!choosing || Decide.parseOptions(options).count >= 2)
+        guard engine.serverUp, hasText else { return false }
+        if choosing { return engine.ready && !agent.deciding && Decide.parseOptions(options).count >= 2 }
+        return !agent.sending
     }
 
     private func submit() {
         if choosing {
-            chat.choose(input, options: Decide.parseOptions(options))
+            agent.choose(input, options: Decide.parseOptions(options))
         } else {
-            chat.send(input)
+            agent.send(input)
         }
         input = ""
     }
 }
 
-/// One message: the person's text verbatim, the model's as Markdown with its thinking folded above
-/// and its figures under it, or a decision's options with their probabilities.
-struct MessageView: View {
-    @EnvironmentObject private var chat: ChatModel
-    let message: ChatMessage
-    let isLast: Bool
+/// A decision's card: the question with its options, each with the probability the model put on
+/// it, the picked one marked.
+struct DecisionView: View {
+    let card: DecisionCard
 
     var body: some View {
-        if message.role == .user {
-            HStack {
-                Spacer(minLength: Grid.xl)
-                Text(message.content)
-                    .textSelection(.enabled)
-                    .foregroundStyle(Palette.text)
-                    .padding(12)
-                    .pixelBox(fill: Palette.surface2, edge: Palette.border, shadow: false)
+        VStack(alignment: .leading, spacing: Grid.s) {
+            Text(card.question).font(.ui(15)).foregroundStyle(Palette.text)
+            ForEach(Array(card.result.scores.enumerated()), id: \.offset) { i, c in
+                ChoiceRow(choice: c, picked: i == card.result.best)
             }
-        } else if let choices = message.choices {
-            VStack(alignment: .leading, spacing: Grid.s) {
-                ForEach(Array(choices.enumerated()), id: \.offset) { i, c in
-                    ChoiceRow(choice: c, picked: i == message.best)
-                }
-                if !message.metrics.isEmpty { metricsLine }
+            if !card.result.metrics.isEmpty {
+                Text(card.result.metrics).font(.figure(13)).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
             }
-            .modifier(AssistantBubble())
-        } else {
-            VStack(alignment: .leading, spacing: Grid.s) {
-                if !message.reasoning.isEmpty { ThinkingView(text: message.reasoning, streaming: false) }
-                MarkdownText(source: message.content).foregroundStyle(Palette.text)
-                if !message.metrics.isEmpty { metricsLine }
-                HStack(spacing: Grid.s) {
-                    Button { UIPasteboard.general.string = message.content } label: { Label("Copy", systemImage: "doc.on.doc") }
-                    if isLast && chat.canRegenerate {
-                        Button { chat.regenerate() } label: { Label("Regenerate", systemImage: "arrow.clockwise") }
-                    }
-                }
-                .font(.pixel(13))
-                .foregroundStyle(Palette.muted)
-                .buttonStyle(.borderless)
-            }
-            .modifier(AssistantBubble())
+            Text("A decision is not part of the conversation and is not kept.").font(.ui(12)).foregroundStyle(Palette.muted)
         }
-    }
-
-    private var metricsLine: some View {
-        Text(message.metrics).font(.pixel(13)).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
-    }
-}
-
-/// The model's side of a conversation: the surface, its edge in the model's colour.
-struct AssistantBubble: ViewModifier {
-    func body(content: Content) -> some View {
-        content
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .pixelBox(fill: Palette.surface, edge: Palette.accent2, shadow: false)
-    }
-}
-
-/// A reasoning model's thinking span: open while it streams, folded once committed.
-struct ThinkingView: View {
-    let text: String
-    let streaming: Bool
-    @State private var open: Bool?
-
-    var body: some View {
-        DisclosureGroup(isExpanded: Binding(get: { open ?? streaming }, set: { open = $0 })) {
-            Text(text).font(.callout).foregroundStyle(Palette.muted).textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, 4)
-        } label: {
-            Text("Thinking").font(.pixel(13, bold: true)).foregroundStyle(Palette.accent2)
-        }
-        .tint(Palette.accent2)
+        .card(padding: 12)
     }
 }
 
@@ -252,19 +271,18 @@ struct ChoiceRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text("\(choice.label)) \(choice.text)").foregroundStyle(picked ? Palette.accent : Palette.text)
-                    .fontWeight(picked ? .bold : .regular)
+                Text("\(choice.label)) \(choice.text)").font(.ui(15, weight: picked ? .semibold : .regular))
+                    .foregroundStyle(picked ? Palette.accentInk : Palette.text)
                 Spacer()
-                Text(String(format: "%.1f%%", choice.probability * 100)).font(.pixel(14)).foregroundStyle(Palette.muted)
-                    .monospacedDigit()
+                Text(String(format: "%.1f%%", choice.probability * 100)).font(.figure(14)).foregroundStyle(Palette.muted)
             }
-            Meter(fraction: choice.probability, color: picked ? Palette.accent : Palette.accent2, height: 8)
+            Meter(fraction: choice.probability, color: picked ? Palette.accent : Palette.muted, height: 6)
         }
     }
 }
 
-/// The live line while an answer streams: the rate, the compute and flash shares, the cache hit
-/// rate. The full card is in Metrics.
+/// The live line while the local model generates: the rate, the compute and flash shares, the
+/// cache hit rate. The full card is in Metrics.
 struct LiveLine: View {
     @EnvironmentObject private var engine: Engine
 
@@ -279,41 +297,55 @@ struct LiveLine: View {
                 Text("flash \(share(b.flashWaitMs))")
                 if t.cacheHitPct >= 0 { Text(String(format: "cache %.0f%%", t.cacheHitPct)) }
             }
-            .font(.pixel(13))
+            .font(.figure(13))
             .foregroundStyle(Palette.muted)
-            .monospacedDigit()
         }
     }
 }
 
-/// The saved conversations, newest first: title, when it was answered, how many messages, which
-/// model. Open, delete, new.
+/// The server's conversations, newest first: title, state, when it changed, the task that ran it.
+/// Open, rename, delete, new.
 struct ConversationsView: View {
-    @EnvironmentObject private var chat: ChatModel
+    @EnvironmentObject private var agent: AgentModel
     @Environment(\.dismiss) private var dismiss
+    @State private var renaming: ConversationSummary?
+    @State private var newTitle = ""
 
     var body: some View {
         NavigationStack {
             List {
-                ForEach(chat.conversations) { c in
+                ForEach(agent.conversations) { c in
                     Button {
-                        chat.select(c)
+                        agent.open(c.id)
                         dismiss()
                     } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(c.title).foregroundStyle(Palette.text).lineLimit(1)
-                            Text(subtitle(c)).font(.caption).foregroundStyle(Palette.muted).lineLimit(1)
+                        HStack(spacing: Grid.s) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(c.displayTitle).font(.ui(16)).foregroundStyle(Palette.text).lineLimit(1)
+                                Text(subtitle(c)).font(.ui(12)).foregroundStyle(Palette.muted).lineLimit(1)
+                            }
+                            Spacer()
+                            if c.state == "waiting" { Badge(text: "Needs you", color: Palette.warn) }
+                            else if c.state == "running" { ProgressView().controlSize(.small) }
+                            else if c.state == "error" { Badge(text: "Error", color: Palette.err) }
                         }
                     }
-                    .listRowBackground(c.id == chat.current.id ? Palette.surface2 : Palette.surface)
+                    .listRowBackground(c.id == agent.current?.id ? Palette.accentTint : Palette.surface)
+                    .swipeActions {
+                        Button(role: .destructive) { agent.delete(c.id) } label: { Label("Delete", systemImage: "trash") }
+                        Button {
+                            newTitle = c.title
+                            renaming = c
+                        } label: { Label("Rename", systemImage: "pencil") }
+                    }
                 }
-                .onDelete { idx in idx.map { chat.conversations[$0].id }.forEach(chat.delete) }
             }
             .scrollContentBackground(.hidden)
             .background(Palette.bg)
+            .refreshable { await agent.refreshConversations() }
             .overlay {
-                if chat.conversations.isEmpty {
-                    Text("No conversations yet").font(.pixel(15)).foregroundStyle(Palette.muted)
+                if agent.conversations.isEmpty {
+                    Text("No conversations yet").font(.ui(15)).foregroundStyle(Palette.muted)
                 }
             }
             .navigationTitle("Conversations")
@@ -321,18 +353,60 @@ struct ConversationsView: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("New chat") {
-                        chat.newConversation()
+                        agent.newChat()
                         dismiss()
                     }
-                    .disabled(chat.streaming)
                 }
+            }
+            .alert("Rename", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+                TextField("Title", text: $newTitle)
+                Button("Save") { if let c = renaming { agent.rename(c.id, to: newTitle) } }
+                Button("Cancel", role: .cancel) {}
             }
         }
     }
 
-    private func subtitle(_ c: Conversation) -> String {
-        let when = c.updated.formatted(.relative(presentation: .named))
-        let parts = [when, "\(c.messages.count) messages", c.model].filter { !$0.isEmpty }
+    private func subtitle(_ c: ConversationSummary) -> String {
+        var parts: [String] = []
+        if let u = c.updated { parts.append(u.formatted(.relative(presentation: .named))) }
+        if let w = agent.workspaces.first(where: { $0.id == c.workspace }) { parts.append(w.name) }
+        if !c.task.isEmpty { parts.append(agent.tasks.first { $0.id == c.task }?.title ?? "a task") }
+        parts.append(c.mode.label)
         return parts.joined(separator: " · ")
+    }
+}
+
+/// Edit and resend: the person's message, changed, replaces it and everything after it.
+struct EditMessageSheet: View {
+    @EnvironmentObject private var agent: AgentModel
+    @Environment(\.dismiss) private var dismiss
+    let item: AgentItem
+    @State private var text = ""
+
+    var body: some View {
+        NavigationStack {
+            TextEditor(text: $text)
+                .font(.ui(17))
+                .padding(Grid.s)
+                .scrollContentBackground(.hidden)
+                .background(Palette.surface)
+                .navigationTitle("Edit and resend")
+                .navigationBarTitleDisplayMode(.inline)
+                .safeAreaInset(edge: .bottom) {
+                    Text("What came after this message is dropped and the agent answers the new one.")
+                        .font(.ui(13)).foregroundStyle(Palette.muted).padding(Grid.m)
+                }
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Send") {
+                            agent.edit(item, to: text)
+                            dismiss()
+                        }
+                        .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+        }
+        .onAppear { text = item.text }
     }
 }

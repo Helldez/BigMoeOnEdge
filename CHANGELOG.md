@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Changed
+- **The phone apps take the agent and the new look.** Android and iOS drop the pixel style for slate
+  and cyan, light and dark following the system: Inter for text and JetBrains Mono for code (SIL
+  OFL, bundled with the licence; the pixel fonts leave the apps), an 8-point corner, 1-point lines
+  and a soft shadow, Material 3 on Android and the system's own idioms on iOS. The pixel logo stays.
+  Each app keeps its colour values in one tokens file (`ui/Theme.kt`, `Design/Theme.swift`).
+- **The chat on a phone is the server's agent** (`docs/agent.md`): conversations held by the engine
+  process, rendered from its items (Markdown answers, folded thinking, tool cards with their state,
+  runs of tool calls folded under one counting line, diffs, approval cards, helpers, notices), with
+  edit-and-resend and Stop, and a composer that picks the mode (Ask first, Read only, Full access),
+  the model (the phone's or a provider's) and the folder. The conversations the apps kept on the
+  phone are handed to the server once and deleted only when every message arrived.
+
+### Added
+- **Workspaces, skills, tasks and providers on the phone.** Workspaces are folders in the app's own
+  storage (Android: the files directory, with import from the system picker and share out; iOS: the
+  Documents folder, shown in the Files app). A file preview reads what the agent wrote through the
+  server: text and code, Markdown, images, and HTML in a web view sandboxed from the app. Skills can
+  be switched and written, tasks scheduled (the screen says they run only while the app's server
+  runs), and providers saved with a key that is never shown again. A notification says when an
+  approval is waiting or a run ended while the app is away. `docs/screens.md` has the phone's
+  differences.
+
 ## [0.38.0] - 2026-10-27
 
 ### Added

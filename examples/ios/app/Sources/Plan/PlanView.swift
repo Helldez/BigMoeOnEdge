@@ -42,7 +42,7 @@ struct PlanView: View {
             if !planner { Banner(text: "This build does not include the hardware planner.", color: Palette.err) }
             if !chosen, !engine.params.isEmpty {
                 Text("Choose a model from Models: a plan is for one model on this device.")
-                    .font(.subheadline).foregroundStyle(Palette.muted)
+                    .font(.ui(15)).foregroundStyle(Palette.muted)
             }
             if let shownError {
                 // A failed plan can be measured again from where it is said.
@@ -72,12 +72,12 @@ struct PlanView: View {
                 lastApplied // the error is in the banner above
             } else if p.none {
                 VStack(alignment: .leading, spacing: Grid.s) {
-                    Text("Not measured yet.").font(.pixel(22, bold: true)).foregroundStyle(Palette.text)
+                    Text("Not measured yet.").font(.ui(22, bold: true)).foregroundStyle(Palette.text)
                     Text("Measure this device to see what the plan does with the chosen model. The probes read "
                         + "storage and run a matmul on every device; on a phone that takes a while.")
-                        .font(.subheadline).foregroundStyle(Palette.muted)
+                        .font(.ui(15)).foregroundStyle(Palette.muted)
                     Button(measuring ? "Measuring…" : "Measure") { Task { await measure() } }
-                        .buttonStyle(.pixelPrimary).disabled(!canMeasure)
+                        .buttonStyle(.appPrimary).disabled(!canMeasure)
                 }
                 .card()
                 lastApplied
@@ -104,9 +104,9 @@ struct PlanView: View {
                              set: { on in Task { try? await engine.setAutoPlan(on) } }))
         {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Plan before every load").font(.subheadline).foregroundStyle(Palette.text)
+                Text("Plan before every load").font(.ui(15)).foregroundStyle(Palette.text)
                 Text("The previous model is unloaded first. Values you set yourself are kept.")
-                    .font(.caption).foregroundStyle(Palette.muted)
+                    .font(.ui(12)).foregroundStyle(Palette.muted)
             }
         }
         .tint(Palette.accent)
@@ -115,7 +115,7 @@ struct PlanView: View {
 
     private func measureButton(primary: Bool) -> some View {
         Button(measuring ? "Measuring…" : "Measure again") { Task { await measure() } }
-            .buttonStyle(primary ? .pixelPrimary : .pixel).disabled(!canMeasure)
+            .buttonStyle(primary ? .appPrimary : .appSecondary).disabled(!canMeasure)
     }
 
     @ViewBuilder
@@ -133,7 +133,7 @@ struct PlanView: View {
                 let scale = max(1, p.devices.map(\.promptRatio).max() ?? 1)
                 ForEach(p.devices.indices, id: \.self) { DeviceRow(device: p.devices[$0], scale: scale) }
                 if !p.devicesNoneText.isEmpty {
-                    Text(p.devicesNoneText).font(.caption).foregroundStyle(Palette.muted)
+                    Text(p.devicesNoneText).font(.ui(12)).foregroundStyle(Palette.muted)
                 }
             }
             .card()
@@ -148,10 +148,10 @@ struct PlanView: View {
                 UIPasteboard.general.string = p.diagnostic
                 copied = true
             }
-            .buttonStyle(.pixel)
-            Text("The command and the planner's whole account, for a bug report.").font(.caption).foregroundStyle(Palette.muted)
+            .buttonStyle(.appSecondary)
+            Text("The command and the planner's whole account, for a bug report.").font(.ui(12)).foregroundStyle(Palette.muted)
         }
-        Link("How the planner decides", destination: Self.planningDoc).font(.caption).foregroundStyle(Palette.accent)
+        Link("How the planner decides", destination: Self.planningDoc).font(.ui(12)).foregroundStyle(Palette.accentInk)
     }
 
     private func summary(_ p: PlanResult) -> some View {
@@ -163,18 +163,18 @@ struct PlanView: View {
                 Badge(text: "The last plan measured")
             }
             Text(p.sentence.isEmpty ? "Regime: \(p.regime)" : p.sentence)
-                .font(.pixel(22, bold: true)).foregroundStyle(Palette.text).fixedSize(horizontal: false, vertical: true)
-            if !p.machine.isEmpty { Text(p.machine).font(.caption).foregroundStyle(Palette.muted) }
+                .font(.ui(22, bold: true)).foregroundStyle(Palette.text).fixedSize(horizontal: false, vertical: true)
+            if !p.machine.isEmpty { Text(p.machine).font(.ui(12)).foregroundStyle(Palette.muted) }
             if p.streamingDeclined, !p.declineReason.isEmpty {
-                Text(p.declineReason).font(.caption).foregroundStyle(Palette.warn)
+                Text(p.declineReason).font(.ui(12)).foregroundStyle(Palette.warn)
             }
             if !p.lanes.isEmpty {
                 // Which device computes the prompt and which the tokens, in one line.
-                lanesText(p.lanes).font(.pixel(15)).fixedSize(horizontal: false, vertical: true)
+                lanesText(p.lanes).font(.ui(15)).fixedSize(horizontal: false, vertical: true)
             }
             if !p.notApplicable.isEmpty {
                 Text("Decided, but not a setting this app can hold: " + p.notApplicable.joined(separator: "; "))
-                    .font(.caption).foregroundStyle(Palette.warn)
+                    .font(.ui(12)).foregroundStyle(Palette.warn)
             }
             LazyVGrid(columns: [GridItem(.flexible(), spacing: Grid.s, alignment: .top), GridItem(.flexible(), alignment: .top)],
                       alignment: .leading, spacing: Grid.s)
@@ -185,15 +185,15 @@ struct PlanView: View {
             }
             HStack(spacing: Grid.s) {
                 Button(applying ? "Applying…" : "Apply plan") { Task { await apply() } }
-                    .buttonStyle(.pixelPrimary).disabled(applying || measuring)
+                    .buttonStyle(.appPrimary).disabled(applying || measuring)
                 measureButton(primary: false)
             }
-            Text("Values you set yourself are never changed.").font(.caption).foregroundStyle(Palette.muted)
+            Text("Values you set yourself are never changed.").font(.ui(12)).foregroundStyle(Palette.muted)
             if let applied { appliedList(applied) }
             if engine.config?.reloadRequired == true, engine.ready {
                 HStack(spacing: Grid.s) {
-                    Text("Some applied values need a model reload.").font(.caption).foregroundStyle(Palette.muted)
-                    Button("Settings") { nav.open(.settings) }.font(.pixel(13)).foregroundStyle(Palette.accent).buttonStyle(.borderless)
+                    Text("Some applied values need a model reload.").font(.ui(12)).foregroundStyle(Palette.muted)
+                    Button("Settings") { nav.open(.settings) }.font(.ui(13)).foregroundStyle(Palette.accentInk).buttonStyle(.borderless)
                 }
             }
         }
@@ -204,7 +204,7 @@ struct PlanView: View {
         var t = Text("")
         for (i, l) in lanes.enumerated() {
             if i > 0 { t = t + Text("   ") }
-            t = t + Text(l.label + " ").foregroundColor(Palette.muted) + Text(l.on.joined(separator: " + ")).foregroundColor(Palette.accent)
+            t = t + Text(l.label + " ").foregroundColor(Palette.muted) + Text(l.on.joined(separator: " + ")).foregroundColor(Palette.accentInk)
         }
         return t
     }
@@ -213,17 +213,17 @@ struct PlanView: View {
     @ViewBuilder
     private func appliedList(_ changes: [AppliedChange]) -> some View {
         if changes.isEmpty {
-            Text("Plan applied: every setting already had the plan's value.").font(.caption).foregroundStyle(Palette.ok)
+            Text("Plan applied: every setting already had the plan's value.").font(.ui(12)).foregroundStyle(Palette.ok)
         } else {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Plan applied. \(changes.count == 1 ? "One setting changed" : "\(changes.count) settings changed"):")
-                    .font(.caption).foregroundStyle(Palette.ok)
+                    .font(.ui(12)).foregroundStyle(Palette.ok)
                 ForEach(changes) { c in
                     Button { nav.openSetting(c.key) } label: {
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Text(c.label).font(.subheadline).foregroundStyle(Palette.accent).underline()
-                            Text(c.from.isEmpty ? "" : c.from).font(.pixel(13)).foregroundStyle(Palette.muted)
-                            Text("→ \(c.to)").font(.pixel(13)).foregroundStyle(Palette.text)
+                            Text(c.label).font(.ui(15)).foregroundStyle(Palette.accentInk).underline()
+                            Text(c.from.isEmpty ? "" : c.from).font(.ui(13)).foregroundStyle(Palette.muted)
+                            Text("→ \(c.to)").font(.ui(13)).foregroundStyle(Palette.text)
                             Spacer(minLength: 0)
                         }
                         .contentShape(Rectangle())
@@ -236,47 +236,47 @@ struct PlanView: View {
 
     private func speedTile(_ p: PlanResult, _ f: PlanResult.Figures) -> some View {
         Tile {
-            Text("Tokens").font(.caption).foregroundStyle(Palette.muted)
+            Text("Tokens").font(.ui(12)).foregroundStyle(Palette.muted)
             if let m = f.measuredTokS {
                 Figure(value: Self.number(m), label: "tok/s measured")
                 if let d = f.deltaPct, let e = f.expectedTokS {
                     if p.fromLastLoad {
                         HStack(spacing: 4) {
                             Badge(text: String(format: "%+.0f%%", d), color: d >= 0 ? Palette.ok : Palette.warn)
-                            Text("against the \(Self.number(e)) expected").font(.caption).foregroundStyle(Palette.muted)
+                            Text("against the \(Self.number(e)) expected").font(.ui(12)).foregroundStyle(Palette.muted)
                         }
                     } else {
-                        Text("\(Self.number(e)) tok/s expected under this plan").font(.caption).foregroundStyle(Palette.muted)
+                        Text("\(Self.number(e)) tok/s expected under this plan").font(.ui(12)).foregroundStyle(Palette.muted)
                     }
                 }
             } else if let e = f.expectedTokS {
                 Figure(value: Self.number(e), label: "tok/s expected")
                 Text(p.fromLastLoad ? "Measured after the first answer" : "Measured after a load")
-                    .font(.caption).foregroundStyle(Palette.muted)
+                    .font(.ui(12)).foregroundStyle(Palette.muted)
             } else {
-                Text("No prediction").font(.caption).foregroundStyle(Palette.muted)
+                Text("No prediction").font(.ui(12)).foregroundStyle(Palette.muted)
             }
         }
     }
 
     private func hitsTile(_ f: PlanResult.Figures, _ shown: Double) -> some View {
         Tile {
-            Text("Cache hits").font(.caption).foregroundStyle(Palette.muted)
+            Text("Cache hits").font(.ui(12)).foregroundStyle(Palette.muted)
             Figure(value: String(format: "%.0f%%", shown), label: f.measuredHitPct != nil ? "measured" : "credited")
             Meter(fraction: shown / 100, height: 10, mark: f.measuredHitPct != nil ? f.creditedHitPct.map { $0 / 100 } : nil)
             if f.measuredHitPct != nil, let credited = f.creditedHitPct {
                 Text(String(format: "The mark is the %.0f%% the plan credited", credited))
-                    .font(.caption).foregroundStyle(Palette.muted)
+                    .font(.ui(12)).foregroundStyle(Palette.muted)
             }
         }
     }
 
     private func memoryTile(_ held: Int64, _ cap: Int64) -> some View {
         Tile {
-            Text("Memory").font(.caption).foregroundStyle(Palette.muted)
+            Text("Memory").font(.ui(12)).foregroundStyle(Palette.muted)
             Figure(value: Bytes.label(held), label: "held")
             Meter(fraction: Double(held) / Double(cap), height: 10)
-            Text("Of the \(Bytes.label(cap)) it may hold").font(.caption).foregroundStyle(Palette.muted)
+            Text("Of the \(Bytes.label(cap)) it may hold").font(.ui(12)).foregroundStyle(Palette.muted)
         }
     }
 
@@ -310,8 +310,8 @@ private struct Tile<Content: View>: View {
         VStack(alignment: .leading, spacing: 4) { content }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Palette.bg)
-            .overlay(Rectangle().strokeBorder(Palette.border, lineWidth: Grid.edge))
+            .background(RoundedRectangle(cornerRadius: Grid.radius, style: .continuous).fill(Palette.bg))
+            .overlay(RoundedRectangle(cornerRadius: Grid.radius, style: .continuous).strokeBorder(Palette.line, lineWidth: Grid.line))
     }
 }
 
@@ -327,7 +327,7 @@ private struct CommandText: View {
                 UIPasteboard.general.string = text
                 copied = true
             }
-            .buttonStyle(.pixel)
+            .buttonStyle(.appSecondary)
         }
     }
 }
@@ -337,7 +337,7 @@ private struct CommandText: View {
 /// segment; a segment's colour is its position.
 private struct PoolBar: View {
     let pool: PlanResult.Pool
-    static let colours = [Palette.accent2, Palette.accent, Palette.muted, Palette.ok, Palette.warn]
+    static let colours = [Palette.accent, Palette.ok, Palette.warn, Palette.muted, Palette.text]
 
     var body: some View {
         let held = pool.rows.filter { !$0.inTurn }
@@ -347,10 +347,10 @@ private struct PoolBar: View {
         VStack(alignment: .leading, spacing: Grid.s) {
             HStack(alignment: .firstTextBaseline) {
                 Text(pool.label + (pool.estimated ? " (an even share of the devices' sum)" : ""))
-                    .font(.subheadline).foregroundStyle(Palette.text)
+                    .font(.ui(15)).foregroundStyle(Palette.text)
                 Spacer()
                 if pool.capBytes > 0 {
-                    Text("of " + Bytes.label(pool.capBytes)).font(.pixel(13)).foregroundStyle(Palette.muted)
+                    Text("of " + Bytes.label(pool.capBytes)).font(.ui(13)).foregroundStyle(Palette.muted)
                 }
             }
             GeometryReader { g in
@@ -364,28 +364,28 @@ private struct PoolBar: View {
             }
             .frame(height: 24)
             .background(Palette.surface2)
-            .overlay(Rectangle().strokeBorder(Palette.border, lineWidth: Grid.edge))
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             ForEach(held.indices, id: \.self) { i in
                 HStack(spacing: 10) {
-                    Rectangle().fill(Self.colours[i % Self.colours.count]).frame(width: 12, height: 12)
-                    Text(held[i].label).font(.subheadline).foregroundStyle(Palette.text)
+                    RoundedRectangle(cornerRadius: 3).fill(Self.colours[i % Self.colours.count]).frame(width: 12, height: 12)
+                    Text(held[i].label).font(.ui(15)).foregroundStyle(Palette.text)
                     Spacer()
                     if held[i].locked { Badge(text: "locked") }
-                    Text(Bytes.label(held[i].bytes)).font(.pixel(14)).foregroundStyle(Palette.text)
+                    Text(Bytes.label(held[i].bytes)).font(.ui(14)).foregroundStyle(Palette.text)
                 }
             }
             if free > 0 {
                 HStack(spacing: 10) {
-                    Rectangle().strokeBorder(Palette.border, lineWidth: Grid.edge).frame(width: 12, height: 12)
-                    Text("Free").font(.subheadline).foregroundStyle(Palette.text)
+                    RoundedRectangle(cornerRadius: 3).strokeBorder(Palette.line, lineWidth: Grid.line).frame(width: 12, height: 12)
+                    Text("Free").font(.ui(15)).foregroundStyle(Palette.text)
                     Spacer()
-                    Text(Bytes.label(free)).font(.pixel(14)).foregroundStyle(Palette.text)
+                    Text(Bytes.label(free)).font(.ui(14)).foregroundStyle(Palette.text)
                 }
             }
             ForEach(pool.rows.filter(\.inTurn).indices, id: \.self) { i in
                 let r = pool.rows.filter(\.inTurn)[i]
                 Text("\(r.label): \(Bytes.label(r.bytes)) borrowed from the expert cache while a prompt runs, given back after.")
-                    .font(.caption).foregroundStyle(Palette.muted)
+                    .font(.ui(12)).foregroundStyle(Palette.muted)
             }
         }
     }
@@ -401,9 +401,9 @@ private struct DeviceRow: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .top, spacing: Grid.s) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(device.name).font(.pixel(16, bold: true)).foregroundStyle(Palette.text)
+                    Text(device.name).font(.ui(16, bold: true)).foregroundStyle(Palette.text)
                     if !device.description.isEmpty, device.description != device.name {
-                        Text(device.description).font(.caption).foregroundStyle(Palette.muted)
+                        Text(device.description).font(.ui(12)).foregroundStyle(Palette.muted)
                     }
                 }
                 Spacer()
@@ -411,8 +411,8 @@ private struct DeviceRow: View {
             }
             Meter(fraction: device.promptRatio > 0 ? max(0.02, device.promptRatio / scale) : 0,
                   color: device.status == "used" ? Palette.accent : Palette.muted, height: 10)
-            if !device.rateText.isEmpty { Text(device.rateText).font(.pixel(13)).foregroundStyle(Palette.text) }
-            if !device.why.isEmpty { Text(device.why).font(.caption).foregroundStyle(Palette.muted) }
+            if !device.rateText.isEmpty { Text(device.rateText).font(.ui(13)).foregroundStyle(Palette.text) }
+            if !device.why.isEmpty { Text(device.why).font(.ui(12)).foregroundStyle(Palette.muted) }
         }
     }
 
@@ -472,10 +472,10 @@ private struct DecisionRow: View {
                 HStack(alignment: .firstTextBaseline, spacing: Grid.s) {
                     Image(systemName: open ? "chevron.down" : "chevron.right").font(.caption2.bold())
                         .foregroundStyle(Palette.muted).frame(width: 12)
-                    Text(d.title).font(.subheadline).foregroundStyle(Palette.text).multilineTextAlignment(.leading)
+                    Text(d.title).font(.ui(15)).foregroundStyle(Palette.text).multilineTextAlignment(.leading)
                     Spacer(minLength: Grid.s)
                     if !d.shownValue.isEmpty {
-                        Text(d.shownValue).font(.pixel(15, bold: true)).foregroundStyle(Palette.accent)
+                        Text(d.shownValue).font(.ui(15, bold: true)).foregroundStyle(Palette.accentInk)
                             .multilineTextAlignment(.trailing)
                     }
                     Badge(text: d.source, color: Self.sourceColor(d.source))
@@ -485,21 +485,21 @@ private struct DecisionRow: View {
             .buttonStyle(.plain)
             if open {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(d.brief.isEmpty ? d.reason : d.brief).font(.subheadline).foregroundStyle(Palette.text)
+                    Text(d.brief.isEmpty ? d.reason : d.brief).font(.ui(15)).foregroundStyle(Palette.text)
                         .fixedSize(horizontal: false, vertical: true)
                     if !d.brief.isEmpty, d.brief != d.reason, !d.reason.isEmpty {
                         Button { why.toggle() } label: {
-                            Text(why ? "Why  ▾" : "Why  ▸").font(.pixel(13, bold: true)).foregroundStyle(Palette.accent)
+                            Text(why ? "Why  ▾" : "Why  ▸").font(.ui(13, bold: true)).foregroundStyle(Palette.accentInk)
                         }
                         .buttonStyle(.plain)
                         if why {
-                            Text(d.reason).font(.caption).foregroundStyle(Palette.muted)
+                            Text(d.reason).font(.ui(12)).foregroundStyle(Palette.muted)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                     // The setting itself: its card and fold opened, the field focused.
                     if !d.label.isEmpty, d.group != "notes" {
-                        Button("Open \(d.title) in Settings") { openSetting(d.knob) }.buttonStyle(.pixel)
+                        Button("Open \(d.title) in Settings") { openSetting(d.knob) }.buttonStyle(.appSecondary)
                     }
                 }
                 .padding(.leading, 20)
@@ -527,7 +527,7 @@ struct PlanProgressCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Measuring this device").font(.pixel(18, bold: true)).foregroundStyle(Palette.text)
+            Text("Measuring this device").font(.ui(18, bold: true)).foregroundStyle(Palette.text)
             Meter(fraction: progress?.fraction ?? 0, height: 10)
             ForEach(done, id: \.self) { step(state: "done", colour: Palette.ok, label: $0) }
             if let p = progress {
@@ -550,7 +550,7 @@ struct PlanProgressCard: View {
     private func step(state: String, colour: Color, label: String) -> some View {
         HStack(spacing: 10) {
             Badge(text: state, color: colour).frame(minWidth: 80, alignment: .leading)
-            Text(label).font(.subheadline).foregroundStyle(Palette.text)
+            Text(label).font(.ui(15)).foregroundStyle(Palette.text)
         }
     }
 }

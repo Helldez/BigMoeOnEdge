@@ -23,7 +23,7 @@ struct MetricsView: View {
             SectionTitle("Records", trailing: files.isEmpty ? nil : "\(files.count)")
             if files.isEmpty {
                 Text("A file per loaded model appears here once it has answered, with Metrics CSV on in Settings.")
-                    .font(.subheadline).foregroundStyle(Palette.muted)
+                    .font(.ui(15)).foregroundStyle(Palette.muted)
             }
             ForEach(files, id: \.self) { url in
                 NavigationLink {
@@ -63,19 +63,19 @@ struct LiveCard: View {
         VStack(alignment: .leading, spacing: Grid.m) {
             SectionTitle("Live", trailing: t.step == 0 ? nil : b.isAverage ? "run average" : "token \(t.step)")
             if t.step == 0 {
-                Text("The next answer's figures appear here as it is generated.").font(.subheadline).foregroundStyle(Palette.muted)
+                Text("The next answer's figures appear here as it is generated.").font(.ui(15)).foregroundStyle(Palette.muted)
             } else {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(String(format: "%.2f", t.rate)).font(.pixel(40, bold: true)).foregroundStyle(Palette.accent)
-                    Text("tok/s").font(.pixel(16)).foregroundStyle(Palette.muted)
+                    Text(String(format: "%.2f", t.rate)).font(.ui(40, bold: true)).foregroundStyle(Palette.accentInk)
+                    Text("tok/s").font(.ui(16)).foregroundStyle(Palette.muted)
                 }
                 if engine.info?.model?.streaming == false {
                     Text("Streaming is off for this model: the engine runs it as plain mmap, so there is no flash term.")
-                        .font(.caption).foregroundStyle(Palette.muted)
+                        .font(.ui(12)).foregroundStyle(Palette.muted)
                 }
                 term("compute", b.computeMs, Palette.accent)
                 term("flash wait", b.flashWaitMs, Palette.warn)
-                term("cache mgmt", b.mgmtMs, Palette.accent2)
+                term("cache mgmt", b.mgmtMs, Palette.accentInk)
                 term("unattributed", b.unattributedMs, Palette.muted)
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: Grid.m) {
                     Figure(value: String(format: "%.0f ms", b.wallMs), label: "per token")
@@ -104,10 +104,10 @@ struct LiveCard: View {
         let total = engine.live.breakdown.totalMs
         return VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(name).font(.pixel(14)).foregroundStyle(Palette.text)
+                Text(name).font(.ui(14)).foregroundStyle(Palette.text)
                 Spacer()
                 Text(String(format: "%.0f ms · %.0f%%", ms, total > 0 ? 100 * ms / total : 0))
-                    .font(.pixel(14)).foregroundStyle(Palette.muted).monospacedDigit()
+                    .font(.ui(14)).foregroundStyle(Palette.muted).monospacedDigit()
             }
             Meter(fraction: total > 0 ? ms / total : 0, color: color, height: 10)
         }
@@ -123,13 +123,13 @@ struct RecordRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(file?.title.isEmpty == false ? file!.title : url.lastPathComponent)
                     .foregroundStyle(Palette.text).lineLimit(1)
-                Text(url.lastPathComponent).font(.caption).foregroundStyle(Palette.muted)
+                Text(url.lastPathComponent).font(.ui(12)).foregroundStyle(Palette.muted)
             }
             Spacer()
             Image(systemName: "chevron.right").foregroundStyle(Palette.muted)
         }
         .padding(12)
-        .pixelBox(shadow: false)
+        .box(lifted: false)
     }
 }
 
@@ -175,11 +175,11 @@ struct RecordView: View {
             .pickerStyle(.menu)
             .tint(Palette.accent)
             if let field = MetricFields.of(column) {
-                Text("\(field.short): \(field.measures)").font(.caption).foregroundStyle(Palette.muted)
+                Text("\(field.short): \(field.measures)").font(.ui(12)).foregroundStyle(Palette.muted)
             }
             Chart(points, id: \.0) { p in
                 LineMark(x: .value("token", p.0), y: .value(column, p.1))
-                    .foregroundStyle(Palette.accent)
+                    .foregroundStyle(Palette.accentInk)
                     .interpolationMethod(.stepCenter)
             }
             .chartXAxisLabel("token")
@@ -202,7 +202,7 @@ struct RecordView: View {
                 Text(["turn \(s["turn"] ?? "\(i + 1)")", s["tok/s"].map { "\($0) tok/s" }, s["tokens"].map { "\($0) tok" },
                       s["prefill_s"].map { "prefill \($0) s" }, s["cache_hit_pct"].map { "cache \($0)%" },
                       s["cancelled"] != nil ? "stopped" : nil].compactMap { $0 }.joined(separator: " · "))
-                    .font(.pixel(13)).foregroundStyle(Palette.text)
+                    .font(.ui(13)).foregroundStyle(Palette.text)
             }
         }
         .card()
@@ -216,7 +216,7 @@ struct RecordView: View {
             SectionTitle("Run with")
             ForEach(f.info.keys.sorted(), id: \.self) { k in
                 HStack(alignment: .firstTextBaseline) {
-                    Text(byKey[k]?.label ?? k).font(.caption).foregroundStyle(byKey[k]?.lossy == true ? Palette.warn : Palette.muted)
+                    Text(byKey[k]?.label ?? k).font(.ui(12)).foregroundStyle(byKey[k]?.lossy == true ? Palette.warn : Palette.muted)
                     Spacer()
                     Text(f.info[k] ?? "").font(.code).foregroundStyle(Palette.text)
                 }
