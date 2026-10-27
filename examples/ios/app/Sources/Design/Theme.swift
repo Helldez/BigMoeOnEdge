@@ -15,13 +15,13 @@ enum Palette {
     static let accent = dynamic(light: 0x0891B2, dark: 0x22B8D6)
     static let accentInk = dynamic(light: 0x0E7490, dark: 0x22B8D6)
     static let onAccent = dynamic(light: 0xFFFFFF, dark: 0x0B1014)
-    static let accentTint = dynamic(light: 0xE1F2F6, dark: 0x15333D)
-    static let ok = dynamic(light: 0x166534, dark: 0x34D399)
-    static let okTint = dynamic(light: 0xE3EDE7, dark: 0x183833)
-    static let warn = dynamic(light: 0x92400E, dark: 0xFBBF24)
-    static let warnTint = dynamic(light: 0xF2E8E2, dark: 0x383421)
+    static let accentTint = dynamic(light: 0xE6F4F8, dark: 0x0F2A33)
+    static let ok = dynamic(light: 0x157A3C, dark: 0x4ADE80)
+    static let okTint = dynamic(light: 0xEAF6EE, dark: 0x12261B)
+    static let warn = dynamic(light: 0xA14A07, dark: 0xFBBF24)
+    static let warnTint = dynamic(light: 0xFDF3E2, dark: 0x2A2111)
     static let err = dynamic(light: 0xB91C1C, dark: 0xF87171)
-    static let errTint = dynamic(light: 0xF7E4E4, dark: 0x38282D)
+    static let errTint = dynamic(light: 0xFCEBEB, dark: 0x2C1517)
 
     /// A semantic colour's tint, for banners and badges: the named tint where there is one.
     static func tint(_ c: Color) -> Color {

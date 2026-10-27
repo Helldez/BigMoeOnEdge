@@ -68,13 +68,13 @@ val LightTokens = Tokens(
     accent = Color(0xFF0891B2),
     accentInk = Color(0xFF0E7490),
     onAccent = Color(0xFFFFFFFF),
-    accentTint = Color(0xFFE1F2F6),
-    ok = Color(0xFF166534),
-    okTint = Color(0xFFE3EDE7),
-    warn = Color(0xFF92400E),
-    warnTint = Color(0xFFF2E8E2),
+    accentTint = Color(0xFFE6F4F8),
+    ok = Color(0xFF157A3C),
+    okTint = Color(0xFFEAF6EE),
+    warn = Color(0xFFA14A07),
+    warnTint = Color(0xFFFDF3E2),
     err = Color(0xFFB91C1C),
-    errTint = Color(0xFFF7E4E4),
+    errTint = Color(0xFFFCEBEB),
 )
 
 val DarkTokens = Tokens(
@@ -88,13 +88,13 @@ val DarkTokens = Tokens(
     accent = Color(0xFF22B8D6),
     accentInk = Color(0xFF22B8D6),
     onAccent = Color(0xFF0B1014),
-    accentTint = Color(0xFF15333D),
-    ok = Color(0xFF34D399),
-    okTint = Color(0xFF183833),
+    accentTint = Color(0xFF0F2A33),
+    ok = Color(0xFF4ADE80),
+    okTint = Color(0xFF12261B),
     warn = Color(0xFFFBBF24),
-    warnTint = Color(0xFF383421),
+    warnTint = Color(0xFF2A2111),
     err = Color(0xFFF87171),
-    errTint = Color(0xFF38282D),
+    errTint = Color(0xFF2C1517),
 )
 
 /** The tokens of the current appearance, for what Material's colour roles do not name. */
