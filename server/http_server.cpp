@@ -1227,8 +1227,9 @@ void register_guards(httplib::Server & svr, const Options & o) {
         return httplib::Server::HandlerResponse::Handled;
     });
     // On every response, the refusals above and the UI's files alike.
-    svr.set_post_routing_handler([](const httplib::Request &, httplib::Response & res) {
-        for (const auto & h : security_headers())
+    svr.set_post_routing_handler([](const httplib::Request & req, httplib::Response & res) {
+        const bool preview = is_preview_path(req.path) && res.status == 200;
+        for (const auto & h : preview ? preview_headers() : security_headers())
             if (!res.has_header(h.first)) res.set_header(h.first, h.second);
     });
     // A handler that reads a field of the wrong type out of a request throws; that is the client's

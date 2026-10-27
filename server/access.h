@@ -91,4 +91,10 @@ bool confine_model_path(const std::string & requested,
 // cannot be framed, sends no referrer, and has no content type guessed for it.
 const std::vector<std::pair<std::string, std::string>> & security_headers();
 
+// The preview of a workspace file (`GET /api/conversations/<id>/file`) is framed by the UI and may
+// be a page with script of its own: it gets these instead, a policy that sandboxes it and lets it
+// reach nothing. `is_preview_path` says which responses those are.
+bool is_preview_path(const std::string & path);
+const std::vector<std::pair<std::string, std::string>> & preview_headers();
+
 } // namespace bmoe::server

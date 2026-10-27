@@ -69,11 +69,25 @@ other software, or other people, on that machine or on a network it was told to 
   browser GET one of the server's own endpoints.
 - Every response carries `Content-Security-Policy: default-src 'self'; script-src 'self';
   style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; media-src 'none';
-  object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`, with
-  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and `X-Frame-Options: DENY`.
-  The UI is one script and one stylesheet from its own origin with no inline script or style, so
-  nothing needs `'unsafe-inline'`; whatever slips past the sanitiser still cannot load from
-  another host, run inline, submit a form or put the page in a frame.
+  object-src 'none'; frame-src 'self' blob:; base-uri 'none'; form-action 'none';
+  frame-ancestors 'none'`, with `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`
+  and `X-Frame-Options: DENY`. The UI is one script and one stylesheet from its own origin with no
+  inline script or style, so nothing needs `'unsafe-inline'`; whatever slips past the sanitiser
+  still cannot load from another host, run inline, submit a form or put the page in a frame. The
+  page may frame two things only, both for the preview of a workspace file: this server's own
+  responses and a `blob:` the page made from bytes it fetched.
+- A workspace file served for that preview (`GET /api/conversations/<id>/file`, answered `200`) is
+  the agent's work, not the UI, and may be a page with script of its own. It carries a policy of
+  its own instead: `Content-Security-Policy: sandbox allow-scripts; default-src 'none'; script-src
+  'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data:
+  blob:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none';
+  frame-ancestors 'self'` and `X-Frame-Options: SAMEORIGIN`, with the same `nosniff` and referrer
+  rules. The `sandbox` directive gives the document an opaque origin however it is opened (framed
+  by the UI with `sandbox="allow-scripts"` and no `allow-same-origin`, or opened directly), so its
+  script runs but cannot read the UI, its storage or the key, cannot reach this server's API or any
+  other host, cannot submit a form, and only the UI's own page may frame it. With a key set, the
+  frame's own request could not carry it: the UI then fetches the bytes with the key and frames a
+  `blob:` of them, where the UI's own policy holds and the page's inline script does not run.
 - `max_tokens` on a chat request is clamped to the `n-predict` parameter's upper bound, and one
   that is not a non-negative integer is refused with `400`.
 - Downloads take a catalog id, never a URL or a path. `DELETE` on a download cancels it and
