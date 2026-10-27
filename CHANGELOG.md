@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+Experimental and in draft. These entries move into a dated section, with the version bump, if they
+land.
+
+### Changed
+- **The streamer leaves the experts the device cache holds to it.** With `--device-cache-mb`, every
+  routed expert used to be made resident in RAM before llama.cpp's device cache uploaded the misses,
+  including the experts the device already held, so the RAM cache duplicated the VRAM one. The
+  submodule now carries a second fork commit, `llama_moe_cache_slots` (draft
+  Helldez/llama.cpp#1), which exposes the cache's live slot map. The hook reads it at each layer's
+  load and loads only the experts the device does not hold. The read happens after the layer's
+  routing and before the cache plans the layer, and the plan never evicts an expert its own batch
+  selected, so a skipped expert's host bytes are never read (`docs/seam.md` section 4 has the
+  argument). The run summary counts the slots served this way (`experts_on_device`, printed by
+  `bmoe-cli` as `moe-device-cache:`). Gate G25d requires some, and the resident placement's bytes. On
+  a llama.cpp without the accessor, everything is loaded as before.
+
 ## [0.38.0] - 2026-10-27
 
 ### Added

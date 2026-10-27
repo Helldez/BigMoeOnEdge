@@ -219,7 +219,7 @@ void RouterHook::apply_drop(ggml_tensor * wt) {
     }
 
     if (tracing) pending_.dropped = drop_mask_;
-    source_->load_layer(D.layer, drop_ids_.data(), (int) drop_ids_.size());
+    load_routed(D.layer, drop_ids_, D.nu, D.nt);
     D.deferred = false;
     predict_after_load(D.layer);
     route_ahead_collect(D.layer);
@@ -1382,6 +1382,27 @@ void RouterHook::serve_rows(ggml_tensor * t) {
 // A routing node, observed with its selected ids materialized: rewrite them if a policy asks,
 // gather them, and drive every consumer — the trace, the drop policy, load_layer, the predictors
 // and the prefetch — in the order their comments explain.
+// The device's slot map is read here, at the layer's load, and nowhere earlier: this is after the
+// layer's routing and before its cache lookup, the one window in which an expert the batch selects
+// that holds a slot is guaranteed to hold it through the upload. A later layer's upload may evict
+// it, which is why a slot read for one layer says nothing about another, or about the next token.
+// close_drop_layer's late load runs after the lookup, so it keeps loading everything.
+void RouterHook::load_routed(int il, const std::vector<int32_t> & ids, int nu, int nt) {
+    const int32_t * slots = dev_slots_fn_ ? dev_slots_fn_(dev_slots_ud_, il, nt, nu) : nullptr;
+    if (!slots) {
+        source_->load_layer(il, ids.data(), (int) ids.size());
+        return;
+    }
+    off_device_.clear();
+    for (const int32_t e : ids) {
+        if (slots[e] >= 0)
+            ++experts_on_device_;
+        else
+            off_device_.push_back(e);
+    }
+    if (!off_device_.empty()) source_->load_layer(il, off_device_.data(), (int) off_device_.size());
+}
+
 void RouterHook::on_topk(ggml_tensor * t, int il) {
     // selected_experts is [n_expert_used, n_tokens] but a VIEW of the full argsort
     // [n_expert, n_tokens]: its row stride is nb[1] (= n_expert*4), not
@@ -1474,7 +1495,7 @@ void RouterHook::on_topk(ggml_tensor * t, int il) {
     if (defer) {
         drop_ids_ = gathered_;
     } else {
-        source_->load_layer(il, gathered_.data(), (int) gathered_.size());
+        load_routed(il, gathered_, nu, nt);
         // Deferred layers speculate from apply_drop instead — after THEIR load, for the same
         // reason this call sits after the one above: the load's quiesce would cancel it.
         predict_after_load(il);

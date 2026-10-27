@@ -1457,6 +1457,10 @@ int main(int argc, char ** argv) {
         // How hard the policy actually bit. The flag sets a threshold, not a drop rate: what gets
         // discarded depends on what the cache held, so this is the only honest report of the trade
         // a given run made.
+        // What the device cache held of the routing: slots computed there that the streamer left out.
+        if (s.experts_on_device > 0)
+            std::printf("moe-device-cache: %lld routed slots served by the device's cache, not read by the streamer\n",
+                        s.experts_on_device);
         if (cfg.moe.drop_cold_frac > 0.0f)
             std::printf("moe-drop: %lld/%lld routed experts dropped (%.1f%%), threshold %.2f x uniform\n",
                         s.experts_dropped, s.experts_routed,
