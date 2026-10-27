@@ -1687,6 +1687,24 @@ int main(int argc, char ** argv) {
                                        s_placed, r_cs.generated_text);
                     }
 #endif
+#ifdef LLAMA_HAS_MOE_CACHE_CPU
+                    // e) the misses computed on the CPU, one upload per layer and token: each routed slot
+                    // comes from the device's slot or the host's copy, never both, over resident experts and
+                    // streamed ones. The loopback device runs the CPU's own kernels, so it is exact here.
+                    RunConfig cpu_misses = cached;
+                    cpu_misses.moe.device_cache_cpu = 1;
+                    RunConfig cpu_misses_s = cached_s;
+                    cpu_misses_s.moe.device_cache_cpu = 1;
+                    std::string s_cpu, s_cpu_s;
+                    if (!gen(cpu_misses, s_cpu, err) || !gen(cpu_misses_s, s_cpu_s, err)) {
+                        std::printf("[FAIL] G25e a run with the misses on the CPU failed: %s\n", err.c_str());
+                        ++fails;
+                    } else {
+                        fails += check("G25e misses on the CPU, resident experts == resident experts", s_placed, s_cpu);
+                        fails +=
+                            check("G25e misses on the CPU, streamed experts == resident experts", s_placed, s_cpu_s);
+                    }
+#endif
                     // c) with speculation: a verify batch is a few positions wide, served by the same
                     // slots, and greedy drafting accepts only what the target would have produced.
                     RunConfig cached_spec = cached_s;

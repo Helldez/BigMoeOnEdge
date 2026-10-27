@@ -115,6 +115,9 @@ ValidationResult validate(const RunConfig & cfg) {
     if (!cfg.moe.expert_host_buffer.empty() && (cfg.moe.device_cache_mb <= 0 || cfg.moe.enabled))
         return fail("moe.expert_host_buffer is where a device cache uploads resident experts from: it needs "
                     "--device-cache-mb and experts that are not streamed");
+    if (cfg.moe.device_cache_cpu != MoeStreamConfig::device_cache_cpu_off &&
+        (cfg.moe.device_cache_cpu < 0 || cfg.moe.device_cache_mb <= 0))
+        return fail("--device-cache-cpu chooses what a device cache does with its misses: it needs --device-cache-mb");
 
     // Sampling ranges are enforced only when sampling is actually on (temp > 0). With temp <= 0
     // the engine takes the argmax path and the other knobs are inert, so a caller that leaves them

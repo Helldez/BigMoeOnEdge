@@ -1171,6 +1171,9 @@ bool Session::Impl::create_contexts(Opening & o) {
     // the expert matmuls read its slots rather than the host tensors, so the capture warm-up, which
     // finds those tensors by the nodes that read them, runs on a context without it.
     if (device_cache_armed) cparams.moe_cache_size = (size_t) cfg.moe.device_cache_mb << 20;
+#ifdef LLAMA_HAS_MOE_CACHE_CPU
+    if (device_cache_armed) cparams.moe_cache_cpu = cfg.moe.device_cache_cpu;
+#endif
 
     llama_context * c = llama_init_from_model(model.get(), cparams);
     // A quantized V cache needs flash attention, and whether a backend has it is only known by asking
@@ -1589,6 +1592,10 @@ bool Session::Impl::arm_device_cache(Opening & o) {
         return o.fail("--device-cache-mb computes the experts on the device; --overlap waits for them on the CPU");
     if (prefill) return o.fail("--device-cache-mb keeps the layers on their device; a prefill device moves them");
     if (cfg.n_gpu_layers == 0) return o.fail("--device-cache-mb needs the layers on a device (--gpu-layers)");
+#ifndef LLAMA_HAS_MOE_CACHE_CPU
+    if (cfg.moe.device_cache_cpu != MoeStreamConfig::device_cache_cpu_off)
+        return o.fail("--device-cache-cpu needs a llama.cpp whose device cache computes its misses on the CPU");
+#endif
     // The speculative driver holds both contexts, and both are made again: it goes first, and is
     // made again over the new ones.
     const bool had_mtp = mtp != nullptr;

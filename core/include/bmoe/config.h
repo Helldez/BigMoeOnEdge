@@ -81,6 +81,13 @@ struct MoeStreamConfig {
     // its slots from where the streamer put it. On a device that shares the host's memory the upload
     // is a copy within one pool; elsewhere it crosses the device's link. See docs/backends.md.
     int device_cache_mb = 0;
+    // EXPERIMENTAL. With that cache, the routed experts it does not hold are computed on the CPU from
+    // the streamer's copy instead of uploaded to it (llama_context_params::moe_cache_cpu, a fork
+    // extension): the device computes the ones it holds, the CPU the rest, and the two sum. The value
+    // is how many of the missing ones per layer and batch are still uploaded, so the cache keeps
+    // learning; device_cache_cpu_off uploads them all, as without it.
+    static constexpr int device_cache_cpu_off = -1;
+    int device_cache_cpu = device_cache_cpu_off;
     // Where that cache's misses are uploaded FROM, for experts resident on the host: a copy of them in
     // a buffer of the device's own host buffer type (ggml_backend_dev_host_buffer_type) instead of the
     // file's mapping, the same bytes in the same layout, the expert tensors pointed at it as the

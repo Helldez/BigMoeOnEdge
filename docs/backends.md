@@ -105,7 +105,13 @@ resident, streamed, and streamed under n-gram speculation, on a device with memo
 loopback RPC device). Where llama.cpp reports the cache's slots (the fork's accessor,
 [seam.md](seam.md#4-the-device-caches-slot-map-fork-extension-experimental)), the streamer leaves out
 the routed experts the device holds, so the host's cache and the device's hold different experts. G25d
-proves it skipped some and still gave those bytes.
+proves it skipped some and still gave those bytes. `--device-cache-cpu N` (experimental, the fork's
+`moe_cache_cpu`, [seam.md](seam.md#5-misses-computed-on-the-cpu-fork-extension-experimental))
+computes a miss on the CPU from the host's copy instead of uploading it, and uploads at most `N`
+misses per layer and token. Each routed expert is then computed once, on the device from its slot or
+on the CPU from the host. Over the loopback device, whose kernels are the CPU's, G25e gives the
+resident placement's bytes. On a real device, the experts the CPU computes follow the CPU's kernels.
+The CPU's pass runs after the device's, not beside it.
 
 **Planned.** `--auto` arms it where a device has memory of its own and the fitter has given whole
 layers' experts some of it: the same bytes become a cache of the experts used most, from every
