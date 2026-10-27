@@ -1,0 +1,71 @@
+[
+ {
+  "engine": "strata",
+  "prompt": "a",
+  "prompt_tokens": 92,
+  "gen_tokens": 256,
+  "ttft_s": 7.01,
+  "prefill_tps": 13.1,
+  "decode_tps": 36.29,
+  "server_timings": {
+   "cache_n": 0,
+   "prompt_n": 92,
+   "prompt_ms": 6948.3,
+   "prompt_per_token_ms": 75.525,
+   "prompt_per_second": 13.2,
+   "predicted_n": 256,
+   "predicted_ms": 7078.2,
+   "predicted_per_token_ms": 27.649,
+   "predicted_per_second": 36.2,
+   "draft_n": 174,
+   "draft_n_accepted": 120
+  },
+  "text": "We need answer user: \"Explain in detail how a mixture-of-experts language model routes each token to its experts, and why that makes it possible to run a model larger than RAM by streaming the experts from flash storage.\"\n\nNeed produce detailed explanation. Need think through MoE routing, token-leve"
+ },
+ {
+  "engine": "strata",
+  "prompt": "b",
+  "prompt_tokens": 92,
+  "gen_tokens": 256,
+  "ttft_s": 0.24,
+  "prefill_tps": 377.5,
+  "decode_tps": 52.48,
+  "server_timings": {
+   "cache_n": 87,
+   "prompt_n": 5,
+   "prompt_ms": 219.4,
+   "prompt_per_token_ms": 43.88,
+   "prompt_per_second": 22.8,
+   "predicted_n": 256,
+   "predicted_ms": 4879.7,
+   "predicted_per_token_ms": 19.061,
+   "predicted_per_second": 52.5,
+   "draft_n": 156,
+   "draft_n_accepted": 108
+  },
+  "text": "We need answer user: \"Explain in detail how a mixture-of-experts language model routes each token to its experts, and why that makes it possible to run a model larger than RAM by streaming the experts from flash storage.\"\n\nNeed produce detailed explanation. Need think through MoE routing, token-leve"
+ },
+ {
+  "engine": "strata",
+  "prompt": "code",
+  "prompt_tokens": 72,
+  "gen_tokens": 256,
+  "ttft_s": 1.86,
+  "prefill_tps": 38.8,
+  "decode_tps": 33.62,
+  "server_timings": {
+   "cache_n": 0,
+   "prompt_n": 72,
+   "prompt_ms": 1824.5,
+   "prompt_per_token_ms": 25.34,
+   "prompt_per_second": 39.5,
+   "predicted_n": 256,
+   "predicted_ms": 7631.8,
+   "predicted_per_token_ms": 29.812,
+   "predicted_per_second": 33.5,
+   "draft_n": 202,
+   "draft_n_accepted": 158
+  },
+  "text": "We need answer user: \"Write a Python function that merges two sorted lists into one sorted list, then explain its time complexity.\" Need provide code and explanation. Need final answer. Need likely include function merge_sorted(a,b). Could mention O(n+m) time, O(n+m) space if new list, or O(1) extra"
+ }
+]

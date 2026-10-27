@@ -1,0 +1,52 @@
+plan: this model's routing read from /root/routing/c1f057c94e8b6ceb.routing
+plan: machine 12 cores, 30206 MiB available of 31936 MiB, 38 GiB/s on this model's matmul
+plan: storage: uncached reads in effect; 112 KiB: 1 lane 526 MiB/s 2 lanes 735 MiB/s 4 lanes 717 MiB/s; 450 KiB: 1 lane 799 MiB/s 2 lanes 1839 MiB/s 4 lanes 2027 MiB/s; 1800 KiB: 1 lane 1231 MiB/s 2 lanes 1844 MiB/s 4 lanes 1740 MiB/s; refault 55 MiB/s
+plan: device CUDA0: one token 340 GiB/s (same result), 128 tokens wide 2547 GiB/s (same result); this model's layer: experts 250.7, dense 251.7 GiB/s; crossing 14 us, probed in a process of its own
+plan: device CPU (host): one token 38 GiB/s (same result), 128 tokens wide 94 GiB/s (same result); this model's layer: experts 25.9, dense 38.3 GiB/s; crossing 0 us
+plan: model qwen4exp, 512 experts top-10 over 48 of 48 blocks
+plan:   embedding    27726 MiB,       0 MiB/token  (row-gathered)
+plan:   attention      964 MiB,     964 MiB/token
+plan:   dense-ffn      221 MiB,     221 MiB/token
+plan:   experts      32400 MiB,     632 MiB/token  (streamable)
+plan:   output         416 MiB,     416 MiB/token
+plan:   other         1606 MiB,    1606 MiB/token
+plan: regime experts-stream
+plan:   token cycle 632 MiB
+plan:   device-cache-mb 10275      [measured] the experts used most live on the processor that computes them fastest, as the RAM cache holds what flash would read: CUDA0 computes this model's experts at 251 GiB/s against the host's 26, both measured on this model's own expert block; a cache of 10275 MiB (10125 the capacity fitter gave 15 of 48 layers' experts, 150 it left free under one more whole layer) serves 93% of a token's routed bytes (from this model's own routing); a miss is uploaded from the host
+plan:   ubatch         0          [derived] a graph as wide as the context reserves 110 MiB of compute buffers, inside 10% of the 30206 MiB this process may hold: a prompt is computed in one pass
+plan:   placement      49 layers on devices [measured] the capacity fitter found a placement that is projected to fit; 48 of 48 MoE layers keep their experts on the host, host-resident 110 MiB, on devices 4408 MiB, context 2048 (fitter's host breakdown: model 49780, context 0, compute 110 MiB; file 63336, experts 32400)
+plan:   ctx-size       2048       [policy] the value this run was given, not a choice: the capacity fitter only picks a context when it is handed a zero and this planner always pins it, so nothing has weighed this number against what the memory it reserves would buy as expert cache
+plan:   regime         experts-stream [derived] on the host 32510 MiB (dense 110) against 24165 MiB usable, which is the 30206 MiB this process may hold (as reported available, unmeasured) less a 6041 MiB margin (the process is killed)
+plan:   extra-offload  none       [policy] the fitter has already placed what fits on the devices - see the placement line above - and placing weights across devices is a capacity problem it solves exactly; this planner owns the tier below it and does not second-guess it
+plan:   experts        host       [derived] this device could compute them on paper - it offers a host buffer and runs the model's own layout - and it still cannot. The streamer rebinds every expert onto memory it reserved itself, which no device was given access to; and a host buffer type would not survive the load anyway, since a mapped model has one substituted for the CPU's. Whether this device can wrap memory a caller already owns - the one opening left - is unprobed. What it advertises is a blanket promise, and a backend whose support is conditional declines to make one while implementing the call anyway, so the absence of a yes decides nothing here
+plan:   dense-weights  anon       [derived] no reclaim-exempt store here, so anonymous buffers are what keeps the dense set off a flash refault (a reclaim then means: the process is killed)
+plan:   prefill-device off        [derived] a device expert cache is set, which keeps the layers on their device and computes the experts there; a prefill device is not combined with it
+plan:   dense-mapped   2 table(s) [derived] the allocation priced the embedding group as mmap (left mapped: the graph gathers rows from it, so a token reads a few KiB of it however large the table is, and residency would buy bytes nothing reads), and the anon policy would otherwise copy its 27726 MiB into memory the ledger did not charge
+plan:   cache-pin      off        [derived] not even one token cycle of the cache can be locked in place here after what is ahead of it, so the cache is ordinary memory and no lock is asked for
+plan:   memory-ledger  20954 MiB  [derived] held 20954 of 24165 MiB holdable, of which locked 0 MiB of 0 MiB lockable: context and compute 110, expert cache 20844
+plan:   storage-rate   2.0 GiB/s  [derived] this model's expert slice is 450 KiB and at that request size this storage gives 2027 MiB/s over 4 lanes: the expert lane is priced there, not at the storage's peak
+plan:   storage-spread 1.7x       [derived] that rate varied by 1.7x across the probe's own repeats, so every predicted cost below carries at least that much uncertainty: treat the ranking as firmer than the totals
+plan:   cache-floor    632 MiB    [derived] the engine's fixed cache guard (1500 MiB) is above this model's token cycle (632 MiB), so a budget between the two returns hits and needs force-cache to be accepted; the floor enforced here is the model's
+plan:   cache-remainder 5.0 GiB    [derived] this model's routing record prices the cache at 15686 MiB, where its curve stops rising; a record is a few hundred tokens, and a longer answer routes to experts it never saw, so the memory the ranking left unspent is the cache's too
+plan:   device-unapplied -          [derived] a device won at least one group, but this build computes on the host: the placement is reported, not applied
+plan:   cache-hits     94%        [measured] measured on this model: an LRU replay of the routing it recorded on an earlier run (256 decoded and 38 prompt tokens) at every cache size up to the whole expert set; at 20844 MiB it serves 94% of the decode lookups, where the linear credit would have said 64%
+plan:   moe-stream     on         [derived] the experts do not fit but the dense set does
+plan:   cache-mb       20844      [derived] what the cache is worth out of 24165 MiB usable, ranked against the resident groups by seconds saved per byte of RAM, with what none of them wanted added: 24053 MiB committed in total, of which 20844 MiB is cache, over a floor of 632 MiB
+plan:   io-threads     4          [measured] the highest measured rate for this model's 450 KiB expert slice on this storage
+plan:   o-direct       on         [measured] uncached reads return correct bytes on this path
+plan:   release-mmap   on         [measured] a live mapping of the model serialises this storage's concurrent uncached reads (1162 vs 6726 MiB/s), and this model's shape keeps no pointer that would survive the release (the session checks again before doing it)
+plan:   lossy          off        [policy] no quality budget was given, and a policy that changes the output must never arm itself
+plan:   overlap        off        [unprobed] hiding compute behind the reads changes no output and has measured faster, but one machine is not a rule and nothing here predicts where it stops paying: pass --overlap
+plan:   threads        12         [measured] measured on this model: an earlier load's first answer decoded in alternating windows with 8, 6 and 12 threads, 3 rounds each between two of the incumbent's; 12 was +28% against 8, past the 10% margin; prefill keeps 8, which the trial did not measure
+plan:   cost 59.3 ms/token predicted, 70589.9 ms/token with nothing resident
+plan:     embedding  mmap                0 MiB held,    0.02 ms/token  left mapped: the graph gathers rows from it, so a token reads a few KiB of it however large the table is, and residency would buy bytes nothing reads
+plan:     attention  resident          964 MiB held,    5.11 ms/token  resident: read whole, every token; computed on CUDA0
+plan:     dense-ffn  resident          221 MiB held,    2.23 ms/token  resident: read whole, every token; computed on CUDA0
+plan:     experts    expert-stream   20844 MiB held,   41.37 ms/token  streamed with a 20844 MiB cache, 64% of the expert set; credited hit rate 94% [measured on this model]: its own routing, 256 decoded tokens, replayed through the cache at this size
+plan:     output     resident          416 MiB held,    2.98 ms/token  resident: read whole, every token; computed on CUDA0
+plan:     other      resident         1606 MiB held,    7.60 ms/token  resident: read whole, every token; computed on CUDA0
+plan:   memory held 20954 of 24165 MiB holdable, locked 0 of 0 MiB lockable
+plan:     context and compute     110 MiB  ordinary
+plan:     expert cache          20844 MiB  ordinary
+plan: reproduce with
+plan: predicted 0.059 s/token, measured 0.048 (+23%); cache hits credited 94% from this model's routing, measured 97.7% in decode (96.7% with the prompt)

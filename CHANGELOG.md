@@ -4,9 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.38.0] - 2026-10-27
 
 ### Added
+- **A rented 16 GB card with 30 GiB of RAM, against llama.cpp and Strata**
+  (`docs/bench-data/2026-10-27-rented-16gb/`, `docs/benchmarks.md`, the README table). The class of
+  a home PC with a mid-range card, where Qwen3.8-Flash-Next streams: `--auto` decodes 19.3-20.8 tok/s
+  over 1024 tokens with #431, 27 from the 768th token, against llama.cpp's own offload at 16.6-18.9
+  over 256 tokens and Strata at 36-67 (50-66 over 1024). The prefetchers, predictive prefetch and
+  route-ahead all lose beside the device cache, measured; the head drafting (`--mtp-head`) does not
+  pay yet. What separates the two engines there is written down with the numbers. The README's table
+  also gains the 24 GB card's rows of 2026-10-26.
+
 - **An MTP head from a file of its own** (`--mtp-head FILE`). Some quantised files leave the trained
   head out (the GSQ-RCO quants of Qwen3.8-Flash-Next), and llama.cpp's converter writes it on its own
   (`convert_hf_to_gguf.py --mtp`). The head is opened as a model of its own, whole on the host, and
