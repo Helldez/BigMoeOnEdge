@@ -37,6 +37,14 @@ Semantic Versioning.
   slower one (#421).
 
 ### Fixed
+- **The expert cache in RAM takes what the plan leaves unspent.** With a routing record, `--auto`
+  sized the cache where the record's hit curve stopped rising and left the rest of the RAM idle; the
+  record is a few hundred tokens, so its curve is flat past the experts those tokens touched, and a
+  longer answer reads every expert it had not seen from the drive. On a 16 GB card with 30 GiB of RAM
+  and Qwen3.8-Flash-Next over 1024 tokens, the plan's 15.7 GB cache held 83% and decoded 11.6 tok/s;
+  22 GB held 96% and decoded 20.7 (27.5 over the last 256 tokens). The ranking still prices the cache
+  on the curve against the resident groups; what none of them wanted now goes to the cache, with a
+  `cache-remainder` decision. The planner test that asserted the old stop is updated.
 - **Speculation's memory is in the placement.** The rollback snapshots speculation keeps in the
   target's context, and the MTP draft context's own state and compute buffers, were not in what
   llama.cpp's capacity fitter placed the model against, so on a card the fitter had filled the

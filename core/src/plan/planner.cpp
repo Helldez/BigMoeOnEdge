@@ -1871,8 +1871,8 @@ bool size_cache(Planning & s, const Allocation & alloc) {
         s.note("cache-mb", u64s(mib(budget)), Source::Derived,
                size_brief(budget) + ": what the cache earns most with, after the dense weights.",
                "what the cache is worth out of " + u64s(mib(s.usable)) +
-                   " MiB usable, ranked against the resident groups by seconds saved per byte of RAM rather "
-                   "than handed the remainder: " +
+                   " MiB usable, ranked against the resident groups by seconds saved per byte of RAM, with "
+                   "what none of them wanted added: " +
                    u64s(mib(alloc.resident_bytes)) + " MiB committed in total, of which " + u64s(mib(budget)) +
                    " MiB is cache, over a floor of " + u64s(mib(cycle)) + " MiB");
 
