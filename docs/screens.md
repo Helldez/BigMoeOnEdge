@@ -1,21 +1,56 @@
-# One experience, three native UIs: the five screens
+# One experience, three native UIs: the screens
 
-Every UI of this project (the web UI the desktop serves, the Android app, the iOS app) is a client of the same `bmoe-server` API ([server-api.md](server-api.md)) and shows the same
-five screens. This page says what each screen shows, what a person can do on it, and what every
-state means, so the three toolkits render the same thing their own way. It describes behaviour,
-not layout: a phone puts the five in a bottom bar and the prompt under a thumb, a desktop puts them
-in a top navigation and the prompt at the foot of a wide column. Alike in what they show and in
-what a setting means; native in how they feel. How it all looks is [design.md](design.md).
+Every UI of this project (the web UI the desktop app and the server show, the Android app, the iOS
+app) is a client of the same `bmoe-server` API ([server-api.md](server-api.md), the agent's routes in
+[agent.md](agent.md)) and shows the same screens: conversations with the agent, Models, Plan,
+Skills, Tasks, Connect apps, Settings and Metrics, and a first-run setup. This page says what each
+screen shows, what a person can do on it, and what every state means, so the three toolkits render
+the same thing their own way. It describes behaviour, not pixels: a phone puts the navigation in a
+drawer and the prompt under a thumb, a desktop puts it in a sidebar and the prompt at the foot of a
+wide column. Alike in what they show and in what a setting means; native in how they feel. How it
+all looks is [design.md](design.md).
 
 The rule behind every screen: **a UI knows no engine parameter by name.** Settings, the plan's
 decisions, the metrics columns and the model list come from the API, and a knob added to the engine
-appears in every UI with no UI change. The exceptions are the two the chat itself needs (the
-number of tokens to generate and whether to think) and the handful of figures the live panel draws.
+appears in every UI with no UI change. The exceptions are the one the composer itself needs
+(whether to think) and the handful of figures the live panel draws.
+
+**Words.** Every word on a screen is plain: what a thing does, never a bare term of art. A figure
+says what it measures ("Answer speed 12 tok/s"), with a tooltip, or a line under it on a phone,
+that explains the unit ("a token is a piece of a word"). Every error says what to do next. The UIs
+speak English and Italian, from one dictionary each, following the system's language with a choice
+in Settings; a word missing from a language fails the UI's tests.
+
+## Layout
+
+- **The sidebar** (on a phone, a drawer behind a menu button in the top bar): the mark and the name;
+  New conversation; a search over conversation titles; the conversations the server holds, each
+  workspace's together under its folder name, then the plain chats by date (today, yesterday, the
+  previous 7 and 30 days, older), each row with its title, when it was last updated, and its state
+  (working, needs you, stopped with an error) instead of the time while it is not idle; rename and
+  delete on each row, delete asked twice; an entry for Tasks. At its foot, a card with the loaded
+  model and the engine's state in words (it leads to Models), and the way to Models, Plan, Skills,
+  Tasks, Metrics, Connect apps and Settings. On the desktop it folds to a rail of icons, remembered.
+- **The screen**, in the middle: the open conversation, or the screen picked in the sidebar, in a
+  readable column.
+- **The preview pane**, on the right beside a conversation, for a file the agent produced or
+  changed (`GET /api/conversations/<id>/file`): a page or a drawing (HTML, SVG) runs in a sandboxed
+  frame apart from the app; Markdown is rendered; code is highlighted; an image is shown; any other
+  text is shown as text, cut past 512 KiB with its size said; anything else says what it is and its
+  size. Refresh, full screen, close; its width is dragged (or set with the arrow keys) and
+  remembered. Where there is no room beside the conversation (a phone, a narrow window) it covers
+  the screen. Opening another conversation closes it.
+- **Keyboard.** Every control is reached and used from the keyboard, with a visible focus ring;
+  Ctrl or Cmd+K goes to the conversation search; Escape closes a menu, a dialog, the drawer or the
+  full-screen preview. Reduced motion is honoured.
 
 ## The status line
 
-Present on every screen, or on every screen that acts on the engine: what the engine is doing, in
-one line, from `GET /api/info` and the `state` events.
+Present on every screen: what the engine is doing, from `GET /api/info` and the `state` events. On
+the desktop it is the model card at the foot of the sidebar (a dot and the state in words, the
+model's name, a running download), with a banner over the screen for what asks for attention: an
+unreachable server, a load under way or failed, the context warning below. On a phone it is the
+line the toolkit gives it.
 
 | State | Shown as | What the UI offers |
 |---|---|---|
@@ -43,42 +78,69 @@ model and context; another model, another context or a first refusal brings it b
 the same line stays under "Serve on the network", where the clients are switched on, dismissed or
 not. Every UI does this.
 
-## Chat
+## Conversation
 
-What it is: a conversation with the loaded model, kept on the device, with the model's reasoning
-visible and every answer's cost visible.
+What it is: a conversation with the agent, held by the server ([agent.md](agent.md)), so a run goes
+on whether the screen is open or not and every UI shows the same one. A plain chat is a
+conversation with no folder.
 
-- **Conversations.** A list (drawer on the phone, side column on the desktop) of saved
-  conversations, newest first, each with its title (the first line of the first message, cut to
-  fit), when it was last answered, how many messages, which model. New chat, open, delete. The
-  conversation is the client's: the server keeps none, every request carries it whole, and the
-  engine reuses the leading tokens its KV cache already holds, so a follow-up costs its own
-  message and switching conversations costs a full prefill.
-- **Messages.** The person's text verbatim; the assistant's as rendered Markdown, with no scripts,
-  forms or styles from the model. A reasoning model's thinking span sits folded above its answer
-  ("Thinking", open while it streams, closed once committed). Under a finished answer, one line of
+- **Messages.** Drawn from the server's items, kept current by the `conversation`, `item` and
+  `delta` events; after a lost connection the open conversation is read again. The person's text
+  verbatim, with Copy and Edit: editing a past question and sending it again removes it and
+  everything after it (`/edit`), and the screen says so before. The model's answer as sanitised
+  Markdown (no scripts, forms or styles from the model), code blocks highlighted with a Copy button;
+  its reasoning folded above it ("Reasoning", open while it streams). Under a finished answer: Copy,
+  Answer again on the last one (the last question sent again), and, on the local model, one line of
   figures from the turn's own summary, each rate named by its phase:
-  `decode 1.7 tok/s (9 tok) · prefill 3.3 tok/s (13 tok, 4.0 s) · ctx 22/4096 · cache 54%`. The
-  prefill counts the tokens this turn read, which with the conversation reused from the KV cache is
-  the new message, not the history. Under speculation the real rate and the share of guesses kept
-  follow.
-- **Streaming.** The answer appears as it is generated. Before the first token: "Reading the
-  prompt…". A chunk marked `reset` replaces the text shown so far instead of appending.
-- **Actions.** Send (disabled with no model loaded, which the status line explains), Stop (the
-  answer so far is kept), Copy an answer, Regenerate the last answer (the prompt is already in the
-  KV, so only the answer is paid), New chat.
-- **Errors.** Shown in the transcript, under the turn they belong to, and decided on by the error's
-  `code`, never its wording. A full context (`context_full`) says so, with the context's size, and
-  offers New chat and a link to the setting that raises the context (from `ctx_advice`); a server
-  without a model (`no_model`) offers Models; anything else is dismissable. The person's message
-  stays, saved with the conversation, and Send again sends it as it is after the fix. A decision
-  that fails leaves no question behind: it is not a conversation turn.
-- **The live line.** While an answer streams and after: the rate, the compute and flash shares,
-  the cache hit rate, the temperature where the device reports one. The full card is in Metrics.
-- **Choose.** Where the server offers `POST /api/decide`: a mode in which the prompt is a question
+  `decode 1.7 tok/s (9 tok) · prefill 3.3 tok/s (13 tok, 4.0 s) · ctx 22/4096 · cache 54%`, with a
+  tooltip saying what each means. Before the first word: "Reading your message…".
+- **Tool calls.** One card each, with the tool's plain title ("Read src/main.cpp"), its state in
+  words, the lines an edit added and removed, and on demand what it was given (the command, the
+  address, the arguments) and what it answered, an edit as a diff whose `+` and `−` stay in the
+  text. A file it produced or changed opens in the preview. Consecutive calls between two messages
+  are one run, summarised in a line ("Read 3 files, edited 2 files · +14 −3") that is open while the
+  run works and folded once it is done; a call alone is shown as itself.
+- **Approvals.** A call that waits for the person is a card that says nothing has happened yet,
+  shows what would run (the command, the diff, the text to write), and offers Allow and Deny. It is
+  never folded away inside a run. In the desktop app a notification says so when the window is in
+  the background.
+- **Helpers and notices.** A helper the agent handed part of the job to is a row with its task, its
+  state, its summary when done, and a way into its own conversation. A notice says in plain words
+  why something did not happen.
+- **The composer.** The text (Enter sends, Shift+Enter starts a line), and chips: the **folder** (none,
+  one of the saved workspaces, or Add a folder: the system's folder dialog in the desktop app, a
+  typed path elsewhere), the **mode** (Ask first, Read only, Full access, each with a line saying
+  what it allows; Full access warns above the composer while a folder is set), the **model**
+  (the local model, or a saved provider's model, saying that messages then go there), **Reasoning**
+  where the local model has a switch for it, and **Choose** (below). Send, or Stop while a run
+  works. Before the first message the chips are the new conversation's; after it they change the
+  open one. With no model loaded and the local model picked, Send is disabled and the line under
+  the composer says why and leads to Models.
+- **Choose.** Where the server offers `POST /api/decide`: a mode in which the text is a question
   and a second field holds options, one per line; the model picks one without writing an answer,
   and each option comes back with the probability the model put on it, the picked one marked. A
-  decision is not a conversation turn.
+  decision is not a conversation turn: it is shown under the conversation and not kept.
+- **Errors.** Decided on by the error's `code`, never its wording, each with the next step: a run
+  already going (`busy`: wait or Stop), no model (`no_model`: Models), a full context
+  (`context_full`: New conversation, and the setting that raises the context from `ctx_advice`),
+  something only the computer that runs the engine may do (`local_only`), a path that is not a
+  folder (`not_a_folder`). The text of a message that was refused stays in the composer.
+- **The live line.** While an answer streams on the local model and after: the answer speed, the
+  shares of computing and of waiting for the disk, how often what a token needed was already in
+  memory, each with a tooltip. The full card is in Metrics.
+- **Earlier conversations.** A UI that kept conversations on the device before the server held them
+  sends them to the server once (`POST /api/conversations` with their messages), says how many
+  moved, and removes its own copy of each once the server has it.
+
+## First run
+
+With no model on the device and none coming, the first screen is a guided setup instead of an empty
+conversation: what this computer has, in plain words (memory, processor threads, the graphics the
+plan saw); the graphics backend pack to install where one applies (from `GET /api/backends`, with
+progress, then the restart the app does or the person does); the catalog's model that suits the
+memory (the largest that fits in it, else the smallest, with a sentence saying which and why) and
+the others beside it; its download with progress, resumable; then "Load it and start", which loads
+it and opens a new conversation. Skip leads to an empty conversation; Models has everything else.
 
 ## Models
 
@@ -95,7 +157,7 @@ list, a guided way to add to it, and nothing else.
   | Downloading | one progress bar over the whole entry, shards included | Cancel |
   | Partly downloaded | what is already here, of the whole | Resume (X of Y GB), Delete partial |
   | On this device | size, architecture, whether this build streams it | Load |
-  | Loaded | the same | Reload, Unload, Go to Chat |
+  | Loaded | the same | Reload, Unload, Go to the conversation |
   | Shards missing | which set, how many shards it should have | Download, where an entry has the rest |
 
   Beside it, Delete for a model in the server's models directory (never while loaded or
@@ -112,7 +174,7 @@ list, a guided way to add to it, and nothing else.
 - **Nothing here yet.** With no model on the device and none coming, the screen is three steps:
   1 Find a model, 2 Check it fits here, 3 Download, then Load; with the Hugging Face field inline,
   the catalog's suggestions as one-click Downloads and the direct link below. A first visit with
-  nothing on the device opens on Models rather than on an empty Chat.
+  nothing on the device opens on the first-run setup instead ([First run](#first-run)).
 - **From Hugging Face: Find, Pick, Check, Download.** A model's name, or a repository id or its
   URL, in one field, and the steps shown as such, the current one marked (`docs/server-api.md`,
   "Models"). Find: a name searches the site and the repositories found are offered, the most
@@ -201,10 +263,51 @@ the same thing and a stage or role added later reaches them all unchanged.
 - **With nothing loaded**, the decisions the configuration carries from the last applied plan are
   shown, grouped the same way, so the screen is never empty after a plan has been made.
 
+## Skills
+
+What it is: the instructions the agent follows when a job calls for them ([agent.md](agent.md#skills)).
+One row per skill: its title, what it is for, where it comes from (Included, Yours, From a folder),
+and a switch. A person's own skill can be written (name in kebab-case, when to use it, the
+instructions), changed and deleted (asked twice); the others can be read. Empty, the screen says
+what a skill is for and offers New skill.
+
+## Tasks
+
+What it is: a prompt that runs on a schedule as a conversation ([agent.md](agent.md#tasks)). One
+row per task: its name, its folder and mode, its schedule in words ("Every weekday at 08:30",
+"Every 2 hours", "Once, 3 Nov 2026, 09:00"), when it runs next, when it last ran with its outcome
+and a way into that run's conversation, a switch to pause it, Run now, Edit and Delete. The editor:
+name, what to do, when (Once with a date and time; Repeat every so many minutes, hours or days;
+Every day at a time; Some days, picked, at a time), the folder, the mode (Read only by default, and
+a line on what each mode means with nobody there to approve) and the model. The schedule is said
+back in words as it is set, and a schedule that cannot run says what is missing. Runs update the
+list live (`task` events).
+
+## Connect apps
+
+What it is: the coding agents and apps the server can serve, with the exact settings for this
+server ([agent.md](agent.md#connecting-other-apps)). One card per client: how to connect it, the
+settings file when there is one, the snippet with Copy, and, where the server may write the file,
+Write settings, asked once, then the file written and the backup kept beside it.
+
 ## Settings
 
-What it is: every engine tunable, rendered from the parameter table, and the few settings that are
-the UI's own.
+What it is: every engine tunable, rendered from the parameter table, and the settings that are the
+UI's own. Four sections, each a tab (`#/settings/<section>`):
+
+- **General.** Appearance: the theme (system, light, dark), the language (the system's, or one
+  picked), the text size (90 to 125%); all kept on the device. Inside the desktop app, the app's own
+  preferences through its bridge ([desktop-app.md](desktop-app.md)): keep running in the tray when
+  the window closes, notifications, the interface size, and the port (a new one restarts the
+  engine).
+- **Providers.** The saved online chat services ([agent.md](agent.md#providers)): name, address,
+  model names, whether a key is saved. Add, edit and remove (asked once). The key field is
+  write-only: it is never filled from the server, and left empty it keeps the saved key.
+- **Graphics and updates.** The graphics backends this engine registered, the packs the release
+  offers that apply to this machine (Install, with progress, then a restart: by the app, or by the
+  person in a browser) and the others folded; and Check for updates, which reads the release feed
+  only when pressed and, in the app, downloads the checked installer and installs it.
+- **Engine.** The parameter table, below. A link to one parameter (`#/settings/<key>`) opens it here.
 
 - **From the table** (`GET /api/params`): one card per group, in the table's order
   (`group_order`), titled with `group_label` and its one line of `group_help`. Each row has its
@@ -234,13 +337,17 @@ the UI's own.
   with Reload.
 - **A configuration that does not validate** is kept (a form mid-edit is often briefly invalid),
   shown with the server's reason, and a load is refused until it does.
-- **The UI's own**: on the phone, Serve on the network with the address on the local network and the key shown and copyable, Metrics
-  CSV, Stop/Start engine; on the desktop, nothing yet (the key and the address are launch
-  options). Never an engine parameter.
+- **The UI's own** (besides General): on the phone, Serve on the network with the address on the
+  local network and the key shown and copyable, Metrics CSV, Stop/Start engine. Never an engine
+  parameter.
 
 ## Metrics
 
-What it is: what the engine measured about its own work, live and recorded.
+What it is: what the engine measured about its own work, live and recorded. A calm monitor: four
+figures with their recent history (answer speed, disk reads, memory in use against what is free,
+how often what a token needed was already in memory, with the cache's size), where a token's time
+goes as one bar, then the last answer's account. With no model loaded it says so and leads to
+Models; a model loaded without streaming says which figures it cannot have.
 
 - **The live card.** For the current or last generation: the rate (the last token's while
   generating, the run's average after), and each token's wall time split into the four terms the

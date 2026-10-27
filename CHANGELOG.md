@@ -4,6 +4,46 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **The agent in the web UI** (`docs/screens.md`). A sidebar with the server's conversations by
+  folder and by date, the loaded model and every screen, folding to a rail and turning into a drawer
+  on a phone. Conversations are drawn from the server's items and follow its `item`, `delta` and
+  `conversation` events: tool calls with plain titles and states, consecutive calls summarised in a
+  line ("Read 3 files, edited 2 files · +14 −3") and expandable, edits as diffs, approval cards
+  that say nothing has happened yet, helper rows and notices; a past question can be edited and
+  sent again. The composer picks the folder (the app's folder dialog, or a typed path), the mode
+  (Ask first, Read only, Full access with a warning), the model (the local one or a saved provider)
+  and reasoning. A resizable preview pane shows a file the agent wrote: a page or a drawing runs in
+  a sandboxed frame, Markdown is rendered, code highlighted.
+- **Skills, Tasks and Connect apps screens**, and a first-run setup: what this computer has in
+  plain words, the graphics pack that applies, the catalog's model that suits its memory, its
+  download, then a conversation. Settings gains Appearance (theme, language, text size), the desktop
+  app's own preferences, Providers (the key is write-only), graphics backend packs with Install,
+  and Check for updates.
+- **English and Italian**, from one dictionary each, following the browser with a choice in
+  Settings; a test fails when a language misses a key or a placeholder.
+- **Desktop notifications** through the app's bridge when an approval waits or a run ends while
+  the window is in the background.
+- **A mock server for the web UI** (`ui/mock/server.ts`, `npm run dev:mock`): every route the UI
+  calls, with made-up data and a short agent run on each message, to work on the UI with no engine.
+
+### Changed
+- **A new visual language** (`docs/design.md`): slate surfaces with one cyan accent, light and dark
+  following the system or the person's choice, Inter for words and JetBrains Mono for code (both SIL
+  OFL, bundled), 8 px corners, 1 px lines, soft shadows, tabular digits for live figures, a visible
+  focus ring and reduced motion honoured. Every token is listed with its hex for both themes, and a
+  test checks every text pair against WCAG AA. The pixel logo stays as it is. Models, Plan,
+  Settings and Metrics are restyled with loading placeholders and empty states; Metrics is a calm
+  monitor of speed, disk reads, memory and the cache with their recent history.
+- **Conversations live on the server.** The web UI no longer keeps them in the browser: those it
+  kept are moved to the server once, then removed from the browser.
+- **The preview of a workspace file has a policy of its own** (`docs/server-api.md`, "Security
+  model"): `GET /api/conversations/<id>/file` answers with a sandboxing Content-Security-Policy that
+  lets its own script run in an opaque origin and reach nothing, framed only by the UI; the UI's
+  policy gains `frame-src 'self' blob:` for that frame.
+
 ## [0.38.0] - 2026-10-27
 
 ### Added
