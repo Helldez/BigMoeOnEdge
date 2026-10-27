@@ -1,3 +1,6 @@
 [submodule "third_party/llama.cpp"]
 	path = third_party/llama.cpp
 	url = https://github.com/Helldez/llama.cpp.git
+[submodule "third_party/webview"]
+	path = third_party/webview
+	url = https://github.com/webview/webview
