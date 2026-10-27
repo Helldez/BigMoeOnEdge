@@ -113,10 +113,64 @@ is affected, and it fails with a clear runtime error instead of silently falling
 server's default for overlap and the `overlap_available` it reports are read from the backend
 that loaded, not from a build flag.
 
-**Sunset condition.** This fork exists *solely* for this one hook. The moment upstream
-ships an equivalent per-expert readiness/residency callback, the branch is dropped and the
-submodule bumps straight back to `ggml-org/llama.cpp`. It is a tide-me-over until the wait
-point is public, not a divergence we intend to maintain.
+**Sunset condition.** The fork exists for this hook and the accessor of section 4. The moment
+upstream ships an equivalent per-expert readiness/residency callback, and a way to read the device
+cache's slots, the branch is dropped and the submodule bumps straight back to `ggml-org/llama.cpp`.
+It is a tide-me-over until the wait point is public, not a divergence we intend to maintain.
+
+## 4. The device cache's slot map (fork extension, experimental)
+
+llama.cpp's device-side expert cache (`moe_cache_size`, `src/llama-moe-cache.cpp`) keeps a slot map
+per layer in host memory: the slot each expert holds in the device's bank, `-1` for an expert not
+there. When the scheduler copies the map to the device, the cache's copy callback reads the batch's
+selection, plans (`moe_cache_slru::plan`) and uploads each selected expert it does not hold from the
+host tensor. The map is not public, and the graph only shows the device's copy of it, so the
+streamer used to make every routed expert resident before that upload, including the ones the device
+already held. The host cache then duplicated the device's.
+
+**What it is.** One accessor, the second commit on the fork branch (`bmoe/moe-cache-slots`, draft
+Helldez/llama.cpp#1):
+
+```c
+// llama.h
+#define LLAMA_HAS_MOE_CACHE_SLOTS 1
+const int32_t * llama_moe_cache_slots(struct llama_context * ctx, int32_t il,
+                                      int64_t n_tokens, int64_t n_expert_used);
+```
+
+It returns the live host slot map of layer `il`, or null when a batch of that shape does not read the
+layer's experts from the cache. The conditions are the graph's own, as `build_moe_cache_slots` applies
+them: the layer is cached, the batch is at most 32 tokens and fits the slots, and the device supports
+the lookup. The macro is what a build against stock upstream lacks. There the streamer loads every
+routed expert as before, which is correct and only duplicates the device's copy.
+
+**How the engine uses it.** `RouterHook::load_routed` asks for the map at each layer's load (the
+`ffn_moe_topk` callback, or the terminal weight node when the drop policy defers the load) and hands
+`load_layer` only the routed experts whose slot is `-1`. `Session` installs the target context's map
+when it arms the device cache. The MTP draft shares the hook but has no cache of its own. It runs only
+the nextn block, which the target's graph never runs, so the target's map holds no slot there. The run
+summary's `experts_on_device` counts the routed slots served this way. Gate G25d requires some, and
+the run's bytes to stay the resident placement's.
+
+**Why it is correct.** The map is read after the layer's selection and before the copy callback
+plans that layer: the lookup split of layer `il` is the next one to copy a slot map, so no other
+plan runs in between. In that plan, every selected expert is marked `seen` before any victim is
+chosen. Hits are only promoted (`touch`, `move`), which never changes the map. `victim(il)` never
+returns a slot of the same layer holding a `seen` expert, and aborts rather than do so. A selected
+expert that has a slot at the load therefore keeps it through its layer's uploads, and its host
+bytes are never read for that batch. A later layer's plan can evict it, which is why the map is
+read per layer, at the load, and never kept: a slot read for one layer says nothing about another
+layer, or about the next token. The late load in `close_drop_layer` runs after the plan, so it
+loads everything.
+
+**Cost to a bump.** 51 added lines in five files: `llama.h`, `llama-context.{h,cpp}` and
+`llama-moe-cache.{h,cpp}`. The hook of section 3 touches ggml's CPU backend, which changed 14 times
+upstream in the three months to 2026-10-27. This accessor touches `llama-context.cpp`, which changed
+53 times in those three months, and the MoE cache, added upstream on 2026-10-07 and changed 4 times
+in its first three weeks. A cherry-pick onto the upstream master of 2026-10-27 conflicted once:
+upstream's 2026-10-26 commit had changed the cache's constructor next to the accessor's lines, and
+the conflict resolved mechanically. The hook commit applied cleanly onto the same master. The
+accessor is small, but it sits in code upstream is still shaping, so expect a conflict on most bumps.
 
 ## The chat glue: llama.cpp `common` (not the streaming seam)
 
@@ -294,11 +348,11 @@ except where noted:
 
 ## Upgrading llama.cpp
 
-Because the submodule pins the `bmoe/expert-ready-hook` fork branch (section 3), a bump
-rebases that 1-commit branch onto the new upstream tag, re-pushes it, and re-pins:
+Because the submodule pins a fork branch (sections 3 and 4), a bump rebases its commits (the hook,
+then the slot-map accessor) onto the new upstream tag, re-pushes it, and re-pins:
 
 ```bash
-# in a Helldez/llama.cpp checkout: rebase the single hook commit onto the new tag
+# in a Helldez/llama.cpp checkout: rebase the fork's commits onto the new tag
 git fetch upstream && git checkout bmoe/expert-ready-hook
 git rebase <newer-upstream-tag> && git push --force-with-lease origin bmoe/expert-ready-hook
 
@@ -321,9 +375,9 @@ instead of silently corrupting output. Each expert layout has a gate to keep gre
 If a future release moves the two hooks (a stable expert-residency API, say) upstream,
 this seam shrinks further or disappears — `core/` does not change.
 
-Pinned submodule at the time of writing: `Helldez/llama.cpp` branch
-`bmoe/expert-ready-hook-2210-dl`, commit `ad98071`: the single expert-ready-hook commit
-(section 3), in the variant that also answers the CPU registry's `get_proc_address` so a build that
+Pinned submodule at the time of writing: `Helldez/llama.cpp` branch `bmoe/moe-cache-slots`,
+commit `a09c1dd`: the slot-map accessor (section 4) on top of branch
+`bmoe/expert-ready-hook-2210-dl`, commit `ad98071`, the expert-ready-hook commit (section 3) in the variant that also answers the CPU registry's `get_proc_address` so a build that
 loads the CPU backend as a module reaches it, on top of upstream `ggml-org/llama.cpp` master
 `d88040c` of 2026-10-22 (95 commits past the previous base, `5aeac37` of 2026-10-18). On this base upstream's CPU `mul_mat_id` has a tiled path that reads an expert
 before the classic loop does, so the hook fires ahead of it; G4 is what proves it still gates

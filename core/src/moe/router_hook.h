@@ -249,6 +249,21 @@ public:
     void count_device_nodes(bool on) { count_device_nodes_ = on; }
     long long device_nodes() const { return device_nodes_; }
 
+    // What a device-side expert cache holds (llama.cpp's MoE cache, read through the fork's
+    // llama_moe_cache_slots): for a layer whose batch the cache serves, one slot per expert, -1 for
+    // an expert not on the device; null when the batch does not read the cache. An expert the batch
+    // routes that has a slot when its layer is loaded keeps it through that layer's upload (the
+    // cache never evicts an expert its own batch selects), so its host slice is never read and the
+    // streamer leaves it out: the RAM cache then holds the experts the device does not. Null `fn`
+    // (the default) loads every routed expert.
+    using DeviceSlotsFn = const int32_t * (*) (void * ud, int il, int n_tokens, int n_expert_used);
+    void set_device_slots(DeviceSlotsFn fn, void * ud) {
+        dev_slots_fn_ = fn;
+        dev_slots_ud_ = ud;
+    }
+    // Routed slots served from the device's cache without a host read, cumulative.
+    long long experts_on_device() const { return experts_on_device_; }
+
     long long experts_routed() const { return experts_routed_; }
     long long experts_dropped() const { return experts_dropped_; }
     // Substitution's own ledger. Reranked counts every slot the policy examined (its denominator —
@@ -330,6 +345,8 @@ private:
     void serve_rows(ggml_tensor * t);                           // row-gathered tables, before a node
     void on_topk(ggml_tensor * t, int il);                      // a routing node, ids materialized
     void record_topk(ggml_tensor * t, int il);                  // the same node, recorded only: no streamer
+    // load_layer, minus the experts the device's cache holds
+    void load_routed(int il, const std::vector<int32_t> & ids, int nu, int nt);
     // Whether the routing record still wants routing nodes: armed, and not yet full.
     bool recording() const { return rec_max_ > 0 && rec_.decode_tokens < (uint32_t) rec_max_; }
 
@@ -561,6 +578,10 @@ private:
     bool drop_prefill_ = false;
     int batch_phase_ = 1; // 0 prefill, 1 decode
     long long experts_routed_ = 0, experts_dropped_ = 0;
+    DeviceSlotsFn dev_slots_fn_ = nullptr;
+    void * dev_slots_ud_ = nullptr;
+    std::vector<int32_t> off_device_; // the routed ids the device's cache does not hold
+    long long experts_on_device_ = 0;
     bool count_device_nodes_ = false;
     long long device_nodes_ = 0;
 

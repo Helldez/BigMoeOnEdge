@@ -237,6 +237,10 @@ struct RunSummary {
     // on the cache.
     long long experts_reranked = 0;
     long long experts_substituted = 0;
+    // Routed slots the device-side expert cache already held during generation (--device-cache-mb
+    // on a llama.cpp that reports its slots): computed on the device from its own copy, so the
+    // streamer neither read nor kept them. Zero without a device cache.
+    long long experts_on_device = 0;
 
     // Temporal prefetch (zero when --prefetch is off): speculative bytes read during generation,
     // experts successfully prefetched, and how many of those a later routing actually used.

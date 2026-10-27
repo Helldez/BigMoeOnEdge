@@ -61,6 +61,16 @@ namespace {
 using detail::batch_fill;
 using detail::PrefillTally;
 
+#ifdef LLAMA_HAS_MOE_CACHE_SLOTS
+// The target context's device cache, asked for whichever context is decoding: the hook is shared
+// with the MTP draft, which has no cache of its own. That is safe because the two run disjoint
+// layers: the draft runs only the nextn block, which the target's graph never runs, so the target's
+// cache never fills a slot there and every expert of it reads as not on the device.
+const int32_t * device_cache_slots(void * ctx, int il, int n_tokens, int n_expert_used) {
+    return llama_moe_cache_slots(static_cast<llama_context *>(ctx), il, n_tokens, n_expert_used);
+}
+#endif
+
 // The speculative driver reads llama.cpp's own mirror of a batch's entries (common_batch), not the
 // llama_batch the engine decodes. It only reads entries (token, position, sequence, output), so a
 // mirror without a context is enough: nothing here asks it to render a batch for a decode.
@@ -1177,6 +1187,17 @@ bool Session::Impl::create_contexts(Opening & o) {
     }
     if (!c) return o.fail("failed to create context"); // llama.cpp's own log says why
     ctx.reset(c);
+    // The device cache's own record of what it holds, so the streamer leaves those experts to it
+    // (RouterHook::set_device_slots). Only on a llama.cpp that exposes it: on another, the streamer
+    // keeps every routed expert in RAM, which is correct and only duplicates the device's copy.
+#ifdef LLAMA_HAS_MOE_CACHE_SLOTS
+    if (hook) {
+        if (device_cache_armed && cfg.moe.enabled)
+            hook->set_device_slots(&device_cache_slots, c);
+        else
+            hook->set_device_slots(nullptr, nullptr);
+    }
+#endif
     // Decode and prefill get their own counts. They are different workloads: prefill is compute-bound
     // and scales with cores, a streamed decode waits on flash. 0 means "the same", which is what
     // every caller got before this existed.
@@ -2250,7 +2271,7 @@ struct Session::Impl::Turn {
     GenTally tally;
     long long prev_spec_bytes = 0, prev_spec_experts = 0, prev_spec_useful = 0;
     long long prev_cache_lookups = 0, prev_cache_hits = 0; // at the start of the decode
-    long long prev_routed = 0, prev_dropped = 0, prev_reranked = 0, prev_substituted = 0;
+    long long prev_routed = 0, prev_dropped = 0, prev_reranked = 0, prev_substituted = 0, prev_on_device = 0;
     long long prev_ra_issue_ns = 0, prev_ra_wd_ns = 0;
     clock_t_::time_point loop_mark;
     double loop_overhead_s = 0.0;
@@ -2644,6 +2665,7 @@ struct Session::Impl::Turn {
         prev_dropped = im.hook->experts_dropped();
         prev_reranked = im.hook->experts_reranked();
         prev_substituted = im.hook->experts_substituted();
+        prev_on_device = im.hook->experts_on_device();
         // Per-token cursors for the hook's own eval-thread meters (route-ahead issue + watchdog): the
         // hook accumulates for the session, the rows want this token's share.
         prev_ra_issue_ns = im.hook->route_ahead_issue_ns();
@@ -3106,6 +3128,7 @@ struct Session::Impl::Turn {
         s.experts_dropped = im.hook->experts_dropped() - prev_dropped;
         s.experts_reranked = im.hook->experts_reranked() - prev_reranked;
         s.experts_substituted = im.hook->experts_substituted() - prev_substituted;
+        s.experts_on_device = im.hook->experts_on_device() - prev_on_device;
         // Per-turn deltas, like every other generation figure here: a warm session's counters are
         // cumulative, and an acceptance rate averaged over earlier prompts would describe none of them.
         s.mtp_drafted = im.mtp_drafted - mtp0_drafted;

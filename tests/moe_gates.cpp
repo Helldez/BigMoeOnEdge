@@ -72,7 +72,8 @@
 //       inside a window (b), and the trial must have reached its verdicts.
 //   G25 the device tier: llama.cpp's device-side expert cache over resident experts (a), over
 //       streamed experts (b) and streamed under n-gram speculation (c), each == the resident
-//       placement.
+//       placement; on a llama.cpp that reports the cache's slots, the streamer leaves the experts
+//       the cache holds out of its reads, and the run still matches (d).
 //   G26 the real-layer probe fills every device's facts and agrees with the host on the layer's
 //       matmuls; it is timed, not gated, on the tiny models.
 //
@@ -98,6 +99,7 @@
 #include "gguf_offsets.h"
 
 #include "ggml-backend.h"
+#include "llama.h"
 
 #include <chrono>
 #include <cmath>
@@ -1668,6 +1670,23 @@ int main(int argc, char ** argv) {
                 } else {
                     fails += check("G25a device cache over resident experts == resident experts", s_placed, s_cached);
                     fails += check("G25b device cache over streamed experts == resident experts", s_placed, s_cached_s);
+#ifdef LLAMA_HAS_MOE_CACHE_SLOTS
+                    // d) the streamer leaves the experts the cache holds to it: identity alone would pass if it
+                    // still read them all, so the run must also have served some routed slots from the device.
+                    const RunResult r_cs = run(cached_s);
+                    if (!r_cs || r_cs.summary.experts_on_device <= 0) {
+                        std::printf("[FAIL] G25d the streamer read every routed expert although the device cache held "
+                                    "some (%lld on the device)\n",
+                                    r_cs ? r_cs.summary.experts_on_device : -1LL);
+                        ++fails;
+                    } else {
+                        std::printf("[PASS] G25d %lld routed slots served from the device cache, not read by the "
+                                    "streamer\n",
+                                    r_cs.summary.experts_on_device);
+                        fails += check("G25d device cache, its experts left out of the stream == resident experts",
+                                       s_placed, r_cs.generated_text);
+                    }
+#endif
                     // c) with speculation: a verify batch is a few positions wide, served by the same
                     // slots, and greedy drafting accepts only what the target would have produced.
                     RunConfig cached_spec = cached_s;

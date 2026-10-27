@@ -102,7 +102,10 @@ inside the CPU's expert matmul, which no longer runs) and with a prefill device 
 layers); speculation works beside it, with the draft's own head served from the host. Gates G25a-c
 (`tests/moe_gates.cpp`) prove the cached runs give the resident placement's bytes, the experts
 resident, streamed, and streamed under n-gram speculation, on a device with memory of its own (the
-loopback RPC device).
+loopback RPC device). Where llama.cpp reports the cache's slots (the fork's accessor,
+[seam.md](seam.md#4-the-device-caches-slot-map-fork-extension-experimental)), the streamer leaves out
+the routed experts the device holds, so the host's cache and the device's hold different experts. G25d
+proves it skipped some and still gave those bytes.
 
 **Planned.** `--auto` arms it where a device has memory of its own and the fitter has given whole
 layers' experts some of it: the same bytes become a cache of the experts used most, from every
@@ -166,11 +169,13 @@ The cost is the cache's, not the streamer's: without the streamer it holds at 19
 88% device hits, about 33 ms a token over the resident run, or 0.8 ms for each of the 40 layers.
 The cache reads every layer's selection on the host before it can upload, which synchronizes the
 device once per layer; on this machine that is the whole gap. Uploads are cheap by comparison
-(409 MB a token at 13.4 tok/s, 62 MB at 18.9). Two further costs are known. The streamer still reads
-every routed expert from flash, including ones the device already holds, because the live slot map
-is not public: the graph shows only the device's copy of it, which a later layer's evictions can
-make stale, and skipping a read on its word would upload bytes nobody wrote. And the host cache and
-the device cache hold many of the same experts. The teacher-forced perplexity of the three GPU paths
+(409 MB a token at 13.4 tok/s, 62 MB at 18.9). These runs had a further cost. The streamer read every
+routed expert from flash, including the ones the device already held, because the live slot map was
+not public: the graph shows only the device's copy of it, which a later layer's evictions can make
+stale, and skipping a read on its word would upload bytes nobody wrote. The host cache and the device
+cache therefore held many of the same experts. The fork's slot-map accessor removes both: the map is
+read at the one point where a slot is guaranteed to hold
+([seam.md](seam.md#4-the-device-caches-slot-map-fork-extension-experimental)). The teacher-forced perplexity of the three GPU paths
 agrees to 0.07% (13.3613 resident, 13.3520 cached, 13.3599 streamed; the cores read 13.3427 resident
 and streamed alike), the spread of a different reduction order: the GPU paths are not byte-identical
 to each other the way the host's streamed and resident runs are.
