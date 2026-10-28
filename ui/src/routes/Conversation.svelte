@@ -11,7 +11,7 @@
   import { blocks, latestFile } from '../lib/items';
   import { agent } from '../stores/agent.svelte';
   import { preview } from '../stores/preview.svelte';
-  import { t, tp } from '../stores/prefs.svelte';
+  import { t, tp } from '../lib/text';
   import { server } from '../stores/server.svelte';
 
   let log: HTMLElement | undefined = $state();

@@ -84,7 +84,7 @@
     setTimeout(() => (diag = diag === 'ok' ? 'idle' : diag), 2000);
   }
   const PLANNING_DOC = 'https://github.com/Helldez/BigMoeOnEdge/blob/main/docs/hardware-planning.md';
-  import { t } from '../stores/prefs.svelte';
+  import { t } from '../lib/text';
 </script>
 
 <div class="page-col">

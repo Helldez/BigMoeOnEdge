@@ -12,7 +12,7 @@
   import { describeSchedule, scheduleProblem, WEEK_ORDER, weekdayNames } from '../lib/schedule';
   import { relativeTime } from '../lib/when';
   import { agent } from '../stores/agent.svelte';
-  import { prefs, t } from '../stores/prefs.svelte';
+  import { LOCALE, t } from '../lib/text';
   import { server } from '../stores/server.svelte';
 
   let tasks = $state<Task[] | null>(null);
@@ -164,7 +164,7 @@
     days = days.includes(d) ? days.filter((x) => x !== d) : [...days, d];
   }
 
-  let dayNames = $derived(weekdayNames(prefs.lang, 'short'));
+  let dayNames = $derived(weekdayNames(LOCALE, 'short'));
   let wsName = (id: string | null) => agent.workspaces.find((w) => w.id === id)?.name ?? '';
   let routes = $derived([
     { value: 'local', label: t('route.local') },
@@ -201,11 +201,11 @@
               {#if task.workspace && wsName(task.workspace)}<span class="badge"><Icon name="folder" size={12} />{wsName(task.workspace)}</span>{/if}
               <span class="badge {task.mode === 'full' ? 'warn' : ''}">{t(`mode.${task.mode}`)}</span>
             </div>
-            <p class="sched">{describeSchedule(task.schedule, t, prefs.lang)}</p>
+            <p class="sched">{describeSchedule(task.schedule, t, LOCALE)}</p>
             <p class="muted small figure">
-              {#if task.enabled && task.next_run}{t('tasks.next', { when: relativeTime(task.next_run, now, prefs.lang) })}{:else if !task.enabled}{t('tasks.paused')}{/if}
+              {#if task.enabled && task.next_run}{t('tasks.next', { when: relativeTime(task.next_run, now, LOCALE) })}{:else if !task.enabled}{t('tasks.paused')}{/if}
               {#if task.last_run?.at}
-                · {t('tasks.last', { when: relativeTime(task.last_run.at, now, prefs.lang) })}{task.last_run.outcome ? ` (${task.last_run.outcome})` : ''}
+                · {t('tasks.last', { when: relativeTime(task.last_run.at, now, LOCALE) })}{task.last_run.outcome ? ` (${task.last_run.outcome})` : ''}
                 {#if task.last_run.conversation}<a href="#/chat/{encodeURIComponent(task.last_run.conversation)}">{t('tasks.openRun')}</a>{/if}
               {/if}
             </p>
@@ -279,7 +279,7 @@
         <input id="tk-at" type="time" bind:value={at} class="time" />
       </div>
     {/if}
-    <p class="summary" class:err-text={problem !== ''}>{problem ? t(problem) : describeSchedule(schedule, t, prefs.lang)}</p>
+    <p class="summary" class:err-text={problem !== ''}>{problem ? t(problem) : describeSchedule(schedule, t, LOCALE)}</p>
     <div class="grid">
       <div class="field-row">
         <label for="tk-ws">{t('workspace.label')}</label>

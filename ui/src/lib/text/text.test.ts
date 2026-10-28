@@ -1,31 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { MODES } from '../agent';
-import { LANGUAGES, pickLanguage, plural, translate } from './index';
+import { t, tp } from './index';
 import { en } from './en';
 
 const sources = import.meta.glob('../../**/*.{svelte,ts}', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
-const placeholders = (s: string) => [...s.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort();
 
-describe('i18n', () => {
-  const keys = Object.keys(en).sort();
-
-  for (const [lang, dict] of Object.entries(LANGUAGES)) {
-    it(`${lang} has every key, and only those`, () => {
-      expect(Object.keys(dict).sort()).toEqual(keys);
-    });
-    it(`${lang} keeps every placeholder and leaves nothing empty`, () => {
-      for (const k of keys) {
-        const v = (dict as Record<string, string>)[k];
-        expect(v.trim(), k).not.toBe('');
-        expect(placeholders(v), k).toEqual(placeholders((en as Record<string, string>)[k]));
-      }
-    });
-  }
+describe('text', () => {
+  it('leaves no word empty', () => {
+    for (const [k, v] of Object.entries(en)) expect(v.trim(), k).not.toBe('');
+  });
 
   it('has a word for every key the code names', () => {
     const missing = new Set<string>();
     for (const [file, text] of Object.entries(sources)) {
-      if (file.includes('/i18n/') || file.endsWith('.test.ts')) continue;
+      if (file.includes('/text/') || file.endsWith('.test.ts')) continue;
       for (const m of text.matchAll(/\bt\('([a-zA-Z0-9_.]+)'/g)) if (!(m[1] in en)) missing.add(`${m[1]} (${file})`);
       for (const m of text.matchAll(/\btp\('([a-zA-Z0-9_.]+)'/g))
         for (const f of ['one', 'other']) if (!(`${m[1]}.${f}` in en)) missing.add(`${m[1]}.${f} (${file})`);
@@ -53,16 +41,10 @@ describe('i18n', () => {
     expect(need.filter((k) => !(k in en))).toEqual([]);
   });
 
-  it('picks the browser language when there is one, English otherwise', () => {
-    expect(pickLanguage(['it-IT', 'en'])).toBe('it');
-    expect(pickLanguage(['de-DE', 'en-GB'])).toBe('en');
-    expect(pickLanguage([])).toBe('en');
-  });
-
   it('fills placeholders and picks plurals', () => {
-    expect(translate('en', 'models.loadTime', { s: '1.5' })).toBe('loaded in 1.5 s');
-    expect(plural('it', 'providers.models', 1)).toBe('1 modello');
-    expect(plural('it', 'providers.models', 3)).toBe('3 modelli');
-    expect(translate('en', 'no.such.key')).toBe('no.such.key');
+    expect(t('models.loadTime', { s: '1.5' })).toBe('loaded in 1.5 s');
+    expect(tp('providers.models', 1)).toBe('1 model');
+    expect(tp('providers.models', 3)).toBe('3 models');
+    expect(t('no.such.key')).toBe('no.such.key');
   });
 });

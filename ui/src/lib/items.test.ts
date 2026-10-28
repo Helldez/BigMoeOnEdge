@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ConversationSummary, Item, ToolItem } from './agent';
-import { translate } from './i18n';
+import { t } from './text';
 import {
   applyDelta,
   blocks,
@@ -16,7 +16,6 @@ import {
   waitingApproval,
 } from './items';
 
-const t = (k: string, v?: Record<string, string | number>) => translate('en', k, v);
 const tool = (id: string, name: string, extra: Partial<ToolItem> = {}): ToolItem => ({ id, kind: 'tool', tool: name, title: name, state: 'done', ...extra });
 
 describe('the item reducer', () => {

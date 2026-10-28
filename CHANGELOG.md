@@ -45,11 +45,11 @@ Semantic Versioning.
   a sandboxed frame, Markdown is rendered, code highlighted.
 - **Skills, Tasks and Connect apps screens**, and a first-run setup: what this computer has in
   plain words, the graphics pack that applies, the catalog's model that suits its memory, its
-  download, then a conversation. Settings gains Appearance (theme, language, text size), the desktop
+  download, then a conversation. Settings gains Appearance (theme, text size), the desktop
   app's own preferences, Providers (the key is write-only), graphics backend packs with Install,
   and Check for updates.
-- **English and Italian**, from one dictionary each, following the browser with a choice in
-  Settings; a test fails when a language misses a key or a placeholder.
+- **Every word in one dictionary** (`ui/src/lib/text`): components name a key, never the text,
+  and a test fails when the code names a key the dictionary lacks.
 - **Desktop notifications** through the app's bridge when an approval waits or a run ends while
   the window is in the background.
 - **A mock server for the web UI** (`ui/mock/server.ts`, `npm run dev:mock`): every route the UI

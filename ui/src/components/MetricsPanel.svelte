@@ -6,7 +6,7 @@
   import Sparkline from './Sparkline.svelte';
   import { formatMib, formatNum, formatPct } from '../lib/format';
   import { server } from '../stores/server.svelte';
-  import { t } from '../stores/prefs.svelte';
+  import { t } from '../lib/text';
 
   let m = $derived(server.metrics);
   let last = $derived(m.last);

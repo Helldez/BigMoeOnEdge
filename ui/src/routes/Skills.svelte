@@ -7,7 +7,7 @@
   import { ApiError } from '../lib/api';
   import type { Skill } from '../lib/agent';
   import { agentApi } from '../lib/agentApi';
-  import { t } from '../stores/prefs.svelte';
+  import { t } from '../lib/text';
 
   let skills = $state<Skill[] | null>(null);
   let error = $state('');

@@ -6,7 +6,7 @@
   import { contextAdvice, dismissContextWarning, dismissedContextWarning, warningText } from '../lib/context';
   import { href } from '../lib/route';
   import { server } from '../stores/server.svelte';
-  import { t } from '../stores/prefs.svelte';
+  import { t } from '../lib/text';
 
   let info = $derived(server.info);
   let ctx = $derived(contextAdvice(info?.model, server.params));

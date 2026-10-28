@@ -3,7 +3,7 @@
   // back where it was. The caller owns `open`.
   import type { Snippet } from 'svelte';
   import Icon from './Icon.svelte';
-  import { t } from '../stores/prefs.svelte';
+  import { t } from '../lib/text';
 
   let {
     open = $bindable(false),

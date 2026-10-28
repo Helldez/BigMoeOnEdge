@@ -2,7 +2,7 @@
   // The last answer's account, from its `done` event, in plain labels.
   import { formatMib, formatNum } from '../lib/format';
   import type { DoneSummary } from '../lib/types';
-  import { t } from '../stores/prefs.svelte';
+  import { t } from '../lib/text';
 
   let { done }: { done: DoneSummary } = $props();
   const ms = (s: number) => formatNum(s * 1000, 1);

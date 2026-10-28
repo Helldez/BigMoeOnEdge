@@ -8,7 +8,7 @@
   import { router } from '../../stores/router.svelte';
   import { server } from '../../stores/server.svelte';
   import { settings } from '../../stores/settings.svelte';
-  import { t, tp } from '../../stores/prefs.svelte';
+  import { t, tp } from '../../lib/text';
 
   // What a level means, in a line under its fold: the four levels are the table's enum, the rows in
   // them are the server's.

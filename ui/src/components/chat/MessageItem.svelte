@@ -6,7 +6,7 @@
   import Markdown from './Markdown.svelte';
   import type { AssistantItem, NoticeItem, UserItem } from '../../lib/agent';
   import { agent } from '../../stores/agent.svelte';
-  import { t } from '../../stores/prefs.svelte';
+  import { t } from '../../lib/text';
 
   let { item, last = false }: { item: UserItem | AssistantItem | NoticeItem; last?: boolean } = $props();
 

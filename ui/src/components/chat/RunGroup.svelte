@@ -6,7 +6,7 @@
   import ToolCard from './ToolCard.svelte';
   import type { Item } from '../../lib/agent';
   import { runSummary, summaryText } from '../../lib/items';
-  import { t } from '../../stores/prefs.svelte';
+  import { t } from '../../lib/text';
 
   let { items, conversation }: { items: Item[]; conversation: string } = $props();
   let summary = $derived(runSummary(items));

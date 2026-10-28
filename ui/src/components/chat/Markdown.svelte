@@ -2,7 +2,7 @@
   // Model output as sanitised Markdown (lib/markdown), with a copy button on every code block. The
   // buttons are this UI's own, added after the sanitiser ran: the model's text can carry none.
   import { renderMarkdown } from '../../lib/markdown';
-  import { t } from '../../stores/prefs.svelte';
+  import { t } from '../../lib/text';
 
   let { text }: { text: string } = $props();
   let html = $derived(renderMarkdown(text));

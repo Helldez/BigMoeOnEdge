@@ -1,9 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { describeSchedule, scheduleProblem, weekdayNames } from './schedule';
-import { translate } from './i18n';
-
-const t = (k: string, v?: Record<string, string | number>) => translate('en', k, v);
-const it_ = (k: string, v?: Record<string, string | number>) => translate('it', k, v);
+import { t } from './text';
 
 describe('describeSchedule', () => {
   it('says an interval in its largest whole unit', () => {
@@ -28,11 +25,6 @@ describe('describeSchedule', () => {
     expect(s).toContain('2026');
   });
 
-  it('speaks Italian too', () => {
-    expect(describeSchedule({ kind: 'daily', at: '09:00' }, it_, 'it')).toBe('Ogni giorno alle 09:00');
-    expect(describeSchedule({ kind: 'interval', every_minutes: 15 }, it_, 'it')).toBe('Ogni 15 minuti');
-    expect(describeSchedule({ kind: 'weekly', at: '09:00', weekdays: [1, 3] }, it_, 'it')).toBe('Ogni lunedì e mercoledì alle 09:00');
-  });
 
   it('says what is missing rather than inventing a time', () => {
     expect(describeSchedule({ kind: 'once', at: '' }, t, 'en')).toBe('Once, date not set');

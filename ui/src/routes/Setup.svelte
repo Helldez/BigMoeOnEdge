@@ -12,7 +12,7 @@
   import { href } from '../lib/route';
   import type { CatalogEntry, ModelsResponse } from '../lib/types';
   import { agent } from '../stores/agent.svelte';
-  import { t } from '../stores/prefs.svelte';
+  import { t } from '../lib/text';
   import { server } from '../stores/server.svelte';
 
   let data = $state<ModelsResponse | null>(null);

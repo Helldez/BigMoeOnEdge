@@ -1,4 +1,5 @@
-// English: the key language. Every key the UI uses is here; i18n.test.ts checks the others match.
+// Every word the UI shows, in English. Components name a key, never the text (text.test.ts checks
+// that every key the code names is here).
 // Plain words for a person who is not an engineer: say what something does, never a bare term of
 // art, and say the next step after anything that went wrong.
 export const en = {
@@ -295,9 +296,6 @@ export const en = {
   'settings.theme.system': 'System',
   'settings.theme.light': 'Light',
   'settings.theme.dark': 'Dark',
-  'settings.language': 'Language',
-  'settings.language.help': 'The language of this interface. The model answers in the language you write to it.',
-  'settings.language.auto': 'Same as the browser',
   'settings.textSize': 'Text size',
   'settings.textSize.help': 'Makes every word on these screens larger or smaller.',
   'settings.app': 'App',

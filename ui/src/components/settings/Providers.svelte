@@ -7,7 +7,7 @@
   import type { Provider, ProviderDraft } from '../../lib/agent';
   import { agentApi } from '../../lib/agentApi';
   import { agent } from '../../stores/agent.svelte';
-  import { t, tp } from '../../stores/prefs.svelte';
+  import { t, tp } from '../../lib/text';
 
   let editing = $state<Provider | null>(null);
   let open = $state(false);

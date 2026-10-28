@@ -5,7 +5,7 @@
   import { downloadSummary } from '../lib/library';
   import { href } from '../lib/route';
   import { server } from '../stores/server.svelte';
-  import { t } from '../stores/prefs.svelte';
+  import { t } from '../lib/text';
 
   let { compact = false, onNavigate = () => {} }: { compact?: boolean; onNavigate?: () => void } = $props();
 

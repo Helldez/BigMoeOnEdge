@@ -9,7 +9,7 @@
   import Providers from '../components/settings/Providers.svelte';
   import Updates from '../components/settings/Updates.svelte';
   import { desktopState } from '../stores/desktop.svelte';
-  import { t } from '../stores/prefs.svelte';
+  import { t } from '../lib/text';
   import { router } from '../stores/router.svelte';
 
   const SECTIONS = ['general', 'providers', 'system', 'engine'] as const;

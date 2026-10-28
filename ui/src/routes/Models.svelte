@@ -160,7 +160,7 @@
     loaded: 'ok',
     incomplete: 'err',
   };
-  import { t } from '../stores/prefs.svelte';
+  import { t } from '../lib/text';
 </script>
 
 <div class="page-col">

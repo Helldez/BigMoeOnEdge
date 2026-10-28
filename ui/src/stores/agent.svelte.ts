@@ -23,7 +23,7 @@ import type { SseEvent } from '../lib/sse';
 import { turnMetrics } from '../lib/turnMetrics';
 import { api } from '../lib/api';
 import type { ChoiceScore } from '../lib/types';
-import { t } from './prefs.svelte';
+import { t } from '../lib/text';
 import { desktopState } from './desktop.svelte';
 import { server } from './server.svelte';
 

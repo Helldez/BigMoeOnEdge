@@ -20,7 +20,8 @@
   import { href } from './lib/route';
   import { agent } from './stores/agent.svelte';
   import { desktopState } from './stores/desktop.svelte';
-  import { prefs, PREVIEW_MAX, PREVIEW_MIN, t } from './stores/prefs.svelte';
+  import { prefs, PREVIEW_MAX, PREVIEW_MIN } from './stores/prefs.svelte';
+  import { t } from './lib/text';
   import { preview } from './stores/preview.svelte';
   import { router } from './stores/router.svelte';
   import { server } from './stores/server.svelte';

@@ -37,7 +37,7 @@ Other scripts:
 
 ```bash
 npm run check   # svelte-check (types and Svelte diagnostics)
-npm test        # vitest: src/lib, the palette's contrast, the dictionaries' completeness
+npm test        # vitest: src/lib, the palette's contrast, the dictionary's completeness
 npm run build   # production build
 ```
 
@@ -49,11 +49,11 @@ relative paths). The CMake build copies it beside `bmoe-server` as `ui/` (see
 so routes are hash based (`#/chat/<conversation>`, `#/models`, `#/plan`, `#/skills`, `#/tasks`,
 `#/connect`, `#/settings/<section or parameter>`, `#/metrics`, `#/setup`).
 
-## Words and languages
+## Words
 
-Every word is a key of `src/lib/i18n/en.ts` (English, the key language), translated in the other
-files there (`it.ts`). A test fails when a language misses a key, drops a placeholder, or the code
-names a key English does not have. The language follows the browser unless Settings picks one.
+Every word is a key of `src/lib/text/en.ts`, the UI's one English dictionary; components call
+`t('key')` (or `tp` for a count) from `src/lib/text`, never write the text. Dates and times are
+written in `LOCALE`, beside them. A test fails when the code names a key the dictionary lacks.
 
 ## Settings are schema driven
 

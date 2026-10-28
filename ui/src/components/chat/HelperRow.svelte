@@ -4,7 +4,7 @@
   import Icon from '../Icon.svelte';
   import { STATE_TONE } from './ToolCard.svelte';
   import type { HelperItem } from '../../lib/agent';
-  import { t } from '../../stores/prefs.svelte';
+  import { t } from '../../lib/text';
 
   let { item }: { item: HelperItem } = $props();
 </script>

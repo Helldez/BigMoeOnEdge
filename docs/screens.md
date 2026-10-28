@@ -18,8 +18,8 @@ appears in every UI with no UI change. The exceptions are the one the composer i
 **Words.** Every word on a screen is plain: what a thing does, never a bare term of art. A figure
 says what it measures ("Answer speed 12 tok/s"), with a tooltip, or a line under it on a phone,
 that explains the unit ("a token is a piece of a word"). Every error says what to do next. The UIs
-speak English and Italian, from one dictionary each, following the system's language with a choice
-in Settings; a word missing from a language fails the UI's tests.
+are in English; the web UI keeps its words in one dictionary, and a key the code names that the
+dictionary lacks fails its tests.
 
 ## Layout
 

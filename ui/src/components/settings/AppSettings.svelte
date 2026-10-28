@@ -1,7 +1,7 @@
 <script lang="ts">
   // The desktop app's own preferences (docs/desktop-app.md), shown only inside the app.
   import { desktopState } from '../../stores/desktop.svelte';
-  import { t } from '../../stores/prefs.svelte';
+  import { t } from '../../lib/text';
   import Segmented from './Segmented.svelte';
 
   const SCALES = [0.9, 1, 1.1, 1.25, 1.5];

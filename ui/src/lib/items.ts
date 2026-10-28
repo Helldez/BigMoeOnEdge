@@ -218,7 +218,7 @@ export function runSummary(items: readonly Item[]): RunSummary {
   return s;
 }
 
-/** A translator: a key and its values, to words (lib/i18n). */
+/** A translator: a key and its values, to words (lib/text). */
 export type Translate = (key: string, vars?: Record<string, string | number>) => string;
 
 /**

@@ -7,7 +7,7 @@
   import { ApiError } from '../lib/api';
   import type { ConnectClient, ConnectWritten } from '../lib/agent';
   import { agentApi } from '../lib/agentApi';
-  import { t } from '../stores/prefs.svelte';
+  import { t } from '../lib/text';
 
   let clients = $state<ConnectClient[] | null>(null);
   let error = $state('');

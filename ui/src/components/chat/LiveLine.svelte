@@ -3,7 +3,7 @@
   // is on Metrics. Each figure says what it is, with a tooltip for the words a person may not know.
   import { formatNum } from '../../lib/format';
   import { server } from '../../stores/server.svelte';
-  import { t } from '../../stores/prefs.svelte';
+  import { t } from '../../lib/text';
 
   let m = $derived(server.metrics);
   let last = $derived(m.last);

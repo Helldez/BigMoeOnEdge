@@ -12,7 +12,7 @@
   import { formatBytes } from '../../lib/format';
   import { readProgress, type Progress } from '../../lib/progressEvent';
   import { server } from '../../stores/server.svelte';
-  import { t } from '../../stores/prefs.svelte';
+  import { t } from '../../lib/text';
 
   let { compact = false }: { compact?: boolean } = $props();
 

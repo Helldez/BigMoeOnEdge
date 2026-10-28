@@ -1,7 +1,7 @@
 <script lang="ts">
   // The loaded session's `streaming`, as the server reports it. Before a load there is nothing to
   // say: whether a model streams is decided at load (a dense model, a plan that declines).
-  import { t } from '../stores/prefs.svelte';
+  import { t } from '../lib/text';
   let { streaming }: { streaming: boolean } = $props();
 </script>
 

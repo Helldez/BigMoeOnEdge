@@ -10,7 +10,7 @@
   import { desktop, isDesktop } from '../../lib/desktop';
   import { agent } from '../../stores/agent.svelte';
   import { server } from '../../stores/server.svelte';
-  import { t } from '../../stores/prefs.svelte';
+  import { t } from '../../lib/text';
 
   let text = $state('');
   let options = $state('');

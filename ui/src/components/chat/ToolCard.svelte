@@ -25,7 +25,7 @@
   import { diffStat } from '../../lib/items';
   import { agent } from '../../stores/agent.svelte';
   import { preview } from '../../stores/preview.svelte';
-  import { t } from '../../stores/prefs.svelte';
+  import { t } from '../../lib/text';
 
   let { item, conversation }: { item: ToolItem; conversation: string } = $props();
   let waiting = $derived(item.state === 'waiting');

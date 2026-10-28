@@ -11,7 +11,7 @@
   import { highlight } from '../lib/highlight';
   import { extOf, FRAMED, PREVIEW_TEXT_LIMIT, previewKind, type PreviewKind } from '../lib/preview';
   import { preview } from '../stores/preview.svelte';
-  import { t } from '../stores/prefs.svelte';
+  import { t } from '../lib/text';
 
   let kind = $state<PreviewKind>('text');
   let text = $state('');

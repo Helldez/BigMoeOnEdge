@@ -8,7 +8,8 @@
   import { groupConversations } from '../lib/items';
   import { href, type Route } from '../lib/route';
   import { agent } from '../stores/agent.svelte';
-  import { prefs, t } from '../stores/prefs.svelte';
+  import { prefs } from '../stores/prefs.svelte';
+  import { LOCALE, t } from '../lib/text';
   import { router } from '../stores/router.svelte';
 
   let { drawer = false, onNavigate = () => {} }: { drawer?: boolean; onNavigate?: () => void } = $props();
@@ -65,7 +66,7 @@
     if (Number.isNaN(ms)) return '';
     const d = new Date(ms);
     const sameDay = new Date(now).toDateString() === d.toDateString();
-    return new Intl.DateTimeFormat(prefs.lang, sameDay ? { hour: '2-digit', minute: '2-digit' } : { day: 'numeric', month: 'short' }).format(d);
+    return new Intl.DateTimeFormat(LOCALE, sameDay ? { hour: '2-digit', minute: '2-digit' } : { day: 'numeric', month: 'short' }).format(d);
   };
 </script>
 

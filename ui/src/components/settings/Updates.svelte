@@ -6,7 +6,7 @@
   import type { UpdateInfo } from '../../lib/agent';
   import { agentApi } from '../../lib/agentApi';
   import { desktop, isDesktop } from '../../lib/desktop';
-  import { t } from '../../stores/prefs.svelte';
+  import { t } from '../../lib/text';
 
   let info = $state<UpdateInfo | null>(null);
   let checking = $state(false);
