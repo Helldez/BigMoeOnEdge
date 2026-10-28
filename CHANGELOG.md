@@ -77,6 +77,10 @@ Semantic Versioning.
   active experts), 14 of 79. The rest stay flags of the command line; one the person set anyway is
   shown so it can be reset. The level filter, the per-level folds and the search are gone, and
   every card starts closed.
+- **The desktop app serves the network too**, the phones' card first in Settings > General: the
+  server listens on every address behind a key kept in `<data>/network-key` (this user only, New
+  key replaces it), the window's page sends it as well, and what reaches files, commands and keys
+  stays loopback-only. `platform::lan_addresses()` lists the addresses to show.
 - **Serve on the network is a card of its own**, first in a phone's Settings: its state and address
   in the closed header; the addresses to copy, the key hidden until shown with New key (on iOS too
   now), the base URL a client needs and a warning that the traffic is unencrypted.
@@ -115,6 +119,12 @@ Semantic Versioning.
   server and the web UI; the separate desktop archive remains for the NPU build only.
 
 ### Changed
+- **Engine messages name settings the way the reader sets them.** A refusal from `validate()` or a
+  model that will not load names a setting as a `{key}` placeholder from the parameter table
+  instead of a flag or a field (`n_ubatch=… exceeds n_ctx=…`, `--device-cache-mb`); one function,
+  `name_params()`, renders it, as flags in `bmoe-cli` and as the settings form's labels in
+  `bmoe-server` (config `error`, the load error, chat and decide failures, the plan's reasons). The messages say what
+  to change in plain words, and a test fails on any `validate()` message that names a flag or a field.
 - **A new visual language** (`docs/design.md`): slate surfaces with one cyan accent, light and dark
   following the system or the person's choice, Inter for words and JetBrains Mono for code (both SIL
   OFL, bundled), 8 px corners, 1 px lines, soft shadows, tabular digits for live figures, a visible

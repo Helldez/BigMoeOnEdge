@@ -455,7 +455,7 @@ struct App {
                   {"launch_keys", store.launch_keys()},
                   {"args", to_args(cfg)},
                   {"valid", v.ok},
-                  {"error", v.error},
+                  {"error", engine_message(v.error)},
                   {"reload_required", !reload.empty()},
                   {"reload_keys", reload},
                   {"plan", store.plan_decisions()},

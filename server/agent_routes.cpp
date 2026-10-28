@@ -58,7 +58,7 @@ bool local(const httplib::Request & req) {
 // A server started with --chat-only takes no agent work: no workspaces, tasks or tool runs.
 bool refuse_chat_only(const AgentRouteDeps & d, httplib::Response & res) {
     if (d.agent->capabilities().value("tools", true)) return false;
-    send_error(res, 409, "this server runs plain chat only (--chat-only): it has no agent", "chat_only");
+    send_error(res, 409, "this server runs plain chat only: it was started without the agent", "chat_only");
     return true;
 }
 

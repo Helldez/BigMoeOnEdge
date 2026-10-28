@@ -176,6 +176,17 @@ std::vector<std::string> to_args(const RunConfig & cfg);
 // renaming a flag in the table cannot leave advice naming one that no longer parses.
 std::string flag_spelling(const std::string & key, const std::string & value = "");
 
+// How a front-end names a parameter in a message the engine wrote. The engine's messages (validate(),
+// a session that will not open) name a setting as `{key}`, or `{key=value}` for one value of it, and
+// never as a flag or a field: the CLI's user types flags, a settings form's user sees labels, and the
+// engine cannot know which one is reading. Each front-end renders once, where the message leaves it.
+//   Flags:  {ubatch} -> --ubatch, {spec=mtp} -> --mtp, {ctx-size=4096} -> --ctx-size 4096
+//   Labels: {ubatch} -> "Batch width", {spec=mtp} -> "Speculative drafts" set to MTP head
+// Braces that do not name a key of the table are left as they are, so a message quoting JSON or a
+// file's own text cannot be mangled.
+enum class ParamNames { Flags, Labels };
+std::string name_params(const std::string & message, ParamNames how);
+
 // The table as a JSON array, one object per parameter, with `default` read from `defaults` — so a
 // front-end that resolves its own defaults (the CLI turns the cache on with streaming) can say so.
 std::string params_json(const RunConfig & defaults);

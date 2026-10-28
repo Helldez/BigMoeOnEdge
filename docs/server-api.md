@@ -26,6 +26,11 @@ Inside a stream that had already answered `200`, the same pair arrives as one
 or no body (`curl -X POST -H 'Content-Type: application/json' .../api/cancel`); one that does not
 gets `415`. The agent protocols, `/v1/messages` and `/v1/responses`, answer every error in their
 own protocol's shape instead ([Agent protocols](#agent-protocols-what-the-two-below-share)).
+A message from the engine (a config `validate()` refuses, a model that will not load, a failed
+turn) names a setting by its label in the settings form (`"Batch width"`, `"Context"`), never by a
+command-line flag or an internal field: the engine writes `{key}` placeholders from the parameter
+table and the server renders them once, where the message leaves it (`bmoe-cli` renders the same
+placeholders as flags).
 
 ## Security model
 

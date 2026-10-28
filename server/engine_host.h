@@ -37,6 +37,11 @@ inline constexpr const char * no_model = "no_model";         // nothing is loade
 inline constexpr const char * streams_full = "streams_full"; // every event stream place is taken
 } // namespace error_code
 
+// An engine message (a config validate() refuses, a model that will not load, a failed turn) as a
+// client of this server shows it: the settings it names, by the labels the settings form shows.
+// Every engine message that leaves for a client goes through here once; the engine names no flag.
+std::string engine_message(const std::string & message);
+
 struct ChatOutcome {
     int status = 200;  // HTTP status; not 200 means `error` says why and `result` is empty
     std::string error; // for a person

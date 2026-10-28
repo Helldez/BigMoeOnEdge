@@ -75,6 +75,10 @@ static void log_context_full(int n_ctx) {
                n_ctx, flag_spelling(k_ctx_param).c_str());
 }
 
+std::string engine_message(const std::string & message) {
+    return name_params(message, ParamNames::Labels);
+}
+
 std::unique_ptr<HostedSession> open_real_session(const SessionConfig & cfg, std::string & error) {
     std::unique_ptr<Session> s = Session::open(cfg, error);
     if (!s) return nullptr;
@@ -117,7 +121,7 @@ void EngineHost::end_planning() {
 
 std::string EngineHost::load(const RunConfig & effective, const RunConfig & requested) {
     const ValidationResult v = validate(effective);
-    if (!v) return v.error;
+    if (!v) return engine_message(v.error);
     std::lock_guard<std::mutex> life(life_m_);
     {
         std::lock_guard<std::mutex> lk(m_);
@@ -149,7 +153,7 @@ std::string EngineHost::load(const RunConfig & effective, const RunConfig & requ
             std::lock_guard<std::mutex> lk(m_);
             if (!s) {
                 state_ = State::Error;
-                error_ = error.empty() ? "the model failed to load" : error;
+                error_ = error.empty() ? "the model failed to load" : engine_message(error);
             } else {
                 session_ = s;
                 routing_kept_ = 0; // a new session records afresh
@@ -346,7 +350,7 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
     generating_ = false;
 
     if (!r) {
-        out.error = r.error;
+        out.error = engine_message(r.error);
         out.code = run_error_name(r.error_kind);
         if (r.error_kind == RunError::ContextFull) note_context_full(s->n_ctx());
         if (run_error_recoverable(r.error_kind)) {
@@ -359,7 +363,7 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
             std::lock_guard<std::mutex> lk(m_);
             session_.reset();
             state_ = State::Error;
-            error_ = "the session failed and was closed: " + r.error;
+            error_ = "the session failed and was closed: " + engine_message(r.error);
             model_ = nullptr;
         }
         publish_state();
@@ -445,7 +449,7 @@ DecideOutcome EngineHost::decide(const DecideRequest & req, const std::function<
     generating_ = false;
 
     if (!r.ok && !r.cancelled) {
-        out.error = r.error;
+        out.error = engine_message(r.error);
         out.code = run_error_name(r.error_kind);
         if (r.error_kind == RunError::ContextFull) note_context_full(s->n_ctx());
         if (!r.fatal) {
@@ -455,7 +459,7 @@ DecideOutcome EngineHost::decide(const DecideRequest & req, const std::function<
             std::lock_guard<std::mutex> lk(m_);
             session_.reset();
             state_ = State::Error;
-            error_ = "the session failed and was closed: " + r.error;
+            error_ = "the session failed and was closed: " + engine_message(r.error);
             model_ = nullptr;
         }
         publish_state();

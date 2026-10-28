@@ -1491,6 +1491,63 @@ std::string flag_spelling(const std::string & key, const std::string & value) {
     return out;
 }
 
+namespace {
+
+// One placeholder's text, or empty when `key` is not a parameter (the caller keeps the braces).
+std::string name_param(const std::string & key, const std::string & value, bool has_value, ParamNames how) {
+    const ParamDesc * d = find_param(key);
+    if (!d) return "";
+    if (how == ParamNames::Flags) {
+        if (has_value) return flag_spelling(key, value);
+        if (!d->flag.empty()) return d->flag;
+        // A switch-only row (--overlap, --mtp): its first switch is how it is turned on.
+        for (const ParamSwitch & s : d->switches)
+            if (!s.deprecated) return s.flag;
+        return "";
+    }
+    std::string out = "\"" + d->label + "\"";
+    if (!has_value) return out;
+    // The value as the form shows it: a choice's label, a special value's meaning, on/off.
+    std::string shown = value;
+    for (const ParamChoice & c : d->choices)
+        if (c.value == value) shown = c.label;
+    for (const ParamSpecial & sp : d->specials)
+        if (sp.value == value) shown = sp.label;
+    if (d->type == ParamType::Bool) shown = value == "true" ? "on" : "off";
+    return out + " set to " + shown;
+}
+
+} // namespace
+
+std::string name_params(const std::string & message, ParamNames how) {
+    std::string out;
+    out.reserve(message.size());
+    size_t i = 0;
+    while (i < message.size()) {
+        const size_t open = message.find('{', i);
+        if (open == std::string::npos) break;
+        const size_t close = message.find('}', open + 1);
+        if (close == std::string::npos) break;
+        out.append(message, i, open - i);
+        const std::string inner = message.substr(open + 1, close - open - 1);
+        const size_t eq = inner.find('=');
+        const std::string key = inner.substr(0, eq);
+        const std::string value = eq == std::string::npos ? "" : inner.substr(eq + 1);
+        const std::string named = name_param(key, value, eq != std::string::npos, how);
+        if (named.empty()) {
+            // Not a placeholder: keep the brace and look again from the next character, so text such
+            // as "{{ctx-size}}" or a quoted object still finds a real placeholder inside it.
+            out += '{';
+            i = open + 1;
+            continue;
+        }
+        out += named;
+        i = close + 1;
+    }
+    out.append(message, i, std::string::npos);
+    return out;
+}
+
 std::string params_json(const RunConfig & defaults) {
     std::string o = "[";
     bool first = true;

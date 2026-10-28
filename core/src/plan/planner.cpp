@@ -1940,8 +1940,8 @@ void note_kv_budget(Planning & s) {
                " and its compute buffers another " + u64s(mib(compute)) + ", against " +
                u64s(mib(s.p.cache_budget_bytes)) +
                " MiB left for the expert cache: the two come out of the same memory, and a shorter context "
-               "is the caller's cheapest way to buy cache. The cache type is set by --cache-type-k / "
-               "--cache-type-v, never by this plan: f16 is lossless, q8_0 (the default) halves the bytes");
+               "is the caller's cheapest way to buy cache. The cache type is set by {cache-type-k} and "
+               "{cache-type-v}, never by this plan: f16 is lossless, q8_0 (the default) halves the bytes");
 }
 
 // The checkpoints' charge, said where it was taken, so a reader who sees a smaller cache on a chat
@@ -1952,7 +1952,7 @@ void note_checkpoint_budget(Planning & s) {
     const RunConfig & c = s.p.config;
     s.note("checkpoint-budget", u64s(mib(s.checkpoint_bytes)) + " MiB", Source::Measured,
            "Context checkpoints may take " + size_brief(s.checkpoint_bytes) + "; that is kept out of the cache.",
-           std::to_string(c.ctx_checkpoints) + " checkpoints (--ctx-checkpoints) of " +
+           std::to_string(c.ctx_checkpoints) + " checkpoints ({ctx-checkpoints}) of " +
                u64s(mib(s.placement.context_fixed_bytes)) +
                " MiB each, the part of the context that does not grow with its length (measured at two "
                "lengths), charged before the cache is sized: a chat run fills them as it goes, and memory "
