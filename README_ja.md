@@ -68,6 +68,7 @@ Mixture-of-Experts モデルは、各トークンでエキスパートのうち�
 | **デスクトップ GPU**（NVIDIA） | 16 GB + 32 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | フラッシュ、GPU キャッシュ | 19-21 |
 | **デスクトップ GPU**（NVIDIA） | 24 GB + 96 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM、GPU キャッシュ | 70 |
 |  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
+| **ワークステーション GPU**（NVIDIA） | 96 GB + 283 GB RAM | DeepSeek V4.1 Flash | 500 GB | フラッシュ、RAM、GPU キャッシュ | 6-7 |
 | **データセンター GPU**（AMD、ROCm） | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
 
 tok/s は整数で示し、範囲は複数回の実行でのばらつきです。「エキスパートの読み出し元」は、ルーティングされた

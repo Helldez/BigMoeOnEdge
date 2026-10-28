@@ -7,6 +7,15 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **DeepSeek V4.1 Flash** (`deepseek41`), with llama.cpp moved to upstream `8ca4060` of 2026-10-28
+  (`docs/seam.md`). The pin carries a second commit beside the expert-ready hook: MXFP8 row gathers,
+  which upstream dropped before its V4.1 support merged while the published GGUFs of the checkpoint
+  keep their Engram table in that type. Measured on a rented 96 GB workstation card with a 283 GB
+  memory limit, where the native-MXFP4 file (466 GiB) fits neither: `--auto` decodes 6.2-6.6 tok/s
+  over 1024 tokens from a cold page cache against 2.8 for llama.cpp's own `llama-completion`
+  (`docs/bench-data/2026-10-28-rented-96gb/`, `docs/benchmarks.md`, the README table). A session of
+  long prompts on that box was killed by its control group: the plan's margin does not yet cover a
+  long prefill on this model.
 - **The first run on ROCm: a rented 192 GB AMD datacenter card, the model resident**
   (`docs/bench-data/2026-10-28-rented-rocm/`, `docs/benchmarks.md`, `docs/platforms.md`, the README
   table). Qwen3.8-Flash-Next Q2_0 fits the card whole: `--auto` decodes 53.4 tok/s over 1024 tokens

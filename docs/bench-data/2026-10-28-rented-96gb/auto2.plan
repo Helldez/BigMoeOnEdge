@@ -1,0 +1,67 @@
+bmoe: memory: phase=auto-probe-begin process_footprint_mib=-1.000 process_headroom_mib=268977.637 rss_mib=170.055 compressed_or_swap_mib=0.000 system_available_mib=2033655.289
+bmoe: memory: phase=auto-hardware process_footprint_mib=-1.000 process_headroom_mib=268941.844 rss_mib=268.906 compressed_or_swap_mib=0.000 system_available_mib=2033648.332
+bmoe: memory: phase=auto-device-support process_footprint_mib=-1.000 process_headroom_mib=268911.199 rss_mib=274.789 compressed_or_swap_mib=0.000 system_available_mib=2033588.031
+bmoe: memory: phase=auto-bandwidth process_footprint_mib=-1.000 process_headroom_mib=268902.645 rss_mib=275.934 compressed_or_swap_mib=0.000 system_available_mib=2033497.766
+bmoe: memory: phase=auto-device-costs process_footprint_mib=-1.000 process_headroom_mib=268902.645 rss_mib=275.934 compressed_or_swap_mib=0.000 system_available_mib=2033497.273
+bmoe: memory: phase=auto-storage process_footprint_mib=-1.000 process_headroom_mib=268531.961 rss_mib=293.926 compressed_or_swap_mib=0.000 system_available_mib=2033745.734
+bmoe: memory: phase=auto-headroom process_footprint_mib=-1.000 process_headroom_mib=268531.461 rss_mib=293.926 compressed_or_swap_mib=0.000 system_available_mib=2033745.734
+bmoe: memory: phase=auto-probe-end process_footprint_mib=-1.000 process_headroom_mib=268510.469 rss_mib=313.000 compressed_or_swap_mib=0.000 system_available_mib=2033663.133
+plan: this model's routing read from /workspace/routing/af0cd727454836cf.routing
+plan: machine 28 cores, 268977 MiB available of 2321787 MiB, 336 GiB/s on this model's matmul
+plan: storage: uncached reads in effect; 1530 KiB: 1 lane 758 MiB/s 2 lanes 1473 MiB/s 4 lanes 2959 MiB/s; 6120 KiB: 1 lane 1777 MiB/s 2 lanes 3332 MiB/s 4 lanes 5380 MiB/s; 24480 KiB: 1 lane 2588 MiB/s 2 lanes 3947 MiB/s 4 lanes 4900 MiB/s; refault 118 MiB/s
+plan: device CUDA0: one token 1598 GiB/s (same result), 128 tokens wide 2471 GiB/s (same result); this model's layer: experts 1635.0, dense 0.0 GiB/s; crossing 10 us, probed in a process of its own
+plan: device CPU (host): one token 336 GiB/s (same result), 128 tokens wide 298 GiB/s (same result); this model's layer: experts 371.1, dense 0.0 GiB/s; crossing 0 us
+plan: model deepseek41, 384 experts top-6 over 40 of 40 blocks
+plan:   embedding   194035 MiB,       0 MiB/token  (row-gathered)
+plan:   attention     5151 MiB,    5151 MiB/token
+plan:   dense-ffn     1735 MiB,    1735 MiB/token
+plan:   experts     275400 MiB,    4303 MiB/token  (streamable)
+plan:   output         670 MiB,     670 MiB/token
+plan:   other          513 MiB,     513 MiB/token
+plan: regime experts-stream
+plan:   token cycle 4303 MiB
+plan:   device-cache-mb 84528      [measured] the experts used most live on the processor that computes them fastest, as the RAM cache holds what flash would read: CUDA0 computes this model's experts at 1635 GiB/s against the host's 371, both measured on this model's own expert block; a cache of 84528 MiB (82620 the capacity fitter gave 12 of 40 layers' experts, 1908 it left free under one more whole layer) serves 89% of a token's routed bytes (from this model's own routing); a miss is uploaded from the host
+plan:   ubatch         0          [derived] a graph as wide as the context reserves 199 MiB of compute buffers, inside 10% of the 268977 MiB this process may hold: a prompt is computed in one pass
+plan:   placement      41 layers on devices [measured] the capacity fitter found a placement that is projected to fit; 40 of 40 MoE layers keep their experts on the host, host-resident 199 MiB, on devices 11141 MiB, context 2048 (fitter's host breakdown: model 386859, context 0, compute 199 MiB; file 477506, experts 275400)
+plan:   ctx-size       2048       [policy] the value this run was given, not a choice: the capacity fitter only picks a context when it is handed a zero and this planner always pins it, so nothing has weighed this number against what the memory it reserves would buy as expert cache
+plan:   regime         experts-stream [derived] on the host 275599 MiB (dense 199) against 215182 MiB usable, which is the 268977 MiB this process may hold (as reported available, unmeasured) less a 53795 MiB margin (the process is killed)
+plan:   extra-offload  none       [policy] the fitter has already placed what fits on the devices - see the placement line above - and placing weights across devices is a capacity problem it solves exactly; this planner owns the tier below it and does not second-guess it
+plan:   experts        host       [derived] this device could compute them on paper - it offers a host buffer and runs the model's own layout - and it still cannot. The streamer rebinds every expert onto memory it reserved itself, which no device was given access to; and a host buffer type would not survive the load anyway, since a mapped model has one substituted for the CPU's. Whether this device can wrap memory a caller already owns - the one opening left - is unprobed. What it advertises is a blanket promise, and a backend whose support is conditional declines to make one while implementing the call anyway, so the absence of a yes decides nothing here
+plan:   dense-weights  anon       [derived] no reclaim-exempt store here, so anonymous buffers are what keeps the dense set off a flash refault (a reclaim then means: the process is killed)
+plan:   prefill-device off        [derived] a device expert cache is set, which keeps the layers on their device and computes the experts there; a prefill device is not combined with it
+plan:   cache-pin      off        [derived] not even one token cycle of the cache can be locked in place here after what is ahead of it, so the cache is ordinary memory and no lock is asked for
+plan:   memory-ledger  215181 MiB [derived] held 215181 of 215182 MiB holdable, of which locked 0 MiB of 0 MiB lockable: context and compute 199, expert cache 214982
+plan:   storage-rate   5.3 GiB/s  [derived] this model's expert slice is 6120 KiB and at that request size this storage gives 5380 MiB/s over 4 lanes: the expert lane is priced there, not at the storage's peak
+plan:   cache-unpriced 209.9 GiB  [derived] the expert cache was sized from what remains after the dense policy (214982 MiB) rather than from what a hit is worth: this machine's read rate was not measured, so there is no price to rank it against. It is the answer that was available, not the answer that was chosen.
+plan:   device-unapplied -          [derived] a device won at least one group, but this build computes on the host: the placement is reported, not applied
+plan:   cache-hits     91%        [measured] measured on this model: an LRU replay of the routing it recorded on an earlier run (256 decoded and 26 prompt tokens) at every cache size up to the whole expert set; at 214982 MiB it serves 91% of the decode lookups, where the linear credit would have said 78%
+plan:   moe-stream     on         [derived] the experts do not fit but the dense set does
+plan:   cache-mb       214982     [derived] what the cache is worth out of 215182 MiB usable, ranked against the resident groups by seconds saved per byte of RAM, with what none of them wanted added: 417088 MiB committed in total, of which 214982 MiB is cache, over a floor of 4303 MiB
+plan:   io-threads     4          [measured] the highest measured rate for this model's 6120 KiB expert slice on this storage
+plan:   o-direct       on         [measured] uncached reads return correct bytes on this path
+plan:   release-mmap   off        [unprobed] the storage probe did not see a live mapping slow its reads here (5224 vs 6064 MiB/s), but it is an instrument validated only in the positive direction, so that is not evidence there is nothing to gain: try --release-mmap and measure
+plan:   lossy          off        [policy] no quality budget was given, and a policy that changes the output must never arm itself
+plan:   threads        28         [measured] measured on this model: an earlier load's first answer decoded in alternating windows with 28 and 14 threads, 3 rounds each between two of the incumbent's; the best other count was -3%, inside the 10% margin, so 28 held
+plan:   cost 89.0 ms/token predicted, 105019.1 ms/token with nothing resident
+plan:     embedding  resident       194035 MiB held,    0.00 ms/token  resident: read whole, every token
+plan:     attention  resident         5151 MiB held,    3.92 ms/token  resident: read whole, every token; computed on CUDA0
+plan:     dense-ffn  resident         1735 MiB held,    1.83 ms/token  resident: read whole, every token; computed on CUDA0
+plan:     experts    expert-stream  214982 MiB held,   80.99 ms/token  streamed with a 214982 MiB cache, 78% of the expert set; credited hit rate 91% [measured on this model]: its own routing, 256 decoded tokens, replayed through the cache at this size
+plan:     output     resident          670 MiB held,    1.18 ms/token  resident: read whole, every token; computed on CUDA0
+plan:     other      resident          513 MiB held,    1.08 ms/token  resident: read whole, every token; computed on CUDA0
+plan:   memory held 215181 of 215182 MiB holdable, locked 0 of 0 MiB lockable
+plan:     context and compute     199 MiB  ordinary
+plan:     expert cache         214982 MiB  ordinary
+plan: reproduce with
+bmoe: memory: phase=model-loaded process_footprint_mib=-1.000 process_headroom_mib=52955.320 rss_mib=241128.223 compressed_or_swap_mib=0.000 system_available_mib=1994319.812
+bmoe: dense-weights=anon — 193365 MiB in 1 tensor(s) exceeds the 50758 MiB available: left mmap'd with random-access advice, outside the warm sweep and the residency sensor
+bmoe: dense-weights=anon — 670 MiB in 1 anon buffers
+bmoe: dense-weights=anon — dropped 670 MiB of now-unused mmap pages
+bmoe: expert streaming ON  n_expert=384 o_direct=1 io_threads=4 cache=214982 MiB shards=9
+bmoe: page cache: the model files' read-ahead handed back (9 file(s))
+bmoe: memory: phase=session-ready process_footprint_mib=-1.000 process_headroom_mib=57075.633 rss_mib=225333.801 compressed_or_swap_mib=0.000 system_available_mib=1970264.742
+ idea that thought can be mechanized, that information can be encoded, that problems can be solved through algorithms. It is allama_moe_cache: ubatch <= 8: hits = 224294, misses = 21466, hit rate = 91.27%, uploaded = 384878.67 MiB
+llama_moe_cache: ubatch  > 8: hits = 0, misses = 2112, hit rate = 0.00%, uploaded = 37867.50 MiB
+generation: 1024 tokens, 0.152 s/token (6.588 tok/s)
+plan: predicted 0.089 s/token, measured 0.152 (-41%); cache hits credited 91% from this model's routing, measured 96.6% in decode (95.8% with the prompt)
+prefill: 26 tokens, 16.244 s (1.6 tok/s) | model load 345.206 s | TTFT 361.450 s
