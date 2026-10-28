@@ -6,6 +6,14 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+- **The first run on ROCm: a rented 192 GB AMD datacenter card, the model resident**
+  (`docs/bench-data/2026-10-28-rented-rocm/`, `docs/benchmarks.md`, `docs/platforms.md`, the README
+  table). Qwen3.8-Flash-Next Q2_0 fits the card whole: `--auto` decodes 53.4 tok/s over 1024 tokens
+  against llama.cpp's own 55.6-55.8, and long prompts prefill at 2.1-2.3k tok/s. With ROCm's clang
+  the build hangs on ggml-cpu's AMX kernels; the bench notes give the line that builds the host code
+  with gcc.
+
 ### Removed
 - **The Obtainium link for Android.** `README.md` (and its translations), `examples/android/README.md`
   and `docs/platforms.md` no longer point to an Obtainium entry: its redirect page depends on the
