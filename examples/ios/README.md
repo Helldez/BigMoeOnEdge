@@ -55,12 +55,17 @@ server (`DELETE /api/models/local/<name>`), which removes a split set whole. The
 the running downloads and, when the context is below what a client of the server sends and the
 server serves the network or has refused a request, a warning with a link that lands on that
 setting and a ✕ that dismisses it for that model and context (a refusal brings it back); the same
-line stays under "Serve on the network". Plan opens on its verdict and three figures with Apply and
-Measure again; Settings is one card per group, every card closed until opened, holding the rows the
-parameter table offers on a form (`form`) and any the person set, with a chip per row for where
-its value came from, and links from Plan that open a row's card and land on it. Metrics is
-not a tab: the **Metrics** switch in Settings (off by default) records a per-token CSV for every
-loaded model and adds the Metrics entry there.
+line stays in the "Serve on the network" card. Plan opens on its verdict and three figures with
+Apply and Measure again; Settings opens with **Serve on the network**, a card whose header says the
+state even while it is closed (Off, or On and the first address, or On but not on a network); inside
+are the switch, each address with Copy, the API key masked with Show, Copy and New key (which
+restarts the engine on the new key), the base URL a client takes, and that prompts and answers
+cross the network unencrypted. Then one card per engine group, every card closed until opened,
+holding the rows the parameter table offers on a form (`form`) and any the person set, with a chip
+per row for where its value came from, and links from Plan that open a row's card and land on it.
+Metrics is not a tab: the **Metrics** switch in Settings (off by default) records a per-token CSV
+for every loaded model and adds the Metrics entry there; it sits in "This app" with the engine's
+start and stop.
 
 ### The chat
 
@@ -90,8 +95,8 @@ Delete partial download), checks a finished file against its catalog `sha256` be
 model (read back in chunks, off the transfers' queue; the file waits under a name of its check's own
 meanwhile, and a mismatch deletes it and says so; a start is refused when the entry does not fit in
 the free space), writes a metrics CSV per loaded model from the event stream while Metrics is on,
-and keeps the network key in the keychain. Nothing in it names an engine parameter: the settings are rendered from the
-parameter table, the plan from the planner.
+and keeps the network key in the keychain. Nothing in it names an engine parameter: the settings
+are rendered from the parameter table, the plan from the planner.
 
 Where things live: models and metrics files in the app's documents folder, which the Files app and
 the Finder show (copy a `.gguf` in, a CSV out; it is kept out of the device backup); the server's

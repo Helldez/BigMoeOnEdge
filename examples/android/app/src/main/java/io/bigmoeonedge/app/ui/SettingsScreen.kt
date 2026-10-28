@@ -46,8 +46,9 @@ import io.bigmoeonedge.app.engine.valueSource
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-/** The open state's key for the app's own section: never a group of the table, whose keys are the engine's. */
+/** The open state's keys for the app's own sections: never a group of the table, whose keys are the engine's. */
 private const val APP_SECTION = " app"
+private const val SHARE_SECTION = " share"
 
 /**
  * Settings, rendered from the engine's parameter table (`GET /api/params`) and nothing else: one
@@ -110,6 +111,10 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
             Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
+            // First, because it is the one setting that reaches past this phone; its header says the state
+            // with the card folded.
+            val ctx = contextWarning(engine.info?.model.takeIf { engine.serverUp && engine.info?.ready == true }, params)
+            ShareSection(openCards[SHARE_SECTION] == true, { openCards = openCards + (SHARE_SECTION to it) }, ctx) { jump = it }
             if (cfg != null && engine.ready && (cfg.reloadRequired || cfg.reloadKeys.isNotEmpty())) {
                 ElevatedCard(Modifier.fillMaxWidth()) {
                     Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -179,10 +184,9 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
             }
 
             HorizontalDivider(color = tokens.line)
-            val ctx = contextWarning(engine.info?.model.takeIf { engine.serverUp && engine.info?.ready == true }, params)
             val appOpen = openCards[APP_SECTION] == true
             FoldCard("This app", "How this phone runs the engine and what it records.", appOpen, onToggle = { openCards = openCards + (APP_SECTION to !appOpen) }) {
-                AppSettings(engine.serverUp, ctx, csv, onCsv = { csv = it }) { jump = it }
+                AppSettings(engine.serverUp, csv, onCsv = { csv = it })
             }
             // The measurements are a tool for whoever switched the recording on, not a screen of their own.
             if (csv) {
@@ -200,13 +204,21 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
     }
 }
 
-/** A box that folds: its title and help line always, its content once opened. */
+/** A box that folds: its title, a [status] beside it and its help line always, its content once opened. */
 @Composable
-private fun FoldCard(title: String, help: String, open: Boolean, onToggle: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+private fun FoldCard(
+    title: String,
+    help: String,
+    open: Boolean,
+    onToggle: () -> Unit,
+    status: (@Composable () -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
     BmoeCard(padding = 12.dp) {
         Column(Modifier.fillMaxWidth().clickable(onClick = onToggle)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(title, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
+                status?.let { Spacer(Modifier.width(8.dp)); it() }
                 Spacer(Modifier.width(8.dp))
                 Text(if (open) "v" else ">", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -216,44 +228,72 @@ private fun FoldCard(title: String, help: String, open: Boolean, onToggle: () ->
     }
 }
 
-/** The settings that are this app's own, never an engine parameter. */
+/**
+ * Serve on the network: the switch, and once on, what a client on another device needs (the
+ * address, the key, the context a client asks for) and what sharing costs (the traffic is in clear).
+ * The header says the state with the card folded, so whether the phone is reachable is never hidden.
+ */
 @Composable
-private fun AppSettings(serverUp: Boolean, ctx: ContextWarning?, csv: Boolean, onCsv: (Boolean) -> Unit, onRaise: (String) -> Unit) {
+private fun ShareSection(open: Boolean, onOpen: (Boolean) -> Unit, ctx: ContextWarning?, onRaise: (String) -> Unit) {
     val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     var share by remember { mutableStateOf(AppPrefs.shareOnNetwork(context)) }
     var key by remember { mutableStateOf(AppPrefs.apiKey(context)) }
-    SwitchRow(
-        "Serve on the network",
-        "Other devices on this network can use this phone's engine through its OpenAI-compatible " +
-            "API, with the key below. Changing this restarts the engine; a loaded model is loaded again. " +
-            "Prompts and answers cross the network in clear.",
-        share,
-    ) { on ->
-        share = on
-        AppPrefs.setShareOnNetwork(context, on)
-        Engine.restart(context)
-    }
+    var showKey by remember { mutableStateOf(false) }
+    // The phone's own address on this network, followed as the network changes (only while shared):
+    // what a client types, not a placeholder to work out.
+    var lan by remember { mutableStateOf(emptyList<String>()) }
     if (share) {
-        val clipboard = LocalClipboardManager.current
-        // The phone's own address on this network, followed as the network changes: what a
-        // client types, not a placeholder to work out.
-        var lan by remember { mutableStateOf(LanAddress.current(context)) }
-        DisposableEffect(Unit) { onDispose(LanAddress.watch(context) { lan = it }) }
+        DisposableEffect(Unit) {
+            lan = LanAddress.current(context)
+            onDispose(LanAddress.watch(context) { lan = it })
+        }
+    }
+    val first = lan.firstOrNull()
+    FoldCard(
+        "Serve on the network", "", open, onToggle = { onOpen(!open) },
+        status = {
+            val (text, colour) = when {
+                !share -> "Off" to MaterialTheme.colorScheme.onSurfaceVariant
+                first == null -> "On · not on a network" to warnColor()
+                else -> "On · ${LanAddress.address(first)}" to MaterialTheme.colorScheme.onSurfaceVariant
+            }
+            Text(text, fontSize = 12.sp, color = colour, maxLines = 1)
+        },
+    ) {
+        SwitchRow(
+            "Serve on the network",
+            "Other devices on this network use this phone's engine as an OpenAI-compatible server. Changing this restarts the engine.",
+            share,
+        ) { on ->
+            share = on
+            AppPrefs.setShareOnNetwork(context, on)
+            Engine.restart(context)
+        }
+        if (!share) return@FoldCard
+        Text("Address", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (lan.isEmpty()) {
             Text(
                 "Not on a Wi-Fi or Ethernet network: no other device can reach the engine until the phone joins one.",
-                fontSize = 12.sp, color = MaterialTheme.colorScheme.error,
+                fontSize = 12.sp, color = warnColor(),
             )
-        } else {
-            Text("Address:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            lan.forEach { ip ->
-                val url = LanAddress.url(ip)
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(url, fontFamily = CodeFont, fontSize = 13.sp, modifier = Modifier.weight(1f))
-                    TextButton(shape = Corner, onClick = { clipboard.setText(AnnotatedString(url)) }) { Text("Copy") }
-                }
+        }
+        lan.forEach { ip ->
+            val address = LanAddress.address(ip)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(address, fontFamily = CodeFont, fontSize = 15.sp, modifier = Modifier.weight(1f))
+                TextButton(shape = Corner, onClick = { clipboard.setText(AnnotatedString(address)) }) { Text("Copy") }
             }
         }
+        Text("API key", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            // Masked: the screen may be seen or recorded, and the key is what lets a device in.
+            Text(if (showKey) key else "•".repeat(key.length), fontFamily = CodeFont, fontSize = 13.sp, maxLines = 1, modifier = Modifier.weight(1f))
+            TextButton(shape = Corner, onClick = { showKey = !showKey }) { Text(if (showKey) "Hide" else "Show") }
+            TextButton(shape = Corner, onClick = { clipboard.setText(AnnotatedString(key)) }) { Text("Copy") }
+            TextButton(shape = Corner, onClick = { key = AppPrefs.regenerateApiKey(context); Engine.restart(context) }) { Text("New key") }
+        }
+        first?.let { Hint("In a client: base URL ${LanAddress.url(it)}, and the key above.") }
         // Where the clients are switched on, what they need: said here whether or not the status
         // line's warning was dismissed.
         if (ctx?.short == true) {
@@ -262,13 +302,14 @@ private fun AppSettings(serverUp: Boolean, ctx: ContextWarning?, csv: Boolean, o
                 TextButton(shape = Corner, onClick = { onRaise(ctx.key) }) { Text("Raise ${ctx.label}") }
             }
         }
-        Text("Key:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(key, fontFamily = CodeFont, fontSize = 13.sp, modifier = Modifier.weight(1f))
-            TextButton(shape = Corner, onClick = { clipboard.setText(AnnotatedString(key)) }) { Text("Copy") }
-            TextButton(shape = Corner, onClick = { key = AppPrefs.regenerateApiKey(context); Engine.restart(context) }) { Text("New key") }
-        }
+        Text("Prompts and answers cross the network unencrypted: use it on a network you trust.", fontSize = 12.sp, color = warnColor())
     }
+}
+
+/** The settings that are this app's own, never an engine parameter, besides sharing. */
+@Composable
+private fun AppSettings(serverUp: Boolean, csv: Boolean, onCsv: (Boolean) -> Unit) {
+    val context = LocalContext.current
     SwitchRow(
         "Metrics",
         "Record a per-token CSV for every loaded model and show the measurements here.",

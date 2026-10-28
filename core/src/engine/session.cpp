@@ -1019,11 +1019,9 @@ bool Session::Impl::read_model(Opening & o) {
         return o.fail("--mtp-head names a file with no MTP head (nextn_predict_layers is absent or zero): " +
                       cfg.spec.mtp_head);
     if (cfg.spec.is_mtp() && !model_dft && n_layer_nextn <= 0)
-        return o.fail("--mtp needs a model with a trained MTP head, and this gguf has no nextn block "
-                      "(nextn_predict_layers is absent or zero). Qwen3.5/3.6 carry one in their "
-                      "ordinary quantisations; other architectures have none. --ngram speculates on any "
-                      "model, since it drafts from the text rather than from the weights. See "
-                      "docs/mtp.md and docs/ngram.md.");
+        return o.fail("MTP drafts need a model with a trained MTP head, and this model has none (no "
+                      "nextn block in the file). N-gram drafts work with any model, since they draft from "
+                      "the text rather than from the weights. See docs/mtp.md and docs/ngram.md.");
 
     char arch_buf[128] = {0};
     llama_model_meta_val_str(m, "general.architecture", arch_buf, sizeof(arch_buf));

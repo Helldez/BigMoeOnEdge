@@ -12,6 +12,7 @@ struct SettingsView: View {
     /// The cards opened on this visit; everything else is closed, so the page opens as a short list.
     @State private var openCards: Set<String> = []
     @State private var appOpen = false
+    @State private var shareOpen = false
     /// A row a link landed on that the form does not offer, shown for this visit.
     @State private var revealed: String?
     @State private var focusKey: String?
@@ -22,6 +23,7 @@ struct SettingsView: View {
         ScrollViewReader { proxy in
             Page {
                 banners
+                ShareSection(open: $shareOpen)
                 // While the engine is down (a sharing change restarts it) the rows stay where they are, so
                 // the page keeps its length and its scroll; a line above says why a change waits.
                 if !engine.serverUp || engine.params.isEmpty {
@@ -366,29 +368,54 @@ struct ParamRow: View {
     }
 }
 
-/// The settings that are the app's own (docs/screens.md): serving the network with the key shown,
-/// the metrics, starting and stopping the engine. Never an engine parameter. A card that folds
-/// like the groups' cards.
-struct AppSettingsSection: View {
+/// A card's header: its title, a line under it, and the chevron that opens it.
+private struct CardHeader: View {
+    let title: String
+    var detail = ""
+    var detailColor = Palette.muted
+    @Binding var open: Bool
+
+    var body: some View {
+        Button {
+            open.toggle()
+        } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: Grid.s) {
+                    Text(title).font(.ui(18, bold: true)).foregroundStyle(Palette.accentInk)
+                    Spacer()
+                    Image(systemName: open ? "chevron.up" : "chevron.down").foregroundStyle(Palette.muted)
+                }
+                if !detail.isEmpty {
+                    Text(detail).font(.ui(13)).foregroundStyle(detailColor).lineLimit(2).multilineTextAlignment(.leading)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Serving the engine to other devices (docs/screens.md): first in Settings, since it is what makes
+/// the phone a server. Its header says the state while the card is closed: whether it serves, and
+/// where. The key is the one kept in the keychain; the addresses are read when the card is drawn.
+struct ShareSection: View {
     @EnvironmentObject private var engine: Engine
     @EnvironmentObject private var nav: Navigator
     @EnvironmentObject private var preferences: Preferences
     @Binding var open: Bool
-    @State private var copied = false
+    @State private var showKey = false
+    @State private var copied: String?
+
+    private var urls: [String] { NetworkAddress.all().map { "http://\($0):\(EngineServer.port)" } }
 
     var body: some View {
+        let on = preferences.shareOnNetwork
+        let urls = on ? urls : []
         VStack(alignment: .leading, spacing: Grid.m) {
-            Button {
-                open.toggle()
-            } label: {
-                HStack(alignment: .firstTextBaseline, spacing: Grid.s) {
-                    Text("This app").font(.ui(18, bold: true)).foregroundStyle(Palette.accentInk)
-                    Spacer()
-                    Image(systemName: open ? "chevron.up" : "chevron.down").foregroundStyle(Palette.muted)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+            CardHeader(title: "Serve on the network",
+                       detail: !on ? "Off" : urls.first.map { "On · \($0)" } ?? "On · not on a network",
+                       detailColor: on && urls.isEmpty ? Palette.warn : Palette.muted,
+                       open: $open)
             if open {
                 Toggle(isOn: Binding(get: { preferences.shareOnNetwork }, set: {
                     preferences.shareOnNetwork = $0
@@ -396,26 +423,86 @@ struct AppSettingsSection: View {
                 })) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Serve on the network").foregroundStyle(Palette.text)
-                        Text("Other devices on this network use the engine through its OpenAI-compatible endpoint, with the key, "
-                            + "while this app is open. Prompts and answers travel in clear.")
+                        Text("Other devices on this network use this phone's engine as an OpenAI-compatible server. "
+                            + "Changing this restarts the engine.")
                             .font(.ui(12)).foregroundStyle(Palette.muted)
                     }
                 }
                 .tint(Palette.accent)
-                if engine.shared {
-                    endpoint
-                    // Where the clients are switched on, what they need: said here whether or not
-                    // the status line's warning was dismissed.
-                    if engine.ready, let ctx = engine.contextAdvice, ctx.short {
-                        HStack(alignment: .center, spacing: Grid.s) {
-                            Text(ctx.warning).font(.ui(12)).foregroundStyle(Palette.warn)
-                                .fixedSize(horizontal: false, vertical: true)
-                            Spacer(minLength: 0)
-                            Button("Raise \(ctx.label)") { nav.openSetting(ctx.key) }
-                                .font(.ui(13, bold: true)).foregroundStyle(Palette.accentInk).buttonStyle(.borderless)
-                        }
-                    }
+                if on { details(urls) }
+            }
+        }
+        .card(padding: 12)
+    }
+
+    private func details(_ urls: [String]) -> some View {
+        VStack(alignment: .leading, spacing: Grid.s) {
+            Text("Address").font(.ui(13)).foregroundStyle(Palette.muted)
+            if urls.isEmpty {
+                Text("Not on a Wi-Fi or wired network: no other device can reach the engine until this one joins one.")
+                    .font(.ui(12)).foregroundStyle(Palette.warn).fixedSize(horizontal: false, vertical: true)
+            }
+            ForEach(urls, id: \.self) { url in
+                HStack(spacing: Grid.s) {
+                    Text(url).font(.mono(15)).foregroundStyle(Palette.text).textSelection(.enabled)
+                    Spacer(minLength: Grid.s)
+                    copyButton(url, id: url)
                 }
+            }
+            Text("API key").font(.ui(13)).foregroundStyle(Palette.muted).padding(.top, 4)
+            // Masked by default: the screen may be seen or recorded by someone the key is not for.
+            Text(showKey ? engine.networkKey : String(repeating: "•", count: min(engine.networkKey.count, 24)))
+                .font(.mono(15)).foregroundStyle(Palette.text).textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: Grid.s) {
+                Button(showKey ? "Hide" : "Show") { showKey.toggle() }.buttonStyle(.appSecondary)
+                copyButton(engine.networkKey, id: "key")
+                Button("New key") {
+                    copied = nil
+                    engine.newNetworkKey()
+                }
+                .buttonStyle(.appSecondary)
+            }
+            if let first = urls.first {
+                Text("In a client: base URL \(first)/v1, and the key above.")
+                    .font(.ui(12)).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
+            }
+            // Where the clients are switched on, what they need: said here whether or not the
+            // status line's warning was dismissed.
+            if engine.shared, engine.ready, let ctx = engine.contextAdvice, ctx.short {
+                HStack(alignment: .center, spacing: Grid.s) {
+                    Text(ctx.warning).font(.ui(12)).foregroundStyle(Palette.warn)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    Button("Raise \(ctx.label)") { nav.openSetting(ctx.key) }
+                        .font(.ui(13, bold: true)).foregroundStyle(Palette.accentInk).buttonStyle(.borderless)
+                }
+            }
+            Text("Prompts and answers cross the network unencrypted: use it on a network you trust.")
+                .font(.ui(12)).foregroundStyle(Palette.warn).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func copyButton(_ text: String, id: String) -> some View {
+        Button(copied == id ? "Copied" : "Copy") {
+            UIPasteboard.general.string = text
+            copied = id
+        }
+        .buttonStyle(.appSecondary)
+    }
+}
+
+/// The settings that are the app's own (docs/screens.md): the metrics, starting and stopping the
+/// engine. Never an engine parameter. A card that folds like the groups' cards.
+struct AppSettingsSection: View {
+    @EnvironmentObject private var engine: Engine
+    @EnvironmentObject private var preferences: Preferences
+    @Binding var open: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Grid.m) {
+            CardHeader(title: "This app", detail: "How this phone runs the engine and what it records.", open: $open)
+            if open {
                 Toggle(isOn: $preferences.metricsCSV) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Metrics").foregroundStyle(Palette.text)
@@ -436,27 +523,5 @@ struct AppSettingsSection: View {
             }
         }
         .card(padding: 12)
-    }
-
-    private var endpoint: some View {
-        let address = NetworkAddress.local()
-        return VStack(alignment: .leading, spacing: 6) {
-            Text("Base URL").font(.ui(13)).foregroundStyle(Palette.muted)
-            if let address {
-                Text("http://\(address):\(EngineServer.port)/v1").font(.code).foregroundStyle(Palette.text).textSelection(.enabled)
-            } else {
-                Text("Not on a Wi-Fi or wired network: no other device can reach the engine until this one joins one.")
-                    .font(.ui(12)).foregroundStyle(Palette.err)
-            }
-            Text("Key").font(.ui(13)).foregroundStyle(Palette.muted)
-            Text(engine.networkKey).font(.code).foregroundStyle(Palette.text).textSelection(.enabled)
-            Button(copied ? "Copied" : "Copy key") {
-                UIPasteboard.general.string = engine.networkKey
-                copied = true
-            }
-            .buttonStyle(.appSecondary)
-        }
-        .padding(12)
-        .box(fill: Palette.bg, lifted: false)
     }
 }

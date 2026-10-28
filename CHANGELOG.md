@@ -77,6 +77,10 @@ Semantic Versioning.
   active experts), 14 of 79. The rest stay flags of the command line; one the person set anyway is
   shown so it can be reset. The level filter, the per-level folds and the search are gone, and
   every card starts closed.
+- **Serve on the network is a card of its own**, first in a phone's Settings: its state and address
+  in the closed header; the addresses to copy, the key hidden until shown with New key (on iOS too
+  now), the base URL a client needs and a warning that the traffic is unencrypted.
+- **The engine's errors name no model family**: the MTP refusal said which models carry a head.
 - **Metrics is a section of Settings**, shown once the Metrics switch is on (off by default; on a
   phone it also records the per-token CSV), instead of an entry of its own in the navigation.
 - **The plan's memory bar tells its parts apart**: a six-colour series palette (`series-1` …

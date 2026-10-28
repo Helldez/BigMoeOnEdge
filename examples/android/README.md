@@ -253,16 +253,19 @@ special value and the usual range. "Needs reload" marks only a row whose value d
 loaded model's, and a banner offers the Reload. A link from the Plan screen or the context warning
 lands on its row.
 
-The app's own settings close the page, in a folded **This app** card:
-
-- **Serve on the network**: the engine listens on every interface with a key the page shows, and
-  the page shows the phone's address on its Wi-Fi or Ethernet network, `http://<phone IP>:8765/v1`,
-  ready to copy and kept current when the network changes. Any OpenAI-compatible client then uses
-  it with `Authorization: Bearer <key>`: a laptop's coding agent, Open WebUI, a script. Prompts and answers
-  cross the network in clear; use it on a network you trust. A coding agent needs a larger Context
-  than a chat: its first request alone is about 10k tokens, so set Context to 16384 or more before
-  pointing one at the phone, at the cost of expert cache ([sizing the context](../../docs/server-api.md#sizing-the-context-for-a-client)). Changing it restarts the engine, and a
-  model that was loaded is loaded again once the engine is back.
+**Serve on the network** is the first card on the page, folded like the rest, with its state in
+its header even when closed: Off, On with the phone's address, or On but not on a network. Switched
+on, the engine listens on every interface, and the card shows the phone's address on its Wi-Fi or
+Ethernet network (`http://<phone IP>:8765`, ready to copy and kept current when the network
+changes), the API key (masked, with Show, Copy and New key) and the base URL a client takes,
+`http://<phone IP>:8765/v1`. Any OpenAI-compatible client then uses it with
+`Authorization: Bearer <key>`: a laptop's coding agent, Open WebUI, a script. Prompts and answers
+cross the network unencrypted, as the card says; use it on a network you trust. A coding agent needs
+a larger Context than a chat: its first request alone is about 10k tokens, so set Context to 16384
+or more before pointing one at the phone, at the cost of expert cache
+([sizing the context](../../docs/server-api.md#sizing-the-context-for-a-client)); the card shows the
+context warning with its Raise button. Changing it restarts the engine, and a model that was loaded
+is loaded again once the engine is back.
 
 The engine requires a key even when it is not shared: on a phone, loopback is reachable by every
 installed app, and an open server would let any of them read a conversation off the event stream.
@@ -276,6 +279,9 @@ is stopped and restarted on a background thread, one step at a time, so a restar
 old process for the port and a stop never freezes the screen; a stopped server's late exit report
 changes nothing. The event stream has a watchdog: the server pings every 15 s, and a stream silent
 for two pings is reconnected.
+
+The app's other settings close the page, in a folded **This app** card, with Stop and Start engine:
+
 - **Metrics** (off by default): record one per-token CSV file per loaded model. While it is on,
   Settings shows a **Metrics** entry that opens the Metrics screen; back returns to Settings.
 

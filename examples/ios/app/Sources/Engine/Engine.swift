@@ -89,6 +89,15 @@ final class Engine: ObservableObject {
         return k
     }
 
+    /// Replaces the network key with a fresh one, made as the first was, and restarts the server so
+    /// it serves with it: a client holding the old key is refused from then on.
+    func newNetworkKey() {
+        Keychain.write(Preferences.networkKeyAccount, APIClient.randomKey())
+        // The key is read from the keychain, not published: the screens showing it redraw now.
+        objectWillChange.send()
+        restart()
+    }
+
     // MARK: the server's life
 
     /// Starts the server if it is not running, and keeps the state following it.

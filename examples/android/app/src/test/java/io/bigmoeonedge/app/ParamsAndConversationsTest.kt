@@ -81,6 +81,7 @@ class ParamsAndConversationsTest {
             .map { java.net.InetAddress.getByName(it) }
         assertEquals(listOf("192.168.1.23", "10.0.0.5"), io.bigmoeonedge.app.engine.LanAddress.pick(a))
         assertEquals("http://192.168.1.23:8765/v1", io.bigmoeonedge.app.engine.LanAddress.url("192.168.1.23"))
+        assertEquals("http://192.168.1.23:8765", io.bigmoeonedge.app.engine.LanAddress.address("192.168.1.23"))
     }
 
     @Test
