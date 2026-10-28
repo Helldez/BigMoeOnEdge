@@ -79,13 +79,17 @@
     margin: 0;
     padding: 0;
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
     gap: 0.4rem 1rem;
   }
   .legend li {
     display: flex;
     align-items: center;
     gap: 0.5rem;
+  }
+  /* A size never breaks across lines; the row's name wraps instead. */
+  .legend .figure {
+    white-space: nowrap;
   }
   .swatch {
     flex: 0 0 12px;

@@ -334,7 +334,7 @@ export const en = {
   'app.port.help': 'Where other apps on this computer reach the engine. Changing it restarts the engine.',
   'app.port.invalid': 'Use a number from 1024 to 65535.',
   'app.port.saved': 'Saved. The engine restarts on the new port.',
-  'settings.engine.lead': 'Every setting of the engine, described by the engine itself. Most people never change these: the plan picks them for this computer.',
+  'settings.engine.lead': 'The settings a person may want to choose. The plan picks every other one for this computer.',
   'settings.saving': 'Saving…',
   'settings.reset': 'Reset',
   'settings.reset.all': 'Reset all my values',
