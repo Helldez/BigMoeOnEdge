@@ -71,7 +71,10 @@ the date, the mode and the switched-on skills' names and descriptions, then the 
 and only the tools the conversation may use. What the model writes streams as `delta` events; its
 tool calls run under the mode, their results are appended, and the next round asks again, until an
 answer that calls no tool or the round limit (30 rounds per message; a notice says so, and another
-message lets it go on). The system prompt is the same for every round of a message and the
+message lets it go on). The same call failing the same way three times in a row also stops the run,
+with a notice: a small model that repeats a refused call would otherwise spend every round on it.
+Without a workspace the prompt tells the model to ask the person for a folder rather than look for
+files some other way, and `fetch_url` takes http and https addresses only. The system prompt is the same for every round of a message and the
 conversation is only appended to, so the engine reuses the prompt its KV cache already holds.
 
 When a request no longer fits the context (the engine refuses it with `context_full`), the oldest

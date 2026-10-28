@@ -318,6 +318,10 @@ bool plan_change(const std::string & ws,
 ToolOutput fetch_url(HttpFetch * net, const json & a, const std::atomic<bool> & stop) {
     const std::string url = arg(a, "url");
     if (!net) return fail("this server cannot make web requests");
+    const std::string scheme = lower(url.substr(0, url.find("://")));
+    if (url.find("://") == std::string::npos || (scheme != "http" && scheme != "https"))
+        return fail("fetch_url reads web pages (http or https) only, not " + url +
+                    ". Files are reached with the file tools, in a conversation that has a workspace.");
     if (url_names_private_host(url))
         return fail("the agent reads the public web only: " + url + " is this computer or a private network");
     HttpFetch::Request r;
@@ -550,7 +554,9 @@ std::string Agent::system_prompt(const json & conv, bool remote) const {
         s += "Workspace: \"" + w.value("name", "") + "\" at " + ws +
              ". Every path you give a tool is relative to it, and nothing outside it can be reached.\n";
     } else {
-        s += "This conversation has no workspace: there are no file or command tools.\n";
+        s += "This conversation has no workspace: there are no file or command tools, and no other way to reach "
+             "files. If the person asks you to create, read or change files, tell them to pick a folder for this "
+             "conversation first.\n";
     }
     s += mode_words(conv.value("mode", "ask"));
     s += "\n";
@@ -942,6 +948,9 @@ std::string Agent::run_rounds(Run & run, const std::string & conv_id, int depth)
     // when the next request extends it, and the conversation is only ever appended to.
     const std::string system = system_prompt(conv, run.remote);
     bool told_shortened = false;
+    // The last failed call (name, arguments, result) and how many times in a row it came back.
+    std::string last_failure;
+    int same_failures = 0;
     std::string final_text;
     int rounds = 0;
     for (;;) {
@@ -1055,7 +1064,24 @@ std::string Agent::run_rounds(Run & run, const std::string & conv_id, int depth)
         for (const ChatToolCall & c : r.tool_calls) {
             if (run.stop.load()) break;
             d_.store->conversation(conv_id, conv);
-            run_tool(run, conv, c, depth);
+            const json done = run_tool(run, conv, c, depth);
+            if (done.value("state", "") != "error") {
+                last_failure.clear();
+                same_failures = 0;
+                continue;
+            }
+            const std::string failure =
+                c.name + '\n' + done.value("args", json::object()).dump() + '\n' + done.value("result", "");
+            same_failures = failure == last_failure ? same_failures + 1 : 1;
+            last_failure = failure;
+            if (same_failures >= k_max_same_failed_calls) {
+                notice(conv_id, "error",
+                       "Stopped: the model asked for the same thing " + std::to_string(same_failures) +
+                           " times and it failed the same way each time. Rephrase the request, or check what the "
+                           "conversation can reach (its folder and mode).");
+                run.failed = true;
+                return final_text;
+            }
         }
     }
 }

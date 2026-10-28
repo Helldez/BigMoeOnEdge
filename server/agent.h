@@ -42,6 +42,9 @@ namespace bmoe::server::agent {
 // Rounds one message may take: model answer, tool calls, results, again. A task that needs more is
 // stopped with a notice and can be continued with another message.
 inline constexpr int k_max_rounds_per_message = 30;
+// The same tool call failing the same way this many times in a row stops the run: a model that
+// repeats a refused call is not going to get a different answer.
+inline constexpr int k_max_same_failed_calls = 3;
 // A helper may not start helpers of its own, and one message may start this many.
 inline constexpr int k_max_delegate_depth = 1;
 inline constexpr int k_max_helpers_per_message = 4;

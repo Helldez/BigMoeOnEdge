@@ -131,6 +131,8 @@ Semantic Versioning.
   it is not listed, read, changed, deleted or stopped, and its events and the tasks' reach local
   event streams only. A client on the network may not give a conversation a workspace or a
   provider route, nor turn on full access.
+- A run stops when the model repeats the same failing tool call three times, with a notice saying so;
+  `fetch_url` refuses anything but http and https with a reason the model can act on.
 - Commands that run without asking are only those that cannot run another program: `git` asks (a
   repository's configuration can make `git status` run one), and so do `sort --compress-program`
   and the abbreviated long options of the refused ones.

@@ -489,6 +489,25 @@ static void loop_tests() {
         check(rig->items_of(c, "tool")[0].value("state", "") == "error", "with state error");
     }
     {
+        // A model that keeps asking for the same refused call is stopped, not left to loop.
+        auto rig = std::make_unique<Rig>();
+        const std::string c = rig->conversation("ask", false);
+        std::vector<Turn> same;
+        for (int i = 0; i < k_max_same_failed_calls + 3; ++i)
+            same.push_back({"", {call("read_file", {{"path", "note.md"}})}});
+        rig->say(same);
+        json item;
+        rig->agent->send(c, "read my note", false, false, item);
+        check(rig->wait_done(c), "a repeated failing call ends the run");
+        check(rig->items_of(c, "tool").size() == static_cast<size_t>(k_max_same_failed_calls),
+              "it stops at the repeat limit");
+        const json notices = rig->items_of(c, "notice");
+        check(!notices.empty() && notices.back().value("text", "").find("same thing") != std::string::npos,
+              "and says why");
+        check(rig->last_request().messages[0].content.find("pick a folder") != std::string::npos,
+              "without a workspace the prompt says to pick a folder for files");
+    }
+    {
         auto rig = std::make_unique<Rig>();
         const std::string c = rig->conversation("ask");
         rig->say({{"", {call("write_file", {{"path", "x.txt"}, {"content", "x"}})}}});
