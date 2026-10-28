@@ -22,7 +22,7 @@ struct MetricsView: View {
         VStack(alignment: .leading, spacing: Grid.s) {
             SectionTitle("Records", trailing: files.isEmpty ? nil : "\(files.count)")
             if files.isEmpty {
-                Text("A file per loaded model appears here once it has answered, with Metrics CSV on in Settings.")
+                Text("A file per loaded model appears here once it has answered.")
                     .font(.ui(15)).foregroundStyle(Palette.muted)
             }
             ForEach(files, id: \.self) { url in

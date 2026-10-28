@@ -32,18 +32,12 @@ object AppPrefs {
         return key
     }
 
-    /** Write one per-token CSV per loaded session, for the Metrics screen and for sharing. */
-    fun metricsCsv(ctx: Context): Boolean = prefs(ctx).getBoolean("metrics_csv", true)
-    fun setMetricsCsv(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("metrics_csv", on).apply()
-
     /**
-     * The deepest level of the parameter table the Settings filter shows, remembered on this phone.
-     * The levels are the table's own; this keeps whichever one was picked while it is one of [known]
-     * (a value an older build stored, or a hand-edited file, is not), else [defaultLevel].
+     * Write one per-token CSV per loaded session and offer the Metrics screen (from Settings). Off
+     * until asked for: a chat app records nothing by default, and the screen is a measuring tool.
      */
-    fun settingsLevel(ctx: Context, known: List<String>, defaultLevel: String): String =
-        prefs(ctx).getString("settings_level", null)?.takeIf { it in known } ?: defaultLevel
-    fun setSettingsLevel(ctx: Context, level: String) = prefs(ctx).edit().putString("settings_level", level).apply()
+    fun metricsCsv(ctx: Context): Boolean = prefs(ctx).getBoolean("metrics_csv", false)
+    fun setMetricsCsv(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("metrics_csv", on).apply()
 
     /** The load whose context warning was dismissed on this phone, or "": one at a time is enough. */
     fun ctxWarningDismissed(ctx: Context): String = prefs(ctx).getString("ctx_warning_dismissed", null) ?: ""

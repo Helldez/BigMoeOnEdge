@@ -331,7 +331,9 @@ private fun MemoryPool(pool: PlanPool) {
     val sum = held.sumOf { it.bytes }
     val whole = maxOf(pool.capBytes, sum).coerceAtLeast(1)
     val free = whole - sum
-    val colours = listOf(MaterialTheme.colorScheme.secondary, MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.onSurfaceVariant, okColor(), MaterialTheme.colorScheme.tertiary)
+    // The categorical series, not the theme's roles: those look alike side by side, and a bar of
+    // processes is read by telling its segments apart.
+    val colours = tokens.series
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(pool.label + if (pool.estimated) " (an even share of the devices' sum)" else "", fontSize = 14.sp)

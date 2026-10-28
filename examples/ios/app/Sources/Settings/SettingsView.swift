@@ -1,27 +1,22 @@
 import BmoeKit
 import SwiftUI
 
-/// Settings (docs/screens.md): every engine tunable, rendered from the parameter table, and the few
-/// settings that are the app's own. One card per group of the table, in its order; a card shows its
-/// basic rows (the recommended configuration) and folds its deeper rows inside it, one heading per
-/// level. A filter shows rows up to a level, a search reads every level, and a link
-/// (`Navigator.openSetting`) lands on one row. Each row appears once.
+/// Settings (docs/screens.md): the engine tunables a form offers, rendered from the parameter
+/// table, and the few settings that are the app's own. One card per group of the table, in its
+/// order, listing the rows the table puts on a form and any the person set; every card starts
+/// closed. A link (`Navigator.openSetting`) opens its row's card and lands on it. Each row appears once.
 struct SettingsView: View {
     @EnvironmentObject private var engine: Engine
     @EnvironmentObject private var nav: Navigator
-    /// The level filter, remembered on this device.
-    @AppStorage("settings.level") private var storedLevel = ParamSpec.Level.advanced.rawValue
-    /// A link to a deeper row widens the filter for this visit, without changing what is remembered.
-    @State private var widened: ParamSpec.Level?
-    @State private var query = ""
-    @State private var closedCards: [String: Bool] = [:]
-    @State private var openFolds: [String: Bool] = [:]
+    @EnvironmentObject private var preferences: Preferences
+    /// The cards opened on this visit; everything else is closed, so the page opens as a short list.
+    @State private var openCards: Set<String> = []
+    @State private var appOpen = false
+    /// A row a link landed on that the form does not offer, shown for this visit.
+    @State private var revealed: String?
     @State private var focusKey: String?
     @State private var failure: String?
     @State private var confirmReset = false
-
-    private var level: ParamSpec.Level { widened ?? ParamSpec.Level(rawValue: storedLevel) ?? .advanced }
-    private var searching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -36,22 +31,35 @@ struct SettingsView: View {
                 }
                 if !engine.params.isEmpty {
                     tools
-                    let cards = SettingsForm.cards(engine.params, upTo: level, query: query,
-                                                   pinned: SettingsForm.pinned(engine.params, config: engine.config))
-                    if searching {
-                        Text(cards.isEmpty ? "No setting matches." : "Every level is searched.").font(.ui(12)).foregroundStyle(Palette.muted)
-                    }
-                    ForEach(cards) { c in card(c) }
+                    let also = SettingsForm.userSet(engine.params, config: engine.config).union(revealed.map { [$0] } ?? [])
+                    ForEach(SettingsForm.cards(engine.params, also: also)) { c in card(c) }
                 }
-                AppSettingsSection()
+                AppSettingsSection(open: $appOpen)
+                if preferences.metricsCSV {
+                    NavigationLink {
+                        MetricsView()
+                            .background(Palette.bg.ignoresSafeArea())
+                            .navigationTitle("Metrics")
+                            .navigationBarTitleDisplayMode(.inline)
+                    } label: {
+                        HStack(spacing: Grid.s) {
+                            Text("Metrics").font(.ui(18, bold: true)).foregroundStyle(Palette.accentInk)
+                            Spacer()
+                            Image(systemName: "chevron.right").foregroundStyle(Palette.muted)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .card(padding: 12)
+                }
             }
             .onAppear { land(proxy) }
             .onChange(of: nav.settingTarget) { _ in land(proxy) }
             .onChange(of: engine.params.count) { _ in land(proxy) }
             .onChange(of: engine.config == nil) { _ in land(proxy) }
-            // A link widens the filter for that visit only.
+            // A row a link revealed is shown for that visit only.
             .onDisappear {
-                widened = nil
+                revealed = nil
                 focusKey = nil
             }
         }
@@ -89,93 +97,36 @@ struct SettingsView: View {
         }
     }
 
-    /// The search, the level filter with its counts, and Reset all my values.
+    /// Reset all my values, when there is one.
+    @ViewBuilder
     private var tools: some View {
-        let counts = SettingsForm.levelCounts(engine.params)
-        return VStack(alignment: .leading, spacing: Grid.s) {
-            AppField(placeholder: "Search settings", text: $query)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(ParamSpec.Level.allCases, id: \.self) { l in
-                        let shown = SettingsForm.widened(l, toShow: level) == level
-                        Button {
-                            widened = nil
-                            storedLevel = l.rawValue
-                        } label: {
-                            Text("\(l.rawValue.capitalized) \(counts[l] ?? 0)")
-                                .font(.ui(13, bold: l == level))
-                                .foregroundStyle(l == level ? Palette.onAccent : Palette.text)
-                                .padding(.horizontal, 10).padding(.vertical, 5)
-                                .background(Capsule().fill(l == level ? Palette.accentInk : shown ? Palette.accentTint : Palette.surface2))
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityAddTraits(l == level ? .isSelected : [])
-                    }
-                }
-                .padding(.vertical, 2)
-            }
-            .disabled(searching)
-            .opacity(searching ? 0.45 : 1)
-            if !resettable.isEmpty {
-                Button("Reset all my values (\(resettable.count))") { confirmReset = true }.buttonStyle(.appSecondary)
-            }
+        if !resettable.isEmpty {
+            Button("Reset all my values (\(resettable.count))") { confirmReset = true }.buttonStyle(.appSecondary)
         }
     }
 
     // MARK: a card
 
     private func card(_ c: SettingsForm.Card) -> some View {
-        let open = searching || !(closedCards[c.group] ?? c.basic.isEmpty)
+        let open = openCards.contains(c.group)
         return VStack(alignment: .leading, spacing: Grid.s) {
             Button {
-                closedCards[c.group] = open
+                if open { openCards.remove(c.group) } else { openCards.insert(c.group) }
             } label: {
                 HStack(alignment: .firstTextBaseline, spacing: Grid.s) {
                     Text(c.label).font(.ui(18, bold: true)).foregroundStyle(Palette.accentInk)
-                    if c.basic.isEmpty { Badge(text: "\(c.moreCount)") }
                     Spacer()
                     Image(systemName: open ? "chevron.up" : "chevron.down").foregroundStyle(Palette.muted)
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(searching)
             if !c.help.isEmpty {
                 Text(c.help).font(.ui(12)).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
             }
-            if open {
-                rows(c.basic, c)
-                if !c.more.isEmpty {
-                    if !c.basic.isEmpty {
-                        Fold(title: "\(c.moreCount) more in \(c.label): \(c.more.map(\.level.rawValue).joined(separator: ", "))",
-                             isOpen: Binding(get: { searching || openFolds[c.group] == true },
-                                             set: { if !searching { openFolds[c.group] = $0 } }),
-                             boxed: false)
-                        { levels(c) }
-                    } else {
-                        levels(c)
-                    }
-                }
-                if c.hidden > 0, !searching {
-                    Text("\(c.hidden) more at a deeper level: widen the filter above to see \(c.hidden == 1 ? "it" : "them").")
-                        .font(.ui(12)).foregroundStyle(Palette.muted)
-                }
-            }
+            if open { rows(c.rows, c) }
         }
         .card(padding: 12)
-    }
-
-    private func levels(_ c: SettingsForm.Card) -> some View {
-        ForEach(c.more, id: \.level) { m in
-            VStack(alignment: .leading, spacing: 2) {
-                Text(m.level.rawValue.capitalized).font(.ui(15, bold: true)).foregroundStyle(Palette.text).padding(.top, Grid.s)
-                let hint = SettingsForm.levelHint(m.level)
-                if !hint.isEmpty { Text(hint).font(.ui(12)).foregroundStyle(Palette.muted) }
-                rows(m.rows, c)
-            }
-        }
     }
 
     private func rows(_ specs: [ParamSpec], _ c: SettingsForm.Card) -> some View {
@@ -193,16 +144,14 @@ struct SettingsView: View {
 
     // MARK: actions
 
-    /// A link to one setting lands on it: the filter widened to its level, its card and fold
-    /// opened, the row scrolled into view and its field focused. Once per link.
+    /// A link to one setting lands on it: the row shown even where the form does not offer it, its
+    /// card opened, the row scrolled into view and its field focused. Once per link.
     private func land(_ proxy: ScrollViewProxy) {
         guard let key = nav.settingTarget, engine.config != nil,
               let spec = engine.params.first(where: { $0.key == key }) else { return }
         nav.settingTarget = nil
-        query = ""
-        if SettingsForm.widened(level, toShow: spec.level) != level { widened = spec.level }
-        closedCards[spec.group] = false
-        if spec.level != .basic { openFolds[spec.group] = true }
+        if !spec.form { revealed = key }
+        openCards.insert(spec.group)
         focusKey = nil
         // After the cards above have opened, so the row is there to scroll to.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
@@ -418,17 +367,29 @@ struct ParamRow: View {
 }
 
 /// The settings that are the app's own (docs/screens.md): serving the network with the key shown,
-/// the metrics files, starting and stopping the engine. Never an engine parameter.
+/// the metrics, starting and stopping the engine. Never an engine parameter. A card that folds
+/// like the groups' cards.
 struct AppSettingsSection: View {
     @EnvironmentObject private var engine: Engine
     @EnvironmentObject private var nav: Navigator
     @EnvironmentObject private var preferences: Preferences
+    @Binding var open: Bool
     @State private var copied = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Grid.s) {
-            SectionTitle("This app")
-            VStack(alignment: .leading, spacing: Grid.m) {
+        VStack(alignment: .leading, spacing: Grid.m) {
+            Button {
+                open.toggle()
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: Grid.s) {
+                    Text("This app").font(.ui(18, bold: true)).foregroundStyle(Palette.accentInk)
+                    Spacer()
+                    Image(systemName: open ? "chevron.up" : "chevron.down").foregroundStyle(Palette.muted)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if open {
                 Toggle(isOn: Binding(get: { preferences.shareOnNetwork }, set: {
                     preferences.shareOnNetwork = $0
                     engine.restart()
@@ -457,8 +418,8 @@ struct AppSettingsSection: View {
                 }
                 Toggle(isOn: $preferences.metricsCSV) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Metrics CSV").foregroundStyle(Palette.text)
-                        Text("A per-token file for every loaded model, in Metrics and in the app's folder.")
+                        Text("Metrics").foregroundStyle(Palette.text)
+                        Text("Record a per-token CSV for every loaded model and show the measurements here.")
                             .font(.ui(12)).foregroundStyle(Palette.muted)
                     }
                 }
@@ -473,8 +434,8 @@ struct AppSettingsSection: View {
                     if let v = engine.info?.version { Text("engine \(v)").font(.ui(13)).foregroundStyle(Palette.muted) }
                 }
             }
-            .card()
         }
+        .card(padding: 12)
     }
 
     private var endpoint: some View {

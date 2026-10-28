@@ -1,5 +1,6 @@
 package io.bigmoeonedge.app.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
@@ -59,7 +60,7 @@ private enum class View { LIST, FILE, CORRELATE, COMPARE, GLOSSARY }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MetricsScreen(modifier: Modifier = Modifier) {
+fun MetricsScreen(modifier: Modifier = Modifier, onBack: (() -> Unit)? = null) {
     val context = LocalContext.current
     var picked by remember { mutableStateOf<File?>(null) }
     var selection by remember { mutableStateOf<List<File>>(emptyList()) }
@@ -77,9 +78,11 @@ fun MetricsScreen(modifier: Modifier = Modifier) {
         when (view) {
             View.CORRELATE -> view = View.FILE
             View.FILE, View.COMPARE, View.GLOSSARY -> view = View.LIST
-            View.LIST -> {}
+            View.LIST -> onBack?.invoke()
         }
     }
+    // The system back steps the same way, and from the list leaves for wherever the screen was opened from.
+    BackHandler(enabled = view != View.LIST || onBack != null) { back() }
 
     Scaffold(
         modifier = modifier,
@@ -98,7 +101,7 @@ fun MetricsScreen(modifier: Modifier = Modifier) {
                     )
                 },
                 navigationIcon = {
-                    if (view != View.LIST) {
+                    if (view != View.LIST || onBack != null) {
                         IconButton(onClick = { back() }) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                         }

@@ -55,6 +55,11 @@ data class Tokens(
     val warnTint: Color,
     val err: Color,
     val errTint: Color,
+    /**
+     * Categorical colours for the parts of one whole (a memory bar's segments): six hues far apart,
+     * so neighbours never read as one, each kept clear of [line] on the surface. Index i % size.
+     */
+    val series: List<Color>,
 )
 
 val LightTokens = Tokens(
@@ -75,6 +80,8 @@ val LightTokens = Tokens(
     warnTint = Color(0xFFFDF3E2),
     err = Color(0xFFB91C1C),
     errTint = Color(0xFFFCEBEB),
+    // cyan, violet, amber, green, rose, slate
+    series = listOf(Color(0xFF0891B2), Color(0xFF7C3AED), Color(0xFFD97706), Color(0xFF16A34A), Color(0xFFE11D48), Color(0xFF64748B)),
 )
 
 val DarkTokens = Tokens(
@@ -95,6 +102,7 @@ val DarkTokens = Tokens(
     warnTint = Color(0xFF2A2111),
     err = Color(0xFFF87171),
     errTint = Color(0xFF2C1517),
+    series = listOf(Color(0xFF22B8D6), Color(0xFFA78BFA), Color(0xFFFBBF24), Color(0xFF4ADE80), Color(0xFFFB7185), Color(0xFF94A3B8)),
 )
 
 /** The tokens of the current appearance, for what Material's colour roles do not name. */

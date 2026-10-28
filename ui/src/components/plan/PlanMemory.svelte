@@ -1,14 +1,15 @@
 <script lang="ts">
   // One bar per memory pool: what the run holds, against what it may hold. The rows and their words
-  // are the plan's ledger; the colour follows a row's position, never its name.
+  // are the plan's ledger; the colour follows a row's position, never its name, from the series
+  // palette so neighbouring parts stay apart.
   import { formatBytes } from '../../lib/format';
   import { memorySegments } from '../../lib/plan';
   import type { PlanMemoryPool } from '../../lib/types';
 
   let { pools }: { pools: PlanMemoryPool[] } = $props();
 
-  const COLOURS = ['var(--accent)', 'var(--accent)', 'var(--muted)', 'var(--ok)', 'var(--warn)'];
-  const colour = (slot: number) => (slot < 0 ? 'var(--surface-2)' : COLOURS[slot % COLOURS.length]);
+  const SERIES = 6;
+  const colour = (slot: number) => (slot < 0 ? 'var(--surface-2)' : `var(--series-${(slot % SERIES) + 1})`);
 </script>
 
 {#each pools as pool, pi (pi)}

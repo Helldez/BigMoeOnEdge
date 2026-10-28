@@ -1,8 +1,8 @@
 import SwiftUI
 import UIKit
 
-/// The app: five screens over the one engine, the five every UI of this project has (chat, models,
-/// plan, settings, metrics), each a client of bmoe-server, which runs inside this app on loopback
+/// The app: the screens every UI of this project has (chat, models, plan, settings, and metrics
+/// opened from settings while its switch is on) over the one engine, each a client of bmoe-server, which runs inside this app on loopback
 /// (docs/application-framework.md). The server starts with the app; the model it holds is loaded
 /// from Models; the server runs with `--chat-only`, so its conversations are plain chat.
 @main

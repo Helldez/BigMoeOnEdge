@@ -31,6 +31,7 @@ const UI: [string, string][] = [
   ['accent', 'surface-2'],
   ['accent-fill', 'surface'],
   ['accent-fill', 'bg'],
+  ...[1, 2, 3, 4, 5, 6].map((i): [string, string] => [`series-${i}`, 'surface']),
 ];
 
 describe('palette contrast (WCAG AA)', () => {

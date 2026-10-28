@@ -337,7 +337,7 @@ private struct CommandText: View {
 /// segment; a segment's colour is its position.
 private struct PoolBar: View {
     let pool: PlanResult.Pool
-    static let colours = [Palette.accent, Palette.ok, Palette.warn, Palette.muted, Palette.text]
+    static func colour(_ i: Int) -> Color { Palette.series[i % Palette.series.count] }
 
     var body: some View {
         let held = pool.rows.filter { !$0.inTurn }
@@ -356,7 +356,7 @@ private struct PoolBar: View {
             GeometryReader { g in
                 HStack(spacing: 0) {
                     ForEach(held.indices, id: \.self) { i in
-                        Rectangle().fill(Self.colours[i % Self.colours.count])
+                        Rectangle().fill(Self.colour(i))
                             .frame(width: g.size.width * Double(held[i].bytes) / Double(whole))
                     }
                     Spacer(minLength: 0)
@@ -367,7 +367,7 @@ private struct PoolBar: View {
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             ForEach(held.indices, id: \.self) { i in
                 HStack(spacing: 10) {
-                    RoundedRectangle(cornerRadius: 3).fill(Self.colours[i % Self.colours.count]).frame(width: 12, height: 12)
+                    RoundedRectangle(cornerRadius: 3).fill(Self.colour(i)).frame(width: 12, height: 12)
                     Text(held[i].label).font(.ui(15)).foregroundStyle(Palette.text)
                     Spacer()
                     if held[i].locked { Badge(text: "locked") }

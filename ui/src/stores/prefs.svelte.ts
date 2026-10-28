@@ -27,6 +27,8 @@ class Prefs {
   theme = $state<Theme>(THEMES.includes(read('bmoe.theme') as Theme) ? (read('bmoe.theme') as Theme) : 'system');
   textScale = $state<number>(((v) => (TEXT_SCALES.includes(v as never) ? v : 1))(Number(read('bmoe.textScale'))));
   sidebarCollapsed = $state(read('bmoe.sidebar') === 'collapsed');
+  // Metrics, a section of Settings; off until switched on, so Settings opens on what a person sets.
+  metrics = $state(read('bmoe.metrics') === 'on');
   previewWidth = $state<number>(((v) => (v >= PREVIEW_MIN && v <= PREVIEW_MAX ? v : 520))(Number(read('bmoe.previewWidth'))));
 
   setTheme(v: Theme): void {
@@ -42,6 +44,10 @@ class Prefs {
   setSidebarCollapsed(v: boolean): void {
     this.sidebarCollapsed = v;
     write('bmoe.sidebar', v ? 'collapsed' : 'open');
+  }
+  setMetrics(v: boolean): void {
+    this.metrics = v;
+    write('bmoe.metrics', v ? 'on' : 'off');
   }
   setPreviewWidth(v: number): void {
     this.previewWidth = Math.round(Math.min(PREVIEW_MAX, Math.max(PREVIEW_MIN, v)));

@@ -39,6 +39,13 @@
   --ok-tint: #eaf6ee;
   --warn: #a14a07;
   --warn-tint: #fdf3e2;
+  /* A chart's categories, told apart by hue: one per part of a whole (the plan's memory bar). */
+  --series-1: #0891b2;
+  --series-2: #7c3aed;
+  --series-3: #d97706;
+  --series-4: #16a34a;
+  --series-5: #e11d48;
+  --series-6: #64748b;
   --err: #b91c1c;
   --err-tint: #fcebeb;
   --code-bg: #f1f4f6;
@@ -74,6 +81,12 @@
     --ok-tint: #12261b;
     --warn: #fbbf24;
     --warn-tint: #2a2111;
+    --series-1: #22b8d6;
+    --series-2: #a78bfa;
+    --series-3: #fbbf24;
+    --series-4: #4ade80;
+    --series-5: #fb7185;
+    --series-6: #94a3b8;
     --err: #f87171;
     --err-tint: #2c1517;
     --code-bg: #0f151a;
@@ -106,6 +119,12 @@
   --ok-tint: #12261b;
   --warn: #fbbf24;
   --warn-tint: #2a2111;
+  --series-1: #22b8d6;
+  --series-2: #a78bfa;
+  --series-3: #fbbf24;
+  --series-4: #4ade80;
+  --series-5: #fb7185;
+  --series-6: #94a3b8;
   --err: #f87171;
   --err-tint: #2c1517;
   --code-bg: #0f151a;

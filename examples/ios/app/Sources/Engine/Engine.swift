@@ -413,13 +413,14 @@ final class Preferences: ObservableObject {
         didSet { defaults.set(shareOnNetwork, forKey: "shareOnNetwork") }
     }
 
-    /// Write a per-token CSV for every loaded model, into Metrics.
+    /// Metrics: write a per-token CSV for every loaded model and show Metrics in Settings. Off until
+    /// asked for, so a person who only chats gets no files and no screen of measurements.
     @Published var metricsCSV: Bool {
         didSet { defaults.set(metricsCSV, forKey: "metricsCSV") }
     }
 
     init() {
         shareOnNetwork = defaults.bool(forKey: "shareOnNetwork")
-        metricsCSV = defaults.object(forKey: "metricsCSV") as? Bool ?? true
+        metricsCSV = defaults.object(forKey: "metricsCSV") as? Bool ?? false
     }
 }

@@ -23,6 +23,18 @@ enum Palette {
     static let err = dynamic(light: 0xB91C1C, dark: 0xF87171)
     static let errTint = dynamic(light: 0xFCEBEB, dark: 0x2C1517)
 
+    /// Categorical colours for the parts of one whole (a memory bar's segments and their swatches):
+    /// hues far apart, so neighbours are told apart by colour, not only by order. Part `i` takes
+    /// `series[i % series.count]`; what is left over stays the empty track.
+    static let series = [
+        dynamic(light: 0x0891B2, dark: 0x22B8D6), // cyan
+        dynamic(light: 0x7C3AED, dark: 0xA78BFA), // violet
+        dynamic(light: 0xD97706, dark: 0xFBBF24), // amber
+        dynamic(light: 0x16A34A, dark: 0x4ADE80), // green
+        dynamic(light: 0xE11D48, dark: 0xFB7185), // rose
+        dynamic(light: 0x64748B, dark: 0x94A3B8), // slate
+    ]
+
     /// A semantic colour's tint, for banners and badges: the named tint where there is one.
     static func tint(_ c: Color) -> Color {
         switch c {

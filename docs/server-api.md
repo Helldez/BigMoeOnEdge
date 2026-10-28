@@ -259,7 +259,7 @@ template). Each element:
 ```json
 {"key": "cache-mb", "label": "Expert cache", "type": "int", "group": "cache",
  "group_label": "Expert cache", "group_help": "The memory that keeps experts once read, ...",
- "group_order": 5, "level": "basic", "scope": "session", "help": "...",
+ "group_order": 5, "level": "basic", "form": true, "scope": "session", "help": "...",
  "flag": "--cache-mb", "min": 0, "unit": "MiB", "typical": {"min": 1500, "max": 8192},
  "special": [{"value": 0, "label": "off"}], "accepts_auto": true, "default": "auto"}
 ```
@@ -271,7 +271,9 @@ range to show a person. `typical` is guidance, not a limit: what a person usuall
 shows as the range. `special` names the values that mean something other than their number (`0` is
 `off`, `4294967295` is `random per run`), with `value` in the row's own JSON type; a form shows the
 label in place of the number.
-`level` is `basic | advanced | experimental | debug`. A form shows the groups in `group_order` (a
+`level` is `basic | advanced | experimental | debug`. `form: true` marks a row a settings form
+offers: every basic row and the few deeper ones a person picks rather than the plan; the others are
+the command line's (a form shows one only when the person has set it). A form shows the groups in `group_order` (a
 row's place in the array is not its group's: a group's rows need not be contiguous), each under its
 short `group_label` and its one-line `group_help`. `group_read_only: true` marks a group a client
 sets with a control of its own (the model file, from the model list), which a settings form shows

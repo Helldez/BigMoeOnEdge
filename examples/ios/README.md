@@ -25,14 +25,16 @@ app/
                 Hugging Face and a link's size on URLSession (the desktop runs curl). The only
                 Objective-C++.
   Sources/
-    App/        the entry point, the five tabs and the links between them, the status line
+    App/        the entry point, the four tabs and the links between them, the status line
     Engine/     the server's life in the app: paths, launch, key, the state the screens observe
     Chat/       the conversations over the server, the transcript, the composer, Markdown,
                 choose-from-options
     Models/     one list of what is here and what the catalog offers, Hugging Face, a link, a file
     Plan/       the verdict and its three figures, the planner's measurements and decisions
-    Settings/   every engine parameter, one card per group of GET /api/params, and the app's own
-    Metrics/    the live card, the recorded runs, the engine's log
+    Settings/   the engine parameters a form offers, one card per group of GET /api/params, and
+                the app's own
+    Metrics/    the live card, the recorded runs, the engine's log: opened from Settings while
+                the Metrics switch is on
     Design/     the visual language (docs/design.md): the tokens, Inter and JetBrains Mono, the
                 boxes, the logo
   Resources/    the app icon, rendered from the logo by make-icon.swift; Fonts/, the bundled
@@ -54,8 +56,11 @@ the running downloads and, when the context is below what a client of the server
 server serves the network or has refused a request, a warning with a link that lands on that
 setting and a ✕ that dismisses it for that model and context (a refusal brings it back); the same
 line stays under "Serve on the network". Plan opens on its verdict and three figures with Apply and
-Measure again; Settings is one card per group with a remembered level filter, a search, a chip per
-row for where its value came from, and links from Plan land on a row.
+Measure again; Settings is one card per group, every card closed until opened, holding the rows the
+parameter table offers on a form (`form`) and any the person set, with a chip per row for where
+its value came from, and links from Plan that open a row's card and land on it. Metrics is
+not a tab: the **Metrics** switch in Settings (off by default) records a per-token CSV for every
+loaded model and adds the Metrics entry there.
 
 ### The chat
 
@@ -84,8 +89,8 @@ lands; a stopped one keeps the system's resume data, so its row reads Resume (X 
 Delete partial download), checks a finished file against its catalog `sha256` before it becomes the
 model (read back in chunks, off the transfers' queue; the file waits under a name of its check's own
 meanwhile, and a mismatch deletes it and says so; a start is refused when the entry does not fit in
-the free space), writes a metrics CSV per loaded model from the event stream, and keeps the network
-key in the keychain. Nothing in it names an engine parameter: the settings are rendered from the
+the free space), writes a metrics CSV per loaded model from the event stream while Metrics is on,
+and keeps the network key in the keychain. Nothing in it names an engine parameter: the settings are rendered from the
 parameter table, the plan from the planner.
 
 Where things live: models and metrics files in the app's documents folder, which the Files app and

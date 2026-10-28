@@ -30,6 +30,8 @@ export interface ParamSpec {
   /** A form shows the group's values without a control: a front-end sets them elsewhere. */
   group_read_only?: boolean;
   level: ParamLevel | (string & {});
+  /** A settings form offers the row; the rest are the CLI's (the plan sets them). */
+  form?: boolean;
   scope: ParamScope | (string & {});
   help: string;
   flag: string;

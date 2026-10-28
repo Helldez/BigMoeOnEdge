@@ -31,7 +31,6 @@
     { route: 'plan', icon: 'gauge', key: 'nav.plan' },
     { route: 'skills', icon: 'spark', key: 'nav.skills' },
     { route: 'tasks', icon: 'clock', key: 'nav.tasks' },
-    { route: 'metrics', icon: 'activity', key: 'nav.metrics' },
     { route: 'connect', icon: 'plug', key: 'nav.connect' },
     { route: 'settings', icon: 'gear', key: 'nav.settings' },
   ];

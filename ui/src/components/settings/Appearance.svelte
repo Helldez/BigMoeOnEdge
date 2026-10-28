@@ -1,5 +1,5 @@
 <script lang="ts">
-  // How the UI looks, kept in this browser: theme, text size.
+  // How the UI looks, kept in this browser: theme, text size, whether Settings shows Metrics.
   import Segmented from './Segmented.svelte';
   import { prefs, TEXT_SCALES, THEMES, type Theme } from '../../stores/prefs.svelte';
   import { t } from '../../lib/text';
@@ -30,5 +30,12 @@
       options={TEXT_SCALES.map((v) => ({ value: v, label: `${Math.round(v * 100)}%` }))}
       onchange={(v: number) => prefs.setTextScale(v)}
     />
+  </div>
+  <div class="setting">
+    <label class="what" for="metrics">
+      <span class="label">{t('settings.metrics')}</span>
+      <span class="muted small">{t('settings.metrics.help')}</span>
+    </label>
+    <input id="metrics" type="checkbox" class="switch" role="switch" checked={prefs.metrics} onchange={(e) => prefs.setMetrics(e.currentTarget.checked)} />
   </div>
 </section>

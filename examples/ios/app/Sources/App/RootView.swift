@@ -6,7 +6,7 @@ import SwiftUI
 @MainActor
 final class Navigator: ObservableObject {
     enum Screen: String, CaseIterable, Identifiable {
-        case chat = "Chat", models = "Models", plan = "Plan", settings = "Settings", metrics = "Metrics"
+        case chat = "Chat", models = "Models", plan = "Plan", settings = "Settings"
         var id: String { rawValue }
 
         var icon: String {
@@ -15,7 +15,6 @@ final class Navigator: ObservableObject {
             case .models: return "shippingbox"
             case .plan: return "cpu"
             case .settings: return "slider.horizontal.3"
-            case .metrics: return "chart.xyaxis.line"
             }
         }
     }
@@ -36,7 +35,8 @@ final class Navigator: ObservableObject {
     }
 }
 
-/// The five screens in a bottom bar, the status line above every one of them.
+/// The four screens in a bottom bar, the status line above every one of them. Metrics is not one:
+/// it opens from Settings while the Metrics switch is on.
 struct RootView: View {
     typealias Screen = Navigator.Screen
     @EnvironmentObject private var nav: Navigator
@@ -85,7 +85,6 @@ struct RootView: View {
         case .models: ModelsView()
         case .plan: PlanView()
         case .settings: SettingsView()
-        case .metrics: MetricsView()
         }
     }
 

@@ -26,15 +26,15 @@ class ParamsAndConversationsTest {
     )
 
     @Test
-    fun groupsKeepTheTablesOrderAndLevelsFilter() {
+    fun groupsKeepTheTablesOrder() {
         val specs = ParamSpec.parse(table)
         val groups = ParamSpec.grouped(specs)
         assertEquals(listOf("Expert cache", "Dense weights"), groups.map { it.first })
         assertEquals(listOf("cache-mb", "overlap"), groups[0].second.map { it.key })
-        assertTrue(ParamSpec.levelRank("basic") < ParamSpec.levelRank("advanced"))
-        assertTrue(ParamSpec.levelRank("debug") < ParamSpec.levelRank("a level added later"))
         assertEquals(listOf("anon" to "Anon", "mmap" to "Mmap"), specs[2].choices)
         assertEquals("MiB", specs[0].unit)
+        // A table without "form" offers its basic rows to a form.
+        assertEquals(listOf(true, false, true), specs.map { it.form })
         assertTrue(specs[0].acceptsAuto)
     }
 

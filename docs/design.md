@@ -36,6 +36,7 @@ this table.
 | `err` | `#B91C1C` | `#F87171` | an error, a destructive action |
 | `err-tint` | `#FCEBEB` | `#2C1517` | behind `err` words |
 | `code-bg` | `#F1F4F6` | `#0F151A` | code blocks, inline code, a diff |
+| `series-1` … `series-6` | `#0891B2` `#7C3AED` `#D97706` `#16A34A` `#E11D48` `#64748B` | `#22B8D6` `#A78BFA` `#FBBF24` `#4ADE80` `#FB7185` `#94A3B8` | the parts of one whole, told apart by hue: the plan's memory bar, part *i* taking `series-(i mod 6 + 1)`; each one 3:1 on `surface` |
 
 Shadows are soft and few: `shadow-sm` (cards, buttons; `0 1px 2px` at 6% of `text` in light, 40%
 black in dark), `shadow-md` (a popover, a menu), `shadow-lg` (a dialog). A dialog's backdrop is

@@ -71,6 +71,17 @@ Semantic Versioning.
   under the last answer: it sends the last question again through the edit route, as the web UI
   does. The empty chat says the model runs on the phone and leads to Models while none is loaded.
 
+- **Settings show what a person sets** (web, Android, iOS alike). The parameter table marks the rows
+  a form offers (`form` in `GET /api/params`): every basic row and the few deeper ones a person
+  picks rather than the plan (which devices, speculative drafts, the context's precision, the
+  active experts), 14 of 79. The rest stay flags of the command line; one the person set anyway is
+  shown so it can be reset. The level filter, the per-level folds and the search are gone, and
+  every card starts closed.
+- **Metrics is a section of Settings**, shown once the Metrics switch is on (off by default; on a
+  phone it also records the per-token CSV), instead of an entry of its own in the navigation.
+- **The plan's memory bar tells its parts apart**: a six-colour series palette (`series-1` …
+  `series-6`, light and dark, each 3:1 on a card) in place of theme colours that looked alike.
+
 - **`bmoe-desktop`, the app's own window** (`desktop/`, `docs/desktop-app.md`). The web UI in the
   system's web view (the `webview` library, a pinned submodule: WKWebView, WebView2, WebKitGTK 4.1),
   with `bmoe-server` as its child process: started on the port of the app's preferences (the next

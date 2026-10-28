@@ -115,6 +115,10 @@ int main() {
     for (const ParamDesc & d : params()) {
         check(d.get && d.set, d.key + ": has accessors");
         check(!d.flag.empty() || !d.switches.empty(), d.key + ": reachable from the command line");
+        // A form offers every basic row, and nothing still pending an A/B or kept for tests.
+        if (d.level == ParamLevel::Basic) check(d.form, d.key + ": a basic row is in the form");
+        if (d.level == ParamLevel::Experimental || d.level == ParamLevel::Debug)
+            check(!d.form, d.key + ": an experimental or debug row stays out of the form");
 
         // The default reads back through the setter to itself.
         RunConfig c;

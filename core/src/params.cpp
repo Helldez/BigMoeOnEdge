@@ -161,6 +161,7 @@ ParamDesc row(const char * key, const char * label, ParamGroup group, ParamLevel
     d.label = label;
     d.group = group;
     d.level = level;
+    d.form = level == ParamLevel::Basic;
     d.help = std::move(help);
     d.flag = std::string("--") + key;
     return d;
@@ -645,6 +646,7 @@ std::vector<ParamDesc> build() {
                           "Layers stored on a compute device, counted from the top as llama.cpp fills them: "
                           "their experts are resident there, not streamed. 0 keeps everything on the host. The "
                           "hardware planner sets it from llama.cpp's own capacity fitter.");
+        d.form = true;
         d.value_hint = "N";
         bounds(d, 0, RunConfig::n_gpu_layers_max, "layers");
         special(d, "0", "all on the host");
@@ -777,6 +779,7 @@ std::vector<ParamDesc> build() {
                           "placed on one and the CPU alone otherwise: a device left registered but unused "
                           "still takes graph nodes, each one a boundary crossing. The prefill device is "
                           "named separately and is not affected.");
+        d.form = true;
         d.type = ParamType::Choice;
         d.value_hint = "auto|all|cpu";
         bind_choice<DeviceUse>(d, [](RunConfig & c) -> DeviceUse & { return c.device_use; },
@@ -953,6 +956,7 @@ std::vector<ParamDesc> build() {
                           "Draft a continuation, then verify it in one wider decode. mtp uses the model's own "
                           "prediction head (needs the nextn block); ngram looks the recent tokens up in the "
                           "prompt and the answer. Needs greedy decoding.");
+        d.form = true;
         d.type = ParamType::Choice;
         d.flag.clear();
         d.value_hint = "mtp|ngram";
@@ -1036,6 +1040,7 @@ std::vector<ParamDesc> build() {
             d.short_flag = short_flag;
             d.value_hint = "TYPE";
             d.lossy = true;
+            d.form = true;
             bind_choice<KvCacheType>(d, field, kv_types);
             t.push_back(d);
         };
@@ -1055,6 +1060,7 @@ std::vector<ParamDesc> build() {
         ParamDesc d = row("n-expert-used", "Active experts", G::Lossy, L::Advanced,
                           "Override the experts routed per token (top-k). Lower is faster but changes the "
                           "output. 0 = the model's own value.");
+        d.form = true;
         d.value_hint = "N";
         d.lossy = true;
         bounds(d, 0, RunConfig::n_expert_used_max, "experts");
@@ -1510,6 +1516,7 @@ std::string params_json(const RunConfig & defaults) {
         json_str(o, param_level_name(d.level));
         o += ",\"scope\":";
         json_str(o, param_scope_name(d.scope));
+        o += d.form ? ",\"form\":true" : ",\"form\":false";
         o += ",\"help\":";
         json_str(o, d.help);
         o += ",\"flag\":";

@@ -1,25 +1,30 @@
 <script lang="ts">
   // Settings (docs/screens.md, "Settings"): the UI's own (appearance, the desktop app), the saved
-  // providers, graphics backends and updates, then every engine tunable from the parameter table.
-  // A link to one parameter (`#/settings/<key>`) opens the engine section on it.
+  // providers, graphics backends and updates, every engine tunable a form offers, and Metrics once
+  // switched on. A link to one parameter (`#/settings/<key>`) opens the engine section on it.
   import AppSettings from '../components/settings/AppSettings.svelte';
   import Appearance from '../components/settings/Appearance.svelte';
   import Backends from '../components/settings/Backends.svelte';
   import EngineSettings from '../components/settings/EngineSettings.svelte';
+  import Metrics from '../components/settings/Metrics.svelte';
   import Providers from '../components/settings/Providers.svelte';
   import Updates from '../components/settings/Updates.svelte';
   import { desktopState } from '../stores/desktop.svelte';
   import { t } from '../lib/text';
+  import { prefs } from '../stores/prefs.svelte';
   import { router } from '../stores/router.svelte';
 
-  const SECTIONS = ['general', 'providers', 'system', 'engine'] as const;
-  type Section = (typeof SECTIONS)[number];
+  const ALL_SECTIONS = ['general', 'providers', 'system', 'engine', 'metrics'] as const;
+  type Section = (typeof ALL_SECTIONS)[number];
+  let sections = $derived(ALL_SECTIONS.filter((s) => s !== 'metrics' || prefs.metrics));
   let picked = $state<Section | null>(null);
   // A named section in the address wins; any other name is a parameter, which lives under Engine.
   let fromLink = $derived<Section | null>(
-    router.target ? ((SECTIONS as readonly string[]).includes(router.target) ? (router.target as Section) : 'engine') : null,
+    router.target ? ((sections as readonly string[]).includes(router.target) ? (router.target as Section) : 'engine') : null,
   );
-  let section = $derived<Section>(picked ?? fromLink ?? 'general');
+  let wanted = $derived<Section>(picked ?? fromLink ?? 'general');
+  // Metrics switched off while open: back to the first section.
+  let section = $derived<Section>(sections.includes(wanted) ? wanted : 'general');
   $effect(() => {
     void router.target;
     picked = null;
@@ -31,7 +36,7 @@
     <h1>{t('nav.settings')}</h1>
   </div>
   <div class="tabs" role="tablist" aria-label={t('nav.settings')}>
-    {#each SECTIONS as s (s)}
+    {#each sections as s (s)}
       <button type="button" role="tab" id="tab-{s}" aria-selected={section === s} aria-controls="panel-{s}" onclick={() => (picked = s)}>{t(`settings.section.${s}`)}</button>
     {/each}
   </div>
@@ -44,8 +49,10 @@
     {:else if section === 'system'}
       <Backends />
       <Updates />
-    {:else}
+    {:else if section === 'engine'}
       <EngineSettings />
+    {:else}
+      <Metrics />
     {/if}
   </div>
 </div>

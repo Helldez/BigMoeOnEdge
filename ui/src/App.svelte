@@ -9,7 +9,6 @@
   import StatusBar from './components/StatusBar.svelte';
   import Connect from './routes/Connect.svelte';
   import Conversation from './routes/Conversation.svelte';
-  import Metrics from './routes/Metrics.svelte';
   import Models from './routes/Models.svelte';
   import Plan from './routes/Plan.svelte';
   import Settings from './routes/Settings.svelte';
@@ -140,8 +139,6 @@
         <Models />
       {:else if router.route === 'settings'}
         <Settings />
-      {:else if router.route === 'metrics'}
-        <Metrics />
       {:else if router.route === 'skills'}
         <Skills />
       {:else if router.route === 'tasks'}

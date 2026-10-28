@@ -6,7 +6,7 @@ storage, and hand the phone's hardware to any OpenAI-compatible client on the ne
 It is a client of `bmoe-server`, the same engine process the desktop runs
 ([docs/application-framework.md](../../docs/application-framework.md)). The APK carries the server
 as `libbmoe-server.so`; a foreground service starts it on loopback with the app's data directory,
-and the five screens (Chat, Models, Plan, Settings, Metrics) speak its HTTP API
+and its screens (Chat, Models, Plan, Settings, and Metrics from Settings) speak its HTTP API
 ([docs/server-api.md](../../docs/server-api.md)), exactly as the web UI does on a laptop. A process
 of its own is the crash boundary: a driver that ends the engine does not end the app.
 
@@ -241,20 +241,19 @@ style.
 Every engine tunable comes from the engine's parameter table (`GET /api/params`): the groups, the
 rows, their bounds and help text. The app names none of them, so a knob added to the engine appears
 here with no app change, and the same setting means the same thing on the desktop. The page is one
-card per group, in the table's order, with the group's one line of help; each card shows its basic
-rows, the recommended configuration, and folds its advanced, experimental and debug rows inside it
-by level. A filter at the top shows rows up to a level (with counts, remembered on the phone), a
-search looks through every level, and a row the plan or you set is shown whatever the filter. They
-ship in the release build on purpose, because measuring them on hardware other than the one test
-phone is part of what this app is for. Each row carries one chip for where its value came from
-(default, from the plan, set by you); a value you set can be reset, or, where the plan decided
+card per group, in the table's order, with the group's one line of help; every card starts folded
+and lists, in the table's order, the rows the table marks for a form (`form`; a server that does not
+send it offers its basic rows), the same rows the web UI and the iOS app show. A row whose value you
+set is shown too, so it can be seen and reset. Every other parameter is still the engine's, set
+from the command line or the API. Each row carries one chip for where its value came from (default,
+from the plan, set by you); a value you set can be reset, or, where the plan decided
 another, replaced with **Use plan value**. **Reset all my values** removes yours after asking,
 leaving what the engine was launched with and the model. A number shows its unit, the name of a
 special value and the usual range. "Needs reload" marks only a row whose value differs from the
 loaded model's, and a banner offers the Reload. A link from the Plan screen or the context warning
 lands on its row.
 
-The app's own settings close the page:
+The app's own settings close the page, in a folded **This app** card:
 
 - **Serve on the network**: the engine listens on every interface with a key the page shows, and
   the page shows the phone's address on its Wi-Fi or Ethernet network, `http://<phone IP>:8765/v1`,
@@ -277,7 +276,8 @@ is stopped and restarted on a background thread, one step at a time, so a restar
 old process for the port and a stop never freezes the screen; a stopped server's late exit report
 changes nothing. The event stream has a watchdog: the server pings every 15 s, and a stream silent
 for two pings is reconnected.
-- **Metrics CSV**: one per-token file per loaded model, for the Metrics screen and for sharing.
+- **Metrics** (off by default): record one per-token CSV file per loaded model. While it is on,
+  Settings shows a **Metrics** entry that opens the Metrics screen; back returns to Settings.
 
 The prefill device (`prefill-device`) is a row like any other, and the planner chooses it: it
 measures every compute device the build carries (the GPU through Vulkan or OpenCL, a Snapdragon's
@@ -287,7 +287,7 @@ why. Nothing in the app names a device. See `../../docs/npu-prefill.md`.
 
 ## Metrics
 
-The Metrics screen shows the live card for the current or last generation (the rate, and each
+The Metrics screen, opened from Settings while **Metrics** is on, shows the live card for the current or last generation (the rate, and each
 token's time split into compute, flash wait, cache management and what nothing claims), then the
 CSV files: view one, share one, correlate its columns, or compare two on one axis. The chat shows
 the same rate in one line above the prompt while an answer streams. The flash term and the threads

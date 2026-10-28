@@ -2,71 +2,40 @@ package io.bigmoeonedge.app.engine
 
 /**
  * The settings form as docs/screens.md ("Settings") describes it, worked out from the parameter
- * table alone: one card per group in the table's group order, the basic rows open and the deeper
- * levels folded inside each card, a level filter and a search, and where each value came from.
+ * table alone: one card per group in the table's group order, each listing the rows the table marks
+ * for a form (`form`) in the table's order, and where each value came from.
  * Nothing here names a group or a parameter. Same rules as the web UI (ui/src/lib/schema.ts).
  */
 
-/** The rows of one level a card folds away. */
-data class LevelRows(val level: String, val params: List<ParamSpec>)
-
-/** One settings card: a group of the table, its basic rows open and the rest folded by level. */
+/** One settings card: a group of the table and the rows of it the form shows, in table order. */
 data class SettingsCard(
     val group: String,
     val label: String,
     val help: String,
     /** Shown, not edited: a front-end sets it with a control of its own. */
     val readOnly: Boolean,
-    val basic: List<ParamSpec>,
-    val more: List<LevelRows>,
-    /** Rows of this group the level filter leaves out. */
-    val hidden: Int,
-) {
-    val moreCount: Int get() = more.sumOf { it.params.size }
-}
+    val params: List<ParamSpec>,
+)
 
 /**
- * The cards for [params]: rows up to level [upTo], every level when [query] holds words (only the
- * matching rows then), and the rows in [pinned] whatever the filter (a value someone or the plan set
- * is never hidden). A card left with no row is dropped.
+ * The cards for [params]: the rows the table offers a form, and the rows in [pinned] whatever the
+ * table says (a value the person set is never hidden, so it can be seen and reset; a row a link
+ * points at is shown so the link lands). A card left with no row is dropped.
  */
-fun settingsCards(params: List<ParamSpec>, upTo: String, query: String = "", pinned: Set<String> = emptySet()): List<SettingsCard> {
-    val words = query.lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
-    val limit = ParamSpec.levelRank(upTo)
+fun settingsCards(params: List<ParamSpec>, pinned: Set<String> = emptySet()): List<SettingsCard> {
     return ParamSpec.grouped(params).mapNotNull { (_, rows) ->
         val first = rows.first()
-        var hidden = 0
-        val basic = mutableListOf<ParamSpec>()
-        val more = linkedMapOf<String, MutableList<ParamSpec>>()
-        for (p in rows) {
-            val shown = if (words.isNotEmpty()) matches(p, words)
-            else p.level == "basic" || ParamSpec.levelRank(p.level) <= limit || p.key in pinned
-            if (!shown) {
-                if (words.isEmpty()) hidden++
-                continue
-            }
-            if (p.level == "basic") basic += p else more.getOrPut(p.level) { mutableListOf() } += p
-        }
-        if (basic.isEmpty() && more.isEmpty()) return@mapNotNull null
+        val shown = rows.filter { it.form || it.key in pinned }
+        if (shown.isEmpty()) return@mapNotNull null
         SettingsCard(
             group = first.group,
             label = first.groupLabel.ifEmpty { first.group },
             help = first.groupHelp,
             readOnly = first.groupReadOnly,
-            basic = basic,
-            more = more.map { (l, ps) -> LevelRows(l, ps) }.sortedBy { ParamSpec.levelRank(it.level) },
-            hidden = hidden,
+            params = shown,
         )
     }
 }
-
-private fun matches(p: ParamSpec, words: List<String>): Boolean {
-    val hay = "${p.label} ${p.help} ${p.flag} ${p.key} ${p.groupLabel}".lowercase()
-    return words.all { it in hay }
-}
-
-/** How many rows each level holds, for the filter's counts. */
-fun levelCounts(params: List<ParamSpec>): Map<String, Int> = params.groupingBy { it.level }.eachCount()
 
 /**
  * What "reset all my values" removes: the person's own values, never a key the server was launched
@@ -121,8 +90,6 @@ fun ParamSpec.isDefault(value: Any?): Boolean = value == null || sameValue(defau
 fun loadTargetChosen(params: List<ParamSpec>?, cfg: ConfigState?): Boolean =
     cfg != null && params.orEmpty().any { it.groupReadOnly && paramValueText(cfg.value(it.key)).isNotEmpty() }
 
-/** The rows shown whatever the filter: set by the person, decided by the plan, or off their default. */
-fun pinnedKeys(params: List<ParamSpec>, cfg: ConfigState): Set<String> {
-    val decided = cfg.plan.orEmpty().map { it.knob }.toSet()
-    return params.filter { it.key in cfg.userKeys || it.key in decided || !it.isDefault(cfg.value(it.key)) }.map { it.key }.toSet()
-}
+/** The rows shown whether or not the table offers them a form: the ones the person set. */
+fun pinnedKeys(params: List<ParamSpec>, cfg: ConfigState): Set<String> =
+    params.filter { it.key in cfg.userKeys }.map { it.key }.toSet()

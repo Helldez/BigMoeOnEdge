@@ -247,36 +247,26 @@ final class ScreensTests: XCTestCase {
              {"key":"spin","label":"Spin","type":"bool","group":"compute","group_label":"Compute","group_order":2,
               "level":"advanced","default":false},
              {"key":"probe","label":"Probe","type":"bool","group":"debugonly","group_label":"Debug only","group_order":3,
-              "level":"debug","default":false}]
+              "level":"debug","default":false},
+             {"key":"layers","label":"GPU layers","type":"int","group":"compute","group_label":"Compute","group_order":2,
+              "level":"advanced","form":true,"default":0},
+             {"key":"batch","label":"Batch","type":"int","group":"compute","group_label":"Compute","group_order":2,
+              "level":"basic","form":false,"default":512}]
             """#))
     }
 
-    func testOneCardPerGroupWithItsDeeperRowsFolded() throws {
+    func testOneCardPerGroupWithTheFormRowsInTableOrder() throws {
         let params = try table()
-        let all = SettingsForm.cards(params, upTo: .debug)
-        XCTAssertEqual(all.map(\.group), ["model", "cache", "compute", "debugonly"])
-        XCTAssertTrue(all[0].readOnly)
-        XCTAssertEqual(all[2].help, "Who computes.")
-        XCTAssertEqual(all[2].basic.map(\.key), ["threads"])
-        XCTAssertEqual(all[2].more.map(\.level), [.advanced, .experimental, .debug]) // by level, not table order
-        XCTAssertEqual(all[2].moreCount, 3)
-
-        let basic = SettingsForm.cards(params, upTo: .basic)
-        XCTAssertEqual(basic.map(\.group), ["model", "cache", "compute"]) // a card with nothing left goes
-        XCTAssertEqual(basic[2].hidden, 3)
-        // A row someone or the plan set is shown whatever the filter.
-        let pinned = SettingsForm.cards(params, upTo: .basic, pinned: ["trace"])
-        XCTAssertEqual(pinned[2].more.map(\.level), [.debug])
-        XCTAssertEqual(pinned[2].hidden, 2)
-        // A search reads every level, by label, help and flag.
-        XCTAssertEqual(SettingsForm.cards(params, upTo: .basic, query: "io-threads").flatMap { $0.more.flatMap(\.rows) }.map(\.key),
-                       ["lanes"])
-        XCTAssertEqual(SettingsForm.cards(params, upTo: .basic, query: "every LAYER").flatMap(\.basic).map(\.key), ["threads"])
-        XCTAssertEqual(SettingsForm.cards(params, upTo: .debug, query: "nothing like it"), [])
-
-        XCTAssertEqual(SettingsForm.levelCounts(params), [.basic: 3, .advanced: 1, .experimental: 1, .debug: 2])
-        XCTAssertEqual(SettingsForm.widened(.basic, toShow: .debug), .debug)
-        XCTAssertEqual(SettingsForm.widened(.experimental, toShow: .advanced), .experimental)
+        let cards = SettingsForm.cards(params)
+        XCTAssertEqual(cards.map(\.group), ["model", "cache", "compute"]) // a card with no form row goes
+        XCTAssertTrue(cards[0].readOnly)
+        XCTAssertEqual(cards[2].help, "Who computes.")
+        // `form` decides, whatever the level: an advanced row on the form, a basic one off it.
+        XCTAssertEqual(cards[2].rows.map(\.key), ["threads", "layers"])
+        // A row the person set is shown, in its place in the table.
+        let set = SettingsForm.cards(params, also: ["trace", "probe"])
+        XCTAssertEqual(set.map(\.group), ["model", "cache", "compute", "debugonly"])
+        XCTAssertEqual(set[2].rows.map(\.key), ["threads", "trace", "layers"])
     }
 
     func testALoadTargetIsReadFromTheReadOnlyGroupNotByName() throws {
@@ -292,12 +282,14 @@ final class ScreensTests: XCTestCase {
         XCTAssertFalse(SettingsForm.loadTargetChosen(params.filter { !$0.groupReadOnly }, config: set, info: nil))
     }
 
-    func testALevelFromLaterIsFoldedAwayNotShownAsBasic() throws {
+    func testWithoutFormTheBasicRowsAreTheForm() throws {
         let specs = ParamSpec.parse(try JSON(parsing: #"""
-            [{"key":"a","group":"g","level":"basic"},{"key":"b","group":"g","level":"from-later"},{"key":"c","group":"g"}]
+            [{"key":"a","group":"g","level":"basic"},{"key":"b","group":"g","level":"from-later"},{"key":"c","group":"g"},
+             {"key":"d","group":"g","level":"advanced"}]
             """#))
-        XCTAssertEqual(specs.map(\.level), [.basic, .debug, .basic])
-        XCTAssertEqual(SettingsForm.cards(specs, upTo: .experimental).first?.hidden, 1)
+        XCTAssertEqual(specs.map(\.level), [.basic, .debug, .basic, .advanced])
+        XCTAssertEqual(specs.map(\.form), [true, false, true, false])
+        XCTAssertEqual(SettingsForm.cards(specs).first?.rows.map(\.key), ["a", "c"])
     }
 
     func testWhereAValueCameFromAndWhatResetAllRemoves() throws {
@@ -312,7 +304,8 @@ final class ScreensTests: XCTestCase {
         XCTAssertEqual(c.launchKeys, ["spin"])
         // Not the launch flag, not the model a load chose: the person's own values.
         XCTAssertEqual(SettingsForm.resettable(c, params: params), ["threads", "gone"])
-        XCTAssertEqual(SettingsForm.pinned(params, config: c), ["model", "threads", "cache-mb", "lanes", "trace", "spin"])
+        XCTAssertEqual(SettingsForm.userSet(params, config: c), ["model", "threads", "spin"]) // a key off the table is no row
+        XCTAssertEqual(SettingsForm.userSet(params, config: nil), [])
 
         let plan = Dictionary(uniqueKeysWithValues: (c.plan ?? []).map { ($0.knob, $0) })
         XCTAssertEqual(SettingsForm.source(userSet: true, decision: plan["threads"]), .you)
@@ -327,8 +320,6 @@ final class ScreensTests: XCTestCase {
         XCTAssertFalse(SettingsForm.isDefault(params[1], .int(6)))
         XCTAssertTrue(JSON.int(8).sameValue(as: .string(" 8")))
         XCTAssertFalse(JSON.string("auto").sameValue(as: .int(0)))
-        XCTAssertEqual(SettingsForm.levelHint(.basic), "")
-        XCTAssertFalse(SettingsForm.levelHint(.debug).isEmpty)
     }
 
     // MARK: the plan's figures

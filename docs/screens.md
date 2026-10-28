@@ -2,8 +2,8 @@
 
 Every UI of this project (the web UI the desktop app and the server show, the Android app, the iOS
 app) is a client of the same `bmoe-server` API ([server-api.md](server-api.md), the agent's routes in
-[agent.md](agent.md)) and shows the same screens: conversations, Models, Plan, Settings and
-Metrics, and a first-run setup; the desktop's conversations are the agent's, with Skills, Tasks and
+[agent.md](agent.md)) and shows the same screens: conversations, Models, Plan and Settings (with
+Metrics inside it once switched on), and a first-run setup; the desktop's conversations are the agent's, with Skills, Tasks and
 Connect apps beside them, and the phone apps are chat apps
 ([below](#the-phone-apps-chat-not-the-agent)). This page says what each screen shows, what a
 person can do on it, and what every state means, so the three toolkits render
@@ -32,7 +32,7 @@ dictionary lacks fails its tests.
   (working, needs you, stopped with an error) instead of the time while it is not idle; rename and
   delete on each row, delete asked twice; an entry for Tasks. At its foot, a card with the loaded
   model and the engine's state in words (it leads to Models), and the way to Models, Plan, Skills,
-  Tasks, Metrics, Connect apps and Settings. On the desktop it folds to a rail of icons, remembered.
+  Tasks, Connect apps and Settings. On the desktop it folds to a rail of icons, remembered.
 - **The screen**, in the middle: the open conversation, or the screen picked in the sidebar, in a
   readable column.
 - **The preview pane**, on the right beside a conversation, for a file the agent produced or
@@ -134,7 +134,7 @@ conversation with no folder.
   folder (`not_a_folder`). The text of a message that was refused stays in the composer.
 - **The live line.** While an answer streams on the local model and after: the answer speed, the
   shares of computing and of waiting for the disk, how often what a token needed was already in
-  memory, each with a tooltip. The full card is in Metrics.
+  memory, each with a tooltip. The full card is in Metrics, when switched on.
 - **Earlier conversations.** A UI that kept conversations on the device before the server held them
   sends them to the server once (`POST /api/conversations` with their messages), says how many
   moved, and removes its own copy of each once the server has it.
@@ -243,7 +243,8 @@ the same thing and a stage or role added later reaches them all unchanged.
   are, and Apply lists what it changed, each row linked to its setting. A plan measured with a
   model loaded carries the server's warning: it is sized for a smaller machine.
 - **Memory.** One bar per pool (`memory.pools`): every row the ledger holds, then what is free,
-  against what the process may hold; each row named, sized and marked when locked. A row held in
+  against what the process may hold; each row named, sized and marked when locked, and coloured
+  by its place from the series palette ([design.md](design.md)), so neighbouring parts stay apart. A row held in
   turn with the cache is a sentence under the bar, not a segment.
 - **Devices.** One row per device the plan saw, the host first among equals: its rate on a prompt
   as a bar scaled to the fastest device measured, a badge for what it does (`Prompt`, `Tokens`,
@@ -299,11 +300,12 @@ Write settings, asked once, then the file written and the backup kept beside it.
 
 ## Settings
 
-What it is: every engine tunable, rendered from the parameter table, and the settings that are the
-UI's own. Four sections, each a tab (`#/settings/<section>`):
+What it is: the engine tunables a person sets, rendered from the parameter table, and the settings
+that are the UI's own. Four sections, each a tab (`#/settings/<section>`), and a fifth, Metrics,
+once switched on:
 
-- **General.** Appearance: the theme (system, light, dark), the language (the system's, or one
-  picked), the text size (90 to 125%); all kept on the device. Inside the desktop app, the app's own
+- **General.** Appearance: the theme (system, light, dark), the text size (90 to 125%), and
+  Metrics (off until switched on); all kept on the device. Inside the desktop app, the app's own
   preferences through its bridge ([desktop-app.md](desktop-app.md)): keep running in the tray when
   the window closes, notifications, the interface size, and the port (a new one restarts the
   engine).
@@ -324,15 +326,13 @@ UI's own. Four sections, each a tab (`#/settings/<section>`):
   Under a number: its unit, the name of a special value when the field holds one ("= off"), and
   the typical range ("usually 2 to 8"), never the type's limit; the limits appear only when a value
   is refused. The help's first sentence is always shown, the rest and the special values on demand.
-- **Levels, inside each group.** A card shows its basic rows open (the recommended configuration)
-  and folds its own advanced, experimental and debug rows inside it, under one heading per level
-  with what the level means; a card with no basic row starts folded. A filter at the top shows
-  rows up to a level (Basic, Advanced, Experimental, Debug, each with its count; remembered on this
-  device), and a card says how many rows the filter leaves out. A row that someone or the plan set
-  is shown whatever the filter. Each row appears once.
-- **Search.** A search field filters every level at once, by label, help and flag.
-- **Deep links.** `#/settings/<key>` lands on that row: the filter widened to its level, its card
-  and fold opened, the field scrolled into view and focused. The Plan screen's decisions and the
+- **Only what a person sets.** A form shows the rows the table marks `form`: every basic row, and
+  the few deeper ones a person picks rather than the plan (which devices, speculative drafts, the
+  context's precision, the active experts). The rest stay flags of the command line, set by the
+  plan; a row the person set anyway is shown, so it can be reset. No level filter and no search:
+  every card starts closed, with its row count, and each row appears once.
+- **Deep links.** `#/settings/<key>` lands on that row: its card opened, the field scrolled into
+  view and focused. The Plan screen's decisions and the
   context warning link this way.
 - **Where a value came from.** One chip per row: `default`, `from the plan`, or `set by you`. A
   value the person set can be reset; where the plan decided a different value, the row offers
@@ -345,12 +345,14 @@ UI's own. Four sections, each a tab (`#/settings/<section>`):
 - **A configuration that does not validate** is kept (a form mid-edit is often briefly invalid),
   shown with the server's reason, and a load is refused until it does.
 - **The UI's own** (besides General): on the phone, Serve on the network with the address on the
-  local network and the key shown and copyable, Metrics CSV, Stop/Start engine. Never an engine
+  local network and the key shown and copyable, Metrics, Stop/Start engine. Never an engine
   parameter.
 
 ## Metrics
 
-What it is: what the engine measured about its own work, live and recorded. A calm monitor: four
+What it is: what the engine measured about its own work, live and recorded: a section of Settings,
+shown once the Metrics switch is on (off by default; on a phone the same switch records the per-token
+CSV). A calm monitor: four
 figures with their recent history (answer speed, disk reads, memory in use against what is free,
 how often what a token needed was already in memory, with the cache's size), where a token's time
 goes as one bar, then the last answer's account. With no model loaded it says so and leads to

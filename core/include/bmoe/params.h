@@ -91,6 +91,10 @@ struct ParamDesc {
     ParamGroup group = ParamGroup::Generation;
     ParamLevel level = ParamLevel::Advanced;
     ParamScope scope = ParamScope::Session;
+    // A settings form offers it: every basic row and the few deeper ones a person picks rather than
+    // the plan (which devices, drafts, the context's precision, active experts). The rest stay
+    // flags of the CLI: the plan sets them, or they are a value nobody types into a phone.
+    bool form = false;
     std::string help; // one paragraph, in the user's terms
 
     std::string flag;       // "--cache-mb": takes a value. Empty when the parameter has only switches

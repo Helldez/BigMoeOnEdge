@@ -1,58 +1,32 @@
 // Schema helpers: everything the settings form knows about parameters comes from here, and all
 // of it is derived from the `GET /api/params` rows. No parameter is named in this module.
-import type { ParamLevel, ParamSpec, ParamValue, PlanDecision } from './types';
+import type { ParamSpec, ParamValue, PlanDecision } from './types';
 
-/** Every level, in order of how much a person needs to know before touching a row. */
-export const ALL_LEVELS: readonly ParamLevel[] = ['basic', 'advanced', 'experimental', 'debug'];
-
-/** A level's place in ALL_LEVELS; a level this UI does not know yet sorts last. */
-export function levelRank(level: string): number {
-  const i = (ALL_LEVELS as readonly string[]).indexOf(level);
-  return i < 0 ? ALL_LEVELS.length : i;
+/** Whether a settings form offers a row: the table says so (`form`); a server too old to say, its basic rows. */
+export function inForm(p: ParamSpec): boolean {
+  return p.form ?? p.level === 'basic';
 }
 
-/** The rows of one level that a card folds away. */
-export interface LevelRows {
-  level: string;
-  params: ParamSpec[];
-}
-
-/** One settings card: a group of the table, its basic rows open and the rest folded by level. */
+/** One settings card: a group of the table and the rows of it a form offers. */
 export interface SettingsCard {
   group: string;
   label: string;
   help: string;
   /** Shown, not edited: a front-end sets it with a control of its own. */
   readOnly: boolean;
-  basic: ParamSpec[];
-  more: LevelRows[];
-  /** Rows of this group the level filter leaves out. */
-  hidden: number;
-}
-
-export interface CardFilter {
-  /** The deepest level shown: every row at or above it. */
-  upTo: string;
-  /** Words to look for; when set, the level filter is ignored and only matching rows are kept. */
-  query?: string;
-  /** Rows shown whatever the filter (a value someone or the plan set must never hide). */
-  pinned?: ReadonlySet<string>;
-}
-
-function matches(p: ParamSpec, words: string[]): boolean {
-  const hay = `${p.label} ${p.help} ${p.flag} ${p.key} ${p.group_label}`.toLowerCase();
-  return words.every((w) => hay.includes(w));
+  params: ParamSpec[];
 }
 
 /**
  * The settings form: one card per group, in the table's group order (`group_order`, else the order
- * groups first appear), rows in table order. Nothing here names a group or a parameter.
+ * groups first appear), rows in table order. A row is shown when the table puts it in forms or when
+ * it is `pinned` (a value the person set must never be hidden, or it could not be reset). Nothing
+ * here names a group or a parameter.
  */
-export function settingsCards(params: readonly ParamSpec[], filter: CardFilter): SettingsCard[] {
-  const words = (filter.query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
-  const upTo = levelRank(filter.upTo);
+export function settingsCards(params: readonly ParamSpec[], pinned?: ReadonlySet<string>): SettingsCard[] {
   const cards = new Map<string, { card: SettingsCard; order: number; first: number }>();
   params.forEach((p, i) => {
+    if (!inForm(p) && !(pinned?.has(p.key) ?? false)) return;
     let entry = cards.get(p.group);
     if (!entry) {
       entry = {
@@ -61,50 +35,16 @@ export function settingsCards(params: readonly ParamSpec[], filter: CardFilter):
           label: p.group_label || p.group,
           help: p.group_help ?? '',
           readOnly: p.group_read_only === true,
-          basic: [],
-          more: [],
-          hidden: 0,
+          params: [],
         },
         order: p.group_order ?? Number.MAX_SAFE_INTEGER,
         first: i,
       };
       cards.set(p.group, entry);
     }
-    const c = entry.card;
-    const shown = words.length
-      ? matches(p, words)
-      : p.level === 'basic' || levelRank(p.level) <= upTo || (filter.pinned?.has(p.key) ?? false);
-    if (!shown) {
-      if (!words.length) c.hidden++;
-      return;
-    }
-    if (p.level === 'basic') {
-      c.basic.push(p);
-      return;
-    }
-    let lv = c.more.find((m) => m.level === p.level);
-    if (!lv) {
-      lv = { level: p.level, params: [] };
-      c.more.push(lv);
-    }
-    lv.params.push(p);
+    entry.card.params.push(p);
   });
-  return [...cards.values()]
-    .filter((e) => e.card.basic.length + e.card.more.length > 0)
-    .sort((a, b) => a.order - b.order || a.first - b.first)
-    .map((e) => ({ ...e.card, more: [...e.card.more].sort((a, b) => levelRank(a.level) - levelRank(b.level)) }));
-}
-
-/** The level a row of the table sits at, or undefined for a key the table does not have. */
-export function levelOf(params: readonly ParamSpec[], key: string): string | undefined {
-  return params.find((p) => p.key === key)?.level;
-}
-
-/** How many rows each level holds, for the filter's counts. */
-export function levelCounts(params: readonly ParamSpec[]): Map<string, number> {
-  const out = new Map<string, number>();
-  for (const p of params) out.set(p.level, (out.get(p.level) ?? 0) + 1);
-  return out;
+  return [...cards.values()].sort((a, b) => a.order - b.order || a.first - b.first).map((e) => e.card);
 }
 
 /**
