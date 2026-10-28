@@ -137,7 +137,8 @@ bool attach(webview::webview & w, const Hooks & hooks) {
     g_nid.uVersion = NOTIFYICON_VERSION_4;
     // The executable's own icon when it carries one, the system's application icon otherwise.
     g_nid.hIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1));
-    if (!g_nid.hIcon) g_nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    // Without UNICODE, IDI_APPLICATION is typed narrow; it is an integer id either way.
+    if (!g_nid.hIcon) g_nid.hIcon = LoadIconW(nullptr, reinterpret_cast<LPCWSTR>(IDI_APPLICATION));
     wcsncpy_s(g_nid.szTip, kTitle, _TRUNCATE);
     add_tray_icon();
     return g_tray;
