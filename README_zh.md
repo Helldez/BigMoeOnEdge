@@ -86,15 +86,13 @@ Qwen3.6-35B-A3B 在各设备上、在发布的应用中实时生成。该模型�
   无需管理员权限；从开始菜单启动 BigMoeOnEdge，关闭其窗口即可停止。
 - **Linux**：`chmod +x BigMoeOnEdge-<版本>-linux-x86_64.AppImage`（或 `-linux-aarch64`）后运行。
   从文件管理器启动时会在终端窗口中打开；关闭该窗口即可停止。
-- **Android**：将应用添加到 [Obtainium][obtainium]，之后每个新版本都会作为更新安装；
-  也可以手动安装 `app-dev-release.apk`。**Settings → Serve on the network** 可通过密钥共享手机上的引擎。
+- **Android**：从发布页面安装 `app-dev-release.apk`；每个版本都会覆盖安装在上一个版本之上。
+  **Settings → Serve on the network** 可通过密钥共享手机上的引擎。
 
 **iOS。** 使用 Xcode 从 [examples/ios](examples/ios/README.md) 构建应用。实验性功能。
 
 **压缩包。** `bmoe-desktop` 压缩包以文件夹形式包含同一个应用，适用于脚本化安装：解压后运行
 `bmoe-server --open`。`bmoe-cli` 压缩包包含命令行引擎。
-
-[obtainium]: https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22io.bigmoeonedge.example.dev%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FHelldez%2FBigMoeOnEdge%22%2C%22author%22%3A%22Helldez%22%2C%22name%22%3A%22BigMoeOnEdge%22%2C%22additionalSettings%22%3A%22%7B%5C%22apkFilterRegEx%5C%22%3A%5C%22-release%5C%5C%5C%5C.apk%24%5C%22%7D%22%7D
 
 **命令行。**
 

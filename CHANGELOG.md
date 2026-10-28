@@ -6,6 +6,13 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Removed
+- **The Obtainium link for Android.** `README.md` (and its translations), `examples/android/README.md`
+  and `docs/platforms.md` no longer point to an Obtainium entry: its redirect page depends on the
+  browser handing the link to the app, which often does nothing, and Android's developer verification
+  (from 2026-2027) makes a third-party installer a second thing that has to keep working. The APK is
+  installed from the release page, as before.
+
 ### Fixed
 - **`bmoe-server`'s launch flags outrank saved settings, as `--help` says** (#435). The settings
   layers applied a value saved by an earlier run after the flags of this one, so
