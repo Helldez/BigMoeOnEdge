@@ -502,7 +502,8 @@ campaign, including the cache-auto confound that round 1 had to unwind:
 [docs/bench-data/2026-07-24-desktop-qwen36](bench-data/2026-07-24-desktop-qwen36/findings.md).
 
 On a 16 GB Apple-silicon laptop, the same model at a 16384 context with `--auto` and nothing else:
-22.4 tok/s, and a 10850-token prompt prefilled in 31.8 s. One machine.
+22.4 tok/s, and a 10850-token prompt prefilled in 31.8 s. One machine. Qwen3-Coder-30B-A3B (18.6 GB)
+on the same laptop: 23 tok/s, and 7-9 inside opencode.
 
 If the model fits in RAM, just run it resident.
 

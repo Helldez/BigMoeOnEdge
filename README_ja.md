@@ -27,7 +27,7 @@ llama.cpp の公開 API の上に構築されており、Android、iOS、macOS�
 <td align="center">12 GB iPhone</td>
 </tr>
 <tr>
-<td align="center" colspan="2"><img src="docs/assets/screens/desktop.gif" width="620" alt="16 GB の Apple silicon ノート PC 上のデスクトップアプリで、Qwen3.6-35B-A3B が 19.9 tok/s でリアルタイムに回答を生成している様子。"></td>
+<td align="center" colspan="2"><img src="docs/assets/screens/desktop.gif" width="620" alt="16 GB の Apple silicon ノート PC 上のデスクトップアプリで、Qwen3.6-35B-A3B が 20 tok/s でリアルタイムに回答を生成している様子。"></td>
 </tr>
 <tr>
 <td align="center" colspan="2">16 GB Apple silicon ノート PC</td>
@@ -40,10 +40,10 @@ llama.cpp の公開 API の上に構築されており、Android、iOS、macOS�
 
 Mixture-of-Experts モデルは、各トークンでエキスパートのうち少数のみを使用します。BigMoeOnEdge は、すべてのトークンで必要な重みと、最近使用したエキスパートのキャッシュをメモリに保持し、それ以外のエキスパートはルーターが要求したときにフラッシュから読み込みます。出力はモデルを完全にメモリ上で実行した場合と同一であり、テストでそれを確認しています。
 
-- **プランナー。** `--auto` はマシン（利用可能なメモリ、ストレージ速度、各 CPU・GPU・NPU）とモデルのヘッダーを計測し、キャッシュサイズ、常駐させるもの、そしてプロンプトと回答をそれぞれどのデバイスで処理するかを設定します。そのルールは特定のプラットフォームやデバイスを名指ししません。手動で指定した設定は維持されます。
+- **プランナー。** `--auto` はマシン（利用可能なメモリ、ストレージ速度、各 CPU・GPU・NPU）とモデルのヘッダーを計測し、キャッシュサイズ、常駐させるもの、そしてプロンプトと回答をそれぞれどのデバイスで処理するかを設定します。初回の実行後は、そのモデル自身のルーティング記録（サーバーがモデルごとに保持）から計画し、最初の回答でスレッド数とオーバーラップを計測します。そのルールは特定のプラットフォームやデバイスを名指ししません。手動で指定した設定は維持されます。
 - **モデル。** llama.cpp が読み込める任意の MoE gguf を、任意の量子化で利用できます。エキスパートテンソルはファイルから検出されるため、新しいアーキテクチャにこちら側のコードは不要です。
-- **バックエンド。** CPU、Metal、Vulkan、OpenCL、Hexagon NPU をモジュールとして読み込みます。それぞれのツールチェーンでビルドした CUDA、HIP、SYCL モジュールも同じ方法で読み込めます。
-- **アプリとサーバー。** Android と iOS ではネイティブアプリ、デスクトップでは Web アプリ、そしてそのすべてで OpenAI 互換サーバーを提供します。
+- **バックエンド。** CPU、Metal、Vulkan、OpenCL、CUDA、HIP、Hexagon NPU をモジュールとして読み込みます。専用のツールチェーンでビルドした SYCL モジュールも同じ方法で読み込めます。GPU では、よく使われるエキスパートを GPU メモリにキャッシュし、残りは RAM キャッシュの背後でストリーミングします。カードに収まるモデルは、すべてカード上で実行されます。
+- **アプリとサーバー。** Android と iOS ではネイティブアプリ、デスクトップでは Web アプリ、そしてそのすべてで OpenAI 互換サーバーを提供し、コーディングエージェント（Claude Code、Codex CLI、opencode）から利用できます。
 
 ## パフォーマンス
 
@@ -52,23 +52,27 @@ Mixture-of-Experts モデルは、各トークンでエキスパートのうち�
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/speed-dark.svg">
-    <img src="docs/assets/diagrams/speed-light.svg" width="820" alt="Qwen3.6-35B-A3B Q4_K_M のデコード速度：16 GB Apple silicon ノート PC で 18-24 tok/s、16 GB Windows ノート PC で 4.8、12 GB Android スマートフォンで 4.8-5.0、12 GB iPhone で 2.6-3.0。">
+    <img src="docs/assets/diagrams/speed-light.svg" width="820" alt="Qwen3.6-35B-A3B Q4_K_M のデコード速度：16 GB Apple silicon ノート PC で 18-24 tok/s、16 GB Windows ノート PC で 5、12 GB Android スマートフォンで 5、12 GB iPhone で 3。">
   </picture>
 </p>
 
-| モデル | ディスク上のサイズ | デバイス | モデル / RAM | デコード |
-|---|---:|---|---:|---:|
-| DeepSeek V4 Flash 284B | 91 GB | 12 GB Android スマートフォン | 7.6× | 0.94 tok/s |
-| Qwen3.8-Flash-Next 125B | 80 GB | 12 GB Android スマートフォン | 6.7× | 2.2-3.5 tok/s |
-| gpt-oss-120b | 60 GB | 12 GB Android スマートフォン | 5× | 1.3 tok/s |
-| Qwen3.6-35B-A3B | 21 GB | 12 GB Android スマートフォン | 1.9× | 4.8-5.0 tok/s |
-| Qwen3.6-35B-A3B | 21 GB | 12 GB iPhone | 1.9× | 2.6-3.0 tok/s |
-| Qwen3-30B-A3B | 18.5 GB | 12 GB Android スマートフォン | 1.5× | 5.2 tok/s |
-| Gemma-4-26B-A4B | 17 GB | 12 GB Android スマートフォン | 1.4× | 4.1 tok/s |
-| Qwen3.8-Flash-Next 125B | 76 GB | 16 GB Apple silicon ノート PC | 4.8× | 6.5-9 tok/s |
-| Qwen3.6-35B-A3B | 21 GB | 16 GB Apple silicon ノート PC | 1.3× | 18-24 tok/s |
-| Qwen3-Coder-30B-A3B | 18.6 GB | 16 GB Apple silicon ノート PC | 1.2× | 23 tok/s、opencode 内では 7-9 |
-| Qwen3.6-35B-A3B | 21 GB | 16 GB Windows ノート PC | 1.3× | 4.8 tok/s |
+| ハードウェア | メモリ | モデル | ディスク上のサイズ | エキスパートの読み出し元 | デコード tok/s |
+|---|---|---|---:|---|---:|
+| **Android スマートフォン** | 12 GB | DeepSeek V4 Flash 284B | 91 GB | フラッシュ | 1 |
+|  |  | Qwen3.8-Flash-Next 125B | 80 GB | フラッシュ | 2-4 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | フラッシュ | 5 |
+| **iPhone** | 12 GB | Qwen3.6-35B-A3B | 21 GB | フラッシュ | 3 |
+| **Apple silicon ノート PC** | 16 GB | Qwen3.8-Flash-Next 125B | 76 GB | フラッシュ | 7-9 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | フラッシュ | 18-24 |
+| **Windows ノート PC** | 16 GB | Qwen3.6-35B-A3B | 21 GB | フラッシュ | 5 |
+| **デスクトップ GPU**（NVIDIA） | 16 GB + 32 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | フラッシュ、GPU キャッシュ | 19-21 |
+| **デスクトップ GPU**（NVIDIA） | 24 GB + 96 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM、GPU キャッシュ | 70 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
+| **データセンター GPU**（AMD、ROCm） | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
+
+tok/s は整数で示し、範囲は複数回の実行でのばらつきです。「エキスパートの読み出し元」は、ルーティングされた
+エキスパートをどこから読むかを示します：フラッシュからのストリーミング、RAM 上、または GPU 上で、よく使われる
+ものは GPU メモリにキャッシュされます。
 
 構成と計測方法：[docs/benchmarks.md](docs/benchmarks.md)。マシンを追加するには、
 `scripts/bench-report.sh /path/to/model.gguf` を実行し、その表を
@@ -142,7 +146,7 @@ API リファレンス：[docs/server-api.md](docs/server-api.md)。
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/plan-dark.svg">
-    <img src="docs/assets/diagrams/plan-light.svg" width="820" alt="16 GB Apple silicon ノート PC で --auto が Qwen3.6-35B-A3B に選んだ構成：RAM に 1.7 GiB の密な重みと 7.2 GiB のエキスパートキャッシュ、キャッシュヒット率 85%、トークンあたりフラッシュから 69.6 MiB を読み込み、プロンプトは GPU で処理、デコードは 8 つの CPU スレッドで 17.6 tok/s。">
+    <img src="docs/assets/diagrams/plan-light.svg" width="820" alt="16 GB Apple silicon ノート PC で --auto が Qwen3.6-35B-A3B に選んだ構成：RAM に 1.7 GiB の密な重みと 7.2 GiB のエキスパートキャッシュ、キャッシュヒット率 85%、トークンあたりフラッシュから 69.6 MiB を読み込み、プロンプトは GPU で処理、デコードは 8 つの CPU スレッドで 18 tok/s。">
   </picture>
 </p>
 
@@ -157,8 +161,8 @@ API リファレンス：[docs/server-api.md](docs/server-api.md)。
 |---|---|---|---|---|---|
 | エンジンと CLI | arm64 | Apple silicon | x86_64, arm64 | x86_64, aarch64 | arm64（アプリ内） |
 | アプリとサーバー | ネイティブアプリ | Web アプリ | Web アプリ | Web アプリ | ネイティブアプリ（ソースからビルド） |
-| アクセラレーター | Hexagon NPU, Vulkan, OpenCL | Metal | Vulkan, OpenCL (arm64), Hexagon NPU (arm64, opt-in) | Vulkan | Metal |
-| 実機での動作 | 12 GB スマートフォン | 16 GB ノート PC | 16 GB ノート PC | CI、コミュニティ | 12 GB iPhone（[#235](https://github.com/Helldez/BigMoeOnEdge/issues/235)） |
+| アクセラレーター | Hexagon NPU, Vulkan, OpenCL | Metal | Vulkan, CUDA（x86_64、別途ダウンロード）, OpenCL (arm64), Hexagon NPU (arm64, opt-in) | Vulkan, CUDA, HIP（x86_64。CUDA は別途ダウンロード、HIP は ROCm 7 がインストールされている環境で） | Metal |
+| 実機での動作 | 12 GB スマートフォン | 16 GB ノート PC | 16 GB ノート PC | CI、レンタルした 12-24 GB の NVIDIA カードと 192 GB の AMD カード | 12 GB iPhone（[#235](https://github.com/Helldez/BigMoeOnEdge/issues/235)） |
 
 詳細と、どこで何を計測したか：[docs/platforms.md](docs/platforms.md)。
 

@@ -14,6 +14,18 @@ Semantic Versioning.
   the build hangs on ggml-cpu's AMX kernels; the bench notes give the line that builds the host code
   with gcc.
 
+### Changed
+- **The README's speed table is grouped by hardware, in whole tokens per second.** `README.md` and its
+  five translations list each machine once (phone, iPhone, Apple-silicon laptop, Windows laptop, two
+  NVIDIA desktop cards, an AMD datacenter card), with its memory and where the experts are read from
+  (flash, RAM, GPU). The phone rows of gpt-oss-120b, Qwen3-30B-A3B and Gemma-4-26B-A4B and the
+  laptop row of Qwen3-Coder-30B-A3B repeated what the others show: they are in `docs/benchmarks.md`
+  now, with every exact figure. `scripts/readme-diagrams.py` labels its
+  figures the same way (the bars keep the measured values). The description catches up with what
+  shipped since 0.36: CUDA and HIP among the released backends, the device memory as a tier of the
+  expert cache, plans from the model's own routing record, and the coding agents the server serves.
+  The translations also gain the CUDA and HIP accelerators and the rented-card runs they lacked.
+
 ### Removed
 - **The Obtainium link for Android.** `README.md` (and its translations), `examples/android/README.md`
   and `docs/platforms.md` no longer point to an Obtainium entry: its redirect page depends on the
