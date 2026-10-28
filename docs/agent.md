@@ -3,13 +3,15 @@
 The server runs an agent: a conversation that can work in a folder of this computer, read and change
 its files, run commands, look things up on the web, follow skills, hand part of a job to a helper,
 and run on a schedule. It is part of `bmoe-server`, like everything else an application needs
-([application-framework.md](application-framework.md)), so every UI gets the same agent through the
-same API, and an agent run does not depend on a UI staying open.
+([application-framework.md](application-framework.md)), so the web UI and the desktop app get the
+same agent through the same API, and an agent run does not depend on a UI staying open. The phone
+apps start their server as plain chat ("On a phone"). A conversation may also be worked by another
+coding agent the computer has, over the Agent Client Protocol ("Other agents").
 
 This page is the contract: the concepts, the routes, the events, and the rules the server enforces.
 The HTTP details, with every error, sit in [server-api.md](server-api.md#agent). The code is
-`server/agent*.{h,cpp}` (the run loop, tools, skills, schedule, store, routes),
-`server/provider_protocol.*` and `server/connect.*`; `tests/agent_test.cpp` drives the loop with a
+`server/agent*.{h,cpp}` (the run loop, tools, skills, schedule, store, routes, other agents),
+`server/acp_connection.*`, `server/provider_protocol.*` and `server/connect.*`; `tests/agent_test.cpp` drives the loop with a
 scripted session and checks every rule below without a model.
 
 ## Concepts

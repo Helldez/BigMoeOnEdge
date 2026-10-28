@@ -4,8 +4,9 @@ Every UI of this project (the web UI the desktop app and the server show, the An
 app) is a client of the same `bmoe-server` API ([server-api.md](server-api.md), the agent's routes in
 [agent.md](agent.md)) and shows the same screens: conversations, Models, Plan, Settings and
 Metrics, and a first-run setup; the desktop's conversations are the agent's, with Skills, Tasks and
-Connect apps beside them, and the phone apps are chat apps ([below](#the-phone-apps-chat-not-the-agent)). This page says what each
-screen shows, what a person can do on it, and what every state means, so the three toolkits render
+Connect apps beside them, and the phone apps are chat apps
+([below](#the-phone-apps-chat-not-the-agent)). This page says what each screen shows, what a
+person can do on it, and what every state means, so the three toolkits render
 the same thing their own way. It describes behaviour, not pixels: a phone puts the navigation in a
 drawer and the prompt under a thumb, a desktop puts it in a sidebar and the prompt at the foot of a
 wide column. Alike in what they show and in what a setting means; native in how they feel. How it
