@@ -134,8 +134,12 @@ Streaming, tool calls and reasoning are supported. For opencode, add the server 
 OpenAI-compatible provider with `baseURL` set to `http://127.0.0.1:8765/v1`. To serve other machines,
 start the server with `--host` and `--api-key`. API reference: [docs/server-api.md](docs/server-api.md).
 
-Coding agents send a large system prompt and tool list on every request: load the model with a
-context of at least 32768 tokens (`-c 32768`).
+Coding agents send a large system prompt and tool list on every request, read files into the
+conversation, and summarize it when the context fills: the context has to hold all three. Size it
+from the agent's first request (the server's `count_tokens` or its `usage` says how large): one of
+~10k tokens ran a six-step task in 32768 (`-c 32768`); one of ~17k could not compact at 32768 and ran
+ten consecutive questions at 65536 (`-c 65536`). See
+[Sizing the context for a client](docs/server-api.md#sizing-the-context-for-a-client).
 
 **Claude Code** speaks the Anthropic Messages API, which the server also serves (`/v1/messages`).
 Use the model id `GET /v1/models` lists, and tell Claude Code the context you loaded so it compacts
@@ -146,7 +150,7 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:8765
 export ANTHROPIC_API_KEY=local            # or the server's --api-key
 export ANTHROPIC_MODEL=<model id from /v1/models>
 export ANTHROPIC_DEFAULT_HAIKU_MODEL=$ANTHROPIC_MODEL
-export CLAUDE_CODE_MAX_CONTEXT_TOKENS=32768
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=65536   # the context you loaded
 claude
 ```
 
