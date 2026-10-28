@@ -2,8 +2,9 @@
 
 Every UI of this project (the web UI the desktop app and the server show, the Android app, the iOS
 app) is a client of the same `bmoe-server` API ([server-api.md](server-api.md), the agent's routes in
-[agent.md](agent.md)) and shows the same screens: conversations with the agent, Models, Plan,
-Skills, Tasks, Connect apps, Settings and Metrics, and a first-run setup. This page says what each
+[agent.md](agent.md)) and shows the same screens: conversations, Models, Plan, Settings and
+Metrics, and a first-run setup; the desktop's conversations are the agent's, with Skills, Tasks and
+Connect apps beside them, and the phone apps are chat apps ([below](#the-phone-apps-chat-not-the-agent)). This page says what each
 screen shows, what a person can do on it, and what every state means, so the three toolkits render
 the same thing their own way. It describes behaviour, not pixels: a phone puts the navigation in a
 drawer and the prompt under a thumb, a desktop puts it in a sidebar and the prompt at the foot of a
@@ -375,25 +376,22 @@ Models; a model loaded without streaming says which figures it cannot have.
 - **An engine console.** What the engine prints goes to the server's log; the UI shows the
   state, the error and the figures, which is what a person acts on.
 
-## The agent on a phone: where the apps differ
+## The phone apps: chat, not the agent
 
-The Android and iOS apps show the agent ([agent.md](agent.md)) as the desktop does, with the
-differences a phone imposes, and only these:
+The Android and iOS apps start their server with `--chat-only` ([agent.md](agent.md)): their
+conversations are the server's, through the same routes and events, but plain chat. A small model on
+a phone is not an agent; the agent is the desktop's. What that leaves out of the screens above, and
+only that:
 
-- **Workspaces live in the app's own storage.** The server needs a real folder path, and the one
-  place a phone app may write freely is its own: a workspace is a folder the app makes and names
-  there (Android: under the app's files directory; iOS: the app's Documents folder, which the Files
-  app shows). Files come in through the system picker and go out through the share sheet; there is
-  no folder picker for the rest of the phone.
-- **No shell.** The server offers no command tool where it cannot start a process, and the apps
-  show none.
-- **Tasks run only while the app's server runs.** The scheduler is the server's, and on a phone the
-  server is the app's: on Android it keeps running in the background with the engine's
-  notification; on iOS the app is suspended in the background. A task that came due meanwhile runs
-  when the server is back, and the Tasks screen says so in those words.
-- **Connect apps** shows the address and key of "Serve on the network", which is what a client of
-  the phone needs; there is no client configuration to write on a phone.
-- **Notifications.** An approval the agent waits for, or a run that ended, while the app is not on
-  the screen, is a system notification that opens that conversation.
+- **No agent.** No workspaces, mode, model route or providers in the composer; no tool calls,
+  approvals, helpers or file preview in the transcript; no Skills, Tasks or Connect apps screens,
+  and no notification of a run. The conversation list is by date, its rows marked while they are
+  being answered or after an error.
+- **Messages as above.** The person's text with Copy and Edit and send again (on a long press),
+  the answer as Markdown with its reasoning folded above it, Copy under it and Answer again on the
+  last one, the server's notices, Stop. Choose from options stays, in the composer.
+- **The empty chat** says the model runs on the phone and leads to Models while none is loaded.
+- **Serve on the network** (Settings) is the address and key a client of the phone needs; there is
+  no client configuration to write on a phone.
 - **The conversations the apps used to keep** are handed to the server once, on the first launch
   that reaches it, and the local copy is deleted only once the server's answer holds every message.

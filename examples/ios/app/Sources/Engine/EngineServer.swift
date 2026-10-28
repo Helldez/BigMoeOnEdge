@@ -34,6 +34,9 @@ final class EngineServer {
             "--api-key", launch.key,
             // A device probe in a child process needs a process to start; an app here has none.
             "--no-isolated-probes",
+            // A phone is a chat client: its conversations are plain chat, the agent is the
+            // desktop's (docs/agent.md).
+            "--chat-only",
         ]
         if let catalog = paths.catalog { args += ["--catalog", catalog.path] }
         running = true

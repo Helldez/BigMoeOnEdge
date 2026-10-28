@@ -27,7 +27,6 @@ struct SettingsView: View {
         ScrollViewReader { proxy in
             Page {
                 banners
-                AgentLinksSection()
                 // While the engine is down (a sharing change restarts it) the rows stay where they are, so
                 // the page keeps its length and its scroll; a line above says why a change waits.
                 if !engine.serverUp || engine.params.isEmpty {
@@ -415,48 +414,6 @@ struct ParamRow: View {
         Task {
             do { try await engine.setConfig(reset: [spec.key]) } catch { onError(error.localizedDescription) }
         }
-    }
-}
-
-/// The agent's own pages: what it may work in, the instructions it can follow, what runs on a
-/// schedule, and the services a conversation can run on instead of this phone's model.
-struct AgentLinksSection: View {
-    @EnvironmentObject private var agent: AgentModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Grid.s) {
-            SectionTitle("Agent")
-            VStack(spacing: 0) {
-                link("Workspaces", icon: "folder", detail: count(agent.workspaces.count, "folder")) { WorkspacesView() }
-                Divider().padding(.leading, 44)
-                link("Skills", icon: "book", detail: count(agent.skills.filter(\.enabled).count, "on", plural: "on")) { SkillsView() }
-                Divider().padding(.leading, 44)
-                link("Tasks", icon: "clock", detail: count(agent.tasks.count, "task")) { TasksView() }
-                Divider().padding(.leading, 44)
-                link("Providers", icon: "network", detail: count(agent.providers.count, "service")) { ProvidersView() }
-            }
-            .box()
-        }
-    }
-
-    private func count(_ n: Int, _ one: String, plural: String? = nil) -> String {
-        n == 0 ? "" : "\(n) \(n == 1 ? one : plural ?? one + "s")"
-    }
-
-    private func link<D: View>(_ title: String, icon: String, detail: String, @ViewBuilder destination: @escaping () -> D) -> some View {
-        NavigationLink(destination: destination) {
-            HStack(spacing: 12) {
-                Image(systemName: icon).foregroundStyle(Palette.accent).frame(width: 20)
-                Text(title).font(.ui(16)).foregroundStyle(Palette.text)
-                Spacer()
-                Text(detail).font(.ui(14)).foregroundStyle(Palette.muted)
-                Image(systemName: "chevron.right").font(.caption.bold()).foregroundStyle(Palette.muted)
-            }
-            .padding(.horizontal, Grid.m)
-            .padding(.vertical, 12)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
     }
 }
 

@@ -1,6 +1,7 @@
 package io.bigmoeonedge.app.engine
 
-import io.bigmoeonedge.app.agent.ConversationCreator
+import io.bigmoeonedge.app.chat.ConversationCreator
+import io.bigmoeonedge.app.chat.ItemReducer
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -90,12 +91,7 @@ class Api(private val baseUrl: String, private val apiKey: String) : Conversatio
     fun plan(measure: Boolean): JSONObject = getJson(if (measure) "/api/plan?measure=1" else "/api/plan?cached=1", SLOW_MS)
     fun applyPlan(): JSONObject = send("POST", "/api/plan/apply", null, QUICK_MS)
 
-    // ── the agent (docs/agent.md): conversations, workspaces, skills, tasks, providers ──
-
-    fun workspaces(): JSONArray = JSONArray(get("/api/workspaces", QUICK_MS))
-    fun addWorkspace(path: String, name: String): JSONObject =
-        send("POST", "/api/workspaces", JSONObject().put("path", path).put("name", name), QUICK_MS)
-    fun removeWorkspace(id: String): JSONObject = send("DELETE", "/api/workspaces/" + seg(id), null, QUICK_MS)
+    // ── conversations (docs/agent.md): held by the server, plain chat under --chat-only ──
 
     fun conversations(): JSONArray = JSONArray(get("/api/conversations", QUICK_MS))
     override fun createConversation(body: JSONObject): JSONObject = send("POST", "/api/conversations", body, QUICK_MS)
@@ -105,59 +101,16 @@ class Api(private val baseUrl: String, private val apiKey: String) : Conversatio
         send("DELETE", "/api/conversations/" + seg(id), null, QUICK_MS)
     }
 
-    /** Answers `202 {item}` at once; the run goes on in the server and reports on the event stream. */
-    fun sendMessage(id: String, text: String, think: Boolean? = null): JSONObject {
-        val body = JSONObject().put("text", text)
-        if (think != null) body.put("think", think)
-        return send("POST", "/api/conversations/" + seg(id) + "/messages", body, QUICK_MS)
-    }
+    /** Answers `202 {item}` at once; the answer streams on the event stream. */
+    fun sendMessage(id: String, text: String): JSONObject =
+        send("POST", "/api/conversations/" + seg(id) + "/messages", JSONObject().put("text", text), QUICK_MS)
 
+    /** Drops [item] and what follows it, then sends [text] in its place: edit, and Answer again. */
     fun editMessage(id: String, item: String, text: String): JSONObject =
-        send("POST", "/api/conversations/" + seg(id) + "/edit", JSONObject().put("item", item).put("text", text), QUICK_MS)
-    fun approval(id: String, item: String, approve: Boolean): JSONObject =
-        send("POST", "/api/conversations/" + seg(id) + "/approval", JSONObject().put("item", item).put("decision", if (approve) "approve" else "deny"), QUICK_MS)
+        send("POST", "/api/conversations/" + seg(id) + "/edit", ItemReducer.editBody(item, text), QUICK_MS)
 
-    // A stop answers once the run and its helpers have stopped: a generation ends at its next token.
+    // A stop answers once the run has stopped: a generation ends at its next token.
     fun stopConversation(id: String): JSONObject = send("POST", "/api/conversations/" + seg(id) + "/stop", null, SLOW_MS)
-
-    /** A workspace file the agent produced, for the preview: its bytes and its content type. */
-    fun conversationFile(id: String, path: String): Pair<ByteArray, String> {
-        val c = open("GET", "/api/conversations/" + seg(id) + "/file?path=" + java.net.URLEncoder.encode(path, "UTF-8"), write = false, readTimeoutMs = QUICK_MS)
-        try {
-            val code = c.responseCode
-            if (code !in 200..299) {
-                val text = runCatching { c.errorStream?.use { it.readBytes().toString(Charsets.UTF_8) } }.getOrNull().orEmpty()
-                throw ApiException(code, errorMessage(code, text), errorCode(text))
-            }
-            return c.inputStream.use { it.readBytes() } to (c.contentType ?: "application/octet-stream")
-        } finally {
-            c.disconnect()
-        }
-    }
-
-    fun skills(): JSONArray = JSONArray(get("/api/skills", QUICK_MS))
-    fun saveSkill(name: String, description: String, body: String, isNew: Boolean): JSONObject {
-        val o = JSONObject().put("name", name).put("description", description).put("body", body)
-        return if (isNew) send("POST", "/api/skills", o, QUICK_MS) else send("PUT", "/api/skills/" + seg(name), o, QUICK_MS)
-    }
-    fun enableSkill(name: String, enabled: Boolean): JSONObject =
-        send("PATCH", "/api/skills/" + seg(name), JSONObject().put("enabled", enabled), QUICK_MS)
-    fun deleteSkill(name: String): JSONObject = send("DELETE", "/api/skills/" + seg(name), null, QUICK_MS)
-
-    fun tasks(): JSONArray = JSONArray(get("/api/tasks", QUICK_MS))
-    fun saveTask(id: String, body: JSONObject): JSONObject =
-        if (id.isEmpty()) send("POST", "/api/tasks", body, QUICK_MS) else send("PUT", "/api/tasks/" + seg(id), body, QUICK_MS)
-    fun deleteTask(id: String): JSONObject = send("DELETE", "/api/tasks/" + seg(id), null, QUICK_MS)
-    fun runTask(id: String): JSONObject = send("POST", "/api/tasks/" + seg(id) + "/run", null, QUICK_MS)
-
-    fun providers(): JSONArray = JSONArray(get("/api/providers", QUICK_MS))
-    /** [apiKey] is sent only when the person typed one: an empty field keeps the saved key. */
-    fun saveProvider(id: String, name: String, baseUrl: String, models: List<String>, apiKey: String): JSONObject {
-        val o = JSONObject().put("name", name).put("base_url", baseUrl).put("models", JSONArray(models))
-        if (apiKey.isNotEmpty()) o.put("api_key", apiKey)
-        return if (id.isEmpty()) send("POST", "/api/providers", o, QUICK_MS) else send("PUT", "/api/providers/" + seg(id), o, QUICK_MS)
-    }
-    fun deleteProvider(id: String): JSONObject = send("DELETE", "/api/providers/" + seg(id), null, QUICK_MS)
 
     private fun seg(s: String) = java.net.URLEncoder.encode(s, "UTF-8").replace("+", "%20")
 
@@ -221,7 +174,7 @@ class Api(private val baseUrl: String, private val apiKey: String) : Conversatio
     }
 
     /**
-     * PATCH (a conversation's settings, a skill's switch) is not in the JDK's list of methods,
+     * PATCH (a conversation's title) is not in the JDK's list of methods,
      * though Android's own connection takes it: where the setter refuses it, the field it would
      * have set is set directly.
      */

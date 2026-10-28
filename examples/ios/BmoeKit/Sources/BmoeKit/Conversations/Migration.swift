@@ -53,7 +53,7 @@ public enum ConversationMigration {
             }
             do {
                 let answer = try await client.importConversation(body(c))
-                if AgentConversation.itemCount(answer) == sent.count {
+                if ServerConversation.itemCount(answer) == sent.count {
                     store.delete(c.id)
                     out.moved += 1
                 } else {

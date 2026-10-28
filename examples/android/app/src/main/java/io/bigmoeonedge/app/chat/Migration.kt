@@ -1,4 +1,4 @@
-package io.bigmoeonedge.app.agent
+package io.bigmoeonedge.app.chat
 
 import io.bigmoeonedge.app.data.Conversation
 import io.bigmoeonedge.app.data.ConversationStore
@@ -77,7 +77,7 @@ object Migration {
     fun itemsOf(c: Conversation): JSONArray {
         val a = JSONArray()
         for (m in c.messages) {
-            val kind = if (m.role == "user") AgentItem.KIND_USER else AgentItem.KIND_ASSISTANT
+            val kind = if (m.role == "user") ChatItem.KIND_USER else ChatItem.KIND_ASSISTANT
             val text = m.choices?.let { cs ->
                 cs.mapIndexed { i, s ->
                     val pick = if (i == m.best) " (picked)" else ""

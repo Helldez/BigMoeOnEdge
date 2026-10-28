@@ -48,10 +48,10 @@ final class Engine: ObservableObject {
     private(set) var api: APIClient
     private var connector: Task<Void, Never>?
     private var restartAfterExit = false
-    /// The agent's events (`conversation`, `item`, `delta`, `task`): the agent's model reads them
-    /// off the one event stream rather than holding a second one.
-    var agentEvents: ((String, JSON) -> Void)?
-    /// The server was reached (again): what the agent keeps of the server is read anew.
+    /// The conversations' events (`conversation`, `item`, `delta`): the chat's model reads them off
+    /// the one event stream rather than holding a second one.
+    var conversationEvents: ((String, JSON) -> Void)?
+    /// The server was reached (again): what the chat keeps of the server is read anew.
     var connected: (() -> Void)?
 
     static let logLines = 200
@@ -258,8 +258,8 @@ final class Engine: ObservableObject {
         case "log":
             log.append("\(o["level"].string(or: "info")): \(o["message"].string(or: ""))")
             if log.count > Self.logLines { log.removeFirst(log.count - Self.logLines) }
-        case "conversation", "item", "delta", "task":
-            agentEvents?(e.event, o)
+        case "conversation", "item", "delta":
+            conversationEvents?(e.event, o)
         default:
             break // downloads are the app's own here, not the server's
         }

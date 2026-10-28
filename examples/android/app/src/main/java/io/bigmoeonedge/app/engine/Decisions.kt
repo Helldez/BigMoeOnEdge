@@ -21,7 +21,7 @@ data class DecisionUi(
 )
 
 /**
- * Choose from options (docs/decide.md) beside the agent's conversations. A decision is not a
+ * Choose from options (docs/decide.md) beside the conversations. A decision is not a
  * conversation turn: the model picks one option from a single prefill and writes nothing, so its
  * answer is shown on the chat screen until dismissed and is never sent to the server's
  * conversation.

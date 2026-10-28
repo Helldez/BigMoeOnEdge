@@ -1,6 +1,6 @@
 package io.bigmoeonedge.app.engine
 
-import io.bigmoeonedge.app.agent.Agent
+import io.bigmoeonedge.app.chat.Chat
 
 import android.content.Context
 import android.content.Intent
@@ -550,7 +550,7 @@ object Engine {
                             if (!_state.value.serverUp) {
                                 _state.update { it.copy(serverUp = true, serverError = null, networkDenied = false) }
                                 backoffMs = 500L
-                                Agent.onServerUp()
+                                Chat.onServerUp()
                                 scope.launch {
                                     refreshStatic()
                                     reloadAfterRestart?.let { path ->
@@ -654,8 +654,8 @@ object Engine {
                 else PlanProgress(step, o.optString("label").ifEmpty { step }, o.optInt("index"), o.optInt("count"))
                 _state.update { it.copy(planProgress = p) }
             }
-            // The agent's conversations travel on the same stream (docs/agent.md).
-            "conversation", "item", "delta", "task" -> Agent.onEvent(ev.event, o)
+            // The conversations travel on the same stream (docs/agent.md).
+            "conversation", "item", "delta" -> Chat.onEvent(ev.event, o)
             else -> {} // downloads are the app's own, not the server's
         }
     }

@@ -22,9 +22,8 @@
     <string>${MACOSX_BUNDLE_BUNDLE_VERSION}</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
-    <!-- The documents folder is how a model gets in, a metrics file gets out, and a workspace's
-         files reach other apps: both keys together make it appear in the Files app and in the
-         Finder when the device is attached. -->
+    <!-- The documents folder is how a model gets in and a metrics file gets out: both keys together
+         make it appear in the Files app and in the Finder when the device is attached. -->
     <key>UIFileSharingEnabled</key>
     <true/>
     <key>LSSupportsOpeningDocumentsInPlace</key>

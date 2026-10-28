@@ -1,19 +1,17 @@
 import BmoeKit
 import SwiftUI
 
-/// Chat (docs/screens.md, docs/agent.md): a conversation held by the server, with its items as
-/// the run builds them (messages, the model's thinking, tool calls folded into what they did, the
-/// approvals it waits on, helpers and notices), and the composer that says what the agent may do,
-/// on which model, in which folder.
+/// Chat (docs/screens.md, docs/chat.md): a conversation held by the server, plain chat on a phone,
+/// with its messages as the answer streams (the model's thinking folded above its answer, and the
+/// server's notices), and the composer under them.
 struct ChatView: View {
     @EnvironmentObject private var engine: Engine
-    @EnvironmentObject private var agent: AgentModel
+    @EnvironmentObject private var chat: ChatModel
     @EnvironmentObject private var nav: Navigator
     var openModels: () -> Void
 
     @State private var showConversations = false
-    @State private var preview: String?
-    @State private var editing: AgentItem?
+    @State private var editing: ConversationItem?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -27,15 +25,12 @@ struct ChatView: View {
                     .accessibilityLabel("Conversations")
             }
             ToolbarItem(placement: .navigationBarTrailing) {
-                Button { agent.newChat() } label: { Image(systemName: "square.and.pencil") }
+                Button { chat.newChat() } label: { Image(systemName: "square.and.pencil") }
                     .accessibilityLabel("New chat")
             }
         }
         .sheet(isPresented: $showConversations) {
             ConversationsView().presentationDetents([.medium, .large])
-        }
-        .sheet(item: Binding(get: { preview.map(PreviewTarget.init) }, set: { preview = $0?.path })) { t in
-            FilePreviewSheet(path: t.path)
         }
         .sheet(item: $editing) { item in
             EditMessageSheet(item: item)
@@ -48,40 +43,40 @@ struct ChatView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: Grid.m) {
-                    if let note = agent.migrationNote {
+                    if let note = chat.migrationNote {
                         Banner(text: note, color: Palette.accent) {
-                            Button("Dismiss") { agent.migrationNote = nil }.buttonStyle(.appSecondary)
+                            Button("Dismiss") { chat.migrationNote = nil }.buttonStyle(.appSecondary)
                         }
                     }
-                    if agent.items.isEmpty && !agent.running && agent.decisions.isEmpty {
-                        if agent.loadingConversation { ProgressView().frame(maxWidth: .infinity).padding(.top, Grid.xl) } else { empty }
+                    if chat.items.isEmpty && !chat.running && chat.decisions.isEmpty {
+                        if chat.loadingConversation { ProgressView().frame(maxWidth: .infinity).padding(.top, Grid.xl) } else { empty }
                     }
-                    ForEach(RunSummary.rows(agent.items)) { row in
-                        ItemRow(row: row, openFile: { preview = $0 }, edit: { editing = $0 })
+                    ForEach(chat.items) { item in
+                        ItemView(item: item, answerAgain: item.id == chat.answerAgainOn, edit: { editing = $0 })
                     }
-                    if agent.running && !(agent.items.last?.streaming ?? false) && agent.items.last?.isWaiting != true {
+                    if chat.running && !(chat.items.last?.streaming ?? false) {
                         HStack(spacing: Grid.s) {
                             ProgressView().controlSize(.small)
-                            Text(agent.items.last?.kind == .user ? "Reading the prompt…" : "Working…")
+                            Text(chat.items.last?.kind == .user ? "Reading the prompt…" : "Working…")
                                 .font(.ui(14)).foregroundStyle(Palette.muted)
                         }
                     }
-                    ForEach(agent.decisions) { DecisionView(card: $0) }
-                    if agent.deciding {
+                    ForEach(chat.decisions) { DecisionView(card: $0) }
+                    if chat.deciding {
                         HStack(spacing: Grid.s) {
                             ProgressView().controlSize(.small)
                             Text("Reading the options…").font(.ui(14)).foregroundStyle(Palette.muted)
                         }
                     }
-                    if agent.running || agent.deciding { LiveLine() }
-                    if let e = agent.error { errorBanner(e) }
+                    if chat.running || chat.deciding { LiveLine() }
+                    if let e = chat.error { errorBanner(e) }
                     Color.clear.frame(height: 1).id(Self.bottom)
                 }
                 .padding(Grid.m)
             }
             .scrollDismissesKeyboard(.interactively)
-            .onChange(of: agent.items) { _ in proxy.scrollTo(Self.bottom, anchor: .bottom) }
-            .onChange(of: agent.decisions.count) { _ in withAnimation { proxy.scrollTo(Self.bottom, anchor: .bottom) } }
+            .onChange(of: chat.items) { _ in proxy.scrollTo(Self.bottom, anchor: .bottom) }
+            .onChange(of: chat.decisions.count) { _ in withAnimation { proxy.scrollTo(Self.bottom, anchor: .bottom) } }
         }
     }
 
@@ -90,13 +85,13 @@ struct ChatView: View {
     private var empty: some View {
         VStack(alignment: .leading, spacing: Grid.s) {
             Logo(size: 48)
-            Text(engine.ready || agent.route != AgentRoute.local ? "Ask anything." : "Load a model to start.")
+            Text(engine.ready ? "Ask anything." : "Load a model to start.")
                 .font(.ui(22, weight: .semibold)).foregroundStyle(Palette.text)
-            Text(agent.workspace == nil
-                ? "Pick a workspace below and the agent can read and change the files in it, as the mode allows."
-                : "The agent works in \(agent.workspace?.name ?? "the folder"): it reads freely and, in Ask first, asks before it changes a file.")
+            Text(engine.ready
+                ? "The model runs on this phone, and nothing you write leaves it."
+                : "The model runs on this phone, and nothing you write leaves it. Load one from Models, then write below.")
                 .font(.ui(15)).foregroundStyle(Palette.muted)
-            if !engine.ready && agent.route == AgentRoute.local {
+            if !engine.ready {
                 Button("Models", action: openModels).buttonStyle(.appPrimary).padding(.top, Grid.s)
             }
         }
@@ -110,32 +105,26 @@ struct ChatView: View {
             HStack(spacing: Grid.s) {
                 switch e.code {
                 case APIError.contextFull:
-                    Button("New chat") { agent.newChat() }.buttonStyle(.appPrimary)
+                    Button("New chat") { chat.newChat() }.buttonStyle(.appPrimary)
                     if let ctx { Button("Raise \(ctx.label)") { nav.openSetting(ctx.key) }.buttonStyle(.appSecondary) }
                 case APIError.noModel:
                     Button("Models", action: openModels).buttonStyle(.appPrimary)
                 default:
                     EmptyView()
                 }
-                Button("Dismiss") { agent.error = nil }.buttonStyle(.appSecondary)
+                Button("Dismiss") { chat.error = nil }.buttonStyle(.appSecondary)
             }
         }
     }
 }
 
-private struct PreviewTarget: Identifiable {
-    let path: String
-    var id: String { path }
-}
-
-/// The composer: what the agent may do, on which model, in which folder, then the message.
+/// The composer: the message, or a question and its options to choose from.
 struct Composer: View {
     @EnvironmentObject private var engine: Engine
-    @EnvironmentObject private var agent: AgentModel
+    @EnvironmentObject private var chat: ChatModel
     @State private var input = ""
     @State private var choosing = false
     @State private var options = ""
-    @State private var managing = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Grid.s) {
@@ -149,8 +138,8 @@ struct Composer: View {
             HStack(alignment: .bottom, spacing: Grid.s) {
                 AppField(placeholder: choosing ? "The question" : "Message", text: $input, axis: .vertical)
                     .lineLimit(1...6)
-                if agent.running {
-                    Button { agent.stop() } label: { Image(systemName: "stop.fill").frame(width: 22, height: 22) }
+                if chat.running {
+                    Button { chat.stop() } label: { Image(systemName: "stop.fill").frame(width: 22, height: 22) }
                         .buttonStyle(.appDestructive)
                         .accessibilityLabel("Stop")
                 } else {
@@ -165,52 +154,15 @@ struct Composer: View {
         .padding(.vertical, 12)
         .background(Palette.surface)
         .overlay(alignment: .top) { Rectangle().fill(Palette.line).frame(height: Grid.line) }
-        .sheet(isPresented: $managing) { NavigationStack { WorkspacesView(showsDone: true) } }
     }
 
-    /// Three chips: the mode, the model route, the workspace. Each a native menu.
+    /// Choose from options, as a chip that turns the composer into a question and its options.
     private var controls: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Grid.s) {
-                Menu {
-                    Picker("Mode", selection: Binding(get: { agent.mode }, set: { agent.setMode($0) })) {
-                        ForEach(AgentMode.allCases) { m in
-                            Label { Text(m.label); Text(m.help) } icon: { Image(systemName: icon(m)) }.tag(m)
-                        }
-                    }
-                } label: { chip(agent.mode.label, icon: icon(agent.mode)) }
-
-                Menu {
-                    Picker("Model", selection: Binding(get: { agent.route }, set: { agent.setRoute($0) })) {
-                        Text("This phone").tag(AgentRoute.local)
-                        ForEach(agent.providers) { p in
-                            ForEach(p.routes, id: \.route) { r in Text(r.label).tag(r.route) }
-                        }
-                    }
-                } label: { chip(AgentRoute.label(agent.route, providers: agent.providers), icon: "cpu") }
-
-                Menu {
-                    Picker("Workspace", selection: Binding(get: { agent.workspaceID }, set: { agent.setWorkspace($0) })) {
-                        Text("No workspace").tag("")
-                        ForEach(agent.workspaces) { w in Text(w.name).tag(w.id) }
-                    }
-                    Divider()
-                    Button { managing = true } label: { Label("Manage workspaces…", systemImage: "folder.badge.gearshape") }
-                } label: { chip(agent.workspace?.name ?? "No workspace", icon: "folder") }
-
-                Button { choosing.toggle() } label: {
-                    chip(choosing ? "Choosing" : "Choose", icon: choosing ? "checklist.checked" : "checklist", on: choosing)
-                }
-                .accessibilityLabel(choosing ? "Back to chat" : "Choose from options")
+        HStack(spacing: Grid.s) {
+            Button { choosing.toggle() } label: {
+                chip(choosing ? "Choosing" : "Choose", icon: choosing ? "checklist.checked" : "checklist", on: choosing)
             }
-        }
-    }
-
-    private func icon(_ m: AgentMode) -> String {
-        switch m {
-        case .ask: return "hand.raised"
-        case .readOnly: return "eye"
-        case .full: return "bolt"
+            .accessibilityLabel(choosing ? "Back to chat" : "Choose from options")
         }
     }
 
@@ -218,7 +170,6 @@ struct Composer: View {
         HStack(spacing: 4) {
             Image(systemName: icon).font(.ui(12))
             Text(text).font(.ui(13, weight: .medium)).lineLimit(1)
-            Image(systemName: "chevron.down").font(.ui(11)).opacity(on ? 0 : 0.6)
         }
         .foregroundStyle(on ? Palette.accentInk : Palette.text)
         .padding(.horizontal, 10)
@@ -229,15 +180,15 @@ struct Composer: View {
     private var canSubmit: Bool {
         let hasText = !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         guard engine.serverUp, hasText else { return false }
-        if choosing { return engine.ready && !agent.deciding && Decide.parseOptions(options).count >= 2 }
-        return !agent.sending
+        if choosing { return engine.ready && !chat.deciding && Decide.parseOptions(options).count >= 2 }
+        return !chat.sending
     }
 
     private func submit() {
         if choosing {
-            agent.choose(input, options: Decide.parseOptions(options))
+            chat.choose(input, options: Decide.parseOptions(options))
         } else {
-            agent.send(input)
+            chat.send(input)
         }
         input = ""
     }
@@ -303,10 +254,9 @@ struct LiveLine: View {
     }
 }
 
-/// The server's conversations, newest first: title, state, when it changed, the task that ran it.
-/// Open, rename, delete, new.
+/// The server's conversations, newest first: title, state, when it changed. Open, rename, delete, new.
 struct ConversationsView: View {
-    @EnvironmentObject private var agent: AgentModel
+    @EnvironmentObject private var chat: ChatModel
     @Environment(\.dismiss) private var dismiss
     @State private var renaming: ConversationSummary?
     @State private var newTitle = ""
@@ -314,25 +264,26 @@ struct ConversationsView: View {
     var body: some View {
         NavigationStack {
             List {
-                ForEach(agent.conversations) { c in
+                ForEach(chat.conversations) { c in
                     Button {
-                        agent.open(c.id)
+                        chat.open(c.id)
                         dismiss()
                     } label: {
                         HStack(spacing: Grid.s) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(c.displayTitle).font(.ui(16)).foregroundStyle(Palette.text).lineLimit(1)
-                                Text(subtitle(c)).font(.ui(12)).foregroundStyle(Palette.muted).lineLimit(1)
+                                if let u = c.updated {
+                                    Text(u.formatted(.relative(presentation: .named))).font(.ui(12)).foregroundStyle(Palette.muted).lineLimit(1)
+                                }
                             }
                             Spacer()
-                            if c.state == "waiting" { Badge(text: "Needs you", color: Palette.warn) }
-                            else if c.state == "running" { ProgressView().controlSize(.small) }
+                            if c.state == "running" { ProgressView().controlSize(.small) }
                             else if c.state == "error" { Badge(text: "Error", color: Palette.err) }
                         }
                     }
-                    .listRowBackground(c.id == agent.current?.id ? Palette.accentTint : Palette.surface)
+                    .listRowBackground(c.id == chat.current?.id ? Palette.accentTint : Palette.surface)
                     .swipeActions {
-                        Button(role: .destructive) { agent.delete(c.id) } label: { Label("Delete", systemImage: "trash") }
+                        Button(role: .destructive) { chat.delete(c.id) } label: { Label("Delete", systemImage: "trash") }
                         Button {
                             newTitle = c.title
                             renaming = c
@@ -342,9 +293,9 @@ struct ConversationsView: View {
             }
             .scrollContentBackground(.hidden)
             .background(Palette.bg)
-            .refreshable { await agent.refreshConversations() }
+            .refreshable { await chat.refreshConversations() }
             .overlay {
-                if agent.conversations.isEmpty {
+                if chat.conversations.isEmpty {
                     Text("No conversations yet").font(.ui(15)).foregroundStyle(Palette.muted)
                 }
             }
@@ -353,34 +304,25 @@ struct ConversationsView: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("New chat") {
-                        agent.newChat()
+                        chat.newChat()
                         dismiss()
                     }
                 }
             }
             .alert("Rename", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
                 TextField("Title", text: $newTitle)
-                Button("Save") { if let c = renaming { agent.rename(c.id, to: newTitle) } }
+                Button("Save") { if let c = renaming { chat.rename(c.id, to: newTitle) } }
                 Button("Cancel", role: .cancel) {}
             }
         }
     }
-
-    private func subtitle(_ c: ConversationSummary) -> String {
-        var parts: [String] = []
-        if let u = c.updated { parts.append(u.formatted(.relative(presentation: .named))) }
-        if let w = agent.workspaces.first(where: { $0.id == c.workspace }) { parts.append(w.name) }
-        if !c.task.isEmpty { parts.append(agent.tasks.first { $0.id == c.task }?.title ?? "a task") }
-        parts.append(c.mode.label)
-        return parts.joined(separator: " · ")
-    }
 }
 
-/// Edit and resend: the person's message, changed, replaces it and everything after it.
+/// Edit and send again: the person's message, changed, replaces it and everything after it.
 struct EditMessageSheet: View {
-    @EnvironmentObject private var agent: AgentModel
+    @EnvironmentObject private var chat: ChatModel
     @Environment(\.dismiss) private var dismiss
-    let item: AgentItem
+    let item: ConversationItem
     @State private var text = ""
 
     var body: some View {
@@ -390,17 +332,17 @@ struct EditMessageSheet: View {
                 .padding(Grid.s)
                 .scrollContentBackground(.hidden)
                 .background(Palette.surface)
-                .navigationTitle("Edit and resend")
+                .navigationTitle("Edit and send again")
                 .navigationBarTitleDisplayMode(.inline)
                 .safeAreaInset(edge: .bottom) {
-                    Text("What came after this message is dropped and the agent answers the new one.")
+                    Text("What came after this message is dropped and the model answers the new one.")
                         .font(.ui(13)).foregroundStyle(Palette.muted).padding(Grid.m)
                 }
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Send") {
-                            agent.edit(item, to: text)
+                            chat.edit(item, to: text)
                             dismiss()
                         }
                         .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

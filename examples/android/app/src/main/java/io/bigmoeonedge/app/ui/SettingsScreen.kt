@@ -71,7 +71,7 @@ private fun levelName(l: String) = l.replaceFirstChar { it.uppercase() }
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded: () -> Unit = {}, onOpenAgent: (AgentPage) -> Unit = {}) {
+fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded: () -> Unit = {}) {
     val context = LocalContext.current
     val engine by Engine.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
@@ -213,7 +213,6 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
                 }
             }
 
-            AgentSettingsCard(onOpenAgent)
             HorizontalDivider(color = tokens.line)
             val ctx = contextWarning(engine.info?.model.takeIf { engine.serverUp && engine.info?.ready == true }, params)
             AppSettings(engine.serverUp, ctx) { jump = it }
