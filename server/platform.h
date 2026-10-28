@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <ctime>
 #include <string>
 #include <vector>
 
@@ -47,6 +48,11 @@ bool library_loads(const std::string & name);
 // system's, not its own: each is loaded first with its folder searched. Elsewhere a module finds
 // them through its run path, and this does nothing.
 void prepare_backend_modules(const std::vector<std::string> & module_paths);
+
+// The calendar time `t` reads in this machine's time zone, and in UTC. Safe from any thread: the C
+// library's localtime and gmtime fill one buffer shared across the process.
+std::tm local_time(std::time_t t);
+std::tm utc_time(std::time_t t);
 
 // This process's id, and whether the process `pid` is still running. A server an app started is
 // told the app's (--parent-pid) and stops when it is gone, so an app that crashes leaves no

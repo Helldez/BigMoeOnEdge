@@ -211,6 +211,26 @@ void prepare_backend_modules(const std::vector<std::string> & module_paths) {
 #endif
 }
 
+std::tm local_time(std::time_t t) {
+    std::tm tm{};
+#if defined(_WIN32)
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    return tm;
+}
+
+std::tm utc_time(std::time_t t) {
+    std::tm tm{};
+#if defined(_WIN32)
+    gmtime_s(&tm, &t);
+#else
+    gmtime_r(&t, &tm);
+#endif
+    return tm;
+}
+
 long current_pid() {
 #if defined(_WIN32)
     return (long) GetCurrentProcessId();

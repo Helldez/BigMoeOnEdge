@@ -1,5 +1,7 @@
 #include "connect.h"
 
+#include "platform.h"
+
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -193,7 +195,8 @@ bool connect_write(const json & catalog,
     if (exists) {
         char stamp[32];
         const std::time_t t = std::time(nullptr);
-        std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", std::gmtime(&t));
+        const std::tm tm = platform::utc_time(t);
+        std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &tm);
         backup = file + ".bmoe-backup-" + stamp;
         fs::copy_file(p, fs::u8path(backup), fs::copy_options::overwrite_existing, ec);
         if (ec) {

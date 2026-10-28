@@ -97,7 +97,8 @@ add_library(bmoe_server_core STATIC
     backend_packs.cpp
     update_service.cpp
 )
-target_link_libraries(bmoe_server_core PUBLIC bmoe_core PRIVATE bmoe_monocypher)
+# The platform's calendar time (platform.h) for the schedule and the backups' stamps.
+target_link_libraries(bmoe_server_core PUBLIC bmoe_core PRIVATE bmoe_monocypher bmoe_server_platform)
 target_include_directories(bmoe_server_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # The vendored libraries (cpp-httplib, nlohmann/json) as system headers: upstream's code, upstream's
 # warnings.

@@ -379,14 +379,8 @@ ToolOutput web_search(HttpFetch * net, const json & a, const std::atomic<bool> &
 }
 
 std::string today() {
-    const std::time_t t = std::time(nullptr);
+    const std::tm tm = platform::local_time(std::time(nullptr));
     char buf[64];
-    std::tm tm{};
-    static std::mutex m;
-    {
-        std::lock_guard<std::mutex> lk(m);
-        tm = *std::localtime(&t);
-    }
     std::strftime(buf, sizeof(buf), "%A %Y-%m-%d", &tm);
     return buf;
 }

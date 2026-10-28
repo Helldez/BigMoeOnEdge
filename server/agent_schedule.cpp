@@ -1,5 +1,7 @@
 #include "agent_schedule.h"
 
+#include "platform.h"
+
 #include <cstdio>
 #include <mutex>
 
@@ -7,19 +9,14 @@ namespace bmoe::server::agent {
 
 namespace {
 
-// std::localtime shares one buffer across the process; the scheduler and a request can both ask.
-std::mutex & tm_mutex() {
-    static std::mutex m;
-    return m;
-}
-
 std::tm local(std::time_t t) {
-    std::lock_guard<std::mutex> lk(tm_mutex());
-    return *std::localtime(&t);
+    return platform::local_time(t);
 }
 
+// mktime reads the time zone's process-wide state; the scheduler and a request can both ask.
 std::time_t make_time(std::tm & tm) {
-    std::lock_guard<std::mutex> lk(tm_mutex());
+    static std::mutex m;
+    std::lock_guard<std::mutex> lk(m);
     return std::mktime(&tm);
 }
 
