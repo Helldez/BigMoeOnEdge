@@ -15,7 +15,7 @@ and restating the diff are not the job.
 2. **Understand the intent.** Read the commit message or ask what the change is for if it is not
    clear. A change can only be wrong relative to what it is meant to do.
 3. **Read around every hunk.** Open the changed files (`read_file` with a line range) and the
-   callers and callees of each changed function (`search_files` for its name). Most real bugs sit
+   callers and callees of each changed function (`grep_search` for its name). Most real bugs sit
    where the change meets code it did not touch.
 4. **Check, in this order:**
    - Correctness: wrong conditions, off-by-one, null or empty inputs, error paths that are

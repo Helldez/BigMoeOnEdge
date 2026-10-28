@@ -149,7 +149,7 @@ other software, or other people, on that machine or on a network it was told to 
   every `task` event) reach loopback streams only; nor may the network give a conversation a
   workspace, a provider route or `full` access. From the network they get `403` with
   `code: "local_only"`. A message from the network to a conversation without a workspace runs, with
-  no web tools, so a client elsewhere cannot have this machine fetch addresses on its network. The
+  no file, command or MCP tools, and `GET /api/agent` lists the MCP servers to loopback only. The
   agent's file tools resolve every path inside the workspace (`..` and links resolved, dangling
   links refused); its commands run in the workspace through the platform's shell, as one process
   group killed at the time limit or a stop; provider keys never appear in a listing, a log or a
@@ -630,12 +630,15 @@ route table). What follows is what a client needs beyond it on the wire.
 `tasks.json`, `providers.json`, `skills.json`), each written to a temporary file and renamed, and
 provider keys in `<data>/credentials.json`, created readable by its owner only. A person's skills
 are folders in `<data>/skills/`; the bundled ones are `skills/` beside the binary (`--skills-dir`
-names another folder). The client catalog is `clients.json` beside the model catalog.
+names another folder). The client catalog is `clients.json` beside the model catalog. The MCP
+servers the agent may use are `<data>/mcp.json` (`--mcp-servers-config PATH` names another file), in
+the `{"mcpServers": {...}}` format ([agent.md](agent.md#mcp-servers)).
 
-**What it can do.** `GET /api/agent` answers `{tools, commands, agents}`: whether conversations here
-have the agent's tools at all, whether `run_command` is among them, and the agents a conversation
-may use (the built-in one and the other coding agents of the client catalog, each with whether its
-program is installed; [agent.md](agent.md), "Other agents"). A server started with
+**What it can do.** `GET /api/agent` answers `{tools, commands, agents, mcp}`: whether conversations
+here have the agent's tools at all, whether `exec_shell_command` is among them, the agents a
+conversation may use (the built-in one and the other coding agents of the client catalog, each with
+whether its program is installed; [agent.md](agent.md), "Other agents"), and the MCP servers with
+their state and tools (to a client on loopback; `[]` to one on the network). A server started with
 `--chat-only` (the phone apps start theirs so) answers `tools: false`: its conversations are plain
 chat, sent to the model with no system prompt and no tools, as before the agent, and adding a
 workspace or a task is `409` with `code: "chat_only"`. A UI reads this and shows only what works.
@@ -643,8 +646,7 @@ workspace or a task is `409` with `code: "chat_only"`. A UI reads this and shows
 **Runs.** `POST /api/conversations/<id>/messages` answers `202 {item}` as soon as the person's item
 is stored; everything after that arrives on `/api/events` (`conversation`, `item`, `delta`) and is
 in the stored conversation. A UI that reconnects reads `GET /api/conversations/<id>`. An approval
-card is a `tool` item in state `waiting`, answered with `POST .../approval` on the conversation (or
-the helper's conversation) it appears in. `POST .../stop` answers once the run has ended.
+card is a `tool` item in state `waiting`, answered with `POST .../approval` on its conversation. `POST .../stop` answers once the run has ended.
 
 **Errors.** `{"error", "code"}`, with these codes:
 
@@ -656,7 +658,7 @@ the helper's conversation) it appears in. `POST .../stop` answers once the run h
 | 403 | `local_only` | a route that reaches this computer, from a client not on loopback (below) |
 | 403 | `outside_workspace` | a preview path that resolves outside the workspace |
 | 404 | `not_found` | no such conversation, workspace, skill, task, provider or client; an approval for an item that is not waiting |
-| 409 | `busy` | a message, an edit, a delete, or a change of workspace or route while the conversation runs; a task run while it runs; a message to a helper's conversation |
+| 409 | `busy` | a message, an edit, a delete, or a change of workspace or route while the conversation runs; a task run while it runs |
 | 409 | `exists` | `POST /api/skills` with the name of one of the person's skills |
 | 409 | `conflict` | `POST /api/connect/<id>` with no model loaded, or a settings file the server will not overwrite (JSON that does not parse, an unclosed block) |
 | 413 | `too_large` | a preview of a file over 16 MiB |
@@ -698,7 +700,7 @@ limit.
 | `update` | the installer's download: the same fields with `id` `update`, and with `done` its `path` and `version` |
 | `config` | the `GET /api/config` object, after any change |
 | `plan_progress` | a measurement (`GET /api/plan?measure=1`, or an auto load) entering a stage: `step` (`devices`, `model`, `compute`, `storage`, `memory`, `placement`, `rules`), its words `label`, `index` from 0 and `count`; then `{"step": "done"}` when it ends. A UI shows `label`; `step` is the protocol |
-| `conversation` | an agent conversation's `{id, title, state, updated, parent}`, whenever one of those changes ([agent.md](agent.md#events)) |
+| `conversation` | an agent conversation's `{id, title, state, updated}`, whenever one of those changes ([agent.md](agent.md#events)) |
 | `item` | `{conversation, item}`: an agent item added or changed, whole |
 | `delta` | `{conversation, item, text?, reasoning?}`: what a streaming assistant item adds |
 | `task` | an agent task, after it is saved and after a run of it starts or ends |

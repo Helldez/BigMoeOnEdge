@@ -1,8 +1,8 @@
 # The agent
 
 The server runs an agent: a conversation that can work in a folder of this computer, read and change
-its files, run commands, look things up on the web, follow skills, hand part of a job to a helper,
-and run on a schedule. It is part of `bmoe-server`, like everything else an application needs
+its files, run commands, use the tools of MCP servers a person configures, follow skills, and run on
+a schedule. It is part of `bmoe-server`, like everything else an application needs
 ([application-framework.md](application-framework.md)), so the web UI and the desktop app get the
 same agent through the same API, and an agent run does not depend on a UI staying open. The phone
 apps start their server as plain chat ("On a phone"). A conversation may also be worked by another
@@ -11,8 +11,13 @@ coding agent the computer has, over the Agent Client Protocol ("Other agents").
 This page is the contract: the concepts, the routes, the events, and the rules the server enforces.
 The HTTP details, with every error, sit in [server-api.md](server-api.md#agent). The code is
 `server/agent*.{h,cpp}` (the run loop, tools, skills, schedule, store, routes, other agents),
-`server/acp_connection.*`, `server/provider_protocol.*` and `server/connect.*`; `tests/agent_test.cpp` drives the loop with a
-scripted session and checks every rule below without a model.
+`server/json_rpc.*` (the wire of ACP and MCP), `server/mcp.*`, `server/provider_protocol.*` and
+`server/connect.*`; `tests/agent_test.cpp` drives the loop with a scripted session and checks every
+rule below without a model.
+
+The built-in agent follows llama.cpp's agent design on purpose: the same tool names, parameters and
+result shapes as llama.cpp's server tools, MCP servers configured the same way, a short system
+prompt and a project's `AGENTS.md`. A model used to one works with the other.
 
 ## Concepts
 
@@ -33,11 +38,11 @@ scripted session and checks every rule below without a model.
   tools.
 - **Mode.** What the agent may do without asking:
 
-  | Mode | Reads | Changes files, runs commands | Web |
-  |---|---|---|---|
-  | `ask` (default) | yes | asks first: one approval card, nothing has run when it appears | asks once per conversation |
-  | `read_only` | yes | refused, the model reads why | asks once per conversation |
-  | `full` | yes | yes | yes |
+  | Mode | Reads | Changes files, runs commands, calls an MCP tool |
+  |---|---|---|
+  | `ask` (default) | yes | asks first: one approval card, nothing has run when it appears |
+  | `read_only` | yes | refused, the model reads why (an MCP tool is not offered) |
+  | `full` | yes | yes |
 
   A command counts as a change unless the server can tell it only reads: every stage of a pipeline
   is a program on a short list (`ls`, `cat`, `head`, `tail`, `wc`, `grep`, `rg`, `find`, ...) with
@@ -60,23 +65,26 @@ scripted session and checks every rule below without a model.
   |---|---|
   | `user` | `text` |
   | `assistant` | `text`, `reasoning`, `streaming`, `tool_calls` (`[{id, name, arguments}]`, when the round called tools) |
-  | `tool` | `tool`, `title` (plain words: "Read src/main.cpp"), `args` (object), `state` (`running`, `waiting`, `done`, `denied`, `error`), `result` (text, capped), `diff` (unified, for edits), `file` (workspace-relative path the tool produced or changed, for the preview), `call_id`, `shortened` (true once the context ran short: the model then reads a few lines of `result`, the person still the whole) |
-  | `helper` | `title`, `state` (`running`, `done`, `error`), `summary`, `conversation` (the helper's own conversation id), `call_id` |
+  | `tool` | `tool`, `title` (plain words: "Read src/main.cpp"), `args` (object), `state` (`running`, `waiting`, `done`, `denied`, `error`), `result` (text, capped), `diff` (unified, for edits), `file` (workspace-relative path the tool produced or changed, for the preview), `call_id`, `shortened` (true once the context ran short: the model then reads a few lines of `result`, the person still the whole), `mcp` (the server, for an MCP server's tool) |
   | `notice` | `text`, `level` (`info`, `warn`, `error`): why something did not happen, in plain words |
 
 ## The run
 
 A message starts a run on a thread of the server: one run per conversation (a second message while
 one runs is `409 busy`), and its rounds line up behind the engine's turn line like any chat turn.
-A round sends the conversation as it stands: a system prompt naming the workspace, the platform,
-the date, the mode and the switched-on skills' names and descriptions, then the items as messages,
-and only the tools the conversation may use. What the model writes streams as `delta` events; its
+A round sends the conversation as it stands: a system prompt naming the workspace (the working
+directory), the platform, the date, the mode and the switched-on skills' names and descriptions,
+then the items as messages, and only the tools the conversation may use. The prompt is kept short
+(under 4,000 characters, about 1,000 tokens, the tool definitions apart; `tests/agent_test.cpp`
+prints its size): every token of it is prefilled for every new conversation. When the workspace has
+an `AGENTS.md` at its root, the convention coding agents share for a project's own instructions,
+its first 8 KiB are appended to it. What the model writes streams as `delta` events; its
 tool calls run under the mode, their results are appended, and the next round asks again, until an
 answer that calls no tool or the round limit (30 rounds per message; a notice says so, and another
 message lets it go on). The same call failing the same way three times in a row also stops the run,
 with a notice: a small model that repeats a refused call would otherwise spend every round on it.
 Without a workspace the prompt tells the model to ask the person for a folder rather than look for
-files some other way, and `fetch_url` takes http and https addresses only. The system prompt is the same for every round of a message and the
+files some other way. The system prompt is the same for every round of a message and the
 conversation is only appended to, so the engine reuses the prompt its KV cache already holds.
 
 When a request no longer fits the context (the engine refuses it with `context_full`), the oldest
@@ -86,7 +94,8 @@ not fit, the run ends with an error notice that says to start a new conversation
 with a larger context.
 
 A stop raises the run's stop: a waiting approval ends at once as denied, a command's whole process
-group is killed, a web request or a provider's stream ends at its next piece, and the engine's turn
+group is killed, an MCP call ends its server's program (started again by the next call), a
+provider's stream ends at its next piece, and the engine's turn
 ends at its next token (or gives up its place in the line). `POST .../stop` answers once the run
 has ended (waiting at most 30 s, the longest a prompt's prefill may delay that next token).
 
@@ -96,26 +105,58 @@ error notice ("No model is loaded ...") and the conversation in state `error`. S
 
 ## Tools
 
-| Tool | What it does | Needs |
-|---|---|---|
-| `list_files` | a folder's entries, with sizes (at most 400) | workspace |
-| `read_file` | a text file, or a line range of it (files up to 8 MiB) | workspace |
-| `search_files` | lines containing a text, case-insensitive, under a folder (at most 200; `.git`, `node_modules`, `.venv`, `__pycache__` skipped) | workspace |
-| `write_file` | create or replace a file | workspace, a change |
-| `edit_file` | replace one exact passage of a file (it must appear exactly once) | workspace, a change |
-| `run_command` | a command in the workspace (`/bin/sh -c`, `cmd /c` on Windows), with a 120 s limit and capped output | workspace, a change, a platform that may start a process |
-| `fetch_url` | a web page (https), as text (2 MiB read at most); never this computer or a private network named by its address or a local name | web |
-| `web_search` | result titles, links and snippets, from a keyless search page | web |
-| `use_skill` | a skill's instructions | a skill that is switched on |
-| `delegate` | a helper conversation with its own task; its final answer comes back | not inside a helper |
+The names, parameters and results are llama.cpp's server tools' (its `tools/server/server-tools.cpp`),
+with every path the workspace's:
+
+| Tool | Parameters | What it does | Needs |
+|---|---|---|---|
+| `read_file` | `path`, `start_line`, `end_line`, `append_loc` | a text file, or a line range of it, each line `N→` numbered with `append_loc` (files up to 8 MiB; past the result cap it says the line to read on from) | workspace |
+| `file_glob_search` | `path`, `include`, `exclude`, `type` (`file`, `dir`, `all`), `max_depth`, `limit` | the entries under a folder that match a glob, relative to it, with the total (at most 100) | workspace |
+| `grep_search` | `path`, `pattern`, `include`, `exclude`, `return_line_numbers`, `literal`, `ignore_case`, `context_lines` | the lines matching a regular expression (or a literal) in a file or under a folder, as `path:line:text` (at most 100; files over 2 MiB are not searched) | workspace |
+| `get_info` | none | `{os, cwd}`: the platform and the workspace as the working directory | workspace |
+| `write_file` | `path`, `content` | create or replace a file, its folders created | workspace, a change |
+| `edit_file` | `path`, `edits: [{old_text, new_text}]` | exact replacements, each `old_text` found once in the original, none overlapping, applied at once | workspace, a change |
+| `exec_shell_command` | `command`, `timeout` (default 10 s, at most 120), `max_output_size` (at most 12 KiB) | a command in the workspace (`/bin/sh -c`, `cmd /c` on Windows), stdout and stderr together, then `[exit code: N]` | workspace, a change, a platform that may start a process |
+| `use_skill` | `name` | a skill's instructions | a skill that is switched on |
+| `<server>_<tool>` | the server's own | an MCP server's tool ("MCP servers") | workspace, a change |
+
+A glob's `*` and `?` stay inside one name, `**` crosses folders; an `include` or `exclude` with no
+`/` matches an entry's name at any depth, one with a `/` the path relative to the folder searched.
+The walks list `.git`, `node_modules`, `.venv`, `build`, `dist` and the like but do not enter them.
+Unlike llama.cpp's, the tools do not consult `.gitignore` (asking git runs the repository's own
+configuration: see "Mode") and `edit_file` matches exactly, with no whitespace-tolerant fallback.
 
 Which tools a conversation is offered follows from its workspace, its mode, the platform and where
-the message came from: a tool that could only be refused is not declared (`write_file` and
-`edit_file` in `read_only`; `run_command` where no process may start). A result the model reads is
-capped at 12 KiB. A helper runs inside its parent's run, in the parent's workspace, mode and route,
-with its own conversation (listed only through its parent's `helper` item); a helper may not start
-helpers, and one message may start four. Every limit is a named constant in `server/agent.h` and
-`server/agent_tools.h`.
+the message came from: a tool that could only be refused is not declared (`write_file`,
+`edit_file` and the MCP tools in `read_only`; `exec_shell_command` where no process may start). A
+result the model reads is capped at 12 KiB. Every limit is a named constant in `server/agent.h`,
+`server/agent_tools.h` and `server/mcp.h`.
+
+## MCP servers
+
+The agent can use the tools of [Model Context Protocol](https://modelcontextprotocol.io) servers, the
+way llama.cpp's server does: a config file in the common `mcpServers` format,
+
+```json
+{"mcpServers": {"docs": {"command": "npx", "args": ["-y", "some-mcp-server"], "env": {"KEY": "value"}}}}
+```
+
+at `<data>/mcp.json`, or wherever `--mcp-servers-config PATH` names (an entry may also give `cwd`
+and `timeout_ms`, the time one call may take, 30 s by default). Only stdio servers are started; an
+entry with a `url` is left out with a warning. Each server is a program started the first time its
+tools are wanted (a round that offers them, or `GET /api/agent`), with `initialize` (protocol
+`2024-11-05`), `notifications/initialized` and `tools/list`, and kept for the server's life in a
+process group of its own (`platform::LineProcess`), ended when the server stops. One that does not
+start within 10 s, or fails its handshake, is left out until the server restarts; one that ends
+later (a stop, a time limit) is started again by the next call. Its tools reach the model beside the
+built-in ones as `<server>_<tool>`, with the server's descriptions and input schemas; a name already
+taken (a built-in tool's, or another server's) is left out. A call is `tools/call` with the model's
+arguments; the text parts of its `content` are the result, an `isError` result an error.
+
+What an MCP tool does is the server's, unknown here, so it is treated as a change: offered only in a
+conversation with a workspace, never to a request from the network, not in `read_only`, an approval
+card in `ask` (showing the arguments), run at once in `full`. A web search or a web page read is an
+MCP server's job too: the agent has no web tool of its own.
 
 ## Skills
 
@@ -127,7 +168,7 @@ earlier one of the same name. A file that does not parse, or whose name is not i
 skipped and the others are listed. Every skill is on until switched off
 (`<data>/agent/skills.json` holds the switches). The agent sees every switched-on skill's name and
 description, and reads the instructions with `use_skill` when it needs them. The release ships
-`review-change`, `write-tests`, `summarize-document`, `web-research` and `explain-codebase`.
+`review-change`, `write-tests`, `summarize-document` and `explain-codebase`.
 
 ## Tasks
 
@@ -173,7 +214,7 @@ the other agent would not know what was said). `GET /api/agent` lists them with 
 installed (`available`, and the programs `missing`), so the UI offers only what runs.
 
 They are spoken to over the [Agent Client Protocol](https://agentclientprotocol.com) (ACP):
-JSON-RPC 2.0, one message a line, on the program's stdin and stdout (`server/acp_connection.*`).
+JSON-RPC 2.0, one message a line, on the program's stdin and stdout (`server/json_rpc.*`).
 How each one starts is data, not code: the `acp` entry of its row in `catalog/clients.json`
 (`command` and the programs it `needs` on PATH), pinned to the version the ACP registry lists.
 OpenCode speaks ACP itself (`opencode acp`); Claude Code, Codex and Pi run through their published
@@ -215,7 +256,8 @@ to local streams only, as do `task` events. A client on the network may not give
 workspace or a provider route, nor set `full` access (asking or reading only, it may). From the
 network these get `403` with `code: "local_only"`. A conversation without a workspace works from the
 network with the key, so the web UI on a phone keeps its chats; a message from the network runs
-without web tools, so a client elsewhere cannot have this computer fetch addresses of its network.
+without file, command or MCP tools, and `GET /api/agent` lists the MCP servers to a local client
+only.
 The rule is `agent_route_locality()` in `server/access.h`.
 
 ## On a phone
@@ -227,8 +269,8 @@ model on a phone is not an agent; the agent is the desktop's. On iOS the server 
 (`run()` on a thread), and its stop (`server::Embedding`) joins every run before `run()` returns.
 
 A server elsewhere decides what it offers from the platform's facts, not from the app:
-`run_command` is offered only where `platform::can_run_commands()` holds, and `GET /api/connect`
-lists no file to write where there is no home folder.
+`exec_shell_command` and the MCP servers are offered only where `platform::can_run_commands()`
+holds, and `GET /api/connect` lists no file to write where there is no home folder.
 
 ## Routes
 
@@ -236,19 +278,19 @@ All JSON; errors are `{"error", "code"}` as everywhere in the API. Times are Uni
 
 | Route | Body / answer |
 |---|---|
-| `GET /api/agent` | `{tools, commands, agents: [{id, name, available, missing}]}`: whether conversations here have tools and commands, and the agents one may use (the built-in one first; none where commands cannot run) |
+| `GET /api/agent` | `{tools, commands, agents: [{id, name, available, missing}], mcp: [{name, command, state, error?, tools: [{name, description}]}]}`: whether conversations here have tools and commands, the agents one may use (the built-in one first; none where commands cannot run), and the MCP servers with their tools as the model calls them (`state` `running`, `stopped` or `failed`; starting the ones not started; `[]` to a client on the network) |
 | `GET /api/workspaces` | `[{id, name, path}]` |
 | `POST /api/workspaces` | `{path, name?}` → the workspace; `400 not_a_folder` |
 | `DELETE /api/workspaces/<id>` | forgets the folder, touches no file |
-| `GET /api/conversations` | `[{id, title, workspace, mode, route, state, created, updated, task, parent, web_allowed}]`, newest first, helpers left out; `state` is `idle`, `running`, `waiting` (an approval, the conversation's or one of its helpers') or `error` (the last run ended in one) |
+| `GET /api/conversations` | `[{id, title, workspace, mode, route, agent, state, created, updated, task}]`, newest first; `state` is `idle`, `running`, `waiting` (an approval) or `error` (the last run ended in one) |
 | `POST /api/conversations` | `{workspace?, mode?, route?, agent?, title?, items?}` → the conversation; another `agent` needs a `workspace`. `items`: `[{kind: "user" \| "assistant", text}]`, a conversation the UI kept before the server did |
 | `GET /api/conversations/<id>` | the conversation with its `items` |
 | `PATCH /api/conversations/<id>` | `{title?, mode?, route?, workspace?, agent?}` → the conversation without items; `409 busy` for `workspace` or `route` while it runs, and for `agent` once it has items |
-| `DELETE /api/conversations/<id>` | with its helpers; `409 busy` while it runs |
+| `DELETE /api/conversations/<id>` | `409 busy` while it runs |
 | `POST /api/conversations/<id>/messages` | `{text, think?, images?}` → `202 {item}`; the run goes on in the server and reports on `/api/events`. `409 busy` while one runs; `images` is not supported yet (`400 unsupported`) |
 | `POST /api/conversations/<id>/edit` | `{item, text, think?}`: drops `item` (a `user` item) and everything after it, then sends `text` → `202 {item}` |
-| `POST /api/conversations/<id>/approval` | `{item, decision: "approve" \| "deny"}`; the conversation or the helper the card is in; `404 not_found` when that item is not waiting |
-| `POST /api/conversations/<id>/stop` | stops the run and its helpers; answers `{stopped}` once it has stopped (`false`: none ran) |
+| `POST /api/conversations/<id>/approval` | `{item, decision: "approve" \| "deny"}`; `404 not_found` when that item is not waiting |
+| `POST /api/conversations/<id>/stop` | stops the run; answers `{stopped}` once it has stopped (`false`: none ran) |
 | `GET /api/conversations/<id>/file?path=` | a workspace file's bytes for the preview, with its content type (16 MiB at most), sandboxed by its own `Content-Security-Policy` |
 | `GET /api/skills?workspace=<id>` | `[{name, title, description, source: "bundled" \| "user" \| "workspace", enabled, body}]`; the workspace's own with `workspace` |
 | `POST /api/skills`, `PUT /api/skills/<name>` | `{name, description, body, title?}`: a person's own skill (a `PUT` on a bundled one writes the person's version of it); `409 exists` on a `POST` that repeats a name |
@@ -268,7 +310,7 @@ On `/api/events`, beside the existing ones:
 
 | event | data |
 |---|---|
-| `conversation` | `{id, title, state, updated, parent}`, whenever one of those changes |
+| `conversation` | `{id, title, state, updated}`, whenever one of those changes |
 | `item` | `{conversation, item}`: an item was added or changed, whole |
 | `delta` | `{conversation, item, text?, reasoning?}`: what a streaming assistant item adds. When the model's parser takes back text it showed (a closing reasoning tag), an `item` event carries the item whole instead |
 | `task` | the task, after it is saved and after a run starts or ends |

@@ -73,7 +73,7 @@ export type Block =
   | { kind: 'run'; id: string; items: Item[] };
 
 /**
- * Consecutive tool and helper items become one run, so a turn that read ten files reads as one line
+ * Consecutive tool items become one run, so a turn that read ten files reads as one line
  * with its summary; everything else stands alone, in the server's order.
  */
 export function blocks(items: readonly Item[]): Block[] {
@@ -85,7 +85,7 @@ export function blocks(items: readonly Item[]): Block[] {
     run = [];
   };
   for (const it of items) {
-    if (it.kind === 'tool' || it.kind === 'helper') {
+    if (it.kind === 'tool') {
       run.push(it);
       continue;
     }
@@ -108,9 +108,7 @@ export interface RunSummary {
   edited: number;
   commands: number;
   pages: number;
-  webSearches: number;
   skills: number;
-  helpers: number;
   other: number;
   added: number;
   removed: number;
@@ -144,9 +142,8 @@ const ACP_KIND_AS_TOOL: Record<string, string> = {
   edit: 'edit_file',
   delete: 'edit_file',
   move: 'edit_file',
-  search: 'search_files',
-  execute: 'run_command',
-  fetch: 'fetch_url',
+  search: 'grep_search',
+  execute: 'exec_shell_command',
 };
 
 export function runSummary(items: readonly Item[]): RunSummary {
@@ -158,9 +155,7 @@ export function runSummary(items: readonly Item[]): RunSummary {
     edited: 0,
     commands: 0,
     pages: 0,
-    webSearches: 0,
     skills: 0,
-    helpers: 0,
     other: 0,
     added: 0,
     removed: 0,
@@ -172,12 +167,6 @@ export function runSummary(items: readonly Item[]): RunSummary {
   const edited = new Set<string>();
   const created = new Set<string>();
   for (const it of items) {
-    if (it.kind === 'helper') {
-      s.helpers++;
-      if (it.state === 'running' || it.state === 'waiting') s.pending++;
-      if (it.state === 'error') s.failed++;
-      continue;
-    }
     if (it.kind !== 'tool') continue;
     if (it.state === 'running' || it.state === 'waiting') s.pending++;
     if (it.state === 'error') s.failed++;
@@ -187,10 +176,10 @@ export function runSummary(items: readonly Item[]): RunSummary {
       case 'read_file':
         read.add(path);
         break;
-      case 'list_files':
+      case 'file_glob_search':
         s.listed++;
         break;
-      case 'search_files':
+      case 'grep_search':
         s.searched++;
         break;
       case 'write_file':
@@ -199,20 +188,15 @@ export function runSummary(items: readonly Item[]): RunSummary {
       case 'edit_file':
         if (ok) edited.add(path);
         break;
-      case 'run_command':
+      case 'exec_shell_command':
         s.commands++;
         break;
-      case 'fetch_url':
+      // Another agent's web reads: this server's own agent reaches the web through an MCP server.
+      case 'fetch':
         s.pages++;
-        break;
-      case 'web_search':
-        s.webSearches++;
         break;
       case 'use_skill':
         s.skills++;
-        break;
-      case 'delegate':
-        s.helpers++;
         break;
       default:
         s.other++;
@@ -245,9 +229,7 @@ export function summaryText(s: RunSummary, t: Translate): string {
     ['run.searched', s.searched],
     ['run.commands', s.commands],
     ['run.pages', s.pages],
-    ['run.web', s.webSearches],
     ['run.skills', s.skills],
-    ['run.helpers', s.helpers],
     ['run.other', s.other],
   ];
   const parts: string[] = [];

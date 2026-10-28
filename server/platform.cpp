@@ -24,6 +24,8 @@
 #include <iphlpapi.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <cwchar>
+#include <cwctype>
 #elif defined(__APPLE__)
 #include <TargetConditionals.h>
 #include <mach-o/dyld.h>
@@ -50,6 +52,8 @@
 #include <net/if.h>
 #include <netinet/in.h>
 #include <unistd.h>
+// The environment a started program inherits (LineProcess); not every libc declares it.
+extern char ** environ;
 #endif
 
 namespace fs = std::filesystem;
@@ -654,8 +658,10 @@ struct LineProcess::Impl {
 
 LineProcess::LineProcess(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 
-std::unique_ptr<LineProcess>
-LineProcess::start(const std::vector<std::string> & argv, const std::string & cwd, std::string & err) {
+std::unique_ptr<LineProcess> LineProcess::start(const std::vector<std::string> & argv,
+                                                const std::string & cwd,
+                                                std::string & err,
+                                                const std::map<std::string, std::string> & env) {
     if (!can_run_commands()) {
         err = "this platform does not let the server start a program";
         return nullptr;
@@ -698,10 +704,38 @@ LineProcess::start(const std::vector<std::string> & argv, const std::string & cw
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION lim{};
     lim.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
     if (impl->job) SetInformationJobObject(impl->job, JobObjectExtendedLimitInformation, &lim, sizeof(lim));
+    // The environment as a block (NAME=value, NUL after each, one more at the end): this process's,
+    // with `env` replacing a name it has (Windows names ignore case) or added after it.
+    std::wstring block;
+    if (!env.empty()) {
+        std::map<std::wstring, std::wstring> merged;
+        const auto upper = [](std::wstring w) {
+            for (wchar_t & c : w)
+                c = (wchar_t) towupper(c);
+            return w;
+        };
+        if (wchar_t * all = GetEnvironmentStringsW()) {
+            for (const wchar_t * e = all; *e; e += wcslen(e) + 1) {
+                const std::wstring entry = e;
+                const size_t eq = entry.find(L'=', 1); // `=C:=C:\` entries start with '='
+                if (eq != std::wstring::npos) merged[upper(entry.substr(0, eq))] = entry;
+            }
+            FreeEnvironmentStringsW(all);
+        }
+        for (const auto & [k, v] : env)
+            merged[upper(widen(k))] = widen(k) + L"=" + widen(v);
+        for (const auto & [k, entry] : merged) {
+            block += entry;
+            block += L'\0';
+        }
+        block += L'\0';
+    }
     PROCESS_INFORMATION pi{};
     const std::wstring wcwd = widen(cwd);
-    const BOOL ok = CreateProcessW(nullptr, line.data(), nullptr, nullptr, TRUE, CREATE_SUSPENDED | CREATE_NO_WINDOW,
-                                   nullptr, cwd.empty() ? nullptr : wcwd.c_str(), &si, &pi);
+    const BOOL ok =
+        CreateProcessW(nullptr, line.data(), nullptr, nullptr, TRUE,
+                       CREATE_SUSPENDED | CREATE_NO_WINDOW | (env.empty() ? 0 : CREATE_UNICODE_ENVIRONMENT),
+                       env.empty() ? nullptr : (LPVOID) block.data(), cwd.empty() ? nullptr : wcwd.c_str(), &si, &pi);
     CloseHandle(in_rd);
     CloseHandle(out_wr);
     if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
@@ -741,6 +775,18 @@ LineProcess::start(const std::vector<std::string> & argv, const std::string & cw
     for (std::string & a : args)
         c_argv.push_back(a.data());
     c_argv.push_back(nullptr);
+    // The environment, made before fork too: this process's, with `env` replacing or added.
+    std::vector<std::string> env_entries;
+    for (char ** e = environ; e && *e; ++e) {
+        const std::string entry = *e;
+        if (!env.count(entry.substr(0, entry.find('=')))) env_entries.push_back(entry);
+    }
+    for (const auto & [k, v] : env)
+        env_entries.push_back(k + "=" + v);
+    std::vector<char *> c_env;
+    for (std::string & e : env_entries)
+        c_env.push_back(e.data());
+    c_env.push_back(nullptr);
     const char * c_cwd = cwd.c_str();
     const bool has_cwd = !cwd.empty();
     const pid_t pid = fork();
@@ -757,7 +803,7 @@ LineProcess::start(const std::vector<std::string> & argv, const std::string & cw
         dup2(out[1], 1);
         const int null = open("/dev/null", O_WRONLY);
         if (null >= 0) dup2(null, 2);
-        execv(c_argv[0], c_argv.data());
+        execve(c_argv[0], c_argv.data(), c_env.data());
         _exit(127);
     }
     setpgid(pid, pid);

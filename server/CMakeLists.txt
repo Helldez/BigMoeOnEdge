@@ -93,7 +93,8 @@ add_library(bmoe_server_core STATIC
     agent_store.cpp
     provider_protocol.cpp
     connect.cpp
-    acp_connection.cpp
+    json_rpc.cpp
+    mcp.cpp
     feed.cpp
     backend_packs.cpp
     update_service.cpp

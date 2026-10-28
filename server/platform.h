@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cstddef>
 #include <ctime>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -112,15 +113,19 @@ CommandResult run_command(const std::string & command,
 std::string find_program(const std::string & program);
 
 // A program the server talks to one line at a time on its stdin and stdout: a coding agent speaking
-// the Agent Client Protocol (docs/agent.md). It and everything it starts run as one process group
-// (a job on Windows), ended whole by stop() or the destructor, so an agent never outlives the
-// conversation that started it. Its stderr is discarded. Not on Android or iOS (can_run_commands()).
+// the Agent Client Protocol, or a tool server speaking the Model Context Protocol (docs/agent.md).
+// It and everything it starts run as one process group (a job on Windows), ended whole by stop() or
+// the destructor, so a program never outlives what started it. Its stderr is discarded. Not on
+// Android or iOS (can_run_commands()).
 class LineProcess {
 public:
     // `argv[0]` is found with find_program(); a Windows batch file (`npx.cmd`) runs through cmd.exe.
-    // nullptr with `err` set when it cannot start.
-    static std::unique_ptr<LineProcess>
-    start(const std::vector<std::string> & argv, const std::string & cwd, std::string & err);
+    // The program inherits this process's environment with `env` set on top of it. nullptr with
+    // `err` set when it cannot start.
+    static std::unique_ptr<LineProcess> start(const std::vector<std::string> & argv,
+                                              const std::string & cwd,
+                                              std::string & err,
+                                              const std::map<std::string, std::string> & env = {});
     ~LineProcess();
     LineProcess(const LineProcess &) = delete;
     LineProcess & operator=(const LineProcess &) = delete;

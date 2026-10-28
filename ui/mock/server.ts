@@ -101,7 +101,7 @@ const conversations: Conv[] = [
       },
       { id: 'i3', kind: 'tool', tool: 'read_file', title: 'Read index.html', args: { path: 'index.html' }, state: 'done', result: '<!doctype html>…' },
       { id: 'i4', kind: 'tool', tool: 'read_file', title: 'Read src/style.css', args: { path: 'src/style.css' }, state: 'done', result: 'body { font-family: serif; }' },
-      { id: 'i5', kind: 'tool', tool: 'search_files', title: 'Search for "hero" in src', args: { pattern: 'hero', path: 'src' }, state: 'done', result: 'src/index.ts:12: hero()' },
+      { id: 'i5', kind: 'tool', tool: 'grep_search', title: 'Search for "hero"', args: { path: 'src', pattern: 'hero' }, state: 'done', result: 'index.ts:hero()\n\n---\nTotal matches: 1\n' },
       { id: 'i6', kind: 'tool', tool: 'edit_file', title: 'Edit src/style.css', args: { path: 'src/style.css' }, state: 'done', diff: DIFF, file: 'src/style.css' },
       { id: 'i7', kind: 'tool', tool: 'write_file', title: 'Write index.html', args: { path: 'index.html' }, state: 'done', file: 'index.html', diff: '--- a/index.html\n+++ b/index.html\n@@ -3 +3,2 @@\n-<h1>Hello</h1>\n+<section class="hero"><h1>Hello</h1>\n+<p>Fast, local, private.</p></section>' },
       {
@@ -110,7 +110,7 @@ const conversations: Conv[] = [
         text: 'The page now uses a sans-serif face, darker text and more room around the hero. Here is the main change:\n\n```css\nbody {\n  font-family: system-ui, sans-serif;\n  line-height: 1.6; /* easier to read */\n}\n```\n\nNext I want to run the build to check nothing broke.',
         streaming: false,
       },
-      { id: 'i9', kind: 'tool', tool: 'run_command', title: 'Run npm run build', args: { command: 'npm run build' }, state: 'waiting' },
+      { id: 'i9', kind: 'tool', tool: 'exec_shell_command', title: 'Run npm run build', args: { command: 'npm run build' }, state: 'waiting' },
     ],
   },
   {
@@ -343,6 +343,14 @@ async function handle(req: Req, res: Res, next: () => void) {
         { id: 'codex', name: 'Codex CLI', available: false, missing: ['npx'] },
         { id: 'opencode', name: 'OpenCode', available: true, missing: [] },
         { id: 'pi', name: 'Pi', available: false, missing: ['pi'] },
+      ],
+      mcp: [
+        {
+          name: 'docs',
+          command: 'npx',
+          state: 'running',
+          tools: [{ name: 'docs_search', description: 'Search the documentation' }],
+        },
       ],
     });
   if (p === '/api/workspaces' && m === 'GET') return send(res, 200, workspaces);

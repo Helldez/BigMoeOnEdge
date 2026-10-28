@@ -57,7 +57,7 @@ bool local(const httplib::Request & req) {
 
 // A server started with --chat-only takes no agent work: no workspaces, tasks or tool runs.
 bool refuse_chat_only(const AgentRouteDeps & d, httplib::Response & res) {
-    if (d.agent->capabilities().value("tools", true)) return false;
+    if (d.agent->capabilities(false).value("tools", true)) return false;
     send_error(res, 409, "this server runs plain chat only: it was started without the agent", "chat_only");
     return true;
 }
@@ -217,8 +217,10 @@ bool read_task(const json & body, const AgentStore & store, const Agent & agent,
 } // namespace
 
 void register_agent_routes(httplib::Server & svr, const AgentRouteDeps & d) {
-    svr.Get("/api/agent",
-            [&d](const httplib::Request &, httplib::Response & res) { send_json(res, d.agent->capabilities()); });
+    // The MCP servers reach this computer's programs: listed to a local client only.
+    svr.Get("/api/agent", [&d](const httplib::Request & req, httplib::Response & res) {
+        send_json(res, d.agent->capabilities(local(req)));
+    });
 
     // ---- workspaces ----
     svr.Get("/api/workspaces",
@@ -281,11 +283,7 @@ void register_agent_routes(httplib::Server & svr, const AgentRouteDeps & d) {
         }
         json c = d.store->create_conversation(fields);
         d.bus->publish("conversation",
-                       json{{"id", c["id"]},
-                            {"title", c["title"]},
-                            {"state", "idle"},
-                            {"updated", c["updated"]},
-                            {"parent", nullptr}},
+                       json{{"id", c["id"]}, {"title", c["title"]}, {"state", "idle"}, {"updated", c["updated"]}},
                        conversation_audience(c));
         send_json(res, c);
     });
@@ -342,8 +340,7 @@ void register_agent_routes(httplib::Server & svr, const AgentRouteDeps & d) {
                        json{{"id", id},
                             {"title", view.value("title", "")},
                             {"state", view.value("state", "idle")},
-                            {"updated", view.value("updated", 0LL)},
-                            {"parent", view.value("parent", json(nullptr))}},
+                            {"updated", view.value("updated", 0LL)}},
                        conversation_audience(view));
         view.erase("items");
         send_json(res, view);
