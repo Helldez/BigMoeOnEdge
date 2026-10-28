@@ -45,8 +45,6 @@ target_link_libraries(bmoe-app PRIVATE
     "-framework UIKit"
     "-framework SwiftUI"
     "-framework Foundation"
-    "-framework WebKit"
-    "-framework UserNotifications"
 )
 
 set_target_properties(bmoe-app PROPERTIES

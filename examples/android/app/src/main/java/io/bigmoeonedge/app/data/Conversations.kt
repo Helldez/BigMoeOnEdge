@@ -9,7 +9,7 @@ import java.util.UUID
 
 /**
  * A conversation as earlier versions of the app kept it on the phone, before the server held them
- * (docs/agent.md). Read once more by the migration (agent/Migration.kt), which hands each to the
+ * (docs/agent.md). Read once more by the migration (chat/Migration.kt), which hands each to the
  * server and deletes the file; nothing writes one any more.
  */
 data class Conversation(

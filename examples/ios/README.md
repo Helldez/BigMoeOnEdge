@@ -27,23 +27,20 @@ app/
   Sources/
     App/        the entry point, the five tabs and the links between them, the status line
     Engine/     the server's life in the app: paths, launch, key, the state the screens observe
-    Chat/       the agent's conversation: items, tool cards, approvals, the composer, Markdown
-    Agent/      the agent's model over the server, workspaces, skills, tasks, providers, the
-                file preview and the notifications
+    Chat/       the conversations over the server, the transcript, the composer, Markdown,
+                choose-from-options
     Models/     one list of what is here and what the catalog offers, Hugging Face, a link, a file
     Plan/       the verdict and its three figures, the planner's measurements and decisions
-    Settings/   every engine parameter, one card per group of GET /api/params, the agent's pages,
-                and the app's own settings
+    Settings/   every engine parameter, one card per group of GET /api/params, and the app's own
     Metrics/    the live card, the recorded runs, the engine's log
     Design/     the visual language (docs/design.md): the tokens, Inter and JetBrains Mono, the
                 boxes, the logo
   Resources/    the app icon, rendered from the logo by make-icon.swift; Fonts/, the bundled
                 faces with their SIL OFL licences
-BmoeKit/        the client side with no UI: the API client, the event stream, the agent's shapes,
-                the transcript the events build and its run summary, the schedule in words, the
-                move of the old local conversations, the decide request, downloads and their
-                check, the models list, the settings cards, the plan's figures, metrics files.
-                `swift test` runs it.
+BmoeKit/        the client side with no UI: the API client, the event stream, the conversations'
+                shapes, the transcript the events build and Answer again, the move of the old
+                local conversations, the decide request, downloads and their check, the models
+                list, the settings cards, the plan's figures, metrics files. `swift test` runs it.
 ```
 
 The screens follow [docs/screens.md](../../docs/screens.md) as the web UI does: Models is one list
@@ -60,42 +57,22 @@ line stays under "Serve on the network". Plan opens on its verdict and three fig
 Measure again; Settings is one card per group with a remembered level filter, a search, a chip per
 row for where its value came from, and links from Plan land on a row.
 
-### The agent
+### The chat
 
-Chat is the server's agent ([docs/agent.md](../../docs/agent.md)): the conversations are the
-server's (`/api/conversations`), the run goes on in the server, and the screen follows it on the
-event stream (`conversation`, `item`, `delta`). The transcript shows the person's messages, the
-model's answers as Markdown with their thinking folded above, tool calls as cards with their state
-(a run of two or more folded under one line, "Read 3 files, edited 2 files"), the diff of an edit,
-an approval card with Approve and Deny when the agent asks first, helpers and notices. Holding a
-message offers Copy and Edit and resend; Stop stops the run. The composer carries three menus:
-the mode (Ask first, Read only, Full access), the model (this phone, or a provider's model), and
-the workspace. Choose from options stays: the model picks one option from one read of the prompt,
-shown as a card under the conversation and not kept, since a decision is not a turn.
+The app starts its server with `--chat-only`: the conversations are the server's
+(`/api/conversations`, [docs/agent.md](../../docs/agent.md)), the answer is written in the server,
+and the screen follows it on the event stream (`conversation`, `item`, `delta`), but they are plain
+chat, with no tools, no workspaces and no tasks. The agent is the desktop's: a small model on a
+phone is not one. The transcript shows the person's messages, the model's answers as Markdown with
+their thinking folded above, and the server's notices. Holding a message offers Copy and Edit and
+send again; under each answer is Copy, and under the last one **Answer again**, which sends the
+last question again as it was (the server drops the old answer). Stop stops the answer. The
+conversations sheet lists them newest first; swipe a row to rename or delete it. With no model
+loaded the empty chat says to load one, with the way to Models. Choose from options stays: the
+model picks one option from one read of the prompt, shown as a card under the conversation and not
+kept, since a decision is not a turn. An answer holds the background time iOS grants, so one nearly
+done when the person switches apps still finishes.
 
-- **Workspaces** live in the app's own `Documents/Workspaces/<name>`, which the Files app shows
-  under the app (`UIFileSharingEnabled`, `LSSupportsOpeningDocumentsInPlace`): the server needs a
-  real folder, and on a phone that is the one there is. Settings › Workspaces (or the composer's
-  workspace menu) makes and names a folder and adds it, lists a folder's files, imports files into
-  it from the Files app and shares one out. Removing a workspace keeps its files. There is no
-  shell on a phone: the server offers no command tool here.
-- **A file the agent produced** opens in a preview read through the server
-  (`GET /api/conversations/<id>/file`): text and code in JetBrains Mono, Markdown rendered, images,
-  and a web page in a web view with no bridge to the app, no base URL, no network and no
-  navigation away from the page.
-- **Skills** (Settings › Skills): every skill with where it comes from, switched on or off; the
-  person's own written, changed and deleted here.
-- **Tasks** (Settings › Tasks): a prompt on a schedule (once, every few minutes or hours, daily,
-  some days of the week) in a workspace or none, Read only unless another mode is picked, with
-  Run now. The scheduler is the server's and the server runs inside this app, so a task runs only
-  while the app does; iOS pauses an app soon after it leaves the screen, and a task due then runs
-  when the app is opened again. The screen says so.
-- **Providers** (Settings › Providers): an OpenAI-compatible service's address, models and key.
-  The key is written and never read back; the screen says only whether one is saved.
-- **Notifications**: a local notification when an approval is waiting or a run finishes while the
-  app is in the background, asked for the first time a message is sent. It can only come while
-  iOS still lets the app run: a run holds the background time the system grants, and one that
-  outlasts it pauses with the app.
 - **The conversations this app used to keep** on the device are moved to the server once, at the
   first start that reaches it (`POST /api/conversations` with their messages as items); a local
   copy is deleted only when the server's answer carries every item, so nothing is lost on a server
@@ -111,10 +88,9 @@ the free space), writes a metrics CSV per loaded model from the event stream, an
 key in the keychain. Nothing in it names an engine parameter: the settings are rendered from the
 parameter table, the plan from the planner.
 
-Where things live: models, metrics files and workspaces in the app's documents folder, which the
-Files app and the Finder show (copy a `.gguf` in, a CSV out, a workspace's files either way; it is
-kept out of the device backup, workspaces included); the server's settings, the agent's
-conversations and its credentials in the app's private Application Support.
+Where things live: models and metrics files in the app's documents folder, which the Files app and
+the Finder show (copy a `.gguf` in, a CSV out; it is kept out of the device backup); the server's
+settings and its conversations in the app's private Application Support.
 
 ### The look
 

@@ -46,7 +46,7 @@ public struct APIError: LocalizedError, Equatable, Sendable {
 public final class APIClient: @unchecked Sendable {
     public let baseURL: URL
     public let apiKey: String
-    let session: URLSession
+    private let session: URLSession
 
     /// A read the server answers from memory: the config, the lists, a cancel.
     static let quick: TimeInterval = 15
@@ -209,7 +209,7 @@ public final class APIClient: @unchecked Sendable {
 
     // MARK: plumbing
 
-    func request(_ method: String, _ path: String, body: JSON?, timeout: TimeInterval) -> URLRequest {
+    private func request(_ method: String, _ path: String, body: JSON?, timeout: TimeInterval) -> URLRequest {
         var r = URLRequest(url: URL(string: path, relativeTo: baseURL)!.absoluteURL)
         r.httpMethod = method
         r.timeoutInterval = timeout
