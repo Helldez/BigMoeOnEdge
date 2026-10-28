@@ -7,12 +7,20 @@ export interface DesktopPrefs {
   port?: number;
   notifications?: boolean;
   uiScale?: number;
+  serveOnNetwork?: boolean;
+}
+
+/** While the app's server serves the network: where other devices reach it, and the key they send. */
+export interface DesktopNetwork {
+  addresses: string[];
+  key: string;
 }
 
 export interface DesktopInfo {
   version: string;
   target: string;
   prefs: DesktopPrefs;
+  network?: DesktopNetwork | null;
 }
 
 /** The calls the app adds; each may answer at once or with a promise. */
@@ -23,10 +31,11 @@ export interface DesktopBridge {
   openExternal(url: string): unknown;
   setPrefs(prefs: DesktopPrefs): unknown;
   restartServer(): unknown;
+  newNetworkKey(): unknown;
   applyUpdate(path: string): unknown;
 }
 
-const CALLS: (keyof DesktopBridge)[] = ['info', 'pickFolder', 'notify', 'openExternal', 'setPrefs', 'restartServer', 'applyUpdate'];
+const CALLS: (keyof DesktopBridge)[] = ['info', 'pickFolder', 'notify', 'openExternal', 'setPrefs', 'restartServer', 'newNetworkKey', 'applyUpdate'];
 
 /** The bridge when this page runs in the app, null in a browser. `scope` is for tests. */
 export function desktopBridge(scope: unknown = globalThis): DesktopBridge | null {
@@ -70,6 +79,8 @@ export const desktop = {
     await call('restartServer', [], scope);
     return true;
   },
+  /** A new network key; the app restarts its server with it. False in a browser. */
+  newNetworkKey: async (scope: unknown = globalThis) => (await call<boolean>('newNetworkKey', [], scope)) === true,
   applyUpdate: async (path: string, scope: unknown = globalThis) => {
     if (!isDesktop(scope)) return false;
     await call('applyUpdate', [path], scope);

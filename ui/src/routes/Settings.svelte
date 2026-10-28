@@ -7,6 +7,7 @@
   import Backends from '../components/settings/Backends.svelte';
   import EngineSettings from '../components/settings/EngineSettings.svelte';
   import Metrics from '../components/settings/Metrics.svelte';
+  import Network from '../components/settings/Network.svelte';
   import Providers from '../components/settings/Providers.svelte';
   import Updates from '../components/settings/Updates.svelte';
   import { desktopState } from '../stores/desktop.svelte';
@@ -42,6 +43,7 @@
   </div>
   <div class="panel" role="tabpanel" id="panel-{section}" aria-labelledby="tab-{section}">
     {#if section === 'general'}
+      {#if desktopState.present}<Network />{/if}
       <Appearance />
       {#if desktopState.present}<AppSettings />{/if}
     {:else if section === 'providers'}

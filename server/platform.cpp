@@ -18,7 +18,10 @@
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
+#include <iphlpapi.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #elif defined(__APPLE__)
@@ -41,7 +44,11 @@
 #include <poll.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <arpa/inet.h>
 #include <dlfcn.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <netinet/in.h>
 #include <unistd.h>
 #endif
 
@@ -304,6 +311,48 @@ std::string home_dir() {
     const char * home = std::getenv("HOME");
     return home ? home : "";
 #endif
+}
+
+namespace {
+// 127.0.0.0/8 and 169.254.0.0/16 (a link with no address handed out) reach nobody else.
+bool shown_lan_address(uint32_t host_order) {
+    return (host_order >> 24) != 127 && (host_order >> 16) != 0xA9FE && host_order != 0;
+}
+} // namespace
+
+std::vector<std::string> lan_addresses() {
+    std::vector<std::string> out;
+    const auto add = [&out](const in_addr & a) {
+        if (!shown_lan_address(ntohl(a.s_addr))) return;
+        char buf[INET_ADDRSTRLEN] = {0};
+        if (!inet_ntop(AF_INET, &a, buf, sizeof(buf))) return;
+        if (std::find(out.begin(), out.end(), buf) == out.end()) out.emplace_back(buf);
+    };
+#if defined(_WIN32)
+    ULONG size = 16 * 1024;
+    std::vector<unsigned char> buf;
+    ULONG rc = ERROR_BUFFER_OVERFLOW;
+    for (int tries = 0; tries < 3 && rc == ERROR_BUFFER_OVERFLOW; ++tries) {
+        buf.resize(size);
+        rc = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
+                                  nullptr, reinterpret_cast<IP_ADAPTER_ADDRESSES *>(buf.data()), &size);
+    }
+    if (rc != NO_ERROR) return out;
+    for (auto * a = reinterpret_cast<IP_ADAPTER_ADDRESSES *>(buf.data()); a; a = a->Next) {
+        if (a->OperStatus != IfOperStatusUp) continue;
+        for (auto * u = a->FirstUnicastAddress; u; u = u->Next)
+            if (u->Address.lpSockaddr && u->Address.lpSockaddr->sa_family == AF_INET)
+                add(reinterpret_cast<const sockaddr_in *>(u->Address.lpSockaddr)->sin_addr);
+    }
+#else
+    ifaddrs * list = nullptr;
+    if (getifaddrs(&list) != 0) return out;
+    for (const ifaddrs * i = list; i; i = i->ifa_next)
+        if (i->ifa_addr && i->ifa_addr->sa_family == AF_INET && (i->ifa_flags & IFF_UP))
+            add(reinterpret_cast<const sockaddr_in *>(i->ifa_addr)->sin_addr);
+    freeifaddrs(list);
+#endif
+    return out;
 }
 
 const char * os_name() {

@@ -34,9 +34,11 @@
   onMount(() => {
     prefs.apply();
     router.start();
-    server.start();
-    agent.start();
-    desktopState.start();
+    // The app first: a server it serves to the network asks this window for the key as well.
+    desktopState.start().finally(() => {
+      server.start();
+      agent.start();
+    });
     // With nothing on disk there is nothing to talk to: a first visit (no screen named in the
     // address) opens the guided setup instead.
     if (!location.hash)

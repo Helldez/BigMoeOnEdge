@@ -344,7 +344,8 @@ once switched on:
   with Reload.
 - **A configuration that does not validate** is kept (a form mid-edit is often briefly invalid),
   shown with the server's reason, and a load is refused until it does.
-- **The UI's own** (besides General), on the phone: **Serve on the network** first, a card of its
+- **The UI's own** (besides General; inside the desktop app, Serve on the network is General's first
+  card, the same card), on the phone: **Serve on the network** first, a card of its
   own whose closed header says whether it is on and at which address; open, the switch, each
   address on the local network to copy, the key (hidden until shown, copyable, replaceable with New
   key, which restarts the engine), the line a client needs (base URL and key) and a warning that

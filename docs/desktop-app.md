@@ -35,6 +35,15 @@ tray menu also has **Restart Server**. Per system:
 The app's preferences are kept in `<data>/desktop.json` (the server's data folder:
 `platform::default_data_dir()`, the one function both use).
 
+**Serve on the network** (`serveOnNetwork`, off by default): the server is started with `--host
+0.0.0.0 --api-key-file <data>/network-key`, so another computer or a phone uses the engine as an
+OpenAI-compatible server with the key. The key is 32 random bytes as hex, made when first needed,
+written readable by this user only, and replaced on request (the server then restarts, ending the old
+key's access). The window's own page sends the key too, read from `info()`. What reaches files,
+commands and keys stays loopback-only whatever the server listens on
+([server-api.md](server-api.md), "Security model"); prompts and answers cross the network
+unencrypted, which the card says.
+
 ### `window.bmoeDesktop`
 
 The app adds a few things a browser cannot do, as a JavaScript object that the UI uses where it
@@ -45,11 +54,12 @@ sites open in the default browser instead of the window.
 
 | Call | What it does |
 |---|---|
-| `info()` | `{version, target, prefs, port, url, notice, tray, dataDir, log}` |
+| `info()` | `{version, target, prefs, port, url, notice, tray, dataDir, log, network}`; `network` is `null`, or `{addresses, key}` while the network is served: each `http://<address>:<port>` on this machine's local networks, and the key |
 | `pickFolder()` | the system's folder dialog; the chosen path or `null` |
 | `notify(title, body)` | a desktop notification, unless `prefs.notifications` is off |
 | `openExternal(url)` | the default browser; `http` and `https` only |
-| `setPrefs(prefs)` | `{closeToTray, port, notifications, uiScale}`, any of them; answers the new preferences. `port` is 0 (the default) or 1024-65535, and a new one restarts the server, the page then moving to it; `uiScale` is 0.9-1.5, applied by the app as the web view's zoom |
+| `setPrefs(prefs)` | `{closeToTray, port, notifications, uiScale, serveOnNetwork}`, any of them; answers the new preferences. `port` is 0 (the default) or 1024-65535; a new port or a change of `serveOnNetwork` restarts the server, the page then moving to it; `uiScale` is 0.9-1.5, applied by the app as the web view's zoom |
+| `newNetworkKey()` | replaces the network key; a server serving the network restarts with it |
 | `restartServer()` | after a backend install; the page is replaced while the server restarts |
 | `applyUpdate(path)` | runs the installer the server downloaded and checked, and quits. Only a file directly inside `<data>/updates/` is run |
 

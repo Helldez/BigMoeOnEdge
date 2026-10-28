@@ -43,6 +43,10 @@ static void prefs_tests() {
     check(!merge_prefs(p, json{{"notifications", true}, {"port", "x"}}, err) && !p.notifications,
           "prefs: a refused patch applies nothing of itself");
     check(merge_prefs(p, json{{"somethingNewer", 1}}, err), "prefs: a field from a newer app is ignored");
+    check(!DesktopPrefs{}.serve_on_network, "prefs: the network is not served until asked");
+    check(merge_prefs(p, json{{"serveOnNetwork", true}}, err) && p.serve_on_network &&
+              prefs_to_json(p).value("serveOnNetwork", false),
+          "prefs: serving the network is a preference");
     check(!merge_prefs(p, json::array(), err), "prefs: not an object");
 
     const fs::path dir = fs::temp_directory_path() / "bmoe_desktop_test";
@@ -125,8 +129,29 @@ static void update_file_tests() {
     fs::remove_all(dir, ec);
 }
 
+static void network_key_tests() {
+    const std::string a = new_network_key(), b = new_network_key();
+    check(a.size() == 64 && a.find_first_not_of("0123456789abcdef") == std::string::npos && a != b,
+          "key: 64 hex digits, a new one each time");
+    const fs::path dir = fs::temp_directory_path() / "bmoe_desktop_test_key";
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    const std::string path = (dir / "network-key").u8string();
+    std::string err;
+    const std::string first = network_key(path, false, err);
+    check(first.size() == 64 && network_key(path, false, err) == first, "key: made once, then kept");
+    const std::string next = network_key(path, true, err);
+    check(next.size() == 64 && next != first && network_key(path, false, err) == next, "key: replaced on request");
+#if !defined(_WIN32)
+    const fs::perms perms = fs::status(fs::u8path(path), ec).permissions();
+    check((perms & (fs::perms::group_all | fs::perms::others_all)) == fs::perms::none,
+          "key: readable by this user only");
+#endif
+    fs::remove_all(dir, ec);
+}
+
 static void launch_tests() {
-    const ServerLaunch l = server_launch("/app/bmoe-server", "", "", 8766, 42, {"--models-only"});
+    const ServerLaunch l = server_launch("/app/bmoe-server", "", "", 8766, 42, "", {"--models-only"});
     check(l.server_path == "/app/bmoe-server" &&
               l.args == std::vector<std::string>{"--port", "8766", "--parent-pid", "42", "--models-only"},
           "launch: the port, the app's pid, then what the person passed");
@@ -138,14 +163,19 @@ static void launch_tests() {
     fs::create_directories(res / "skills");
     std::ofstream(res / "ui" / "index.html") << "x";
     std::ofstream(res / "catalog" / "models.json") << "{}";
-    const ServerLaunch b = server_launch("/x/bmoe-server", res.u8string(), "/data", 8765, 0, {});
+    const ServerLaunch n = server_launch("/app/bmoe-server", "", "", 8766, 0, "/data/network-key", {});
+    check(n.args ==
+              std::vector<std::string>{"--port", "8766", "--host", "0.0.0.0", "--api-key-file", "/data/network-key"},
+          "launch: serving the network listens on every address behind the key's file");
+    const ServerLaunch b = server_launch("/x/bmoe-server", res.u8string(), "/data", 8765, 0, "", {});
     check(b.args.size() == 10 && b.args[2] == "--data-dir" && b.args[3] == "/data" && b.args[4] == "--ui-dir" &&
               b.args[6] == "--catalog" && b.args[8] == "--skills-dir",
           "launch: a bundle's UI, catalog and skills, and the data folder the app was given");
     fs::remove_all(res, ec);
     const std::string js = bridge_script();
     bool all = true;
-    for (const char * n : {"info", "pickFolder", "notify", "openExternal", "setPrefs", "restartServer", "applyUpdate"})
+    for (const char * n :
+         {"info", "pickFolder", "notify", "openExternal", "setPrefs", "restartServer", "newNetworkKey", "applyUpdate"})
         all = all && js.find(std::string("'") + n + "'") != std::string::npos;
     check(all && js.find("bmoeDesktop") != std::string::npos, "bridge: window.bmoeDesktop with every call");
     check(js_string("a\"b</script>") == "\"a\\\"b</script>\"", "js: a string literal, quotes escaped");
@@ -157,6 +187,7 @@ int main() {
     port_check_tests();
     origin_tests();
     update_file_tests();
+    network_key_tests();
     launch_tests();
     if (failures) {
         std::printf("\n%d check(s) FAILED\n", failures);

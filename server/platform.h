@@ -72,6 +72,10 @@ bool started_by_double_click();
 // thing a person edits): where the settings files of other programs live (connect.h).
 std::string home_dir();
 
+// This machine's IPv4 addresses on its local networks (neither loopback nor link-local), each
+// once: what another device types to reach a server listening on every address.
+std::vector<std::string> lan_addresses();
+
 // The operating system, in the words a system prompt tells a model ("macOS", "Linux", "Windows",
 // "Android", "iOS"), so it writes commands for the shell it will get.
 const char * os_name();

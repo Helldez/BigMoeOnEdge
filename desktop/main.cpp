@@ -117,6 +117,7 @@ public:
           prefs_path_((fs::u8path(data_dir_) / kPrefsFile).u8string()),
           updates_dir_((fs::u8path(data_dir_) / "updates").u8string()),
           log_path_((fs::u8path(data_dir_) / "logs" / "server.log").u8string()),
+          key_path_((fs::u8path(data_dir_) / kNetworkKeyFile).u8string()),
           sup_(log_path_, [this](int status) { serial_.post([this, status] { on_server_exit(status); }); }) {
         std::string warning;
         prefs_ = load_prefs(prefs_path_, warning);
@@ -193,11 +194,18 @@ private:
             std::lock_guard<std::mutex> lk(m_);
             notice_ = notice;
         }
+        std::string err;
+        // The key exists before a server that reads it starts; one that cannot be written keeps the
+        // server on this computer rather than open to the network.
+        const bool network = prefs().serve_on_network && !network_key(key_path_, false, err).empty();
+        if (prefs().serve_on_network && !network) {
+            show_error("The engine's server did not start", "Serving the network needs a key: " + err);
+            return;
+        }
         const fs::path exe = fs::u8path(server::platform::executable_dir());
         const ServerLaunch launch =
             server_launch((exe / os::kServerExecutable).u8string(), os::resources_dir(), opt_.data_dir, port,
-                          server::platform::current_pid(), opt_.server_args);
-        std::string err;
+                          server::platform::current_pid(), network ? key_path_ : "", opt_.server_args);
         if (!sup_.start(launch, port, err)) {
             if (!quitting_) show_error("The engine's server did not start", err + "\nIts log: " + log_path_);
             return;
@@ -238,7 +246,19 @@ private:
         if (prefs().notifications) os::notify(title, body);
     }
 
+    // While the server serves the network: each address another device uses, and the key it sends,
+    // which the window's own page sends too.
+    json network() {
+        if (!prefs().serve_on_network) return nullptr;
+        std::string err;
+        json addresses = json::array();
+        for (const std::string & ip : server::platform::lan_addresses())
+            addresses.push_back("http://" + ip + ":" + std::to_string(port_.load()));
+        return json{{"addresses", addresses}, {"key", network_key(key_path_, false, err)}};
+    }
+
     json info() {
+        json net = network();
         std::lock_guard<std::mutex> lk(m_);
         return json{{"version", version()},
                     {"target", server::platform::build_target()},
@@ -248,7 +268,8 @@ private:
                     {"notice", notice_},
                     {"tray", has_tray_},
                     {"dataDir", data_dir_},
-                    {"log", log_path_}};
+                    {"log", log_path_},
+                    {"network", net}};
     }
 
     // A binding: answered only for a page of the server's own origin, with the call's arguments as
@@ -301,7 +322,7 @@ private:
                 std::lock_guard<std::mutex> lk(m_);
                 next = prefs_;
             }
-            const int old_port = next.port;
+            const DesktopPrefs old = next;
             if (!merge_prefs(next, a[0], err)) throw std::runtime_error(err);
             if (!save_prefs(prefs_path_, next, err)) throw std::runtime_error(err);
             {
@@ -309,8 +330,9 @@ private:
                 prefs_ = next;
             }
             os::set_zoom(w_, next.ui_scale);
-            // A new port is a new server: the page then moves to it.
-            if (next.port != old_port) serial_.post([this] { start_server(); });
+            // A new port or a new audience is a new server: the page then moves to it.
+            if (next.port != old.port || next.serve_on_network != old.serve_on_network)
+                serial_.post([this] { start_server(); });
             return prefs_to_json(next);
         });
         // Answered once the server is up again, or not.
@@ -330,6 +352,13 @@ private:
                 w_.resolve(id, 0, "true");
             },
             nullptr);
+        // A new key ends the old one's access at once: the server restarts with it.
+        bind("newNetworkKey", [this](const json &) {
+            std::string err;
+            if (network_key(key_path_, true, err).empty()) throw std::runtime_error(err);
+            if (prefs().serve_on_network) serial_.post([this] { start_server(); });
+            return json(true);
+        });
         bind("applyUpdate", [this](const json & a) {
             const std::string path = arg_string(a, 0);
             if (!is_update_file(path, updates_dir_))
@@ -343,7 +372,7 @@ private:
 
     webview::webview & w_;
     Options opt_;
-    std::string data_dir_, prefs_path_, updates_dir_, log_path_;
+    std::string data_dir_, prefs_path_, updates_dir_, log_path_, key_path_;
     std::mutex m_;
     DesktopPrefs prefs_;
     std::string notice_;

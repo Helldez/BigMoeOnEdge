@@ -48,7 +48,7 @@ target_include_directories(bmoe_server_platform SYSTEM PUBLIC ${CMAKE_SOURCE_DIR
 target_compile_definitions(bmoe_server_platform PRIVATE BMOE_BUILD_TARGET="${BMOE_BUILD_TARGET}")
 target_compile_features(bmoe_server_platform PUBLIC cxx_std_17)
 if(WIN32)
-    target_link_libraries(bmoe_server_platform PUBLIC shell32 ole32)
+    target_link_libraries(bmoe_server_platform PUBLIC shell32 ole32 iphlpapi ws2_32)
 elseif(NOT APPLE)
     target_link_libraries(bmoe_server_platform PUBLIC ${CMAKE_DL_LIBS})
 endif()

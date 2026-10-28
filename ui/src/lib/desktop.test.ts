@@ -11,6 +11,13 @@ describe('the desktop bridge', () => {
     expect(await desktop.notify('t', 'b', scope)).toBe(false);
     expect(await desktop.restartServer(scope)).toBe(false);
     expect(await desktop.applyUpdate('/x', scope)).toBe(false);
+    expect(await desktop.newNetworkKey(scope)).toBe(false);
+  });
+
+  it('asks the app for a new network key', async () => {
+    const newNetworkKey = vi.fn(() => true);
+    expect(await desktop.newNetworkKey({ bmoeDesktop: { newNetworkKey } })).toBe(true);
+    expect(newNetworkKey).toHaveBeenCalled();
   });
 
   it('ignores a bridge that is not an object with calls', () => {

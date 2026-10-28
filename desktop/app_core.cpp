@@ -5,6 +5,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <sstream>
 
 namespace fs = std::filesystem;
@@ -15,7 +16,8 @@ json prefs_to_json(const DesktopPrefs & p) {
     return json{{"closeToTray", p.close_to_tray},
                 {"port", p.port},
                 {"notifications", p.notifications},
-                {"uiScale", p.ui_scale}};
+                {"uiScale", p.ui_scale},
+                {"serveOnNetwork", p.serve_on_network}};
 }
 
 bool merge_prefs(DesktopPrefs & p, const json & patch, std::string & err) {
@@ -27,12 +29,14 @@ bool merge_prefs(DesktopPrefs & p, const json & patch, std::string & err) {
     for (auto it = patch.begin(); it != patch.end(); ++it) {
         const std::string & k = it.key();
         const json & v = it.value();
-        if (k == "closeToTray" || k == "notifications") {
+        if (k == "closeToTray" || k == "notifications" || k == "serveOnNetwork") {
             if (!v.is_boolean()) {
                 err = k + " must be true or false";
                 return false;
             }
-            (k == "closeToTray" ? next.close_to_tray : next.notifications) = v.get<bool>();
+            (k == "closeToTray"     ? next.close_to_tray
+             : k == "notifications" ? next.notifications
+                                    : next.serve_on_network) = v.get<bool>();
         } else if (k == "port") {
             if (!v.is_number_integer() ||
                 (v.get<long long>() != 0 && (v.get<long long>() < kMinPort || v.get<long long>() > kMaxPort))) {
@@ -90,6 +94,47 @@ bool save_prefs(const std::string & path, const DesktopPrefs & p, std::string & 
     return true;
 }
 
+std::string new_network_key() {
+    constexpr int kKeyBytes = 32;
+    std::random_device rd; // the system's random source on every target this app is built for
+    std::string key;
+    static const char * hex = "0123456789abcdef";
+    for (int i = 0; i < kKeyBytes; ++i) {
+        const unsigned b = rd() & 0xFF;
+        key += hex[b >> 4];
+        key += hex[b & 0xF];
+    }
+    return key;
+}
+
+std::string network_key(const std::string & path, bool replace, std::string & err) {
+    if (!replace) {
+        std::ifstream in(fs::u8path(path), std::ios::binary);
+        std::string key;
+        if (in && std::getline(in, key) && !key.empty()) return key;
+    }
+    const std::string key = new_network_key();
+    std::error_code ec;
+    fs::create_directories(fs::u8path(path).parent_path(), ec);
+    const fs::path tmp = fs::u8path(path + ".tmp");
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        out << key << "\n";
+        if (!out) {
+            err = "could not write " + tmp.u8string();
+            return "";
+        }
+    }
+    // Before it gets its name: the key is never readable by others under it.
+    fs::permissions(tmp, fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace, ec);
+    fs::rename(tmp, fs::u8path(path), ec);
+    if (ec) {
+        err = "could not replace " + path + ": " + ec.message();
+        return "";
+    }
+    return key;
+}
+
 bool port_is_free(int port) {
     constexpr time_t kProbeTimeoutS = 1;
     // Something answering there (on any address the port is bound on) is a no; so is a port this
@@ -143,10 +188,15 @@ ServerLaunch server_launch(const std::string & server_path,
                            const std::string & data_dir,
                            int port,
                            long parent_pid,
+                           const std::string & network_key_file,
                            const std::vector<std::string> & extra_args) {
     ServerLaunch l;
     l.server_path = server_path;
     l.args = {"--port", std::to_string(port)};
+    // Every address, so the window (on loopback) and the network both reach it; the server keeps
+    // files, commands and keys to loopback whatever it listens on.
+    if (!network_key_file.empty())
+        l.args.insert(l.args.end(), {"--host", "0.0.0.0", "--api-key-file", network_key_file});
     if (parent_pid > 0) {
         l.args.push_back("--parent-pid");
         l.args.push_back(std::to_string(parent_pid));
@@ -185,7 +235,7 @@ std::string bridge_script() {
     return R"JS((function () {
   if (window.bmoeDesktop) return;
   var api = {};
-  ['info', 'pickFolder', 'notify', 'openExternal', 'setPrefs', 'restartServer', 'applyUpdate'].forEach(function (n) {
+  ['info', 'pickFolder', 'notify', 'openExternal', 'setPrefs', 'restartServer', 'newNetworkKey', 'applyUpdate'].forEach(function (n) {
     api[n] = function () { return window['__bmoe_' + n].apply(null, arguments); };
   });
   Object.defineProperty(window, 'bmoeDesktop', { value: Object.freeze(api) });

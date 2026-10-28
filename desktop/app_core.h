@@ -24,12 +24,17 @@ inline constexpr double kMaxUiScale = 1.5;
 inline constexpr int kPortTries = 20;
 // The file the preferences are kept in, in the server's data folder.
 inline constexpr const char * kPrefsFile = "desktop.json";
+// The key other devices use while the server serves the network, beside the preferences, readable
+// by this user only. A file, so it never appears on a command line.
+inline constexpr const char * kNetworkKeyFile = "network-key";
 
 struct DesktopPrefs {
     bool close_to_tray = true; // closing the window keeps the app (and its server) running
     int port = 0;              // 0: the server's default port
     bool notifications = true;
     double ui_scale = 1.0;
+    // The server listens on every address, behind the network key, instead of this computer only.
+    bool serve_on_network = false;
 };
 
 json prefs_to_json(const DesktopPrefs & p);
@@ -62,10 +67,18 @@ bool same_origin(const std::string & url, const std::string & origin);
 // inside `updates_dir`, after links and `..` are resolved. The bridge runs nothing else.
 bool is_update_file(const std::string & path, const std::string & updates_dir);
 
+// A new network key: 32 random bytes as hex.
+std::string new_network_key();
+
+// The key in `path`, made and written there (this user only) when there is none or `replace` is
+// set. "" with `err` when it could not be written.
+std::string network_key(const std::string & path, bool replace, std::string & err);
+
 // What the server is started with: `server_path` is bmoe-server beside the app; `resources_dir`,
 // when the app is a bundle whose web UI, catalog and bundled skills sit apart from the code, holds
 // ui/, catalog/ and skills/; `data_dir` is passed on when the app was given one; `parent_pid` is the app's, so the
-// server stops when the app is gone however it ended.
+// server stops when the app is gone however it ended; `network_key_file`, when not "", serves the
+// network behind the key in that file, and this computer alone otherwise.
 struct ServerLaunch {
     std::string server_path;
     std::vector<std::string> args;
@@ -75,6 +88,7 @@ ServerLaunch server_launch(const std::string & server_path,
                            const std::string & data_dir,
                            int port,
                            long parent_pid,
+                           const std::string & network_key_file,
                            const std::vector<std::string> & extra_args);
 
 // The script every page of the window starts with: `window.bmoeDesktop`, over the native
