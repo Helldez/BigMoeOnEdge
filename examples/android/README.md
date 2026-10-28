@@ -280,10 +280,14 @@ old process for the port and a stop never freezes the screen; a stopped server's
 changes nothing. The event stream has a watchdog: the server pings every 15 s, and a stream silent
 for two pings is reconnected.
 
-The app's other settings close the page, in a folded **This app** card, with Stop and Start engine:
+An **Appearance** card follows **Serve on the network**, folded too:
 
+- **Theme**: System, Light or Dark (the web UI's three). System follows the phone; the choice
+  applies at once, status and navigation bars included.
 - **Metrics** (off by default): record one per-token CSV file per loaded model. While it is on,
   Settings shows a **Metrics** entry that opens the Metrics screen; back returns to Settings.
+
+The engine cards come next, and a folded **This app** card with Stop and Start engine closes the page.
 
 The prefill device (`prefill-device`) is a row like any other, and the planner chooses it: it
 measures every compute device the build carries (the GPU through Vulkan or OpenCL, a Snapdragon's

@@ -49,6 +49,7 @@ import kotlinx.coroutines.launch
 /** The open state's keys for the app's own sections: never a group of the table, whose keys are the engine's. */
 private const val APP_SECTION = " app"
 private const val SHARE_SECTION = " share"
+private const val LOOK_SECTION = " appearance"
 
 /**
  * Settings, rendered from the engine's parameter table (`GET /api/params`) and nothing else: one
@@ -115,6 +116,10 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
             // with the card folded.
             val ctx = contextWarning(engine.info?.model.takeIf { engine.serverUp && engine.info?.ready == true }, params)
             ShareSection(openCards[SHARE_SECTION] == true, { openCards = openCards + (SHARE_SECTION to it) }, ctx) { jump = it }
+            val lookOpen = openCards[LOOK_SECTION] == true
+            FoldCard("Appearance", "", lookOpen, onToggle = { openCards = openCards + (LOOK_SECTION to !lookOpen) }) {
+                Appearance(csv, onCsv = { csv = it })
+            }
             if (cfg != null && engine.ready && (cfg.reloadRequired || cfg.reloadKeys.isNotEmpty())) {
                 ElevatedCard(Modifier.fillMaxWidth()) {
                     Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -185,8 +190,8 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
 
             HorizontalDivider(color = tokens.line)
             val appOpen = openCards[APP_SECTION] == true
-            FoldCard("This app", "How this phone runs the engine and what it records.", appOpen, onToggle = { openCards = openCards + (APP_SECTION to !appOpen) }) {
-                AppSettings(engine.serverUp, csv, onCsv = { csv = it })
+            FoldCard("This app", "How this phone runs the engine.", appOpen, onToggle = { openCards = openCards + (APP_SECTION to !appOpen) }) {
+                AppSettings(engine.serverUp)
             }
             // The measurements are a tool for whoever switched the recording on, not a screen of their own.
             if (csv) {
@@ -306,15 +311,36 @@ private fun ShareSection(open: Boolean, onOpen: (Boolean) -> Unit, ctx: ContextW
     }
 }
 
-/** The settings that are this app's own, never an engine parameter, besides sharing. */
+/** How the app looks and what it shows: the theme, applied at once, and whether metrics are recorded. */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AppSettings(serverUp: Boolean, csv: Boolean, onCsv: (Boolean) -> Unit) {
+private fun Appearance(csv: Boolean, onCsv: (Boolean) -> Unit) {
     val context = LocalContext.current
+    val theme by AppPrefs.theme(context).collectAsStateWithLifecycle()
+    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("Theme", fontSize = 15.sp)
+        Hint("Follow the system, or always light or dark.")
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            AppPrefs.THEMES.forEachIndexed { i, (value, label) ->
+                SegmentedButton(
+                    selected = theme == value,
+                    onClick = { AppPrefs.setTheme(context, value) },
+                    shape = SegmentedButtonDefaults.itemShape(i, AppPrefs.THEMES.size),
+                ) { Text(label) }
+            }
+        }
+    }
     SwitchRow(
         "Metrics",
         "Record a per-token CSV for every loaded model and show the measurements here.",
         csv,
     ) { on -> onCsv(on); AppPrefs.setMetricsCsv(context, on) }
+}
+
+/** The engine process: the settings that are this app's own besides sharing and appearance. */
+@Composable
+private fun AppSettings(serverUp: Boolean) {
+    val context = LocalContext.current
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         OutlinedButton(shape = Corner, onClick = { Engine.stop(context) }, enabled = serverUp, modifier = Modifier.weight(1f)) { Text("Stop engine") }
         OutlinedButton(shape = Corner, onClick = { Engine.start(context) }, enabled = !serverUp, modifier = Modifier.weight(1f)) { Text("Start engine") }

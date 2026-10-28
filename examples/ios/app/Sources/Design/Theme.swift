@@ -56,6 +56,27 @@ enum Palette {
     }
 }
 
+extension Preferences.Theme {
+    /// What SwiftUI is asked for; nil follows the system.
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+
+    /// What the windows are told, so UIKit's bars and every dynamic colour above resolve in the
+    /// chosen scheme; `.unspecified` hands the choice back to the system.
+    var interfaceStyle: UIUserInterfaceStyle {
+        switch self {
+        case .system: return .unspecified
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+}
+
 /// The grid: spacing is 8, 16, 24, 32; every box has an 8-point corner and a 1-point line.
 enum Grid {
     static let s: CGFloat = 8

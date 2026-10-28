@@ -13,6 +13,7 @@ struct SettingsView: View {
     @State private var openCards: Set<String> = []
     @State private var appOpen = false
     @State private var shareOpen = false
+    @State private var appearanceOpen = false
     /// A row a link landed on that the form does not offer, shown for this visit.
     @State private var revealed: String?
     @State private var focusKey: String?
@@ -24,6 +25,7 @@ struct SettingsView: View {
             Page {
                 banners
                 ShareSection(open: $shareOpen)
+                AppearanceSection(open: $appearanceOpen)
                 // While the engine is down (a sharing change restarts it) the rows stay where they are, so
                 // the page keeps its length and its scroll; a line above says why a change waits.
                 if !engine.serverUp || engine.params.isEmpty {
@@ -492,17 +494,23 @@ struct ShareSection: View {
     }
 }
 
-/// The settings that are the app's own (docs/screens.md): the metrics, starting and stopping the
-/// engine. Never an engine parameter. A card that folds like the groups' cards.
-struct AppSettingsSection: View {
-    @EnvironmentObject private var engine: Engine
+/// How the app looks and what it shows: the theme, applied at once, and the Metrics switch.
+struct AppearanceSection: View {
     @EnvironmentObject private var preferences: Preferences
     @Binding var open: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: Grid.m) {
-            CardHeader(title: "This app", detail: "How this phone runs the engine and what it records.", open: $open)
+            CardHeader(title: "Appearance", open: $open)
             if open {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Theme").foregroundStyle(Palette.text)
+                    Text("Follow the system, or always light or dark.").font(.ui(12)).foregroundStyle(Palette.muted)
+                    Picker("Theme", selection: $preferences.theme) {
+                        ForEach(Preferences.Theme.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                }
                 Toggle(isOn: $preferences.metricsCSV) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Metrics").foregroundStyle(Palette.text)
@@ -511,6 +519,22 @@ struct AppSettingsSection: View {
                     }
                 }
                 .tint(Palette.accent)
+            }
+        }
+        .card(padding: 12)
+    }
+}
+
+/// The settings that are the app's own (docs/screens.md): starting and stopping the engine. Never
+/// an engine parameter. A card that folds like the groups' cards.
+struct AppSettingsSection: View {
+    @EnvironmentObject private var engine: Engine
+    @Binding var open: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Grid.m) {
+            CardHeader(title: "This app", detail: "How this phone runs the engine.", open: $open)
+            if open {
                 HStack(spacing: Grid.s) {
                     if engine.serverUp {
                         Button("Stop engine") { engine.stop() }.buttonStyle(.appDestructive)

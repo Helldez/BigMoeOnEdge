@@ -41,6 +41,7 @@ struct RootView: View {
     typealias Screen = Navigator.Screen
     @EnvironmentObject private var nav: Navigator
     @EnvironmentObject private var engine: Engine
+    @EnvironmentObject private var preferences: Preferences
 
     init() {
         Self.styleBars()
@@ -70,6 +71,9 @@ struct RootView: View {
             }
         }
         .tint(Palette.accent)
+        .preferredColorScheme(preferences.theme.colorScheme)
+        .onAppear { applyTheme() }
+        .onChange(of: preferences.theme) { _ in applyTheme() }
         // A first visit with nothing on the device opens on Models: there is nothing to chat with.
         .onChange(of: engine.modelsListed) { listed in
             guard listed, !nav.startChosen else { return }
@@ -85,6 +89,16 @@ struct RootView: View {
         case .models: ModelsView()
         case .plan: PlanView()
         case .settings: SettingsView()
+        }
+    }
+
+    /// The theme on the windows too: the bars are UIKit and resolve the palette's dynamic colours
+    /// from the window's style, and a scheme SwiftUI forced is not always handed back to the
+    /// system by `preferredColorScheme(nil)` alone.
+    private func applyTheme() {
+        let style = preferences.theme.interfaceStyle
+        for case let scene as UIWindowScene in UIApplication.shared.connectedScenes {
+            for window in scene.windows { window.overrideUserInterfaceStyle = style }
         }
     }
 

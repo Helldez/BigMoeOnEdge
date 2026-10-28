@@ -7,6 +7,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
@@ -34,6 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.core.content.ContextCompat
 import io.bigmoeonedge.app.chat.Chat
+import io.bigmoeonedge.app.data.AppPrefs
 import io.bigmoeonedge.app.engine.Engine
 import io.bigmoeonedge.app.ui.ChatNav
 import io.bigmoeonedge.app.ui.BmoeTheme
@@ -65,7 +67,8 @@ class MainActivity : ComponentActivity() {
         Chat.init(this)
         Engine.start(this)
         setContent {
-            BmoeTheme {
+            val theme by AppPrefs.theme(this).collectAsStateWithLifecycle()
+            BmoeTheme(dark = AppPrefs.darkFor(theme, isSystemInDarkTheme())) {
                 Surface(color = MaterialTheme.colorScheme.background) { Root() }
             }
         }

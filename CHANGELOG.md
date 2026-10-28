@@ -81,6 +81,8 @@ Semantic Versioning.
   server listens on every address behind a key kept in `<data>/network-key` (this user only, New
   key replaces it), the window's page sends it as well, and what reaches files, commands and keys
   stays loopback-only. `platform::lan_addresses()` lists the addresses to show.
+- **The phones pick their theme** like the web UI: System, Light or Dark in an Appearance card
+  (with the Metrics switch), applied at once, the system bars following it.
 - **Serve on the network is a card of its own**, first in a phone's Settings: its state and address
   in the closed header; the addresses to copy, the key hidden until shown with New key (on iOS too
   now), the base URL a client needs and a warning that the traffic is unencrypted.

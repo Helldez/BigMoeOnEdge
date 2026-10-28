@@ -349,8 +349,8 @@ once switched on:
   own whose closed header says whether it is on and at which address; open, the switch, each
   address on the local network to copy, the key (hidden until shown, copyable, replaceable with New
   key, which restarts the engine), the line a client needs (base URL and key) and a warning that
-  the traffic is unencrypted. Then **This app**: Metrics and Stop/Start engine. Never an engine
-  parameter.
+  the traffic is unencrypted. Then **Appearance**: the theme (System, Light, Dark, as on the web)
+  and Metrics. Then **This app**: Stop/Start engine. Never an engine parameter.
 
 ## Metrics
 

@@ -422,6 +422,17 @@ final class Preferences: ObservableObject {
         didSet { defaults.set(shareOnNetwork, forKey: "shareOnNetwork") }
     }
 
+    /// How the app looks: the system's light or dark, or always one of them. The web UI's choice.
+    enum Theme: String, CaseIterable, Identifiable {
+        case system, light, dark
+        var id: String { rawValue }
+        var label: String { rawValue.capitalized }
+    }
+
+    @Published var theme: Theme {
+        didSet { defaults.set(theme.rawValue, forKey: "theme") }
+    }
+
     /// Metrics: write a per-token CSV for every loaded model and show Metrics in Settings. Off until
     /// asked for, so a person who only chats gets no files and no screen of measurements.
     @Published var metricsCSV: Bool {
@@ -431,5 +442,6 @@ final class Preferences: ObservableObject {
     init() {
         shareOnNetwork = defaults.bool(forKey: "shareOnNetwork")
         metricsCSV = defaults.object(forKey: "metricsCSV") as? Bool ?? false
+        theme = defaults.string(forKey: "theme").flatMap(Theme.init(rawValue:)) ?? .system
     }
 }

@@ -60,12 +60,14 @@ Apply and Measure again; Settings opens with **Serve on the network**, a card wh
 state even while it is closed (Off, or On and the first address, or On but not on a network); inside
 are the switch, each address with Copy, the API key masked with Show, Copy and New key (which
 restarts the engine on the new key), the base URL a client takes, and that prompts and answers
-cross the network unencrypted. Then one card per engine group, every card closed until opened,
-holding the rows the parameter table offers on a form (`form`) and any the person set, with a chip
-per row for where its value came from, and links from Plan that open a row's card and land on it.
-Metrics is not a tab: the **Metrics** switch in Settings (off by default) records a per-token CSV
-for every loaded model and adds the Metrics entry there; it sits in "This app" with the engine's
-start and stop.
+cross the network unencrypted. Then **Appearance**: the theme (System, Light or Dark, applied at
+once; the web UI's choice) and the Metrics switch. Then one card per engine group, every card
+closed until opened, holding the rows the parameter table offers on a form (`form`) and any the
+person set, with a chip per row for where its value came from, and links from Plan that open a
+row's card and land on it.
+Metrics is not a tab: the **Metrics** switch in Appearance (off by default) records a per-token CSV
+for every loaded model and adds the Metrics entry to Settings. "This app" starts and stops the
+engine.
 
 ### The chat
 
@@ -104,11 +106,11 @@ settings and its conversations in the app's private Application Support.
 
 ### The look
 
-Slate and cyan, light and dark following the system (the tokens are one file,
-`Sources/Design/Theme.swift`, and [docs/design.md](../../docs/design.md) is their source): Inter for
-every word, JetBrains Mono for code, paths and keys, both bundled from their official releases with
-their licences; 8-point rounded boxes with a 1-point line and a soft shadow on cards; the system's
-navigation, tab bars, lists, forms, sheets and menus, tinted. The pixel logo is unchanged.
+Slate and cyan, light and dark following the system or the Theme in Settings (the tokens are one
+file, `Sources/Design/Theme.swift`, and [docs/design.md](../../docs/design.md) is their source):
+Inter for every word, JetBrains Mono for code, paths and keys, both bundled from their official
+releases with their licences; 8-point rounded boxes with a 1-point line and a soft shadow on cards;
+the system's navigation, tab bars, lists, forms, sheets and menus, tinted. The pixel logo is unchanged.
 
 The server listens on `127.0.0.1:8765` with a random key per launch, since every app on the
 device can reach loopback. **Serve on the network** in Settings restarts it on all addresses

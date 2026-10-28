@@ -1,5 +1,6 @@
 package io.bigmoeonedge.app.ui
 
+import android.app.Activity
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -16,11 +17,14 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
@@ -28,6 +32,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
 import io.bigmoeonedge.app.R
 
 /**
@@ -193,10 +198,23 @@ private val UiShapes = Shapes(
     extraLarge = RoundedCornerShape(16.dp), // sheets and dialogs: Material's own proportion
 )
 
+/** The app's look, [dark] or light; the system bars take the same colours and icons, so they never contradict it. */
 @Composable
-fun BmoeTheme(content: @Composable () -> Unit) {
-    val dark = isSystemInDarkTheme()
+fun BmoeTheme(dark: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
     val tokens = if (dark) DarkTokens else LightTokens
+    val view = LocalView.current
+    if (!view.isInEditMode) {
+        SideEffect {
+            val window = (view.context as? Activity)?.window ?: return@SideEffect
+            // The top bar sits on the background, the bottom navigation bar on the surface.
+            window.statusBarColor = tokens.bg.toArgb()
+            window.navigationBarColor = tokens.surface.toArgb()
+            WindowCompat.getInsetsController(window, view).apply {
+                isAppearanceLightStatusBars = !dark
+                isAppearanceLightNavigationBars = !dark
+            }
+        }
+    }
     CompositionLocalProvider(LocalTokens provides tokens) {
         MaterialTheme(
             colorScheme = scheme(tokens, dark),
