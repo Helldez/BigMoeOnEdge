@@ -659,13 +659,15 @@ jobs:
       # serve the web UI from inside the package, then stop.
       - name: Smoke the package
         shell: bash
+        # A server that takes the connection and never answers fails here, not at the job's limit.
+        timeout-minutes: 15
         env:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
           answers() { # the API and the built UI (not the "UI is not built" page) on the default port
-            curl -fsS --retry 60 --retry-delay 1 --retry-connrefused http://127.0.0.1:8765/api/info
+            curl -fsS --max-time 10 --retry 60 --retry-delay 1 --retry-connrefused http://127.0.0.1:8765/api/info
             echo
-            curl -fsS http://127.0.0.1:8765/ | grep -q '<div id="app"' || { echo "the UI is not served"; return 1; }
+            curl -fsS --max-time 10 http://127.0.0.1:8765/ | grep -q '<div id="app"' || { echo "the UI is not served"; return 1; }
           }
           case "${{ matrix.target }}" in
             macos-*)
@@ -680,7 +682,7 @@ jobs:
               # The app (bmoe-desktop) starts the server; quitting the app stops it. SIGTERM takes
               # the same path as Quit, and needs no Apple Events permission on the runner.
               open "$MNT/BigMoeOnEdge.app"
-              answers
+              answers || { cat "$HOME/Library/Application Support/BigMoeOnEdge/logs/server.log"; exit 1; }
               pkill -TERM -f 'BigMoeOnEdge.app/Contents/MacOS/BigMoeOnEdge'
               for i in $(seq 20); do pgrep -f 'BigMoeOnEdge.app/Contents/MacOS/' > /dev/null || break; sleep 1; done
               if pgrep -fl 'BigMoeOnEdge.app/Contents/MacOS/'; then echo "quitting the app left a process"; exit 1; fi
