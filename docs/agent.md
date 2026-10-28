@@ -38,13 +38,14 @@ scripted session and checks every rule below without a model.
   | `full` | yes | yes | yes |
 
   A command counts as a change unless the server can tell it only reads: every stage of a pipeline
-  is a program on a short list (`ls`, `cat`, `head`, `tail`, `wc`, `grep`, `rg`, `find`, `git status`
-  and the other read-only `git` subcommands, ...) with no option that writes or runs something
-  (`find -exec`/`-delete`, `sort -o`, `rg --pre`, `git -c`, ...) and no argument that may lead out
+  is a program on a short list (`ls`, `cat`, `head`, `tail`, `wc`, `grep`, `rg`, `find`, ...) with
+  no option that writes or runs something (`find -exec`/`-delete`, `sort -o` or `--compress-program`
+  and their abbreviations, `rg --pre`, ...) and no argument that may lead out
   of the workspace (absolute, `~`, `..`, a drive), and the line has no redirection, substitution,
   separator or background job. Anything it cannot tell asks, so a read that skips the question
-  stays inside the folder the file tools are confined to. A `git` command runs
-  with the repository's own configuration, which is trusted like the folder itself. An edit's
+  stays inside the folder the file tools are confined to. `git` always
+  asks: a repository's own configuration can make even `git status` run a program (`core.fsmonitor`,
+  a clean filter, `diff.external`), and the folder may have come from anyone. An edit's
   approval card carries the diff the edit will make, computed before the card is shown; after a
   yes the edit is computed again, so a file that changed meanwhile is never overwritten blind.
   The mode may change while a run waits (a person can switch to `full` with a card open); the next
@@ -163,8 +164,12 @@ Everything that reaches this computer's files, processes or secrets answers only
 connection comes from loopback, whatever the server's `--host` and whatever key it sends: adding or
 removing a workspace, a message (or an edit) in a conversation that has a workspace or a provider
 route, a workspace file's preview, an approval, writing a skill or switching one, saving a
-provider, writing a client's settings, and creating, changing or running a task. From the network
-these get `403` with `code: "local_only"`. A conversation without a workspace works from the
+provider, writing a client's settings, and creating, changing or running a task. A conversation
+with a workspace or a provider route is this computer's alone: from the network it is not listed,
+cannot be read, changed, deleted or stopped, and its events (`conversation`, `item`, `delta`) go
+to local streams only, as do `task` events. A client on the network may not give a conversation a
+workspace or a provider route, nor set `full` access (asking or reading only, it may). From the
+network these get `403` with `code: "local_only"`. A conversation without a workspace works from the
 network with the key, so the web UI on a phone keeps its chats; a message from the network runs
 without web tools, so a client elsewhere cannot have this computer fetch addresses of its network.
 The rule is `agent_route_locality()` in `server/access.h`.

@@ -484,19 +484,29 @@ bool Agent::running(const std::string & conversation) const {
     return runs_.count(conversation) > 0;
 }
 
+EventBus::Audience conversation_audience(const json & conv) {
+    return conversation_reaches(conv) ? EventBus::Audience::LocalOnly : EventBus::Audience::Everyone;
+}
+
+EventBus::Audience Agent::audience_of(const std::string & conv) const {
+    return d_.store->reaches(conv) ? EventBus::Audience::LocalOnly : EventBus::Audience::Everyone;
+}
+
 void Agent::publish_conversation(const std::string & id) {
     json c;
     if (!conversation(id, c)) return;
-    d_.bus->publish("conversation", json{{"id", id},
-                                         {"title", c.value("title", "")},
-                                         {"state", c.value("state", "idle")},
-                                         {"updated", c.value("updated", 0LL)},
-                                         {"parent", c.value("parent", json(nullptr))}});
+    d_.bus->publish("conversation",
+                    json{{"id", id},
+                         {"title", c.value("title", "")},
+                         {"state", c.value("state", "idle")},
+                         {"updated", c.value("updated", 0LL)},
+                         {"parent", c.value("parent", json(nullptr))}},
+                    conversation_audience(c));
 }
 
 void Agent::publish_item(const std::string & conv, const json & item, bool persist) {
     d_.store->upsert_item(conv, item, persist);
-    d_.bus->publish("item", json{{"conversation", conv}, {"item", item}});
+    d_.bus->publish("item", json{{"conversation", conv}, {"item", item}}, audience_of(conv));
 }
 
 void Agent::notice(const std::string & conv, const std::string & level, const std::string & text) {
@@ -970,12 +980,12 @@ std::string Agent::run_rounds(Run & run, const std::string & conv_id, int depth)
                 json d{{"conversation", conv_id}, {"item", item_id}};
                 if (text.size() > sent_text.size()) d["text"] = text.substr(sent_text.size());
                 if (reasoning.size() > sent_reasoning.size()) d["reasoning"] = reasoning.substr(sent_reasoning.size());
-                if (d.size() > 2) d_.bus->publish("delta", d);
+                if (d.size() > 2) d_.bus->publish("delta", d, audience_of(conv_id));
             } else {
                 // The parser took back text it had shown (a closing reasoning tag): the item, whole.
                 item["text"] = text;
                 item["reasoning"] = reasoning;
-                d_.bus->publish("item", json{{"conversation", conv_id}, {"item", item}});
+                d_.bus->publish("item", json{{"conversation", conv_id}, {"item", item}}, audience_of(conv_id));
             }
             sent_text = text;
             sent_reasoning = reasoning;
@@ -1232,10 +1242,10 @@ Refusal Agent::run_task(const std::string & id) {
         notice(cid, "error", "The task could not start: " + r.error);
         task["last_run"]["outcome"] = "error";
         d_.store->put_task(task);
-        d_.bus->publish("task", task_view(task));
+        d_.bus->publish("task", task_view(task), EventBus::Audience::LocalOnly);
         return r;
     }
-    d_.bus->publish("task", task_view(task));
+    d_.bus->publish("task", task_view(task), EventBus::Audience::LocalOnly);
     return {};
 }
 
@@ -1251,7 +1261,7 @@ void Agent::finish_task(const std::string & task_id, const std::string & conv_id
     task["last_run"] = last;
     if (task.value("schedule", json::object()).value("kind", "") == "once") task["enabled"] = false;
     d_.store->put_task(task);
-    d_.bus->publish("task", task_view(task));
+    d_.bus->publish("task", task_view(task), EventBus::Audience::LocalOnly);
     tasks_changed();
 }
 

@@ -188,6 +188,22 @@ json AgentStore::list_conversations() const {
     return arr;
 }
 
+bool conversation_reaches(const json & conv) {
+    return conv.value("workspace", json(nullptr)).is_string() || conv.value("route", "local") != "local";
+}
+
+bool network_may_not_set(const json & fields) {
+    return (fields.contains("workspace") && !fields["workspace"].is_null()) ||
+           (fields.contains("route") && fields["route"] != "local") ||
+           (fields.contains("mode") && fields["mode"] == "full");
+}
+
+bool AgentStore::reaches(const std::string & id) const {
+    std::lock_guard<std::mutex> lk(m_);
+    const auto it = conversations_.find(id);
+    return it != conversations_.end() && conversation_reaches(it->second);
+}
+
 bool AgentStore::conversation(const std::string & id, json & out) const {
     std::lock_guard<std::mutex> lk(m_);
     const auto it = conversations_.find(id);

@@ -79,6 +79,10 @@ struct AgentDeps {
         run_command;
 };
 
+// Who may see a conversation's events: local clients only when it reaches this computer
+// (conversation_reaches).
+EventBus::Audience conversation_audience(const json & conv);
+
 // What a request that is refused gets: status 0 means accepted.
 struct Refusal {
     int status = 0;
@@ -158,6 +162,8 @@ private:
     std::vector<ChatTool> tools_for(const json & conv, bool remote, int depth) const;
     std::string system_prompt(const json & conv, bool remote) const;
 
+    // Who may see a conversation's events: local clients only when it reaches this computer.
+    EventBus::Audience audience_of(const std::string & conv) const;
     void publish_conversation(const std::string & id);
     void publish_item(const std::string & conv, const json & item, bool persist = true);
     void notice(const std::string & conv, const std::string & level, const std::string & text);

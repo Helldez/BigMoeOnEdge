@@ -198,7 +198,9 @@ Locality agent_route_locality(const std::string & method, const std::string & pa
         const size_t slash = path.find('/', conv.size());
         const std::string tail = slash == std::string::npos ? "" : path.substr(slash + 1);
         if (tail == "approval") return Locality::Always;
-        if (tail == "messages" || tail == "edit" || tail == "file") return Locality::IfConversationReaches;
+        // The conversation itself (read, changed, deleted) and what runs in it.
+        if (tail.empty() || tail == "messages" || tail == "edit" || tail == "file" || tail == "stop")
+            return Locality::IfConversationReaches;
     }
     return Locality::Anywhere;
 }

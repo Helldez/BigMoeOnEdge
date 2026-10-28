@@ -65,10 +65,9 @@ bool valid_mode(const std::string & m) {
     return m == "ask" || m == "read_only" || m == "full";
 }
 
-// A conversation reaches this computer when it has a workspace or sends to a saved provider (whose
-// key the server holds): such a conversation answers to a local client only.
-bool reaches(const json & conv) {
-    return conv.value("workspace", json(nullptr)).is_string() || conv.value("route", "local") != "local";
+// A conversation that reaches this computer (conversation_reaches) answers to a local client only.
+bool hidden_from(const httplib::Request & req, const json & conv) {
+    return conversation_reaches(conv) && !local(req);
 }
 
 // `route` names the engine or a saved provider and one of its models. "" when it does.
@@ -222,14 +221,23 @@ void register_agent_routes(httplib::Server & svr, const AgentRouteDeps & d) {
     });
 
     // ---- conversations ----
-    svr.Get("/api/conversations",
-            [&d](const httplib::Request &, httplib::Response & res) { send_json(res, d.agent->list_conversations()); });
+    svr.Get("/api/conversations", [&d](const httplib::Request & req, httplib::Response & res) {
+        json list = d.agent->list_conversations();
+        if (!local(req)) {
+            json shown = json::array();
+            for (const json & c : list)
+                if (!conversation_reaches(c)) shown.push_back(c);
+            list = std::move(shown);
+        }
+        send_json(res, list);
+    });
     svr.Post("/api/conversations", [&d](const httplib::Request & req, httplib::Response & res) {
         json body;
         if (!body_of(req, res, body)) return;
         json fields = json::object();
         std::string err;
         if (!read_conversation_fields(body, *d.store, fields, err)) return send_error(res, 400, err, "invalid_request");
+        if (!local(req) && network_may_not_set(fields)) return refuse_remote(res);
         if (body.contains("items")) {
             // A conversation the UI kept before the server did: its messages, as they were.
             if (!body["items"].is_array()) return send_error(res, 400, "items must be an array", "invalid_request");
@@ -249,17 +257,20 @@ void register_agent_routes(httplib::Server & svr, const AgentRouteDeps & d) {
             fields["items"] = items;
         }
         json c = d.store->create_conversation(fields);
-        d.bus->publish("conversation", json{{"id", c["id"]},
-                                            {"title", c["title"]},
-                                            {"state", "idle"},
-                                            {"updated", c["updated"]},
-                                            {"parent", nullptr}});
+        d.bus->publish("conversation",
+                       json{{"id", c["id"]},
+                            {"title", c["title"]},
+                            {"state", "idle"},
+                            {"updated", c["updated"]},
+                            {"parent", nullptr}},
+                       conversation_audience(c));
         send_json(res, c);
     });
     svr.Get(R"(/api/conversations/([^/]+))", [&d](const httplib::Request & req, httplib::Response & res) {
         json c;
         if (!d.agent->conversation(req.matches[1].str(), c))
             return send_error(res, 404, "no such conversation", "not_found");
+        if (hidden_from(req, c)) return refuse_remote(res);
         send_json(res, c);
     });
     svr.Patch(R"(/api/conversations/([^/]+))", [&d](const httplib::Request & req, httplib::Response & res) {
@@ -269,6 +280,11 @@ void register_agent_routes(httplib::Server & svr, const AgentRouteDeps & d) {
         json fields = json::object();
         std::string err;
         if (!read_conversation_fields(body, *d.store, fields, err)) return send_error(res, 400, err, "invalid_request");
+        if (!local(req)) {
+            json before;
+            if (!d.store->conversation(id, before)) return send_error(res, 404, "no such conversation", "not_found");
+            if (hidden_from(req, before) || network_may_not_set(fields)) return refuse_remote(res);
+        }
         // The mode may change while a run goes (a person allows everything while a card waits); what
         // the run works in and with may not.
         if ((fields.contains("workspace") || fields.contains("route")) && d.agent->running(id))
@@ -284,15 +300,19 @@ void register_agent_routes(httplib::Server & svr, const AgentRouteDeps & d) {
             return send_error(res, 404, "no such conversation", "not_found");
         json view;
         d.agent->conversation(id, view);
-        d.bus->publish("conversation", json{{"id", id},
-                                            {"title", view.value("title", "")},
-                                            {"state", view.value("state", "idle")},
-                                            {"updated", view.value("updated", 0LL)},
-                                            {"parent", view.value("parent", json(nullptr))}});
+        d.bus->publish("conversation",
+                       json{{"id", id},
+                            {"title", view.value("title", "")},
+                            {"state", view.value("state", "idle")},
+                            {"updated", view.value("updated", 0LL)},
+                            {"parent", view.value("parent", json(nullptr))}},
+                       conversation_audience(view));
         view.erase("items");
         send_json(res, view);
     });
     svr.Delete(R"(/api/conversations/([^/]+))", [&d](const httplib::Request & req, httplib::Response & res) {
+        json conv;
+        if (d.store->conversation(req.matches[1].str(), conv) && hidden_from(req, conv)) return refuse_remote(res);
         const Refusal r = d.agent->remove_conversation(req.matches[1].str());
         if (!r.ok()) return send_refusal(res, r);
         send_json(res, json{{"ok", true}});
@@ -304,7 +324,7 @@ void register_agent_routes(httplib::Server & svr, const AgentRouteDeps & d) {
         if (!body_of(req, res, body)) return;
         json conv;
         if (!d.store->conversation(id, conv)) return send_error(res, 404, "no such conversation", "not_found");
-        if (reaches(conv) && !local(req)) return refuse_remote(res);
+        if (hidden_from(req, conv)) return refuse_remote(res);
         if (!body.contains("text") || !body["text"].is_string() || body["text"].get<std::string>().empty())
             return send_error(res, 400, "text must be a non-empty string", "invalid_request");
         if (body.contains("images") && body["images"].is_array() && !body["images"].empty())
@@ -332,6 +352,8 @@ void register_agent_routes(httplib::Server & svr, const AgentRouteDeps & d) {
         send_json(res, json{{"ok", true}});
     });
     svr.Post(R"(/api/conversations/([^/]+)/stop)", [&d](const httplib::Request & req, httplib::Response & res) {
+        json conv;
+        if (d.store->conversation(req.matches[1].str(), conv) && hidden_from(req, conv)) return refuse_remote(res);
         send_json(res, json{{"stopped", d.agent->stop(req.matches[1].str())}});
     });
     svr.Get(R"(/api/conversations/([^/]+)/file)", [&d](const httplib::Request & req, httplib::Response & res) {
@@ -448,7 +470,7 @@ void register_agent_routes(httplib::Server & svr, const AgentRouteDeps & d) {
         d.store->put_task(task);
         d.agent->tasks_changed();
         const json view = d.agent->task_view(task);
-        d.bus->publish("task", view);
+        d.bus->publish("task", view, EventBus::Audience::LocalOnly);
         send_json(res, view);
     };
     svr.Post("/api/tasks",

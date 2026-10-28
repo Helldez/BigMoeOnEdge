@@ -65,24 +65,27 @@ std::string workspace_relative(const std::string & root, const std::string & abs
 namespace {
 
 // Programs that read and print, and nothing else, once the options below are refused. Kept small:
-// a program missing here asks, which is the safe answer.
+// a program missing here asks, which is the safe answer. git is not here: the repository's own
+// configuration (a folder the agent may have been handed) can make even `git status` run a program
+// (core.fsmonitor, a clean filter, diff.external), and no option on the line turns all of that off.
 const std::set<std::string> & read_only_programs() {
     static const std::set<std::string> p = {
-        "ls",     "cat",      "head",    "tail",     "wc",   "grep",  "egrep", "fgrep", "rg",      "find", "pwd",
-        "file",   "stat",     "du",      "df",       "tree", "which", "echo",  "diff",  "cmp",     "date", "uname",
-        "whoami", "basename", "dirname", "realpath", "sort", "nl",    "dir",   "type",  "findstr", "git"};
+        "ls",     "cat",      "head",    "tail",     "wc",   "grep",  "egrep", "fgrep", "rg",     "find", "pwd",
+        "file",   "stat",     "du",      "df",       "tree", "which", "echo",  "diff",  "cmp",    "date", "uname",
+        "whoami", "basename", "dirname", "realpath", "sort", "nl",    "dir",   "type",  "findstr"};
     return p;
-}
-
-// git subcommands that only read the repository.
-const std::set<std::string> & read_only_git() {
-    static const std::set<std::string> g = {"status",   "log",       "diff",     "show",    "blame",
-                                            "ls-files", "rev-parse", "describe", "shortlog"};
-    return g;
 }
 
 bool starts(const std::string & s, const char * p) {
     return s.compare(0, std::strlen(p), p) == 0;
+}
+
+// `a` is the long option `--<name>`, or an abbreviation of it at least `shortest` letters long (GNU
+// programs take any unambiguous one: `sort --o=x` is `--output=x`).
+bool long_option(const std::string & a, const std::string & name, size_t shortest) {
+    if (!starts(a, "--")) return false;
+    const std::string given = a.substr(2, a.find('=') == std::string::npos ? std::string::npos : a.find('=') - 2);
+    return given.size() >= shortest && given.size() <= name.size() && name.compare(0, given.size(), given) == 0;
 }
 
 // Shell words, quotes honoured. False for an unterminated quote.
@@ -133,17 +136,13 @@ bool stage_reads_only(const std::vector<std::string> & w) {
         if (prog == "find" && (a == "-exec" || a == "-execdir" || a == "-ok" || a == "-okdir" || a == "-delete" ||
                                starts(a, "-fprint") || a == "-fls"))
             return false;
-        if (prog == "sort" &&
-            (starts(a, "--output") || (a.size() > 1 && a[0] == '-' && a[1] != '-' && a.find('o') != std::string::npos)))
+        if (prog == "sort" && (long_option(a, "output", 1) || long_option(a, "compress-program", 2) ||
+                               (a.size() > 1 && a[0] == '-' && a[1] != '-' && a.find('o') != std::string::npos)))
             return false;
         if (prog == "rg" && starts(a, "--pre")) return false;
         if (prog == "tree" && (a == "-o" || starts(a, "--output"))) return false;
-        if (prog == "date" && (a == "-s" || starts(a, "--set"))) return false;
-        if (prog == "git" && (starts(a, "--output") || a == "--ext-diff" || a == "--textconv")) return false;
+        if (prog == "date" && (a == "-s" || long_option(a, "set", 1))) return false;
     }
-    // git: the subcommand comes first (no global option: `-c` sets any configuration, a pager among
-    // them) and is one that only reads.
-    if (prog == "git" && (w.size() < 2 || !read_only_git().count(w[1]))) return false;
     return true;
 }
 

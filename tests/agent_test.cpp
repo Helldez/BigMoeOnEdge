@@ -555,9 +555,8 @@ static void private_host_tests() {
 }
 
 static void classifier_tests() {
-    for (const char * c :
-         {"ls -la", "git status", "git log --oneline -5", "cat a.txt | grep -n foo | head -3", "find . -name '*.cpp'",
-          "rg TODO src", "wc -l a b", "pwd", "git diff HEAD~1 -- src", "grep -rn \"a b\" ."})
+    for (const char * c : {"ls -la", "cat a.txt | grep -n foo | head -3", "find . -name '*.cpp'", "rg TODO src",
+                           "wc -l a b", "pwd", "grep -rn \"a b\" .", "sort -r names.txt", "sort --reverse names.txt"})
         check(is_read_only_command(c), std::string("reads only: ") + c);
     for (const char * c : {"rm -rf build",
                            "ls > out.txt",
@@ -572,8 +571,16 @@ static void classifier_tests() {
                            "git push",
                            "git -c core.pager=sh status",
                            "git",
+                           "git status",
+                           "git diff HEAD~1 -- src",
+                           "git log --oneline -5",
                            "sort -o out in",
                            "sort -ro out in",
+                           "sort --o=out in",
+                           "sort --outp=out in",
+                           "sort --compress-program=sh in",
+                           "sort --co=sh in",
+                           "date --s=2020",
                            "/bin/ls",
                            "FOO=1 ls",
                            "rg --pre=sh x",
@@ -917,14 +924,30 @@ static void access_tests() {
           "workspaces: adding and removing are local only, listing is not");
     check(agent_route_locality("POST", "/api/conversations/c1/approval") == Locality::Always,
           "an approval is local only");
-    check(agent_route_locality("POST", "/api/conversations/c1/messages") == Locality::IfConversationReaches &&
-              agent_route_locality("POST", "/api/conversations/c1/edit") == Locality::IfConversationReaches &&
-              agent_route_locality("GET", "/api/conversations/c1/file") == Locality::IfConversationReaches,
-          "a message, an edit and a preview depend on the conversation");
+    for (const auto & [m, p] :
+         std::vector<std::pair<const char *, const char *>>{{"POST", "/api/conversations/c1/messages"},
+                                                            {"POST", "/api/conversations/c1/edit"},
+                                                            {"GET", "/api/conversations/c1/file"},
+                                                            {"GET", "/api/conversations/c1"},
+                                                            {"PATCH", "/api/conversations/c1"},
+                                                            {"DELETE", "/api/conversations/c1"},
+                                                            {"POST", "/api/conversations/c1/stop"}})
+        check(agent_route_locality(m, p) == Locality::IfConversationReaches,
+              std::string("depends on the conversation: ") + m + " " + p);
     check(agent_route_locality("POST", "/api/conversations") == Locality::Anywhere &&
-              agent_route_locality("GET", "/api/conversations/c1") == Locality::Anywhere &&
-              agent_route_locality("POST", "/api/conversations/c1/stop") == Locality::Anywhere,
+              agent_route_locality("GET", "/api/conversations") == Locality::Anywhere,
           "plain chat works from the network");
+
+    // What reaches this computer, and what a client on the network may not set.
+    check(!conversation_reaches(json{{"workspace", nullptr}, {"route", "local"}}) &&
+              conversation_reaches(json{{"workspace", "w1"}, {"route", "local"}}) &&
+              conversation_reaches(json{{"workspace", nullptr}, {"route", "p1/m"}}),
+          "a conversation reaches this computer through a workspace or a saved provider");
+    for (const json & f : {json{{"workspace", "w1"}}, json{{"route", "p1/m"}}, json{{"mode", "full"}}})
+        check(network_may_not_set(f), "the network may not set " + f.dump());
+    for (const json & f : {json::object(), json{{"workspace", nullptr}, {"route", "local"}, {"mode", "ask"}},
+                           json{{"mode", "read_only"}, {"title", "x"}}})
+        check(!network_may_not_set(f), "the network may set " + f.dump());
     for (const char * p : {"/api/skills", "/api/skills/x", "/api/tasks", "/api/tasks/t/run", "/api/providers",
                            "/api/providers/p", "/api/connect/codex"})
         check(agent_route_locality("POST", p) == Locality::Always || agent_route_locality("PUT", p) == Locality::Always,
@@ -933,6 +956,31 @@ static void access_tests() {
               agent_route_locality("GET", "/api/connect") == Locality::Anywhere,
           "reading providers (without keys) and the client list is not");
     check(agent_route_locality("POST", "/api/skillsx") == Locality::Anywhere, "a prefix is matched on a path boundary");
+}
+
+// An event for local clients only never reaches a stream from the network.
+static void audience_tests() {
+    EventBus bus;
+    auto here = bus.subscribe(true);
+    auto away = bus.subscribe(false);
+    bus.publish("item", json{{"secret", 1}}, EventBus::Audience::LocalOnly);
+    bus.publish("conversation", json{{"plain", 1}});
+    const auto frames = [](EventBus::Queue & q) {
+        std::string all, f;
+        while (EventBus::next(q, f, 20ms) && !f.empty())
+            all += f;
+        return all;
+    };
+    const std::string h = frames(*here), a = frames(*away);
+    check(h.find("secret") != std::string::npos && h.find("plain") != std::string::npos,
+          "a local stream gets every event");
+    check(a.find("secret") == std::string::npos && a.find("plain") != std::string::npos,
+          "a stream from the network gets only the events for everyone");
+    check(conversation_audience(json{{"workspace", "w1"}}) == EventBus::Audience::LocalOnly &&
+              conversation_audience(json{{"workspace", nullptr}, {"route", "local"}}) == EventBus::Audience::Everyone,
+          "a conversation that reaches this computer is shown to local clients only");
+    bus.unsubscribe(here);
+    bus.unsubscribe(away);
 }
 
 int main() {
@@ -947,6 +995,7 @@ int main() {
     connect_tests();
     store_tests();
     access_tests();
+    audience_tests();
     command_tests();
     loop_tests();
     if (failures) {

@@ -976,8 +976,8 @@ void register_routes(httplib::Server & svr, App & app) {
     // A client that closed its connection is seen within a liveness poll; one that keeps it open
     // but stops reading is let go by the ping, whose write times out (the server's write timeout)
     // once the socket's buffer is full.
-    svr.Get("/api/events", [&](const httplib::Request &, httplib::Response & res) {
-        std::shared_ptr<EventBus::Queue> q = app.bus.subscribe();
+    svr.Get("/api/events", [&](const httplib::Request & req, httplib::Response & res) {
+        std::shared_ptr<EventBus::Queue> q = app.bus.subscribe(is_loopback_peer(req.remote_addr));
         if (!q)
             return send_error(res, 503,
                               "too many event streams are open (" + std::to_string(k_max_event_streams) +

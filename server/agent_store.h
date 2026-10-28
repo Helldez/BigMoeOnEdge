@@ -30,6 +30,15 @@ bool write_file_atomic(const std::string & path, const std::string & text, bool 
 
 std::time_t now_s();
 
+// A conversation reaches this computer when it has a workspace or sends to a saved provider (whose
+// key the server holds): it, its events and its changes answer to a local client only.
+bool conversation_reaches(const json & conv);
+
+// Whether a create or change of a conversation sets what a client on the network may not: a
+// workspace, a provider route, or full access (which would let a later local run act without
+// asking). Asking and reading only are the safe direction, so the web UI on a phone still sets them.
+bool network_may_not_set(const json & fields);
+
 class AgentStore {
 public:
     // `data_dir` is the server's data directory; the store keeps its files below it.
@@ -46,6 +55,9 @@ public:
     // reached through its parent's `helper` item.
     json list_conversations() const;
     bool conversation(const std::string & id, json & out) const;
+    // conversation_reaches() of a conversation, read in place (no copy: asked on every streamed
+    // token). False when there is no such conversation.
+    bool reaches(const std::string & id) const;
     json create_conversation(json fields);
     // Apply `edit` to the conversation under the lock, stamp `updated`, persist when `persist`.
     // False when there is no such conversation. `after`, when given, receives the result.

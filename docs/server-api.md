@@ -139,7 +139,10 @@ other software, or other people, on that machine or on a network it was told to 
   connection from loopback, whatever `--host` and whatever key: adding or removing a workspace, a
   message or an edit in a conversation that has a workspace or a provider route, a workspace
   file's preview, an approval, writing or switching a skill, creating, changing or running a task,
-  saving a provider, writing a client's settings. From the network they get `403` with
+  saving a provider, writing a client's settings. A conversation with a workspace or a provider
+  route is not listed, read, changed, deleted or stopped from the network, and its events (and
+  every `task` event) reach loopback streams only; nor may the network give a conversation a
+  workspace, a provider route or `full` access. From the network they get `403` with
   `code: "local_only"`. A message from the network to a conversation without a workspace runs, with
   no web tools, so a client elsewhere cannot have this machine fetch addresses on its network. The
   agent's file tools resolve every path inside the workspace (`..` and links resolved, dangling
