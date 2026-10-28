@@ -261,7 +261,9 @@ without editing; the field is absent otherwise. The prompt's device and reads ar
 
 `values` holds every parameter. `user_keys` are the operator's keys (the launch flags and the
 values a client set); `launch_keys` are the ones of them the server was launched with, which a
-client's "reset all my values" leaves alone. `args` is the equivalent `bmoe-cli` command line (for "copy as
+client's "reset all my values" leaves alone. A launch flag outranks the value an earlier run saved
+for its key, so `-m` and `-c` given at start are what loads; a value a client sets while the server
+runs replaces the flag's. `args` is the equivalent `bmoe-cli` command line (for "copy as
 command"). `reload_required` is true when a session-scoped value differs from the loaded
 session's, and `reload_keys` names those parameters in table order (empty with no session). `plan` is the last applied plan's decisions (see below), or `null`. `auto_plan` is
 whether every load plans first: on by default in a build with the planner, always false without

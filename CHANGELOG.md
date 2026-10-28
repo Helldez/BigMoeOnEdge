@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **`bmoe-server`'s launch flags outrank saved settings, as `--help` says** (#435). The settings
+  layers applied a value saved by an earlier run after the flags of this one, so
+  `bmoe-server -m A.gguf -c 32768` loaded the model and context `settings.json` held instead. The
+  order is now defaults < plan < saved values < launch flags; a value set from a client while the
+  server runs still replaces the flag's, as before.
+
 ## [0.38.0] - 2026-10-27
 
 ### Added
