@@ -333,6 +333,18 @@ async function handle(req: Req, res: Res, next: () => void) {
   if (p === '/api/config') return send(res, 200, CONFIG);
   if (p === '/api/models') return send(res, 200, MODELS);
   if (p === '/api/plan') return send(res, 200, PLAN);
+  if (p === '/api/agent' && m === 'GET')
+    return send(res, 200, {
+      tools: true,
+      commands: true,
+      agents: [
+        { id: 'builtin', name: 'Built-in', available: true },
+        { id: 'claude-code', name: 'Claude Code', available: true, missing: [] },
+        { id: 'codex', name: 'Codex CLI', available: false, missing: ['npx'] },
+        { id: 'opencode', name: 'OpenCode', available: true, missing: [] },
+        { id: 'pi', name: 'Pi', available: false, missing: ['pi'] },
+      ],
+    });
   if (p === '/api/workspaces' && m === 'GET') return send(res, 200, workspaces);
   if (p === '/api/workspaces' && m === 'POST') {
     const b = await body(req);

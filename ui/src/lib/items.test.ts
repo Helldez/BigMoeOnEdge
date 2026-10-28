@@ -136,6 +136,12 @@ describe('runs of tool calls', () => {
     );
   });
 
+  it("counts another agent's tool calls by their protocol kind", () => {
+    expect(summaryText(runSummary([tool('1', 'execute'), tool('2', 'read'), tool('3', 'think')]), t)).toBe(
+      'Read 1 file, ran 1 command, took 1 other step',
+    );
+  });
+
   it('does not count a denied change as made', () => {
     const s = runSummary([tool('1', 'edit_file', { state: 'denied', diff })]);
     expect(s.edited).toBe(0);

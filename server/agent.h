@@ -17,6 +17,7 @@
 #pragma once
 
 #include "agent_schedule.h"
+#include "acp_connection.h"
 #include "agent_skills.h"
 #include "agent_store.h"
 #include "chat_turn.h"
@@ -81,7 +82,21 @@ struct AgentDeps {
                                           size_t max_output,
                                           const std::atomic<bool> & stop)>
         run_command;
+    // The other coding agents a conversation may use instead of the built-in one, over the Agent
+    // Client Protocol: the catalog's entries that carry `acp` ({id, name, acp: {command, needs}}).
+    json external_agents = json::array();
+    // Starts one (`command` in `cwd`); a test passes an in-process agent. Null: platform::LineProcess.
+    std::function<std::unique_ptr<AcpTransport>(
+        const std::vector<std::string> & command, const std::string & cwd, std::string & err)>
+        start_agent;
+    // Whether a program is installed (platform::find_program); a test passes its own.
+    std::function<bool(const std::string & program)> program_found;
 };
+
+// The agent a conversation uses when it names none: this server's own.
+inline constexpr const char * k_builtin_agent = "builtin";
+// How long an agent asked to stop has to answer before it is ended.
+inline constexpr int k_external_cancel_grace_s = 10;
 
 // Who may see a conversation's events: local clients only when it reaches this computer
 // (conversation_reaches).
@@ -125,8 +140,12 @@ public:
     // The conversation as the API shows it: the stored one, with `state` from the live run.
     bool conversation(const std::string & id, json & out) const;
     json list_conversations() const;
-    // What a conversation here can do: {tools, commands}, for the UIs to show only what works.
+    // What a conversation here can do: {tools, commands, agents}, for the UIs to show only what
+    // works. `agents` lists the built-in agent and each external one with whether it is installed
+    // (and, when not, which program is missing); it is empty where commands cannot run.
     json capabilities() const;
+    // Whether `id` names an agent a conversation may use here (installed or not).
+    bool knows_agent(const std::string & id) const;
     // Remove one that is not running; its helpers go with it.
     Refusal remove_conversation(const std::string & id);
 
@@ -144,6 +163,7 @@ public:
 
 private:
     struct Run;
+    struct External;
 
     Refusal start(const std::string & conversation,
                   const std::string & text,
@@ -168,6 +188,17 @@ private:
     std::vector<ChatTool> tools_for(const json & conv, bool remote, int depth) const;
     std::string system_prompt(const json & conv, bool remote) const;
 
+    // ---- a conversation whose agent is another program (agent_external.cpp) ----
+    std::string run_external(Run & run, const std::string & conv_id);
+    std::shared_ptr<External> external_for(Run & run, const json & conv, const std::string & ws, std::string & err);
+    void on_external_update(const std::shared_ptr<External> & ext, const json & params);
+    bool on_external_request(const std::shared_ptr<External> & ext,
+                             const std::string & method,
+                             const json & params,
+                             json & result,
+                             std::string & error);
+    void close_external(const std::string & conv_id);
+
     // Who may see a conversation's events: local clients only when it reaches this computer.
     EventBus::Audience audience_of(const std::string & conv) const;
     void publish_conversation(const std::string & id);
@@ -187,6 +218,8 @@ private:
     // Runs whose thread has returned or is returning, joined at the next start or at shutdown.
     std::vector<std::pair<std::string, std::shared_ptr<Run>>> finished_;
     std::set<std::string> running_tasks_; // task ids with a run going
+    // The external agents running, one per conversation, kept between its messages.
+    std::map<std::string, std::shared_ptr<External>> externals_;
     bool shutting_down_ = false;
 
     std::thread scheduler_;

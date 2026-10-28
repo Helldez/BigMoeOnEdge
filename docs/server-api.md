@@ -625,8 +625,10 @@ provider keys in `<data>/credentials.json`, created readable by its owner only. 
 are folders in `<data>/skills/`; the bundled ones are `skills/` beside the binary (`--skills-dir`
 names another folder). The client catalog is `clients.json` beside the model catalog.
 
-**What it can do.** `GET /api/agent` answers `{tools, commands}`: whether conversations here have
-the agent's tools at all, and whether `run_command` is among them. A server started with
+**What it can do.** `GET /api/agent` answers `{tools, commands, agents}`: whether conversations here
+have the agent's tools at all, whether `run_command` is among them, and the agents a conversation
+may use (the built-in one and the other coding agents of the client catalog, each with whether its
+program is installed; [agent.md](agent.md), "Other agents"). A server started with
 `--chat-only` (the phone apps start theirs so) answers `tools: false`: its conversations are plain
 chat, sent to the model with no system prompt and no tools, as before the agent, and adding a
 workspace or a task is `409` with `code: "chat_only"`. A UI reads this and shows only what works.

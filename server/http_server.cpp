@@ -12,6 +12,7 @@
 #include "agent_routes.h"
 #include "agent_store.h"
 #include "anthropic_messages.h"
+#include "connect.h"
 #include "decide_protocol.h"
 #include "engine_host.h"
 #include "openai_chat.h"
@@ -1403,6 +1404,18 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     for (const std::string & w : app.agent_store->load())
         std::fprintf(stderr, "warning: %s\n", w.c_str());
     {
+        // The clients a person can connect, beside the model catalog; a server without it lists none.
+        const fs::path clients = fs::u8path(catalog).parent_path() / "clients.json";
+        std::ifstream in(clients, std::ios::binary);
+        if (in) {
+            try {
+                app.agent_routes.clients = json::parse(in);
+            } catch (const std::exception & e) {
+                std::fprintf(stderr, "warning: %s does not parse: %s\n", clients.u8string().c_str(), e.what());
+            }
+        }
+    }
+    {
         agent::AgentDeps deps;
         deps.bus = &app.bus;
         deps.store = app.agent_store.get();
@@ -1417,6 +1430,7 @@ int run(int argc, char ** argv, const Embedding & embedding) {
         deps.tools = !o.chat_only;
         deps.can_run_commands = platform::can_run_commands();
         deps.os_name = platform::os_name();
+        deps.external_agents = acp_agents(app.agent_routes.clients);
         app.agent = std::make_unique<agent::Agent>(std::move(deps));
     }
     app.agent_routes.agent = app.agent.get();
@@ -1426,18 +1440,6 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     app.agent_routes.user_skills_dir = (fs::u8path(data_dir) / "skills").u8string();
     app.agent_routes.has_key = !o.api_key.empty();
     app.agent_routes.home = platform::home_dir();
-    {
-        // The clients a person can connect, beside the model catalog; a server without it lists none.
-        const fs::path clients = fs::u8path(catalog).parent_path() / "clients.json";
-        std::ifstream in(clients, std::ios::binary);
-        if (in) {
-            try {
-                app.agent_routes.clients = json::parse(in);
-            } catch (const std::exception & e) {
-                std::fprintf(stderr, "warning: %s does not parse: %s\n", clients.u8string().c_str(), e.what());
-            }
-        }
-    }
 
     httplib::Server svr;
     // A worker is held for a request's whole life, and a connection past the queue is closed at

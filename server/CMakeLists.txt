@@ -93,6 +93,7 @@ add_library(bmoe_server_core STATIC
     agent_store.cpp
     provider_protocol.cpp
     connect.cpp
+    acp_connection.cpp
     feed.cpp
     backend_packs.cpp
     update_service.cpp
@@ -115,6 +116,7 @@ add_library(bmoe_server STATIC
     planner_adapter.cpp
     routing_store.cpp
     agent.cpp
+    agent_external.cpp
     agent_routes.cpp
 )
 target_link_libraries(bmoe_server PUBLIC bmoe_server_core bmoe_server_platform PRIVATE cpp-httplib)

@@ -27,6 +27,8 @@ export interface ConversationSummary {
   mode: Mode | (string & {});
   /** `local`, or `<provider id>/<model>`. */
   route: string;
+  /** Who does the work: `builtin`, or another coding agent's catalog id (GET /api/agent). */
+  agent?: string;
   state: ConversationState;
   updated: WireTime;
   /** The task whose run this conversation is, when it is one. */
@@ -196,6 +198,34 @@ const ITEM_KINDS = new Set(['user', 'assistant', 'tool', 'helper', 'notice']);
 
 export function isItem(v: unknown): v is Item {
   return isObject(v) && isStr(v.id) && isStr(v.kind) && ITEM_KINDS.has(v.kind);
+}
+
+/** An agent a conversation may use (GET /api/agent), and whether its program is installed here. */
+export interface AgentChoice {
+  id: string;
+  name: string;
+  available: boolean;
+  /** The programs it needs that are not on this computer. */
+  missing?: string[];
+}
+
+/** What a conversation on this server can do (GET /api/agent). */
+export interface AgentCapabilities {
+  tools: boolean;
+  commands: boolean;
+  agents: AgentChoice[];
+}
+
+export const BUILTIN_AGENT = 'builtin';
+
+export function isAgentCapabilities(v: unknown): v is AgentCapabilities {
+  return (
+    isObject(v) &&
+    typeof v.tools === 'boolean' &&
+    typeof v.commands === 'boolean' &&
+    Array.isArray(v.agents) &&
+    v.agents.every((a) => isObject(a) && isStr(a.id) && isStr(a.name) && typeof a.available === 'boolean')
+  );
 }
 
 export function isConversationSummary(v: unknown): v is ConversationSummary {

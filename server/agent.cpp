@@ -1,4 +1,5 @@
 #include "agent.h"
+#include "agent_run.h"
 
 #include "agent_tools.h"
 #include "provider_protocol.h"
@@ -15,27 +16,6 @@
 namespace fs = std::filesystem;
 
 namespace bmoe::server::agent {
-
-// One message's run: its stop, the approvals it waits for, and the helpers it started. Shared by
-// the run's thread and the HTTP workers that approve or stop it; every conversation the run works
-// on (the one the message went to, and each helper) maps to the same Run.
-struct Agent::Run {
-    std::atomic<bool> stop{false};
-    std::mutex m;
-    std::condition_variable cv;
-    std::map<std::string, int> decisions;          // item -> -1 waiting, 0 denied, 1 approved; under m
-    std::map<std::string, std::string> waiting_in; // item -> the conversation it waits in; under m
-    bool done = false;                             // under m
-    bool remote = false;
-    bool auto_deny = false;
-    bool think = false;
-    bool failed = false; // run thread only
-    int helpers = 0;     // run thread only
-    int denied = 0;      // run thread only
-    std::string root;
-    std::string task;
-    std::thread thread;
-};
 
 namespace {
 
@@ -446,6 +426,15 @@ void Agent::shutdown() {
     }
     for (std::thread & t : threads)
         t.join();
+    // The other agents' programs, now that no run talks to them.
+    std::vector<std::string> open;
+    {
+        std::lock_guard<std::mutex> lk(m_);
+        for (const auto & [id, e] : externals_)
+            open.push_back(id);
+    }
+    for (const std::string & id : open)
+        close_external(id);
 }
 
 // ---- state and events ----
@@ -468,10 +457,6 @@ bool Agent::conversation(const std::string & id, json & out) const {
     if (!d_.store->conversation(id, out)) return false;
     out["state"] = live_state(id, out.value("state", "idle"));
     return true;
-}
-
-json Agent::capabilities() const {
-    return {{"tools", d_.tools}, {"commands", d_.tools && d_.can_run_commands}};
 }
 
 json Agent::list_conversations() const {
@@ -1142,7 +1127,12 @@ Refusal Agent::start(const std::string & conversation,
         // try to join it: start() holds run->m across the assignment.
         { std::lock_guard<std::mutex> wait_for_start(run->m); }
         try {
-            run_rounds(*run, conversation, 0);
+            json c;
+            d_.store->conversation(conversation, c);
+            if (c.value("agent", std::string(k_builtin_agent)) == k_builtin_agent)
+                run_rounds(*run, conversation, 0);
+            else
+                run_external(*run, conversation);
         } catch (const std::exception & e) {
             run->failed = true;
             notice(conversation, "error", std::string("The run failed: ") + e.what());
@@ -1184,6 +1174,13 @@ Refusal Agent::edit(const std::string & conversation,
                     bool remote,
                     json & item_out) {
     if (running(conversation)) return {409, "this conversation is running: stop it first", "busy"};
+    {
+        json c;
+        if (d_.store->conversation(conversation, c) &&
+            c.value("agent", std::string(k_builtin_agent)) != k_builtin_agent)
+            return {409, "another agent's session cannot be rewritten: send a new message, or start a new conversation",
+                    "unsupported"};
+    }
     bool found = false;
     if (!d_.store->edit_conversation(conversation, [&](json & c) {
             json kept = json::array();
@@ -1221,6 +1218,7 @@ Refusal Agent::remove_conversation(const std::string & id) {
     for (const json & it : c["items"])
         if (it.value("kind", "") == "helper") d_.store->remove_conversation(it.value("conversation", ""));
     d_.store->remove_conversation(id);
+    close_external(id);
     return {};
 }
 

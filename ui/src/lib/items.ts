@@ -138,6 +138,17 @@ function toolPath(t: ToolItem): string {
   return typeof p === 'string' ? p : '';
 }
 
+/** Another agent's tool calls come with the Agent Client Protocol's kind: counted as the built-in tool that does the same. */
+const ACP_KIND_AS_TOOL: Record<string, string> = {
+  read: 'read_file',
+  edit: 'edit_file',
+  delete: 'edit_file',
+  move: 'edit_file',
+  search: 'search_files',
+  execute: 'run_command',
+  fetch: 'fetch_url',
+};
+
 export function runSummary(items: readonly Item[]): RunSummary {
   const s: RunSummary = {
     read: 0,
@@ -172,7 +183,7 @@ export function runSummary(items: readonly Item[]): RunSummary {
     if (it.state === 'error') s.failed++;
     const ok = it.state !== 'denied' && it.state !== 'error';
     const path = toolPath(it) || it.id;
-    switch (it.tool) {
+    switch (ACP_KIND_AS_TOOL[it.tool] ?? it.tool) {
       case 'read_file':
         read.add(path);
         break;

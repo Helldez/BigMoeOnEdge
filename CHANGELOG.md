@@ -31,6 +31,16 @@ Semantic Versioning.
 - **Connecting other apps** (`GET /api/connect`, `POST /api/connect/<id>`, `catalog/clients.json`):
   the settings for Claude Code, Codex CLI, OpenCode, an OpenAI SDK program and Open WebUI, filled in
   for this server; the server writes Codex CLI's and OpenCode's settings files with a backup.
+- **Other coding agents in a conversation** (`docs/agent.md`, "Other agents"): on a computer that
+  runs programs, a conversation with a folder may be worked by OpenCode, Claude Code, Codex or Pi
+  instead of the built-in agent (still the default), over the Agent Client Protocol. How each starts
+  is the `acp` entry of its row in `catalog/clients.json` (OpenCode itself, the others through their
+  published adapters, versions pinned). Its text, reasoning and tool calls become the
+  conversation's items; the permissions it asks for are the mode's to answer, or an approval card
+  with its diff; its file reads and writes are served inside the folder only. `GET /api/agent` says
+  which agents are installed; the web UI's composer offers them before the first message.
+- `--chat-only`: conversations are plain chat (no tools, no agent prompt, no workspaces or tasks),
+  for the phone apps; `GET /api/agent` says so.
 - `--skills-dir PATH` names the folder of bundled skills, for a package that keeps them elsewhere.
 
 - **The agent in the web UI** (`docs/screens.md`). A sidebar with the server's conversations by
@@ -55,14 +65,11 @@ Semantic Versioning.
 - **A mock server for the web UI** (`ui/mock/server.ts`, `npm run dev:mock`): every route the UI
   calls, with made-up data and a short agent run on each message, to work on the UI with no engine.
 
-- **Workspaces, skills, tasks and providers on the phone.** Workspaces are folders in the app's own
-  storage (Android: the files directory, with import from the system picker and share out; iOS: the
-  Documents folder, shown in the Files app). A file preview reads what the agent wrote through the
-  server: text and code, Markdown, images, and HTML in a web view sandboxed from the app. Skills can
-  be switched and written, tasks scheduled (the screen says they run only while the app's server
-  runs), and providers saved with a key that is never shown again. A notification says when an
-  approval is waiting or a run ended while the app is away. `docs/screens.md` has the phone's
-  differences.
+- **The phone apps are chat apps** (Android and iOS, `--chat-only`): conversations are held by the
+  server, through the same API as the desktop's, but are plain chat with no tools, no agent prompt,
+  no workspaces and no tasks; the agent is the desktop's. The new look stays. **Answer again** is
+  under the last answer: it sends the last question again through the edit route, as the web UI
+  does. The empty chat says the model runs on the phone and leads to Models while none is loaded.
 
 - **`bmoe-desktop`, the app's own window** (`desktop/`, `docs/desktop-app.md`). The web UI in the
   system's web view (the `webview` library, a pinned submodule: WKWebView, WebView2, WebKitGTK 4.1),

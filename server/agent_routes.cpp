@@ -90,7 +90,8 @@ std::string route_refusal(const AgentStore & store, const std::string & route) {
 }
 
 // Reads the conversation fields a create or a change may set into `out`; false with the reason.
-bool read_conversation_fields(const json & body, const AgentStore & store, json & out, std::string & err) {
+bool read_conversation_fields(
+    const json & body, const AgentStore & store, const Agent & agent, json & out, std::string & err) {
     if (body.contains("title")) {
         if (!body["title"].is_string()) return err = "title must be a string", false;
         out["title"] = body["title"];
@@ -112,6 +113,13 @@ bool read_conversation_fields(const json & body, const AgentStore & store, json 
             (!body["workspace"].is_string() || !store.workspace(body["workspace"].get<std::string>(), w)))
             return err = "no such workspace", false;
         out["workspace"] = body["workspace"];
+    }
+    if (body.contains("agent")) {
+        // Another agent works in a folder of this computer: it needs one, and a computer that runs
+        // programs.
+        if (!body["agent"].is_string() || !agent.knows_agent(body["agent"].get<std::string>()))
+            return err = "no such agent", false;
+        out["agent"] = body["agent"];
     }
     return true;
 }
@@ -177,7 +185,7 @@ bool read_provider(const json & body, json & out, std::string & err) {
     return true;
 }
 
-bool read_task(const json & body, const AgentStore & store, json & task, std::string & err) {
+bool read_task(const json & body, const AgentStore & store, const Agent & agent, json & task, std::string & err) {
     for (const char * k : {"title", "prompt"})
         if (body.contains(k)) {
             if (!body[k].is_string()) return err = std::string(k) + " must be a string", false;
@@ -186,7 +194,7 @@ bool read_task(const json & body, const AgentStore & store, json & task, std::st
     if (task.value("prompt", "").empty()) return err = "prompt is required", false;
     if (task.value("title", "").empty()) task["title"] = task.value("prompt", "").substr(0, k_title_max_chars);
     json fields = json::object();
-    if (!read_conversation_fields(body, store, fields, err)) return false;
+    if (!read_conversation_fields(body, store, agent, fields, err)) return false;
     for (auto it = fields.begin(); it != fields.end(); ++it)
         if (it.key() != "title") task[it.key()] = it.value();
     if (!task.contains("mode")) task["mode"] = "read_only";
@@ -247,8 +255,12 @@ void register_agent_routes(httplib::Server & svr, const AgentRouteDeps & d) {
         if (!body_of(req, res, body)) return;
         json fields = json::object();
         std::string err;
-        if (!read_conversation_fields(body, *d.store, fields, err)) return send_error(res, 400, err, "invalid_request");
+        if (!read_conversation_fields(body, *d.store, *d.agent, fields, err))
+            return send_error(res, 400, err, "invalid_request");
         if (!local(req) && network_may_not_set(fields)) return refuse_remote(res);
+        if (fields.value("agent", std::string(agent::k_builtin_agent)) != agent::k_builtin_agent &&
+            !fields.value("workspace", json(nullptr)).is_string())
+            return send_error(res, 400, "another agent works in a folder: pick a workspace for it", "invalid_request");
         if (body.contains("items")) {
             // A conversation the UI kept before the server did: its messages, as they were.
             if (!body["items"].is_array()) return send_error(res, 400, "items must be an array", "invalid_request");
@@ -290,7 +302,8 @@ void register_agent_routes(httplib::Server & svr, const AgentRouteDeps & d) {
         if (!body_of(req, res, body)) return;
         json fields = json::object();
         std::string err;
-        if (!read_conversation_fields(body, *d.store, fields, err)) return send_error(res, 400, err, "invalid_request");
+        if (!read_conversation_fields(body, *d.store, *d.agent, fields, err))
+            return send_error(res, 400, err, "invalid_request");
         if (!local(req)) {
             json before;
             if (!d.store->conversation(id, before)) return send_error(res, 404, "no such conversation", "not_found");
@@ -300,6 +313,20 @@ void register_agent_routes(httplib::Server & svr, const AgentRouteDeps & d) {
         // the run works in and with may not.
         if ((fields.contains("workspace") || fields.contains("route")) && d.agent->running(id))
             return send_error(res, 409, "this conversation is running: stop it first", "busy");
+        if (fields.contains("agent")) {
+            // The agent is chosen before the first message: another one would not know what was said.
+            json before;
+            if (d.store->conversation(id, before) && !before["items"].empty() &&
+                before.value("agent", std::string(agent::k_builtin_agent)) != fields.value("agent", ""))
+                return send_error(res, 409, "the agent is chosen before the first message: start a new conversation",
+                                  "busy");
+            const bool external = fields.value("agent", "") != agent::k_builtin_agent;
+            const json ws =
+                fields.contains("workspace") ? fields["workspace"] : before.value("workspace", json(nullptr));
+            if (external && !ws.is_string())
+                return send_error(res, 400, "another agent works in a folder: pick a workspace for it",
+                                  "invalid_request");
+        }
         json after;
         if (!d.store->edit_conversation(
                 id,
@@ -477,7 +504,7 @@ void register_agent_routes(httplib::Server & svr, const AgentRouteDeps & d) {
         if (!id.empty() && !d.store->task(id, task)) return send_error(res, 404, "no such task", "not_found");
         if (id.empty()) task = json{{"id", new_id("t")}, {"created", now_s()}, {"last_run", nullptr}};
         std::string err;
-        if (!read_task(body, *d.store, task, err)) return send_error(res, 400, err, "invalid_request");
+        if (!read_task(body, *d.store, *d.agent, task, err)) return send_error(res, 400, err, "invalid_request");
         d.store->put_task(task);
         d.agent->tasks_changed();
         const json view = d.agent->task_view(task);

@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <mutex>
 #include <thread>
 
 #if defined(_WIN32)
@@ -518,6 +519,292 @@ bool started_by_double_click() {
     return GetConsoleProcessList(&pid, 1) == 1;
 #else
     return false;
+#endif
+}
+
+// ---- programs the server talks to ----
+
+std::string find_program(const std::string & program) {
+    if (program.empty()) return "";
+    std::error_code ec;
+    if (program.find('/') != std::string::npos || program.find('\\') != std::string::npos)
+        return fs::is_regular_file(fs::u8path(program), ec) ? program : "";
+#if defined(_WIN32)
+    // SearchPath reads PATH itself; a name without an extension is tried as each of these.
+    for (const wchar_t * ext : {L".exe", L".cmd", L".bat", L".com"}) {
+        wchar_t buf[MAX_PATH];
+        const DWORD n = SearchPathW(nullptr, widen(program).c_str(), ext, MAX_PATH, buf, nullptr);
+        if (n > 0 && n < MAX_PATH) return fs::path(buf).u8string();
+    }
+    return "";
+#else
+    // The one environment read beyond the data folder: where the person's programs are.
+    const char * path = std::getenv("PATH");
+    std::string dirs = path ? path : "/usr/local/bin:/usr/bin:/bin";
+    size_t start = 0;
+    for (;;) {
+        const size_t colon = dirs.find(':', start);
+        const std::string dir = dirs.substr(start, colon == std::string::npos ? std::string::npos : colon - start);
+        if (!dir.empty()) {
+            const fs::path cand = fs::u8path(dir) / fs::u8path(program);
+            if (fs::is_regular_file(cand, ec) && access(cand.c_str(), X_OK) == 0) return cand.u8string();
+        }
+        if (colon == std::string::npos) break;
+        start = colon + 1;
+    }
+    return "";
+#endif
+}
+
+#if defined(_WIN32)
+namespace {
+std::string lower_ascii(std::string s) {
+    for (char & c : s)
+        if (c >= 'A' && c <= 'Z') c = (char) (c - 'A' + 'a');
+    return s;
+}
+
+// One argument as CommandLineToArgvW reads it back: quoted, with the backslashes before a quote
+// doubled.
+std::wstring quote_arg(const std::wstring & a) {
+    if (!a.empty() && a.find_first_of(L" \t\"") == std::wstring::npos) return a;
+    std::wstring out = L"\"";
+    size_t slashes = 0;
+    for (wchar_t c : a) {
+        if (c == L'\\') {
+            ++slashes;
+            continue;
+        }
+        out.append(c == L'"' ? slashes * 2 + 1 : slashes, L'\\');
+        slashes = 0;
+        out += c;
+    }
+    out.append(slashes * 2, L'\\');
+    return out + L"\"";
+}
+} // namespace
+
+struct LineProcess::Impl {
+    HANDLE process = nullptr;
+    HANDLE job = nullptr;
+    HANDLE in = nullptr;  // the program's stdin, written here
+    HANDLE out = nullptr; // its stdout, read here
+    std::mutex write_m;
+    std::string pending; // read past the last line handed out
+    std::atomic<bool> stopped{false};
+};
+#else
+struct LineProcess::Impl {
+    pid_t pid = -1;
+    int in = -1;          // the program's stdin, written here
+    FILE * out = nullptr; // its stdout, read here
+    std::mutex write_m;
+    std::atomic<bool> stopped{false};
+};
+#endif
+
+LineProcess::LineProcess(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+
+std::unique_ptr<LineProcess>
+LineProcess::start(const std::vector<std::string> & argv, const std::string & cwd, std::string & err) {
+    if (!can_run_commands()) {
+        err = "this platform does not let the server start a program";
+        return nullptr;
+    }
+    if (argv.empty()) {
+        err = "no program to start";
+        return nullptr;
+    }
+    const std::string exe = find_program(argv[0]);
+    if (exe.empty()) {
+        err = argv[0] + " is not installed (it is not on PATH)";
+        return nullptr;
+    }
+    auto impl = std::make_unique<Impl>();
+#if defined(_WIN32)
+    SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
+    HANDLE in_rd = nullptr, in_wr = nullptr, out_rd = nullptr, out_wr = nullptr;
+    if (!CreatePipe(&in_rd, &in_wr, &sa, 0) || !CreatePipe(&out_rd, &out_wr, &sa, 0)) {
+        err = "could not create the pipes for " + argv[0];
+        return nullptr;
+    }
+    SetHandleInformation(in_wr, HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(out_rd, HANDLE_FLAG_INHERIT, 0);
+    HANDLE nul = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = in_rd;
+    si.hStdOutput = out_wr;
+    si.hStdError = nul;
+    std::wstring line;
+    const std::string ext = lower_ascii(fs::u8path(exe).extension().u8string());
+    // A batch file (npx.cmd) is cmd.exe's to run; /d skips AutoRun, /s keeps the quoting as written.
+    const bool batch = ext == ".cmd" || ext == ".bat";
+    std::wstring args = quote_arg(widen(exe));
+    for (size_t i = 1; i < argv.size(); ++i)
+        args += L" " + quote_arg(widen(argv[i]));
+    line = batch ? L"cmd.exe /d /s /c \"" + args + L"\"" : args;
+    impl->job = CreateJobObjectW(nullptr, nullptr);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION lim{};
+    lim.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (impl->job) SetInformationJobObject(impl->job, JobObjectExtendedLimitInformation, &lim, sizeof(lim));
+    PROCESS_INFORMATION pi{};
+    const std::wstring wcwd = widen(cwd);
+    const BOOL ok = CreateProcessW(nullptr, line.data(), nullptr, nullptr, TRUE, CREATE_SUSPENDED | CREATE_NO_WINDOW,
+                                   nullptr, cwd.empty() ? nullptr : wcwd.c_str(), &si, &pi);
+    CloseHandle(in_rd);
+    CloseHandle(out_wr);
+    if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
+    if (!ok) {
+        CloseHandle(in_wr);
+        CloseHandle(out_rd);
+        if (impl->job) CloseHandle(impl->job);
+        err = "could not start " + argv[0];
+        return nullptr;
+    }
+    if (impl->job) AssignProcessToJobObject(impl->job, pi.hProcess);
+    ResumeThread(pi.hThread);
+    CloseHandle(pi.hThread);
+    impl->process = pi.hProcess;
+    impl->in = in_wr;
+    impl->out = out_rd;
+#else
+    // A program that ended is written to as a closed pipe: an error, not a signal.
+    signal(SIGPIPE, SIG_IGN);
+    int in[2], out[2];
+    if (pipe(in) != 0) {
+        err = "could not create the pipes for " + argv[0];
+        return nullptr;
+    }
+    if (pipe(out) != 0) {
+        close(in[0]);
+        close(in[1]);
+        err = "could not create the pipes for " + argv[0];
+        return nullptr;
+    }
+    for (int fd : {in[0], in[1], out[0], out[1]})
+        fcntl(fd, F_SETFD, FD_CLOEXEC);
+    // Everything the child needs is made before fork (see run_command).
+    std::vector<std::string> args = argv;
+    args[0] = exe;
+    std::vector<char *> c_argv;
+    for (std::string & a : args)
+        c_argv.push_back(a.data());
+    c_argv.push_back(nullptr);
+    const char * c_cwd = cwd.c_str();
+    const bool has_cwd = !cwd.empty();
+    const pid_t pid = fork();
+    if (pid < 0) {
+        for (int fd : {in[0], in[1], out[0], out[1]})
+            close(fd);
+        err = "could not start a process";
+        return nullptr;
+    }
+    if (pid == 0) {
+        setpgid(0, 0);
+        if (has_cwd && chdir(c_cwd) != 0) _exit(126);
+        dup2(in[0], 0);
+        dup2(out[1], 1);
+        const int null = open("/dev/null", O_WRONLY);
+        if (null >= 0) dup2(null, 2);
+        execv(c_argv[0], c_argv.data());
+        _exit(127);
+    }
+    setpgid(pid, pid);
+    close(in[0]);
+    close(out[1]);
+    impl->pid = pid;
+    impl->in = in[1];
+    impl->out = fdopen(out[0], "r");
+    if (!impl->out) {
+        close(out[0]);
+        kill(-pid, SIGKILL);
+        waitpid(pid, nullptr, 0);
+        close(impl->in);
+        err = "could not read from " + argv[0];
+        return nullptr;
+    }
+#endif
+    return std::unique_ptr<LineProcess>(new LineProcess(std::move(impl)));
+}
+
+bool LineProcess::write_line(const std::string & line) {
+    std::lock_guard<std::mutex> lk(impl_->write_m);
+    if (impl_->stopped) return false;
+    const std::string data = line + "\n";
+    size_t done = 0;
+    while (done < data.size()) {
+#if defined(_WIN32)
+        DWORD n = 0;
+        if (!WriteFile(impl_->in, data.data() + done, (DWORD) (data.size() - done), &n, nullptr) || n == 0)
+            return false;
+#else
+        const ssize_t n = write(impl_->in, data.data() + done, data.size() - done);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return false;
+#endif
+        done += (size_t) n;
+    }
+    return true;
+}
+
+bool LineProcess::read_line(std::string & line) {
+    line.clear();
+#if defined(_WIN32)
+    for (;;) {
+        const size_t nl = impl_->pending.find('\n');
+        if (nl != std::string::npos) {
+            line = impl_->pending.substr(0, nl);
+            impl_->pending.erase(0, nl + 1);
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            return true;
+        }
+        char buf[4096];
+        DWORD n = 0;
+        if (!ReadFile(impl_->out, buf, sizeof(buf), &n, nullptr) || n == 0) return false;
+        impl_->pending.append(buf, n);
+    }
+#else
+    char * buf = nullptr;
+    size_t cap = 0;
+    const ssize_t n = getline(&buf, &cap, impl_->out);
+    if (n < 0) {
+        std::free(buf);
+        return false;
+    }
+    line.assign(buf, (size_t) n);
+    std::free(buf);
+    if (!line.empty() && line.back() == '\n') line.pop_back();
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    return true;
+#endif
+}
+
+void LineProcess::stop() {
+    if (impl_->stopped.exchange(true)) return;
+#if defined(_WIN32)
+    if (impl_->job)
+        TerminateJobObject(impl_->job, 1);
+    else
+        TerminateProcess(impl_->process, 1);
+#else
+    kill(-impl_->pid, SIGKILL);
+#endif
+}
+
+LineProcess::~LineProcess() {
+    stop();
+#if defined(_WIN32)
+    WaitForSingleObject(impl_->process, INFINITE);
+    CloseHandle(impl_->in);
+    CloseHandle(impl_->out);
+    CloseHandle(impl_->process);
+    if (impl_->job) CloseHandle(impl_->job);
+#else
+    close(impl_->in);
+    fclose(impl_->out);
+    waitpid(impl_->pid, nullptr, 0);
 #endif
 }
 

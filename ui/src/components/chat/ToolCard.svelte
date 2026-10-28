@@ -11,6 +11,15 @@
     web_search: 'globe',
     use_skill: 'spark',
     delegate: 'helper',
+    // Another agent's tool calls, by the kind the Agent Client Protocol gives them.
+    read: 'file',
+    edit: 'edit',
+    delete: 'edit',
+    move: 'edit',
+    search: 'search',
+    execute: 'terminal',
+    fetch: 'globe',
+    think: 'spark',
   };
   export const STATE_TONE: Record<string, string> = { running: 'info', waiting: 'warn', done: 'ok', denied: '', error: 'err' };
 </script>

@@ -5,9 +5,11 @@
 import { ApiError } from '../lib/api';
 import { agentApi, type NewConversation } from '../lib/agentApi';
 import {
+  BUILTIN_AGENT,
   isConversationEvent,
   isDeltaEvent,
   isItemEvent,
+  type AgentCapabilities,
   type ConversationState,
   type ConversationSummary,
   type Item,
@@ -45,6 +47,7 @@ export interface Draft {
   workspace: string | null;
   mode: Mode;
   route: string;
+  agent: string;
 }
 
 const BUSY: ReadonlySet<string> = new Set(['running', 'waiting']);
@@ -80,13 +83,16 @@ class AgentStore {
   imported = $state(0);
 
   /** What a new conversation starts with: the composer's chips before the first message. */
-  draft = $state<Draft>({ workspace: null, mode: 'ask', route: 'local' });
+  draft = $state<Draft>({ workspace: null, mode: 'ask', route: 'local', agent: BUILTIN_AGENT });
+  /** What conversations here can do; until the server says, plain chat with the built-in agent. */
+  caps = $state<AgentCapabilities>({ tools: true, commands: false, agents: [] });
 
   running = $derived(this.current !== null && BUSY.has(this.current.state));
   /** The settings in force for the composer: the open conversation's, else the draft's. */
   workspace = $derived(this.current ? this.current.workspace || null : this.draft.workspace);
   mode = $derived<Mode>(((this.current?.mode as Mode) ?? this.draft.mode) || 'ask');
   route = $derived(this.current?.route ?? this.draft.route);
+  agentId = $derived(this.current?.agent ?? this.draft.agent);
 
   private started = false;
   private opening = 0;
@@ -103,6 +109,15 @@ class AgentStore {
     this.refreshList().then(() => this.importOld());
     this.refreshWorkspaces();
     this.refreshProviders();
+    this.refreshCapabilities();
+  }
+
+  async refreshCapabilities(): Promise<void> {
+    try {
+      this.caps = await agentApi.capabilities();
+    } catch {
+      // an older server: the built-in agent alone
+    }
   }
 
   async refreshList(): Promise<void> {
@@ -210,7 +225,11 @@ class AgentStore {
   private async ensure(): Promise<string> {
     if (this.currentId) return this.currentId;
     const d = this.draft;
-    const c = await agentApi.createConversation({ workspace: d.workspace, mode: d.mode, route: d.route });
+    const c = await agentApi.createConversation(
+      d.agent === BUILTIN_AGENT
+        ? { workspace: d.workspace, mode: d.mode, route: d.route }
+        : { workspace: d.workspace, mode: d.mode, agent: d.agent },
+    );
     this.currentId = c.id;
     this.current = c;
     this.conversations = upsertSummary(
@@ -297,6 +316,9 @@ class AgentStore {
   }
   async setWorkspace(workspace: string | null): Promise<void> {
     await this.change({ workspace });
+  }
+  async setAgent(agent: string): Promise<void> {
+    await this.change({ agent });
   }
 
   private async change(p: Partial<Draft>): Promise<void> {

@@ -18,7 +18,7 @@ scripted session and checks every rule below without a model.
   temporary file and renamed, so a crash leaves the previous version), because a run can outlive
   the page that started it: a scheduled task has no page at all, and an approval can wait for a
   person who closed the tab. A conversation has a title, an optional workspace, a mode, a model
-  route and a list of items. Plain chat in the web UI is a conversation with no workspace. A
+  route, an agent (`builtin`, or another coding agent: see "Other agents") and a list of items. Plain chat in the web UI is a conversation with no workspace. A
   conversation that was running when the server stopped reads `idle` on the next start, with a
   notice saying its run ended there.
 - **Workspace.** A folder a person added (`<data>/agent/workspaces.json`): `id`, `name`, `path`
@@ -161,6 +161,45 @@ between two marker lines, replaced on the next write, and a JSON file has the sn
 it key by key (one that does not parse is not touched). It needs a loaded model, whose id the
 client asks for.
 
+## Other agents
+
+On a computer that runs programs, a conversation with a workspace may be worked by another coding
+agent instead of the built-in one: OpenCode, Claude Code, Codex or Pi, whichever is installed. The
+built-in agent stays the default; the other is chosen before the first message (`agent` on
+`POST /api/conversations`; a `PATCH` that changes it on a conversation with items is `409`, since
+the other agent would not know what was said). `GET /api/agent` lists them with whether each is
+installed (`available`, and the programs `missing`), so the UI offers only what runs.
+
+They are spoken to over the [Agent Client Protocol](https://agentclientprotocol.com) (ACP):
+JSON-RPC 2.0, one message a line, on the program's stdin and stdout (`server/acp_connection.*`).
+How each one starts is data, not code: the `acp` entry of its row in `catalog/clients.json`
+(`command` and the programs it `needs` on PATH), pinned to the version the ACP registry lists.
+OpenCode speaks ACP itself (`opencode acp`); Claude Code, Codex and Pi run through their published
+adapters with `npx`. The program runs in the workspace, in a process group of its own (a job on
+Windows) that ends with it (`platform::LineProcess`), one per conversation, kept between its
+messages and ended when the conversation is deleted or the server stops.
+
+What it does reaches the conversation as the built-in agent's would (`server/agent_external.cpp`):
+
+- Its text and reasoning are `assistant` items, streamed as `delta` events; each tool call is a
+  `tool` item, its `tool` the protocol's kind (`read`, `edit`, `execute`, `fetch`, ...), its
+  result the text it reports, its diff shown when it carries one.
+- A permission it asks for is the conversation's mode's to answer: `full` allows it, `read_only`
+  declines it, `ask` puts it in front of the person as an approval card (with the diff, when the
+  agent sent one) and waits. A stop is `session/cancel`; an agent that has not answered ten seconds
+  later is ended.
+- It reads and writes files through the server (`fs/read_text_file`, `fs/write_text_file`), which
+  serves them inside the workspace only, with the same path confinement as the built-in tools; a
+  read-only conversation takes no write. It gets no terminal from the server: a command it runs, it
+  runs itself, under the permission it asked for.
+- The session id is kept with the conversation (`acp_session`); an agent started again (the server
+  restarted) resumes it with `session/load` where it can, and says so with a notice where it cannot.
+  An `edit` of an earlier message is `409`: another agent's session cannot be rewritten.
+
+The model is the agent's own business: each is set up with Connect (below) to use this server, or
+uses its own account. Such a conversation reaches this computer, so it answers to a local client
+only (see below).
+
 ## Who may use it
 
 Everything that reaches this computer's files, processes or secrets answers only to a client whose
@@ -195,13 +234,14 @@ All JSON; errors are `{"error", "code"}` as everywhere in the API. Times are Uni
 
 | Route | Body / answer |
 |---|---|
+| `GET /api/agent` | `{tools, commands, agents: [{id, name, available, missing}]}`: whether conversations here have tools and commands, and the agents one may use (the built-in one first; none where commands cannot run) |
 | `GET /api/workspaces` | `[{id, name, path}]` |
 | `POST /api/workspaces` | `{path, name?}` → the workspace; `400 not_a_folder` |
 | `DELETE /api/workspaces/<id>` | forgets the folder, touches no file |
 | `GET /api/conversations` | `[{id, title, workspace, mode, route, state, created, updated, task, parent, web_allowed}]`, newest first, helpers left out; `state` is `idle`, `running`, `waiting` (an approval, the conversation's or one of its helpers') or `error` (the last run ended in one) |
-| `POST /api/conversations` | `{workspace?, mode?, route?, title?, items?}` → the conversation. `items`: `[{kind: "user" \| "assistant", text}]`, a conversation the UI kept before the server did |
+| `POST /api/conversations` | `{workspace?, mode?, route?, agent?, title?, items?}` → the conversation; another `agent` needs a `workspace`. `items`: `[{kind: "user" \| "assistant", text}]`, a conversation the UI kept before the server did |
 | `GET /api/conversations/<id>` | the conversation with its `items` |
-| `PATCH /api/conversations/<id>` | `{title?, mode?, route?, workspace?}` → the conversation without items; `409 busy` for `workspace` or `route` while it runs |
+| `PATCH /api/conversations/<id>` | `{title?, mode?, route?, workspace?, agent?}` → the conversation without items; `409 busy` for `workspace` or `route` while it runs, and for `agent` once it has items |
 | `DELETE /api/conversations/<id>` | with its helpers; `409 busy` while it runs |
 | `POST /api/conversations/<id>/messages` | `{text, think?, images?}` → `202 {item}`; the run goes on in the server and reports on `/api/events`. `409 busy` while one runs; `images` is not supported yet (`400 unsupported`) |
 | `POST /api/conversations/<id>/edit` | `{item, text, think?}`: drops `item` (a `user` item) and everything after it, then sends `text` → `202 {item}` |

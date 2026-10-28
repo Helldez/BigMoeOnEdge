@@ -30,12 +30,13 @@ bool write_file_atomic(const std::string & path, const std::string & text, bool 
 
 std::time_t now_s();
 
-// A conversation reaches this computer when it has a workspace or sends to a saved provider (whose
-// key the server holds): it, its events and its changes answer to a local client only.
+// A conversation reaches this computer when it has a workspace, sends to a saved provider (whose key
+// the server holds) or is another agent's (a program here): it, its events and its changes answer to
+// a local client only.
 bool conversation_reaches(const json & conv);
 
 // Whether a create or change of a conversation sets what a client on the network may not: a
-// workspace, a provider route, or full access (which would let a later local run act without
+// workspace, a provider route, another agent, or full access (which would let a later local run act without
 // asking). Asking and reading only are the safe direction, so the web UI on a phone still sets them.
 bool network_may_not_set(const json & fields);
 
@@ -50,7 +51,8 @@ public:
     std::vector<std::string> load();
 
     // ---- conversations ----
-    // {id, title, workspace, mode, route, state, created, updated, task, parent, web_allowed, items}
+    // {id, title, workspace, mode, route, agent, acp_session?, state, created, updated, task, parent,
+    // web_allowed, items}
     // Summaries without items, newest first; a helper (one with a parent) is left out: it is
     // reached through its parent's `helper` item.
     json list_conversations() const;

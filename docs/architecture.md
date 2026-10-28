@@ -29,7 +29,8 @@ server/         bmoe-server: the application framework every UI speaks to (docs/
                 agent_schedule (a task's next run), agent_store (conversations, workspaces, tasks,
                 providers and their keys, on disk), provider_protocol (an OpenAI-compatible
                 service's request and streamed answer), connect (a client's settings, written with a
-                backup),
+                backup, and the catalog's coding agents), acp_connection (the Agent Client
+                Protocol's JSON-RPC over a transport a test replaces),
                 feed (the signed release feed: Ed25519 over Monocypher, its shape held to its rules),
                 backend_packs (which packs apply, where installed ones live, which archives may be
                 unpacked), update_service (packs and updates downloaded, checked, put in place):
@@ -41,7 +42,8 @@ server/         bmoe-server: the application framework every UI speaks to (docs/
                 each model's routing record and knob verdicts, kept by content fingerprint for the
                 next plan;
                 agent: the agent's runs (one thread each, approvals, stop, helpers) and its task
-                scheduler, over EngineHost::chat or a provider; agent_routes: its HTTP routes;
+                scheduler, over EngineHost::chat or a provider; agent_external: a conversation
+                another coding agent works, over ACP; agent_routes: its HTTP routes;
                 access: who may reach the API (host, origin, key, content type, the local-only
                 routes), pure and tested;
                 platform: the only file with platform #ifs, a library of its own

@@ -19,6 +19,7 @@
 // Checks are explicit (not <cassert>): the Release build defines NDEBUG, which compiles assert out.
 
 #include "access.h"
+#include "acp_connection.h"
 #include "agent.h"
 #include "agent_schedule.h"
 #include "agent_skills.h"
@@ -168,7 +169,7 @@ struct Rig {
     std::atomic<int> commands{0};
     std::string workspace_id;
 
-    explicit Rig(bool load = true, bool tools = true) {
+    explicit Rig(bool load = true, bool tools = true, const std::function<void(AgentDeps &)> & tweak = nullptr) {
         host = std::make_unique<EngineHost>(*bus, [this](const SessionConfig &, std::string &) {
             return std::unique_ptr<HostedSession>(new ScriptedSession(script));
         });
@@ -198,6 +199,7 @@ struct Rig {
             r.output = "ran: " + cmd;
             return r;
         };
+        if (tweak) tweak(d);
         agent = std::make_unique<Agent>(std::move(d));
         json w;
         std::string err;
@@ -948,6 +950,21 @@ static void command_tests() {
           "a background child holding the output does not hold the tool call");
     r = platform::run_command("yes | head -c 100000", dir.path.u8string(), 10, 1000, stop);
     check(r.output.size() == 1000 && r.truncated, "output past the cap is dropped and said to be");
+
+    // A program spoken to a line at a time, as another agent is: cat says back what it is told.
+    check(!platform::find_program("cat").empty() && platform::find_program("no-such-program-here").empty(),
+          "a program is found on PATH, and one that is not there is not");
+    std::string err;
+    auto cat = platform::LineProcess::start({"cat"}, dir.path.u8string(), err);
+    check(cat != nullptr, "a line process starts");
+    std::string line;
+    check(cat && cat->write_line("{\"jsonrpc\":\"2.0\"}") && cat->read_line(line) && line == "{\"jsonrpc\":\"2.0\"}",
+          "a line goes in and comes back whole");
+    if (cat) cat->stop();
+    check(cat && !cat->read_line(line) && !cat->write_line("x"), "after stop() it reads its end and takes no more");
+    check(platform::LineProcess::start({"no-such-program-here"}, "", err) == nullptr &&
+              err.find("not installed") != std::string::npos,
+          "a program that is not installed says so");
 #endif
 }
 
@@ -1017,6 +1034,216 @@ static void audience_tests() {
     bus.unsubscribe(away);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Another agent over the Agent Client Protocol: an in-process stand-in that answers as `behave`
+// says, so the bridge is tested without a program or a model.
+
+class FakeAcpAgent : public AcpTransport {
+public:
+    using Behave = std::function<void(FakeAcpAgent &, const json & message)>;
+    explicit FakeAcpAgent(Behave b) : behave_(std::move(b)) {
+        thread_ = std::thread([this] {
+            json m;
+            while (next(m))
+                if (m.contains("method")) behave_(*this, m);
+        });
+    }
+    ~FakeAcpAgent() override {
+        stop();
+        if (thread_.joinable()) thread_.join();
+    }
+    bool write_line(const std::string & line) override {
+        if (line.find('\n') != std::string::npos) wire_ok = false;
+        // Seen as it arrives: the agent's own thread may be busy answering the prompt it cancels.
+        if (line.find("\"session/cancel\"") != std::string::npos) cancelled = true;
+        std::lock_guard<std::mutex> lk(m_);
+        if (closed_) return false;
+        in_.push_back(line);
+        cv_.notify_all();
+        return true;
+    }
+    bool read_line(std::string & line) override {
+        std::unique_lock<std::mutex> lk(m_);
+        cv_.wait(lk, [&] { return closed_ || !out_.empty(); });
+        if (out_.empty()) return false;
+        line = out_.front();
+        out_.pop_front();
+        return true;
+    }
+    void stop() override {
+        std::lock_guard<std::mutex> lk(m_);
+        closed_ = true;
+        cv_.notify_all();
+    }
+    // To the client.
+    void send(const json & m) {
+        std::lock_guard<std::mutex> lk(m_);
+        out_.push_back(m.dump());
+        cv_.notify_all();
+    }
+    void reply(const json & request, const json & result) {
+        send({{"jsonrpc", "2.0"}, {"id", request["id"]}, {"result", result}});
+    }
+    void update(const json & u) {
+        send({{"jsonrpc", "2.0"}, {"method", "session/update"}, {"params", {{"sessionId", "s1"}, {"update", u}}}});
+    }
+    // A request to the client, and its answer (the messages in between go to `behave`).
+    json ask(const std::string & method, const json & params) {
+        const int id = ++asked_;
+        send({{"jsonrpc", "2.0"}, {"id", 1000 + id}, {"method", method}, {"params", params}});
+        json m;
+        while (next(m)) {
+            if (m.contains("method")) {
+                behave_(*this, m);
+                continue;
+            }
+            if (m.value("id", 0) == 1000 + id) return m;
+        }
+        return json();
+    }
+    std::atomic<bool> wire_ok{true};
+    std::atomic<bool> cancelled{false};
+
+private:
+    bool next(json & m) {
+        std::unique_lock<std::mutex> lk(m_);
+        cv_.wait(lk, [&] { return closed_ || !in_.empty(); });
+        if (in_.empty()) return false;
+        m = json::parse(in_.front());
+        in_.pop_front();
+        return true;
+    }
+    Behave behave_;
+    std::mutex m_;
+    std::condition_variable cv_;
+    std::deque<std::string> in_, out_;
+    bool closed_ = false;
+    int asked_ = 0;
+    std::thread thread_;
+};
+
+// A rig whose conversations may use "fake", an agent that behaves as `b`.
+static std::unique_ptr<Rig> acp_rig(FakeAcpAgent::Behave b, FakeAcpAgent ** last = nullptr) {
+    return std::make_unique<Rig>(true, true, [b, last](AgentDeps & d) {
+        d.external_agents = json::array(
+            {{{"id", "fake"}, {"name", "Fake"}, {"acp", {{"command", {"fake-acp"}}, {"needs", {"fake-acp"}}}}},
+             {{"id", "absent"}, {"name", "Absent"}, {"acp", {{"command", {"nope"}}, {"needs", {"nope"}}}}}});
+        d.program_found = [](const std::string & p) { return p == "fake-acp"; };
+        d.start_agent = [b, last](const std::vector<std::string> &, const std::string &, std::string &) {
+            auto a = std::make_unique<FakeAcpAgent>(b);
+            if (last) *last = a.get();
+            return std::unique_ptr<AcpTransport>(std::move(a));
+        };
+    });
+}
+
+// The handshake every fake agent answers the same way.
+static bool handshake(FakeAcpAgent & a, const json & m) {
+    const std::string method = m.value("method", "");
+    if (method == "initialize") {
+        a.reply(m, {{"protocolVersion", 1}, {"agentCapabilities", {{"loadSession", false}}}});
+        return true;
+    }
+    if (method == "session/new") {
+        a.reply(m, {{"sessionId", "s1"}});
+        return true;
+    }
+    return false;
+}
+
+static void external_agent_tests() {
+    {
+        auto rig = acp_rig([](FakeAcpAgent &, const json &) {});
+        const json caps = rig->agent->capabilities();
+        check(caps["agents"].size() == 3 && caps["agents"][0].value("id", "") == "builtin" &&
+                  caps["agents"][1].value("available", false) && !caps["agents"][2].value("available", true) &&
+                  caps["agents"][2]["missing"][0] == "nope",
+              "acp: the built-in agent and each other one, with whether its program is installed");
+        check(rig->agent->knows_agent("fake") && !rig->agent->knows_agent("other"), "acp: agents are the catalog's");
+    }
+    {
+        std::string ws_path;
+        json write_answer, outside_answer;
+        auto rig = acp_rig([&](FakeAcpAgent & a, const json & m) {
+            if (handshake(a, m)) return;
+            if (m.value("method", "") != "session/prompt") return;
+            const std::string file = (fs::u8path(ws_path) / "a.txt").u8string();
+            a.update({{"sessionUpdate", "agent_message_chunk"}, {"content", {{"type", "text"}, {"text", "Working"}}}});
+            a.update({{"sessionUpdate", "tool_call"},
+                      {"toolCallId", "t1"},
+                      {"title", "Write a.txt"},
+                      {"kind", "edit"},
+                      {"status", "pending"},
+                      {"content", {{{"type", "diff"}, {"path", file}, {"oldText", nullptr}, {"newText", "hi\n"}}}}});
+            const json perm = a.ask("session/request_permission",
+                                    {{"sessionId", "s1"},
+                                     {"toolCall", {{"toolCallId", "t1"}}},
+                                     {"options",
+                                      {{{"optionId", "yes"}, {"name", "Allow"}, {"kind", "allow_once"}},
+                                       {{"optionId", "no"}, {"name", "Reject"}, {"kind", "reject_once"}}}}});
+            if (perm["result"]["outcome"].value("optionId", "") == "yes")
+                write_answer = a.ask("fs/write_text_file", {{"sessionId", "s1"}, {"path", file}, {"content", "hi\n"}});
+            outside_answer = a.ask("fs/read_text_file", {{"sessionId", "s1"}, {"path", "/etc/hosts"}});
+            a.update({{"sessionUpdate", "tool_call_update"}, {"toolCallId", "t1"}, {"status", "completed"}});
+            a.update({{"sessionUpdate", "agent_message_chunk"}, {"content", {{"type", "text"}, {"text", "Done."}}}});
+            a.reply(m, {{"stopReason", "end_turn"}});
+        });
+        ws_path = rig->ws.path.u8string();
+        const std::string c =
+            rig->store->create_conversation({{"mode", "ask"}, {"workspace", rig->workspace_id}, {"agent", "fake"}})
+                .value("id", "");
+        json item;
+        check(rig->agent->send(c, "write a file", false, false, item).ok(), "acp: a message starts the other agent");
+        check(rig->wait_state(c, "waiting"), "acp: its permission request is an approval card");
+        const json card = rig->items_of(c, "tool")[0];
+        check(card.value("diff", "").find("+hi") != std::string::npos && card.value("file", "") == "a.txt",
+              "acp: the card carries the agent's diff, relative to the workspace");
+        check(!fs::exists(rig->ws.path / "a.txt"), "acp: nothing is written before the yes");
+        check(rig->agent->approve(c, rig->waiting_item(c), true).ok(), "acp: the approval is taken");
+        check(rig->wait_done(c), "acp: the turn ends");
+        check(slurp(rig->ws.path / "a.txt") == "hi\n" && write_answer.contains("result"),
+              "acp: the agent's write lands in the workspace");
+        check(outside_answer.contains("error") && !outside_answer.contains("result"),
+              "acp: a read outside the workspace is refused");
+        const json said = rig->items_of(c, "assistant");
+        check(said.size() == 2 && said[0].value("text", "") == "Working" && said[1].value("text", "") == "Done." &&
+                  !said[1].value("streaming", true),
+              "acp: the agent's text, split around its tool call, as assistant items");
+        check(rig->items_of(c, "tool")[0].value("state", "") == "done", "acp: the tool item ends done");
+        check(rig->conv(c).value("acp_session", "") == "s1", "acp: the session is kept for the next message");
+        json again;
+        check(rig->agent->edit(c, item.value("id", ""), "other", false, false, again).status == 409,
+              "acp: another agent's session is not rewritten by an edit");
+    }
+    {
+        FakeAcpAgent * fake = nullptr;
+        auto rig = acp_rig(
+            [](FakeAcpAgent & a, const json & m) {
+                if (handshake(a, m)) return;
+                // A prompt is answered once it is cancelled, as an agent that was told to stop.
+                if (m.value("method", "") == "session/prompt") {
+                    a.update(
+                        {{"sessionUpdate", "agent_message_chunk"}, {"content", {{"type", "text"}, {"text", "..."}}}});
+                    for (int i = 0; i < 2000 && !a.cancelled; ++i)
+                        std::this_thread::sleep_for(5ms);
+                    a.reply(m, {{"stopReason", "cancelled"}});
+                }
+            },
+            &fake);
+        const std::string c =
+            rig->store->create_conversation({{"mode", "full"}, {"workspace", rig->workspace_id}, {"agent", "fake"}})
+                .value("id", "");
+        json item;
+        rig->agent->send(c, "go on forever", false, false, item);
+        for (int i = 0; i < 500 && rig->items_of(c, "assistant").empty(); ++i)
+            std::this_thread::sleep_for(2ms);
+        check(rig->agent->stop(c), "acp: a stop reaches the other agent");
+        check(fake && fake->cancelled && fake->wire_ok, "acp: as session/cancel, one message a line");
+        const json notices = rig->items_of(c, "notice");
+        check(!notices.empty() && notices.back().value("text", "") == "Stopped.", "acp: the turn reads stopped");
+    }
+}
+
 int main() {
     confinement_tests();
     classifier_tests();
@@ -1030,6 +1257,7 @@ int main() {
     store_tests();
     access_tests();
     audience_tests();
+    external_agent_tests();
     command_tests();
     loop_tests();
     if (failures) {

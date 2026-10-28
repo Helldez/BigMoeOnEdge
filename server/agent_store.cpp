@@ -189,13 +189,15 @@ json AgentStore::list_conversations() const {
 }
 
 bool conversation_reaches(const json & conv) {
-    return conv.value("workspace", json(nullptr)).is_string() || conv.value("route", "local") != "local";
+    return conv.value("workspace", json(nullptr)).is_string() || conv.value("route", "local") != "local" ||
+           conv.value("agent", "builtin") != "builtin";
 }
 
 bool network_may_not_set(const json & fields) {
     return (fields.contains("workspace") && !fields["workspace"].is_null()) ||
            (fields.contains("route") && fields["route"] != "local") ||
-           (fields.contains("mode") && fields["mode"] == "full");
+           (fields.contains("mode") && fields["mode"] == "full") ||
+           (fields.contains("agent") && fields["agent"] != "builtin");
 }
 
 bool AgentStore::reaches(const std::string & id) const {
@@ -219,6 +221,7 @@ json AgentStore::create_conversation(json fields) {
            {"workspace", fields.value("workspace", json(nullptr))},
            {"mode", fields.value("mode", std::string("ask"))},
            {"route", fields.value("route", std::string("local"))},
+           {"agent", fields.value("agent", std::string("builtin"))},
            {"state", "idle"},
            {"created", t},
            {"updated", t},

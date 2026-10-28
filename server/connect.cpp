@@ -63,6 +63,25 @@ void merge_into(json & dst, const json & src) {
 
 } // namespace
 
+json acp_agents(const json & catalog) {
+    json out = json::array();
+    if (!catalog.is_object() || !catalog.value("clients", json()).is_array()) return out;
+    for (const json & c : catalog["clients"]) {
+        if (!c.is_object() || !c.value("acp", json()).is_object()) continue;
+        const std::string id = c.value("id", ""), name = c.value("name", "");
+        const json command = c["acp"].value("command", json());
+        if (id.empty() || name.empty() || id == "builtin" || !command.is_array() || command.empty()) continue;
+        bool strings = true;
+        for (const json & a : command)
+            strings = strings && a.is_string() && !a.get<std::string>().empty();
+        if (!strings) continue;
+        json needs = c["acp"].value("needs", json::array({command[0]}));
+        if (!needs.is_array()) needs = json::array({command[0]});
+        out.push_back({{"id", id}, {"name", name}, {"acp", {{"command", command}, {"needs", needs}}}});
+    }
+    return out;
+}
+
 std::string fill_template(const std::string & text, const ConnectFacts & f, bool quoted) {
     const auto v = [&](const std::string & s) { return quoted ? escape(s) : s; };
     std::string s = text;

@@ -28,6 +28,8 @@ import {
   type TaskDraft,
   type UpdateDownloaded,
   type UpdateInfo,
+  type AgentCapabilities,
+  isAgentCapabilities,
   type Workspace,
 } from './agent';
 import { isObject } from './guards';
@@ -39,6 +41,7 @@ export interface NewConversation {
   workspace?: string | null;
   mode?: Mode;
   route?: string;
+  agent?: string;
   title?: string;
   items?: { kind: 'user' | 'assistant'; text: string; reasoning?: string }[];
 }
@@ -50,6 +53,7 @@ export interface PreviewFile {
 }
 
 export const agentApi = {
+  capabilities: () => request<AgentCapabilities>('GET', 'api/agent', undefined, isAgentCapabilities),
   workspaces: () => request<Workspace[]>('GET', 'api/workspaces', undefined, isListOf<Workspace>(isWorkspace)),
   addWorkspace: (path: string, name?: string) =>
     request<Workspace>('POST', 'api/workspaces', name ? { path, name } : { path }, isWorkspace),
@@ -59,7 +63,7 @@ export const agentApi = {
   createConversation: (body: NewConversation) =>
     request<ConversationSummary>('POST', 'api/conversations', body, isConversationSummary),
   conversation: (id: string) => request<Conversation>('GET', `api/conversations/${seg(id)}`, undefined, isConversation),
-  patchConversation: (id: string, body: { title?: string; mode?: Mode; route?: string; workspace?: string | null }) =>
+  patchConversation: (id: string, body: { title?: string; mode?: Mode; route?: string; workspace?: string | null; agent?: string }) =>
     request<unknown>('PATCH', `api/conversations/${seg(id)}`, body),
   deleteConversation: (id: string) => request<unknown>('DELETE', `api/conversations/${seg(id)}`),
   send: (id: string, text: string, think?: boolean) =>

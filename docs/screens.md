@@ -107,7 +107,12 @@ conversation with no folder.
 - **Helpers and notices.** A helper the agent handed part of the job to is a row with its task, its
   state, its summary when done, and a way into its own conversation. A notice says in plain words
   why something did not happen.
-- **The composer.** The text (Enter sends, Shift+Enter starts a line), and chips: the **folder** (none,
+- **The composer.** The text (Enter sends, Shift+Enter starts a line), and chips: the **agent**,
+  where the server offers more than its own (a computer that runs programs; `GET /api/agent`): the
+  built-in agent, or OpenCode, Claude Code, Codex or Pi, each saying whether it is installed and
+  which program it needs when it is not; it is chosen before the first message and shown as a plain
+  label after it, another agent needs a folder (the line under the composer says so), and with
+  another agent the model chip is not shown, since that agent uses its own. Then the **folder** (none,
   one of the saved workspaces, or Add a folder: the system's folder dialog in the desktop app, a
   typed path elsewhere), the **mode** (Ask first, Read only, Full access, each with a line saying
   what it allows; Full access warns above the composer while a folder is set), the **model**

@@ -130,6 +130,13 @@ export const en = {
   'mode.full.desc': 'Changes files and runs commands without asking. Use it only in a folder you can restore.',
   'mode.full.warning': 'Full access: the agent changes files and runs commands in this folder without asking.',
 
+  'agent.label': 'Agent',
+  'agent.builtin': 'Built-in agent',
+  'agent.builtin.desc': 'This app\'s own agent, with the model loaded here.',
+  'agent.external.desc': 'Runs on this computer and does the work in the folder; uses the model set up in it.',
+  'agent.missing': 'Not installed here: needs {programs}. See Connect apps.',
+  'agent.needsFolder': '{name} works in a folder: pick one first.',
+  'agent.locked': 'The agent is chosen before the first message.',
   'route.label': 'Model',
   'route.local': 'Local model',
   'route.local.desc': 'The model loaded on this computer. Nothing leaves it.',

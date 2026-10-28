@@ -21,6 +21,11 @@ struct ConnectFacts {
 // `catalog` is the parsed clients.json; an entry missing its id, name or snippet is left out.
 json connect_list(const json & catalog, const ConnectFacts & facts);
 
+// The catalog's coding agents a conversation may use over the Agent Client Protocol: the entries
+// with an `acp` whose command is a non-empty list of strings, as {id, name, acp: {command, needs}}
+// (`needs` defaults to the command's program).
+json acp_agents(const json & catalog);
+
 // `text` with the catalog's {{placeholders}} replaced. `quoted`: each value is escaped for a
 // double-quoted string (TOML and JSON read `\"` and `\\` alike).
 std::string fill_template(const std::string & text, const ConnectFacts & facts, bool quoted);

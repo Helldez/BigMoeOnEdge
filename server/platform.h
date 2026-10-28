@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cstddef>
 #include <ctime>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -100,5 +101,38 @@ CommandResult run_command(const std::string & command,
                           int timeout_s,
                           size_t max_output,
                           const std::atomic<bool> & stop);
+
+// The full path of `program` as the system would find it on PATH (with PATHEXT's extensions on
+// Windows), or "" when it is not there. A name with a separator is a path and comes back as is when
+// it exists.
+std::string find_program(const std::string & program);
+
+// A program the server talks to one line at a time on its stdin and stdout: a coding agent speaking
+// the Agent Client Protocol (docs/agent.md). It and everything it starts run as one process group
+// (a job on Windows), ended whole by stop() or the destructor, so an agent never outlives the
+// conversation that started it. Its stderr is discarded. Not on Android or iOS (can_run_commands()).
+class LineProcess {
+public:
+    // `argv[0]` is found with find_program(); a Windows batch file (`npx.cmd`) runs through cmd.exe.
+    // nullptr with `err` set when it cannot start.
+    static std::unique_ptr<LineProcess>
+    start(const std::vector<std::string> & argv, const std::string & cwd, std::string & err);
+    ~LineProcess();
+    LineProcess(const LineProcess &) = delete;
+    LineProcess & operator=(const LineProcess &) = delete;
+
+    // One line, '\n' appended. False once the program's stdin is closed. Safe from any thread.
+    bool write_line(const std::string & line);
+    // The next line of its stdout, without the line break. Blocks; false at the end of its output
+    // (it ended, or stop() was called). One reader at a time.
+    bool read_line(std::string & line);
+    // Ends the program and what it started; read_line() then returns false. Safe from any thread.
+    void stop();
+
+private:
+    struct Impl;
+    explicit LineProcess(std::unique_ptr<Impl> impl);
+    std::unique_ptr<Impl> impl_;
+};
 
 } // namespace bmoe::server::platform

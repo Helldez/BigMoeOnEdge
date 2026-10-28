@@ -6,7 +6,7 @@
   import Dialog from '../Dialog.svelte';
   import Icon from '../Icon.svelte';
   import Menu, { type MenuItem } from '../Menu.svelte';
-  import { MODES, type Mode } from '../../lib/agent';
+  import { BUILTIN_AGENT, MODES, type Mode } from '../../lib/agent';
   import { desktop, isDesktop } from '../../lib/desktop';
   import { agent } from '../../stores/agent.svelte';
   import { server } from '../../stores/server.svelte';
@@ -21,14 +21,43 @@
   let pathText = $state('');
   let pathError = $state('');
 
+  // Who does the work (GET /api/agent): offered where more than the built-in agent can run, and
+  // chosen before the first message, since another agent would not know what was said.
+  let agentChoices = $derived(agent.caps.agents);
+  let chosen = $derived(agentChoices.find((a) => a.id === agent.agentId) ?? null);
+  let external = $derived(agent.agentId !== BUILTIN_AGENT);
+  let agentLocked = $derived(agent.items.length > 0);
+  let agentItems = $derived<MenuItem[]>(
+    agentChoices.map((a) => ({
+      value: a.id,
+      label: a.id === BUILTIN_AGENT ? t('agent.builtin') : a.name,
+      description: !a.available
+        ? t('agent.missing', { programs: (a.missing ?? []).join(', ') })
+        : a.id === BUILTIN_AGENT
+          ? t('agent.builtin.desc')
+          : t('agent.external.desc'),
+      tone: a.available ? ('' as const) : ('err' as const),
+    })),
+  );
+  let agentLabel = $derived(chosen ? (chosen.id === BUILTIN_AGENT ? t('agent.builtin') : chosen.name) : t('agent.builtin'));
+  let needsFolder = $derived(external && !agent.workspace);
+
+  function pickAgent(id: string): void {
+    const a = agentChoices.find((x) => x.id === id);
+    if (!a || !a.available || agentLocked) return;
+    agent.setAgent(id);
+  }
+
   let local = $derived(agent.route === 'local');
   let model = $derived(server.info?.model ?? null);
   let canThink = $derived(local && !!model && model.think_ctl !== 'none');
   let thinkDefault = $derived(server.config?.values?.think === false ? false : true);
   let thinking = $derived(think ?? thinkDefault);
   let localReady = $derived(server.ready);
-  let blocked = $derived(local && !localReady);
-  let canSend = $derived(!blocked && !agent.sending && !agent.running && text.trim() !== '' && (!choose || options.trim() !== ''));
+  let blocked = $derived(!external && local && !localReady);
+  let canSend = $derived(
+    !blocked && !needsFolder && !agent.sending && !agent.running && text.trim() !== '' && (!choose || options.trim() !== ''),
+  );
 
   let ws = $derived(agent.workspaces.find((w) => w.id === agent.workspace) ?? null);
   let wsItems = $derived<MenuItem[]>([
@@ -43,6 +72,7 @@
     ...agent.providers.flatMap((p) => p.models.map((m) => ({ value: `${p.id}/${m}`, label: m, description: t('route.provider.desc', { name: p.name }) }))),
   ]);
   let routeLabel = $derived(routeItems.find((r) => r.value === agent.route)?.label ?? agent.route);
+
 
   async function send() {
     if (!canSend) return;
@@ -129,6 +159,18 @@
       <textarea id="composer-options" class="options" rows="3" placeholder={t('choose.options.placeholder')} bind:value={options}></textarea>
     {/if}
     <div class="bar">
+      {#if agentChoices.length > 1}
+        {#if agentLocked}
+          <span class="chip static" title={t('agent.locked')}><Icon name="spark" size={15} /><span class="chip-text">{agentLabel}</span></span>
+        {:else}
+          <Menu items={agentItems} value={agent.agentId} label={t('agent.label')} onselect={pickAgent}>
+            {#snippet trigger()}
+              <Icon name="spark" size={15} /><span class="chip-text">{agentLabel}</span>
+            {/snippet}
+          </Menu>
+        {/if}
+      {/if}
+      {#if agent.caps.tools}
       <Menu items={wsItems} value={agent.workspace ?? ''} label={t('workspace.label')} onselect={(v) => agent.setWorkspace(v || null)}>
         {#snippet trigger()}
           <Icon name="folder" size={15} /><span class="chip-text">{ws ? ws.name : t('workspace.none.short')}</span>
@@ -142,11 +184,14 @@
           <Icon name={agent.mode === 'full' ? 'alert' : agent.mode === 'read_only' ? 'eye' : 'shield'} size={15} /><span class="chip-text">{t(`mode.${agent.mode}`)}</span>
         {/snippet}
       </Menu>
-      <Menu items={routeItems} value={agent.route} label={t('route.label')} onselect={(v) => agent.setRoute(v)}>
-        {#snippet trigger()}
-          <Icon name="chip" size={15} /><span class="chip-text">{routeLabel}</span>
-        {/snippet}
-      </Menu>
+      {/if}
+      {#if !external}
+        <Menu items={routeItems} value={agent.route} label={t('route.label')} onselect={(v) => agent.setRoute(v)}>
+          {#snippet trigger()}
+            <Icon name="chip" size={15} /><span class="chip-text">{routeLabel}</span>
+          {/snippet}
+        </Menu>
+      {/if}
       {#if canThink}
         <button type="button" class="toggle" aria-pressed={thinking} title={t('composer.think.hint')} onclick={() => (think = !thinking)}>
           <Icon name="brain" size={15} />{t('composer.think')}
@@ -168,6 +213,9 @@
   {#if blocked}
     <p class="hint muted small">{t('composer.noModel')} <a href="#/models">{t('nav.models')}</a></p>
   {/if}
+  {#if needsFolder}
+    <p class="hint muted small">{t('agent.needsFolder', { name: agentLabel })}</p>
+  {/if}
 </form>
 
 <Dialog bind:open={pathOpen} title={t('workspace.add')}>
@@ -184,6 +232,20 @@
 </Dialog>
 
 <style>
+  /* The agent once chosen: shown like a chip, not a control. */
+  .static {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s1);
+    min-height: 2rem;
+    padding: 0 var(--s2);
+    border: 1px solid var(--line);
+    border-radius: var(--pill);
+    font-size: 0.8125rem;
+    font-weight: 550;
+    color: var(--muted);
+    max-width: 13rem;
+  }
   .composer {
     display: flex;
     flex-direction: column;
