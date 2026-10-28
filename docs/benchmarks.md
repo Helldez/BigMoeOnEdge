@@ -536,6 +536,14 @@ handed back so the kernel does not swap the cache out): **19.3-20.8 tok/s**, 27 
 with its expert profile and its drafting, 36-67 (50-66 over 1024): it computes the experts its card
 does not hold on the CPU, where this engine uploads each one over the bus.
 
+On a rented 192 GB AMD datacenter card (MI300X class) through ROCm, the first run of the HIP
+backend, Qwen3.8-Flash-Next Q2_0 fits the card whole: `--auto` put every layer on it and decoded at
+**53.4 tok/s** over 1024 tokens, against 55.6-55.8 for llama.cpp's own `llama-completion` from the
+same submodule; long prompts prefilled at 2.1-2.3k tok/s
+([bench-data/2026-10-28-rented-rocm](bench-data/2026-10-28-rented-rocm/README.md), which also has the
+build line: ROCm's clang hangs on ggml-cpu's AMX kernels, so the host code builds with gcc). Resident,
+nothing streams, so this measures the backend and the engine's overhead, not the streamer.
+
 On the last file llama.cpp's own offload (`-ngl 99 --n-cpu-moe 43`, every expert on the cores, the
 file memory-mapped) decoded at 18.5 tok/s from the same cold page cache: the whole file fits the
 control group's page cache, so it ran resident where our plan kept a fixed 18 GB margin and

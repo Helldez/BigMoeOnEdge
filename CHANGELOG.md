@@ -6,7 +6,27 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+- **The first run on ROCm: a rented 192 GB AMD datacenter card, the model resident**
+  (`docs/bench-data/2026-10-28-rented-rocm/`, `docs/benchmarks.md`, `docs/platforms.md`, the README
+  table). Qwen3.8-Flash-Next Q2_0 fits the card whole: `--auto` decodes 53.4 tok/s over 1024 tokens
+  against llama.cpp's own 55.6-55.8, and long prompts prefill at 2.1-2.3k tok/s. With ROCm's clang
+  the build hangs on ggml-cpu's AMX kernels; the bench notes give the line that builds the host code
+  with gcc.
+
+### Removed
+- **The Obtainium link for Android.** `README.md` (and its translations), `examples/android/README.md`
+  and `docs/platforms.md` no longer point to an Obtainium entry: its redirect page depends on the
+  browser handing the link to the app, which often does nothing, and Android's developer verification
+  (from 2026-2027) makes a third-party installer a second thing that has to keep working. The APK is
+  installed from the release page, as before.
+
 ### Fixed
+- **`bmoe-server`'s launch flags outrank saved settings, as `--help` says** (#435). The settings
+  layers applied a value saved by an earlier run after the flags of this one, so
+  `bmoe-server -m A.gguf -c 32768` loaded the model and context `settings.json` held instead. The
+  order is now defaults < plan < saved values < launch flags; a value set from a client while the
+  server runs still replaces the flag's, as before.
 - **An answer cut by a full context is said in the server's log** (#436). A request that fits is
   served with only the room its prompt left; an agent that summarizes its conversation near the limit
   then got a cut or empty summary and reported only that compaction failed, while the server logged

@@ -101,17 +101,15 @@ choisissez un modèle sous **Models**.
   l'arrêter.
 - **Linux** : `chmod +x BigMoeOnEdge-<version>-linux-x86_64.AppImage` (ou `-linux-aarch64`) puis lancez-le.
   Depuis un gestionnaire de fichiers, il s'ouvre dans une fenêtre de terminal ; fermez-la pour l'arrêter.
-- **Android** : ajoutez l'application à [Obtainium][obtainium], qui installe chaque version comme mise à
-  jour, ou installez `app-dev-release.apk` à la main. **Settings → Serve on the network** partage le
-  moteur du téléphone, avec une clé.
+- **Android** : installez `app-dev-release.apk` depuis la page de la version ; chaque version s'installe
+  par-dessus la précédente. **Settings → Serve on the network** partage le moteur du téléphone, avec
+  une clé.
 
 **iOS.** Compilez l'application avec Xcode depuis [examples/ios](examples/ios/README.md). Expérimental.
 
 **Archives.** L'archive `bmoe-desktop` contient la même application sous forme de dossier, pour les
 installations scriptées : extrayez-la et lancez `bmoe-server --open`. L'archive `bmoe-cli` contient le
 moteur en ligne de commande.
-
-[obtainium]: https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22io.bigmoeonedge.example.dev%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FHelldez%2FBigMoeOnEdge%22%2C%22author%22%3A%22Helldez%22%2C%22name%22%3A%22BigMoeOnEdge%22%2C%22additionalSettings%22%3A%22%7B%5C%22apkFilterRegEx%5C%22%3A%5C%22-release%5C%5C%5C%5C.apk%24%5C%22%7D%22%7D
 
 **Ligne de commande.**
 

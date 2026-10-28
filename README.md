@@ -83,6 +83,7 @@ hardware runs faster.
 | Qwen3.8-Flash-Next 125B | 66 GB | 16 GB desktop GPU, 32 GB RAM | 2.1× | 19-21 tok/s; 27 from the 768th token |
 | Qwen3.8-Flash-Next 125B | 66 GB | 24 GB desktop GPU, 89 GiB RAM | 0.7× | 70 tok/s |
 | Qwen3.6-35B-A3B | 21 GB | 24 GB desktop GPU | resident | 217 tok/s |
+| Qwen3.8-Flash-Next 125B | 66 GB | 192 GB datacenter AMD GPU (ROCm) | resident | 53 tok/s; llama.cpp 56 |
 
 Configurations and method: [docs/benchmarks.md](docs/benchmarks.md). To add a machine, run
 `scripts/bench-report.sh /path/to/model.gguf` and paste the table into a
@@ -101,16 +102,13 @@ model under **Models**.
   No administrator rights; start BigMoeOnEdge from the Start menu, and close its window to stop it.
 - **Linux**: `chmod +x BigMoeOnEdge-<version>-linux-x86_64.AppImage` (or `-linux-aarch64`) and run it.
   Started from a file manager it opens in a terminal window; close the window to stop it.
-- **Android**: add the app to [Obtainium][obtainium], which then installs every release as an
-  update, or install `app-dev-release.apk` by hand. **Settings → Serve on the network** shares the
-  phone's engine, with a key.
+- **Android**: install `app-dev-release.apk` from the release page; each release installs over the
+  previous one. **Settings → Serve on the network** shares the phone's engine, with a key.
 
 **iOS.** Build the app with Xcode from [examples/ios](examples/ios/README.md). Experimental.
 
 **Archives.** The `bmoe-desktop` archive holds the same app as a folder, for scripted installs:
 extract it and run `bmoe-server --open`. The `bmoe-cli` archive holds the command-line engine.
-
-[obtainium]: https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22io.bigmoeonedge.example.dev%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FHelldez%2FBigMoeOnEdge%22%2C%22author%22%3A%22Helldez%22%2C%22name%22%3A%22BigMoeOnEdge%22%2C%22additionalSettings%22%3A%22%7B%5C%22apkFilterRegEx%5C%22%3A%5C%22-release%5C%5C%5C%5C.apk%24%5C%22%7D%22%7D
 
 **Command line.**
 
