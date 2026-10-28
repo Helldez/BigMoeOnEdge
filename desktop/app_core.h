@@ -43,6 +43,11 @@ bool merge_prefs(DesktopPrefs & p, const json & patch, std::string & err);
 DesktopPrefs load_prefs(const std::string & path, std::string & warning);
 bool save_prefs(const std::string & path, const DesktopPrefs & p, std::string & err);
 
+// Whether a server can be started on `port`: nothing answers there, and this process can bind it.
+// Leaves nothing bound: a socket left listening would share the port with the server started on it
+// (SO_REUSEPORT), and the connections that land on it would wait forever.
+bool port_is_free(int port);
+
 // The first port from `preferred` on that `is_free` accepts, trying kPortTries; 0 when none is.
 int pick_port(int preferred, const std::function<bool(int)> & is_free);
 

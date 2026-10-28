@@ -97,7 +97,7 @@ endif()
 # bridge answers, which file runs as an update. No window, no server.
 if(TARGET bmoe_desktop_core)
     add_executable(bmoe_desktop_test desktop_test.cpp)
-    target_link_libraries(bmoe_desktop_test PRIVATE bmoe_desktop_core)
+    target_link_libraries(bmoe_desktop_test PRIVATE bmoe_desktop_core cpp-httplib)
     add_test(NAME desktop_rules COMMAND bmoe_desktop_test)
 endif()
 

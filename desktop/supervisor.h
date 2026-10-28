@@ -20,9 +20,6 @@ namespace bmoe::desktop {
 // checks a freshly installed binary and a GPU backend compiles its kernels.
 inline constexpr std::chrono::seconds kServerStartTimeout{90};
 
-// Whether nothing listens on `port` on loopback and this process could listen there.
-bool port_is_free(int port);
-
 class ServerSupervisor {
 public:
     // `on_exit` is told the exit status when the server ends without being asked to, from a thread

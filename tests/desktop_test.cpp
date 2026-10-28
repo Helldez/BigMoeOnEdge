@@ -6,11 +6,14 @@
 
 #include "app_core.h"
 
+#include <cpp-httplib/httplib.h>
+
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <set>
 #include <string>
+#include <thread>
 
 namespace fs = std::filesystem;
 using namespace bmoe::desktop;
@@ -64,6 +67,28 @@ static void port_tests() {
     check(pick_port(8765, [](int) { return true; }) == 8765, "port: the preferred one when free");
     check(pick_port(8765, [](int) { return false; }) == 0, "port: none free in reach, none");
     check(pick_port(65535, [](int p) { return p != 65535; }) == 0, "port: never past 65535");
+}
+
+// The check leaves nothing bound: a socket it left listening would share the port with the server
+// started on it, and the connections that land on it would never be answered.
+static void port_check_tests() {
+    int port = 0;
+    {
+        httplib::Server probe;
+        port = probe.bind_to_any_port("127.0.0.1");
+        probe.stop();
+    }
+    check(port > 0, "port check: a free port to try");
+    check(port_is_free(port), "port check: a free port is free");
+    check(port_is_free(port), "port check: still free after a check, so the check bound nothing it kept");
+    httplib::Server held;
+    held.Get("/", [](const httplib::Request &, httplib::Response & res) { res.set_content("x", "text/plain"); });
+    check(held.bind_to_port("127.0.0.1", port), "port check: a server takes the port");
+    std::thread serve([&] { held.listen_after_bind(); });
+    held.wait_until_ready();
+    check(!port_is_free(port), "port check: a port a server answers on is not free");
+    held.stop();
+    serve.join();
 }
 
 static void origin_tests() {
@@ -129,6 +154,7 @@ static void launch_tests() {
 int main() {
     prefs_tests();
     port_tests();
+    port_check_tests();
     origin_tests();
     update_file_tests();
     launch_tests();

@@ -46,20 +46,6 @@ bool answers_info(int port) {
 
 } // namespace
 
-bool port_is_free(int port) {
-    // Something answering there (on any address the port is bound on) is a no; so is a port this
-    // process cannot bind, whoever holds it.
-    {
-        httplib::Client c("127.0.0.1", port);
-        c.set_connection_timeout(kProbeTimeoutS, 0);
-        c.set_read_timeout(kProbeTimeoutS, 0);
-        const auto res = c.Get("/");
-        if (res || res.error() != httplib::Error::Connection) return false;
-    }
-    httplib::Server s;
-    return s.bind_to_port("127.0.0.1", port);
-}
-
 struct ServerSupervisor::Child {
     subprocess_s proc{};
 };

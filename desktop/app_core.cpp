@@ -1,5 +1,7 @@
 #include "app_core.h"
 
+#include <cpp-httplib/httplib.h>
+
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -86,6 +88,24 @@ bool save_prefs(const std::string & path, const DesktopPrefs & p, std::string & 
         return false;
     }
     return true;
+}
+
+bool port_is_free(int port) {
+    constexpr time_t kProbeTimeoutS = 1;
+    // Something answering there (on any address the port is bound on) is a no; so is a port this
+    // process cannot bind, whoever holds it.
+    {
+        httplib::Client c("127.0.0.1", port);
+        c.set_connection_timeout(kProbeTimeoutS, 0);
+        c.set_read_timeout(kProbeTimeoutS, 0);
+        const auto res = c.Get("/");
+        if (res || res.error() != httplib::Error::Connection) return false;
+    }
+    httplib::Server s;
+    const bool bound = s.bind_to_port("127.0.0.1", port);
+    // httplib's destructor does not close a socket bound without listen_after_bind(); stop() does.
+    s.stop();
+    return bound;
 }
 
 int pick_port(int preferred, const std::function<bool(int)> & is_free) {
