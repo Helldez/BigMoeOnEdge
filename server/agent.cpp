@@ -470,6 +470,10 @@ bool Agent::conversation(const std::string & id, json & out) const {
     return true;
 }
 
+json Agent::capabilities() const {
+    return {{"tools", d_.tools}, {"commands", d_.tools && d_.can_run_commands}};
+}
+
 json Agent::list_conversations() const {
     json list = d_.store->list_conversations();
     for (json & c : list)
@@ -545,6 +549,7 @@ std::vector<std::pair<Skill, bool>> Agent::skills(const std::string & workspace_
 // ---- requests to the model ----
 
 std::string Agent::system_prompt(const json & conv, bool remote) const {
+    if (!d_.tools) return ""; // plain chat: the model as it is, as before the agent
     const std::string ws = workspace_path(conv);
     std::string s = "You are the agent of BigMoeOnEdge, working for the person at this computer. Today is " + today() +
                     ". The computer runs " + d_.os_name + ".\n";
@@ -573,6 +578,7 @@ std::string Agent::system_prompt(const json & conv, bool remote) const {
 }
 
 std::vector<ChatTool> Agent::tools_for(const json & conv, bool remote, int depth) const {
+    if (!d_.tools) return {};
     const std::string ws = workspace_path(conv);
     const std::string mode = conv.value("mode", "ask");
     bool any_skill = false;
@@ -609,7 +615,7 @@ std::vector<ChatTool> Agent::tools_for(const json & conv, bool remote, int depth
 ChatRequest
 Agent::build_request(const json & conv, const std::string & system, bool remote, int depth, bool think) const {
     ChatRequest req;
-    req.messages.push_back({"system", system});
+    if (!system.empty()) req.messages.push_back({"system", system});
     const json & items = conv["items"];
     // What each call got back, by its id: a tool item's result, or a helper's summary.
     std::map<std::string, std::string> answers;

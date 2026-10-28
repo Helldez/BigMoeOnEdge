@@ -136,6 +136,7 @@ struct Options {
     std::string api_key_file; // --api-key-file: the key, read at start, never on the command line
     bool no_api_key = false;  // listen beyond loopback with no key, on purpose
     bool models_only = false; // every client, local ones too, names models in the models folder only
+    bool chat_only = false;   // conversations are plain chat: no agent tools, workspaces or tasks
     bool open_browser = false;
     bool isolated_probes = true;                  // the planner asks each device in a child process first
     std::string hf_endpoint = kDefaultHfEndpoint; // where repositories are listed and fetched from
@@ -184,6 +185,7 @@ void print_usage(const char * argv0) {
                 "  --no-api-key         listen beyond loopback with no key, on a network you trust\n"
                 "  --models-only        local clients too may only open models from the folders models\n"
                 "                       are listed from (clients on the network always are)\n"
+                "  --chat-only          conversations are plain chat: no agent tools, workspaces or tasks\n"
                 "  --no-isolated-probes the planner probes compute devices in this process instead of a child each\n"
                 "  --hf-endpoint URL    where Hugging Face repositories are read from (default %s; a mirror)\n"
                 "  --feed-url URL       the signed release feed backend packs and updates are read from\n"
@@ -243,6 +245,8 @@ int parse_args(int argc, char ** argv, Options & o) {
             o.no_api_key = true;
         else if (a == "--models-only")
             o.models_only = true;
+        else if (a == "--chat-only")
+            o.chat_only = true;
         else if (a == "--no-isolated-probes")
             o.isolated_probes = false;
         else if (a == "--probe-device")
@@ -1410,6 +1414,7 @@ int run(int argc, char ** argv, const Embedding & embedding) {
         deps.net = app.net.get();
         deps.bundled_skills_dir = o.skills_dir.empty() ? (exe / "skills").u8string() : o.skills_dir;
         deps.user_skills_dir = (fs::u8path(data_dir) / "skills").u8string();
+        deps.tools = !o.chat_only;
         deps.can_run_commands = platform::can_run_commands();
         deps.os_name = platform::os_name();
         app.agent = std::make_unique<agent::Agent>(std::move(deps));
@@ -1469,7 +1474,7 @@ int run(int argc, char ** argv, const Embedding & embedding) {
         if (!origin.empty() && origin.back() == '/') origin.pop_back();
         app.agent_routes.origin = origin;
     }
-    app.agent->start_scheduler();
+    if (!o.chat_only) app.agent->start_scheduler();
     std::printf("bmoe-server %s listening on %s\n", version(), url.c_str());
     std::printf("  data: %s\n  models: %s\n  ui: %s\n", data_dir.c_str(), models_dir.c_str(),
                 ui_dir.empty() ? "(not built)" : ui_dir.c_str());

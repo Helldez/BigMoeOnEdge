@@ -55,6 +55,13 @@ bool local(const httplib::Request & req) {
     return is_loopback_peer(req.remote_addr);
 }
 
+// A server started with --chat-only takes no agent work: no workspaces, tasks or tool runs.
+bool refuse_chat_only(const AgentRouteDeps & d, httplib::Response & res) {
+    if (d.agent->capabilities().value("tools", true)) return false;
+    send_error(res, 409, "this server runs plain chat only (--chat-only): it has no agent", "chat_only");
+    return true;
+}
+
 void refuse_remote(httplib::Response & res) {
     send_error(res, 403,
                "only a client on this computer may do this: it reaches this computer's files, processes or keys",
@@ -202,10 +209,14 @@ bool read_task(const json & body, const AgentStore & store, json & task, std::st
 } // namespace
 
 void register_agent_routes(httplib::Server & svr, const AgentRouteDeps & d) {
+    svr.Get("/api/agent",
+            [&d](const httplib::Request &, httplib::Response & res) { send_json(res, d.agent->capabilities()); });
+
     // ---- workspaces ----
     svr.Get("/api/workspaces",
             [&d](const httplib::Request &, httplib::Response & res) { send_json(res, d.store->workspaces()); });
     svr.Post("/api/workspaces", [&d](const httplib::Request & req, httplib::Response & res) {
+        if (refuse_chat_only(d, res)) return;
         json body;
         if (!body_of(req, res, body)) return;
         json w;
@@ -473,10 +484,11 @@ void register_agent_routes(httplib::Server & svr, const AgentRouteDeps & d) {
         d.bus->publish("task", view, EventBus::Audience::LocalOnly);
         send_json(res, view);
     };
-    svr.Post("/api/tasks",
-             [put_task](const httplib::Request & req, httplib::Response & res) { put_task(req, res, ""); });
-    svr.Put(R"(/api/tasks/([^/]+))", [put_task](const httplib::Request & req, httplib::Response & res) {
-        put_task(req, res, req.matches[1].str());
+    svr.Post("/api/tasks", [&d, put_task](const httplib::Request & req, httplib::Response & res) {
+        if (!refuse_chat_only(d, res)) put_task(req, res, "");
+    });
+    svr.Put(R"(/api/tasks/([^/]+))", [&d, put_task](const httplib::Request & req, httplib::Response & res) {
+        if (!refuse_chat_only(d, res)) put_task(req, res, req.matches[1].str());
     });
     svr.Delete(R"(/api/tasks/([^/]+))", [&d](const httplib::Request & req, httplib::Response & res) {
         if (!d.store->remove_task(req.matches[1].str())) return send_error(res, 404, "no such task", "not_found");
@@ -484,6 +496,7 @@ void register_agent_routes(httplib::Server & svr, const AgentRouteDeps & d) {
         send_json(res, json{{"ok", true}});
     });
     svr.Post(R"(/api/tasks/([^/]+)/run)", [&d](const httplib::Request & req, httplib::Response & res) {
+        if (refuse_chat_only(d, res)) return;
         const Refusal r = d.agent->run_task(req.matches[1].str());
         if (!r.ok()) return send_refusal(res, r);
         json t;

@@ -168,7 +168,7 @@ struct Rig {
     std::atomic<int> commands{0};
     std::string workspace_id;
 
-    explicit Rig(bool load = true) {
+    explicit Rig(bool load = true, bool tools = true) {
         host = std::make_unique<EngineHost>(*bus, [this](const SessionConfig &, std::string &) {
             return std::unique_ptr<HostedSession>(new ScriptedSession(script));
         });
@@ -188,6 +188,7 @@ struct Rig {
                               const std::function<bool()> & w) { return host->chat(r, t, w); };
         d.bundled_skills_dir = (data.path / "bundled").u8string();
         d.user_skills_dir = (data.path / "skills").u8string();
+        d.tools = tools;
         d.can_run_commands = true;
         d.run_command = [this](const std::string & cmd, const std::string &, int, size_t, const std::atomic<bool> &) {
             ++commands;
@@ -487,6 +488,20 @@ static void loop_tests() {
         // No network in this rig: web tools are not offered, so the call is an error, not a card.
         check(rig->wait_done(c), "a tool the conversation is not offered ends as an error item");
         check(rig->items_of(c, "tool")[0].value("state", "") == "error", "with state error");
+    }
+    {
+        // --chat-only: the model gets the conversation alone, as plain chat did before the agent.
+        auto rig = std::make_unique<Rig>(true, false);
+        check(!rig->agent->capabilities().value("tools", true) && !rig->agent->capabilities().value("commands", true),
+              "chat only: the server says it has no agent");
+        const std::string c = rig->conversation("full");
+        rig->say({{"Hello.", {}}});
+        json item;
+        rig->agent->send(c, "hi", false, false, item);
+        check(rig->wait_done(c), "chat only: a message is answered");
+        const GenerateRequest r = rig->last_request();
+        check(r.tools.empty() && !r.messages.empty() && r.messages[0].role == "user",
+              "chat only: no tools and no agent prompt, even with a workspace and full access");
     }
     {
         // A model that keeps asking for the same refused call is stopped, not left to loop.

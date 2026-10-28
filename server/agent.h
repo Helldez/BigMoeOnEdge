@@ -71,6 +71,7 @@ struct AgentDeps {
     HttpFetch * net = nullptr;           // the web tools and providers; null: no web, no providers
     std::string bundled_skills_dir;      // `skills/` beside the executable
     std::string user_skills_dir;         // `<data>/skills`
+    bool tools = true;                   // false: plain chat (--chat-only), no tools and no agent prompt
     bool can_run_commands = false;       // platform::can_run_commands()
     std::string os_name = "this system"; // for the system prompt
     // Runs a command (platform::run_command); a test passes its own.
@@ -124,6 +125,8 @@ public:
     // The conversation as the API shows it: the stored one, with `state` from the live run.
     bool conversation(const std::string & id, json & out) const;
     json list_conversations() const;
+    // What a conversation here can do: {tools, commands}, for the UIs to show only what works.
+    json capabilities() const;
     // Remove one that is not running; its helpers go with it.
     Refusal remove_conversation(const std::string & id);
 

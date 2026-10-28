@@ -179,16 +179,15 @@ The rule is `agent_route_locality()` in `server/access.h`.
 
 ## On a phone
 
-The Android and iOS apps use the same API, on loopback with their key, so every route above is
-theirs. The differences are the platform's, and the server states them, not the apps:
+The Android and iOS apps are chat apps: they start their server with `--chat-only`, so their
+conversations are held by the server (one record, the same API) but are plain chat, with no tools,
+no agent prompt, no workspaces and no tasks (`GET /api/agent` answers `tools: false`). A small
+model on a phone is not an agent; the agent is the desktop's. On iOS the server runs inside the app
+(`run()` on a thread), and its stop (`server::Embedding`) joins every run before `run()` returns.
 
-- `run_command` is never offered: an app there may not start arbitrary programs
-  (`platform::can_run_commands()` is false on Android and iOS).
-- A workspace is any folder the app passes, inside its own storage; nothing assumes a desktop home.
-  `GET /api/connect` lists no file to write where there is no home folder.
-- On iOS the server runs inside the app (`run()` on a thread). Its stop (`server::Embedding`) ends
-  every run and the scheduler and joins their threads before `run()` returns: nothing of the agent
-  outlives the server.
+A server elsewhere decides what it offers from the platform's facts, not from the app:
+`run_command` is offered only where `platform::can_run_commands()` holds, and `GET /api/connect`
+lists no file to write where there is no home folder.
 
 ## Routes
 
