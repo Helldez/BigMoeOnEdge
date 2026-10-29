@@ -184,7 +184,7 @@ bool is_loopback_peer(const std::string & remote_addr) {
     return a == "::1" || a.compare(0, 4, "127.") == 0;
 }
 
-Locality agent_route_locality(const std::string & method, const std::string & path) {
+Locality agent_route_locality(const std::string & path) {
     const auto under = [&](const char * prefix) {
         const std::string p = prefix;
         return path == p || path.compare(0, p.size() + 1, p + "/") == 0;
