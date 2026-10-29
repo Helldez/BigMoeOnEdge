@@ -81,6 +81,12 @@ Semantic Versioning.
   server listens on every address behind a key kept in `<data>/network-key` (this user only, New
   key replaces it), the window's page sends it as well, and what reaches files, commands and keys
   stays loopback-only. `platform::lan_addresses()` lists the addresses to show.
+- **The network reads no agent data**: listing workspaces (which name folders on the disk), skills,
+  tasks, providers and the clients to connect is loopback-only now, like changing them.
+- **The release feed has its key**: `server/feed_key.h` carries the public half of the Ed25519 key
+  the release workflow signs `feed.json` with, so backend packs and updates read the feed. The
+  installers stay without an Apple or Windows publisher signature; `docs/desktop-app.md` says how
+  to open them the first time.
 - **The Plan screen names its model**: "For <model file>" under the title on the three UIs, with
   Change to Models, so Measure says what it measures for.
 - **The phones pick their theme** like the web UI: System, Light or Dark in an Appearance card
