@@ -172,6 +172,10 @@ public:
     // predicted residents happens at every value — it costs zero bytes.
     void set_predict_prefetch(bool on, int spec_max = 2);
 
+    // Joins the prediction worker. It reads the gate weights, which the source frees when it shuts
+    // down, so the session's teardown stops it before that rather than at ~RouterHook.
+    void predict_worker_stop();
+
     // ── route-ahead: commit to the stale-gate prediction (lossy; see MoeStreamConfig) ─
     // With n > 0, the expert selection of MoE layer L is REPLACED, during decode, by the ranking
     // layer L's own gate matrix produced on the hidden state N layers earlier in the same forward
@@ -511,7 +515,6 @@ private:
 
     bool predict_on() const { return predict_log_ || predict_prefetch_; }
     void predict_reset();
-    void predict_worker_stop();
     void predict_worker_main();
 
     // Rank the top `k` of `scores` into `out`, and score a prediction against a routing.
