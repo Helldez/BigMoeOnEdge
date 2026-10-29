@@ -33,6 +33,10 @@ struct PlanView: View {
     private var planner: Bool { engine.info?.plannerAvailable ?? true }
     /// A model chosen or loaded: there is something to plan for.
     private var chosen: Bool { SettingsForm.loadTargetChosen(engine.params, config: engine.config, info: engine.info) }
+    /// The model this screen plans for, by file name: the shown plan's, else the one a load opens.
+    private var target: String? {
+        SettingsForm.planTarget(plan, params: engine.params, config: engine.config, info: engine.info)
+    }
     private var canMeasure: Bool {
         planner && chosen && !measuring && engine.serverUp && !engine.generating && !engine.loading
     }
@@ -40,7 +44,15 @@ struct PlanView: View {
     var body: some View {
         Page {
             if !planner { Banner(text: "This build does not include the hardware planner.", color: Palette.err) }
-            if !chosen, !engine.params.isEmpty {
+            if let target {
+                // Which model Measure plans for, said before anything else on the screen.
+                HStack(alignment: .firstTextBaseline, spacing: Grid.s) {
+                    (Text("For ") + Text(target).font(.ui(15, bold: true)))
+                        .font(.ui(15)).foregroundStyle(Palette.text).lineLimit(2)
+                    Spacer(minLength: Grid.s)
+                    Button("Change") { nav.open(.models) }.buttonStyle(.appSecondary)
+                }
+            } else if !chosen, !engine.params.isEmpty {
                 Text("Choose a model from Models: a plan is for one model on this device.")
                     .font(.ui(15)).foregroundStyle(Palette.muted)
             }
@@ -73,7 +85,7 @@ struct PlanView: View {
             } else if p.none {
                 VStack(alignment: .leading, spacing: Grid.s) {
                     Text("Not measured yet.").font(.ui(22, bold: true)).foregroundStyle(Palette.text)
-                    Text("Measure this device to see what the plan does with the chosen model. The probes read "
+                    Text("Measure this device for \(target ?? "the chosen model"). The probes read "
                         + "storage and run a matmul on every device; on a phone that takes a while.")
                         .font(.ui(15)).foregroundStyle(Palette.muted)
                     Button(measuring ? "Measuring…" : "Measure") { Task { await measure() } }

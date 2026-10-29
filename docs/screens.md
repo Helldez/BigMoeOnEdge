@@ -210,7 +210,9 @@ list, a guided way to add to it, and nothing else.
 ## Plan
 
 What it is: what the hardware planner measured on this machine and what it decided for the
-chosen model, with the fact behind each knob.
+chosen model, with the fact behind each knob. Under the title, "For <model file>" names that model
+(the plan's own `model` while one is shown, else the one a load would open, else the loaded one),
+with Change leading to Models; with none, the screen says to choose one first.
 
 One layout for every machine. A phone with an NPU, a laptop with an integrated GPU, a desktop with
 a discrete card and a server with only cores show the same blocks in the same order; what changes is
