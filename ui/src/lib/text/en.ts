@@ -350,6 +350,8 @@ export const en = {
   'settings.copyByHand': 'The clipboard is not available here. Copy the command by hand:',
   'settings.schemaFailed': 'Could not read the list of settings. Reload the page to try again:',
   'settings.saveFailed': 'Saving failed; your change is not applied yet. Try again:',
+  'settings.mine': 'Set by you',
+  'settings.mine.help': 'Every value you chose yourself, in or out of the form; reset one to give it back to the plan or the default.',
   'settings.invalid': 'This configuration does not validate{error}. Loading a model is refused until it is fixed.',
   'settings.reloadNeeded': 'Some changes take effect only after the model is loaded again.',
   'settings.reload': 'Reload the model',

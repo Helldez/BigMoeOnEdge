@@ -331,8 +331,11 @@ once switched on:
 - **Only what a person sets.** A form shows the rows the table marks `form`: every basic row, and
   the few deeper ones a person picks rather than the plan (which devices, speculative drafts, the
   context's precision, the active experts). The rest stay flags of the command line, set by the
-  plan; a row the person set anyway is shown, so it can be reset. No level filter and no search:
-  every card starts closed, with its row count, and each row appears once.
+  plan. No level filter and no search: every card starts closed, with its row count.
+- **Set by you.** First among the cards, shown while there is any: every value the person set, in
+  or out of the form, in table order, each with its way back (to the plan's value or the default).
+  A row the person set lives there and leaves its group, so each row appears once; a reset sends it
+  back.
 - **Deep links.** `#/settings/<key>` lands on that row: its card opened, the field scrolled into
   view and focused. The Plan screen's decisions and the
   context warning link this way.

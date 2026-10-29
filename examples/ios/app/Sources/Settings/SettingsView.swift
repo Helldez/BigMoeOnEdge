@@ -2,9 +2,10 @@ import BmoeKit
 import SwiftUI
 
 /// Settings (docs/screens.md): the engine tunables a form offers, rendered from the parameter
-/// table, and the few settings that are the app's own. One card per group of the table, in its
-/// order, listing the rows the table puts on a form and any the person set; every card starts
-/// closed. A link (`Navigator.openSetting`) opens its row's card and lands on it. Each row appears once.
+/// table, and the few settings that are the app's own. "Set by you" first, every row holding a
+/// value the person set, then one card per group of the table, in its order, listing the other
+/// rows the table puts on a form; every card starts closed. A link (`Navigator.openSetting`) opens
+/// its row's card and lands on it. Each row appears once.
 struct SettingsView: View {
     @EnvironmentObject private var engine: Engine
     @EnvironmentObject private var nav: Navigator
@@ -14,6 +15,7 @@ struct SettingsView: View {
     @State private var appOpen = false
     @State private var shareOpen = false
     @State private var appearanceOpen = false
+    @State private var mineOpen = false
     /// A row a link landed on that the form does not offer, shown for this visit.
     @State private var revealed: String?
     @State private var focusKey: String?
@@ -35,8 +37,10 @@ struct SettingsView: View {
                 }
                 if !engine.params.isEmpty {
                     tools
-                    let also = SettingsForm.userSet(engine.params, config: engine.config).union(revealed.map { [$0] } ?? [])
-                    ForEach(SettingsForm.cards(engine.params, also: also)) { c in card(c) }
+                    let mine = SettingsForm.setByYou(engine.params, config: engine.config)
+                    if !mine.isEmpty { setByYouCard(mine) }
+                    ForEach(SettingsForm.cards(engine.params, revealed: revealed.map { [$0] } ?? [],
+                                               setByYou: Set(mine.map(\.key)))) { c in card(c) }
                 }
                 AppSettingsSection(open: $appOpen)
                 if preferences.metricsCSV {
@@ -128,18 +132,27 @@ struct SettingsView: View {
             if !c.help.isEmpty {
                 Text(c.help).font(.ui(12)).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
             }
-            if open { rows(c.rows, c) }
+            if open { rows(c.rows, readOnly: c.readOnly) }
         }
         .card(padding: 12)
     }
 
-    private func rows(_ specs: [ParamSpec], _ c: SettingsForm.Card) -> some View {
+    /// Every value the person set, wherever its row sits in the table: one place to see and undo them.
+    private func setByYouCard(_ specs: [ParamSpec]) -> some View {
+        VStack(alignment: .leading, spacing: Grid.s) {
+            CardHeader(title: "Set by you · \(specs.count)", open: $mineOpen)
+            if mineOpen { rows(specs, readOnly: false) }
+        }
+        .card(padding: 12)
+    }
+
+    private func rows(_ specs: [ParamSpec], readOnly: Bool) -> some View {
         let decisions = Dictionary((engine.config?.plan ?? []).map { ($0.knob, $0) }, uniquingKeysWith: { _, last in last })
         let reload = Set(engine.config?.reloadKeys ?? [])
         return VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(specs.enumerated()), id: \.element.key) { i, spec in
                 if i > 0 { Rectangle().fill(Palette.line).frame(height: 1) }
-                ParamRow(spec: spec, readOnly: c.readOnly, decision: decisions[spec.key], needsReload: reload.contains(spec.key),
+                ParamRow(spec: spec, readOnly: readOnly, decision: decisions[spec.key], needsReload: reload.contains(spec.key),
                          focusRequest: focusKey == spec.key, onError: { failure = $0 })
                     .id("param-\(spec.key)")
             }
@@ -148,14 +161,19 @@ struct SettingsView: View {
 
     // MARK: actions
 
-    /// A link to one setting lands on it: the row shown even where the form does not offer it, its
-    /// card opened, the row scrolled into view and its field focused. Once per link.
+    /// A link to one setting lands on it: "Set by you" opened when the person set it, else its group's
+    /// card, with the row shown even where the form does not offer it; the row scrolled into view
+    /// and its field focused. Once per link.
     private func land(_ proxy: ScrollViewProxy) {
         guard let key = nav.settingTarget, engine.config != nil,
               let spec = engine.params.first(where: { $0.key == key }) else { return }
         nav.settingTarget = nil
-        if !spec.form { revealed = key }
-        openCards.insert(spec.group)
+        if SettingsForm.setByYou(engine.params, config: engine.config).contains(where: { $0.key == key }) {
+            mineOpen = true
+        } else {
+            if !spec.form { revealed = key }
+            openCards.insert(spec.group)
+        }
         focusKey = nil
         // After the cards above have opened, so the row is there to scroll to.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
