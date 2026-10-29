@@ -295,11 +295,10 @@ except where noted:
 ## Upgrading llama.cpp
 
 Because the submodule pins the `bmoe/expert-ready-hook` fork branch (section 3), a bump
-rebases that branch's commits (the pin below lists them) onto the new upstream tag, re-pushes it, and
-re-pins:
+rebases that 1-commit branch onto the new upstream tag, re-pushes it, and re-pins:
 
 ```bash
-# in a Helldez/llama.cpp checkout: rebase the branch's commits onto the new tag
+# in a Helldez/llama.cpp checkout: rebase the single hook commit onto the new tag
 git fetch upstream && git checkout bmoe/expert-ready-hook
 git rebase <newer-upstream-tag> && git push --force-with-lease origin bmoe/expert-ready-hook
 
@@ -323,16 +322,10 @@ If a future release moves the two hooks (a stable expert-residency API, say) ups
 this seam shrinks further or disappears — `core/` does not change.
 
 Pinned submodule at the time of writing: `Helldez/llama.cpp` branch
-`bmoe/expert-ready-hook-2810`, commit `396b6c4`, on top of upstream `ggml-org/llama.cpp` master
+`bmoe/expert-ready-hook-2810-hook`, commit `152dd5c`: the single expert-ready-hook commit
+(section 3), in the variant that also answers the CPU registry's `get_proc_address` so a build that
+loads the CPU backend as a module reaches it, on top of upstream `ggml-org/llama.cpp` master
 `8ca4060` of 2026-10-28 (132 commits past the previous base, `d88040c` of 2026-10-22, which brought
-DeepSeek V4.1 Flash, `deepseek41`). Two commits: the expert-ready hook (section 3), in the variant
-that also answers the CPU registry's `get_proc_address` so a build that loads the CPU backend as a
-module reaches it; and MXFP8 row gathers. Upstream's DeepSeek V4.1 support first read the Engram
-table in MXFP8 and then dropped the type for BF16 before it merged, but the published GGUFs of the
-checkpoint (unsloth's, 2026-10) keep the table in MXFP8, which upstream then refuses to open. The
-second commit is that type brought back from the PR's first revision, gathers only (CPU and CUDA
-`get_rows`), and goes when upstream or the published files settle on one type. On this base upstream's CPU `mul_mat_id` has a tiled path that reads an expert
-before the classic loop does, so the hook fires ahead of it; G4 is what proves it still gates
-every read. Each bump gets its own fork branch and the
+DeepSeek V4.1 Flash, `deepseek41`). Each bump gets its own fork branch and the
 previous ones stay, so every commit an old pin names remains reachable (see `.gitmodules` /
 `git submodule status` for the current pin).

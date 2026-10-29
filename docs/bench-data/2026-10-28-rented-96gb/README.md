@@ -20,8 +20,9 @@ printed.
 | CUDA | 12.8 toolkit, driver 595 |
 | model | unsloth's DeepSeek-V4.1-Flash-1017 UD-Q4_K_XL: 466 GiB in nine shards, routed experts in their native MXFP4, the 189 GiB Engram table in MXFP8, the rest Q8_0 |
 
-The Engram table's MXFP8 is what the second commit of the llama.cpp pin reads
-([seam.md](../../seam.md)): upstream dropped the type before its DeepSeek V4.1 support merged.
+Upstream llama.cpp dropped MXFP8 before its DeepSeek V4.1 support merged and does not open this file
+(`invalid ggml type 43`); these runs read it with an experimental build that brought the type back
+for gathers (`Helldez/llama.cpp` `bmoe/expert-ready-hook-dsv41`), which is not the pin.
 
 ## What `--auto` chose
 

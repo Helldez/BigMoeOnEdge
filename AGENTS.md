@@ -43,8 +43,8 @@ we do not fork llama.cpp. See `docs/architecture.md` and `docs/seam.md`.
   Hexagon backend documents it reads, set before the backend loads (`server/platform.cpp`).
 - `ui/`: the web UI (Svelte + TypeScript). Settings are rendered from `GET /api/params`: never
   name an engine parameter in the UI. `catalog/models.json`: the model catalog, as data.
-- `third_party/llama.cpp` — the pinned submodule: upstream plus two commits, the expert-ready hook
-  `--overlap` needs and MXFP8 row gathers for the DeepSeek V4.1 GGUFs that keep it (the fork branch hard rule 1 describes; `docs/seam.md`). Everything else builds
+- `third_party/llama.cpp` — the pinned submodule: upstream plus one commit, the expert-ready hook
+  `--overlap` needs (the fork branch hard rule 1 describes; `docs/seam.md`). Everything else builds
   against stock upstream.
 - `tests/` — byte-identity gates. `examples/android/` — the Android app, a client of `bmoe-server`
   (shipped in the APK, run as a child process; no engine logic in Kotlin). `examples/ios/` — the iOS
