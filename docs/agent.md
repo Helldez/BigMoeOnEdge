@@ -247,7 +247,9 @@ only (see below).
 
 Everything that reaches this computer's files, processes or secrets answers only to a client whose
 connection comes from loopback, whatever the server's `--host` and whatever key it sends: adding or
-removing a workspace, a message (or an edit) in a conversation that has a workspace or a provider
+removing a workspace (and listing them, or the skills, tasks, providers and clients: a workspace
+names a folder here, the rest carries this computer's text and settings), a message (or an edit) in
+a conversation that has a workspace or a provider
 route, a workspace file's preview, an approval, writing a skill or switching one, saving a
 provider, writing a client's settings, and creating, changing or running a task. A conversation
 with a workspace or a provider route is this computer's alone: from the network it is not listed,

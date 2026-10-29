@@ -141,7 +141,8 @@ other software, or other people, on that machine or on a network it was told to 
   everything else, the UI's own requests included. Connections that arrive while every worker is
   busy wait in a queue of 64; past that the server closes the next one at once.
 - The agent's routes that reach this computer's files, processes or secrets answer only to a
-  connection from loopback, whatever `--host` and whatever key: adding or removing a workspace, a
+  connection from loopback, whatever `--host` and whatever key: listing, adding or removing a
+  workspace, listing the skills, the tasks, the providers or the clients to connect, a
   message or an edit in a conversation that has a workspace or a provider route, a workspace
   file's preview, an approval, writing or switching a skill, creating, changing or running a task,
   saving a provider, writing a client's settings. A conversation with a workspace or a provider
