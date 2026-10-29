@@ -10,6 +10,61 @@ if(NOT TARGET cpp-httplib)
                      ${CMAKE_BINARY_DIR}/vendor/cpp-httplib EXCLUDE_FROM_ALL)
 endif()
 
+# The release target this build is, as the feed names it (docs/desktop-app.md): which installer,
+# archive and backend packs are this machine's. Empty where the releases ship nothing (a phone).
+set(BMOE_TARGET_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
+if(APPLE AND CMAKE_OSX_ARCHITECTURES)
+    set(BMOE_TARGET_ARCH "${CMAKE_OSX_ARCHITECTURES}")
+endif()
+string(TOLOWER "${BMOE_TARGET_ARCH}" BMOE_TARGET_ARCH)
+if(BMOE_TARGET_ARCH MATCHES "^(x86_64|amd64|x64)$")
+    set(BMOE_TARGET_ARCH x86_64)
+elseif(BMOE_TARGET_ARCH MATCHES "^(arm64|aarch64)$")
+    set(BMOE_TARGET_ARCH arm64)
+else()
+    set(BMOE_TARGET_ARCH "")
+endif()
+set(BMOE_BUILD_TARGET "")
+if(BMOE_TARGET_ARCH AND NOT IOS AND NOT ANDROID)
+    if(APPLE)
+        set(BMOE_BUILD_TARGET "macos-${BMOE_TARGET_ARCH}")
+    elseif(WIN32)
+        set(BMOE_BUILD_TARGET "windows-${BMOE_TARGET_ARCH}")
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # Linux names its 64-bit ARM the way the kernel does.
+        string(REPLACE "arm64" "aarch64" BMOE_BUILD_TARGET "linux-${BMOE_TARGET_ARCH}")
+    endif()
+endif()
+
+# The public key the release feed is checked against (server/feed_key.h). A fork that signs its own
+# feed sets this to its own key's base64.
+set(BMOE_FEED_PUBLIC_KEY "" CACHE STRING "Base64 Ed25519 public key the release feed is verified with (empty: server/feed_key.h's)")
+
+# What the server and the desktop app ask the operating system (platform.h): no engine in it, so
+# the app links it without the engine.
+add_library(bmoe_server_platform STATIC platform.cpp)
+target_include_directories(bmoe_server_platform PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(bmoe_server_platform SYSTEM PUBLIC ${CMAKE_SOURCE_DIR}/third_party/llama.cpp/vendor)
+target_compile_definitions(bmoe_server_platform PRIVATE BMOE_BUILD_TARGET="${BMOE_BUILD_TARGET}")
+target_compile_features(bmoe_server_platform PUBLIC cxx_std_17)
+if(WIN32)
+    target_link_libraries(bmoe_server_platform PUBLIC shell32 ole32 iphlpapi ws2_32)
+elseif(NOT APPLE)
+    target_link_libraries(bmoe_server_platform PUBLIC ${CMAKE_DL_LIBS})
+endif()
+
+# Ed25519 verification for the feed's signature: Monocypher 4.0.2 (third_party/monocypher), its
+# src/monocypher.{c,h} and src/optional/monocypher-ed25519.{c,h} as released in
+# monocypher-4.0.2.tar.gz (SHA-512 bf275d4c53ff94af...dc084714, the one monocypher.org and the
+# GitHub release both publish), unmodified, used for nothing else. Compiled as C++, which it is written to be, since this project
+# enables no C compiler of its own.
+set(BMOE_MONOCYPHER_SOURCES
+    ${CMAKE_SOURCE_DIR}/third_party/monocypher/monocypher.c
+    ${CMAKE_SOURCE_DIR}/third_party/monocypher/monocypher-ed25519.c)
+set_source_files_properties(${BMOE_MONOCYPHER_SOURCES} PROPERTIES LANGUAGE CXX)
+add_library(bmoe_monocypher STATIC ${BMOE_MONOCYPHER_SOURCES})
+target_include_directories(bmoe_monocypher SYSTEM PUBLIC ${CMAKE_SOURCE_DIR}/third_party/monocypher)
+
 # The server's own policy, with no HTTP, no session and no platform code, so tests/ can drive it:
 # the chat protocol, the line turns wait in, the layered settings, the event fan-out, the JSON
 # edges and the plan as a person reads it (plan_view).
@@ -32,8 +87,19 @@ add_library(bmoe_server_core STATIC
     model_delete.cpp
     settings_store.cpp
     plan_view.cpp
+    agent_tools.cpp
+    agent_skills.cpp
+    agent_schedule.cpp
+    agent_store.cpp
+    provider_protocol.cpp
+    connect.cpp
+    acp_connection.cpp
+    feed.cpp
+    backend_packs.cpp
+    update_service.cpp
 )
-target_link_libraries(bmoe_server_core PUBLIC bmoe_core)
+# The platform's calendar time (platform.h) for the schedule and the backups' stamps.
+target_link_libraries(bmoe_server_core PUBLIC bmoe_core PRIVATE bmoe_monocypher bmoe_server_platform)
 target_include_directories(bmoe_server_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # The vendored libraries (cpp-httplib, nlohmann/json) as system headers: upstream's code, upstream's
 # warnings.
@@ -48,13 +114,18 @@ add_library(bmoe_server STATIC
     model_library.cpp
     model_inspect.cpp
     planner_adapter.cpp
-    platform.cpp
     routing_store.cpp
+    agent.cpp
+    agent_external.cpp
+    agent_routes.cpp
 )
-target_link_libraries(bmoe_server PUBLIC bmoe_server_core PRIVATE cpp-httplib)
+target_link_libraries(bmoe_server PUBLIC bmoe_server_core bmoe_server_platform PRIVATE cpp-httplib)
+if(BMOE_FEED_PUBLIC_KEY)
+    target_compile_definitions(bmoe_server PRIVATE BMOE_FEED_PUBLIC_KEY_OVERRIDE="${BMOE_FEED_PUBLIC_KEY}")
+endif()
 target_include_directories(bmoe_server PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 if(WIN32)
-    target_link_libraries(bmoe_server PUBLIC ws2_32 shell32 ole32)
+    target_link_libraries(bmoe_server PUBLIC ws2_32)
 endif()
 
 # The hardware planner is a library the engine may or may not carry. Detected by its header, the

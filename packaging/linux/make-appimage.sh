@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# BigMoeOnEdge-<tag>-<target>.AppImage, from the staged bmoe-desktop folder the release workflow
-# also archives (bmoe-server, its libraries and backend modules, ui/, catalog/, the licenses and
-# README.txt). The folder goes into the AppImage as it is, under usr/bin, so the server finds its
-# backends, ui/ and catalog/ beside itself exactly as in the archive.
+# BigMoeOnEdge-<tag>-<target>.AppImage, from the staged app folder of the release workflow
+# (bmoe-desktop, bmoe-server, their libraries and backend modules, ui/, catalog/, skills/ when there
+# is one, the licenses). The folder goes into the AppImage as it is, under usr/bin, so the server
+# finds its backends, ui/ and catalog/ beside itself. Its entry (AppRun) is bmoe-desktop, the app's
+# window; WebKitGTK 4.1 is the system's, as the image does not carry a web engine.
 #
 #   packaging/linux/make-appimage.sh <staged bmoe-desktop folder> <tag> <target> [out dir]
 #
@@ -37,6 +38,7 @@ case "$TARGET" in
 esac
 [ "$(uname -m)" = "$ARCH" ] || { echo "target $TARGET needs an $ARCH machine, this is $(uname -m)" >&2; exit 1; }
 [ -x "$STAGE/bmoe-server" ] || { echo "no bmoe-server in $STAGE" >&2; exit 1; }
+[ -x "$STAGE/bmoe-desktop" ] || { echo "no bmoe-desktop in $STAGE" >&2; exit 1; }
 
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
@@ -59,7 +61,7 @@ mkdir -p "$APPDIR/usr/bin"
 cp -a "$STAGE"/. "$APPDIR/usr/bin/"
 install -m 755 "$HERE/AppRun" "$APPDIR/AppRun"
 cp "$HERE/bigmoeonedge.desktop" "$APPDIR/"
-cp "$ICON_PNG" "$APPDIR/bigmoeonedge.png"
+cp "$ICON_PNG" "$APPDIR/bigmoeonedge.png" # also the tray's icon (desktop/os_linux.cpp)
 cp "$ICON_PNG" "$APPDIR/.DirIcon"
 
 # The tool is itself an AppImage: extract-and-run needs no FUSE on the build machine.

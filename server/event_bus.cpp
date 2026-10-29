@@ -4,10 +4,11 @@
 
 namespace bmoe::server {
 
-std::shared_ptr<EventBus::Queue> EventBus::subscribe() {
+std::shared_ptr<EventBus::Queue> EventBus::subscribe(bool local) {
     std::lock_guard<std::mutex> lk(m_);
     if (subs_.size() >= max_subs_) return nullptr;
     auto q = std::make_shared<Queue>();
+    q->local = local;
     subs_.push_back(q);
     return q;
 }
@@ -21,7 +22,7 @@ std::string EventBus::frame(const std::string & event, const json & data) {
     return "event: " + event + "\ndata: " + data.dump(-1, ' ', false, json::error_handler_t::replace) + "\n\n";
 }
 
-void EventBus::publish(const std::string & event, const json & data) {
+void EventBus::publish(const std::string & event, const json & data, Audience audience) {
     const std::string f = frame(event, data);
     std::vector<std::shared_ptr<Queue>> subs;
     {
@@ -29,6 +30,7 @@ void EventBus::publish(const std::string & event, const json & data) {
         subs = subs_;
     }
     for (const auto & q : subs) {
+        if (audience == Audience::LocalOnly && !q->local) continue;
         {
             std::lock_guard<std::mutex> lk(q->m);
             if (q->closed) continue;

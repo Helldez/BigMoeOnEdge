@@ -98,6 +98,9 @@ for, and today it takes launch options and hand-typed values. One Connect view i
 the server: share on the network with a key, the base URL, model id, context and maximum output a
 client must be told, a preset that sizes the context for an agent, and a filled-in snippet per
 client. Researched and specified in [#257](https://github.com/Helldez/BigMoeOnEdge/issues/257).
+The server half is built: `GET /api/connect` lists the clients with their settings filled in for
+this server, and writes a client's settings file with a backup ([agent.md](agent.md)); the views
+that show it in each UI are owed.
 
 **The planner, drawn.** One diagram of the whole solution, as logic rather than code: the facts
 the probes measure, the rules that read them, the ledger that keeps memory honest, and the plan

@@ -2,8 +2,22 @@
 // produces always goes through DOMPurify before it reaches the DOM.
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
+import { escapeHtml, highlight } from './highlight';
 
 marked.setOptions({ gfm: true, breaks: true });
+
+// Code blocks are highlighted here, from the text, into class-only spans: the highlighter escapes
+// everything it is given, so a block stays text whatever it holds. The language is a class the
+// copy button and the reader can see, limited to name characters.
+marked.use({
+  renderer: {
+    code({ text, lang }: { text: string; lang?: string }) {
+      const name = (lang ?? '').trim().split(/\s+/)[0].replace(/[^\w+#.-]/g, '');
+      const cls = name ? ` class="language-${escapeHtml(name)}"` : '';
+      return `<pre><code${cls}>${highlight(text, name)}</code></pre>\n`;
+    },
+  },
+});
 
 // An image is fetched the moment an answer is shown, with no click: text that talks the model into
 // writing one can send what its URL carries to any host, or have the browser GET one of this

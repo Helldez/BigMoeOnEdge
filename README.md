@@ -95,23 +95,38 @@ Configurations and method: [docs/benchmarks.md](docs/benchmarks.md). To add a ma
 ## Quick start
 
 Everything below comes from the [latest release](https://github.com/Helldez/BigMoeOnEdge/releases/latest).
-Each package starts the engine and opens the app in the browser at `http://127.0.0.1:8765/`; pick a
-model under **Models**.
+Each installer puts the app on the machine: a window of its own over the engine's server, which a
+browser can also open at `http://127.0.0.1:8765/`; pick a model under **Models**. A graphics card
+that needs a vendor's runtime (NVIDIA's CUDA, AMD's ROCm) gets its backend from the app's Settings,
+downloaded and checked against the release's signed feed ([docs/desktop-app.md](docs/desktop-app.md)).
 
 - **macOS** (Apple silicon): open `BigMoeOnEdge-<version>-macos-arm64.dmg` and drag the app to
-  Applications. It stays in the Dock and the menu bar while it runs; **Stop and Quit** stops it. Not
-  notarised yet: the first start needs the step in the dmg's README.txt.
+  Applications. Closing the window keeps it in the menu bar; **Quit** stops it. Not notarised yet:
+  the first start needs the step in the dmg's README.txt.
 - **Windows**: run `BigMoeOnEdge-<version>-windows-x86_64-setup.exe` (or `-windows-arm64-setup.exe`).
-  No administrator rights; start BigMoeOnEdge from the Start menu, and close its window to stop it.
+  No administrator rights; start BigMoeOnEdge from the Start menu. Closing the window keeps it in the
+  notification area; **Quit** there stops it.
 - **Linux**: `chmod +x BigMoeOnEdge-<version>-linux-x86_64.AppImage` (or `-linux-aarch64`) and run it.
-  Started from a file manager it opens in a terminal window; close the window to stop it.
+  The window needs WebKitGTK 4.1, which common desktops have; without it the UI opens in the
+  browser. `--server` runs the server alone.
 - **Android**: install `app-dev-release.apk` from the release page; each release installs over the
   previous one. **Settings → Serve on the network** shares the phone's engine, with a key.
 
 **iOS.** Build the app with Xcode from [examples/ios](examples/ios/README.md). Experimental.
 
-**Archives.** The `bmoe-desktop` archive holds the same app as a folder, for scripted installs:
-extract it and run `bmoe-server --open`. The `bmoe-cli` archive holds the command-line engine.
+**Terminal, servers and coding agents.** One line installs the command-line tools (`bmoe-cli`, and
+`bmoe-server` with its web UI) into your user folder and puts them on `PATH`, no administrator
+rights; run it again to update:
+
+```bash
+curl -fsSL https://github.com/Helldez/BigMoeOnEdge/releases/latest/download/install.sh | sh
+```
+
+```powershell
+irm https://github.com/Helldez/BigMoeOnEdge/releases/latest/download/install.ps1 | iex
+```
+
+The `bmoe-cli` archives on the release page hold the same tools, for an install by hand.
 
 **Command line.**
 
@@ -170,6 +185,16 @@ base_url = "http://127.0.0.1:8765/v1"
 wire_api = "responses"
 env_key = "BMOE_API_KEY"   # export BMOE_API_KEY=local, or the server's --api-key
 ```
+
+### The agent
+
+The server also runs an agent: a conversation that works in a folder you add, reads and edits its
+files, runs commands, searches and reads the web, follows skills, hands parts of a job to helpers
+and runs on a schedule. Changes wait for your approval unless you choose otherwise, and the
+conversation lives in the server, so a run goes on with the page closed. It works with the loaded
+model or any OpenAI-compatible service you save. The server also writes the settings that connect
+Codex CLI or OpenCode to it, and shows the ones for Claude Code and other clients. See
+[docs/agent.md](docs/agent.md).
 
 ## How it works
 

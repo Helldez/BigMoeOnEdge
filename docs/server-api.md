@@ -26,6 +26,11 @@ Inside a stream that had already answered `200`, the same pair arrives as one
 or no body (`curl -X POST -H 'Content-Type: application/json' .../api/cancel`); one that does not
 gets `415`. The agent protocols, `/v1/messages` and `/v1/responses`, answer every error in their
 own protocol's shape instead ([Agent protocols](#agent-protocols-what-the-two-below-share)).
+A message from the engine (a config `validate()` refuses, a model that will not load, a failed
+turn) names a setting by its label in the settings form (`"Batch width"`, `"Context"`), never by a
+command-line flag or an internal field: the engine writes `{key}` placeholders from the parameter
+table and the server renders them once, where the message leaves it (`bmoe-cli` renders the same
+placeholders as flags).
 
 ## Security model
 
@@ -69,11 +74,25 @@ other software, or other people, on that machine or on a network it was told to 
   browser GET one of the server's own endpoints.
 - Every response carries `Content-Security-Policy: default-src 'self'; script-src 'self';
   style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; media-src 'none';
-  object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`, with
-  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` and `X-Frame-Options: DENY`.
-  The UI is one script and one stylesheet from its own origin with no inline script or style, so
-  nothing needs `'unsafe-inline'`; whatever slips past the sanitiser still cannot load from
-  another host, run inline, submit a form or put the page in a frame.
+  object-src 'none'; frame-src 'self' blob:; base-uri 'none'; form-action 'none';
+  frame-ancestors 'none'`, with `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`
+  and `X-Frame-Options: DENY`. The UI is one script and one stylesheet from its own origin with no
+  inline script or style, so nothing needs `'unsafe-inline'`; whatever slips past the sanitiser
+  still cannot load from another host, run inline, submit a form or put the page in a frame. The
+  page may frame two things only, both for the preview of a workspace file: this server's own
+  responses and a `blob:` the page made from bytes it fetched.
+- A workspace file served for that preview (`GET /api/conversations/<id>/file`, answered `200`) is
+  the agent's work, not the UI, and may be a page with script of its own. It carries a policy of
+  its own instead: `Content-Security-Policy: sandbox allow-scripts; default-src 'none'; script-src
+  'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data:
+  blob:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none';
+  frame-ancestors 'self'` and `X-Frame-Options: SAMEORIGIN`, with the same `nosniff` and referrer
+  rules. The `sandbox` directive gives the document an opaque origin however it is opened (framed
+  by the UI with `sandbox="allow-scripts"` and no `allow-same-origin`, or opened directly), so its
+  script runs but cannot read the UI, its storage or the key, cannot reach this server's API or any
+  other host, cannot submit a form, and only the UI's own page may frame it. With a key set, the
+  frame's own request could not carry it: the UI then fetches the bytes with the key and frames a
+  `blob:` of them, where the UI's own policy holds and the page's inline script does not run.
 - `max_tokens` on a chat request is clamped to the `n-predict` parameter's upper bound, and one
   that is not a non-negative integer is refused with `400`.
 - Downloads take a catalog id, never a URL or a path. `DELETE` on a download cancels it and
@@ -94,6 +113,13 @@ other software, or other people, on that machine or on a network it was told to 
   its own scan of the models directory groups under that name, a split set whole. Never a file in a
   scan directory, never the model loaded or loading (`409`), never a file a running download is
   writing (`409`); a link is removed as the link, its target kept.
+- Some routes answer only a client whose connection comes from this machine, whatever `--host`
+  and the key say: they install software, read the network on the person's behalf, or change
+  files. They are one list, `local_only_routes()` in `server/access.h`, enforced before routing
+  (`403`, `code: "local_only"`): deleting a model, adding one from a link, and the backend-pack and
+  update routes ([Backend packs and updates](#backend-packs-and-updates)).
+- A server started by an app with `--parent-pid PID` stops when that process ends, so an app that
+  crashes leaves no server holding the port and a model's memory.
 - Over the API a client may name one file to open, the model, and it is only read (what it may delete is a model as the listing names it, above). Parameters that make
   the engine write a file are set at launch and are refused over `PUT /api/config`.
 - A client on the network (a connection whose peer address is not loopback) may name a model only
@@ -114,6 +140,21 @@ other software, or other people, on that machine or on a network it was told to 
   turn and 16 waiting behind it (the next gets `503` with `code: "busy"`). That leaves 7 workers for
   everything else, the UI's own requests included. Connections that arrive while every worker is
   busy wait in a queue of 64; past that the server closes the next one at once.
+- The agent's routes that reach this computer's files, processes or secrets answer only to a
+  connection from loopback, whatever `--host` and whatever key: listing, adding or removing a
+  workspace, listing the skills, the tasks, the providers or the clients to connect, a
+  message or an edit in a conversation that has a workspace or a provider route, a workspace
+  file's preview, an approval, writing or switching a skill, creating, changing or running a task,
+  saving a provider, writing a client's settings. A conversation with a workspace or a provider
+  route is not listed, read, changed, deleted or stopped from the network, and its events (and
+  every `task` event) reach loopback streams only; nor may the network give a conversation a
+  workspace, a provider route or `full` access. From the network they get `403` with
+  `code: "local_only"`. A message from the network to a conversation without a workspace runs, with
+  no web tools, so a client elsewhere cannot have this machine fetch addresses on its network. The
+  agent's file tools resolve every path inside the workspace (`..` and links resolved, dangling
+  links refused); its commands run in the workspace through the platform's shell, as one process
+  group killed at the time limit or a stop; provider keys never appear in a listing, a log or a
+  command line ([agent.md](agent.md#who-may-use-it)).
 - `--open` starts the system's opener (`open` on macOS, `xdg-open` elsewhere; the shell's own call
   on Windows) directly, with the URL as one argument: no shell is involved.
 
@@ -224,7 +265,7 @@ template). Each element:
 ```json
 {"key": "cache-mb", "label": "Expert cache", "type": "int", "group": "cache",
  "group_label": "Expert cache", "group_help": "The memory that keeps experts once read, ...",
- "group_order": 5, "level": "basic", "scope": "session", "help": "...",
+ "group_order": 5, "level": "basic", "form": true, "scope": "session", "help": "...",
  "flag": "--cache-mb", "min": 0, "unit": "MiB", "typical": {"min": 1500, "max": 8192},
  "special": [{"value": 0, "label": "off"}], "accepts_auto": true, "default": "auto"}
 ```
@@ -236,7 +277,9 @@ range to show a person. `typical` is guidance, not a limit: what a person usuall
 shows as the range. `special` names the values that mean something other than their number (`0` is
 `off`, `4294967295` is `random per run`), with `value` in the row's own JSON type; a form shows the
 label in place of the number.
-`level` is `basic | advanced | experimental | debug`. A form shows the groups in `group_order` (a
+`level` is `basic | advanced | experimental | debug`. `form: true` marks a row a settings form
+offers: every basic row and the few deeper ones a person picks rather than the plan; the others are
+the command line's (a form shows one only when the person has set it). A form shows the groups in `group_order` (a
 row's place in the array is not its group's: a group's rows need not be contiguous), each under its
 short `group_label` and its one-line `group_help`. `group_read_only: true` marks a group a client
 sets with a control of its own (the model file, from the model list), which a settings form shows
@@ -587,6 +630,52 @@ The keys are the CLI's `BMOE_DECIDE` keys; `POST /api/cancel` stops a decision b
 chunks, and the answer then carries `cancelled: true`. The `decide` parameter (on by default in
 the server) is what lets a session accept these; off, every decision is refused.
 
+## Agent
+
+The agent's conversations, workspaces, skills, tasks, providers and client settings
+([agent.md](agent.md), which is the contract: concepts, modes, tools, item and event shapes, the
+route table). What follows is what a client needs beyond it on the wire.
+
+**State.** The server keeps it in `<data>/agent/` (`conversations/<id>.json`, `workspaces.json`,
+`tasks.json`, `providers.json`, `skills.json`), each written to a temporary file and renamed, and
+provider keys in `<data>/credentials.json`, created readable by its owner only. A person's skills
+are folders in `<data>/skills/`; the bundled ones are `skills/` beside the binary (`--skills-dir`
+names another folder). The client catalog is `clients.json` beside the model catalog.
+
+**What it can do.** `GET /api/agent` answers `{tools, commands, agents}`: whether conversations here
+have the agent's tools at all, whether `run_command` is among them, and the agents a conversation
+may use (the built-in one and the other coding agents of the client catalog, each with whether its
+program is installed; [agent.md](agent.md), "Other agents"). A server started with
+`--chat-only` (the phone apps start theirs so) answers `tools: false`: its conversations are plain
+chat, sent to the model with no system prompt and no tools, as before the agent, and adding a
+workspace or a task is `409` with `code: "chat_only"`. A UI reads this and shows only what works.
+
+**Runs.** `POST /api/conversations/<id>/messages` answers `202 {item}` as soon as the person's item
+is stored; everything after that arrives on `/api/events` (`conversation`, `item`, `delta`) and is
+in the stored conversation. A UI that reconnects reads `GET /api/conversations/<id>`. An approval
+card is a `tool` item in state `waiting`, answered with `POST .../approval` on the conversation (or
+the helper's conversation) it appears in. `POST .../stop` answers once the run has ended.
+
+**Errors.** `{"error", "code"}`, with these codes:
+
+| status | `code` | when |
+|---|---|---|
+| 400 | `invalid_request` | a field of the wrong type or value (a mode, a route naming no saved provider, a schedule that cannot run, an imported item that is not `user` / `assistant`) |
+| 400 | `not_a_folder` | `POST /api/workspaces` with a path that is not an absolute, existing folder |
+| 400 | `unsupported` | a message with `images` |
+| 403 | `local_only` | a route that reaches this computer, from a client not on loopback (below) |
+| 403 | `outside_workspace` | a preview path that resolves outside the workspace |
+| 404 | `not_found` | no such conversation, workspace, skill, task, provider or client; an approval for an item that is not waiting |
+| 409 | `busy` | a message, an edit, a delete, or a change of workspace or route while the conversation runs; a task run while it runs; a message to a helper's conversation |
+| 409 | `exists` | `POST /api/skills` with the name of one of the person's skills |
+| 409 | `conflict` | `POST /api/connect/<id>` with no model loaded, or a settings file the server will not overwrite (JSON that does not parse, an unclosed block) |
+| 413 | `too_large` | a preview of a file over 16 MiB |
+| 503 | `stopping` | a message while the server stops |
+
+A run's own failures are not HTTP errors: they arrive as `notice` items (no model loaded, a context
+that no longer fits, a provider that answered with an error) and leave the conversation in state
+`error`.
+
 ## Live events
 
 ### `GET /api/events`
@@ -615,8 +704,14 @@ limit.
 | `done` | per generation, the CLI's `BMOE_DONE` keys (`docs/telemetry.md`): `cancelled`, `tokens`, `tok_s`, `load_s`, `prefill_s`, `prefill_tps`, `prefill_read_mib`, `prefill_dev_tokens`, `n_prompt`, `n_past`, `cache_hit_pct`, `read_mib`, `io_s_tok`, `compute_s_tok`, `stall_s_tok`, `flash_wait_s_tok`, `mgmt_s_tok`, `majflt_tok`, `cpu_s_tok`, `loop_overhead_s_tok`, `cache_resident_mib`, `cache_budget_mib`, `cache_evictions`, `cache_rereads`, `token_demand_mib`, `mtp_drafted`, `mtp_accepted`, `mtp_decodes`, `drafted_steps`, `mtp_draft_s_tok`, `ttft_s` |
 | `decide` | per decision: the `POST /api/decide` answer |
 | `download` | a download's progress: `id`, `file`, `received`, `total`, `state` (`running`, `done`, `error`, `cancelled`), `error` (with `running`: why the last attempt failed while the server waits to resume) |
+| `backend` | a backend pack's install: `id` (the pack), `kind` (`backend`), `file`, `received`, `total`, `state` (`running`, `done`, `error`, `cancelled`), `error` (with `running`: the step, such as `unpacking`); with `done`, `restart_required` and `in_place` (false when the pack replaces one in use and takes its place at the next start) |
+| `update` | the installer's download: the same fields with `id` `update`, and with `done` its `path` and `version` |
 | `config` | the `GET /api/config` object, after any change |
 | `plan_progress` | a measurement (`GET /api/plan?measure=1`, or an auto load) entering a stage: `step` (`devices`, `model`, `compute`, `storage`, `memory`, `placement`, `rules`), its words `label`, `index` from 0 and `count`; then `{"step": "done"}` when it ends. A UI shows `label`; `step` is the protocol |
+| `conversation` | an agent conversation's `{id, title, state, updated, parent}`, whenever one of those changes ([agent.md](agent.md#events)) |
+| `item` | `{conversation, item}`: an agent item added or changed, whole |
+| `delta` | `{conversation, item, text?, reasoning?}`: what a streaming assistant item adds |
+| `task` | an agent task, after it is saved and after a run of it starts or ends |
 | `log` | one engine diagnostic (`bmoe/log.h`): `level` (`info`, `warn`, `error`) and `message`, the line the server also writes to stderr after `bmoe: `. For a person to read; a client decides nothing on its wording |
 
 `flash_wait_ms` (per token) and `flash_wait_s_tok` (the run's average) are the flash term that is a
@@ -968,3 +1063,52 @@ Applies the current plan's `values` to the config without adding them to `user_k
 the decisions so `GET /api/config` returns them under `plan`. Returns the config object. A plan is
 made from the configuration without the plan layer (defaults, launch flags, the person's values),
 so its `values` are complete on their own and replace the previous plan whole.
+
+## Backend packs and updates
+
+The desktop app's side of the release ([desktop-app.md](desktop-app.md)): the signed feed, read
+when a person asks and never otherwise, backend packs installed into `<data>/backends/<id>/`, and
+the installer of a newer release. Every route here answers a local client only (`403`,
+`code: "local_only"` from the network). A build that carries no feed key answers `503` with
+`code: "no_feed_key"` where it would read the feed. `--feed-url URL` (https) reads the feed from
+elsewhere, for testing.
+
+### `GET /api/backends`
+
+`{registered, target, feed, packs, installed, restart_required, feed_error?}`. `registered` is every
+backend that registered at start (`CPU`, `MTL`, `Vulkan`, ...); `target` the build's
+(`macos-arm64`, ...); `feed` `{version, published}` of the verified feed known, or `null`. `packs`
+is that feed's packs for this target: `{id, title, size, applies, installed, installed_version,
+current}`, `applies` when one of the pack's driver libraries loads here, `current` when the
+installed copy is this feed's file. `installed` lists every pack on disk (`{id, version, offered}`).
+`restart_required` is true once a pack was installed since the server started. With `?refresh=1`
+the feed is read from the network first; a feed that cannot be read or does not verify is said in
+`feed_error`, and the rest of the answer stands. Without it, the feed kept from the last read
+answers (checked again), or none.
+
+### `POST /api/backends/<id>/install`
+
+Body `{}` or `{"force": true}` (install a pack that does not apply here). Downloads the pack of the
+last feed read, checks its size and SHA-256, lists the archive with the system's `tar` and refuses
+it if an entry would leave the folder (an absolute path, a drive, a backslash, `..`, a hard link, a
+device, an entry under a link), unpacks it into a staging folder, checks the files again (every link
+points inside), and moves it to `<data>/backends/<id>/` with a `pack.json` marker. The answer comes
+when it is done: `200` with `{ok, id, restart_required: true}`; progress meanwhile as `backend`
+events. `409` with `no_feed` (no feed read yet), `not_applicable` (no driver library loads; `force`
+overrides), `busy` (another download runs); `404` `not_found` (no such pack for this target); `502`
+`failed` with the reason when the download, the checks or the unpacking fail, in which case nothing
+is installed. The engine loads the pack at the next start of the server.
+
+### `GET /api/update`
+
+Reads the feed and answers `{current, latest, available, notes, published, target, installer}`:
+`available` when the feed's version is newer than this server's and has an installer for this
+target, `installer` `{url, sha256, size, file}` or `null`. `502` `feed` when the feed cannot be read
+or does not verify.
+
+### `POST /api/update/download`
+
+Downloads the installer of the feed last read into `<data>/updates/`, checks its size and SHA-256,
+and answers once it is there: `200` with `{ok, version, path}`; progress as `update` events. The
+desktop app runs `path` (`bmoeDesktop.applyUpdate`), which accepts nothing outside that folder.
+`409` with `no_feed` or `up_to_date`, or `busy`; `502` `failed` when it does not arrive whole.

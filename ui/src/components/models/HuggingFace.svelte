@@ -243,7 +243,7 @@
   }
   .steps li {
     padding: 0.1rem 0.5rem;
-    border: 1px solid var(--border);
+    border: 1px solid var(--line);
     color: var(--muted);
   }
   .steps li.done {
@@ -314,12 +314,12 @@
     cursor: pointer;
   }
   .models li.chosen {
-    background: var(--ok-bg);
+    background: var(--ok-tint);
   }
   .facts {
     margin-top: 0.75rem;
     padding-top: 0.5rem;
-    border-top: 2px solid var(--border);
+    border-top: 2px solid var(--line);
   }
   .facts header {
     display: flex;

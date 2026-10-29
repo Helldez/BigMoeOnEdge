@@ -78,14 +78,14 @@ async function errorFrom(res: Response): Promise<ApiError> {
 
 // A 401 means the server wants a key this page has not got (or has got wrong): the app asks for
 // one. Every call reports it the same way, so no caller has to.
-async function failed(res: Response): Promise<ApiError> {
+export async function failed(res: Response): Promise<ApiError> {
   if (res.status === 401) auth.unauthorized();
   return errorFrom(res);
 }
 
 // `guard` checks the parts of the answer the UI reads; an answer that fails it is an error here,
 // not an undefined later. Writes whose answer nobody reads have none.
-async function request<T>(method: string, path: string, body?: unknown, guard?: (v: unknown) => v is T): Promise<T> {
+export async function request<T>(method: string, path: string, body?: unknown, guard?: (v: unknown) => v is T): Promise<T> {
   const headers: Record<string, string> = auth.headers();
   // Every write says it is JSON, with or without a body: the server refuses one that does not,
   // which is what keeps an HTML form (it cannot send this type) from calling the API.

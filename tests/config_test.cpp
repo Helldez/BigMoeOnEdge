@@ -7,7 +7,9 @@
 // Checks are explicit (not <cassert>): the Release build defines NDEBUG, which compiles assert out.
 
 #include "bmoe/config.h"
+#include "bmoe/params.h"
 
+#include <cctype>
 #include <cstdio>
 #include <limits>
 #include <string>
@@ -40,9 +42,39 @@ static void expect_ok(const char * name, const RunConfig & c) {
     }
 }
 
+// A rejection is read by whoever set the config: a CLI user who typed flags, or a person in a
+// settings form who has never seen one. So the engine names a setting only as a `{key}` placeholder
+// the front-end renders (name_params), never as a flag or a field. Returns what is wrong, or empty.
+static std::string front_end_neutral(const std::string & msg) {
+    std::string bare; // the message with its placeholders taken out
+    for (size_t i = 0; i < msg.size(); ++i) {
+        if (msg[i] != '{') {
+            bare += msg[i];
+            continue;
+        }
+        const size_t close = msg.find('}', i);
+        if (close == std::string::npos) return "an unclosed brace";
+        const std::string inner = msg.substr(i + 1, close - i - 1);
+        const std::string key = inner.substr(0, inner.find('='));
+        if (!find_param(key)) return "{" + inner + "} names no parameter";
+        bare += ' ';
+        i = close;
+    }
+    if (bare.find("--") != std::string::npos) return "a command-line flag";
+    // A field name: a word joined by an underscore (n_ubatch, top_p, cache_mb).
+    for (size_t i = 0; i + 2 < bare.size(); ++i)
+        if (bare[i + 1] == '_' && std::isalnum((unsigned char) bare[i]) && std::isalnum((unsigned char) bare[i + 2]))
+            return "a field name around '" + bare.substr(i > 8 ? i - 8 : 0, 20) + "'";
+    return "";
+}
+
 static void expect_fail(const char * name, const RunConfig & c) {
     ValidationResult r = validate(c);
-    if (!r.ok) {
+    const std::string wrong = r.ok ? "" : front_end_neutral(r.error);
+    if (!r.ok && !wrong.empty()) {
+        std::printf("[FAIL] %s\n  the message names %s: %s\n", name, wrong.c_str(), r.error.c_str());
+        ++failures;
+    } else if (!r.ok) {
         std::printf("[PASS] %s (rejected: %s)\n", name, r.error.c_str());
     } else {
         std::printf("[FAIL] %s\n  expected rejection, got ok\n", name);

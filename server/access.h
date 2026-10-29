@@ -32,13 +32,15 @@ struct RequestFacts {
     std::string sec_fetch_site;
     std::string content_type;
     std::string authorization;
-    std::string x_api_key; // the X-Api-Key header: how Anthropic clients send a key
+    std::string x_api_key;   // the X-Api-Key header: how Anthropic clients send a key
+    std::string remote_addr; // the connection's peer address, which a client cannot choose
 };
 
 // status 0 when the request may proceed; otherwise the status to answer with, and why.
 struct AccessDecision {
     int status = 0;
     std::string error;
+    std::string code; // what a client decides on, when the refusal has one ("local_only")
     bool allowed() const { return status == 0; }
 };
 
@@ -59,6 +61,22 @@ bool bearer_matches(const std::string & authorization, const std::string & key);
 // `token` is `key`, compared in constant time. An empty key matches nothing.
 bool key_matches(const std::string & token, const std::string & key);
 
+// A route only the person at this machine may use, whatever the server's --host and key: it
+// installs software, reads the network on the person's behalf, or changes files. `path` is matched
+// segment by segment: `*` is any one segment, a final `**` any number of them.
+struct LocalOnlyRoute {
+    const char * method; // "GET", "POST", ...; "*" for any
+    const char * path;
+    const char * what; // finishes "only a client on this machine may ..."
+};
+
+// Every such route. The one list: a route is made local-only by adding a row here, and the guard
+// in front of every request refuses it from the network (403, code "local_only") before routing.
+const std::vector<LocalOnlyRoute> & local_only_routes();
+
+// The row of local_only_routes() that `method` and `path` fall under, or nullptr.
+const LocalOnlyRoute * local_only_route(const std::string & method, const std::string & path);
+
 AccessDecision check_access(const AccessPolicy & policy, const RequestFacts & req);
 
 // Why the server may not start with these launch options, or "" when it may. Listening beyond
@@ -75,6 +93,18 @@ bool read_api_key_file(const std::string & path, std::string & key, std::string 
 // Unlike is_loopback_host() this is the socket's own address, which a client cannot choose.
 bool is_loopback_peer(const std::string & remote_addr);
 
+// The agent's routes that reach this computer's files, processes or secrets answer only to a client
+// whose connection comes from this machine, whatever --host says (docs/agent.md, "Who may use it").
+// `Always`: the route itself does (a workspace added, an approval, a skill, a task, a provider, a
+// client's settings written). `IfConversationReaches`: it does when the conversation it names has a
+// workspace or sends to a saved provider, which only the handler can look up. The apps reach the
+// server on loopback, so every route stays theirs.
+enum class Locality { Anywhere, Always, IfConversationReaches };
+Locality agent_route_locality(const std::string & path);
+
+// The code a local-only refusal carries (403).
+inline constexpr const char * k_local_only_code = "local_only";
+
 // The model path a client named, as the path the engine will open: canonical, symbolic links and
 // `..` resolved, and inside one of `roots` - the folders whose models the server lists. A relative
 // path is taken relative to the first root, the models folder. False, with the reason, for a path
@@ -90,5 +120,11 @@ bool confine_model_path(const std::string & requested,
 // else (an image in model output cannot be fetched from another host), runs no inline script,
 // cannot be framed, sends no referrer, and has no content type guessed for it.
 const std::vector<std::pair<std::string, std::string>> & security_headers();
+
+// The preview of a workspace file (`GET /api/conversations/<id>/file`) is framed by the UI and may
+// be a page with script of its own: it gets these instead, a policy that sandboxes it and lets it
+// reach nothing. `is_preview_path` says which responses those are.
+bool is_preview_path(const std::string & path);
+const std::vector<std::pair<std::string, std::string>> & preview_headers();
 
 } // namespace bmoe::server

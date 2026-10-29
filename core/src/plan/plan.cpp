@@ -166,7 +166,8 @@ std::string Plan::explain() const {
         std::snprintf(head, sizeof(head), "plan:   %-14s %-10s [%s] ", d.knob.c_str(), d.value.c_str(),
                       source_name(d.source));
         out += head;
-        out += d.reason;
+        // The command line's account: a setting the reason names is its flag.
+        out += name_params(d.reason, ParamNames::Flags);
         out += "\n";
     }
 

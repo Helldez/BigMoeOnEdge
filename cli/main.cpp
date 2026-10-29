@@ -46,6 +46,11 @@
 
 using namespace bmoe;
 
+// An engine message as this front-end's user reads it: the settings it names, as the flags they type.
+static std::string flags_named(const std::string & engine_message) {
+    return name_params(engine_message, ParamNames::Flags);
+}
+
 static std::string json_escape(const std::string & s) {
     std::string o;
     o.reserve(s.size() + 8);
@@ -269,7 +274,8 @@ static bool emit_decide(Session & session, const SessionCmd & cmd) {
     const DecideResult r = session.decide(req);
     if (!r.ok && !r.cancelled) {
         std::printf("BMOE_ERROR {\"id\":%d,\"fatal\":%s,\"code\":\"%s\",\"msg\":\"%s\"}\n", cmd.id,
-                    r.fatal ? "true" : "false", run_error_name(r.error_kind), json_escape(r.error).c_str());
+                    r.fatal ? "true" : "false", run_error_name(r.error_kind),
+                    json_escape(flags_named(r.error)).c_str());
         std::fflush(stdout);
         return !r.fatal;
     }
@@ -405,7 +411,7 @@ static int run_session_loop(const RunConfig & cfg,
     std::unique_ptr<Session> session = Session::open(sc, error, route_trace, compute_trace, io_trace);
     if (!session) {
         std::printf("BMOE_ERROR {\"id\":0,\"fatal\":true,\"code\":\"%s\",\"msg\":\"%s\"}\n",
-                    run_error_name(RunError::Failed), json_escape(error).c_str());
+                    run_error_name(RunError::Failed), json_escape(flags_named(error)).c_str());
         std::fflush(stdout);
         return 1;
     }
@@ -512,7 +518,8 @@ static int run_session_loop(const RunConfig & cfg,
             // goes on the line as `code` so a client decides on it too, never on `msg`.
             const bool recoverable = run_error_recoverable(r.error_kind);
             std::printf("BMOE_ERROR {\"id\":%d,\"fatal\":%s,\"code\":\"%s\",\"msg\":\"%s\"}\n", cmd.id,
-                        recoverable ? "false" : "true", run_error_name(r.error_kind), json_escape(r.error).c_str());
+                        recoverable ? "false" : "true", run_error_name(r.error_kind),
+                        json_escape(flags_named(r.error)).c_str());
             std::fflush(stdout);
             if (!recoverable) {
                 rc = 1;
@@ -1137,7 +1144,7 @@ int main(int argc, char ** argv) {
         for (const std::string & s : to_args(cfg))
             args += (args.empty() ? "\"" : ",\"") + json_escape(s) + "\"";
         std::printf("{\"config\":%s,\"args\":[%s],\"valid\":%s,\"error\":\"%s\"}\n", config_json(cfg).c_str(),
-                    args.c_str(), v.ok ? "true" : "false", json_escape(v.error).c_str());
+                    args.c_str(), v.ok ? "true" : "false", json_escape(flags_named(v.error)).c_str());
         return v.ok ? 0 : 1;
     }
 
@@ -1155,7 +1162,7 @@ int main(int argc, char ** argv) {
 
     ValidationResult vr = validate(cfg);
     if (!vr) {
-        std::fprintf(stderr, "config error: %s\n", vr.error.c_str());
+        std::fprintf(stderr, "config error: %s\n", flags_named(vr.error).c_str());
         return 1;
     }
     // Decide requests only travel through the session protocol; a one-shot run would ignore the flag.
@@ -1232,7 +1239,7 @@ int main(int argc, char ** argv) {
         std::unique_ptr<Session> session =
             Session::open(sc, error, route_trace.get(), compute_trace.get(), io_trace.get());
         if (!session) {
-            std::fprintf(stderr, "bmoe: %s\n", error.c_str());
+            std::fprintf(stderr, "bmoe: %s\n", flags_named(error).c_str());
             return 1;
         }
         for (const std::string & path : paths) {
@@ -1250,7 +1257,8 @@ int main(int argc, char ** argv) {
             pr.choices = ppl_choices;
             const PplResult pres = session->perplexity(pr);
             if (!pres.ok) {
-                std::fprintf(stderr, "bmoe: perplexity failed on '%s': %s\n", path.c_str(), pres.error.c_str());
+                std::fprintf(stderr, "bmoe: perplexity failed on '%s': %s\n", path.c_str(),
+                             flags_named(pres.error).c_str());
                 return 1;
             }
             if (paths.size() > 1) std::printf("ppl-file: %s\n", path.c_str());
@@ -1296,7 +1304,7 @@ int main(int argc, char ** argv) {
     outs.io_trace = io_trace.get();
     RunResult r = run(cfg, outs);
     if (!r) {
-        std::fprintf(stderr, "\nerror: %s\n", r.error.c_str());
+        std::fprintf(stderr, "\nerror: %s\n", flags_named(r.error).c_str());
         return 1;
     }
     routing.keep(r.routing);

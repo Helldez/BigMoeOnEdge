@@ -88,7 +88,7 @@ jobs:
         # bump would silently start failing every PR against a version nobody was told about.
         run: |
           sudo apt-get update && sudo apt-get install -y clang-format-18
-          find core cli server tests -type f \( -name '*.cpp' -o -name '*.h' -o -name '*.mm' \) \
+          find core cli server desktop tests -type f \( -name '*.cpp' -o -name '*.h' -o -name '*.mm' \) \
             -print0 | xargs -0 clang-format-18 --dry-run --Werror
 
   host-linux:
@@ -101,9 +101,11 @@ jobs:
           submodules: recursive
       - name: iOS run-batch status fixtures (no SDK or device)
         run: python3 tests/ios_runs_test.py
+      # WebKitGTK and the indicator library: bmoe-desktop builds where they are found, so this is
+      # where its Linux code is compiled on every PR.
       - name: Install deps
         run: |
-          sudo apt-get update && sudo apt-get install -y cmake ninja-build
+          sudo apt-get update && sudo apt-get install -y cmake ninja-build libwebkit2gtk-4.1-dev libayatana-appindicator3-dev
           python3 -m pip install --upgrade pip
           python3 -m pip install -r scripts/requirements-ci.txt
       # This is the job that proves --overlap byte-identical, so the overlap gates may not skip
@@ -148,8 +150,9 @@ jobs:
 
   tsan:
     # ThreadSanitizer over the tests that run threads: the engine host (loads, turns, cancel and
-    # unload across threads), the server's turn queue and event fan-out, and the byte-identity gates,
-    # which drive the streamer's I/O lanes and --overlap's expert-ready hook. llama.cpp is
+    # unload across threads), the agent (runs, approvals, stop, tasks), the server's turn queue and
+    # event fan-out, and the byte-identity gates, which drive the streamer's I/O lanes and
+    # --overlap's expert-ready hook. llama.cpp is
     # instrumented too (BMOE_SANITIZE is the whole build) and runs on its own threadpool rather than
     # OpenMP, whose runtime TSan cannot see into.
     needs: changes
@@ -176,7 +179,7 @@ jobs:
       - name: Threaded tests, sanitized
         env:
           TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
-        run: cd build-tsan && ctest -j 2 --output-on-failure -R '^(engine_host|server_logic|moe_gates_.*)$'
+        run: cd build-tsan && ctest -j 2 --output-on-failure -R '^(engine_host|server_logic|agent|moe_gates_.*)$'
 
   ui:
     # The web UI's unit tests (ui/src/lib). release-host runs them too, but only once a release is

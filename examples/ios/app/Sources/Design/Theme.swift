@@ -1,30 +1,53 @@
 import SwiftUI
 import UIKit
 
-/// The visual language (docs/design.md) as SwiftUI reads it: the logo's palette as colours that
-/// follow the system's appearance, Pixelify Sans for the product's own voice (titles, labels,
-/// figures), the system face for prose, the system mono for what a person may paste, an 8-point
-/// grid, square corners, 2-point edges and a hard shadow.
+/// The visual language's tokens, the one place this app keeps them (docs/design.md): slate and
+/// cyan, light and dark following the system, each pair checked for 4.5:1 where it carries words.
+/// The accent itself is too light for words on white in the light scheme, so words in the accent
+/// and the primary button's fill use `accentInk`, and the accent marks what is not text.
 enum Palette {
-    static let bg = dynamic(dark: 0x0A0512, light: 0xF2ECFF)
-    static let surface = dynamic(dark: 0x160B2A, light: 0xFFFFFF)
-    static let surface2 = dynamic(dark: 0x2A1150, light: 0xE6DCFF)
-    static let border = dynamic(dark: 0x3B2A63, light: 0x6C5AA8)
-    static let text = dynamic(dark: 0xF2ECFF, light: 0x0A0512)
-    static let muted = dynamic(dark: 0xB9A9E6, light: 0x4B3A7A)
-    static let accent = dynamic(dark: 0x21E6FF, light: 0x0FA8C2)
-    static let accentText = dynamic(dark: 0x0A0512, light: 0xFFFFFF)
-    static let accent2 = dynamic(dark: 0x6C5AA8, light: 0x6C5AA8)
-    static let warn = dynamic(dark: 0xFFC53D, light: 0x8A5A00)
-    static let ok = dynamic(dark: 0x7CE0B0, light: 0x1D7A46)
-    static let err = dynamic(dark: 0xFF6B8B, light: 0xB42318)
-    static let shadow = dynamic(dark: 0x000000, light: 0x0A0512)
+    static let bg = dynamic(light: 0xF6F8F9, dark: 0x0B1014)
+    static let surface = dynamic(light: 0xFFFFFF, dark: 0x131A20)
+    static let surface2 = dynamic(light: 0xEEF2F4, dark: 0x1A232B)
+    static let line = dynamic(light: 0xDFE5E9, dark: 0x222C34)
+    static let text = dynamic(light: 0x111820, dark: 0xE6EDF2)
+    static let muted = dynamic(light: 0x56636E, dark: 0x93A1AC)
+    static let accent = dynamic(light: 0x0891B2, dark: 0x22B8D6)
+    static let accentInk = dynamic(light: 0x0E7490, dark: 0x22B8D6)
+    static let onAccent = dynamic(light: 0xFFFFFF, dark: 0x0B1014)
+    static let accentTint = dynamic(light: 0xE6F4F8, dark: 0x0F2A33)
+    static let ok = dynamic(light: 0x157A3C, dark: 0x4ADE80)
+    static let okTint = dynamic(light: 0xEAF6EE, dark: 0x12261B)
+    static let warn = dynamic(light: 0xA14A07, dark: 0xFBBF24)
+    static let warnTint = dynamic(light: 0xFDF3E2, dark: 0x2A2111)
+    static let err = dynamic(light: 0xB91C1C, dark: 0xF87171)
+    static let errTint = dynamic(light: 0xFCEBEB, dark: 0x2C1517)
 
-    /// A semantic colour's tint for banners and badges: the colour at 18% over the surface.
-    static func tint(_ c: Color) -> Color { c.opacity(0.18) }
+    /// Categorical colours for the parts of one whole (a memory bar's segments and their swatches):
+    /// hues far apart, so neighbours are told apart by colour, not only by order. Part `i` takes
+    /// `series[i % series.count]`; what is left over stays the empty track.
+    static let series = [
+        dynamic(light: 0x0891B2, dark: 0x22B8D6), // cyan
+        dynamic(light: 0x7C3AED, dark: 0xA78BFA), // violet
+        dynamic(light: 0xD97706, dark: 0xFBBF24), // amber
+        dynamic(light: 0x16A34A, dark: 0x4ADE80), // green
+        dynamic(light: 0xE11D48, dark: 0xFB7185), // rose
+        dynamic(light: 0x64748B, dark: 0x94A3B8), // slate
+    ]
 
-    private static func dynamic(dark: UInt32, light: UInt32) -> Color {
-        Color(UIColor { $0.userInterfaceStyle == .light ? uiColor(light) : uiColor(dark) })
+    /// A semantic colour's tint, for banners and badges: the named tint where there is one.
+    static func tint(_ c: Color) -> Color {
+        switch c {
+        case ok: return okTint
+        case warn: return warnTint
+        case err: return errTint
+        case accent, accentInk: return accentTint
+        default: return c.opacity(0.14)
+        }
+    }
+
+    private static func dynamic(light: UInt32, dark: UInt32) -> Color {
+        Color(UIColor { $0.userInterfaceStyle == .dark ? uiColor(dark) : uiColor(light) })
     }
 
     static func uiColor(_ hex: UInt32) -> UIColor {
@@ -33,23 +56,84 @@ enum Palette {
     }
 }
 
-/// The grid: spacing is 8, 16, 24, 32.
+extension Preferences.Theme {
+    /// What SwiftUI is asked for; nil follows the system.
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+
+    /// What the windows are told, so UIKit's bars and every dynamic colour above resolve in the
+    /// chosen scheme; `.unspecified` hands the choice back to the system.
+    var interfaceStyle: UIUserInterfaceStyle {
+        switch self {
+        case .system: return .unspecified
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+}
+
+/// The grid: spacing is 8, 16, 24, 32; every box has an 8-point corner and a 1-point line.
 enum Grid {
     static let s: CGFloat = 8
     static let m: CGFloat = 16
     static let l: CGFloat = 24
     static let xl: CGFloat = 32
-    static let edge: CGFloat = 2
-    static let shadow: CGFloat = 4
+    static let radius: CGFloat = 8
+    static let line: CGFloat = 1
 }
 
 extension Font {
-    /// The product's own voice: titles, screen names, headings, badges and every figure the engine
-    /// reports. Never below 13 points.
-    static func pixel(_ size: CGFloat = 15, bold: Bool = false) -> Font {
-        .custom("Pixelify Sans", size: max(13, size)).weight(bold ? .bold : .regular)
+    /// Inter, bundled (Resources/Fonts), scaled with the person's text size from the nearest
+    /// system style. Every word of the app is set in it.
+    static func ui(_ size: CGFloat = 17, bold: Bool = false, weight: Font.Weight? = nil) -> Font {
+        let w = weight ?? (bold ? .semibold : .regular)
+        return .custom(interName(w), size: size, relativeTo: style(for: size))
+    }
+
+    /// JetBrains Mono, bundled: anything a person may paste or a model wrote as code.
+    static func mono(_ size: CGFloat = 14, bold: Bool = false) -> Font {
+        .custom(bold ? "JetBrainsMono-Bold" : "JetBrainsMono-Regular", size: size, relativeTo: style(for: size))
     }
 
     /// Anything a person may paste: a command line, a path, a key.
-    static let code = Font.system(.footnote, design: .monospaced)
+    static let code = Font.mono(14)
+
+    /// A figure the engine reports, with digits of one width so a live value does not jitter.
+    static func figure(_ size: CGFloat = 15, bold: Bool = false) -> Font { ui(size, bold: bold).monospacedDigit() }
+
+    private static func interName(_ w: Font.Weight) -> String {
+        switch w {
+        case .bold, .heavy, .black: return "Inter-Bold"
+        case .semibold: return "Inter-SemiBold"
+        case .medium: return "Inter-Medium"
+        default: return "Inter-Regular"
+        }
+    }
+
+    private static func style(for size: CGFloat) -> Font.TextStyle {
+        switch size {
+        case ..<12: return .caption2
+        case ..<13: return .caption
+        case ..<14: return .footnote
+        case ..<16: return .subheadline
+        case ..<18: return .body
+        case ..<21: return .title3
+        case ..<26: return .title2
+        default: return .title
+        }
+    }
+}
+
+extension UIFont {
+    /// Inter for the UIKit bars, which SwiftUI's navigation and tab bars read.
+    static func ui(_ size: CGFloat, weight: UIFont.Weight = .regular) -> UIFont {
+        let name = weight >= .bold ? "Inter-Bold" : weight >= .semibold ? "Inter-SemiBold" : weight >= .medium ? "Inter-Medium"
+            : "Inter-Regular"
+        return UIFont(name: name, size: size) ?? .systemFont(ofSize: size, weight: weight)
+    }
 }

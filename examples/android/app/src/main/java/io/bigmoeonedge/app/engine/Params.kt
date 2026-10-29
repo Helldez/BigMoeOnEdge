@@ -20,6 +20,8 @@ data class ParamSpec(
     val group: String,
     val groupLabel: String,
     val level: String, // basic | advanced | experimental | debug
+    /** A settings form offers this row (`form`); a server that does not say offers its basic rows. */
+    val form: Boolean,
     val scope: String, // session | request
     val help: String,
     val flag: String,
@@ -77,8 +79,6 @@ data class ParamSpec(
     }
 
     companion object {
-        val LEVELS = listOf("basic", "advanced", "experimental", "debug")
-
         fun parse(arr: JSONArray): List<ParamSpec> = (0 until arr.length()).map { i -> of(arr.getJSONObject(i)) }
 
         fun of(o: JSONObject): ParamSpec {
@@ -104,6 +104,7 @@ data class ParamSpec(
                 group = o.optString("group", ""),
                 groupLabel = o.optString("group_label", o.optString("group", "")),
                 level = o.optString("level", "basic"),
+                form = if (o.has("form") && !o.isNull("form")) o.getBoolean("form") else o.optString("level", "basic") == "basic",
                 scope = o.optString("scope", "session"),
                 help = o.optString("help", ""),
                 flag = o.optString("flag", ""),
@@ -140,9 +141,6 @@ data class ParamSpec(
             return order.sortedBy { g -> by.getValue(g).first().groupOrder ?: Int.MAX_VALUE }
                 .map { g -> (by.getValue(g).first().groupLabel) to by.getValue(g) }
         }
-
-        /** A level's place in [LEVELS]; a level this app does not know yet sorts last. */
-        fun levelRank(level: String): Int = LEVELS.indexOf(level).let { if (it < 0) LEVELS.size else it }
     }
 }
 

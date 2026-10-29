@@ -22,8 +22,11 @@ object LanAddress {
             .mapNotNull { it.hostAddress }
             .distinct()
 
-    /** The engine's address for a client on this network, `http://<ip>:<port>/v1`. */
-    fun url(ip: String): String = "http://$ip:${ServerProcess.PORT}/v1"
+    /** The engine on this network, `http://<ip>:<port>`: what Settings lists. */
+    fun address(ip: String): String = "http://$ip:${ServerProcess.PORT}"
+
+    /** The base URL an OpenAI-compatible client is given, `http://<ip>:<port>/v1`. */
+    fun url(ip: String): String = address(ip) + "/v1"
 
     /** What the phone has right now on its Wi-Fi and Ethernet networks. */
     fun current(ctx: Context): List<String> {

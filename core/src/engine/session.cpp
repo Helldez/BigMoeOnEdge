@@ -937,7 +937,9 @@ bool Session::Impl::load_model(Opening & o) {
     if (!prefill && !cpu_only && !cfg.device_list.empty()) {
         for (const std::string & n : cfg.device_list) {
             ggml_backend_dev_t dev = ggml_backend_dev_by_name(n.c_str());
-            if (!dev) return o.fail("the plan names device '" + n + "', which this build does not have");
+            if (!dev)
+                return o.fail("{device-list} names device '" + n +
+                              "', which this build does not have: plan again on this machine");
             listed_devices.push_back(dev);
         }
         listed_devices.push_back(nullptr);
@@ -953,7 +955,9 @@ bool Session::Impl::load_model(Opening & o) {
     if (!prefill && !cpu_only && !cfg.device_split.empty()) {
         for (const auto & d : cfg.device_split) {
             ggml_backend_dev_t dev = ggml_backend_dev_by_name(d.first.c_str());
-            if (!dev) return o.fail("the placement names device '" + d.first + "', which this build does not have");
+            if (!dev)
+                return o.fail("{device-split} names device '" + d.first +
+                              "', which this build does not have: plan again on this machine");
             split_devices.push_back(dev);
         }
         split_layers.assign(llama_max_devices(), 0.0f);
@@ -974,13 +978,16 @@ bool Session::Impl::load_model(Opening & o) {
     std::memset(kv_overrides, 0, sizeof(kv_overrides)); // second entry stays the key[0]==0 terminator
     if (cfg.n_expert_used > 0) {
         const GgufModelInfo & info = o.gguf();
-        if (!info.ok) return o.fail("cannot read gguf metadata: " + cfg.model_path);
-        if (info.arch.empty()) return o.fail("gguf has no general.architecture; cannot set n_expert_used");
+        if (!info.ok) return o.fail("cannot read the model file's metadata: " + cfg.model_path);
+        if (info.arch.empty())
+            return o.fail("{n-expert-used} cannot be applied: the model file declares no architecture "
+                          "(general.architecture), so it is incomplete or not a model");
         if (info.n_expert <= 0)
-            return o.fail("n_expert_used was set but the model is not MoE (no " + info.arch + ".expert_count)");
+            return o.fail("{n-expert-used} was set, but this model has no experts (the file declares no expert "
+                          "count): leave it at 0");
         if (cfg.n_expert_used > info.n_expert)
-            return o.fail("n_expert_used=" + std::to_string(cfg.n_expert_used) + " exceeds the model's expert count (" +
-                          std::to_string(info.n_expert) + ")");
+            return o.fail("{n-expert-used} (" + std::to_string(cfg.n_expert_used) +
+                          ") is more than the model's experts (" + std::to_string(info.n_expert) + ")");
         const std::string key = info.arch + ".expert_used_count";
         kv_overrides[0].tag = LLAMA_KV_OVERRIDE_TYPE_INT;
         std::snprintf(kv_overrides[0].key, sizeof(kv_overrides[0].key), "%s", key.c_str());
@@ -989,7 +996,7 @@ bool Session::Impl::load_model(Opening & o) {
     }
 
     llama_model * m = llama_model_load_from_file(cfg.model_path.c_str(), mparams);
-    if (!m) return o.fail("failed to load model: " + cfg.model_path);
+    if (!m) return o.fail("could not load the model: " + cfg.model_path);
     model.reset(m);
     if (cfg.spec.is_mtp() && !cfg.spec.mtp_head.empty()) {
         // The head whole and resident, where the plan put it: on the devices the target's layers
@@ -1000,7 +1007,7 @@ bool Session::Impl::load_model(Opening & o) {
         hp.devices = mparams.devices; // the same list, so the head cannot land on a device the plan left out
         hp.load_mtp = true;
         llama_model * h = llama_model_load_from_file(cfg.spec.mtp_head.c_str(), hp);
-        if (!h) return o.fail("failed to load the MTP head: " + cfg.spec.mtp_head);
+        if (!h) return o.fail("could not load {mtp-head}: " + cfg.spec.mtp_head);
         model_dft.reset(h);
     }
     return true;
@@ -1018,14 +1025,12 @@ bool Session::Impl::read_model(Opening & o) {
     // converted without the nextn tensors.
     n_layer_nextn = llama_model_n_layer_nextn(m);
     if (model_dft && llama_model_n_layer_nextn(model_dft.get()) <= 0)
-        return o.fail("--mtp-head names a file with no MTP head (nextn_predict_layers is absent or zero): " +
+        return o.fail("{mtp-head} names a file with no MTP head in it (its nextn_predict_layers is absent or zero): " +
                       cfg.spec.mtp_head);
     if (cfg.spec.is_mtp() && !model_dft && n_layer_nextn <= 0)
-        return o.fail("--mtp needs a model with a trained MTP head, and this gguf has no nextn block "
-                      "(nextn_predict_layers is absent or zero). Qwen3.5/3.6 carry one in their "
-                      "ordinary quantisations; other architectures have none. --ngram speculates on any "
-                      "model, since it drafts from the text rather than from the weights. See "
-                      "docs/mtp.md and docs/ngram.md.");
+        return o.fail("{spec=mtp} needs a model with a trained MTP head, and this model has none (no nextn block "
+                      "in the file): give a head file in {mtp-head}, or use {spec=ngram}, which works with "
+                      "any model since it drafts from the text rather than from the weights.");
 
     char arch_buf[128] = {0};
     llama_model_meta_val_str(m, "general.architecture", arch_buf, sizeof(arch_buf));
@@ -1046,7 +1051,7 @@ bool Session::Impl::read_model(Opening & o) {
         o.layout = discover_expert_layout(o.meta().offsets.extents, o.gguf().n_expert);
         if (!o.layout.ok)
             return o.fail("not a MoE this engine streams: " + o.layout.error +
-                          " (docs/which-models-stream.md; without --moe-stream the file runs as plain mmap)");
+                          ". Turn {moe-stream} off to run it from the mapped file (docs/which-models-stream.md).");
     } else if (!cfg.moe.expert_host_buffer.empty()) {
         // The copy into a device's host memory needs only to know which tensors are experts; a file
         // it cannot read that way is simply not copied.
@@ -1344,7 +1349,7 @@ bool Session::Impl::bind_expert_offsets(Opening & o,
         if (L.on_device)
             return o.fail("MoE layer " + std::to_string(il) +
                           " has its experts split between a device and the host, which streaming cannot "
-                          "serve: place all of blk." +
+                          "serve: in {tensor-overrides}, place all of blk." +
                           std::to_string(il) + "'s experts on one side (" +
                           tensor_names::expert_override_pattern((int) il) + " keeps them on the host)");
         ++n_bound;
@@ -1567,9 +1572,12 @@ bool Session::Impl::arm_unstreamed_record(Opening & o) {
 bool Session::Impl::arm_device_cache(Opening & o) {
     const SessionConfig & cfg = o.cfg;
     if (cfg.moe.overlap)
-        return o.fail("--device-cache-mb computes the experts on the device; --overlap waits for them on the CPU");
-    if (prefill) return o.fail("--device-cache-mb keeps the layers on their device; a prefill device moves them");
-    if (cfg.n_gpu_layers == 0) return o.fail("--device-cache-mb needs the layers on a device (--gpu-layers)");
+        return o.fail("{device-cache-mb} does not combine with {overlap}: the cache computes the experts on the "
+                      "device, and {overlap} waits for them on the CPU. Turn one of them off.");
+    if (prefill)
+        return o.fail("{device-cache-mb} does not combine with {prefill-device}: the cache keeps the layers on "
+                      "their device, and a prefill device moves them. Turn one of them off.");
+    if (cfg.n_gpu_layers == 0) return o.fail("{device-cache-mb} needs layers on a device: set {gpu-layers} above 0");
     // The speculative driver holds both contexts, and both are made again: it goes first, and is
     // made again over the new ones.
     const bool had_mtp = mtp != nullptr;
@@ -1691,8 +1699,8 @@ bool Session::Impl::bind_streaming(Opening & o) {
     }
 
     if (cfg.moe.overlap && !source.enable_overlap_hook())
-        return o.fail("--overlap needs the expert-ready hook of the bmoe llama.cpp fork, and the CPU backend "
-                      "loaded here does not expose it (docs/seam.md)");
+        return o.fail("{overlap} needs the expert-ready hook of the bmoe llama.cpp fork, and the CPU backend "
+                      "loaded here does not expose it: turn {overlap} off (docs/seam.md)");
 
     clear_memory(ctx.get()); // discard warm-up KV
     if (ctx_dft) llama_memory_clear(llama_get_memory(ctx_dft.get()), true);
@@ -2325,8 +2333,7 @@ struct Session::Impl::Turn {
         // A message list replaces the engine-held conversation instead of adding one user turn to it.
         const bool replace = !req.messages.empty();
         if (replace && !chat_on)
-            return fail(RunError::NeedsChatMode,
-                        "a message list needs chat mode: open the session with the chat template on");
+            return fail(RunError::NeedsChatMode, "a message list needs chat turns: open the session with {chatml} on");
         if (!chat_on) return true;
         try {
             if (replace) {
@@ -2404,9 +2411,9 @@ struct Session::Impl::Turn {
         if (ctx_room < 1) {
             undo_history();
             return fail(RunError::ContextFull,
-                        "the conversation (" + std::to_string(n_prompt) + " tokens) exceeds the session n_ctx (" +
+                        "the conversation (" + std::to_string(n_prompt) + " tokens) is longer than {ctx-size} (" +
                             std::to_string(im.cfg.n_ctx) +
-                            "): start a new conversation, or load the model with a larger context size");
+                            " tokens): start a new conversation, or load the model with a larger {ctx-size}");
         }
         n_predict = std::min(req.n_predict, ctx_room);
         return true;

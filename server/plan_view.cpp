@@ -319,8 +319,9 @@ json decision_json(const Decision & d) {
             {"value", d.value},
             {"value_text", value_text(d)},
             {"source", source_name(d.source)},
-            {"brief", d.brief.empty() ? d.reason : d.brief},
-            {"reason", d.reason}};
+            // A setting the planner's words name is the label a form shows.
+            {"brief", name_params(d.brief.empty() ? d.reason : d.brief, ParamNames::Labels)},
+            {"reason", name_params(d.reason, ParamNames::Labels)}};
 }
 
 std::string plan_step_label(const std::string & step) {

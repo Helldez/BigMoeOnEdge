@@ -12,7 +12,7 @@
   import { api } from '../lib/api';
   import { commandLine, formatBytes, formatNum } from '../lib/format';
   import { appliedChanges, diagnosticText, planDecisions, speedCheck, type AppliedChange } from '../lib/plan';
-  import { settingHref } from '../lib/route';
+  import { href, settingHref } from '../lib/route';
   import { server } from '../stores/server.svelte';
 
   let error = $state('');
@@ -60,6 +60,11 @@
   });
 
   const plan = $derived(server.plan);
+  // The model the page is about: the one the shown plan measured, else the one a load would open.
+  const modelPath = $derived(
+    (plan?.available ? plan.model : '') || String(server.config?.values?.model ?? '') || server.info?.model?.path || '',
+  );
+  const modelName = $derived(modelPath.split(/[\\/]/).pop() ?? '');
   const measuring = $derived(server.measuring);
   const avail = $derived(plan?.available && !plan.error ? plan : null);
   const check = $derived(avail ? speedCheck(avail.predicted, avail.measured) : null);
@@ -84,9 +89,19 @@
     setTimeout(() => (diag = diag === 'ok' ? 'idle' : diag), 2000);
   }
   const PLANNING_DOC = 'https://github.com/Helldez/BigMoeOnEdge/blob/main/docs/hardware-planning.md';
+  import { t } from '../lib/text';
 </script>
 
-<h1>Plan</h1>
+<div class="page-col">
+<div class="page-head">
+  <h1>{t('nav.plan')}</h1>
+  <p>{t('plan.lead')}</p>
+  {#if modelName}
+    <p class="for">{t('plan.for')} <strong title={modelPath}>{modelName}</strong> · <a href={href('models')}>{t('plan.change')}</a></p>
+  {:else}
+    <p class="for muted">{t('plan.noModel')}</p>
+  {/if}
+</div>
 
 {#if shownError}
   <div class="banner error" role="alert">
@@ -100,7 +115,7 @@
 {/if}
 
 {#if !plan}
-  {#if !shownError && !showProgress}<p class="muted">Reading the plan...</p>{/if}
+  {#if !shownError && !showProgress}<div class="skel" aria-hidden="true"><span class="skeleton"></span><span class="skeleton"></span></div>{/if}
 {:else if !plan.available}
   <div class="card">
     <p><strong>The automatic hardware planner is not in this build.</strong></p>
@@ -111,6 +126,8 @@
   <label class="auto">
     <input
       type="checkbox"
+      class="switch"
+      role="switch"
       checked={server.config?.auto_plan ?? false}
       disabled={savingAuto}
       onchange={(e) => setAuto((e.currentTarget as HTMLInputElement).checked)}
@@ -121,7 +138,7 @@
   {#if plan.none}
     <section class="card summary">
       <p class="sentence">Not measured yet.</p>
-      <p class="muted machine">Measure this machine to see what the plan does with the chosen model.</p>
+      <p class="muted machine">{t('plan.measureFor', { name: modelName || t('plan.theModel') })}</p>
       <div class="apply">
         <button type="button" class="primary" onclick={measure} disabled={measuring}>{measuring ? 'Measuring...' : 'Measure'}</button>
       </div>
@@ -263,7 +280,13 @@
   <PlanDecisions decisions={carried} />
 {/if}
 
+</div>
+
 <style>
+  .for {
+    margin: var(--s2) 0 0;
+    overflow-wrap: anywhere;
+  }
   .auto {
     display: flex;
     gap: 0.6rem;
@@ -271,7 +294,16 @@
     margin-bottom: 1rem;
   }
   .auto input {
-    margin-top: 0.25rem;
+    margin-top: 0.125rem;
+  }
+  .skel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s3);
+  }
+  .skel .skeleton {
+    height: 9rem;
+    border-radius: var(--radius);
   }
   .summary {
     display: flex;
@@ -281,8 +313,10 @@
   }
   .sentence {
     margin: 0;
-    font-size: 1.6rem;
-    line-height: 1.2;
+    font-size: 1.375rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1.25;
     max-width: 34ch;
   }
   .machine {
@@ -296,7 +330,8 @@
   }
   .tile {
     background: var(--bg);
-    border: var(--edge) solid var(--border);
+    border: var(--edge) solid var(--line);
+    border-radius: var(--radius);
     padding: 0.75rem;
     display: flex;
     flex-direction: column;
@@ -312,13 +347,14 @@
   }
   .hits {
     position: relative;
-    height: 10px;
-    border: var(--edge) solid var(--border);
+    height: 8px;
+    border-radius: var(--pill);
     background: var(--surface-2);
   }
   .hits span {
     display: block;
     height: 100%;
+    border-radius: var(--pill);
     background: var(--accent);
   }
   .hits i {
@@ -335,7 +371,7 @@
     gap: 0.3rem 1.25rem;
   }
   .lanes .figure {
-    color: var(--accent);
+    color: var(--accent-ink);
     overflow-wrap: anywhere;
   }
   .doc {

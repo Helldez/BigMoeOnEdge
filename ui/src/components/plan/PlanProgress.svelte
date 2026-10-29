@@ -49,7 +49,7 @@
     appearance: none;
     width: 100%;
     height: 14px;
-    border: var(--edge) solid var(--border);
+    border: var(--edge) solid var(--line);
     background: var(--surface-2);
   }
   progress::-webkit-progress-bar {

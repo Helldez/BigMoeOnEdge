@@ -30,6 +30,8 @@ export interface ParamSpec {
   /** A form shows the group's values without a control: a front-end sets them elsewhere. */
   group_read_only?: boolean;
   level: ParamLevel | (string & {});
+  /** A settings form offers the row; the rest are the CLI's (the plan sets them). */
+  form?: boolean;
   scope: ParamScope | (string & {});
   help: string;
   flag: string;
@@ -211,6 +213,8 @@ export interface PlanAvailable {
   values: Record<string, ParamValue>;
   args: string[];
   explain: string;
+  /** The model file the plan was measured for. */
+  model?: string;
   machine?: string;
   not_applicable?: string[];
   /** Set when the plan was measured with a model loaded, which makes it pessimistic. */

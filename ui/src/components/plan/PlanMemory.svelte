@@ -1,14 +1,15 @@
 <script lang="ts">
   // One bar per memory pool: what the run holds, against what it may hold. The rows and their words
-  // are the plan's ledger; the colour follows a row's position, never its name.
+  // are the plan's ledger; the colour follows a row's position, never its name, from the series
+  // palette so neighbouring parts stay apart.
   import { formatBytes } from '../../lib/format';
   import { memorySegments } from '../../lib/plan';
   import type { PlanMemoryPool } from '../../lib/types';
 
   let { pools }: { pools: PlanMemoryPool[] } = $props();
 
-  const COLOURS = ['var(--accent-2)', 'var(--accent)', 'var(--muted)', 'var(--ok)', 'var(--warn)'];
-  const colour = (slot: number) => (slot < 0 ? 'var(--surface-2)' : COLOURS[slot % COLOURS.length]);
+  const SERIES = 6;
+  const colour = (slot: number) => (slot < 0 ? 'var(--surface-2)' : `var(--series-${(slot % SERIES) + 1})`);
 </script>
 
 {#each pools as pool, pi (pi)}
@@ -66,7 +67,7 @@
   .bar {
     display: flex;
     height: 28px;
-    border: var(--edge) solid var(--border);
+    border: var(--edge) solid var(--line);
     background: var(--surface-2);
     overflow: hidden;
   }
@@ -78,7 +79,7 @@
     margin: 0;
     padding: 0;
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
     gap: 0.4rem 1rem;
   }
   .legend li {
@@ -86,10 +87,14 @@
     align-items: center;
     gap: 0.5rem;
   }
+  /* A size never breaks across lines; the row's name wraps instead. */
+  .legend .figure {
+    white-space: nowrap;
+  }
   .swatch {
     flex: 0 0 12px;
     height: 12px;
-    border: 1px solid var(--border);
+    border: 1px solid var(--line);
   }
   .note {
     margin: 0;

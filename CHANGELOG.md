@@ -21,11 +21,169 @@ Semantic Versioning.
   against llama.cpp's own 55.6-55.8, and long prompts prefill at 2.1-2.3k tok/s. With ROCm's clang
   the build hangs on ggml-cpu's AMX kernels; the bench notes give the line that builds the host code
   with gcc.
+- **The agent, in the server** (`docs/agent.md`, `docs/server-api.md#agent`). A conversation held
+  by the server can work in a folder a person adds (a workspace): list, read, search, write and edit
+  its files, run commands, read web pages and search the web, follow skills, and hand parts of a job
+  to helper conversations. Three modes say what it may do without asking (`ask`, `read_only`,
+  `full`); an approval card carries the diff an edit will make, and nothing has run when it
+  appears. Paths are confined to the workspace after resolving `..` and links; a command runs in
+  the workspace with a time limit as one process group, killed on a stop; a short list of programs
+  that only read runs without asking. A run goes on in the server with no page open and reports on
+  `/api/events` (`conversation`, `item`, `delta`); rounds wait in the engine's turn line like any
+  chat, and keep the prompt the KV holds. A context that runs short shortens the oldest tool
+  results, and says so. Conversations, workspaces, tasks, skills' switches and providers are kept
+  in `<data>/agent/`; a UI can import the conversations it kept before.
+- **Skills**: `SKILL.md` folders shipped beside the server (`review-change`, `write-tests`,
+  `summarize-document`, `web-research`, `explain-codebase`), written in the app, or kept in a
+  workspace's `.bmoe/skills/`; switched on and off per name.
+- **Tasks**: a prompt that runs on a schedule (once, every so many minutes, daily, weekly, in local
+  time) as a conversation, read-only unless chosen otherwise, with approvals refused at once and
+  reported.
+- **Providers**: a conversation can run on any OpenAI-compatible chat service, streamed, with the
+  tools as OpenAI tools. The key is stored in `<data>/credentials.json`, readable by its owner only,
+  and never returned, logged or put on a command line.
+- **Connecting other apps** (`GET /api/connect`, `POST /api/connect/<id>`, `catalog/clients.json`):
+  the settings for Claude Code, Codex CLI, OpenCode, an OpenAI SDK program and Open WebUI, filled in
+  for this server; the server writes Codex CLI's and OpenCode's settings files with a backup.
+- **Other coding agents in a conversation** (`docs/agent.md`, "Other agents"): on a computer that
+  runs programs, a conversation with a folder may be worked by OpenCode, Claude Code, Codex or Pi
+  instead of the built-in agent (still the default), over the Agent Client Protocol. How each starts
+  is the `acp` entry of its row in `catalog/clients.json` (OpenCode itself, the others through their
+  published adapters, versions pinned). Its text, reasoning and tool calls become the
+  conversation's items; the permissions it asks for are the mode's to answer, or an approval card
+  with its diff; its file reads and writes are served inside the folder only. `GET /api/agent` says
+  which agents are installed; the web UI's composer offers them before the first message.
+- `--chat-only`: conversations are plain chat (no tools, no agent prompt, no workspaces or tasks),
+  for the phone apps; `GET /api/agent` says so.
+- `--skills-dir PATH` names the folder of bundled skills, for a package that keeps them elsewhere.
+
+- **The agent in the web UI** (`docs/screens.md`). A sidebar with the server's conversations by
+  folder and by date, the loaded model and every screen, folding to a rail and turning into a drawer
+  on a phone. Conversations are drawn from the server's items and follow its `item`, `delta` and
+  `conversation` events: tool calls with plain titles and states, consecutive calls summarised in a
+  line ("Read 3 files, edited 2 files · +14 −3") and expandable, edits as diffs, approval cards
+  that say nothing has happened yet, helper rows and notices; a past question can be edited and
+  sent again. The composer picks the folder (the app's folder dialog, or a typed path), the mode
+  (Ask first, Read only, Full access with a warning), the model (the local one or a saved provider)
+  and reasoning. A resizable preview pane shows a file the agent wrote: a page or a drawing runs in
+  a sandboxed frame, Markdown is rendered, code highlighted.
+- **Skills, Tasks and Connect apps screens**, and a first-run setup: what this computer has in
+  plain words, the graphics pack that applies, the catalog's model that suits its memory, its
+  download, then a conversation. Settings gains Appearance (theme, text size), the desktop
+  app's own preferences, Providers (the key is write-only), graphics backend packs with Install,
+  and Check for updates.
+- **Every word in one dictionary** (`ui/src/lib/text`): components name a key, never the text,
+  and a test fails when the code names a key the dictionary lacks.
+- **Desktop notifications** through the app's bridge when an approval waits or a run ends while
+  the window is in the background.
+- **A mock server for the web UI** (`ui/mock/server.ts`, `npm run dev:mock`): every route the UI
+  calls, with made-up data and a short agent run on each message, to work on the UI with no engine.
+
+- **The phone apps are chat apps** (Android and iOS, `--chat-only`): conversations are held by the
+  server, through the same API as the desktop's, but are plain chat with no tools, no agent prompt,
+  no workspaces and no tasks; the agent is the desktop's. The new look stays. **Answer again** is
+  under the last answer: it sends the last question again through the edit route, as the web UI
+  does. The empty chat says the model runs on the phone and leads to Models while none is loaded.
+
+- **Settings show what a person sets** (web, Android, iOS alike). The parameter table marks the rows
+  a form offers (`form` in `GET /api/params`): every basic row and the few deeper ones a person
+  picks rather than the plan (which devices, speculative drafts, the context's precision, the
+  active experts), 14 of 79. The rest stay flags of the command line; one the person set anyway is
+  shown so it can be reset. The level filter, the per-level folds and the search are gone, and
+  every card starts closed.
+- **The desktop app serves the network too**, the phones' card first in Settings > General: the
+  server listens on every address behind a key kept in `<data>/network-key` (this user only, New
+  key replaces it), the window's page sends it as well, and what reaches files, commands and keys
+  stays loopback-only. `platform::lan_addresses()` lists the addresses to show.
+- **Settings gather what you set in one card**, "Set by you", first and folded like the others, on
+  the three UIs: every value the person set, in or out of the form, each with its reset. The rows
+  there leave their groups, so each row appears once.
+- **The network reads no agent data**: listing workspaces (which name folders on the disk), skills,
+  tasks, providers and the clients to connect is loopback-only now, like changing them.
+- **The release feed has its key**: `server/feed_key.h` carries the public half of the Ed25519 key
+  the release workflow signs `feed.json` with, so backend packs and updates read the feed. The
+  installers stay without an Apple or Windows publisher signature; `docs/desktop-app.md` says how
+  to open them the first time.
+- **The Plan screen names its model**: "For <model file>" under the title on the three UIs, with
+  Change to Models, so Measure says what it measures for.
+- **The phones pick their theme** like the web UI: System, Light or Dark in an Appearance card
+  (with the Metrics switch), applied at once, the system bars following it.
+- **Serve on the network is a card of its own**, first in a phone's Settings: its state and address
+  in the closed header; the addresses to copy, the key hidden until shown with New key (on iOS too
+  now), the base URL a client needs and a warning that the traffic is unencrypted.
+- **The engine's errors name no model family**: the MTP refusal said which models carry a head.
+- **Metrics is a section of Settings**, shown once the Metrics switch is on (off by default; on a
+  phone it also records the per-token CSV), instead of an entry of its own in the navigation.
+- **The plan's memory bar tells its parts apart**: a six-colour series palette (`series-1` …
+  `series-6`, light and dark, each 3:1 on a card) in place of theme colours that looked alike.
+
+- **`bmoe-desktop`, the app's own window** (`desktop/`, `docs/desktop-app.md`). The web UI in the
+  system's web view (the `webview` library, a pinned submodule: WKWebView, WebView2, WebKitGTK 4.1),
+  with `bmoe-server` as its child process: started on the port of the app's preferences (the next
+  free one when it is taken, said in a notification), restarted when it ends on its own, stopped on
+  Quit, and stopping by itself when the app is gone (`--parent-pid`). `window.bmoeDesktop` gives
+  the UI `info`, `pickFolder`, `notify`, `openExternal`, `setPrefs`, `restartServer` and
+  `applyUpdate`, answered for the server's own pages only. A tray or menu-bar item (Open, Restart
+  Server, Quit) with close to it on macOS and Windows, and on Linux where libayatana-appindicator3
+  is found at build time; notifications, the system's folder dialog, one instance per user.
+- **Backend packs** (`GET /api/backends`, `POST /api/backends/<id>/install`). CUDA and HIP leave the
+  installers for packs of their own, which the app installs where one of a pack's driver libraries
+  loads: downloaded, size and SHA-256 checked, the archive refused if an entry would leave its
+  folder, unpacked into `<data>/backends/<id>/`. The engine loads modules from each folder there
+  after the executable's (`register_backends` takes the folders; `docs/backends.md`), so a
+  read-only install takes packs too.
+- **Updates on request** (`GET /api/update`, `POST /api/update/download`): the installer of a newer
+  release, checked, for the app to run. Nothing reaches the network unless a person asked.
+- **A signed release feed.** Every release carries `feed.json` (`scripts/make-feed.py`, packs from
+  `packaging/packs.json`) and its Ed25519 signature, made with the repository's `FEED_SIGNING_KEY`;
+  the server checks it against the key compiled in (`server/feed_key.h`, Monocypher vendored for
+  the check) before it believes a byte of it. The release does not go out with an unsigned feed.
+- **One installer per OS runs the app**: `BigMoeOnEdge.app` (its main executable `bmoe-desktop`, the
+  Swift launcher gone), the Windows setup and the AppImage (`--server` for the server alone).
+- **One-line install of the command-line tools**: `scripts/install.sh` and `scripts/install.ps1`,
+  attached to each release, install `bmoe-cli` and `bmoe-server` with its UI into the user's folder
+  and onto `PATH`, the archive checked against the feed. The `bmoe-cli` archives now carry the
+  server and the web UI; the separate desktop archive remains for the NPU build only.
 
 ### Changed
 - **llama.cpp moves to upstream `8ca4060` of 2026-10-28**, 132 commits past `d88040c`
   (`docs/seam.md`). The pin is still upstream plus the one expert-ready-hook commit; the 37 gates pass
   on it.
+- **Engine messages name settings the way the reader sets them.** A refusal from `validate()` or a
+  model that will not load names a setting as a `{key}` placeholder from the parameter table
+  instead of a flag or a field (`n_ubatch=… exceeds n_ctx=…`, `--device-cache-mb`); one function,
+  `name_params()`, renders it, as flags in `bmoe-cli` and as the settings form's labels in
+  `bmoe-server` (config `error`, the load error, chat and decide failures, the plan's reasons). The messages say what
+  to change in plain words, and a test fails on any `validate()` message that names a flag or a field.
+- **A new visual language** (`docs/design.md`): slate surfaces with one cyan accent, light and dark
+  following the system or the person's choice, Inter for words and JetBrains Mono for code (both SIL
+  OFL, bundled), 8 px corners, 1 px lines, soft shadows, tabular digits for live figures, a visible
+  focus ring and reduced motion honoured. Every token is listed with its hex for both themes, and a
+  test checks every text pair against WCAG AA. The pixel logo stays as it is. Models, Plan,
+  Settings and Metrics are restyled with loading placeholders and empty states; Metrics is a calm
+  monitor of speed, disk reads, memory and the cache with their recent history.
+- **Conversations live on the server.** The web UI no longer keeps them in the browser: those it
+  kept are moved to the server once, then removed from the browser.
+- **The preview of a workspace file has a policy of its own** (`docs/server-api.md`, "Security
+  model"): `GET /api/conversations/<id>/file` answers with a sandboxing Content-Security-Policy that
+  lets its own script run in an opaque origin and reach nothing, framed only by the UI; the UI's
+  policy gains `frame-src 'self' blob:` for that frame.
+
+- **The phone apps take the agent and the new look.** Android and iOS drop the pixel style for slate
+  and cyan, light and dark following the system: Inter for text and JetBrains Mono for code (SIL
+  OFL, bundled with the licence; the pixel fonts leave the apps), an 8-point corner, 1-point lines
+  and a soft shadow, Material 3 on Android and the system's own idioms on iOS. The pixel logo stays.
+  Each app keeps its colour values in one tokens file (`ui/Theme.kt`, `Design/Theme.swift`).
+- **The chat on a phone is the server's agent** (`docs/agent.md`): conversations held by the engine
+  process, rendered from its items (Markdown answers, folded thinking, tool cards with their state,
+  runs of tool calls folded under one counting line, diffs, approval cards, helpers, notices), with
+  edit-and-resend and Stop, and a composer that picks the mode (Ask first, Read only, Full access),
+  the model (the phone's or a provider's) and the folder. The conversations the apps kept on the
+  phone are handed to the server once and deleted only when every message arrived.
+
+- **Local-only routes are one list** (`local_only_routes()`, `server/access.h`), enforced before
+  routing with `403` and `code: "local_only"`; deleting a model and adding one from a link moved
+  onto it, with the pack and update routes.
 - **The README's speed table is grouped by hardware, in whole tokens per second.** `README.md` and its
   five translations list each machine once (phone, iPhone, Apple-silicon laptop, Windows laptop, two
   NVIDIA desktop cards, an AMD datacenter card), with its memory and where the experts are read from
@@ -36,6 +194,27 @@ Semantic Versioning.
   shipped since 0.36: CUDA and HIP among the released backends, the device memory as a tier of the
   expert cache, plans from the model's own routing record, and the coding agents the server serves.
   The translations also gain the CUDA and HIP accelerators and the rented-card runs they lacked.
+
+### Security
+- The agent's routes that reach this computer's files, processes or keys answer only to a
+  connection from loopback, whatever `--host` and key (`403`, `code: "local_only"`); a message from
+  the network runs with no web tools.
+- A conversation with a workspace or a provider route is this computer's alone: from the network
+  it is not listed, read, changed, deleted or stopped, and its events and the tasks' reach local
+  event streams only. A client on the network may not give a conversation a workspace or a
+  provider route, nor turn on full access.
+- A run stops when the model repeats the same failing tool call three times, with a notice saying so;
+  `fetch_url` refuses anything but http and https with a reason the model can act on.
+- Commands that run without asking are only those that cannot run another program: `git` asks (a
+  repository's configuration can make `git status` run one), and so do `sort --compress-program`
+  and the abbreviated long options of the refused ones.
+
+- **The first run on ROCm: a rented 192 GB AMD datacenter card, the model resident**
+  (`docs/bench-data/2026-10-28-rented-rocm/`, `docs/benchmarks.md`, `docs/platforms.md`, the README
+  table). Qwen3.8-Flash-Next Q2_0 fits the card whole: `--auto` decodes 53.4 tok/s over 1024 tokens
+  against llama.cpp's own 55.6-55.8, and long prompts prefill at 2.1-2.3k tok/s. With ROCm's clang
+  the build hangs on ggml-cpu's AMX kernels; the bench notes give the line that builds the host code
+  with gcc.
 
 ### Removed
 - **The Obtainium link for Android.** `README.md` (and its translations), `examples/android/README.md`
