@@ -1,21 +1,29 @@
-# Builds bmoe-cli for desktop hosts when a release is published and attaches the archives to it,
-# so a benchmark contributor can download one file and run scripts/bench-report.sh without a
-# toolchain (docs/community-benchmarks.md). The desktop app also ships as a package per OS, built
-# from the same staged folder as its archive by the scripts under packaging/: BigMoeOnEdge.app in a
-# .dmg, a per-user installer .exe (Inno Setup) and an AppImage. Same clean-checkout rule as release-apk.yml: nothing
-# from a developer machine rides into a published artifact.
+# Builds the desktop hosts' release when a release is published and attaches it (docs/desktop-app.md):
+#   - one installer per OS, of the app (bmoe-desktop, the native window, with bmoe-server, the web UI
+#     and the backends that need nothing but the system), built by the scripts under packaging/:
+#     BigMoeOnEdge.app in a .dmg, a per-user setup .exe (Inno Setup) and an AppImage;
+#   - the command-line archive per target (bmoe-cli and bmoe-server with its UI), which
+#     scripts/install.sh and install.ps1 install with one line, and from which a benchmark
+#     contributor runs scripts/bench-report.sh without a toolchain (docs/community-benchmarks.md);
+#   - the backend packs: a backend that needs a vendor's runtime, as an archive of its own the app
+#     installs where it applies (packaging/packs.json);
+#   - feed.json, which names all of these with their SHA-256 and size, and its Ed25519 signature,
+#     made by the `feed` job with the repository's FEED_SIGNING_KEY. No release goes out with an
+#     unsigned feed: without the key the job fails.
+# Same clean-checkout rule as release-apk.yml: nothing from a developer machine rides into a
+# published artifact.
 #
 # One layout on every OS: the executable and, beside it, one module per backend and one CPU module
 # per instruction-set tier, the best picked at start-up (BMOE_BACKEND_MODULES, the top-level
 # CMakeLists). A module whose driver library the machine lacks is not loaded and the engine runs on
 # the CPU, so the same archive serves a laptop with a GPU and a server without one. Vulkan rides in
 # the Linux and Windows archives; Metal in the macOS one; OpenCL in the Windows ARM64 one, for the
-# Adreno GPU of a Snapdragon laptop. CUDA has an x86_64 Linux and Windows archive of its own (the
-# CUDA pack), with the NVIDIA runtime and cuBLAS it links, which NVIDIA lets an application carry:
-# twenty times the rest, so only an NVIDIA machine downloads it, into the folder of an archive or
-# the installed app, where the engine loads it like the modules beside it; HIP in the x86_64 Linux
-# one without ROCm, which is gigabytes and installed system-wide where an AMD card runs it. Where one
-# card can be driven by more than one of them, the planner measures which drives it faster. The Hexagon NPU has archives of its own (windows-arm64-npu):
+# Adreno GPU of a Snapdragon laptop. CUDA is a pack for x86_64 Linux and Windows, with the NVIDIA
+# runtime and cuBLAS it links, which NVIDIA lets an application carry: twenty times the rest, so
+# only an NVIDIA machine downloads it, and the app installs it into the data folder, where the
+# engine loads modules from too (docs/backends.md). HIP is a pack for x86_64 Linux without ROCm,
+# which is gigabytes and installed system-wide where an AMD card runs it. Where one card can be
+# driven by more than one of them, the planner measures which drives it faster. The Hexagon NPU has archives of its own (windows-arm64-npu):
 # on Windows its driver runs DSP code only from a catalog signed by a certificate the machine
 # trusts, which the user sets up by hand, test-signing included (docs/npu-windows.md).
 #
@@ -201,18 +209,20 @@ jobs:
 
       # Vulkan needs its shader compiler and headers on the build host; the archive needs nothing
       # but a driver on the machine that runs it.
-      - name: Install ninja and the Vulkan toolchain (Linux)
+      - name: Install ninja, the Vulkan toolchain and the app's web view (Linux)
         if: runner.os == 'Linux'
         # 22.04 packages no glslc: the SDK comes from LunarG's repository, the recipe llama.cpp's
         # release uses there. On 24.04, gcc-14: the compiler it ships (13) does not build the
         # newest ARM tier of the CPU backend; the same workaround llama.cpp uses on that image.
         run: |
+          # WebKitGTK 4.1 and the indicator library for bmoe-desktop, on both images.
+          APP_DEPS="libwebkit2gtk-4.1-dev libayatana-appindicator3-dev"
           if [ "$(lsb_release -rs)" = "22.04" ]; then
             wget -qO - https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo apt-key add -
             sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
-            sudo apt-get update -q && sudo apt-get install -y -q ninja-build vulkan-sdk
+            sudo apt-get update -q && sudo apt-get install -y -q ninja-build vulkan-sdk $APP_DEPS
           else
-            sudo apt-get update -q && sudo apt-get install -y -q ninja-build glslc libvulkan-dev spirv-headers gcc-14 g++-14
+            sudo apt-get update -q && sudo apt-get install -y -q ninja-build glslc libvulkan-dev spirv-headers gcc-14 g++-14 $APP_DEPS
             echo "CC=gcc-14" >> "$GITHUB_ENV"
             echo "CXX=g++-14" >> "$GITHUB_ENV"
           fi
@@ -302,7 +312,7 @@ jobs:
           echo "CUDACXX=$CUDA/bin/nvcc" >> "$GITHUB_ENV"
           echo "$CUDA/bin" >> "$GITHUB_PATH"
 
-      # The HIP module, built in the job below against ROCm, joins the modules of this archive.
+      # The HIP module, built in the job above against ROCm, becomes the HIP pack.
       - name: The HIP module
         if: matrix.hip
         uses: actions/download-artifact@v7
@@ -330,8 +340,9 @@ jobs:
             -DGGML_OPENMP=OFF \
             -DLLAMA_CURL=OFF \
             ${{ matrix.cmake_extra }}
-          cmake --build build --config Release -j --target bmoe-cli bmoe-server bmoe-server-assets ${{ matrix.extra_targets }}
-          if [ -d hip-module ]; then cp -P hip-module/* build/bin/; fi
+          # The app's window everywhere an installer is made; the NPU target keeps its archives only.
+          APP=bmoe-desktop; [ "${{ matrix.target }}" != windows-arm64-npu ] || APP=""
+          cmake --build build --config Release -j --target bmoe-cli bmoe-server bmoe-server-assets $APP ${{ matrix.extra_targets }}
 
       # The catalog the NPU driver checks, libggml-htp.cat, made by Inf2Cat from upstream's
       # libggml-htp.inf and signed with a certificate made here. Its private key never leaves this
@@ -412,13 +423,10 @@ jobs:
             case "${{ matrix.target }}" in
               windows-arm64*) ls "$1" | grep -q 'ggml-opencl' || { echo "no OpenCL backend module in $1"; exit 1; } ;;
             esac
-            # CUDA travels in an archive of its own (the CUDA pack, below): with the NVIDIA libraries
-            # it links it is about twenty times the rest, which a machine without an NVIDIA card
-            # would download for nothing.
+            # CUDA travels in a pack of its own (below): with the NVIDIA libraries it links it is
+            # about twenty times the rest, which a machine without an NVIDIA card would download for
+            # nothing.
             if [ -n "${{ matrix.cuda }}" ]; then rm -f "$1"/ggml-cuda.dll "$1"/libggml-cuda.so*; fi
-            if [ "${{ matrix.hip }}" = "true" ]; then
-              ls "$1" | grep -q 'ggml-hip' || { echo "no HIP backend module in $1"; exit 1; }
-            fi
             # The NPU archives carry the Hexagon module, its DSP libraries, the signed catalog and
             # the certificate that signed it; the guide says what to do with them.
             if [ "${{ matrix.target }}" = windows-arm64-npu ]; then
@@ -438,6 +446,13 @@ jobs:
             strip "$NAME/bmoe-cli" || true
           fi
           libs "$NAME"
+          # The command-line tools are the CLI and the server with its web UI: what install.sh and
+          # install.ps1 put on PATH.
+          if [ "${{ runner.os }}" = "Windows" ]; then BIN=$WB; SRV=bmoe-server.exe; else BIN=build/bin; SRV=bmoe-server; fi
+          cp "$BIN/$SRV" "$NAME/"
+          [ "${{ runner.os }}" = "Windows" ] || strip "$NAME/$SRV" || true
+          cp -r "$BIN/ui" "$BIN/catalog" "$NAME/"
+          if [ -d "$BIN/skills" ]; then cp -r "$BIN/skills" "$NAME/"; fi
           cp LICENSE THIRD_PARTY_LICENSES "$NAME/"
           if [ "${{ runner.os }}" = "Windows" ]; then
             EXE='.\bmoe-cli.exe'; SHELL_NAME='PowerShell or cmd'
@@ -466,15 +481,25 @@ jobs:
           macOS; on Windows run the protocol command from docs/community-benchmarks.md by hand):
             BMOE_CLI=\$PWD/bmoe-cli scripts/bench-report.sh /path/to/model.gguf
           from a checkout of https://github.com/Helldez/BigMoeOnEdge (docs/community-benchmarks.md).
+
+          The web UI: ./$SRV --open (or double-click $SRV on Windows) serves it at
+          http://127.0.0.1:8765/. Settings and downloaded models live in your user data folder.
           EOF
-          # The desktop app: bmoe-server with the web UI and the model catalog staged beside it.
+          # The app: bmoe-desktop and the server with the web UI, the model catalog and the bundled
+          # skills staged beside them; the installers are made from this folder.
           DESK="bmoe-desktop-$TAG-${{ matrix.target }}"
           mkdir -p "$DESK"
-          if [ "${{ runner.os }}" = "Windows" ]; then BIN=$WB; SRV=bmoe-server.exe; else BIN=build/bin; SRV=bmoe-server; fi
           cp "$BIN/$SRV" "$DESK/"
           [ "${{ runner.os }}" = "Windows" ] || strip "$DESK/$SRV" || true
+          if [ "${{ matrix.target }}" != windows-arm64-npu ]; then
+            if [ "${{ runner.os }}" = "Windows" ]; then APPX=bmoe-desktop.exe; else APPX=bmoe-desktop; fi
+            [ -f "$BIN/$APPX" ] || { echo "no $APPX: the app's web view was not found at build time"; exit 1; }
+            cp "$BIN/$APPX" "$DESK/"
+            [ "${{ runner.os }}" = "Windows" ] || strip "$DESK/$APPX" || true
+          fi
           libs "$DESK"
           cp -r "$BIN/ui" "$BIN/catalog" "$DESK/"
+          if [ -d "$BIN/skills" ]; then cp -r "$BIN/skills" "$DESK/"; fi
           cp LICENSE THIRD_PARTY_LICENSES "$DESK/"
           cat > "$DESK/README.txt" <<EOF
           BigMoeOnEdge desktop $TAG, ${{ matrix.target }}
@@ -505,8 +530,10 @@ jobs:
             for f in "$NAME/README.txt" "$DESK/README.txt"; do
               cat >> "$f" <<EOF
 
-          NVIDIA GPU: the CUDA backend is a download of its own, for its size:
-          bmoe-cuda-$TAG-${{ matrix.target }} on the same release page. Extract it into this folder.
+          NVIDIA GPU: the CUDA backend is a pack of its own, for its size. The app installs it from
+          Settings when it finds an NVIDIA driver; bmoe-cli loads it when its files sit beside the
+          program: extract bmoe-pack-cuda-$TAG-${{ matrix.target }} from the same release page into
+          this folder.
           EOF
             done
           fi
@@ -526,12 +553,12 @@ jobs:
             done
           fi
           # The CUDA pack: the module, the runtime and cuBLAS it links, and the licence they come
-          # under, unpacked by the user into the folder of either archive or of the installed app,
-          # where the engine loads modules from. The driver's own library (libcuda, nvcuda.dll) is
-          # the machine's, and is the only thing the module may find missing beside the rest of an
-          # archive: without it the module is not loaded and the rest runs.
+          # under. The app unpacks it into <data>/backends/cuda and the server loads modules from
+          # there (docs/backends.md); bmoe-cli loads it from its own folder. The driver's own
+          # library (libcuda, nvcuda.dll) is the machine's, and is the only thing the module may
+          # find missing: without it the module is not loaded and the rest runs.
           if [ -n "${{ matrix.cuda }}" ]; then
-            PACK="bmoe-cuda-$TAG-${{ matrix.target }}"
+            PACK="bmoe-pack-cuda-$TAG-${{ matrix.target }}"
             mkdir -p "$PACK"
             C="$(cygpath -u "$CUDAToolkit_ROOT" 2>/dev/null || echo "$CUDAToolkit_ROOT")"
             if [ "${{ runner.os }}" = "Windows" ]; then
@@ -540,22 +567,22 @@ jobs:
               cp -P build/bin/libggml-cuda.so* "$PACK/"
               strip "$PACK"/libggml-cuda.so* || true
               cp -P "$C"/lib/libcudart.so.12* "$C"/lib/libcublas.so.12* "$C"/lib/libcublasLt.so.12* "$PACK/"
-              # Resolved as it will be: the pack beside the archive's own libraries.
+              # Resolved as it will be: the pack's own folder, and the engine's libraries already
+              # loaded by the program that loads it.
               MISSING="$(LD_LIBRARY_PATH="$PWD/$DESK" ldd "$PACK"/libggml-cuda.so | grep 'not found' | grep -v 'libcuda\.so' || true)"
-              [ -z "$MISSING" ] || { echo "the CUDA module needs libraries neither archive carries:"; echo "$MISSING"; exit 1; }
+              [ -z "$MISSING" ] || { echo "the CUDA module needs libraries neither the pack nor the app carries:"; echo "$MISSING"; exit 1; }
             fi
             cp "$C/LICENSE" "$PACK/LICENSE-CUDA.txt"
             cat > "$PACK/README-CUDA.txt" <<EOF
           BigMoeOnEdge CUDA backend $TAG, ${{ matrix.target }}
 
-          The NVIDIA GPU backend, kept out of the main downloads for its size. Its files are at the
-          top of the archive: extract it into the folder of bmoe-cli or bmoe-desktop $TAG for
-          ${{ matrix.target }}, or of the installed app
-          (%LOCALAPPDATA%\\Programs\\BigMoeOnEdge on Windows), so these files sit beside the
-          program: it loads every backend it finds there at start-up, and the plan
-          (--auto --plan-explain, or the Plan page) then shows the NVIDIA card. It needs the NVIDIA
-          driver installed, and nothing else: the CUDA runtime and cuBLAS are here. The AppImage
-          is read-only and cannot take it; on Linux use the bmoe-desktop archive instead.
+          The NVIDIA GPU backend, kept out of the main downloads for its size. The app installs it
+          on its own (Settings, Backends) where an NVIDIA driver is found. By hand: its files are at
+          the top of the archive; extract it into the folder of bmoe-cli $TAG for
+          ${{ matrix.target }}, so they sit beside the program, which loads every backend it finds
+          there at start-up; the plan (--auto --plan-explain, or the Plan page) then shows the
+          NVIDIA card. It needs the NVIDIA driver installed, and nothing else: the CUDA runtime and
+          cuBLAS are here.
 
           The NVIDIA libraries are NVIDIA's software, redistributed under LICENSE-CUDA.txt.
           EOF
@@ -570,6 +597,24 @@ jobs:
             tar czf "$DESK.tar.gz" "$DESK"
             [ -z "${PACK:-}" ] || tar czf "$PACK.tar.gz" -C "$PACK" .
           fi
+          # The HIP pack: the module, flat like the CUDA one. It links ROCm's libraries from the
+          # system (/opt/rocm/lib, in its run path), which is what applies it to a machine.
+          if [ "${{ matrix.hip }}" = "true" ]; then
+            HPACK="bmoe-pack-hip-$TAG-${{ matrix.target }}"
+            mkdir -p "$HPACK"
+            cp -P hip-module/* "$HPACK/"
+            ls "$HPACK" | grep -q 'ggml-hip' || { echo "no HIP backend module in $HPACK"; exit 1; }
+            cat > "$HPACK/README-HIP.txt" <<EOF
+          BigMoeOnEdge HIP backend $TAG, ${{ matrix.target }}
+
+          The AMD GPU backend, for a machine with ROCm 7 installed system-wide. The app installs it on
+          its own (Settings, Backends) where ROCm's runtime is found; by hand, extract it into the
+          folder of bmoe-cli $TAG for ${{ matrix.target }}.
+          EOF
+            tar czf "$HPACK.tar.gz" -C "$HPACK" .
+          fi
+          # The plain app archive only where no installer is made (the NPU target, set up by hand).
+          if [ "${{ matrix.target }}" != windows-arm64-npu ]; then rm -f "$DESK.zip" "$DESK.tar.gz"; fi
           echo "desk=$DESK" >> "$GITHUB_OUTPUT"
           # The packages, from the folder the archive was just made of. Windows builds its
           # installer in the next step, from PowerShell, where ISCC's /D arguments stay as typed.
@@ -607,19 +652,22 @@ jobs:
             "$WB/bmoe-cli.exe" --version && "$WB/bmoe-server.exe" --version
           else
             build/bin/bmoe-cli --version && build/bin/bmoe-server --version
+            [ ! -x build/bin/bmoe-desktop ] || build/bin/bmoe-desktop --version
           fi
 
       # Each package started as a user would start it, with no model: the server must answer and
       # serve the web UI from inside the package, then stop.
       - name: Smoke the package
         shell: bash
+        # A server that takes the connection and never answers fails here, not at the job's limit.
+        timeout-minutes: 15
         env:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
           answers() { # the API and the built UI (not the "UI is not built" page) on the default port
-            curl -fsS --retry 60 --retry-delay 1 --retry-connrefused http://127.0.0.1:8765/api/info
+            curl -fsS --max-time 10 --retry 60 --retry-delay 1 --retry-connrefused http://127.0.0.1:8765/api/info
             echo
-            curl -fsS http://127.0.0.1:8765/ | grep -q '<div id="app"' || { echo "the UI is not served"; return 1; }
+            curl -fsS --max-time 10 http://127.0.0.1:8765/ | grep -q '<div id="app"' || { echo "the UI is not served"; return 1; }
           }
           case "${{ matrix.target }}" in
             macos-*)
@@ -630,10 +678,11 @@ jobs:
               [ -L "$MNT/Applications" ] || { echo "no Applications link in $DMG"; exit 1; }
               codesign --verify --deep --strict "$MNT/BigMoeOnEdge.app"
               "$MNT/BigMoeOnEdge.app/Contents/MacOS/bmoe-server" --version
-              # The launcher starts the server; quitting the app stops it. SIGTERM takes the same
-              # path as Stop and Quit, and needs no Apple Events permission on the runner.
+              "$MNT/BigMoeOnEdge.app/Contents/MacOS/BigMoeOnEdge" --version
+              # The app (bmoe-desktop) starts the server; quitting the app stops it. SIGTERM takes
+              # the same path as Quit, and needs no Apple Events permission on the runner.
               open "$MNT/BigMoeOnEdge.app"
-              answers
+              answers || { cat "$HOME/Library/Application Support/BigMoeOnEdge/logs/server.log"; exit 1; }
               pkill -TERM -f 'BigMoeOnEdge.app/Contents/MacOS/BigMoeOnEdge'
               for i in $(seq 20); do pgrep -f 'BigMoeOnEdge.app/Contents/MacOS/' > /dev/null || break; sleep 1; done
               if pgrep -fl 'BigMoeOnEdge.app/Contents/MacOS/'; then echo "quitting the app left a process"; exit 1; fi
@@ -642,9 +691,13 @@ jobs:
             linux-*)
               IMG="./BigMoeOnEdge-$TAG-${{ matrix.target }}.AppImage"
               chmod +x "$IMG"
-              # The runner has no FUSE: the runtime extracts and runs instead.
-              "$IMG" --appimage-extract-and-run --version
-              "$IMG" --appimage-extract-and-run --port 8765 > server.log 2>&1 &
+              # The runner has no FUSE: the runtime extracts and runs instead. It has no display
+              # either, so the window is only checked to load (--version); the server runs as
+              # --server does.
+              "$IMG" --appimage-extract-and-run --server --version
+              (mkdir -p appimage-check && cd appimage-check && "../$IMG" --appimage-extract > /dev/null)
+              appimage-check/squashfs-root/usr/bin/bmoe-desktop --version
+              "$IMG" --appimage-extract-and-run --server --port 8765 > server.log 2>&1 &
               PID=$!
               answers || { cat server.log; exit 1; }
               # The runtime runs AppRun as its child: stop the server itself, then the runtime.
@@ -658,6 +711,7 @@ jobs:
               [ -f "$(cygpath -u "$APPDATA")/Microsoft/Windows/Start Menu/Programs/BigMoeOnEdge.lnk" ] \
                 || { echo "no Start-menu entry"; exit 1; }
               "$APPDIR/bmoe-server.exe" --version
+              [ -f "$APPDIR/bmoe-desktop.exe" ] || { echo "no bmoe-desktop.exe installed"; exit 1; }
               "$APPDIR/bmoe-server.exe" --port 8765 > server.log 2>&1 &
               answers || { cat server.log; exit 1; }
               taskkill //F //IM bmoe-server.exe
@@ -756,11 +810,104 @@ jobs:
           path: bmoe-ios-harness-sim-*.zip
           if-no-files-found: error
 
+  # The feed (docs/desktop-app.md, "The feed"): every installer, archive and pack the build jobs
+  # made, with its SHA-256 and size (scripts/make-feed.py), signed with FEED_SIGNING_KEY, and the
+  # install scripts carrying the public half. A read-only token: it uploads nothing itself, and
+  # `publish` attaches what it hands over. The private key is in this job only, in a file the job
+  # deletes. A feed that will be published is never left unsigned: without the key, or with a key
+  # whose public half is not the one the builds check with (server/feed_key.h), the job fails.
+  feed:
+    needs: [cli]
+    if: always() && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          case "$EVENT" in
+            release) T="$RELEASE_TAG" ;;
+            *)       T="$INPUT_TAG" ;;
+          esac
+          case "$T" in
+            ''|*[!A-Za-z0-9._-]*) echo "not a plain tag name: '$T'"; exit 1 ;;
+          esac
+          echo "tag=$T" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: host-*
+          path: assets
+          merge-multiple: true
+
+      - name: Write the feed
+        shell: bash
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          mkdir -p out
+          python3 scripts/make-feed.py --tag "$TAG" --repo "$REPO" --assets assets \
+            --packs packaging/packs.json --out out/feed.json
+          cat out/feed.json
+
+      - name: Sign the feed
+        shell: bash
+        env:
+          FEED_SIGNING_KEY: ${{ secrets.FEED_SIGNING_KEY }}
+          PUBLISHING: ${{ github.event_name == 'release' || inputs.upload }}
+        run: |
+          set -euo pipefail
+          if [ -z "$FEED_SIGNING_KEY" ]; then
+            if [ "$PUBLISHING" != "true" ]; then
+              echo "no FEED_SIGNING_KEY: this dry run's feed stays unsigned"
+              exit 0
+            fi
+            echo "::error::FEED_SIGNING_KEY is not set: no release goes out with an unsigned feed (docs/desktop-app.md, Signing the feed)"
+            exit 1
+          fi
+          umask 077
+          KEY="$RUNNER_TEMP/feed-key.pem"
+          trap 'rm -f "$KEY"' EXIT
+          printf '%s\n' "$FEED_SIGNING_KEY" > "$KEY"
+          # The public half, as the builds carry it: base64 of the raw 32 bytes, the last 32 of DER.
+          PUB="$(openssl pkey -in "$KEY" -pubout -outform DER | tail -c 32 | base64 -w0)"
+          WANT="$(sed -n 's/^inline constexpr const char \* kFeedPublicKey = "\([A-Za-z0-9+/=]*\)";$/\1/p' server/feed_key.h)"
+          if [ "$PUB" != "$WANT" ]; then
+            echo "::error::the signing key's public half ($PUB) is not the one in server/feed_key.h ('$WANT'): no build could read this feed"
+            exit 1
+          fi
+          openssl pkeyutl -sign -inkey "$KEY" -rawin -in out/feed.json -out "$RUNNER_TEMP/feed.sig"
+          openssl pkey -in "$KEY" -pubout -out "$RUNNER_TEMP/feed-pub.pem"
+          openssl pkeyutl -verify -pubin -inkey "$RUNNER_TEMP/feed-pub.pem" -rawin -in out/feed.json \
+            -sigfile "$RUNNER_TEMP/feed.sig"
+          base64 -w0 "$RUNNER_TEMP/feed.sig" > out/feed.json.sig
+          # The install scripts, install.sh carrying the key it checks the feed with.
+          sed "s|@FEED_PUBLIC_KEY@|$PUB|" scripts/install.sh > out/install.sh
+          cp scripts/install.ps1 out/install.ps1
+          ls -l out
+
+      - name: Keep as workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: feed
+          path: out
+          if-no-files-found: error
+
   # Attaches what the build jobs made to the release: the one job with write access, and it runs
   # nothing from the checkout. always(): a target that failed to build does not hold back the ones
-  # that built, as when each job attached its own (the failed job still fails the run).
+  # that built, as when each job attached its own (the failed job still fails the run), but a
+  # release is never left without its signed feed unnoticed: the job fails at the end without it.
   publish:
-    needs: [cli, ios-harness]
+    needs: [cli, ios-harness, feed]
     if: always() && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.upload))
     runs-on: ubuntu-latest
     permissions:
@@ -799,5 +946,11 @@ jobs:
           shopt -s nullglob
           files=(assets/bmoe-* assets/BigMoeOnEdge-*)
           [ ${#files[@]} -gt 0 ] || { echo "no archive to attach"; exit 1; }
+          # The feed and the install scripts only signed, and together.
+          signed=(assets/feed.json assets/feed.json.sig assets/install.sh assets/install.ps1)
+          have_feed=true
+          for f in "${signed[@]}"; do [ -f "$f" ] || have_feed=false; done
+          if $have_feed; then files+=("${signed[@]}"); fi
           ls -l "${files[@]}"
           gh release upload "$TAG" "${files[@]}" --clobber
+          $have_feed || { echo "::error::no signed feed to attach: the app finds no packs or updates for this release"; exit 1; }

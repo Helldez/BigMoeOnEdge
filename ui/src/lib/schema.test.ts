@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   differsFromPlan,
   helpParts,
+  inForm,
   isDefault,
-  levelCounts,
-  levelOf,
   resettableKeys,
+  setByYou,
   sameValue,
   settingsCards,
   specialLabel,
@@ -33,46 +33,47 @@ function spec(key: string, group: string, level: string, extra: Partial<ParamSpe
 
 const rows = [
   spec('a', 'g1', 'basic'),
-  spec('b', 'g2', 'advanced'),
+  spec('b', 'g2', 'advanced', { form: true }),
   spec('c', 'g1', 'debug'),
   spec('d', 'g3', 'experimental'),
   spec('e', 'g2', 'basic'),
+  spec('f', 'g2', 'advanced', { form: false }),
 ];
 
 const keys = (ps: ParamSpec[]) => ps.map((p) => p.key);
 
+describe('setByYou', () => {
+  it('lists every row the person set, in or out of the form, in table order', () => {
+    expect(keys(setByYou(rows, new Set(['f', 'a', 'd'])))).toEqual(['a', 'd', 'f']);
+    expect(setByYou(rows, new Set())).toEqual([]);
+    const ro = [spec('m', 'model', 'basic', { group_read_only: true }), spec('x', 'g', 'basic')];
+    expect(keys(setByYou(ro, new Set(['m', 'x'])))).toEqual(['x']);
+    expect(settingsCards(ro, new Set(['m', 'x'])).map((c) => c.group)).toEqual(['model']);
+  });
+});
+
+describe('inForm', () => {
+  it('follows the table, and takes the basic rows from a server that does not say', () => {
+    expect(inForm(spec('x', 'g', 'advanced', { form: true }))).toBe(true);
+    expect(inForm(spec('x', 'g', 'basic', { form: false }))).toBe(false);
+    expect(inForm(spec('x', 'g', 'basic'))).toBe(true);
+    expect(inForm(spec('x', 'g', 'advanced'))).toBe(false);
+  });
+});
+
 describe('settingsCards', () => {
-  it('gives every group one card, its basic rows open and the rest folded by level', () => {
-    const c = settingsCards(rows, { upTo: 'debug' });
-    expect(c.map((x) => x.group)).toEqual(['g1', 'g2', 'g3']);
-    expect(keys(c[0].basic)).toEqual(['a']);
-    expect(c[0].more.map((m) => [m.level, keys(m.params)])).toEqual([['debug', ['c']]]);
-    expect(keys(c[1].basic)).toEqual(['e']);
-    expect(c[1].more.map((m) => m.level)).toEqual(['advanced']);
-    expect(c[2].basic).toEqual([]);
+  it('gives every group with a form row one card, its rows in table order', () => {
+    const c = settingsCards(rows);
+    expect(c.map((x) => x.group)).toEqual(['g1', 'g2']);
+    expect(keys(c[0].params)).toEqual(['a']);
+    expect(keys(c[1].params)).toEqual(['b', 'e']);
     expect(c[0].label).toBe('g1 label');
   });
 
-  it('shows each row once', () => {
-    const c = settingsCards(rows, { upTo: 'debug' });
-    const all = c.flatMap((x) => [...keys(x.basic), ...x.more.flatMap((m) => keys(m.params))]);
-    expect(all.sort()).toEqual(['a', 'b', 'c', 'd', 'e']);
-  });
-
-  it('leaves out the levels below the filter, counts them, and drops a card left empty', () => {
-    const c = settingsCards(rows, { upTo: 'basic' });
+  it('leaves the rows the person set to Set by you, so each row appears once', () => {
+    const c = settingsCards(rows, new Set(['b', 'd']));
     expect(c.map((x) => x.group)).toEqual(['g1', 'g2']);
-    expect(c[0].more).toEqual([]);
-    expect(c[0].hidden).toBe(1);
-    const adv = settingsCards(rows, { upTo: 'advanced' });
-    expect(adv.map((x) => x.group)).toEqual(['g1', 'g2']);
-    expect(adv[1].more.map((m) => m.level)).toEqual(['advanced']);
-  });
-
-  it('shows a pinned row whatever the filter', () => {
-    const c = settingsCards(rows, { upTo: 'basic', pinned: new Set(['d']) });
-    expect(c.map((x) => x.group)).toEqual(['g1', 'g2', 'g3']);
-    expect(keys(c[2].more[0].params)).toEqual(['d']);
+    expect(keys(c[1].params)).toEqual(['e']);
   });
 
   it('orders cards by the table group order, not by where a group first appears', () => {
@@ -81,38 +82,18 @@ describe('settingsCards', () => {
       spec('y', 'early', 'basic', { group_order: 0 }),
       spec('z', 'mid', 'basic', { group_order: 1 }),
     ];
-    expect(settingsCards(ordered, { upTo: 'basic' }).map((x) => x.group)).toEqual(['early', 'mid', 'late']);
+    expect(settingsCards(ordered).map((x) => x.group)).toEqual(['early', 'mid', 'late']);
   });
 
   it('carries the group help and the read-only mark from the table', () => {
-    const c = settingsCards([spec('m', 'picked', 'basic', { group_help: 'One line.', group_read_only: true })], {
-      upTo: 'basic',
-    });
+    const c = settingsCards([spec('m', 'picked', 'basic', { group_help: 'One line.', group_read_only: true })]);
     expect(c[0].help).toBe('One line.');
     expect(c[0].readOnly).toBe(true);
   });
 
-  it('searches every level, ignoring the filter', () => {
-    const found = settingsCards([...rows, spec('needle', 'g3', 'debug', { label: 'Find me' })], {
-      upTo: 'basic',
-      query: 'find ME',
-    });
-    expect(found.map((x) => x.group)).toEqual(['g3']);
-    expect(keys(found[0].more[0].params)).toEqual(['needle']);
-    expect(settingsCards(rows, { upTo: 'debug', query: 'nothing like it' })).toEqual([]);
-  });
-
   it('falls back to the group key when group_label is empty', () => {
-    const g = settingsCards([spec('x', 'raw', 'basic', { group_label: '' })], { upTo: 'basic' });
+    const g = settingsCards([spec('x', 'raw', 'basic', { group_label: '' })]);
     expect(g[0].label).toBe('raw');
-  });
-});
-
-describe('levels', () => {
-  it('counts the rows of each level and finds a row\'s level', () => {
-    expect(levelCounts(rows).get('basic')).toBe(2);
-    expect(levelOf(rows, 'd')).toBe('experimental');
-    expect(levelOf(rows, 'nope')).toBeUndefined();
   });
 });
 

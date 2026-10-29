@@ -38,8 +38,9 @@ DecideResult run_decide(IDecideBackend & backend, IPrefixCache * cache, const De
     const int n = (int) tokens.size();
     if (n < 1) return refuse(RunError::EmptyPrompt, "empty prompt after tokenization");
     if (n > backend.n_ctx())
-        return refuse(RunError::ContextFull, "prompt of " + std::to_string(n) + " tokens exceeds the session n_ctx (" +
-                                                 std::to_string(backend.n_ctx()) + ")");
+        return refuse(RunError::ContextFull, "the prompt (" + std::to_string(n) +
+                                                 " tokens) is longer than {ctx-size} (" +
+                                                 std::to_string(backend.n_ctx()) + " tokens)");
     r.n_tokens = n;
 
     const bool reuse = cache && req.reuse_prefix && !req.prefix.empty();

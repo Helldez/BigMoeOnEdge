@@ -7,7 +7,8 @@ import org.json.JSONObject
  * One message of a conversation as this app keeps it. [reasoning] is the model's thinking span
  * on an assistant turn (shown folded above the answer, and sent back to the model as
  * `reasoning_content` so a reasoning model sees its own trace); [metrics] is the one-line figure
- * shown under the answer. Neither is engine state: the server keeps no conversation.
+ * shown under the answer. What the app kept on the phone before the server held conversations;
+ * the migration reads it, and a decision still uses [ChoiceScore].
  */
 data class ChatMessage(
     val role: String,

@@ -1,0 +1,22 @@
+{
+  "_comment": "Backend packs: the release's backends that need a vendor's runtime, which the app installs on first start where they apply (docs/desktop-app.md). scripts/make-feed.py turns each into a feed entry per target whose asset the release carries: the asset is <asset>-<tag>-<target>.tar.gz or .zip. needs_any lists the driver libraries, by the name the system loader takes, one of which must load for the pack to be of use.",
+  "packs": [
+    {
+      "id": "cuda",
+      "title": "NVIDIA graphics (CUDA)",
+      "asset": "bmoe-pack-cuda",
+      "targets": {
+        "linux-x86_64": { "needs_any": ["libcuda.so.1"] },
+        "windows-x86_64": { "needs_any": ["nvcuda.dll"] }
+      }
+    },
+    {
+      "id": "hip",
+      "title": "AMD graphics (ROCm)",
+      "asset": "bmoe-pack-hip",
+      "targets": {
+        "linux-x86_64": { "needs_any": ["libamdhip64.so.7"] }
+      }
+    }
+  ]
+}

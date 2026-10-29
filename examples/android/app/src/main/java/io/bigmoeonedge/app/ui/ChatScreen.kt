@@ -1,37 +1,37 @@
 package io.bigmoeonedge.app.ui
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.RectangleShape
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.bigmoeonedge.app.chat.Chat
+import io.bigmoeonedge.app.chat.ConversationSummary
+import io.bigmoeonedge.app.chat.ItemReducer
 import io.bigmoeonedge.app.data.breakdown
-import io.bigmoeonedge.app.engine.Chat
-import io.bigmoeonedge.app.engine.ChatMessage
+import io.bigmoeonedge.app.engine.ApiException
 import io.bigmoeonedge.app.engine.Decide
+import io.bigmoeonedge.app.engine.Decisions
 import io.bigmoeonedge.app.engine.Engine
 import io.bigmoeonedge.app.engine.contextWarning
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -41,61 +41,75 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/** Where the chat's error cards lead: the other screens. */
+data class ChatNav(
+    val openModels: () -> Unit,
+    val openSetting: (String) -> Unit,
+)
+
 /**
- * The chat: the conversations in a drawer, the current one in the middle, the prompt at the
- * bottom where a thumb reaches it. An answer streams in with its thinking span above it; the
- * figures under a finished answer are the turn's own.
+ * The chat: the conversations (the server's, docs/chat.md; plain chat on a phone) in a drawer;
+ * the open one in the middle as its messages; the composer at the bottom where a thumb reaches it.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(modifier: Modifier = Modifier, onOpenModels: () -> Unit, onOpenSetting: (key: String) -> Unit = {}) {
+fun ChatScreen(modifier: Modifier = Modifier, nav: ChatNav) {
     val chat by Chat.state.collectAsStateWithLifecycle()
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    var confirmDelete by remember { mutableStateOf<ConversationSummary?>(null) }
+    var renaming by remember { mutableStateOf<ConversationSummary?>(null) }
+    LaunchedEffect(Unit) { Chat.refreshConversations() }
 
     ModalNavigationDrawer(
         drawerState = drawer,
         drawerContent = {
-            ModalDrawerSheet {
+            ModalDrawerSheet(drawerContainerColor = tokens.surface) {
                 Row(
                     Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 16.dp, bottom = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Box(Modifier.weight(1f)) { BrandMark() }
-                    TextButton(shape = RectangleShape, 
-                        onClick = { Chat.newConversation(); scope.launch { drawer.close() } },
-                        enabled = !chat.streaming,
-                    ) {
-                        Icon(Icons.Filled.Add, contentDescription = null)
-                        Spacer(Modifier.width(4.dp))
-                        Text("New")
+                    FilledTonalButton(onClick = { Chat.newConversation(); scope.launch { drawer.close() } }, shape = Corner) {
+                        Icon(Icons.Filled.Add, contentDescription = null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("New chat")
                     }
                 }
-                HorizontalDivider()
+                HorizontalDivider(Modifier.padding(vertical = 8.dp), color = tokens.line)
+                SectionTitle("Conversations", Modifier.padding(horizontal = 28.dp, vertical = 4.dp))
                 val stamp = remember { SimpleDateFormat("d MMM HH:mm", Locale.getDefault()) }
-                LazyColumn {
+                if (chat.conversations.isEmpty()) {
+                    Text(
+                        "None yet. What you send starts one, kept by the engine on this phone.",
+                        style = MaterialTheme.typography.bodySmall, color = tokens.muted,
+                        modifier = Modifier.padding(horizontal = 28.dp, vertical = 8.dp),
+                    )
+                }
+                LazyColumn(contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)) {
                     items(chat.conversations, key = { it.id }) { c ->
-                        ListItem(
-                            headlineContent = { Text(c.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                            supportingContent = {
-                                Text(
-                                    listOf(stamp.format(Date(c.updatedAt)), "${c.messageCount} messages", c.model)
-                                        .filter { it.isNotEmpty() }.joinToString(" · "),
-                                    fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                )
-                            },
-                            trailingContent = {
-                                IconButton(onClick = { Chat.delete(c.id) }, enabled = !chat.streaming || c.id != chat.current.id) {
-                                    Icon(Icons.Filled.Delete, contentDescription = "Delete")
+                        var menu by remember { mutableStateOf(false) }
+                        NavigationDrawerItem(
+                            selected = c.id == chat.open?.id,
+                            onClick = { Chat.open(c.id); scope.launch { drawer.close() } },
+                            label = {
+                                Column {
+                                    Text(c.title.ifEmpty { "New chat" }, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        val meta = c.updated.takeIf { it > 0 }?.let { stamp.format(Date(it)) }.orEmpty()
+                                        Text(meta, fontSize = 11.sp, color = tokens.muted, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                                        ConversationStateChip(c.state)
+                                    }
                                 }
                             },
-                            colors = ListItemDefaults.colors(
-                                containerColor = if (c.id == chat.current.id) MaterialTheme.colorScheme.secondaryContainer
-                                else MaterialTheme.colorScheme.surface,
-                            ),
-                            modifier = Modifier.clickable(enabled = !chat.streaming) {
-                                Chat.select(c.id)
-                                scope.launch { drawer.close() }
+                            badge = {
+                                Box {
+                                    IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More") }
+                                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                                        DropdownMenuItem(text = { Text("Rename") }, leadingIcon = { Icon(Icons.Filled.Edit, null) }, onClick = { menu = false; renaming = c })
+                                        DropdownMenuItem(text = { Text("Delete") }, leadingIcon = { Icon(Icons.Filled.Delete, null) }, onClick = { menu = false; confirmDelete = c })
+                                    }
+                                }
                             },
                         )
                     }
@@ -105,36 +119,69 @@ fun ChatScreen(modifier: Modifier = Modifier, onOpenModels: () -> Unit, onOpenSe
     ) {
         Column(modifier.fillMaxSize()) {
             TopAppBar(
-                title = { Text(chat.current.title.ifEmpty { "New chat" }, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                title = {
+                    Text(chat.open?.title?.ifEmpty { null } ?: "New chat", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
+                },
                 navigationIcon = {
-                    IconButton(onClick = { scope.launch { drawer.open() } }) {
-                        Icon(Icons.Filled.Menu, contentDescription = "Conversations")
-                    }
+                    IconButton(onClick = { scope.launch { drawer.open() } }) { Icon(Icons.Filled.Menu, contentDescription = "Conversations") }
                 },
                 actions = {
-                    if (chat.current.messages.isNotEmpty()) {
-                        TextButton(shape = RectangleShape, onClick = { Chat.newConversation() }, enabled = !chat.streaming) { Text("New chat") }
+                    if (chat.open != null) {
+                        IconButton(onClick = { Chat.newConversation() }) { Icon(Icons.Filled.Add, contentDescription = "New chat") }
                     }
                 },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = tokens.bg),
             )
-            Transcript(Modifier.weight(1f), onOpenModels, onOpenSetting)
-            PromptBar()
+            HorizontalDivider(color = tokens.line)
+            Transcript(Modifier.weight(1f), nav)
+            Composer()
         }
+    }
+
+    confirmDelete?.let { c ->
+        AlertDialog(
+            onDismissRequest = { confirmDelete = null },
+            title = { Text("Delete this conversation?") },
+            text = { Text("\"${c.title.ifEmpty { "New chat" }}\" and everything in it is removed from the engine.") },
+            confirmButton = { TextButton(onClick = { Chat.delete(c.id); confirmDelete = null }) { Text("Delete", color = tokens.err) } },
+            dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } },
+        )
+    }
+    renaming?.let { c ->
+        var title by remember(c.id) { mutableStateOf(c.title) }
+        AlertDialog(
+            onDismissRequest = { renaming = null },
+            title = { Text("Rename") },
+            text = { OutlinedTextField(value = title, onValueChange = { title = it }, singleLine = true, modifier = Modifier.fillMaxWidth()) },
+            confirmButton = { TextButton(onClick = { Chat.rename(c.id, title.trim()); renaming = null }, enabled = title.isNotBlank()) { Text("Save") } },
+            dismissButton = { TextButton(onClick = { renaming = null }) { Text("Cancel") } },
+        )
     }
 }
 
 @Composable
-private fun Transcript(modifier: Modifier, onOpenModels: () -> Unit, onOpenSetting: (String) -> Unit) {
+fun ConversationStateChip(state: String) {
+    when (state) {
+        ConversationSummary.STATE_RUNNING -> Chip("running", tokens.accentInk)
+        ConversationSummary.STATE_ERROR -> Chip("error", tokens.err)
+    }
+}
+
+@Composable
+private fun Transcript(modifier: Modifier, nav: ChatNav) {
     val chat by Chat.state.collectAsStateWithLifecycle()
+    val decision by Decisions.state.collectAsStateWithLifecycle()
     // Only the context advice, not every token event: the transcript is the heaviest thing on screen.
     val ctxAdvice by remember { Engine.state.map { contextWarning(it.info?.model, it.params) }.distinctUntilChanged() }.collectAsStateWithLifecycle(null)
     val listState = rememberLazyListState()
-    val messages = chat.current.messages
-    val liveShown = chat.streaming
-    val total = messages.size + (if (liveShown) 1 else 0) + (if (chat.error != null) 1 else 0)
+    val shown = chat.items
+    val againOn = remember(shown) { ItemReducer.answerAgainOn(shown) }
+    val working = chat.running && shown.lastOrNull()?.streaming != true
+    val total = shown.size + (if (working || chat.sending) 1 else 0) + (if (decision != null) 1 else 0) + (if (chat.error != null) 1 else 0)
+    val lastText = chat.items.lastOrNull()?.let { it.text.length + it.reasoning.length } ?: 0
 
-    // Follow the tail only while the user is parked at the bottom. A long answer streams for a
-    // long time, and scrolling back to re-read it must not fight a per-token scroll command.
+    // Follow the tail only while the person is parked at the bottom: scrolling back to re-read a
+    // long answer must not fight a per-token scroll command.
     var followTail by remember { mutableStateOf(true) }
     val atBottom by remember {
         derivedStateOf {
@@ -149,20 +196,16 @@ private fun Transcript(modifier: Modifier, onOpenModels: () -> Unit, onOpenSetti
     LaunchedEffect(listState) {
         snapshotFlow { listState.isScrollInProgress }.collect { scrolling -> if (!scrolling) followTail = atBottom }
     }
-    LaunchedEffect(total, chat.answer.length, chat.reasoning.length, followTail) {
+    LaunchedEffect(total, lastText, followTail) {
         if (followTail && total > 0) runCatching { listState.scrollToItem(total - 1, Int.MAX_VALUE) }
     }
 
     Box(modifier.fillMaxWidth()) {
-        if (messages.isEmpty() && !liveShown && chat.error == null) {
-            Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center) {
-                Text("Ask anything.", fontSize = 18.sp, fontWeight = FontWeight.Medium)
-                Text(
-                    "The model runs on this phone, streamed from storage. Load one from Models if none is " +
-                        "loaded, then type below.",
-                    fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+        if (chat.opening) {
+            LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
+        }
+        if (shown.isEmpty() && decision == null && chat.error == null && !chat.sending && !chat.opening) {
+            EmptyChat(chat.unsupported)
         }
         LazyColumn(
             state = listState,
@@ -170,58 +213,28 @@ private fun Transcript(modifier: Modifier, onOpenModels: () -> Unit, onOpenSetti
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            itemsIndexed(messages) { i, m ->
-                MessageView(m, isLast = i == messages.lastIndex, streaming = chat.streaming)
+            items(shown) { item ->
+                ItemView(item, answerAgain = item.id == againOn, running = chat.running || chat.sending)
             }
-            if (liveShown) {
-                item(key = "live") {
-                    if (chat.answer.isEmpty() && chat.reasoning.isEmpty()) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                            Text("Reading the prompt…", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    } else {
-                        MessageView(ChatMessage("assistant", chat.answer, chat.reasoning), isLast = true, streaming = true, reasoningOpen = true)
+            if (working || chat.sending) {
+                item(key = "working") {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = tokens.accent)
+                        Text(if (chat.sending) "Sending…" else "Working…", style = MaterialTheme.typography.bodySmall, color = tokens.muted)
                     }
                 }
             }
+            decision?.let { d -> item(key = "decision") { DecisionCard(d, nav.openModels) } }
             chat.error?.let { err ->
                 item(key = "error") {
-                    ElevatedCard(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(err, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
-                            // The fix for a full context: a new chat, or the setting that raises it.
-                            val ctx = if (chat.contextFull) ctxAdvice else null
-                            if (chat.contextFull) {
-                                Text(
-                                    "The conversation has filled the model's context" + (ctx?.let { " of ${it.nCtx} tokens" } ?: "") + ".",
-                                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                if (chat.contextFull) {
-                                    Spacer(Modifier.weight(1f))
-                                    if (ctx != null) TextButton(shape = RectangleShape, onClick = { onOpenSetting(ctx.key) }) { Text("Raise ${ctx.label}") }
-                                    TextButton(shape = RectangleShape, onClick = { Chat.newConversation() }) { Text("New chat") }
-                                } else if (chat.noModel) {
-                                    Spacer(Modifier.weight(1f))
-                                    TextButton(shape = RectangleShape, onClick = onOpenModels) { Text("Models") }
-                                } else {
-                                    Spacer(Modifier.weight(1f))
-                                    if (chat.canRetry) {
-                                        TextButton(shape = RectangleShape, onClick = { Chat.retry() }) { Text("Send again") }
-                                    }
-                                    TextButton(shape = RectangleShape, onClick = { Chat.clearError() }) { Text("Dismiss") }
-                                }
-                            }
-                        }
-                    }
+                    ErrorCard(err, chat.errorCode, ctxAdvice?.let { it.nCtx to (it.key to it.label) }, nav)
                 }
             }
         }
         if (!followTail && !atBottom && total > 0) {
             val scope = rememberCoroutineScope()
-            FilledTonalButton(shape = RectangleShape, 
+            FilledTonalButton(
+                shape = Corner,
                 onClick = { scope.launch { listState.animateScrollToItem(total - 1, Int.MAX_VALUE) } },
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
             ) { Text("Jump to latest") }
@@ -229,154 +242,155 @@ private fun Transcript(modifier: Modifier, onOpenModels: () -> Unit, onOpenSetti
     }
 }
 
-private fun <T> androidx.compose.foundation.lazy.LazyListScope.itemsIndexed(
-    items: List<T>,
-    content: @Composable (Int, T) -> Unit,
-) = items(items.size) { i -> content(i, items[i]) }
-
-/**
- * One message: a role label, the thinking span folded above an assistant's answer, the answer as
- * Markdown (the user's own text verbatim), the turn's figures, and what can be done with it.
- */
 @Composable
-private fun MessageView(m: ChatMessage, isLast: Boolean, streaming: Boolean, reasoningOpen: Boolean = false) {
-    val isUser = m.role == "user"
-    val clipboard = LocalClipboardManager.current
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(
-            if (isUser) "You" else "Assistant",
-            fontSize = 12.sp, fontWeight = FontWeight.Bold,
-            color = if (isUser) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary,
-        )
-        m.choices?.let { choices ->
-            ChoiceView(choices, m.best, m.metrics)
+private fun EmptyChat(unsupported: Boolean) {
+    Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center) {
+        if (unsupported) {
+            Text("This engine keeps no conversations.", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "The server this app started does not offer conversations. Update the app to a build that carries them.",
+                style = MaterialTheme.typography.bodyMedium, color = tokens.muted,
+            )
             return@Column
         }
-        if (m.reasoning.isNotEmpty()) ReasoningBlock(m.reasoning, reasoningOpen)
-        SelectionContainer {
-            if (isUser) Text(m.content, fontSize = 15.sp) else MarkdownText(m.content)
+        Text("Ask anything.", style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "The model runs on this phone, and nothing you write leaves it. Load a model from Models, " +
+                "then write below.",
+            style = MaterialTheme.typography.bodyMedium, color = tokens.muted,
+        )
+    }
+}
+
+/** Why a send or a run failed, decided on by its code; the fix sits beside it. */
+@Composable
+private fun ErrorCard(err: String, code: String, ctx: Pair<Int, Pair<String, String>>?, nav: ChatNav) {
+    BmoeCard(colour = tokens.errTint, padding = 12.dp) {
+        Text(err, color = tokens.text, style = MaterialTheme.typography.bodyMedium)
+        val contextFull = code == ApiException.CODE_CONTEXT_FULL
+        if (contextFull) {
+            Text(
+                "The conversation has filled the model's context" + (ctx?.let { " of ${it.first} tokens" } ?: "") + ".",
+                style = MaterialTheme.typography.bodySmall, color = tokens.muted,
+            )
         }
-        if (m.metrics.isNotEmpty()) {
-            Text(m.metrics, style = FigureStyle, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            Spacer(Modifier.weight(1f))
+            when {
+                contextFull -> {
+                    if (ctx != null) TextButton(onClick = { nav.openSetting(ctx.second.first) }) { Text("Raise ${ctx.second.second}") }
+                    TextButton(onClick = { Chat.newConversation() }) { Text("New chat") }
+                }
+                code == ApiException.CODE_NO_MODEL -> TextButton(onClick = nav.openModels) { Text("Models") }
+            }
+            TextButton(onClick = { Chat.clearError() }) { Text("Dismiss") }
         }
-        if (!isUser && !streaming) {
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                TextButton(shape = RectangleShape, 
-                    onClick = { clipboard.setText(AnnotatedString(m.content)) },
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                ) { Text("Copy", fontSize = 12.sp) }
-                if (isLast) {
-                    TextButton(shape = RectangleShape, 
-                        onClick = { Chat.regenerate() },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                    ) { Text("Regenerate", fontSize = 12.sp) }
+    }
+}
+
+/** A decision's answer: every option with the probability the model put on it, the pick in bold. */
+@Composable
+private fun DecisionCard(d: io.bigmoeonedge.app.engine.DecisionUi, onOpenModels: () -> Unit) {
+    BmoeCard(padding = 12.dp) {
+        Text("Choose: " + d.question, style = MaterialTheme.typography.titleSmall)
+        when {
+            d.running -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                Text("Reading the options…", style = MaterialTheme.typography.bodySmall, color = tokens.muted)
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = { Decisions.stop() }) { Text("Stop") }
+            }
+            d.error != null -> {
+                Text(d.error, color = tokens.err, style = MaterialTheme.typography.bodySmall)
+                if (d.errorCode == ApiException.CODE_NO_MODEL) TextButton(onClick = onOpenModels) { Text("Models") }
+            }
+            else -> d.scores.forEachIndexed { i, c ->
+                val picked = i == d.best
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "${c.label}) ${c.text}", style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = if (picked) FontWeight.SemiBold else FontWeight.Normal,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+                    )
+                    LinearProgressIndicator(
+                        progress = { c.prob.toFloat().coerceIn(0f, 1f) }, color = if (picked) tokens.accent else tokens.muted,
+                        trackColor = tokens.surface2, modifier = Modifier.width(72.dp).height(6.dp),
+                    )
+                    Text(String.format(Locale.US, "%.0f%%", 100.0 * c.prob), style = FigureStyle, modifier = Modifier.width(40.dp))
                 }
             }
         }
+        if (d.metrics.isNotEmpty()) Text(d.metrics, style = CodeStyle.copy(fontSize = 11.sp), color = tokens.muted)
+        if (!d.running) Row { Spacer(Modifier.weight(1f)); TextButton(onClick = { Decisions.dismiss() }) { Text("Dismiss") } }
     }
 }
 
-/**
- * The model's side of a decision: every option with the probability the model put on it, the
- * picked one in bold. The bars need not add up to 100%: the rest is what the model would have said
- * instead of any option, and a large rest is the model saying it is unsure.
- */
+/** The composer: the live line while the engine works, then the prompt and Send, or Stop while an answer is written. */
 @Composable
-private fun ChoiceView(choices: List<io.bigmoeonedge.app.engine.ChoiceScore>, best: Int, metrics: String) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        choices.forEachIndexed { i, c ->
-            val picked = i == best
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    "${c.label}) ${c.text}", fontSize = 14.sp,
-                    fontWeight = if (picked) FontWeight.Bold else FontWeight.Normal,
-                    maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
-                )
-                LinearProgressIndicator(progress = { c.prob.toFloat().coerceIn(0f, 1f) }, modifier = Modifier.width(72.dp).height(6.dp))
-                Text(String.format(Locale.US, "%.0f%%", 100.0 * c.prob), fontSize = 12.sp, modifier = Modifier.width(40.dp))
-            }
-        }
-        if (metrics.isNotEmpty()) {
-            Text(metrics, fontFamily = FontFamily.Monospace, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-    }
-}
-
-/** The model's reasoning, dimmed and folded: a thinking model spends its first tokens here. */
-@Composable
-private fun ReasoningBlock(reasoning: String, initiallyExpanded: Boolean) {
-    var expanded by rememberSaveable { mutableStateOf(initiallyExpanded) }
-    Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded },
-            ) {
-                Text("Thinking", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(if (expanded) "▾" else "▸", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            if (expanded) {
-                SelectionContainer {
-                    Text(reasoning, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
-                }
-            }
-        }
-    }
-}
-
-/** The prompt, where a thumb reaches it, with the live rate above it while an answer streams. */
-@Composable
-private fun PromptBar() {
+private fun Composer() {
     val chat by Chat.state.collectAsStateWithLifecycle()
+    val decision by Decisions.state.collectAsStateWithLifecycle()
     val engine by Engine.state.collectAsStateWithLifecycle()
     val focus = LocalFocusManager.current
     var prompt by rememberSaveable { mutableStateOf("") }
     var choose by rememberSaveable { mutableStateOf(false) }
     var optionsText by rememberSaveable { mutableStateOf("") }
 
-    Column(Modifier.fillMaxWidth().imePadding()) {
-        LiveLine()
-        HorizontalDivider()
-        Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("Choose from options", fontSize = 12.sp, modifier = Modifier.weight(1f))
-            Switch(checked = choose, onCheckedChange = { choose = it }, enabled = !chat.streaming)
-        }
-        if (choose) {
-            OutlinedTextField(
-                value = optionsText, onValueChange = { optionsText = it },
-                placeholder = { Text("Options, one per line") },
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp), minLines = 2, maxLines = 6,
-            )
-        }
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.Bottom,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            OutlinedTextField(
-                value = prompt,
-                onValueChange = { prompt = it },
-                placeholder = { Text(if (choose) "Question" else "Message") },
-                modifier = Modifier.weight(1f),
-                maxLines = 6,
-                trailingIcon = if (prompt.isNotEmpty()) ({
-                    IconButton(onClick = { prompt = "" }) { Icon(Icons.Filled.Clear, contentDescription = "Clear") }
-                }) else null,
-            )
-            if (chat.streaming) {
-                FilledTonalButton(shape = RectangleShape, onClick = { Chat.stop() }, contentPadding = PaddingValues(horizontal = 16.dp)) { Text("Stop") }
-            } else {
-                val options = if (choose) Decide.parseOptions(optionsText) else emptyList()
-                FilledIconButton(shape = RectangleShape, 
-                    onClick = {
-                        // Drop focus so the keyboard retracts: the answer streams into the space it covered.
-                        focus.clearFocus()
-                        if (choose) Chat.choose(prompt, options) else Chat.send(prompt)
-                        prompt = ""
-                    },
-                    enabled = prompt.isNotBlank() && engine.serverUp && (!choose || options.size >= 2),
-                ) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = if (choose) "Choose" else "Send") }
+    Surface(color = tokens.surface, shadowElevation = 2.dp) {
+        Column(Modifier.fillMaxWidth().imePadding()) {
+            HorizontalDivider(color = tokens.line)
+            LiveLine()
+            if (choose) {
+                OutlinedTextField(
+                    value = optionsText, onValueChange = { optionsText = it },
+                    label = { Text("Options, one per line") },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(top = 8.dp), minLines = 2, maxLines = 6,
+                )
+            }
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.Bottom,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                var more by remember { mutableStateOf(false) }
+                Box {
+                    IconButton(onClick = { more = true }) { Icon(Icons.Filled.Add, contentDescription = "More") }
+                    DropdownMenu(expanded = more, onDismissRequest = { more = false }) {
+                        DropdownMenuItem(
+                            text = { Text(if (choose) "Back to a message" else "Choose from options") },
+                            leadingIcon = { Icon(Icons.Filled.Build, null) },
+                            onClick = { choose = !choose; more = false },
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = prompt,
+                    onValueChange = { prompt = it },
+                    placeholder = { Text(if (choose) "Question" else "Message") },
+                    modifier = Modifier.weight(1f),
+                    maxLines = 6,
+                    shape = Corner,
+                    trailingIcon = if (prompt.isNotEmpty()) ({
+                        IconButton(onClick = { prompt = "" }) { Icon(Icons.Filled.Clear, contentDescription = "Clear") }
+                    }) else null,
+                )
+                if (chat.running) {
+                    FilledTonalButton(onClick = { Chat.stop() }, shape = Corner, contentPadding = PaddingValues(horizontal = 16.dp)) { Text("Stop") }
+                } else {
+                    val options = if (choose) Decide.parseOptions(optionsText) else emptyList()
+                    FilledIconButton(
+                        shape = Corner,
+                        onClick = {
+                            // Drop focus so the keyboard retracts: the answer streams into the space it covered.
+                            focus.clearFocus()
+                            if (choose) Decisions.choose(prompt, options) else Chat.send(prompt)
+                            prompt = ""
+                        },
+                        enabled = prompt.isNotBlank() && engine.serverUp && !chat.sending && decision?.running != true &&
+                            (!choose || options.size >= 2),
+                    ) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = if (choose) "Choose" else "Send") }
+                }
             }
         }
     }
@@ -386,7 +400,6 @@ private fun PromptBar() {
 @Composable
 private fun LiveLine() {
     val engine by Engine.state.collectAsStateWithLifecycle()
-    val chat by Chat.state.collectAsStateWithLifecycle()
     val t = engine.live
     if (t.step == 0 && t.avgTokensPerSecond <= 0) return
     val b = breakdown(t)
@@ -400,12 +413,12 @@ private fun LiveLine() {
     }
     if (t.cacheHitPct >= 0) parts += String.format(loc, "cache %.0f%%", t.cacheHitPct)
     engine.cpuTempC?.let { parts += String.format(loc, "%.0f°C", it) }
-    if (chat.streaming && t.steps > 0) parts += "${t.step}/${t.steps}"
+    if (engine.generating && t.steps > 0) parts += "${t.step}/${t.steps}"
     Text(
         parts.joinToString(" · "),
         style = FigureStyle, fontSize = 12.sp,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+        color = tokens.muted,
+        modifier = Modifier.padding(horizontal = 16.dp).padding(top = 6.dp),
         maxLines = 1, overflow = TextOverflow.Ellipsis,
     )
 }

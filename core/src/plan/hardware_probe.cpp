@@ -14,7 +14,10 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <filesystem>
 #include <functional>
+#include <map>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -228,7 +231,70 @@ uint32_t g_backends_linked = 0;
 uint32_t g_backends_loaded = 0;
 bool g_backends_looked = false;
 
-void register_backends() {
+namespace {
+
+// How ggml names a backend module (ggml-backend-reg.cpp: backend_filename_prefix/extension).
+#if defined(_WIN32)
+constexpr const char * kModulePrefix = "ggml-";
+constexpr const char * kModuleExtension = ".dll";
+#else
+constexpr const char * kModulePrefix = "libggml-";
+constexpr const char * kModuleExtension = ".so";
+#endif
+
+// "cuda" for libggml-cuda.so, "cpu" for libggml-cpu-haswell.so; "" for a file that is no module.
+std::string module_backend(const std::string & file) {
+    const std::string prefix = kModulePrefix, ext = kModuleExtension;
+    if (file.size() <= prefix.size() + ext.size() || file.compare(0, prefix.size(), prefix) != 0 ||
+        file.compare(file.size() - ext.size(), ext.size(), ext) != 0)
+        return "";
+    const std::string rest = file.substr(prefix.size(), file.size() - prefix.size() - ext.size());
+    const size_t dash = rest.find('-');
+    return dash == std::string::npos ? rest : rest.substr(0, dash);
+}
+
+std::vector<std::string> files_in(const std::string & dir) {
+    std::vector<std::string> out;
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(std::filesystem::u8path(dir), ec), end; !ec && it != end;
+         it.increment(ec)) {
+        std::error_code fec;
+        if (it->is_regular_file(fec)) out.push_back(it->path().filename().u8string());
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+} // namespace
+
+std::vector<std::string> extra_backend_modules(const std::string & exe_dir,
+                                               const std::vector<std::string> & extra_dirs) {
+    std::set<std::string> taken, beside_exe;
+    for (const std::string & f : files_in(exe_dir)) {
+        beside_exe.insert(f);
+        const std::string b = module_backend(f);
+        if (!b.empty()) taken.insert(b);
+    }
+    std::vector<std::string> out;
+    for (const std::string & dir : extra_dirs) {
+        if (dir.empty()) continue;
+        // Per backend, the module named after it alone when there is one, else the first variant.
+        std::map<std::string, std::string> pick;
+        for (const std::string & f : files_in(dir)) {
+            const std::string b = module_backend(f);
+            if (b.empty() || beside_exe.count(f) || taken.count(b)) continue;
+            const bool plain = f == kModulePrefix + b + kModuleExtension;
+            if (!pick.count(b) || plain) pick[b] = f;
+        }
+        for (const auto & [b, f] : pick) {
+            taken.insert(b);
+            out.push_back((std::filesystem::u8path(dir) / std::filesystem::u8path(f)).u8string());
+        }
+    }
+    return out;
+}
+
+void register_backends(const std::vector<std::string> & extra_dirs) {
     // Once: llama_backend_init() loads nothing when the registry is already filled, and a second
     // pass here would count the modules the first one loaded as linked in.
     if (g_backends_looked) return;
@@ -246,6 +312,10 @@ void register_backends() {
         const size_t slash = self.find_last_of("/\\");
         const std::string dir = slash == std::string::npos ? std::string(".") : self.substr(0, slash);
         ggml_backend_load_all_from_path(dir.c_str());
+        // Then the folders the front-end installed backends into, one module per backend the
+        // executable's folder did not already supply, so no device is registered twice.
+        for (const std::string & m : extra_backend_modules(dir, extra_dirs))
+            ggml_backend_load(m.c_str());
     } else {
         ggml_backend_load_all();
     }

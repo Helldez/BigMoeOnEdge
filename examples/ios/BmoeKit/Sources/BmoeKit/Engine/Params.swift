@@ -31,6 +31,8 @@ public struct ParamSpec: Equatable, Sendable, Identifiable {
     /// The group is set with a control of its own (the model, from Models): shown, not edited.
     public let groupReadOnly: Bool
     public let level: Level
+    /// The table offers the row on a settings form (`form`): the short list every front-end shows.
+    public let form: Bool
     public let scope: Scope
     public let help: String
     public let flag: String
@@ -58,8 +60,10 @@ public struct ParamSpec: Equatable, Sendable, Identifiable {
         groupHelp = j["group_help"].string(or: "")
         groupReadOnly = j["group_read_only"].bool(or: false)
         // No level is a basic row; a level this app does not know yet is taken as the deepest, so
-        // a new kind of row is folded away rather than shown with the recommended ones.
+        // a new kind of row is left off the form rather than shown with the recommended ones.
         level = Level(rawValue: j["level"].string(or: "basic")) ?? .debug
+        // A server from before `form` offered its basic rows first: those are the form there.
+        form = j["form"].bool(or: level == .basic)
         scope = Scope(rawValue: j["scope"].string(or: "session")) ?? .session
         help = j["help"].string(or: "")
         flag = j["flag"].string(or: "")

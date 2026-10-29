@@ -223,11 +223,11 @@ public final class APIClient: @unchecked Sendable {
         return r
     }
 
-    private func get(_ path: String, timeout: TimeInterval) async throws -> JSON {
+    func get(_ path: String, timeout: TimeInterval) async throws -> JSON {
         try await exchange(request("GET", path, body: nil, timeout: timeout))
     }
 
-    private func send(_ method: String, _ path: String, _ body: JSON?, timeout: TimeInterval) async throws -> JSON {
+    func send(_ method: String, _ path: String, _ body: JSON?, timeout: TimeInterval) async throws -> JSON {
         try await exchange(request(method, path, body: body, timeout: timeout))
     }
 

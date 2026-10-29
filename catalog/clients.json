@@ -1,0 +1,84 @@
+{
+  "about": "The coding agents and apps bmoe-server can serve (GET /api/connect, docs/agent.md). Placeholders: {{origin}} is the server's address, {{base_url}} its OpenAI-compatible base ({{origin}}/v1), {{model}} the loaded model's id, {{api_key}} 'local' when the server has no key and a pointer to it when it has one. `write` says how POST /api/connect/<id> writes `file`: toml_block replaces a marked block of its own, json_merge merges the snippet's object into the file's. `acp`, on a coding agent, is how the desktop runs it as a conversation's agent over the Agent Client Protocol (GET /api/agent): the command and its arguments, and the programs that must be on PATH for it to be offered. An entry with no snippet is not listed under Connect.",
+  "clients": [
+    {
+      "id": "claude-code",
+      "name": "Claude Code",
+      "how": "Claude Code speaks the Anthropic Messages API, which this server serves. Set these in the shell you start it from. Load the model with a context of at least 32768 tokens.",
+      "snippet": "export ANTHROPIC_BASE_URL={{origin}}\nexport ANTHROPIC_API_KEY={{api_key}}\nexport ANTHROPIC_MODEL={{model}}\nexport ANTHROPIC_DEFAULT_HAIKU_MODEL={{model}}\nexport CLAUDE_CODE_MAX_CONTEXT_TOKENS=32768\nclaude",
+      "acp": {
+        "command": [
+          "npx",
+          "-y",
+          "@agentclientprotocol/claude-agent-acp@0.98.0"
+        ],
+        "needs": [
+          "npx"
+        ]
+      }
+    },
+    {
+      "id": "codex",
+      "name": "Codex CLI",
+      "how": "Codex CLI speaks the OpenAI Responses API. This adds a `bmoe` provider and profile to its config: start it with `codex --profile bmoe`, with BMOE_API_KEY set to {{api_key}}.",
+      "file": "~/.codex/config.toml",
+      "write": "toml_block",
+      "snippet": "[model_providers.bmoe]\nname = \"BigMoeOnEdge\"\nbase_url = \"{{base_url}}\"\nwire_api = \"responses\"\nenv_key = \"BMOE_API_KEY\"\n\n[profiles.bmoe]\nmodel = \"{{model}}\"\nmodel_provider = \"bmoe\"\n",
+      "acp": {
+        "command": [
+          "npx",
+          "-y",
+          "@agentclientprotocol/codex-acp@2.3.0"
+        ],
+        "needs": [
+          "npx"
+        ]
+      }
+    },
+    {
+      "id": "opencode",
+      "name": "OpenCode",
+      "how": "Adds this server as an OpenAI-compatible provider in OpenCode's global config. The key is read from BMOE_API_KEY ({{api_key}}); pick the model as bmoe/{{model}}.",
+      "file": "~/.config/opencode/opencode.json",
+      "write": "json_merge",
+      "snippet": "{\n  \"$schema\": \"https://opencode.ai/config.json\",\n  \"provider\": {\n    \"bmoe\": {\n      \"npm\": \"@ai-sdk/openai-compatible\",\n      \"name\": \"BigMoeOnEdge\",\n      \"options\": { \"baseURL\": \"{{base_url}}\", \"apiKey\": \"{env:BMOE_API_KEY}\" },\n      \"models\": { \"{{model}}\": { \"name\": \"{{model}}\" } }\n    }\n  }\n}\n",
+      "acp": {
+        "command": [
+          "opencode",
+          "acp"
+        ],
+        "needs": [
+          "opencode"
+        ]
+      }
+    },
+    {
+      "id": "pi",
+      "name": "Pi",
+      "how": "Pi, a minimal coding agent, through its ACP adapter. Install Pi itself and Node.js; point Pi at this server as an OpenAI-compatible provider ({{base_url}}, key {{api_key}}) in Pi's own settings.",
+      "acp": {
+        "command": [
+          "npx",
+          "-y",
+          "pi-acp@0.0.34"
+        ],
+        "needs": [
+          "npx",
+          "pi"
+        ]
+      }
+    },
+    {
+      "id": "openai-sdk",
+      "name": "OpenAI SDK (Python)",
+      "how": "Any program that uses an OpenAI client library works with the base URL and key below.",
+      "snippet": "from openai import OpenAI\n\nclient = OpenAI(base_url=\"{{base_url}}\", api_key=\"{{api_key}}\")\nreply = client.chat.completions.create(\n    model=\"{{model}}\",\n    messages=[{\"role\": \"user\", \"content\": \"Hello\"}],\n)\nprint(reply.choices[0].message.content)\n"
+    },
+    {
+      "id": "open-webui",
+      "name": "Open WebUI",
+      "how": "In Open WebUI, open Admin Settings, Connections, and add an OpenAI API connection with these values. From a container, use the host's address instead of 127.0.0.1 (start this server with --host and --api-key-file for that).",
+      "snippet": "URL: {{base_url}}\nKey: {{api_key}}\nModel: {{model}}"
+    }
+  ]
+}

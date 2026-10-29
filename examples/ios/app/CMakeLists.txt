@@ -19,11 +19,14 @@ set_target_properties(BmoeKit PROPERTIES
 )
 
 # What the app carries beside its code: the catalog the server lists, the logo the screens draw,
-# and the face the product speaks in. Each from its one place in the repository.
+# and the faces every word is set in (Inter, JetBrains Mono: static instances of their official
+# releases, with their SIL OFL licences beside them). Each from its one place in the repository.
+file(GLOB _fonts CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Resources/Fonts/*.ttf"
+                                   "${CMAKE_CURRENT_SOURCE_DIR}/Resources/Fonts/OFL-*.txt")
 set(_resources
     "${PROJECT_SOURCE_DIR}/catalog/models.json"
     "${PROJECT_SOURCE_DIR}/docs/assets/logo/icon.svg"
-    "${PROJECT_SOURCE_DIR}/docs/assets/fonts/PixelifySans.ttf"
+    ${_fonts}
     "${CMAKE_CURRENT_SOURCE_DIR}/Resources/Assets.xcassets"
 )
 

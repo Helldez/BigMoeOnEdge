@@ -30,6 +30,8 @@ class ServerStore {
   params = $state<ParamSpec[] | null>(null);
   paramsError = $state('');
   connected = $state(false);
+  /** The stream was open once: a later loss is "unreachable", not a first "connecting". */
+  everConnected = $state(false);
   metrics = $state<LiveMetrics>(emptyMetrics());
   lastDone = $state<DoneSummary | null>(null);
   /** The stage a measurement is in, null when none runs (a `done` stage clears it). */
@@ -52,6 +54,8 @@ class ServerStore {
   ready = $derived(this.info?.state === 'ready' && this.info.model !== null);
 
   private stream: AbortController | null = null;
+  private listeners = new Set<(ev: SseEvent) => void>();
+  private openListeners = new Set<() => void>();
   private retryMs = RECONNECT_MIN_MS;
   private openedBefore = false;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -63,6 +67,18 @@ class ServerStore {
     });
     this.connect();
     this.refreshStatic();
+  }
+
+  /** Every event the stream carries, for the stores that keep their own state (the agent's). */
+  subscribe(fn: (ev: SseEvent) => void): () => void {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
+
+  /** Runs on every (re)connection: what was missed while cut off arrived as no event. */
+  onOpen(fn: () => void): () => void {
+    this.openListeners.add(fn);
+    return () => this.openListeners.delete(fn);
   }
 
   /** The key the person typed: kept for this browser, and everything is asked again with it. */
@@ -143,11 +159,13 @@ class ServerStore {
     openEvents(
       () => {
         this.connected = true;
+        this.everConnected = true;
         this.retryMs = RECONNECT_MIN_MS;
         // A reconnection may follow a server restart: the schema and the config can have changed,
         // and a config change made while this page was cut off arrived as no event.
         if (this.openedBefore) this.refreshStatic();
         this.openedBefore = true;
+        for (const fn of this.openListeners) fn();
       },
       (ev) => this.onEvent(ev),
       ac.signal,
@@ -164,6 +182,7 @@ class ServerStore {
   }
 
   private onEvent(ev: SseEvent): void {
+    for (const fn of this.listeners) fn(ev);
     switch (ev.event) {
       case 'state':
         this.onJson<Info>(ev, isInfo, (d) => this.onInfo(d));

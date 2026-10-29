@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# BigMoeOnEdge.app and its drag-to-install disk image, from the staged bmoe-desktop folder the
-# release workflow also archives (bmoe-server, its libraries and backend modules, ui/, catalog/,
-# the licenses and README.txt). Nothing is built here but the launcher (launcher.swift).
+# BigMoeOnEdge.app and its drag-to-install disk image, from the staged app folder of the release
+# workflow (bmoe-desktop, bmoe-server, their libraries and backend modules, ui/, catalog/, skills/
+# when there is one, the licenses). Nothing is built here: the app's main executable is
+# bmoe-desktop (desktop/), the native window that starts bmoe-server beside it.
 #
 #   packaging/macos/make-app.sh <staged bmoe-desktop folder> <tag> [out dir]
 #
@@ -17,6 +18,7 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 ICON_PNG="$ROOT/examples/ios/app/Resources/Assets.xcassets/AppIcon.appiconset/icon-1024.png"
 
 [ -x "$STAGE/bmoe-server" ] || { echo "no bmoe-server in $STAGE" >&2; exit 1; }
+[ -x "$STAGE/bmoe-desktop" ] || { echo "no bmoe-desktop in $STAGE" >&2; exit 1; }
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 APP="$OUT/BigMoeOnEdge.app"
@@ -36,12 +38,14 @@ DMG="$OUT/BigMoeOnEdge-$TAG-macos-$ARCH.dmg"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-# Code in Contents/MacOS: the launcher, the server, and every library and module beside it, as the
-# server looks for its backends beside its own executable. -P keeps the soname symlinks.
-swiftc -O -target "$ARCH-apple-macos$MINOS" -o "$APP/Contents/MacOS/BigMoeOnEdge" "$HERE/launcher.swift"
+# Code in Contents/MacOS: the app (bmoe-desktop, under the bundle's name), the server, and every
+# library and module beside them, as the server looks for its backends beside its own executable.
+# -P keeps the soname symlinks.
+cp "$STAGE/bmoe-desktop" "$APP/Contents/MacOS/BigMoeOnEdge"
 cp -P "$STAGE/bmoe-server" "$STAGE"/*.dylib "$STAGE"/*.so "$APP/Contents/MacOS/"
-# Everything else is a resource.
+# Everything else is a resource; the app hands the server ui/ and catalog/ from here.
 cp -R "$STAGE/ui" "$STAGE/catalog" "$APP/Contents/Resources/"
+if [ -d "$STAGE/skills" ]; then cp -R "$STAGE/skills" "$APP/Contents/Resources/"; fi
 cp "$STAGE/LICENSE" "$STAGE/THIRD_PARTY_LICENSES" "$APP/Contents/Resources/"
 
 # The icon, the app icon the iOS app uses, at the sizes an .icns holds.
@@ -77,7 +81,7 @@ EOF
 plutil -lint "$APP/Contents/Info.plist" > /dev/null
 
 # Ad-hoc signatures, inside out: each library and module, the server, then the bundle, which seals
-# the resources and the launcher. --deep is not used: Apple deprecates it for signing, and signing
+# the resources and the app's executable. --deep is not used: Apple deprecates it for signing, and signing
 # each piece is what it would do anyway.
 find "$APP/Contents/MacOS" -type f \( -name '*.dylib' -o -name '*.so' \) -exec codesign --force -s - {} \;
 codesign --force -s - "$APP/Contents/MacOS/bmoe-server"
@@ -92,13 +96,12 @@ ln -s /Applications "$DMGROOT/Applications"
 cat > "$DMGROOT/README.txt" <<EOF
 BigMoeOnEdge $TAG for macOS ($ARCH)
 
-Drag BigMoeOnEdge onto Applications, then open it from there. It starts the server and opens the
-app in your browser at http://127.0.0.1:8765/. While it runs, BigMoeOnEdge sits in the Dock and in
-the menu bar; choose Stop and Quit there (or quit it from the Dock, or press Cmd-Q) to stop it.
-Download a model from the Models page or point it at a gguf you have. Everything runs on this Mac;
-the server listens on this Mac only. Settings and downloaded models live in
-~/Library/Application Support/BigMoeOnEdge; the server's output is in
-~/Library/Logs/BigMoeOnEdge/server.log.
+Drag BigMoeOnEdge onto Applications, then open it from there. It opens its window and starts the
+engine's server behind it (on http://127.0.0.1:8765/, which a browser can open too). Closing the
+window keeps it in the menu bar; Quit there, or Cmd-Q, stops it. Download a model from the Models
+page or point it at a gguf you have. Everything runs on this Mac; the server listens on this Mac
+only. Settings and downloaded models live in ~/Library/Application Support/BigMoeOnEdge, and the
+server's output in its logs/server.log.
 
 The app is not notarised yet, so a copy downloaded with a browser is quarantined and macOS refuses
 to open it the first time. Once, in Terminal, after dragging it to Applications:

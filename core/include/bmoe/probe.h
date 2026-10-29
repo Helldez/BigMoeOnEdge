@@ -85,7 +85,22 @@ void probe_device_support(HardwareProfile & hw, const ModelProfile & model);
 // which llama.cpp's own loader would also search. Idempotent; a front-end calls it once, before
 // anything asks ggml about devices, and before llama_backend_init() (which would otherwise load
 // from both places). A statically linked build finds nothing and loses nothing.
-void register_backends();
+//
+// `extra_dirs` are more folders to load modules from, after the executable's, in order: where a
+// front-end keeps backends installed after the program (the server's backend packs,
+// docs/backends.md). The library does not know where those are; the front-end that installed them
+// does. Only the first call's folders count.
+void register_backends(const std::vector<std::string> & extra_dirs = {});
+
+// The module files register_backends() loads from `extra_dirs`, given the executable's folder
+// `exe_dir`: in each folder, in order, each file named as ggml names a backend module
+// ([lib]ggml-<backend>[-<variant>] with the platform's module extension) whose backend no folder
+// before it had, the executable's first, and whose file name is not one of the executable's
+// folder (ggml's own base library, say). One file per backend, the one named after it alone where
+// there is one: a folder is not a second place to pick a CPU variant from. Exposed for the front-end that must ready
+// them first (server/platform.h, prepare_backend_modules) and for the tests.
+std::vector<std::string> extra_backend_modules(const std::string & exe_dir,
+                                               const std::vector<std::string> & extra_dirs);
 
 // Whether the CPU backend registered here exposes the fork's expert-ready hook, which `--overlap`
 // needs (docs/seam.md). Asked of the backend at run time rather than decided at compile time, so a

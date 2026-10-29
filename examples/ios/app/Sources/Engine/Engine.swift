@@ -48,6 +48,11 @@ final class Engine: ObservableObject {
     private(set) var api: APIClient
     private var connector: Task<Void, Never>?
     private var restartAfterExit = false
+    /// The conversations' events (`conversation`, `item`, `delta`): the chat's model reads them off
+    /// the one event stream rather than holding a second one.
+    var conversationEvents: ((String, JSON) -> Void)?
+    /// The server was reached (again): what the chat keeps of the server is read anew.
+    var connected: (() -> Void)?
 
     static let logLines = 200
 
@@ -82,6 +87,15 @@ final class Engine: ObservableObject {
         let k = APIClient.randomKey()
         Keychain.write(Preferences.networkKeyAccount, k)
         return k
+    }
+
+    /// Replaces the network key with a fresh one, made as the first was, and restarts the server so
+    /// it serves with it: a client holding the old key is refused from then on.
+    func newNetworkKey() {
+        Keychain.write(Preferences.networkKeyAccount, APIClient.randomKey())
+        // The key is read from the keychain, not published: the screens showing it redraw now.
+        objectWillChange.send()
+        restart()
     }
 
     // MARK: the server's life
@@ -154,6 +168,7 @@ final class Engine: ObservableObject {
                         serverError = nil
                         backoff = 500_000_000
                         Task { await refreshStatic() }
+                        connected?()
                     }
                     handle(event)
                 }
@@ -252,6 +267,8 @@ final class Engine: ObservableObject {
         case "log":
             log.append("\(o["level"].string(or: "info")): \(o["message"].string(or: ""))")
             if log.count > Self.logLines { log.removeFirst(log.count - Self.logLines) }
+        case "conversation", "item", "delta":
+            conversationEvents?(e.event, o)
         default:
             break // downloads are the app's own here, not the server's
         }
@@ -405,13 +422,26 @@ final class Preferences: ObservableObject {
         didSet { defaults.set(shareOnNetwork, forKey: "shareOnNetwork") }
     }
 
-    /// Write a per-token CSV for every loaded model, into Metrics.
+    /// How the app looks: the system's light or dark, or always one of them. The web UI's choice.
+    enum Theme: String, CaseIterable, Identifiable {
+        case system, light, dark
+        var id: String { rawValue }
+        var label: String { rawValue.capitalized }
+    }
+
+    @Published var theme: Theme {
+        didSet { defaults.set(theme.rawValue, forKey: "theme") }
+    }
+
+    /// Metrics: write a per-token CSV for every loaded model and show Metrics in Settings. Off until
+    /// asked for, so a person who only chats gets no files and no screen of measurements.
     @Published var metricsCSV: Bool {
         didSet { defaults.set(metricsCSV, forKey: "metricsCSV") }
     }
 
     init() {
         shareOnNetwork = defaults.bool(forKey: "shareOnNetwork")
-        metricsCSV = defaults.object(forKey: "metricsCSV") as? Bool ?? true
+        metricsCSV = defaults.object(forKey: "metricsCSV") as? Bool ?? false
+        theme = defaults.string(forKey: "theme").flatMap(Theme.init(rawValue:)) ?? .system
     }
 }

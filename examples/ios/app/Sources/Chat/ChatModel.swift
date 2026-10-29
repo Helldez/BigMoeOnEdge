@@ -2,210 +2,284 @@ import BmoeKit
 import Foundation
 import UIKit
 
-/// Conversations and the turn in flight. The server keeps no history: every request carries the
-/// whole conversation and the engine reuses the leading tokens its KV cache already holds, so a
-/// follow-up costs its own message and switching conversations costs a full prefill. What is kept
-/// here is saved on the device, one file per conversation, and survives a restart.
+/// A decision's question and the model's pick, shown under the conversation it was asked in. A
+/// decision is not a conversation turn (docs/screens.md, "Choose"), so it is not sent to the
+/// server's conversation and is not kept: it goes when another conversation opens.
+struct DecisionCard: Identifiable, Equatable {
+    let id = UUID()
+    let question: String
+    let result: Decide.Result
+}
+
+/// The chat as the screens see it (docs/agent.md): the server's conversations and the open one's
+/// items as the event stream builds them. The app starts its server with `--chat-only`, so they
+/// are plain chat. The server holds them and writes every answer; this object reads them, sends
+/// what the person does, and follows the events, so an answer goes on whether or not a screen is
+/// open.
 @MainActor
 final class ChatModel: ObservableObject {
-    @Published private(set) var conversations: [Conversation] = []
-    @Published private(set) var current = Conversation()
-    /// The answer and the thinking span in flight; committed to `current` when the turn ends.
-    @Published private(set) var answer = ""
-    @Published private(set) var reasoning = ""
-    @Published private(set) var streaming = false
-    /// The last turn's failure, shown under it and decided on by its code.
+    @Published private(set) var conversations: [ConversationSummary] = []
+    /// The open conversation; nil for a new chat not sent yet.
+    @Published private(set) var current: ConversationSummary?
+    @Published private(set) var transcript: Transcript?
+    @Published private(set) var loadingConversation = false
+    /// A message on its way to the server: Send waits for its answer.
+    @Published private(set) var sending = false
     @Published var error: TurnError?
+    @Published private(set) var decisions: [DecisionCard] = []
+    @Published private(set) var deciding = false
+    /// A line about the conversations moved from this device to the server, once.
+    @Published var migrationNote: String?
 
-    private let engine: Engine
-    private let store: ConversationStore
-    private var turn: Task<Void, Never>?
-    private var stopRequested = false
+    let engine: Engine
+    private var migrated = false
+    private var background: UIBackgroundTaskIdentifier = .invalid
 
     init(engine: Engine) {
         self.engine = engine
-        store = ConversationStore(directory: engine.paths.conversations)
-        conversations = store.list()
+        engine.conversationEvents = { [weak self] event, data in self?.handle(event, data) }
+        engine.connected = { [weak self] in Task { await self?.serverReached() } }
     }
 
-    /// The last message is the person's, unanswered: a turn failed, and it can be sent again as it is.
-    var canRetry: Bool { !streaming && current.messages.last?.role == .user }
-    var canRegenerate: Bool {
-        guard !streaming, let last = current.messages.last else { return false }
-        return last.role == .assistant && !last.isDecision
-    }
+    private var api: APIClient { engine.api }
 
-    func newConversation() {
-        guard !streaming else { return }
-        current = Conversation()
-        error = nil
-    }
+    /// An answer is being written in the open conversation: Stop, not Send.
+    var running: Bool { sending || (current?.busy ?? false) }
+    var items: [ConversationItem] { transcript?.items ?? [] }
+    /// The answer that offers Answer again, if any.
+    var answerAgainOn: String? { transcript?.answerAgainOn }
 
-    func select(_ c: Conversation) {
-        guard !streaming else { return }
-        current = c
-        error = nil
-    }
+    // MARK: the server
 
-    func delete(_ id: UUID) {
-        store.delete(id)
-        if current.id == id && !streaming { current = Conversation() }
-        conversations = store.list()
-    }
-
-    /// Sends `text` as the next turn of the current conversation.
-    func send(_ text: String) {
-        let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !prompt.isEmpty, !streaming, checkReady() else { return }
-        var c = current
-        c.messages.append(ChatMessage(role: .user, content: prompt))
-        stamp(&c)
-        run(c)
-    }
-
-    /// Sends the conversation again as it stands, after a failed turn left the person's message last.
-    func retry() {
-        guard canRetry, checkReady() else { return }
-        run(current)
-    }
-
-    /// Drops the last answer and asks again: the KV holds the prompt, so only the answer is paid.
-    func regenerate() {
-        guard canRegenerate, checkReady() else { return }
-        var c = current
-        c.messages.removeLast()
-        stamp(&c)
-        run(c)
-    }
-
-    /// A decision: the model picks one of `options` for `question` from one prefill and no decode.
-    /// Shown as the question with its lettered options, then each option with its probability;
-    /// never sent back to the model as history.
-    func choose(_ question: String, options: [String]) {
-        let q = question.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !q.isEmpty, options.count >= 2, !streaming, checkReady() else { return }
-        let before = current
-        var c = current
-        c.messages.append(ChatMessage(role: .user, content: Decide.userText(q, options)))
-        stamp(&c)
-        begin(c)
-        turn = Task {
-            let background = beginBackgroundWork()
-            defer { endBackgroundWork(background) }
-            var committed = before
-            do {
-                let r = Decide.parse(try await engine.api.decide(Decide.requestBody(q, options)), options)
-                if !r.cancelled {
-                    committed = c
-                    committed.messages.append(ChatMessage(role: .assistant, content: "", metrics: r.metrics, choices: r.scores,
-                                                          best: r.best))
-                    committed.updated = Date()
-                }
-            } catch {
-                self.error = Self.turnError(error)
-            }
-            // A decision's question is not a conversation turn: without its answer it would go out
-            // as history with the next message, so a failed or cancelled one leaves none behind.
-            persist(committed)
-            current = committed
-            streaming = false
+    private func serverReached() async {
+        await refreshAll()
+        if !migrated {
+            migrated = true
+            await migrate()
         }
     }
 
-    /// Stops the turn in flight; what streamed so far is kept as the answer.
-    func stop() {
-        guard streaming else { return }
-        stopRequested = true
-        Task { await engine.cancel() }
+    func refreshAll() async {
+        await refreshConversations()
+        // A reconnect may have missed events of the open conversation: read it whole again.
+        if let id = current?.id { await reload(id) }
+    }
+
+    func refreshConversations() async {
+        if let c = try? await api.conversations() { conversations = c }
+    }
+
+    /// The conversations this app kept itself before the server held them, moved there once.
+    private func migrate() async {
+        let store = ConversationStore(directory: engine.paths.conversations)
+        guard !store.list().isEmpty else { return }
+        let out = await ConversationMigration.run(store: store, client: api)
+        if out.moved > 0 {
+            migrationNote = "Moved \(out.moved) saved \(out.moved == 1 ? "conversation" : "conversations") from this "
+                + "device to the engine, where every conversation is now kept."
+            await refreshConversations()
+        }
+        if out.kept > 0 {
+            let n = out.kept
+            migrationNote = (migrationNote.map { $0 + " " } ?? "")
+                + "\(n) saved \(n == 1 ? "conversation stays" : "conversations stay") on this device for now: the engine did not take "
+                + "\(n == 1 ? "it" : "them") whole, and the next start tries again."
+        }
+    }
+
+    // MARK: conversations
+
+    func newChat() {
+        current = nil
+        transcript = nil
+        decisions = []
+        error = nil
+    }
+
+    func open(_ id: String) {
+        guard id != current?.id else { return }
+        decisions = []
+        error = nil
+        current = conversations.first { $0.id == id } ?? ConversationSummary(id: id)
+        transcript = Transcript(conversation: id)
+        Task { await reload(id) }
+    }
+
+    private func reload(_ id: String) async {
+        loadingConversation = transcript?.items.isEmpty ?? true
+        defer { loadingConversation = false }
+        do {
+            let c = try await api.conversation(id: id)
+            guard current?.id == id else { return }
+            current = c.summary
+            transcript = Transcript(conversation: id, items: c.items)
+        } catch {
+            if current?.id == id { self.error = Self.turnError(error) }
+        }
+    }
+
+    func delete(_ id: String) {
+        Task {
+            do {
+                try await api.deleteConversation(id: id)
+                conversations.removeAll { $0.id == id }
+                if current?.id == id { newChat() }
+            } catch {
+                self.error = Self.turnError(error)
+            }
+        }
+    }
+
+    func rename(_ id: String, to title: String) {
+        Task {
+            try? await api.renameConversation(id: id, title: title)
+            await refreshConversations()
+            if current?.id == id { current?.title = title }
+        }
     }
 
     // MARK: the turn
 
-    private func stamp(_ c: inout Conversation) {
-        c.updated = Date()
-        if let name = engine.info?.model?.name { c.model = name }
-    }
-
-    private func begin(_ c: Conversation) {
-        persist(c)
-        current = c
-        answer = ""
-        reasoning = ""
+    /// Sends `text`: into the open conversation, or into a new one. The server's answer is the
+    /// person's item; the model's answer streams on the event stream.
+    func send(_ text: String) {
+        let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !message.isEmpty, !running, canSend() else { return }
+        sending = true
         error = nil
-        streaming = true
-        stopRequested = false
-        engine.resetLive()
-    }
-
-    private func run(_ conversation: Conversation) {
-        begin(conversation)
-        turn = Task {
-            let background = beginBackgroundWork()
-            defer { endBackgroundWork(background) }
-            var finish: String?
-            var summary: JSON?
-            var failure: TurnError?
+        holdBackground()
+        Task {
+            defer { sending = false }
             do {
-                for try await data in engine.api.chat(ChatProtocol.requestBody(conversation.messages)) {
-                    guard let chunk = ChatProtocol.parseChunk(data) else { continue }
-                    if let e = chunk.error { failure = e }
-                    if chunk.reset {
-                        answer = ""
-                        reasoning = ""
-                    }
-                    if let t = chunk.content { answer += t }
-                    if let t = chunk.reasoning { reasoning += t }
-                    if let f = chunk.finish { finish = f }
-                    if let s = chunk.summary { summary = s }
+                let id: String
+                if let c = current {
+                    id = c.id
+                } else {
+                    let made = try await api.createConversation()
+                    id = made.summary.id
+                    current = made.summary
+                    transcript = Transcript(conversation: id, items: made.items)
+                    conversations.removeAll { $0.id == id }
+                    conversations.insert(made.summary, at: 0)
                 }
+                let item = try await api.sendMessage(conversation: id, text: message)
+                if !item.id.isEmpty, transcript?.conversation == id { transcript?.upsert(item) }
+                // The answer is under way even if its first `conversation` event is still on its way.
+                if current?.id == id, current?.state == "idle" { current?.state = "running" }
             } catch {
-                if !stopRequested { failure = Self.turnError(error) }
+                self.error = Self.turnError(error)
+                releaseBackground()
             }
-            let cancelled = finish == "cancelled" || stopRequested
-            let metrics = summary.map { ChatProtocol.turnMetrics($0, nCtx: engine.info?.model?.nCtx ?? 0, cancelled: cancelled) } ?? ""
-            // A turn that produced nothing and failed keeps the person's message, so it can be sent
-            // again after the fix (a new chat, a loaded model); an empty cancelled turn is dropped.
-            var committed = conversation
-            if !answer.isEmpty || (failure == nil && !cancelled) {
-                committed.messages.append(ChatMessage(role: .assistant, content: answer, reasoning: reasoning, metrics: metrics))
-                committed.updated = Date()
-                persist(committed)
-            }
-            current = committed
-            answer = ""
-            reasoning = ""
-            error = failure
-            streaming = false
         }
     }
 
-    /// Nothing to send to: said with the code the server itself would answer, so one rule reads both.
-    private func checkReady() -> Bool {
-        if engine.ready { return true }
-        error = engine.serverUp ? TurnError(message: "Load a model first, from Models.", code: APIError.noModel)
-            : TurnError(message: "The engine is not running.", code: "")
-        return false
+    /// Drops the person's message `item` and everything after it, then sends `text` in its place.
+    func edit(_ item: ConversationItem, to text: String) {
+        guard let id = current?.id, !running, canSend() else { return }
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        error = nil
+        holdBackground()
+        transcript?.truncate(from: item.id)
+        Task {
+            do {
+                try await api.editMessage(conversation: id, item: item.id, text: t)
+            } catch {
+                self.error = Self.turnError(error)
+                await reload(id)
+                releaseBackground()
+            }
+        }
     }
 
-    private func persist(_ c: Conversation) {
-        try? store.save(c)
-        conversations = store.list()
+    /// Answer again: the last question, resent as it was, as the web UI does.
+    func answerAgain() {
+        guard let last = transcript?.lastUser else { return }
+        edit(last, to: last.text)
     }
 
-    private static func turnError(_ error: Error) -> TurnError {
+    func stop() {
+        guard let id = current?.id else { return }
+        Task { try? await api.stopConversation(id: id) }
+    }
+
+    /// A message needs the server and the loaded model. Said with the code the server itself
+    /// would answer, so one rule reads both.
+    private func canSend() -> Bool {
+        guard engine.serverUp else {
+            error = TurnError(message: "The engine is not running.", code: "")
+            return false
+        }
+        if !engine.ready {
+            error = TurnError(message: "Load a model first, from Models.", code: APIError.noModel)
+            return false
+        }
+        return true
+    }
+
+    // MARK: a decision
+
+    /// The model picks one of `options` for `question` from one prefill and no decode; the card
+    /// stays under the conversation until another one opens.
+    func choose(_ question: String, options: [String]) {
+        let q = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty, options.count >= 2, !deciding else { return }
+        guard engine.ready else {
+            error = TurnError(message: "Load a model first, from Models.", code: APIError.noModel)
+            return
+        }
+        deciding = true
+        error = nil
+        engine.resetLive()
+        Task {
+            defer { deciding = false }
+            do {
+                let r = Decide.parse(try await api.decide(Decide.requestBody(q, options)), options)
+                if !r.cancelled { decisions.append(DecisionCard(question: Decide.userText(q, options), result: r)) }
+            } catch {
+                self.error = Self.turnError(error)
+            }
+        }
+    }
+
+    // MARK: the events
+
+    private func handle(_ event: String, _ data: JSON) {
+        switch event {
+        case "conversation":
+            let id = data["id"].string ?? ""
+            guard let row = ConversationList.apply(&conversations, event: data) else { return }
+            if current?.id == id {
+                current?.title = row.title
+                current?.state = row.state
+                current?.updated = row.updated
+            }
+            if !conversations.contains(where: \.busy) && !sending { releaseBackground() }
+        case "item", "delta":
+            transcript?.apply(event: event, data: data)
+        default:
+            break
+        }
+    }
+
+    // An answer is written in the server, inside this app's process: iOS suspends the app soon
+    // after the person leaves it, and the server with it. Asking for the time the system grants
+    // keeps an answer that is nearly done going when the person switches apps.
+    private func holdBackground() {
+        guard background == .invalid else { return }
+        background = UIApplication.shared.beginBackgroundTask(withName: "chat-turn") { [weak self] in
+            Task { @MainActor in self?.releaseBackground() }
+        }
+    }
+
+    private func releaseBackground() {
+        guard background != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(background)
+        background = .invalid
+    }
+
+    static func turnError(_ error: Error) -> TurnError {
         if let e = error as? APIError { return TurnError(message: e.message, code: e.code) }
         return TurnError(message: error.localizedDescription, code: "")
-    }
-
-    // A turn runs on in the background for the time the system allows, so an answer that is nearly
-    // done when the person switches apps is not cut off and lost.
-    private func beginBackgroundWork() -> UIBackgroundTaskIdentifier {
-        UIApplication.shared.beginBackgroundTask(withName: "chat-turn") { [weak self] in
-            Task { @MainActor in self?.stop() }
-        }
-    }
-
-    private func endBackgroundWork(_ id: UIBackgroundTaskIdentifier) {
-        if id != .invalid { UIApplication.shared.endBackgroundTask(id) }
     }
 }

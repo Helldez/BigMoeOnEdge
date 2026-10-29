@@ -35,10 +35,15 @@
         <key>UIApplicationSupportsMultipleScenes</key>
         <false/>
     </dict>
-    <!-- The product's own face (docs/design.md), bundled from docs/assets/fonts. -->
+    <!-- The faces every word is set in (docs/design.md), bundled from Resources/Fonts. -->
     <key>UIAppFonts</key>
     <array>
-        <string>PixelifySans.ttf</string>
+        <string>Inter-Regular.ttf</string>
+        <string>Inter-Medium.ttf</string>
+        <string>Inter-SemiBold.ttf</string>
+        <string>Inter-Bold.ttf</string>
+        <string>JetBrainsMono-Regular.ttf</string>
+        <string>JetBrainsMono-Bold.ttf</string>
     </array>
     <!-- The engine serves the network only when the person turns it on in Settings; the system
          asks them once before an app reaches the local network. -->

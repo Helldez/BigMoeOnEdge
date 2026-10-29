@@ -84,6 +84,21 @@ if(TARGET bmoe_server_core)
     add_executable(bmoe_server_test server_test.cpp)
     target_link_libraries(bmoe_server_test PRIVATE bmoe_server_core)
     add_test(NAME server_logic COMMAND bmoe_server_test)
+
+    # The desktop app's server side: the signed release feed, backend packs, archives that would
+    # leave their folder, the local-only routes, and the modules loaded from the pack folders. No
+    # network, no driver; the install case runs the system's tar.
+    add_executable(bmoe_feed_test feed_test.cpp)
+    target_link_libraries(bmoe_feed_test PRIVATE bmoe_server_core bmoe_monocypher)
+    add_test(NAME feed_and_packs COMMAND bmoe_feed_test)
+endif()
+
+# The desktop app's rules (desktop/app_core.h): preferences, port, server arguments, which pages the
+# bridge answers, which file runs as an update. No window, no server.
+if(TARGET bmoe_desktop_core)
+    add_executable(bmoe_desktop_test desktop_test.cpp)
+    target_link_libraries(bmoe_desktop_test PRIVATE bmoe_desktop_core cpp-httplib)
+    add_test(NAME desktop_rules COMMAND bmoe_desktop_test)
 endif()
 
 # bmoe-server's engine host: loads, turns, cancel and unload across threads, and which failures
@@ -93,6 +108,13 @@ if(TARGET bmoe_server)
     add_executable(bmoe_engine_host_test engine_host_test.cpp)
     target_link_libraries(bmoe_engine_host_test PRIVATE bmoe_server)
     add_test(NAME engine_host COMMAND bmoe_engine_host_test)
+
+    # The agent: its run loop over the engine host with a scripted session (approvals, denials, modes,
+    # stop, the round limit, a short context, helpers, tasks), and the rules of its tools and stores.
+    # No model, no network.
+    add_executable(bmoe_agent_test agent_test.cpp)
+    target_link_libraries(bmoe_agent_test PRIVATE bmoe_server)
+    add_test(NAME agent COMMAND bmoe_agent_test)
 endif()
 
 # release_file_mappings: on Windows it must find and drop this process's own view + section of a
