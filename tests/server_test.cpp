@@ -4,7 +4,7 @@
 //   * the chat protocol: which request fields become an engine turn, and what a turn's result
 //     (text, tool calls, token counts) looks like on the wire;
 //   * the turn queue: first come first served, a bound, and a caller that gives its place up;
-//   * the settings layers: defaults < plan < launch < user, what a reset removes, what persists;
+//   * the settings layers: defaults < plan < user < launch, what a reset removes, what persists;
 //   * the JSON edges: form values to parameter strings and back;
 //   * access: which host names, origins, keys and content types reach the API, and when the server
 //     may not start at all;
@@ -794,7 +794,7 @@ static void settings_tests() {
     check(s.launch_keys() == std::vector<std::string>{"threads"}, "launch keys: the launch layer's");
 
     json rejected = s.apply(json{{"threads", 12}, {"top-k", "abc"}, {"nope", 1}}, {});
-    check(s.config().n_threads == 12, "user values override launch flags");
+    check(s.config().n_threads == 12, "a value set while running overrides the launch flag");
     check(rejected.contains("top-k") && rejected.contains("nope") && !rejected.contains("threads"),
           "unparseable values and unknown keys are rejected, the rest applied");
     const auto keys = s.operator_keys();
@@ -814,6 +814,11 @@ static void settings_tests() {
     SettingsStore third(defaults, path.u8string());
     third.load();
     check(!third.auto_plan(true), "auto_plan, once turned off, stays off across a restart");
+
+    // A value saved by an earlier run is under the flags of this one: -m / -c at start win.
+    third.set_launch_values({{"temp", "0.2"}});
+    check(third.config().sampling.temp == 0.2f, "a launch flag overrides the saved value of its key");
+    check(third.planning_config().sampling.temp == 0.2f, "and the planning config sees the launch flag too");
 
     std::filesystem::remove(path, ec);
 }
