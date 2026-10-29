@@ -333,10 +333,11 @@ std::string Agent::system_prompt(const json & conv, bool remote) const {
                     "computer runs " +
                     d_.os_name + ".\n";
     if (!ws.empty()) {
-        // Relative paths, said with an example: a long absolute path copied back by a small model is
-        // where it slips (a dropped folder is a refused call).
-        s += "Workspace (the working directory): " + ws +
-             ". Give tools paths relative to it, like `src/main.py` or `.`; nothing outside it can be reached.\n";
+        // Neither the folder's absolute path nor its name: a small model handed either prefixes it to
+        // what it writes (a folder tree, or a folder of that name, inside the workspace). Commands start
+        // there already; get_info gives the path when one is needed.
+        s += "You work in the person's project folder, which is the working directory. Give tools paths relative "
+             "to it, like `src/main.py` or `.`; nothing outside it can be reached.\n";
     } else {
         s += "No workspace: there are no file or command tools. If the person asks to create, read or change "
              "files, tell them to pick a folder for this conversation first.\n";

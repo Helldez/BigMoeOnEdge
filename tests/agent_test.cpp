@@ -319,9 +319,10 @@ static void loop_tests() {
         check(rig->conv(c).value("title", "") == "write a file", "an untitled conversation takes its first message");
         const GenerateRequest r = rig->last_request();
         check(!r.messages.empty() && r.messages[0].role == "system" &&
-                  r.messages[0].content.find(rig->ws.path.u8string()) != std::string::npos &&
+                  r.messages[0].content.find("working directory") != std::string::npos &&
+                  r.messages[0].content.find(rig->ws.path.u8string()) == std::string::npos &&
                   r.messages[0].content.find("Mode: ask") != std::string::npos,
-              "the system prompt names the workspace and the mode");
+              "the system prompt says the work is in the working directory, without its path, and the mode");
         GenerateRequest first;
         {
             std::lock_guard<std::mutex> lk(rig->script.m);
