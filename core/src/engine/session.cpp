@@ -519,7 +519,9 @@ struct Session::Impl {
         end_cancel_quiet(); // a window still open would demote every later llama.cpp error
         // Deterministic teardown order: stop the I/O pool (it holds fds into the mmap and its
         // buffers back the rebound expert tensors), then the context (its eval callback points
-        // at the hook), then the hook, then unmap the model, then release the backend.
+        // at the hook), then the hook, then unmap the model, then release the backend. The hook's
+        // prediction worker goes first of all: it reads gate weights the source frees.
+        if (hook) hook->predict_worker_stop();
         source.shutdown();
         // Hands every weight back to its mapping, then frees the device copy: before the model goes.
         prefill.reset();

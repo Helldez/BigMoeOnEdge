@@ -34,6 +34,9 @@ Semantic Versioning.
   installed from the release page, as before.
 
 ### Fixed
+- **A session's teardown no longer frees the gate weights under the router's prediction worker.**
+  The worker could still be scoring a layer when the source's shutdown freed the dense copy it read
+  from; TSan caught it on `main` in the Nemotron-H gate. The teardown now joins the worker first.
 - **`bmoe-server`'s launch flags outrank saved settings, as `--help` says** (#435). The settings
   layers applied a value saved by an earlier run after the flags of this one, so
   `bmoe-server -m A.gguf -c 32768` loaded the model and context `settings.json` held instead. The
