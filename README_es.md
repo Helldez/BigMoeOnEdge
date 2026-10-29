@@ -15,9 +15,8 @@
 
 Esta es una traducción; el README en inglés es la referencia y puede ser más reciente.
 
-Ejecuta modelos Mixture-of-Experts más grandes que la memoria del dispositivo haciendo streaming de los expertos desde la flash.
-Construido sobre la API pública de llama.cpp; Android, iOS, macOS, Windows y Linux; un servidor local
-compatible con OpenAI en cada uno.
+Ejecuta modelos Mixture-of-Experts más grandes que la memoria de tu dispositivo. Los expertos se leen de la
+flash cuando el modelo los necesita. Android, iOS, macOS, Windows y Linux, construido sobre llama.cpp.
 
 <table align="center">
 <tr>
@@ -36,42 +35,23 @@ compatible con OpenAI en cada uno.
 </tr>
 </table>
 
-Qwen3.6-35B-A3B generando en cada dispositivo, en tiempo real, en las apps publicadas. El modelo es más grande
-que la memoria de cada dispositivo.
+Qwen3.6-35B-A3B (21 GB) en tiempo real en cada dispositivo. El modelo es más grande que la memoria de cada
+dispositivo.
 
-## Descripción
+## Qué hace
 
-Un modelo Mixture-of-Experts usa unos pocos de sus expertos para cada token. BigMoeOnEdge mantiene en memoria
-los pesos que necesita cada token y una caché de los expertos usados recientemente, y lee los demás expertos de
-la flash cuando el router los solicita. La salida es idéntica a ejecutar el modelo completamente en memoria;
-los tests lo comprueban.
-
-- **Planificador.** `--auto` mide la máquina (memoria disponible, velocidad del almacenamiento, cada CPU, GPU y
-  NPU) y la cabecera del modelo, y luego fija el tamaño de la caché, qué permanece residente y qué dispositivo ejecuta
-  el prompt y cuál la respuesta. Tras una primera ejecución planifica a partir del registro de enrutamiento del propio
-  modelo (el servidor guarda uno por modelo), y la primera respuesta mide los hilos y el overlap. Sus reglas no nombran
-  ninguna plataforma ni dispositivo. Los ajustes indicados a mano se respetan.
-- **Modelos.** Cualquier gguf MoE que cargue llama.cpp, en cualquier cuantización. Los tensores de expertos se localizan a partir del
-  archivo, así que una arquitectura nueva no necesita código aquí.
-- **Backends.** CPU, Metal, Vulkan, OpenCL, CUDA, HIP y Hexagon NPU, cargados como módulos; un módulo SYCL
-  compilado con su propia toolchain se carga de la misma forma. En una GPU, los expertos más usados quedan en caché en
-  su memoria y los demás llegan en streaming tras una caché en RAM; un modelo que cabe en la tarjeta se ejecuta entero
-  en ella.
-- **Apps y servidor.** Apps nativas en Android e iOS, una app web en el escritorio y un
-  servidor compatible con OpenAI en todos ellos, que pueden usar los agentes de programación (Claude Code, Codex CLI,
-  opencode).
+- **Ejecuta modelos que no caben.** Un modelo MoE usa unos pocos expertos por token. El motor mantiene en
+  memoria los pesos que necesita cada token y los expertos más usados, y lee el resto de la flash. La salida
+  es la misma que con el modelo entero en memoria; los tests lo comprueban.
+- **Se configura solo.** `--auto` mide la máquina y el modelo y elige el tamaño de la caché, los hilos y qué
+  dispositivo hace qué. La pantalla Plan muestra cada decisión y su motivo.
+- **Cualquier GGUF MoE.** Todo lo que carga llama.cpp, en cualquier cuantización. Sin código por modelo.
+- **Todos los backends.** CPU, Metal, CUDA, HIP, Vulkan, OpenCL y la Hexagon NPU. En una GPU, los expertos
+  más usados se quedan en su memoria.
+- **Apps y un servidor.** Una app de escritorio, apps para el teléfono y un servidor compatible con OpenAI y
+  Anthropic para agentes de programación.
 
 ## Rendimiento
-
-Velocidad de decodificación, medida en los dispositivos siguientes. El motor se dimensiona según la máquina, así que un hardware
-más potente funciona más rápido.
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/speed-dark.svg">
-    <img src="docs/assets/diagrams/speed-light.svg" width="820" alt="Velocidad de decodificación de Qwen3.6-35B-A3B Q4_K_M: 18-24 tok/s en un portátil Apple silicon de 16 GB, 5 en un portátil Windows de 16 GB, 5 en un teléfono Android de 12 GB, 3 en un iPhone de 12 GB.">
-  </picture>
-</p>
 
 | Hardware | Memoria | Modelo | En disco | Expertos desde | Decodificación tok/s |
 |---|---|---|---:|---|---:|
@@ -87,59 +67,89 @@ más potente funciona más rápido.
 |  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
 | **GPU de centro de datos** (AMD, ROCm) | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
 
-Tokens por segundo enteros; un rango es la variación entre ejecuciones. "Expertos desde" indica
-de dónde se leen los expertos: en streaming desde la flash, en RAM o en la GPU, con una caché de
-los más usados en la memoria de la GPU.
-
-Configuraciones y método: [docs/benchmarks.md](docs/benchmarks.md). Para añadir una máquina, ejecuta
-`scripts/bench-report.sh /path/to/model.gguf` y pega la tabla en un
+Todo con `--auto`. Un rango es la variación entre ejecuciones. Método y todas las ejecuciones:
+[docs/benchmarks.md](docs/benchmarks.md). Para añadir tu máquina, ejecuta
+`scripts/bench-report.sh model.gguf` y abre un
 [informe de benchmark](https://github.com/Helldez/BigMoeOnEdge/issues/new?template=benchmark-report.yml).
 
-## Inicio rápido
+## Instalación
 
-Todo lo que sigue viene de la [última versión](https://github.com/Helldez/BigMoeOnEdge/releases/latest).
-Cada paquete arranca el motor y abre la app en el navegador en `http://127.0.0.1:8765/`; elige un
-modelo en **Models**.
+Desde la [última versión](https://github.com/Helldez/BigMoeOnEdge/releases/latest):
 
-- **macOS** (Apple silicon): abre `BigMoeOnEdge-<versión>-macos-arm64.dmg` y arrastra la app a
-  Aplicaciones. Mientras funciona está en el Dock y en la barra de menús; **Stop and Quit** la detiene.
-  Aún sin notarizar: el primer arranque necesita el paso del README.txt del dmg.
-- **Windows**: ejecuta `BigMoeOnEdge-<versión>-windows-x86_64-setup.exe` (o `-windows-arm64-setup.exe`).
-  Sin derechos de administrador; abre BigMoeOnEdge desde el menú Inicio y cierra su ventana para detenerlo.
-- **Linux**: `chmod +x BigMoeOnEdge-<versión>-linux-x86_64.AppImage` (o `-linux-aarch64`) y ejecútalo.
-  Desde un gestor de archivos se abre en una ventana de terminal; ciérrala para detenerlo.
-- **Android**: instala `app-dev-release.apk` desde la página de la versión; cada versión se instala
-  sobre la anterior. **Settings → Serve on the network** comparte el motor del teléfono, con una clave.
+- **macOS** (Apple silicon): abre el `.dmg` y arrastra la app a Aplicaciones. Aún no está notarizada; el
+  README.txt del dmg tiene el único paso para el primer arranque.
+- **Windows**: ejecuta el `-setup.exe`. Sin derechos de administrador.
+- **Linux**: haz ejecutable el `.AppImage` y ejecútalo. La ventana necesita WebKitGTK 4.1;
+  `--server` ejecuta solo el servidor.
+- **Android**: instala `app-dev-release.apk`. Cada versión se instala sobre la anterior.
+- **iOS**: compila la app con Xcode desde [examples/ios](examples/ios/README.md). Experimental.
 
-**iOS.** Compila la app con Xcode desde [examples/ios](examples/ios/README.md). Experimental.
+Abre la app y elige un modelo en **Models**. Una tarjeta NVIDIA o AMD obtiene su backend desde
+**Settings** ([docs/desktop-app.md](docs/desktop-app.md)).
 
-**Archivos.** El archivo `bmoe-desktop` contiene la misma app como carpeta, para instalaciones con
-scripts: extráelo y ejecuta `bmoe-server --open`. El archivo `bmoe-cli` contiene el motor de línea de
-comandos.
-
-**Línea de comandos.**
+Solo las herramientas de línea de comandos (`bmoe-cli`, `bmoe-server`):
 
 ```bash
-bmoe-cli -m model.gguf --auto -p "Explain MoE routing."   # measure, plan, run
-bmoe-cli -m model.gguf --plan                              # print the plan and exit
+curl -fsSL https://github.com/Helldez/BigMoeOnEdge/releases/latest/download/install.sh | sh
 ```
 
-## Servidor compatible con OpenAI
+```powershell
+irm https://github.com/Helldez/BigMoeOnEdge/releases/latest/download/install.ps1 | iex
+```
+
+## Uso
+
+```bash
+bmoe-cli -m model.gguf --auto -p "Explain MoE routing."   # plan and run
+bmoe-cli -m model.gguf --plan                              # print the plan
+bmoe-server -m model.gguf -c 32768                         # the server and its web UI, port 8765
+```
+
+El servidor habla la API de OpenAI (`/v1/chat/completions`, `/v1/responses`) y la de Anthropic
+(`/v1/messages`), con streaming, llamadas a herramientas y razonamiento. Añade `--host 0.0.0.0 --api-key KEY`
+para dar servicio a otras máquinas. Referencia: [docs/server-api.md](docs/server-api.md).
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(base_url="http://127.0.0.1:8765/v1", api_key="local")
-reply = client.chat.completions.create(
-    model="local",
-    messages=[{"role": "user", "content": "Write a haiku about experts on flash."}],
-)
+reply = client.chat.completions.create(model="local", messages=[{"role": "user", "content": "Hello"}])
 print(reply.choices[0].message.content)
 ```
 
-Se admiten streaming, llamadas a herramientas y razonamiento. Para opencode, añade el servidor como
-proveedor compatible con OpenAI con `baseURL` igual a `http://127.0.0.1:8765/v1`. Para dar servicio a otras máquinas,
-inicia el servidor con `--host` y `--api-key`. Referencia de la API: [docs/server-api.md](docs/server-api.md).
+**Los agentes de programación** necesitan un contexto grande: varias veces el tamaño de su primera petición.
+32768 basta para opencode, 65536 para Claude Code
+([dimensionar el contexto](docs/server-api.md#sizing-the-context-for-a-client)).
+
+```bash
+# Claude Code
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8765
+export ANTHROPIC_API_KEY=local
+export ANTHROPIC_MODEL=<model id from /v1/models>
+export ANTHROPIC_DEFAULT_HAIKU_MODEL=$ANTHROPIC_MODEL
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=65536
+claude
+```
+
+```toml
+# Codex CLI, ~/.codex/config.toml
+model = "<model id from /v1/models>"
+model_provider = "bmoe"
+
+[model_providers.bmoe]
+name = "bmoe"
+base_url = "http://127.0.0.1:8765/v1"
+wire_api = "responses"
+env_key = "BMOE_API_KEY"
+```
+
+Para opencode, añade el servidor como proveedor compatible con OpenAI en `http://127.0.0.1:8765/v1`. En
+**Connect apps**, la app escribe la configuración de Codex CLI y opencode y muestra la de
+Claude Code.
+
+**El agente.** La app de escritorio tiene su propio agente: trabaja en una carpeta que eliges, lee y edita
+archivos y ejecuta comandos, y pregunta antes de cambiar nada salvo que se lo permitas. Una conversación
+también la puede llevar OpenCode, Claude Code, Codex o Pi. Consulta [docs/agent.md](docs/agent.md).
 
 ## Cómo funciona
 
@@ -150,24 +160,31 @@ inicia el servidor con `--host` y `--api-key`. Referencia de la API: [docs/serve
   </picture>
 </p>
 
-El motor usa la API pública de llama.cpp: toda cuantización, tokenizador y plantilla de chat que llama.cpp
-admite funciona sin cambios, y actualizar llama.cpp es un bump del submódulo. Los expertos enrutados se leen
-según la disposición de tensores del archivo ([docs/which-models-stream.md](docs/which-models-stream.md)).
-`ctest` comprueba que la salida en streaming es igual a la salida totalmente residente a través de la caché, los desalojos,
-el solapamiento, las sesiones y los modelos divididos ([docs/architecture.md](docs/architecture.md)).
+Tres niveles, cada uno una caché del de abajo:
+
+- **La flash** contiene el modelo entero.
+- **La RAM** contiene los pesos que lee cada token y una caché de expertos.
+- **La memoria de la GPU**, en una tarjeta que tiene la suya propia, contiene los pesos densos y los
+  expertos más usados.
+
+Un experto que falta en la tarjeta se sube desde la RAM; uno que falta en la RAM se lee de la flash. Un
+modelo que cabe en la tarjeta se ejecuta entero en ella. El streaming solo lee, así que no desgasta el
+disco.
+
+El motor usa la API pública de llama.cpp, así que sus cuantizaciones, tokenizadores y plantillas de chat
+funcionan sin cambios, y una actualización es un bump del submódulo. Qué tensores son expertos se lee del
+archivo ([docs/which-models-stream.md](docs/which-models-stream.md)). Diseño:
+[docs/architecture.md](docs/architecture.md).
 
 ## El planificador
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/plan-dark.svg">
-    <img src="docs/assets/diagrams/plan-light.svg" width="820" alt="Lo que eligió --auto para Qwen3.6-35B-A3B en un portátil Apple silicon de 16 GB: 1.7 GiB de pesos densos y una caché de expertos de 7.2 GiB en RAM, 85% de aciertos de caché, 69.6 MiB leídos de la flash por token, el prompt en la GPU y la decodificación en 8 hilos de CPU a 18 tok/s.">
-  </picture>
+  <img src="docs/assets/screens/plan-mac.png" width="820" alt="La pantalla Plan en un portátil Apple silicon de 16 GB con Qwen3.6-35B-A3B Q4_K_M: los expertos llegan de la flash con una caché de 6.6 GiB, el prompt corre en la GPU y los tokens en la CPU, 23.9 tok/s y 94% de aciertos medidos, y adónde va la memoria.">
 </p>
 
-El planificador lee la forma del modelo desde su cabecera y mide la máquina. Las mismas reglas dan a un
-teléfono y a un portátil planes distintos. La pantalla Plan muestra el resultado: adónde va la memoria, qué hace
-cada dispositivo y el motivo de cada decisión.
+El planificador lee la cabecera del modelo y mide la máquina: memoria, velocidad del almacenamiento, cada
+CPU, GPU y NPU. Sus reglas no nombran ningún dispositivo ni plataforma, así que un teléfono y un equipo de
+escritorio reciben planes distintos del mismo código. Los valores que fijas tú se respetan. Consulta
 [docs/hardware-planning.md](docs/hardware-planning.md).
 
 ## Plataformas
@@ -175,11 +192,28 @@ cada dispositivo y el motivo de cada decisión.
 | | Android | macOS | Windows | Linux | iOS |
 |---|---|---|---|---|---|
 | Motor y CLI | arm64 | Apple silicon | x86_64, arm64 | x86_64, aarch64 | arm64 (dentro de la app) |
-| App y servidor | app nativa | app web | app web | app web | app nativa, compilada desde el código fuente |
-| Aceleradores | Hexagon NPU, Vulkan, OpenCL | Metal | Vulkan, CUDA (x86_64, descarga aparte), OpenCL (arm64), Hexagon NPU (arm64, opt-in) | Vulkan, CUDA y HIP (x86_64; CUDA una descarga aparte, HIP donde ROCm 7 está instalado) | Metal |
-| Ejecutado en hardware | teléfono de 12 GB | portátil de 16 GB | portátil de 16 GB | CI; tarjetas NVIDIA de 12-24 GB y AMD de 192 GB alquiladas | iPhone de 12 GB ([#235](https://github.com/Helldez/BigMoeOnEdge/issues/235)) |
+| App | app nativa | app de escritorio | app de escritorio | app de escritorio | app nativa, compilada desde el código fuente |
+| Aceleradores | Hexagon NPU, Vulkan, OpenCL | Metal | Vulkan, CUDA, OpenCL (arm64), Hexagon NPU (arm64) | Vulkan, CUDA, HIP | Metal |
+| Probado en | teléfono de 12 GB | portátil de 16 GB | portátil de 16 GB | tarjetas NVIDIA de 12-24 GB y AMD de 192 GB alquiladas | iPhone de 12 GB |
 
-Detalles y qué se midió dónde: [docs/platforms.md](docs/platforms.md).
+Detalles: [docs/platforms.md](docs/platforms.md).
+
+## Cómo se compara
+
+| | **BigMoeOnEdge** | Strata | ds4 | colibri | KTransformers |
+|---|:---:|:---:|:---:|:---:|:---:|
+| Teléfono Android (también NPU) | ✅ | ❌ | ❌ | ❌ | ❌ |
+| iPhone | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Mac | ✅ | ✅ | ✅ | ✅ | ❌ |
+| Windows / Linux, solo CPU | ✅ | ❌ | ✅ | ✅ | ❌ |
+| NVIDIA | ✅ | ✅ | ✅ | ✅ | ✅ |
+| AMD (ROCm) | ✅ (también MI300X) | Radeon RX y Strix Halo | Strix Halo y RDNA | Vulkan | ✅ |
+| Cualquier modelo MoE en GGUF | ✅ | pocos modelos | pocos modelos | formato propio | pocos modelos |
+| Se configura solo | ✅ `--auto` | elige el modelo según la memoria | presupuesto de la caché de expertos | `coli tune` | ❌ |
+
+Cuando un modelo cabe en una GPU de gaming más la RAM, Strata es de dos a cuatro veces más rápido. Cuando se
+lee desde la flash, todos los motores se quedan por debajo de diez tokens por segundo y es el disco quien
+marca el ritmo. Velocidades y fuentes: [docs/comparison.md](docs/comparison.md).
 
 ## Compilar desde el código fuente
 
@@ -191,25 +225,23 @@ scripts/build-host.sh
 build/bin/bmoe-server --open
 ```
 
-Tests: `cd build && ctest --output-on-failure` (requiere `python3` con el paquete `gguf`). Android:
-`scripts/build-android.ps1`, y luego el APK en [`examples/android`](examples/android).
+Tests: `cd build && ctest --output-on-failure` (requiere `python3` con `gguf`). Android:
+`scripts/build-android.ps1`, y luego el APK en [examples/android](examples/android). Más:
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Documentación
 
-[docs/](docs/README.md), indexada por tarea. Empieza por [hardware-planning.md](docs/hardware-planning.md),
-[settings.md](docs/settings.md), [server-api.md](docs/server-api.md),
-[platforms.md](docs/platforms.md) y [limitations.md](docs/limitations.md).
+[docs/](docs/README.md). Empieza por [hardware-planning.md](docs/hardware-planning.md),
+[settings.md](docs/settings.md), [server-api.md](docs/server-api.md) y
+[limitations.md](docs/limitations.md).
 
 ## Trabajos previos
 
-AirLLM, *LLM in a flash* de Apple, FlexGen, PowerInfer y EdgeMoE. El trabajo reciente más cercano es
-[flash-moe](https://github.com/danveloper/flash-moe), un motor Metal que lee en streaming un MoE de 397B desde SSD
-en Apple silicon; BigMoeOnEdge usa la API pública de llama.cpp en distintas arquitecturas y plataformas.
+AirLLM, *LLM in a flash* de Apple, FlexGen, PowerInfer, EdgeMoE y
+[flash-moe](https://github.com/danveloper/flash-moe), un motor Metal que lee en streaming un MoE de 397B
+desde SSD en Apple silicon.
 
 ## Licencia
 
-Apache-2.0. Consulta [LICENSE](LICENSE). Los binarios y las apps también incluyen llama.cpp y
-ggml, cpp-httplib, nlohmann/json, las bibliotecas JavaScript de la interfaz web (MIT, Apache-2.0)
-y dos fuentes (SIL OFL 1.1): sus licencias están en
-[THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES), que viaja en cada archivo y APK.
+Apache-2.0 ([LICENSE](LICENSE)). Los binarios y las apps también incluyen llama.cpp, ggml y otras
+bibliotecas bajo MIT, Apache-2.0 y SIL OFL 1.1: [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES).
