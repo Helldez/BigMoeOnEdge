@@ -7,6 +7,20 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **A run with flash, RAM and a GPU cache all in play**: a 466 GiB file on a rented 96 GB
+  workstation card with a 283 GB memory limit, so the experts fit neither the card nor the RAM.
+  `--auto` put an 84.5 GB expert cache on the card and 207-215 GB in RAM, and decoded 6.2-6.6 tok/s
+  over 1024 tokens from a cold page cache against 2.8 for llama.cpp's own `llama-completion`
+  (`docs/bench-data/2026-10-28-rented-96gb/`, `docs/benchmarks.md`). The file keeps a table in a type
+  upstream does not have yet, so the run used an experimental build, not the pin. A session of long
+  prompts on that box was killed by its control group: the plan's margin does not yet cover a long
+  prefill there.
+- **The first run on ROCm: a rented 192 GB AMD datacenter card, the model resident**
+  (`docs/bench-data/2026-10-28-rented-rocm/`, `docs/benchmarks.md`, `docs/platforms.md`, the README
+  table). Qwen3.8-Flash-Next Q2_0 fits the card whole: `--auto` decodes 53.4 tok/s over 1024 tokens
+  against llama.cpp's own 55.6-55.8, and long prompts prefill at 2.1-2.3k tok/s. With ROCm's clang
+  the build hangs on ggml-cpu's AMX kernels; the bench notes give the line that builds the host code
+  with gcc.
 - **The agent, in the server** (`docs/agent.md`, `docs/server-api.md#agent`). A conversation held
   by the server can work in a folder a person adds (a workspace): list, read, search, write and edit
   its files, run commands, read web pages and search the web, follow skills, and hand parts of a job
@@ -132,6 +146,9 @@ Semantic Versioning.
   server and the web UI; the separate desktop archive remains for the NPU build only.
 
 ### Changed
+- **llama.cpp moves to upstream `8ca4060` of 2026-10-28**, 132 commits past `d88040c`
+  (`docs/seam.md`). The pin is still upstream plus the one expert-ready-hook commit; the 37 gates pass
+  on it.
 - **The Android chat renders Markdown with multiplatform-markdown-renderer** (0.41.0, Apache-2.0),
   GitHub-flavoured: tables (bordered in the line token, cells wrapping, scrolling sideways when
   wide), task lists, strikethrough and autolinks now render, in the app's tokens and fonts. No image
@@ -219,6 +236,9 @@ Semantic Versioning.
   installed from the release page, as before.
 
 ### Fixed
+- **A session's teardown no longer frees the gate weights under the router's prediction worker.**
+  The worker could still be scoring a layer when the source's shutdown freed the dense copy it read
+  from; TSan caught it on `main` in the Nemotron-H gate. The teardown now joins the worker first.
 - **`bmoe-server`'s launch flags outrank saved settings, as `--help` says** (#435). The settings
   layers applied a value saved by an earlier run after the flags of this one, so
   `bmoe-server -m A.gguf -c 32768` loaded the model and context `settings.json` held instead. The

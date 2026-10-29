@@ -1289,8 +1289,7 @@ void register_guards(httplib::Server & svr, const Options & o) {
         AccessDecision d = check_access(policy, f);
         // What reaches this computer's files, processes or keys answers to this computer only, key
         // or no key (docs/agent.md). A route that depends on its conversation checks in its handler.
-        if (d.allowed() && agent_route_locality(req.method, req.path) == Locality::Always &&
-            !is_loopback_peer(req.remote_addr))
+        if (d.allowed() && agent_route_locality(req.path) == Locality::Always && !is_loopback_peer(req.remote_addr))
             d = {403, "only a client on this computer may do this: it reaches this computer's files, processes or keys",
                  k_local_only_code};
         if (d.allowed()) return httplib::Server::HandlerResponse::Unhandled;
