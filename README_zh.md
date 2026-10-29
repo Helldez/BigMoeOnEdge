@@ -160,6 +160,21 @@ Plan 界面展示结果：内存的去向、每个设备承担的工作，以及
 
 详细信息以及各项在何处测得：[docs/platforms.md](docs/platforms.md)。
 
+## 与其他引擎的比较
+
+| | 运行平台 | 模型 | 超出 RAM 的专家 | 自动配置 |
+|---|---|---|---|---|
+| **BigMoeOnEdge** | Android、iOS、macOS、Windows、Linux；CPU、Metal、CUDA、HIP、Vulkan、OpenCL、Hexagon NPU | llama.cpp 能加载的任意 MoE GGUF | 从闪存流式读取，配有 RAM 缓存和 GPU 缓存 | **`--auto`：测量机器和模型，设定每个参数并说明理由** |
+| llama.cpp | Android、iOS、macOS、Windows、Linux | 任意 GGUF | 操作系统页缓存 | `--fit` 放置各层 |
+| Strata | Windows、Linux、macOS；NVIDIA、AMD、Intel Arc、Apple silicon | 三个模型系列 | 仅 DeepSeek V4.1 从 SSD 读取 | 按内存选择模型 |
+| ds4 | macOS、Linux；Metal、CUDA、ROCm | DeepSeek V4/V4.1、GLM 5.x、Qwen3.8（自有 GGUF） | 从 SSD 读取 | 专家缓存预算 |
+| colibri | Linux、macOS、Windows；CPU、Vulkan、CUDA、Metal | 自有格式，按系列 | 从磁盘读取 | `coli plan`、`coli tune` |
+| KTransformers | Linux、Windows；NVIDIA、AMD、Intel Arc、Ascend | 已列出的系列 | 保存在 RAM 中 | 未说明 |
+
+当模型能放进游戏 GPU 加 RAM 时，Strata 及其面向 Blackwell 的分支的解码速度是本引擎的二到四倍，长提示的预填充也快数倍；
+当模型需要从闪存流式读取时，所有引擎都低于每秒十个 token，速度由硬盘决定。各项目公布的速度及出处：
+[docs/comparison.md](docs/comparison.md)。
+
 ## 从源码构建
 
 ```bash

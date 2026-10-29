@@ -166,6 +166,22 @@ API リファレンス：[docs/server-api.md](docs/server-api.md)。
 
 詳細と、どこで何を計測したか：[docs/platforms.md](docs/platforms.md)。
 
+## 他のエンジンとの比較
+
+| | 動作環境 | モデル | RAM を超えるエキスパート | 自動設定 |
+|---|---|---|---|---|
+| **BigMoeOnEdge** | Android、iOS、macOS、Windows、Linux；CPU、Metal、CUDA、HIP、Vulkan、OpenCL、Hexagon NPU | llama.cpp が読める任意の MoE GGUF | フラッシュからストリーミング（RAM キャッシュと GPU キャッシュ付き） | **`--auto`：マシンとモデルを計測し、すべての設定を決め、理由を説明** |
+| llama.cpp | Android、iOS、macOS、Windows、Linux | 任意の GGUF | OS のページキャッシュ | `--fit` がレイヤーを配置 |
+| Strata | Windows、Linux、macOS；NVIDIA、AMD、Intel Arc、Apple silicon | 3 つのモデルファミリー | DeepSeek V4.1 のみ SSD から | メモリに応じたモデル選択 |
+| ds4 | macOS、Linux；Metal、CUDA、ROCm | DeepSeek V4/V4.1、GLM 5.x、Qwen3.8（独自 GGUF） | SSD から | エキスパートキャッシュの予算 |
+| colibri | Linux、macOS、Windows；CPU、Vulkan、CUDA、Metal | 独自形式（ファミリーごと） | ディスクから | `coli plan`、`coli tune` |
+| KTransformers | Linux、Windows；NVIDIA、AMD、Intel Arc、Ascend | 対応ファミリー | RAM に保持 | 記載なし |
+
+モデルがゲーミング GPU と RAM の合計に収まる場合、Strata とその Blackwell 向けフォークはこのエンジンより
+デコードが 2〜4 倍速く、長いプロンプトのプリフィルも数倍速い。フラッシュからストリーミングする場合は、
+どのエンジンも毎秒 10 トークン未満で、速度を決めるのはドライブ。各プロジェクトが公表している速度と出典：
+[docs/comparison.md](docs/comparison.md)。
+
 ## ソースからのビルド
 
 ```bash

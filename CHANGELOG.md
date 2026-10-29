@@ -7,6 +7,13 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **How it compares** (`docs/comparison.md`, a section in `README.md` and its five translations). What
+  each engine that runs MoE models larger than a GPU runs on - llama.cpp, Strata, ds4, colibri,
+  KTransformers - which models, how it handles experts beyond RAM, and whether it configures itself,
+  beside the decode and prefill speeds each reports, with the source and date of every figure. It says
+  where the others lead (Strata and its Blackwell fork, two to four times faster where a model fits a
+  gaming GPU and RAM) and where they do not; the CPU-beside-the-GPU work that gap calls for is in
+  `docs/roadmap.md`.
 - **The first run on ROCm: a rented 192 GB AMD datacenter card, the model resident**
   (`docs/bench-data/2026-10-28-rented-rocm/`, `docs/benchmarks.md`, `docs/platforms.md`, the README
   table). Qwen3.8-Flash-Next Q2_0 fits the card whole: `--auto` decodes 53.4 tok/s over 1024 tokens

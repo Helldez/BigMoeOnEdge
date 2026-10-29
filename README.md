@@ -216,6 +216,22 @@ each device does, and the reason for each decision.
 
 Details and what was measured where: [docs/platforms.md](docs/platforms.md).
 
+## How it compares
+
+| | Runs on | Models | Experts beyond RAM | Configures itself |
+|---|---|---|---|---|
+| **BigMoeOnEdge** | Android, iOS, macOS, Windows, Linux; CPU, Metal, CUDA, HIP, Vulkan, OpenCL, Hexagon NPU | any MoE GGUF llama.cpp loads | streamed from flash, behind a RAM and a GPU cache | **`--auto`: measures the machine and the model, sets every knob, explains each** |
+| llama.cpp | Android, iOS, macOS, Windows, Linux | any GGUF | the OS page cache | `--fit` places layers |
+| Strata | Windows, Linux, macOS; NVIDIA, AMD, Intel Arc, Apple silicon | three model families | from SSD for DeepSeek V4.1 | model choice by memory |
+| ds4 | macOS, Linux; Metal, CUDA, ROCm | DeepSeek V4/V4.1, GLM 5.x, Qwen3.8, own GGUFs | from SSD | expert-cache budget |
+| colibri | Linux, macOS, Windows; CPU, Vulkan, CUDA, Metal | its own container, per family | from disk | `coli plan`, `coli tune` |
+| KTransformers | Linux, Windows; NVIDIA, AMD, Intel Arc, Ascend | listed families | held in RAM | not documented |
+
+Where a model fits between a gaming GPU and RAM, Strata and its Blackwell fork decode two to four times
+faster than this engine and prefill long prompts several times faster; where it streams from flash,
+every engine is in single-digit tokens per second and the drive sets the pace. The speeds each project
+reports, with sources: [docs/comparison.md](docs/comparison.md).
+
 ## Build from source
 
 ```bash

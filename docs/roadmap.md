@@ -309,6 +309,18 @@ more budget — which `--cache-mb auto` now takes automatically, capped by `--ca
 ([cache-sizing.md](cache-sizing.md)). Admission policies and a persistent cross-run cache
 remain unexplored.
 
+## The experts a device does not hold, computed beside it
+
+Where a model fits between a GPU and RAM, the engines written for a few GPUs decode two to four times
+faster than this one ([comparison.md](comparison.md)). They compute the experts the GPU's cache misses
+on the CPU, from RAM, while the GPU computes the rest; this engine uploads every miss over the bus to
+the device cache, and llama.cpp's scheduler runs a CPU part of a graph only after the GPU part, so an
+experimental branch that computed the misses on the CPU gained 12% once its cache settled on an 8 GB laptop card and lost on
+a 32 GB one. Running the two halves of a layer at once needs the scheduler to split them, which is a
+change to llama.cpp, and the planner would then choose the split from measured rates. A wide-batch
+prefill that overlaps the uploads with the compute belongs with it: prefill on long prompts is where
+the gap is widest.
+
 ## Hardware planning — what is measured, and what is still owed
 
 `--auto` derives the streaming knobs from the machine and the model instead of from flags, and

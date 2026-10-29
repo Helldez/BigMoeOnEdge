@@ -182,6 +182,22 @@ chaque appareil, et la raison de chaque décision.
 
 Détails et ce qui a été mesuré où : [docs/platforms.md](docs/platforms.md).
 
+## Comparaison
+
+| | Fonctionne sur | Modèles | Experts au-delà de la RAM | Se configure seul |
+|---|---|---|---|---|
+| **BigMoeOnEdge** | Android, iOS, macOS, Windows, Linux ; CPU, Metal, CUDA, HIP, Vulkan, OpenCL, NPU Hexagon | tout GGUF MoE que llama.cpp charge | lus en streaming depuis la flash, derrière un cache en RAM et un cache GPU | **`--auto` : mesure la machine et le modèle, règle chaque paramètre et explique pourquoi** |
+| llama.cpp | Android, iOS, macOS, Windows, Linux | tout GGUF | le cache de pages du système | `--fit` place les couches |
+| Strata | Windows, Linux, macOS ; NVIDIA, AMD, Intel Arc, Apple silicon | trois familles de modèles | depuis le SSD pour DeepSeek V4.1 | choix du modèle selon la mémoire |
+| ds4 | macOS, Linux ; Metal, CUDA, ROCm | DeepSeek V4/V4.1, GLM 5.x, Qwen3.8, GGUF propres | depuis le SSD | budget du cache d'experts |
+| colibri | Linux, macOS, Windows ; CPU, Vulkan, CUDA, Metal | format propre, par famille | depuis le disque | `coli plan`, `coli tune` |
+| KTransformers | Linux, Windows ; NVIDIA, AMD, Intel Arc, Ascend | familles listées | gardés en RAM | non documenté |
+
+Quand le modèle tient entre un GPU grand public et la RAM, Strata et son fork pour Blackwell décodent deux à
+quatre fois plus vite que ce moteur et traitent les longs prompts plusieurs fois plus vite ; quand il est
+lu depuis la flash, tous les moteurs restent sous dix tokens par seconde et c'est le disque qui donne le
+rythme. Les vitesses publiées par chaque projet, avec leurs sources : [docs/comparison.md](docs/comparison.md).
+
 ## Compiler depuis les sources
 
 ```bash
