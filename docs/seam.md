@@ -322,11 +322,9 @@ If a future release moves the two hooks (a stable expert-residency API, say) ups
 this seam shrinks further or disappears — `core/` does not change.
 
 Pinned submodule at the time of writing: `Helldez/llama.cpp` branch
-`bmoe/expert-ready-hook-2210-dl`, commit `ad98071`: the single expert-ready-hook commit
+`bmoe/expert-ready-hook-2810-hook`, commit `152dd5c`: the single expert-ready-hook commit
 (section 3), in the variant that also answers the CPU registry's `get_proc_address` so a build that
 loads the CPU backend as a module reaches it, on top of upstream `ggml-org/llama.cpp` master
-`d88040c` of 2026-10-22 (95 commits past the previous base, `5aeac37` of 2026-10-18). On this base upstream's CPU `mul_mat_id` has a tiled path that reads an expert
-before the classic loop does, so the hook fires ahead of it; G4 is what proves it still gates
-every read. Each bump gets its own fork branch and the
+`8ca4060` of 2026-10-28 (132 commits past the previous base, `d88040c` of 2026-10-22). Each bump gets its own fork branch and the
 previous ones stay, so every commit an old pin names remains reachable (see `.gitmodules` /
 `git submodule status` for the current pin).
