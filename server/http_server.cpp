@@ -750,7 +750,8 @@ void register_routes(httplib::Server & svr, App & app) {
         if (!parse_body(req, res, body)) return;
         OpenAiChatRequest cr;
         std::string err;
-        if (!parse_chat_request(body, app.store.config(), cr, err)) return send_error(res, 400, err, "invalid_request");
+        if (!parse_chat_request(body, app.store.api_config(), cr, err))
+            return send_error(res, 400, err, "invalid_request");
         if (!app.host.ready())
             return send_error(res, 503, "no model is loaded: load one from the Models page", error_code::no_model);
 
@@ -869,7 +870,7 @@ void register_routes(httplib::Server & svr, App & app) {
         if (!parse_body(req, res, body)) return;
         AnthropicRequest ar;
         std::string err;
-        if (!parse_messages_request(body, app.store.config(), ar, err))
+        if (!parse_messages_request(body, app.store.api_config(), ar, err))
             return send_path_error(req.path, res, 400, err, "invalid_request");
         if (!app.host.ready())
             return send_path_error(req.path, res, 503, "no model is loaded: load one from the Models page",
@@ -887,7 +888,7 @@ void register_routes(httplib::Server & svr, App & app) {
         if (!parse_body(req, res, body)) return;
         AnthropicRequest ar;
         std::string err;
-        if (!parse_messages_request(body, app.store.config(), ar, err))
+        if (!parse_messages_request(body, app.store.api_config(), ar, err))
             return send_path_error(req.path, res, 400, err, "invalid_request");
         send_json(res, json{{"input_tokens", estimate_prompt_tokens(ar.turn)}});
     });
@@ -899,7 +900,7 @@ void register_routes(httplib::Server & svr, App & app) {
         if (!parse_body(req, res, body)) return;
         ResponsesRequest rr;
         std::string err;
-        if (!parse_responses_request(body, app.store.config(), rr, err))
+        if (!parse_responses_request(body, app.store.api_config(), rr, err))
             return send_path_error(req.path, res, 400, err, "invalid_request");
         if (!app.host.ready())
             return send_path_error(req.path, res, 503, "no model is loaded: load one from the Models page",

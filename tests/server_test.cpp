@@ -820,6 +820,14 @@ static void settings_tests() {
     check(third.config().sampling.temp == 0.2f, "a launch flag overrides the saved value of its key");
     check(third.planning_config().sampling.temp == 0.2f, "and the planning config sees the launch flag too");
 
+    // An API client that says nothing about thinking gets it on, unless the person set it (#448).
+    check(!third.config().think && third.api_config().think, "unset: off for the apps, on for an API client");
+    third.set_launch_values({{"think", "false"}});
+    check(!third.api_config().think, "a --no-think launch holds for the API too");
+    third.set_launch_values({});
+    third.apply(json{{"think", false}}, {});
+    check(!third.api_config().think, "and so does a saved off");
+
     std::filesystem::remove(path, ec);
 }
 

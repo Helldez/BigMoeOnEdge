@@ -45,6 +45,12 @@ Semantic Versioning.
   installed from the release page, as before.
 
 ### Fixed
+- **An API client that never asks about thinking gets it again** (#448). Since 0.35.0 thinking was off
+  unless a request turned it on, so an agent that sends no reasoning field (Pi with a hand-made model
+  entry, for one) lost the reasoning it had on 0.34.1, and a quantized model then often answered with
+  a tool call and no text. On `/v1/chat/completions`, `/v1/messages` and `/v1/responses`, a request
+  that says nothing now thinks, unless the person set `think` at launch or in Settings; the apps'
+  conversations, which do not use these routes, are unchanged.
 - **A session's teardown no longer frees the gate weights under the router's prediction worker.**
   The worker could still be scoring a layer when the source's shutdown freed the dense copy it read
   from; TSan caught it on `main` in the Nemotron-H gate. The teardown now joins the worker first.
