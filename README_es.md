@@ -85,7 +85,6 @@ más potente funciona más rápido.
 | **GPU de escritorio** (NVIDIA) | 16 GB + 32 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | flash, caché en GPU | 19-21 |
 | **GPU de escritorio** (NVIDIA) | 24 GB + 96 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM, caché en GPU | 70 |
 |  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
-| **GPU de estación de trabajo** (NVIDIA) | 96 GB + 283 GB RAM | DeepSeek V4.1 Flash | 500 GB | flash, RAM, caché en GPU | 6-7 |
 | **GPU de centro de datos** (AMD, ROCm) | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
 
 Tokens por segundo enteros; un rango es la variación entre ejecuciones. "Expertos desde" indica

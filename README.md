@@ -82,7 +82,6 @@ hardware runs faster.
 | **Desktop GPU** (NVIDIA) | 16 GB + 32 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | flash, GPU cache | 19-21 |
 | **Desktop GPU** (NVIDIA) | 24 GB + 96 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM, GPU cache | 70 |
 |  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
-| **Workstation GPU** (NVIDIA) | 96 GB + 283 GB RAM | DeepSeek V4.1 Flash | 500 GB | flash, RAM, GPU cache | 6-7 |
 | **Datacenter GPU** (AMD, ROCm) | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
 
 Whole tokens per second; a range is the spread across runs. "Experts from" is where the

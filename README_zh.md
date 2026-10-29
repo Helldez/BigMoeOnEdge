@@ -68,7 +68,6 @@ Qwen3.6-35B-A3B 在各设备上、在发布的应用中实时生成。该模型�
 | **桌面 GPU**（NVIDIA） | 16 GB + 32 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | 闪存，GPU 缓存 | 19-21 |
 | **桌面 GPU**（NVIDIA） | 24 GB + 96 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM，GPU 缓存 | 70 |
 |  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
-| **工作站 GPU**（NVIDIA） | 96 GB + 283 GB RAM | DeepSeek V4.1 Flash | 500 GB | 闪存，RAM，GPU 缓存 | 6-7 |
 | **数据中心 GPU**（AMD，ROCm） | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
 
 tok/s 取整数；范围表示多次运行之间的差异。“专家读取自”表示路由专家从哪里读取：从闪存流式读取、保存在 RAM 中，

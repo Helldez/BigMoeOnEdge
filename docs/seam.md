@@ -325,7 +325,6 @@ Pinned submodule at the time of writing: `Helldez/llama.cpp` branch
 `bmoe/expert-ready-hook-2810-hook`, commit `152dd5c`: the single expert-ready-hook commit
 (section 3), in the variant that also answers the CPU registry's `get_proc_address` so a build that
 loads the CPU backend as a module reaches it, on top of upstream `ggml-org/llama.cpp` master
-`8ca4060` of 2026-10-28 (132 commits past the previous base, `d88040c` of 2026-10-22, which brought
-DeepSeek V4.1 Flash, `deepseek41`). Each bump gets its own fork branch and the
+`8ca4060` of 2026-10-28 (132 commits past the previous base, `d88040c` of 2026-10-22). Each bump gets its own fork branch and the
 previous ones stay, so every commit an old pin names remains reachable (see `.gitmodules` /
 `git submodule status` for the current pin).

@@ -7,15 +7,14 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
-- **DeepSeek V4.1 Flash** (`deepseek41`), with llama.cpp moved to upstream `8ca4060` of 2026-10-28
-  (`docs/seam.md`). Upstream dropped MXFP8 before its V4.1 support merged, while the published GGUFs
-  of the checkpoint keep their Engram table in that type, so upstream does not open them; the run
-  below read it with a build that brought the type back. Measured on a rented 96 GB workstation card with a 283 GB
-  memory limit, where the native-MXFP4 file (466 GiB) fits neither: `--auto` decodes 6.2-6.6 tok/s
+- **A run with flash, RAM and a GPU cache all in play**: a 466 GiB file on a rented 96 GB
+  workstation card with a 283 GB memory limit, so the experts fit neither the card nor the RAM.
+  `--auto` put an 84.5 GB expert cache on the card and 207-215 GB in RAM, and decoded 6.2-6.6 tok/s
   over 1024 tokens from a cold page cache against 2.8 for llama.cpp's own `llama-completion`
-  (`docs/bench-data/2026-10-28-rented-96gb/`, `docs/benchmarks.md`, the README table). A session of
-  long prompts on that box was killed by its control group: the plan's margin does not yet cover a
-  long prefill on this model.
+  (`docs/bench-data/2026-10-28-rented-96gb/`, `docs/benchmarks.md`). The file keeps a table in a type
+  upstream does not have yet, so the run used an experimental build, not the pin. A session of long
+  prompts on that box was killed by its control group: the plan's margin does not yet cover a long
+  prefill there.
 - **The first run on ROCm: a rented 192 GB AMD datacenter card, the model resident**
   (`docs/bench-data/2026-10-28-rented-rocm/`, `docs/benchmarks.md`, `docs/platforms.md`, the README
   table). Qwen3.8-Flash-Next Q2_0 fits the card whole: `--auto` decodes 53.4 tok/s over 1024 tokens
@@ -24,6 +23,9 @@ Semantic Versioning.
   with gcc.
 
 ### Changed
+- **llama.cpp moves to upstream `8ca4060` of 2026-10-28**, 132 commits past `d88040c`
+  (`docs/seam.md`). The pin is still upstream plus the one expert-ready-hook commit; the 37 gates pass
+  on it.
 - **The README's speed table is grouped by hardware, in whole tokens per second.** `README.md` and its
   five translations list each machine once (phone, iPhone, Apple-silicon laptop, Windows laptop, two
   NVIDIA desktop cards, an AMD datacenter card), with its memory and where the experts are read from
