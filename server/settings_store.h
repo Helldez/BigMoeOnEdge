@@ -47,6 +47,11 @@ public:
     // would see its own earlier choices as already there, leave them out of its values, and
     // apply_plan would then drop them along with the layer it replaces.
     RunConfig planning_config() const;
+    // The configuration an API request starts from. A client that says nothing about thinking gets
+    // it on, the model's own behaviour and what a llama.cpp server answers, unless the person set
+    // `think`: the off default is for the apps' conversations, which do not come through the API
+    // routes, and an agent that never asks would otherwise lose its reasoning (#448).
+    RunConfig api_config() const;
     const RunConfig & defaults() const { return defaults_; }
     std::vector<std::string> operator_keys() const; // launch + user: what a plan must not touch
     // The keys the server was launched with. A client's "reset everything I set" leaves them: they

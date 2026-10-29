@@ -110,6 +110,13 @@ RunConfig SettingsStore::planning_config() const {
     return c;
 }
 
+RunConfig SettingsStore::api_config() const {
+    std::lock_guard<std::mutex> lk(m_);
+    RunConfig c = build_locked();
+    if (!launch_.count("think") && !user_.count("think")) c.think = true;
+    return c;
+}
+
 std::vector<std::string> SettingsStore::operator_keys() const {
     std::lock_guard<std::mutex> lk(m_);
     std::set<std::string> keys;
