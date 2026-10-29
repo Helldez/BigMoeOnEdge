@@ -46,7 +46,7 @@
     flex-wrap: wrap;
     gap: 0.5rem 1.25rem;
     padding: 0.75rem 0;
-    border-top: var(--edge) solid var(--border);
+    border-top: var(--edge) solid var(--line);
   }
   li:first-child {
     border-top: none;
@@ -72,7 +72,7 @@
   }
   .track {
     height: 10px;
-    border: var(--edge) solid var(--border);
+    border: var(--edge) solid var(--line);
     background: var(--surface-2);
   }
   .track span {
@@ -95,7 +95,7 @@
   }
   .none {
     margin: 0.5rem 0 0;
-    border: var(--edge) dashed var(--border);
+    border: var(--edge) dashed var(--line);
     padding: 0.4rem 0.6rem;
   }
 </style>

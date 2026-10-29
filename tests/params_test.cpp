@@ -115,6 +115,10 @@ int main() {
     for (const ParamDesc & d : params()) {
         check(d.get && d.set, d.key + ": has accessors");
         check(!d.flag.empty() || !d.switches.empty(), d.key + ": reachable from the command line");
+        // A form offers every basic row, and nothing still pending an A/B or kept for tests.
+        if (d.level == ParamLevel::Basic) check(d.form, d.key + ": a basic row is in the form");
+        if (d.level == ParamLevel::Experimental || d.level == ParamLevel::Debug)
+            check(!d.form, d.key + ": an experimental or debug row stays out of the form");
 
         // The default reads back through the setter to itself.
         RunConfig c;
@@ -372,6 +376,31 @@ int main() {
             check(ok && find_param(kv.first)->get(c) == kv.second,
                   std::string("flag_spelling(") + kv.first + ", " + kv.second + ") parses back: " + join(argv));
         }
+    }
+
+    // ── name_params: one engine message, a flag for the CLI and a label for a form ───
+    {
+        const std::string msg = "{ubatch} (4096) is wider than {ctx-size} (2048)";
+        check(name_params(msg, ParamNames::Flags) == "--ubatch (4096) is wider than --ctx-size (2048)",
+              "name_params renders flags");
+        check(name_params(msg, ParamNames::Labels) == "\"Batch width\" (4096) is wider than \"Context\" (2048)",
+              "name_params renders labels");
+        check(name_params("{overlap} needs {moe-stream}", ParamNames::Flags) == "--overlap needs --moe-stream",
+              "name_params names a switch-only row by its switch");
+        check(name_params("it needs {spec=mtp}", ParamNames::Flags) == "it needs --mtp",
+              "name_params spells a value as the switch that says it");
+        check(name_params("it needs {spec=mtp}", ParamNames::Labels) ==
+                  "it needs \"Speculative drafts\" set to MTP head",
+              "name_params shows a value by its choice label");
+        check(name_params("{cache-mb=auto}", ParamNames::Flags) == "--cache-mb auto",
+              "name_params spells a flag with its value");
+        check(name_params("{overlap=true}", ParamNames::Labels) == "\"Overlap I/O\" set to on",
+              "name_params shows a switch's value as on/off");
+        const std::string plain = "{\"a\":1} {no-such-knob} {ubatch";
+        check(name_params(plain, ParamNames::Flags) == plain && name_params(plain, ParamNames::Labels) == plain,
+              "name_params leaves braces that name no parameter untouched");
+        check(name_params("{{ubatch}}", ParamNames::Flags) == "{--ubatch}", "name_params finds a key inside braces");
+        check(name_params("", ParamNames::Labels).empty(), "name_params of nothing is nothing");
     }
 
     // ── schema ───────────────────────────────────────────────────────────────────────

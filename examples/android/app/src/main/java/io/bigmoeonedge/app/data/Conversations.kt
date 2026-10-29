@@ -7,7 +7,11 @@ import org.json.JSONObject
 import java.io.File
 import java.util.UUID
 
-/** A conversation as the app keeps it. The server holds none: every request carries it whole. */
+/**
+ * A conversation as earlier versions of the app kept it on the phone, before the server held them
+ * (docs/agent.md). Read once more by the migration (chat/Migration.kt), which hands each to the
+ * server and deletes the file; nothing writes one any more.
+ */
 data class Conversation(
     val id: String,
     val title: String,

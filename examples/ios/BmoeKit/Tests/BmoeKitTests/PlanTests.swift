@@ -32,6 +32,7 @@ final class PlanTests: XCTestCase {
     func testTheDocumentedPlanReadsWhole() throws {
         let p = PlanResult(try JSON(parsing: Self.sample))
         XCTAssertTrue(p.available)
+        XCTAssertEqual(p.model, "C:/models/Qwen3.6-35B-A3B-Q4_K_M.gguf")
         XCTAssertFalse(p.none)
         XCTAssertFalse(p.cached)
         XCTAssertEqual(p.sentence, "Experts stream from flash, with a 0.7 GiB cache.")

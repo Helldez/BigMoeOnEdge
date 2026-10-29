@@ -3,7 +3,6 @@ package io.bigmoeonedge.app.ui
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
@@ -11,12 +10,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -38,52 +35,47 @@ import io.bigmoeonedge.app.engine.Engine
 import io.bigmoeonedge.app.engine.ParamSpec
 import io.bigmoeonedge.app.engine.LanAddress
 import io.bigmoeonedge.app.engine.PlanDecision
-import io.bigmoeonedge.app.engine.SettingsCard
 import io.bigmoeonedge.app.engine.ValueSource
 import io.bigmoeonedge.app.engine.differsFromPlan
-import io.bigmoeonedge.app.engine.levelCounts
 import io.bigmoeonedge.app.engine.paramValueFromText
 import io.bigmoeonedge.app.engine.paramValueText
-import io.bigmoeonedge.app.engine.pinnedKeys
+import io.bigmoeonedge.app.engine.setByYou
 import io.bigmoeonedge.app.engine.resettableKeys
 import io.bigmoeonedge.app.engine.settingsCards
 import io.bigmoeonedge.app.engine.valueSource
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-/** What a level means, in a line under its fold: the levels are the table's enum, the rows in them the server's. */
-private val LEVEL_HINT = mapOf(
-    "advanced" to "Measured levers with a known trade-off.",
-    "experimental" to "Measured once or on one device: they can slow a run down.",
-    "debug" to "Tests, diagnostics and A/B baselines; never a speed setting.",
-)
-
-private fun levelName(l: String) = l.replaceFirstChar { it.uppercase() }
+/** The open state's keys for the app's own sections: never a group of the table, whose keys are the engine's. */
+private const val APP_SECTION = " app"
+private const val SHARE_SECTION = " share"
+private const val LOOK_SECTION = " appearance"
+private const val MINE_SECTION = " mine"
 
 /**
  * Settings, rendered from the engine's parameter table (`GET /api/params`) and nothing else: one
- * card per group in the table's order, each with its basic rows open and its deeper levels folded
- * inside it, a level filter and a search over every level (docs/screens.md, "Settings"). The groups,
- * rows, types, bounds and help all come from the engine, so a knob added there appears here with no
- * app change. Values live in the server's layers; a value set here is the person's and a plan never
- * overrides it. [target] is a parameter a link points at (the Plan screen, the context warning):
- * the page lands on that row and calls [onLanded]. The few settings that are this app's own close
- * the page.
+ * card per group in the table's order listing the rows the table offers a form (docs/screens.md,
+ * "Settings"). The groups, rows, types, bounds and help all come from the
+ * engine, so a knob added there appears here with no app change. Values live in the server's
+ * layers; a value set here is the person's and a plan never overrides it. [target] is a parameter a
+ * link points at (the Plan screen, the context warning): the page lands on that row and calls
+ * [onLanded]. The few settings that are this app's own close the page, and with the metrics switch
+ * on, [onOpenMetrics] is one tap from here.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded: () -> Unit = {}) {
+fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded: () -> Unit = {}, onOpenMetrics: () -> Unit = {}) {
     val context = LocalContext.current
     val engine by Engine.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
-    var upTo by rememberSaveable { mutableStateOf(AppPrefs.settingsLevel(context, ParamSpec.LEVELS, ParamSpec.LEVELS[1])) }
-    var query by rememberSaveable { mutableStateOf("") }
-    // Open state per card and per fold, by group: a card with basic rows starts open, one holding only
-    // deeper rows starts folded, so the page opens on the recommended configuration.
-    var closedCards by remember { mutableStateOf(mapOf<String, Boolean>()) }
-    var openFolds by remember { mutableStateOf(mapOf<String, Boolean>()) }
+    // Open state per card, by group: every card starts folded, so the page opens as a short list of
+    // what can be set and a person opens the one they came for.
+    var openCards by remember { mutableStateOf(mapOf<String, Boolean>()) }
+    var csv by remember { mutableStateOf(AppPrefs.metricsCsv(context)) }
     var landedOn by remember { mutableStateOf("") }
+    // Where the link landed: "Set by you" for a value the person set, else the row's group.
+    var landedMine by remember { mutableStateOf(false) }
     // A link from inside this screen (the context line under "Serve on the network") lands the same way.
     var jump by remember { mutableStateOf("") }
     val landing = target.ifEmpty { jump }
@@ -101,19 +93,18 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
     // A path is set at launch, not over the API: only a read-only group's (chosen on Models) is shown.
     val settable = remember(params) { params?.filter { it.type != "path" || it.groupReadOnly } }
 
-    // A link to one setting lands on it: the filter widened to its level, the search cleared, its card
-    // and fold opened; the row itself scrolls into view. Once per link, so editing another field
-    // afterwards does not jump back.
+    // A link to one setting lands on it: its card opened ("Set by you" for a value the person set;
+    // else its group, the row shown even where the table offers it no form); the row itself scrolls
+    // into view. Once per link, so editing
+    // another field afterwards does not jump back.
     LaunchedEffect(landing, settable, cfg != null) {
         if (landing.isEmpty() || settable == null || cfg == null) return@LaunchedEffect
         val spec = settable.firstOrNull { it.key == landing }
         onLanded()
         jump = ""
         if (spec == null) return@LaunchedEffect
-        query = ""
-        if (ParamSpec.levelRank(spec.level) > ParamSpec.levelRank(upTo)) upTo = spec.level
-        closedCards = closedCards + (spec.group to false)
-        if (spec.level != "basic") openFolds = openFolds + (spec.group to true)
+        landedMine = !spec.groupReadOnly && spec.key in cfg.userKeys
+        openCards = openCards + ((if (landedMine) MINE_SECTION else spec.group) to true)
         landedOn = spec.key
     }
 
@@ -126,12 +117,20 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
             Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
+            // First, because it is the one setting that reaches past this phone; its header says the state
+            // with the card folded.
+            val ctx = contextWarning(engine.info?.model.takeIf { engine.serverUp && engine.info?.ready == true }, params)
+            ShareSection(openCards[SHARE_SECTION] == true, { openCards = openCards + (SHARE_SECTION to it) }, ctx) { jump = it }
+            val lookOpen = openCards[LOOK_SECTION] == true
+            FoldCard("Appearance", "", lookOpen, onToggle = { openCards = openCards + (LOOK_SECTION to !lookOpen) }) {
+                Appearance(csv, onCsv = { csv = it })
+            }
             if (cfg != null && engine.ready && (cfg.reloadRequired || cfg.reloadKeys.isNotEmpty())) {
                 ElevatedCard(Modifier.fillMaxWidth()) {
                     Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text("Some changes only take effect after the model is reloaded.", fontSize = 13.sp, modifier = Modifier.weight(1f))
                         TextButton(
-                            shape = RectangleShape, enabled = cfg.valid,
+                            shape = Corner, enabled = cfg.valid,
                             onClick = { scope.launch { Engine.load(null).onFailure { snackbar.showSnackbar(it.message ?: "reload failed") } } },
                         ) { Text("Reload") }
                     }
@@ -153,31 +152,16 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
             when {
                 settable == null || cfg == null -> if (engine.serverUp) Text("Waiting for the engine…", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 else -> {
-                    val searching = query.isNotBlank()
                     val decisions = remember(cfg.plan) { cfg.plan.orEmpty().associateBy { it.knob } }
-                    val cards = remember(settable, cfg, upTo, query) { settingsCards(settable, upTo, query, pinnedKeys(settable, cfg)) }
-                    val counts = remember(settable) { levelCounts(settable) }
+                    val mine = remember(settable, cfg) { setByYou(settable, cfg) }
+                    val cards = remember(settable, mine, landedOn, landedMine) {
+                        val pinned = if (landedMine) emptySet() else setOfNotNull(landedOn.ifEmpty { null })
+                        settingsCards(settable, pinned, mine.map { it.key }.toSet())
+                    }
                     val resettable = remember(settable, cfg) { resettableKeys(cfg.userKeys, cfg.launchKeys, settable) }
 
-                    OutlinedTextField(
-                        value = query, onValueChange = { query = it },
-                        label = { Text("Search settings") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                    )
-                    // Rows up to a level; a row someone or the plan set shows whatever the filter.
-                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        ParamSpec.LEVELS.forEach { l ->
-                            FilterChip(
-                                selected = ParamSpec.levelRank(l) <= ParamSpec.levelRank(upTo),
-                                onClick = { upTo = l; AppPrefs.setSettingsLevel(context, l) },
-                                enabled = !searching,
-                                shape = RectangleShape,
-                                label = { Text("${levelName(l)} ${counts[l] ?: 0}", fontSize = 11.sp, maxLines = 1) },
-                            )
-                        }
-                    }
-                    if (searching) Hint(if (cards.isEmpty()) "No setting matches." else "Every level is searched.")
                     if (resettable.isNotEmpty()) {
-                        TextButton(shape = RectangleShape, onClick = { confirmReset = true }, contentPadding = PaddingValues(horizontal = 0.dp)) {
+                        TextButton(shape = Corner, onClick = { confirmReset = true }, contentPadding = PaddingValues(horizontal = 0.dp)) {
                             Text("Reset all my values (${resettable.size})", fontSize = 13.sp)
                         }
                     }
@@ -192,147 +176,194 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
                                     fontSize = 13.sp,
                                 )
                             },
-                            confirmButton = { TextButton(shape = RectangleShape, onClick = { confirmReset = false; reset(resettable) }) { Text("Reset") } },
-                            dismissButton = { TextButton(shape = RectangleShape, onClick = { confirmReset = false }) { Text("Keep") } },
+                            confirmButton = { TextButton(shape = Corner, onClick = { confirmReset = false; reset(resettable) }) { Text("Reset") } },
+                            dismissButton = { TextButton(shape = Corner, onClick = { confirmReset = false }) { Text("Keep") } },
                         )
                     }
 
+                    // Every value the person set, on the form or off it, in one card and only there: nothing
+                    // they set is out of sight, each has its way back, and a reset returns it to its group.
+                    if (mine.isNotEmpty()) {
+                        val open = openCards[MINE_SECTION] == true
+                        FoldCard("Set by you · ${mine.size}", "", open, onToggle = { openCards = openCards + (MINE_SECTION to !open) }) {
+                            mine.forEach { spec ->
+                                ParamRow(
+                                    spec, cfg, decisions[spec.key], readOnly = false, landing = landedMine && spec.key == landedOn,
+                                    onSet = { set(spec.key, it) }, onReset = { reset(listOf(spec.key)) },
+                                )
+                            }
+                        }
+                    }
                     cards.forEach { c ->
-                        val open = searching || !(closedCards[c.group] ?: c.basic.isEmpty())
-                        val foldOpen = searching || openFolds[c.group] == true
-                        GroupCard(
-                            c, open, foldOpen,
-                            onToggle = { if (!searching) closedCards = closedCards + (c.group to open) },
-                            onToggleFold = { if (!searching) openFolds = openFolds + (c.group to !foldOpen) },
-                        ) { spec ->
-                            ParamRow(
-                                spec, cfg, decisions[spec.key], readOnly = c.readOnly, landing = spec.key == landedOn,
-                                onSet = { set(spec.key, it) }, onReset = { reset(listOf(spec.key)) },
-                            )
+                        val open = openCards[c.group] == true
+                        FoldCard(c.label, c.help, open, onToggle = { openCards = openCards + (c.group to !open) }) {
+                            c.params.forEach { spec ->
+                                ParamRow(
+                                    spec, cfg, decisions[spec.key], readOnly = c.readOnly, landing = !landedMine && spec.key == landedOn,
+                                    onSet = { set(spec.key, it) }, onReset = { reset(listOf(spec.key)) },
+                                )
+                            }
                         }
                     }
                 }
             }
 
-            HorizontalDivider()
-            val ctx = contextWarning(engine.info?.model.takeIf { engine.serverUp && engine.info?.ready == true }, params)
-            AppSettings(engine.serverUp, ctx) { jump = it }
+            HorizontalDivider(color = tokens.line)
+            val appOpen = openCards[APP_SECTION] == true
+            FoldCard("This app", "How this phone runs the engine.", appOpen, onToggle = { openCards = openCards + (APP_SECTION to !appOpen) }) {
+                AppSettings(engine.serverUp)
+            }
+            // The measurements are a tool for whoever switched the recording on, not a screen of their own.
+            if (csv) {
+                BmoeCard(Modifier.clickable(onClick = onOpenMetrics), padding = 12.dp) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Metrics", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
+                        Text(">", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Hint("The live figures of the current generation and the recorded CSV files.")
+                }
+            }
             engine.info?.let { Text("Engine ${it.version}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             Spacer(Modifier.height(24.dp))
         }
     }
 }
 
-/** One group of the table: its label and help line, the basic rows, the deeper levels folded inside it. */
+/** A box that folds: its title, a [status] beside it and its help line always, its content once opened. */
 @Composable
-private fun GroupCard(
-    c: SettingsCard,
+private fun FoldCard(
+    title: String,
+    help: String,
     open: Boolean,
-    foldOpen: Boolean,
     onToggle: () -> Unit,
-    onToggleFold: () -> Unit,
-    row: @Composable (ParamSpec) -> Unit,
+    status: (@Composable () -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit,
 ) {
-    Column(
-        Modifier.fillMaxWidth().border(2.dp, MaterialTheme.colorScheme.outline).padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
+    BmoeCard(padding = 12.dp) {
         Column(Modifier.fillMaxWidth().clickable(onClick = onToggle)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(c.label, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
-                if (c.basic.isEmpty()) Text("${c.moreCount}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(title, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
+                status?.let { Spacer(Modifier.width(8.dp)); it() }
                 Spacer(Modifier.width(8.dp))
                 Text(if (open) "v" else ">", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            if (c.help.isNotEmpty()) Hint(c.help)
+            if (help.isNotEmpty()) Hint(help)
         }
-        if (!open) return@Column
-        c.basic.forEach { row(it) }
-        if (c.more.isNotEmpty()) {
-            val foldable = c.basic.isNotEmpty()
-            if (foldable) {
-                Text(
-                    "${if (foldOpen) "v" else ">"}  ${c.moreCount} more in ${c.label}: ${c.more.joinToString(", ") { it.level }}",
-                    fontSize = 13.sp, color = MaterialTheme.colorScheme.tertiary,
-                    modifier = Modifier.fillMaxWidth().clickable(onClick = onToggleFold).padding(vertical = 4.dp),
-                )
-            }
-            if (!foldable || foldOpen) {
-                c.more.forEach { lv ->
-                    Text(levelName(lv.level), fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.tertiary)
-                    LEVEL_HINT[lv.level]?.let { Hint(it) }
-                    lv.params.forEach { row(it) }
-                }
-            }
-        }
-        if (c.hidden > 0) Hint("${c.hidden} more at a deeper level: widen the filter above to see ${if (c.hidden == 1) "it" else "them"}.")
+        if (open) content()
     }
 }
 
-/** The settings that are this app's own, never an engine parameter. */
+/**
+ * Serve on the network: the switch, and once on, what a client on another device needs (the
+ * address, the key, the context a client asks for) and what sharing costs (the traffic is in clear).
+ * The header says the state with the card folded, so whether the phone is reachable is never hidden.
+ */
 @Composable
-private fun AppSettings(serverUp: Boolean, ctx: ContextWarning?, onRaise: (String) -> Unit) {
+private fun ShareSection(open: Boolean, onOpen: (Boolean) -> Unit, ctx: ContextWarning?, onRaise: (String) -> Unit) {
     val context = LocalContext.current
-    Text("This app", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+    val clipboard = LocalClipboardManager.current
     var share by remember { mutableStateOf(AppPrefs.shareOnNetwork(context)) }
     var key by remember { mutableStateOf(AppPrefs.apiKey(context)) }
-    SwitchRow(
-        "Serve on the network",
-        "Other devices on this network can use this phone's engine through its OpenAI-compatible " +
-            "API, with the key below. Changing this restarts the engine; a loaded model is loaded again. " +
-            "Prompts and answers cross the network in clear.",
-        share,
-    ) { on ->
-        share = on
-        AppPrefs.setShareOnNetwork(context, on)
-        Engine.restart(context)
-    }
+    var showKey by remember { mutableStateOf(false) }
+    // The phone's own address on this network, followed as the network changes (only while shared):
+    // what a client types, not a placeholder to work out.
+    var lan by remember { mutableStateOf(emptyList<String>()) }
     if (share) {
-        val clipboard = LocalClipboardManager.current
-        // The phone's own address on this network, followed as the network changes: what a
-        // client types, not a placeholder to work out.
-        var lan by remember { mutableStateOf(LanAddress.current(context)) }
-        DisposableEffect(Unit) { onDispose(LanAddress.watch(context) { lan = it }) }
+        DisposableEffect(Unit) {
+            lan = LanAddress.current(context)
+            onDispose(LanAddress.watch(context) { lan = it })
+        }
+    }
+    val first = lan.firstOrNull()
+    FoldCard(
+        "Serve on the network", "", open, onToggle = { onOpen(!open) },
+        status = {
+            val (text, colour) = when {
+                !share -> "Off" to MaterialTheme.colorScheme.onSurfaceVariant
+                first == null -> "On · not on a network" to warnColor()
+                else -> "On · ${LanAddress.address(first)}" to MaterialTheme.colorScheme.onSurfaceVariant
+            }
+            Text(text, fontSize = 12.sp, color = colour, maxLines = 1)
+        },
+    ) {
+        SwitchRow(
+            "Serve on the network",
+            "Other devices on this network use this phone's engine as an OpenAI-compatible server. Changing this restarts the engine.",
+            share,
+        ) { on ->
+            share = on
+            AppPrefs.setShareOnNetwork(context, on)
+            Engine.restart(context)
+        }
+        if (!share) return@FoldCard
+        Text("Address", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (lan.isEmpty()) {
             Text(
                 "Not on a Wi-Fi or Ethernet network: no other device can reach the engine until the phone joins one.",
-                fontSize = 12.sp, color = MaterialTheme.colorScheme.error,
+                fontSize = 12.sp, color = warnColor(),
             )
-        } else {
-            Text("Address:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            lan.forEach { ip ->
-                val url = LanAddress.url(ip)
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(url, fontFamily = FontFamily.Monospace, fontSize = 13.sp, modifier = Modifier.weight(1f))
-                    TextButton(shape = RectangleShape, onClick = { clipboard.setText(AnnotatedString(url)) }) { Text("Copy") }
-                }
+        }
+        lan.forEach { ip ->
+            val address = LanAddress.address(ip)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(address, fontFamily = CodeFont, fontSize = 15.sp, modifier = Modifier.weight(1f))
+                TextButton(shape = Corner, onClick = { clipboard.setText(AnnotatedString(address)) }) { Text("Copy") }
             }
         }
+        Text("API key", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            // Masked: the screen may be seen or recorded, and the key is what lets a device in.
+            Text(if (showKey) key else "•".repeat(key.length), fontFamily = CodeFont, fontSize = 13.sp, maxLines = 1, modifier = Modifier.weight(1f))
+            TextButton(shape = Corner, onClick = { showKey = !showKey }) { Text(if (showKey) "Hide" else "Show") }
+            TextButton(shape = Corner, onClick = { clipboard.setText(AnnotatedString(key)) }) { Text("Copy") }
+            TextButton(shape = Corner, onClick = { key = AppPrefs.regenerateApiKey(context); Engine.restart(context) }) { Text("New key") }
+        }
+        first?.let { Hint("In a client: base URL ${LanAddress.url(it)}, and the key above.") }
         // Where the clients are switched on, what they need: said here whether or not the status
         // line's warning was dismissed.
         if (ctx?.short == true) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(ctx.text(), fontSize = 12.sp, color = warnColor(), modifier = Modifier.weight(1f))
-                TextButton(shape = RectangleShape, onClick = { onRaise(ctx.key) }) { Text("Raise ${ctx.label}") }
+                TextButton(shape = Corner, onClick = { onRaise(ctx.key) }) { Text("Raise ${ctx.label}") }
             }
         }
-        Text("Key:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(key, fontFamily = FontFamily.Monospace, fontSize = 13.sp, modifier = Modifier.weight(1f))
-            TextButton(shape = RectangleShape, onClick = { clipboard.setText(AnnotatedString(key)) }) { Text("Copy") }
-            TextButton(shape = RectangleShape, onClick = { key = AppPrefs.regenerateApiKey(context); Engine.restart(context) }) { Text("New key") }
+        Text("Prompts and answers cross the network unencrypted: use it on a network you trust.", fontSize = 12.sp, color = warnColor())
+    }
+}
+
+/** How the app looks and what it shows: the theme, applied at once, and whether metrics are recorded. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun Appearance(csv: Boolean, onCsv: (Boolean) -> Unit) {
+    val context = LocalContext.current
+    val theme by AppPrefs.theme(context).collectAsStateWithLifecycle()
+    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("Theme", fontSize = 15.sp)
+        Hint("Follow the system, or always light or dark.")
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            AppPrefs.THEMES.forEachIndexed { i, (value, label) ->
+                SegmentedButton(
+                    selected = theme == value,
+                    onClick = { AppPrefs.setTheme(context, value) },
+                    shape = SegmentedButtonDefaults.itemShape(i, AppPrefs.THEMES.size),
+                ) { Text(label) }
+            }
         }
     }
-    var csv by remember { mutableStateOf(AppPrefs.metricsCsv(context)) }
     SwitchRow(
-        "Metrics CSV",
-        "One file per loaded model: per-token timings, faults, cache figures and where memory sat. " +
-            "Read and shared from Metrics.",
+        "Metrics",
+        "Record a per-token CSV for every loaded model and show the measurements here.",
         csv,
-    ) { on -> csv = on; AppPrefs.setMetricsCsv(context, on) }
+    ) { on -> onCsv(on); AppPrefs.setMetricsCsv(context, on) }
+}
+
+/** The engine process: the settings that are this app's own besides sharing and appearance. */
+@Composable
+private fun AppSettings(serverUp: Boolean) {
+    val context = LocalContext.current
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        OutlinedButton(shape = RectangleShape, onClick = { Engine.stop(context) }, enabled = serverUp, modifier = Modifier.weight(1f)) { Text("Stop engine") }
-        OutlinedButton(shape = RectangleShape, onClick = { Engine.start(context) }, enabled = !serverUp, modifier = Modifier.weight(1f)) { Text("Start engine") }
+        OutlinedButton(shape = Corner, onClick = { Engine.stop(context) }, enabled = serverUp, modifier = Modifier.weight(1f)) { Text("Stop engine") }
+        OutlinedButton(shape = Corner, onClick = { Engine.start(context) }, enabled = !serverUp, modifier = Modifier.weight(1f)) { Text("Start engine") }
     }
 }
 
@@ -365,7 +396,7 @@ private fun ParamRow(
         if (!readOnly && spec.type != "bool" && spec.type != "choice") runCatching { focus.requestFocus() }
     }
     var mod = Modifier.fillMaxWidth().bringIntoViewRequester(bring)
-    if (landing) mod = mod.border(2.dp, MaterialTheme.colorScheme.primary).padding(6.dp)
+    if (landing) mod = mod.border(1.dp, tokens.accent, Corner).padding(6.dp)
     Column(mod, verticalArrangement = Arrangement.spacedBy(2.dp)) {
         when {
             readOnly -> {
@@ -407,7 +438,7 @@ private fun ParamRow(
                     source == ValueSource.YOU && decision != null && decision.group.ifEmpty { "set" } == "set" -> "Let the plan set it"
                     else -> "Reset"
                 }
-                TextButton(shape = RectangleShape, onClick = onReset, contentPadding = PaddingValues(horizontal = 8.dp)) { Text(label, fontSize = 12.sp) }
+                TextButton(shape = Corner, onClick = onReset, contentPadding = PaddingValues(horizontal = 8.dp)) { Text(label, fontSize = 12.sp) }
             }
         }
     }

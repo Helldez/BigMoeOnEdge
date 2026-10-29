@@ -25,18 +25,24 @@ app/
                 Hugging Face and a link's size on URLSession (the desktop runs curl). The only
                 Objective-C++.
   Sources/
-    App/        the entry point, the five tabs and the links between them, the status line
+    App/        the entry point, the four tabs and the links between them, the status line
     Engine/     the server's life in the app: paths, launch, key, the state the screens observe
-    Chat/       conversations, the turn in flight, Markdown, choose-from-options
+    Chat/       the conversations over the server, the transcript, the composer, Markdown,
+                choose-from-options
     Models/     one list of what is here and what the catalog offers, Hugging Face, a link, a file
     Plan/       the verdict and its three figures, the planner's measurements and decisions
-    Settings/   every engine parameter, one card per group of GET /api/params, and the app's own
-    Metrics/    the live card, the recorded runs, the engine's log
-    Design/     the visual language (docs/design.md): palette, type, boxes, the logo
-  Resources/    the app icon, rendered from the logo by make-icon.swift
-BmoeKit/        the client side with no UI: the API client, the event stream, the chat protocol,
-                the decide request, conversations, downloads and their check, the models list,
-                the settings cards, the plan's figures, metrics files. `swift test` runs it.
+    Settings/   the engine parameters a form offers, one card per group of GET /api/params, and
+                the app's own
+    Metrics/    the live card, the recorded runs, the engine's log: opened from Settings while
+                the Metrics switch is on
+    Design/     the visual language (docs/design.md): the tokens, Inter and JetBrains Mono, the
+                boxes, the logo
+  Resources/    the app icon, rendered from the logo by make-icon.swift; Fonts/, the bundled
+                faces with their SIL OFL licences
+BmoeKit/        the client side with no UI: the API client, the event stream, the conversations'
+                shapes, the transcript the events build and Answer again, the move of the old
+                local conversations, the decide request, downloads and their check, the models
+                list, the settings cards, the plan's figures, metrics files. `swift test` runs it.
 ```
 
 The screens follow [docs/screens.md](../../docs/screens.md) as the web UI does: Models is one list
@@ -49,24 +55,65 @@ server (`DELETE /api/models/local/<name>`), which removes a split set whole. The
 the running downloads and, when the context is below what a client of the server sends and the
 server serves the network or has refused a request, a warning with a link that lands on that
 setting and a ✕ that dismisses it for that model and context (a refusal brings it back); the same
-line stays under "Serve on the network". Plan opens on its verdict and three figures with Apply and
-Measure again; Settings is one card per group with a remembered level filter, a search, a chip per
-row for where its value came from, and links from Plan land on a row.
+line stays in the "Serve on the network" card. Plan opens on "For <model file>" with Change (to
+Models), the plan's own model or else the one a load would open, then its verdict and three figures
+with Apply and Measure again; Settings opens with **Serve on the network**, a card whose header says the
+state even while it is closed (Off, or On and the first address, or On but not on a network); inside
+are the switch, each address with Copy, the API key masked with Show, Copy and New key (which
+restarts the engine on the new key), the base URL a client takes, and that prompts and answers
+cross the network unencrypted. Then **Appearance**: the theme (System, Light or Dark, applied at
+once; the web UI's choice) and the Metrics switch. Then **Set by you · N**, every value the person
+set, on the form or not, in table order, each with its reset or plan action, shown when there is
+one; then one card per engine group holding the other rows the parameter table offers on a form
+(`form`), so each row appears once and a reset sends it back to its group. Every card is closed
+until opened; a row carries a chip for where its value came from, and a link from Plan opens the
+row's card ("Set by you" for a value the person set) and lands on it.
+Metrics is not a tab: the **Metrics** switch in Appearance (off by default) records a per-token CSV
+for every loaded model and adds the Metrics entry to Settings. "This app" starts and stops the
+engine.
 
-What the app does itself, and why: it holds the conversations (the server keeps none), downloads
-the catalog's files with the system's background transfers (they go on while the app is away;
-the server has no `curl` here and only lists what lands; a stopped one keeps the system's resume
-data, so its row reads Resume (X of Y GB) beside Delete partial download), checks a finished file
-against its catalog `sha256` before it becomes the model (read back in chunks, off the transfers'
-queue; the file waits under a name of its check's own meanwhile, and a mismatch deletes it and
-says so; a start is refused when the entry does not fit in the free space), writes a
-metrics CSV per loaded model from the event stream, and keeps the network key in the keychain.
-Nothing in it names an engine parameter: the settings are rendered from the parameter table, the
-plan from the planner.
+### The chat
 
-Where things live: models and metrics files in the app's documents folder, which the Files app
-and the Finder show (copy a `.gguf` in, a CSV out; it is kept out of the device backup); the
-server's settings and the conversations in the app's private Application Support.
+The app starts its server with `--chat-only`: the conversations are the server's
+(`/api/conversations`, [docs/agent.md](../../docs/agent.md)), the answer is written in the server,
+and the screen follows it on the event stream (`conversation`, `item`, `delta`), but they are plain
+chat, with no tools, no workspaces and no tasks. The agent is the desktop's: a small model on a
+phone is not one. The transcript shows the person's messages, the model's answers as Markdown with
+their thinking folded above, and the server's notices. Holding a message offers Copy and Edit and
+send again; under each answer is Copy, and under the last one **Answer again**, which sends the
+last question again as it was (the server drops the old answer). Stop stops the answer. The
+conversations sheet lists them newest first; swipe a row to rename or delete it. With no model
+loaded the empty chat says to load one, with the way to Models. Choose from options stays: the
+model picks one option from one read of the prompt, shown as a card under the conversation and not
+kept, since a decision is not a turn. An answer holds the background time iOS grants, so one nearly
+done when the person switches apps still finishes.
+
+- **The conversations this app used to keep** on the device are moved to the server once, at the
+  first start that reaches it (`POST /api/conversations` with their messages as items); a local
+  copy is deleted only when the server's answer carries every item, so nothing is lost on a server
+  that does not take them.
+
+What the app does itself, and why: it downloads the catalog's files with the system's background
+transfers (they go on while the app is away; the server has no `curl` here and only lists what
+lands; a stopped one keeps the system's resume data, so its row reads Resume (X of Y GB) beside
+Delete partial download), checks a finished file against its catalog `sha256` before it becomes the
+model (read back in chunks, off the transfers' queue; the file waits under a name of its check's own
+meanwhile, and a mismatch deletes it and says so; a start is refused when the entry does not fit in
+the free space), writes a metrics CSV per loaded model from the event stream while Metrics is on,
+and keeps the network key in the keychain. Nothing in it names an engine parameter: the settings
+are rendered from the parameter table, the plan from the planner.
+
+Where things live: models and metrics files in the app's documents folder, which the Files app and
+the Finder show (copy a `.gguf` in, a CSV out; it is kept out of the device backup); the server's
+settings and its conversations in the app's private Application Support.
+
+### The look
+
+Slate and cyan, light and dark following the system or the Theme in Settings (the tokens are one
+file, `Sources/Design/Theme.swift`, and [docs/design.md](../../docs/design.md) is their source):
+Inter for every word, JetBrains Mono for code, paths and keys, both bundled from their official
+releases with their licences; 8-point rounded boxes with a 1-point line and a soft shadow on cards;
+the system's navigation, tab bars, lists, forms, sheets and menus, tinted. The pixel logo is unchanged.
 
 The server listens on `127.0.0.1:8765` with a random key per launch, since every app on the
 device can reach loopback. **Serve on the network** in Settings restarts it on all addresses
@@ -74,7 +121,9 @@ with a key kept in the keychain and shown there, for an OpenAI client on another
 serves while the app is open, since iOS suspends an app in the background. A coding agent needs a
 larger Context than a chat (its first request alone is about 10k tokens): set Context to 16384 or
 more before pointing one at the phone, at the cost of expert cache
-([sizing the context](../../docs/server-api.md#sizing-the-context-for-a-client)).
+([sizing the context](../../docs/server-api.md#sizing-the-context-for-a-client)). That address and
+key are what another app needs to connect; the desktop's settings writer for coding agents is not
+offered on a phone.
 
 ## Build
 

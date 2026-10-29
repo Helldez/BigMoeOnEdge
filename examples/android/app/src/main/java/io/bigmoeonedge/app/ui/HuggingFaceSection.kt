@@ -8,7 +8,6 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
@@ -125,10 +124,10 @@ fun HuggingFaceSection(onAdded: suspend (id: String) -> Unit) {
         )
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(
-                shape = RectangleShape, onClick = { list() },
+                shape = Corner, onClick = { list() },
                 enabled = repo.isNotBlank() && busy.isEmpty(), modifier = Modifier.weight(1f),
             ) { Text(if (busy == "list") "Looking…" else "Find") }
-            OutlinedButton(shape = RectangleShape, onClick = { askToken = !askToken }, modifier = Modifier.weight(1f)) {
+            OutlinedButton(shape = Corner, onClick = { askToken = !askToken }, modifier = Modifier.weight(1f)) {
                 Text(if (askToken) "Hide token" else "Token")
             }
         }
@@ -199,7 +198,7 @@ fun HuggingFaceSection(onAdded: suspend (id: String) -> Unit) {
                 }
                 main.forEach { ModelChoice(it) }
                 if (companions.isNotEmpty()) {
-                    TextButton(shape = RectangleShape, onClick = { companionsOpen = !companionsOpen }, contentPadding = PaddingValues(horizontal = 0.dp)) {
+                    TextButton(shape = Corner, onClick = { companionsOpen = !companionsOpen }, contentPadding = PaddingValues(horizontal = 0.dp)) {
                         Text(
                             "${companions.size} companion ${if (companions.size == 1) "file" else "files"} (projectors, draft heads, going by their names; Check reads the header)" +
                                 if (companionsOpen) "" else " · show",
@@ -209,7 +208,7 @@ fun HuggingFaceSection(onAdded: suspend (id: String) -> Unit) {
                     if (companionsOpen) companions.forEach { ModelChoice(it) }
                 }
                 Button(
-                    shape = RectangleShape, onClick = { inspect() },
+                    shape = Corner, onClick = { inspect() },
                     enabled = chosen != null && busy.isEmpty(), modifier = Modifier.fillMaxWidth(),
                 ) { Text(if (busy == "inspect") "Reading the header…" else "Check it fits here") }
                 if (chosen == null) Hint("Pick a model above first.")
@@ -246,7 +245,7 @@ fun HuggingFaceSection(onAdded: suspend (id: String) -> Unit) {
                 Text("Downloading: follow it in Your models; Load appears on its row when it is done.", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
             } else {
                 Button(
-                    shape = RectangleShape, onClick = { add() },
+                    shape = Corner, onClick = { add() },
                     enabled = f.downloadable && chosen.complete && busy.isEmpty(), modifier = Modifier.fillMaxWidth(),
                 ) { Text(if (busy == "add") "Starting…" else "Download") }
                 if (!chosen.complete) Hint("Shards are missing from the repository: it cannot be downloaded whole.")

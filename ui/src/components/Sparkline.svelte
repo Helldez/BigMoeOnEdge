@@ -19,7 +19,7 @@
     height: 32px;
     color: var(--accent);
     background: var(--surface-2);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     display: block;
   }
 </style>

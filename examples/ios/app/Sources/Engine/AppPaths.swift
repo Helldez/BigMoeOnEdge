@@ -9,6 +9,7 @@ struct AppPaths {
     let documents: URL
     /// The server's settings and its added catalog entries.
     let data: URL
+    /// What the app kept of its conversations before the server held them: moved once, then empty.
     let conversations: URL
     let metrics: URL
     /// What a broken-off download keeps to resume from.
@@ -24,7 +25,7 @@ struct AppPaths {
             documents: documents, data: support, conversations: support.appendingPathComponent("conversations"),
             metrics: documents.appendingPathComponent("Metrics"), downloads: support.appendingPathComponent("downloads"),
             catalog: Bundle.main.url(forResource: "models", withExtension: "json"))
-        for dir in [paths.documents, paths.data, paths.conversations, paths.metrics, paths.downloads] {
+        for dir in [paths.documents, paths.data, paths.metrics, paths.downloads] {
             try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         }
         var noBackup = URLResourceValues()

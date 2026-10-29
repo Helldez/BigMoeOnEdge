@@ -161,6 +161,7 @@ ParamDesc row(const char * key, const char * label, ParamGroup group, ParamLevel
     d.label = label;
     d.group = group;
     d.level = level;
+    d.form = level == ParamLevel::Basic;
     d.help = std::move(help);
     d.flag = std::string("--") + key;
     return d;
@@ -645,6 +646,7 @@ std::vector<ParamDesc> build() {
                           "Layers stored on a compute device, counted from the top as llama.cpp fills them: "
                           "their experts are resident there, not streamed. 0 keeps everything on the host. The "
                           "hardware planner sets it from llama.cpp's own capacity fitter.");
+        d.form = true;
         d.value_hint = "N";
         bounds(d, 0, RunConfig::n_gpu_layers_max, "layers");
         special(d, "0", "all on the host");
@@ -777,6 +779,7 @@ std::vector<ParamDesc> build() {
                           "placed on one and the CPU alone otherwise: a device left registered but unused "
                           "still takes graph nodes, each one a boundary crossing. The prefill device is "
                           "named separately and is not affected.");
+        d.form = true;
         d.type = ParamType::Choice;
         d.value_hint = "auto|all|cpu";
         bind_choice<DeviceUse>(d, [](RunConfig & c) -> DeviceUse & { return c.device_use; },
@@ -953,6 +956,7 @@ std::vector<ParamDesc> build() {
                           "Draft a continuation, then verify it in one wider decode. mtp uses the model's own "
                           "prediction head (needs the nextn block); ngram looks the recent tokens up in the "
                           "prompt and the answer. Needs greedy decoding.");
+        d.form = true;
         d.type = ParamType::Choice;
         d.flag.clear();
         d.value_hint = "mtp|ngram";
@@ -1036,6 +1040,7 @@ std::vector<ParamDesc> build() {
             d.short_flag = short_flag;
             d.value_hint = "TYPE";
             d.lossy = true;
+            d.form = true;
             bind_choice<KvCacheType>(d, field, kv_types);
             t.push_back(d);
         };
@@ -1055,6 +1060,7 @@ std::vector<ParamDesc> build() {
         ParamDesc d = row("n-expert-used", "Active experts", G::Lossy, L::Advanced,
                           "Override the experts routed per token (top-k). Lower is faster but changes the "
                           "output. 0 = the model's own value.");
+        d.form = true;
         d.value_hint = "N";
         d.lossy = true;
         bounds(d, 0, RunConfig::n_expert_used_max, "experts");
@@ -1485,6 +1491,63 @@ std::string flag_spelling(const std::string & key, const std::string & value) {
     return out;
 }
 
+namespace {
+
+// One placeholder's text, or empty when `key` is not a parameter (the caller keeps the braces).
+std::string name_param(const std::string & key, const std::string & value, bool has_value, ParamNames how) {
+    const ParamDesc * d = find_param(key);
+    if (!d) return "";
+    if (how == ParamNames::Flags) {
+        if (has_value) return flag_spelling(key, value);
+        if (!d->flag.empty()) return d->flag;
+        // A switch-only row (--overlap, --mtp): its first switch is how it is turned on.
+        for (const ParamSwitch & s : d->switches)
+            if (!s.deprecated) return s.flag;
+        return "";
+    }
+    std::string out = "\"" + d->label + "\"";
+    if (!has_value) return out;
+    // The value as the form shows it: a choice's label, a special value's meaning, on/off.
+    std::string shown = value;
+    for (const ParamChoice & c : d->choices)
+        if (c.value == value) shown = c.label;
+    for (const ParamSpecial & sp : d->specials)
+        if (sp.value == value) shown = sp.label;
+    if (d->type == ParamType::Bool) shown = value == "true" ? "on" : "off";
+    return out + " set to " + shown;
+}
+
+} // namespace
+
+std::string name_params(const std::string & message, ParamNames how) {
+    std::string out;
+    out.reserve(message.size());
+    size_t i = 0;
+    while (i < message.size()) {
+        const size_t open = message.find('{', i);
+        if (open == std::string::npos) break;
+        const size_t close = message.find('}', open + 1);
+        if (close == std::string::npos) break;
+        out.append(message, i, open - i);
+        const std::string inner = message.substr(open + 1, close - open - 1);
+        const size_t eq = inner.find('=');
+        const std::string key = inner.substr(0, eq);
+        const std::string value = eq == std::string::npos ? "" : inner.substr(eq + 1);
+        const std::string named = name_param(key, value, eq != std::string::npos, how);
+        if (named.empty()) {
+            // Not a placeholder: keep the brace and look again from the next character, so text such
+            // as "{{ctx-size}}" or a quoted object still finds a real placeholder inside it.
+            out += '{';
+            i = open + 1;
+            continue;
+        }
+        out += named;
+        i = close + 1;
+    }
+    out.append(message, i, std::string::npos);
+    return out;
+}
+
 std::string params_json(const RunConfig & defaults) {
     std::string o = "[";
     bool first = true;
@@ -1510,6 +1573,7 @@ std::string params_json(const RunConfig & defaults) {
         json_str(o, param_level_name(d.level));
         o += ",\"scope\":";
         json_str(o, param_scope_name(d.scope));
+        o += d.form ? ",\"form\":true" : ",\"form\":false";
         o += ",\"help\":";
         json_str(o, d.help);
         o += ",\"flag\":";

@@ -6,7 +6,7 @@ import SwiftUI
 @MainActor
 final class Navigator: ObservableObject {
     enum Screen: String, CaseIterable, Identifiable {
-        case chat = "Chat", models = "Models", plan = "Plan", settings = "Settings", metrics = "Metrics"
+        case chat = "Chat", models = "Models", plan = "Plan", settings = "Settings"
         var id: String { rawValue }
 
         var icon: String {
@@ -15,7 +15,6 @@ final class Navigator: ObservableObject {
             case .models: return "shippingbox"
             case .plan: return "cpu"
             case .settings: return "slider.horizontal.3"
-            case .metrics: return "chart.xyaxis.line"
             }
         }
     }
@@ -36,11 +35,13 @@ final class Navigator: ObservableObject {
     }
 }
 
-/// The five screens in a bottom bar, the status line above every one of them.
+/// The four screens in a bottom bar, the status line above every one of them. Metrics is not one:
+/// it opens from Settings while the Metrics switch is on.
 struct RootView: View {
     typealias Screen = Navigator.Screen
     @EnvironmentObject private var nav: Navigator
     @EnvironmentObject private var engine: Engine
+    @EnvironmentObject private var preferences: Preferences
 
     init() {
         Self.styleBars()
@@ -58,8 +59,8 @@ struct RootView: View {
                     .toolbar {
                         ToolbarItem(placement: .principal) {
                             HStack(spacing: Grid.s) {
-                                Logo(size: 24)
-                                Text(s.rawValue).font(.pixel(20, bold: true)).foregroundStyle(Palette.text)
+                                Logo(size: 22)
+                                Text(s.rawValue).font(.ui(17, weight: .semibold)).foregroundStyle(Palette.text)
                             }
                         }
                     }
@@ -70,6 +71,9 @@ struct RootView: View {
             }
         }
         .tint(Palette.accent)
+        .preferredColorScheme(preferences.theme.colorScheme)
+        .onAppear { applyTheme() }
+        .onChange(of: preferences.theme) { _ in applyTheme() }
         // A first visit with nothing on the device opens on Models: there is nothing to chat with.
         .onChange(of: engine.modelsListed) { listed in
             guard listed, !nav.startChosen else { return }
@@ -85,18 +89,28 @@ struct RootView: View {
         case .models: ModelsView()
         case .plan: PlanView()
         case .settings: SettingsView()
-        case .metrics: MetricsView()
         }
     }
 
-    /// The bars in the palette, with the pixel face for their titles: UIKit's appearance, which
-    /// SwiftUI's bars read.
+    /// The theme on the windows too: the bars are UIKit and resolve the palette's dynamic colours
+    /// from the window's style, and a scheme SwiftUI forced is not always handed back to the
+    /// system by `preferredColorScheme(nil)` alone.
+    private func applyTheme() {
+        let style = preferences.theme.interfaceStyle
+        for case let scene as UIWindowScene in UIApplication.shared.connectedScenes {
+            for window in scene.windows { window.overrideUserInterfaceStyle = style }
+        }
+    }
+
+    /// The bars in the palette, with Inter for their words and a 1-point line under them: UIKit's
+    /// appearance, which SwiftUI's bars read.
     private static func styleBars() {
         let nav = UINavigationBarAppearance()
         nav.configureWithOpaqueBackground()
         nav.backgroundColor = UIColor(Palette.surface)
-        nav.shadowColor = UIColor(Palette.border)
-        nav.titleTextAttributes = [.foregroundColor: UIColor(Palette.text)]
+        nav.shadowColor = UIColor(Palette.line)
+        nav.titleTextAttributes = [.foregroundColor: UIColor(Palette.text), .font: UIFont.ui(17, weight: .semibold)]
+        nav.largeTitleTextAttributes = [.foregroundColor: UIColor(Palette.text), .font: UIFont.ui(32, weight: .bold)]
         UINavigationBar.appearance().standardAppearance = nav
         UINavigationBar.appearance().scrollEdgeAppearance = nav
         UINavigationBar.appearance().compactAppearance = nav
@@ -104,13 +118,13 @@ struct RootView: View {
         let tab = UITabBarAppearance()
         tab.configureWithOpaqueBackground()
         tab.backgroundColor = UIColor(Palette.surface)
-        tab.shadowColor = UIColor(Palette.border)
+        tab.shadowColor = UIColor(Palette.line)
         let item = UITabBarItemAppearance()
-        let font = UIFont(name: "PixelifySans-Regular", size: 12) ?? .systemFont(ofSize: 12)
+        let font = UIFont.ui(11, weight: .medium)
         item.normal.titleTextAttributes = [.font: font, .foregroundColor: UIColor(Palette.muted)]
         item.normal.iconColor = UIColor(Palette.muted)
-        item.selected.titleTextAttributes = [.font: font, .foregroundColor: UIColor(Palette.accent)]
-        item.selected.iconColor = UIColor(Palette.accent)
+        item.selected.titleTextAttributes = [.font: font, .foregroundColor: UIColor(Palette.accentInk)]
+        item.selected.iconColor = UIColor(Palette.accentInk)
         tab.stackedLayoutAppearance = item
         tab.inlineLayoutAppearance = item
         tab.compactInlineLayoutAppearance = item
@@ -129,10 +143,10 @@ struct StatusLine: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Grid.s) {
             HStack(spacing: Grid.s) {
-                Rectangle().fill(color).frame(width: 10, height: 10)
+                StateDot(color: color)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(.pixel(14, bold: true)).foregroundStyle(Palette.text).lineLimit(1)
-                    if let detail { Text(detail).font(.caption).foregroundStyle(Palette.muted).lineLimit(2) }
+                    Text(title).font(.ui(14, weight: .semibold)).foregroundStyle(Palette.text).lineLimit(1)
+                    if let detail { Text(detail).font(.ui(12)).foregroundStyle(Palette.muted).lineLimit(2) }
                 }
                 Spacer(minLength: Grid.s)
                 downloads
@@ -143,10 +157,10 @@ struct StatusLine: View {
             // that model and context (docs/screens.md, "The status line").
             if engine.ready, let ctx = engine.contextAdvice, ctx.warn, ctx.dismissKey != ctxDismissed {
                 HStack(alignment: .center, spacing: Grid.s) {
-                    Text(ctx.warning).font(.caption).foregroundStyle(Palette.warn).fixedSize(horizontal: false, vertical: true)
+                    Text(ctx.warning).font(.ui(12)).foregroundStyle(Palette.warn).fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                     Button("Raise \(ctx.label)") { nav.openSetting(ctx.key) }
-                        .font(.pixel(13, bold: true)).foregroundStyle(Palette.accent).buttonStyle(.borderless)
+                        .font(.ui(13, bold: true)).foregroundStyle(Palette.accentInk).buttonStyle(.borderless)
                     Button { ctxDismissed = ctx.dismissKey } label: {
                         Image(systemName: "xmark").frame(minWidth: 44, minHeight: 44)
                     }
@@ -156,9 +170,9 @@ struct StatusLine: View {
             }
         }
         .padding(.horizontal, Grid.m)
-        .padding(.vertical, Grid.s)
+        .padding(.vertical, 10)
         .background(Palette.surface)
-        .overlay(alignment: .bottom) { Rectangle().fill(Palette.border).frame(height: Grid.edge) }
+        .overlay(alignment: .bottom) { Rectangle().fill(Palette.line).frame(height: Grid.line) }
     }
 
     private var title: String {
@@ -205,11 +219,11 @@ struct StatusLine: View {
     @ViewBuilder
     private var action: some View {
         if !engine.serverUp {
-            Button("Start") { engine.start() }.buttonStyle(.pixel)
+            Button("Start") { engine.start() }.buttonStyle(.appSecondary)
         } else if engine.generating {
-            Button("Stop") { Task { await engine.cancel() } }.buttonStyle(.pixel)
+            Button("Stop") { Task { await engine.cancel() } }.buttonStyle(.appSecondary)
         } else if let s = engine.info?.state, s == .empty || s == .error, nav.screen != .models {
-            Button("Models") { nav.open(.models) }.buttonStyle(.pixel)
+            Button("Models") { nav.open(.models) }.buttonStyle(.appSecondary)
         }
     }
 

@@ -7,10 +7,10 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Settings
@@ -34,8 +34,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.core.content.ContextCompat
-import io.bigmoeonedge.app.engine.Chat
+import io.bigmoeonedge.app.chat.Chat
+import io.bigmoeonedge.app.data.AppPrefs
 import io.bigmoeonedge.app.engine.Engine
+import io.bigmoeonedge.app.ui.ChatNav
 import io.bigmoeonedge.app.ui.BmoeTheme
 import androidx.compose.foundation.layout.Column
 import io.bigmoeonedge.app.ui.ChatScreen
@@ -46,9 +48,10 @@ import io.bigmoeonedge.app.ui.PlanScreen
 import io.bigmoeonedge.app.ui.SettingsScreen
 
 /**
- * The app: five screens over the one engine, the same five every UI of this project has (chat,
- * models, plan, settings, metrics), each a client of bmoe-server on loopback. The server starts
- * with the app and stays up in a foreground service; the model it holds is loaded from Models.
+ * The app: four screens in the bar over the one engine (chat, models, plan, settings), plus metrics,
+ * opened from Settings once its recording is on; each a client of bmoe-server on loopback. The server starts
+ * with the app (plain chat: `--chat-only`) and stays up in a foreground service; the model it
+ * holds is loaded from Models.
  */
 class MainActivity : ComponentActivity() {
 
@@ -64,20 +67,25 @@ class MainActivity : ComponentActivity() {
         Chat.init(this)
         Engine.start(this)
         setContent {
-            BmoeTheme {
+            val theme by AppPrefs.theme(this).collectAsStateWithLifecycle()
+            BmoeTheme(dark = AppPrefs.darkFor(theme, isSystemInDarkTheme())) {
                 Surface(color = MaterialTheme.colorScheme.background) { Root() }
             }
         }
     }
 }
 
-private enum class Screen(val label: String, val icon: ImageVector) {
+/** A screen and the bar item that shows it as current: Metrics has no item of its own, it sits under Settings. */
+private enum class Screen(val label: String, val icon: ImageVector?) {
     CHAT("Chat", Icons.Filled.Email),
     MODELS("Models", Icons.AutoMirrored.Filled.List),
     PLAN("Plan", Icons.Filled.Info),
     SETTINGS("Settings", Icons.Filled.Settings),
-    METRICS("Metrics", Icons.Filled.DateRange),
+    METRICS("Metrics", null),
 }
+
+/** The bar item lit while [this] is shown. */
+private val Screen.barItem: Screen get() = if (this == Screen.METRICS) Screen.SETTINGS else this
 
 @Composable
 private fun Root() {
@@ -102,10 +110,11 @@ private fun Root() {
                 EngineStatusLine(onOpenModels = { screen = Screen.MODELS }, onOpenSetting = openSetting)
                 NavigationBar {
                     Screen.values().forEach { s ->
+                        val icon = s.icon ?: return@forEach
                         NavigationBarItem(
-                            selected = screen == s,
+                            selected = screen.barItem == s,
                             onClick = { screen = s },
-                            icon = { Icon(s.icon, contentDescription = s.label) },
+                            icon = { Icon(icon, contentDescription = s.label) },
                             label = { Text(s.label) },
                         )
                     }
@@ -115,11 +124,11 @@ private fun Root() {
     ) { padding ->
         val m = Modifier.padding(padding)
         when (screen) {
-            Screen.CHAT -> ChatScreen(m, onOpenModels = { screen = Screen.MODELS }, onOpenSetting = openSetting)
+            Screen.CHAT -> ChatScreen(m, ChatNav(openModels = { screen = Screen.MODELS }, openSetting = openSetting))
             Screen.MODELS -> ModelsScreen(m, onOpenChat = { screen = Screen.CHAT })
-            Screen.PLAN -> PlanScreen(m, onOpenSetting = openSetting)
-            Screen.SETTINGS -> SettingsScreen(m, target = settingTarget, onLanded = { settingTarget = "" })
-            Screen.METRICS -> MetricsScreen(m)
+            Screen.PLAN -> PlanScreen(m, onOpenSetting = openSetting, onOpenModels = { screen = Screen.MODELS })
+            Screen.SETTINGS -> SettingsScreen(m, target = settingTarget, onLanded = { settingTarget = "" }, onOpenMetrics = { screen = Screen.METRICS })
+            Screen.METRICS -> MetricsScreen(m, onBack = { screen = Screen.SETTINGS })
         }
     }
 }

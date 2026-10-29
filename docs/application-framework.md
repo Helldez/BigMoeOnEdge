@@ -18,7 +18,7 @@ project speaks that API, and nothing else:
 
 | Platform | How the UI reaches the server | Why that way |
 |---|---|---|
-| Windows, macOS, Linux | `bmoe-server` as its own process; the web UI and any OpenAI client over HTTP on loopback, or on the network with `--api-key` | A process of its own is the crash boundary: a driver that ends the engine does not end the UI |
+| Windows, macOS, Linux | `bmoe-server` as its own process, started by the desktop app (`bmoe-desktop`, the web UI in a native window, [desktop-app.md](desktop-app.md)) or on its own; the web UI and any OpenAI client over HTTP on loopback, or on the network with `--api-key` | A process of its own is the crash boundary: a driver that ends the engine does not end the window |
 | Android | The same binary, shipped in the APK as `libbmoe-server.so` and started by the app as a child process, the way the CLI is today; the app is an HTTP client of loopback, always with a key (on a phone every installed app reaches loopback) | Same crash boundary, same API, and the phone serves the network with the same flag the desktop uses |
 | iOS | An app may not start a process: the app links `bmoe_server` and calls `run()` on a thread, then speaks to loopback inside its own process | The one platform without the boundary still gets the one API, with no second implementation |
 
@@ -32,6 +32,8 @@ What follows from one API with one implementation:
   list everywhere; settings live in the same layers (defaults, plan, launch, user) with the same
   rule that a plan never overrides a person; who may reach the API is decided once, in
   `server/access.h`, and stated once, in [server-api.md](server-api.md#security-model).
+- **One agent.** Conversations, tools, approvals, skills and tasks are the server's
+  ([agent.md](agent.md)), so a UI draws them and none reimplements them.
 - **One set of tests for the application layer.** The policy is tested without HTTP, a session or
   a model (`tests/server_test.cpp`); a UI's own tests cover its screens, not the engine's rules.
 
@@ -43,7 +45,8 @@ and one event stream per UI, which is microseconds against the tens of milliseco
 ## What stays platform-specific, and where
 
 The server has one file with platform `#if`s (`server/platform.cpp`): the data directory, the
-executable's own directory, opening a browser, and what the compute backends are told before they
+executable's own directory, the home folder, opening a browser, running the agent's commands
+(and whether it may: not on Android or iOS), and what the compute backends are told before they
 load (on Android, the Hexagon backend's polling and host buffer, set only where the environment has
 not set them). Everything else platform-shaped is an adapter the
 host app supplies or the server does without:
@@ -60,9 +63,9 @@ host app supplies or the server does without:
 
 ## The UIs
 
-Three native UIs, one experience: the five screens (chat, models, plan, settings, metrics) are
-specified once, in what they show and what a setting means, and each toolkit renders them its own
-way: [screens.md](screens.md). The web UI, the Android app and the iOS app implement it.
+Three native UIs, one experience: the screens (conversations, models, plan, skills, tasks,
+connected apps, settings, metrics) are specified once, in what they show and what a setting means,
+and each toolkit renders them its own way: [screens.md](screens.md). The web UI, the Android app and the iOS app implement it.
 
 ## The order of the work
 
@@ -82,6 +85,16 @@ way: [screens.md](screens.md). The web UI, the Android app and the iOS app imple
 4. **Desktop and Windows at parity** (issue #234): an installer per OS, the device probes isolated
    in the server, the cache lock and the gates on Windows.
 
-What is not on this list: a second engine host, a chat history held by the server (the
-conversation is the client's, and the KV cache is reused by prefix), or a transport other than
-HTTP for the phone.
+What is not on this list: a second engine host, or a transport other than HTTP for the phone.
+
+## The server holds agent conversations
+
+The OpenAI-compatible endpoints stay stateless: a client sends its whole conversation on every
+request, and the KV cache is reused by prefix. The agent ([agent.md](agent.md)) is different, and
+the server holds its conversations (`<data>/agent/`), with their workspaces, skills, tasks and
+providers. Three things decide it. A run outlives the page that started it: an approval can wait
+for a person who closed the tab, and the run must still be there, waiting, when they come back. A
+scheduled task has no page at all. And every UI (the web UI, the Android app, the iOS app) shows the
+same conversation and the same approval card, which one copy in the server gives for free and a
+copy per UI would have to keep in step. The run loop sits on `EngineHost::chat` like any client, so
+nothing in the engine host changed: it still keeps no conversation of its own.

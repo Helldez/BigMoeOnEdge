@@ -60,6 +60,9 @@ class ServerProcess(private val ctx: Context) {
             "--models-dir", ModelManager.internalModelsDir(ctx).absolutePath,
             "--catalog", stageCatalog(ctx).absolutePath,
             "--api-key-file", writeKeyFile(ctx, apiKey).absolutePath,
+            // A phone is a chat client: its conversations are plain chat, the agent is the
+            // desktop's (docs/agent.md).
+            "--chat-only",
         )
         // The other places a model can sit: the server lists what they hold and loads it in place.
         for (d in ModelManager.scanDirs(ctx)) argv += listOf("--scan-dir", d.absolutePath)

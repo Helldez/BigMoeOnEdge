@@ -1055,6 +1055,22 @@ static void access_tests() {
     for (const auto & h : security_headers())
         names.insert(h.first);
     check(names.count("X-Content-Type-Options") && names.count("Referrer-Policy"), "no sniffing, no referrer");
+    check(csp.find("frame-src 'self' blob:;") != std::string::npos,
+          "the page may frame this server's previews and nothing else");
+
+    check(is_preview_path("/api/conversations/abc/file") && !is_preview_path("/api/conversations//file") &&
+              !is_preview_path("/api/conversations/a/b/file") && !is_preview_path("/api/conversations/abc") &&
+              !is_preview_path("/api/conversations/abc/files"),
+          "a preview is one conversation's file route");
+    const auto pcsp = [] {
+        for (const auto & h : preview_headers())
+            if (h.first == "Content-Security-Policy") return h.second;
+        return std::string();
+    }();
+    check(pcsp.rfind("sandbox allow-scripts;", 0) == 0 && pcsp.find("allow-same-origin") == std::string::npos &&
+              pcsp.find("connect-src 'none'") != std::string::npos &&
+              pcsp.find("frame-ancestors 'self'") != std::string::npos && pcsp.find("'self';") == std::string::npos,
+          "a preview runs sandboxed in an opaque origin, reaches nothing, and only the UI frames it");
 }
 
 static void file_tests() {

@@ -14,6 +14,7 @@ struct MarkdownText: View {
                 view(block)
             }
         }
+        .font(.ui(16))
         .textSelection(.enabled)
     }
 
@@ -21,7 +22,7 @@ struct MarkdownText: View {
     private func view(_ b: MarkdownBlock) -> some View {
         switch b {
         case let .heading(level, text):
-            Text(inline(text)).font(.system(size: level <= 1 ? 22 : level == 2 ? 19 : 17, weight: .bold))
+            Text(inline(text)).font(.ui(level <= 1 ? 22 : level == 2 ? 19 : 17, weight: .bold))
         case let .paragraph(text):
             Text(inline(text)).fixedSize(horizontal: false, vertical: true)
         case let .list(ordered, items):
@@ -37,15 +38,14 @@ struct MarkdownText: View {
             Text(inline(text))
                 .foregroundStyle(Palette.muted)
                 .padding(.leading, 12)
-                .overlay(alignment: .leading) { Rectangle().fill(Palette.accent2).frame(width: 3) }
+                .overlay(alignment: .leading) { Rectangle().fill(Palette.accentInk).frame(width: 3) }
         case let .code(text):
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(text).font(.code).foregroundStyle(Palette.text).padding(12)
             }
-            .background(Palette.bg)
-            .overlay(Rectangle().strokeBorder(Palette.border, lineWidth: Grid.edge))
+            .background(RoundedRectangle(cornerRadius: Grid.radius, style: .continuous).fill(Palette.surface2))
         case .rule:
-            Rectangle().fill(Palette.border).frame(height: Grid.edge)
+            Rectangle().fill(Palette.line).frame(height: Grid.line)
         }
     }
 
@@ -53,7 +53,7 @@ struct MarkdownText: View {
         var out = (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
             ?? AttributedString(s)
         for run in out.runs where run.link != nil {
-            out[run.range].foregroundColor = Palette.accent
+            out[run.range].foregroundColor = Palette.accentInk
             out[run.range].underlineStyle = .single
         }
         return out

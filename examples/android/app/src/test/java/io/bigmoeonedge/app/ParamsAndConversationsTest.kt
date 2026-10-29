@@ -26,15 +26,15 @@ class ParamsAndConversationsTest {
     )
 
     @Test
-    fun groupsKeepTheTablesOrderAndLevelsFilter() {
+    fun groupsKeepTheTablesOrder() {
         val specs = ParamSpec.parse(table)
         val groups = ParamSpec.grouped(specs)
         assertEquals(listOf("Expert cache", "Dense weights"), groups.map { it.first })
         assertEquals(listOf("cache-mb", "overlap"), groups[0].second.map { it.key })
-        assertTrue(ParamSpec.levelRank("basic") < ParamSpec.levelRank("advanced"))
-        assertTrue(ParamSpec.levelRank("debug") < ParamSpec.levelRank("a level added later"))
         assertEquals(listOf("anon" to "Anon", "mmap" to "Mmap"), specs[2].choices)
         assertEquals("MiB", specs[0].unit)
+        // A table without "form" offers its basic rows to a form.
+        assertEquals(listOf(true, false, true), specs.map { it.form })
         assertTrue(specs[0].acceptsAuto)
     }
 
@@ -81,6 +81,7 @@ class ParamsAndConversationsTest {
             .map { java.net.InetAddress.getByName(it) }
         assertEquals(listOf("192.168.1.23", "10.0.0.5"), io.bigmoeonedge.app.engine.LanAddress.pick(a))
         assertEquals("http://192.168.1.23:8765/v1", io.bigmoeonedge.app.engine.LanAddress.url("192.168.1.23"))
+        assertEquals("http://192.168.1.23:8765", io.bigmoeonedge.app.engine.LanAddress.address("192.168.1.23"))
     }
 
     @Test
