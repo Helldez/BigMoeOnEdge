@@ -27,7 +27,7 @@
 <td align="center">12 GB iPhone</td>
 </tr>
 <tr>
-<td align="center" colspan="2"><img src="docs/assets/screens/desktop.gif" width="620" alt="Qwen3.6-35B-A3B 在 16 GB Apple silicon 笔记本的桌面应用中实时生成回答，速度为 19.9 tok/s。"></td>
+<td align="center" colspan="2"><img src="docs/assets/screens/desktop.gif" width="620" alt="Qwen3.6-35B-A3B 在 16 GB Apple silicon 笔记本的桌面应用中实时生成回答，速度为 20 tok/s。"></td>
 </tr>
 <tr>
 <td align="center" colspan="2">16 GB Apple silicon 笔记本</td>
@@ -40,10 +40,10 @@ Qwen3.6-35B-A3B 在各设备上、在发布的应用中实时生成。该模型�
 
 混合专家模型在每个 token 上只使用少数几个专家。BigMoeOnEdge 将每个 token 都需要的权重以及最近使用过的专家缓存保留在内存中，其余专家在路由器请求时从闪存读取。输出与将模型完全加载到内存中运行时完全一致；测试会对此进行验证。
 
-- **规划器。** `--auto` 会测量机器（可用内存、存储速度、每个 CPU、GPU 和 NPU）以及模型的文件头，然后设定缓存大小、哪些内容常驻内存，以及由哪个设备处理提示词、哪个设备生成回答。其规则不指定任何平台或设备。手动给出的设置会被保留。
+- **规划器。** `--auto` 会测量机器（可用内存、存储速度、每个 CPU、GPU 和 NPU）以及模型的文件头，然后设定缓存大小、哪些内容常驻内存，以及由哪个设备处理提示词、哪个设备生成回答。首次运行之后，它根据模型自身的路由记录进行规划（服务器为每个模型保存一份），并在第一个回答中测量线程数和 overlap。其规则不指定任何平台或设备。手动给出的设置会被保留。
 - **模型。** llama.cpp 能加载的任意 MoE gguf，任意量化格式。专家张量从文件中识别，因此新架构无需在此添加代码。
-- **后端。** CPU、Metal、Vulkan、OpenCL 和 Hexagon NPU，以模块形式加载；使用各自工具链构建的 CUDA、HIP 和 SYCL 模块也以同样方式加载。
-- **应用与服务器。** Android 和 iOS 上的原生应用、桌面端的 Web 应用，以及在所有平台上的 OpenAI 兼容服务器。
+- **后端。** CPU、Metal、Vulkan、OpenCL、CUDA、HIP 和 Hexagon NPU，以模块形式加载；使用自身工具链构建的 SYCL 模块也以同样方式加载。在 GPU 上，最常用的专家缓存在显存中，其余专家在 RAM 缓存之后流式读取；能装进显卡的模型完整地在显卡上运行。
+- **应用与服务器。** Android 和 iOS 上的原生应用、桌面端的 Web 应用，以及在所有平台上的 OpenAI 兼容服务器，可供编程智能体（Claude Code、Codex CLI、opencode）使用。
 
 ## 性能
 
@@ -52,23 +52,26 @@ Qwen3.6-35B-A3B 在各设备上、在发布的应用中实时生成。该模型�
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/speed-dark.svg">
-    <img src="docs/assets/diagrams/speed-light.svg" width="820" alt="Qwen3.6-35B-A3B Q4_K_M 解码速度：16 GB Apple silicon 笔记本上 18-24 tok/s，16 GB Windows 笔记本上 4.8，12 GB Android 手机上 4.8-5.0，12 GB iPhone 上 2.6-3.0。">
+    <img src="docs/assets/diagrams/speed-light.svg" width="820" alt="Qwen3.6-35B-A3B Q4_K_M 解码速度：16 GB Apple silicon 笔记本上 18-24 tok/s，16 GB Windows 笔记本上 5，12 GB Android 手机上 5，12 GB iPhone 上 3。">
   </picture>
 </p>
 
-| 模型 | 磁盘占用 | 设备 | 模型 / RAM | 解码 |
-|---|---:|---|---:|---:|
-| DeepSeek V4 Flash 284B | 91 GB | 12 GB Android 手机 | 7.6× | 0.94 tok/s |
-| Qwen3.8-Flash-Next 125B | 80 GB | 12 GB Android 手机 | 6.7× | 2.2-3.5 tok/s |
-| gpt-oss-120b | 60 GB | 12 GB Android 手机 | 5× | 1.3 tok/s |
-| Qwen3.6-35B-A3B | 21 GB | 12 GB Android 手机 | 1.9× | 4.8-5.0 tok/s |
-| Qwen3.6-35B-A3B | 21 GB | 12 GB iPhone | 1.9× | 2.6-3.0 tok/s |
-| Qwen3-30B-A3B | 18.5 GB | 12 GB Android 手机 | 1.5× | 5.2 tok/s |
-| Gemma-4-26B-A4B | 17 GB | 12 GB Android 手机 | 1.4× | 4.1 tok/s |
-| Qwen3.8-Flash-Next 125B | 76 GB | 16 GB Apple silicon 笔记本 | 4.8× | 6.5-9 tok/s |
-| Qwen3.6-35B-A3B | 21 GB | 16 GB Apple silicon 笔记本 | 1.3× | 18-24 tok/s |
-| Qwen3-Coder-30B-A3B | 18.6 GB | 16 GB Apple silicon 笔记本 | 1.2× | 23 tok/s；在 opencode 中为 7-9 |
-| Qwen3.6-35B-A3B | 21 GB | 16 GB Windows 笔记本 | 1.3× | 4.8 tok/s |
+| 硬件 | 内存 | 模型 | 磁盘占用 | 专家读取自 | 解码 tok/s |
+|---|---|---|---:|---|---:|
+| **Android 手机** | 12 GB | DeepSeek V4 Flash 284B | 91 GB | 闪存 | 1 |
+|  |  | Qwen3.8-Flash-Next 125B | 80 GB | 闪存 | 2-4 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | 闪存 | 5 |
+| **iPhone** | 12 GB | Qwen3.6-35B-A3B | 21 GB | 闪存 | 3 |
+| **Apple silicon 笔记本** | 16 GB | Qwen3.8-Flash-Next 125B | 76 GB | 闪存 | 7-9 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | 闪存 | 18-24 |
+| **Windows 笔记本** | 16 GB | Qwen3.6-35B-A3B | 21 GB | 闪存 | 5 |
+| **桌面 GPU**（NVIDIA） | 16 GB + 32 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | 闪存，GPU 缓存 | 19-21 |
+| **桌面 GPU**（NVIDIA） | 24 GB + 96 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM，GPU 缓存 | 70 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
+| **数据中心 GPU**（AMD，ROCm） | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
+
+tok/s 取整数；范围表示多次运行之间的差异。“专家读取自”表示路由专家从哪里读取：从闪存流式读取、保存在 RAM 中，
+或在 GPU 上，最常用的专家缓存在 GPU 显存中。
 
 配置与方法：[docs/benchmarks.md](docs/benchmarks.md)。如需添加一台机器，请运行
 `scripts/bench-report.sh /path/to/model.gguf`，并将表格粘贴到
@@ -86,15 +89,13 @@ Qwen3.6-35B-A3B 在各设备上、在发布的应用中实时生成。该模型�
   无需管理员权限；从开始菜单启动 BigMoeOnEdge，关闭其窗口即可停止。
 - **Linux**：`chmod +x BigMoeOnEdge-<版本>-linux-x86_64.AppImage`（或 `-linux-aarch64`）后运行。
   从文件管理器启动时会在终端窗口中打开；关闭该窗口即可停止。
-- **Android**：将应用添加到 [Obtainium][obtainium]，之后每个新版本都会作为更新安装；
-  也可以手动安装 `app-dev-release.apk`。**Settings → Serve on the network** 可通过密钥共享手机上的引擎。
+- **Android**：从发布页面安装 `app-dev-release.apk`；每个版本都会覆盖安装在上一个版本之上。
+  **Settings → Serve on the network** 可通过密钥共享手机上的引擎。
 
 **iOS。** 使用 Xcode 从 [examples/ios](examples/ios/README.md) 构建应用。实验性功能。
 
 **压缩包。** `bmoe-desktop` 压缩包以文件夹形式包含同一个应用，适用于脚本化安装：解压后运行
 `bmoe-server --open`。`bmoe-cli` 压缩包包含命令行引擎。
-
-[obtainium]: https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22io.bigmoeonedge.example.dev%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FHelldez%2FBigMoeOnEdge%22%2C%22author%22%3A%22Helldez%22%2C%22name%22%3A%22BigMoeOnEdge%22%2C%22additionalSettings%22%3A%22%7B%5C%22apkFilterRegEx%5C%22%3A%5C%22-release%5C%5C%5C%5C.apk%24%5C%22%7D%22%7D
 
 **命令行。**
 
@@ -140,7 +141,7 @@ API 参考：[docs/server-api.md](docs/server-api.md)。
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/plan-dark.svg">
-    <img src="docs/assets/diagrams/plan-light.svg" width="820" alt="--auto 在 16 GB Apple silicon 笔记本上为 Qwen3.6-35B-A3B 选择的方案：RAM 中 1.7 GiB 稠密权重和 7.2 GiB 专家缓存，缓存命中率 85%，每个 token 从闪存读取 69.6 MiB，提示词在 GPU 上处理，解码在 8 个 CPU 线程上运行，速度为 17.6 tok/s。">
+    <img src="docs/assets/diagrams/plan-light.svg" width="820" alt="--auto 在 16 GB Apple silicon 笔记本上为 Qwen3.6-35B-A3B 选择的方案：RAM 中 1.7 GiB 稠密权重和 7.2 GiB 专家缓存，缓存命中率 85%，每个 token 从闪存读取 69.6 MiB，提示词在 GPU 上处理，解码在 8 个 CPU 线程上运行，速度为 18 tok/s。">
   </picture>
 </p>
 
@@ -154,8 +155,8 @@ Plan 界面展示结果：内存的去向、每个设备承担的工作，以及
 |---|---|---|---|---|---|
 | 引擎与 CLI | arm64 | Apple silicon | x86_64, arm64 | x86_64, aarch64 | arm64（内置于应用中） |
 | 应用与服务器 | 原生应用 | Web 应用 | Web 应用 | Web 应用 | 原生应用，从源码构建 |
-| 加速器 | Hexagon NPU, Vulkan, OpenCL | Metal | Vulkan, OpenCL (arm64), Hexagon NPU (arm64, opt-in) | Vulkan | Metal |
-| 实机运行 | 12 GB 手机 | 16 GB 笔记本 | 16 GB 笔记本 | CI、社区 | 12 GB iPhone（[#235](https://github.com/Helldez/BigMoeOnEdge/issues/235)） |
+| 加速器 | Hexagon NPU, Vulkan, OpenCL | Metal | Vulkan, CUDA（x86_64，单独下载）, OpenCL (arm64), Hexagon NPU (arm64, opt-in) | Vulkan, CUDA 和 HIP（x86_64；CUDA 需单独下载，HIP 在安装了 ROCm 7 的环境中可用） | Metal |
+| 实机运行 | 12 GB 手机 | 16 GB 笔记本 | 16 GB 笔记本 | CI；租用的 12-24 GB NVIDIA 显卡和 192 GB AMD 显卡 | 12 GB iPhone（[#235](https://github.com/Helldez/BigMoeOnEdge/issues/235)） |
 
 详细信息以及各项在何处测得：[docs/platforms.md](docs/platforms.md)。
 

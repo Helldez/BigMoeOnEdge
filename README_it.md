@@ -29,7 +29,7 @@ compatibile OpenAI su ciascuno.
 <td align="center">iPhone da 12 GB</td>
 </tr>
 <tr>
-<td align="center" colspan="2"><img src="docs/assets/screens/desktop.gif" width="620" alt="Qwen3.6-35B-A3B che genera una risposta nell'app desktop su un portatile Apple silicon da 16 GB, in tempo reale, a 19.9 tok/s."></td>
+<td align="center" colspan="2"><img src="docs/assets/screens/desktop.gif" width="620" alt="Qwen3.6-35B-A3B che genera una risposta nell'app desktop su un portatile Apple silicon da 16 GB, in tempo reale, a 20 tok/s."></td>
 </tr>
 <tr>
 <td align="center" colspan="2">Portatile Apple silicon da 16 GB</td>
@@ -48,14 +48,17 @@ i test lo verificano.
 
 - **Planner.** `--auto` misura la macchina (memoria disponibile, velocità dello storage, ogni CPU, GPU e
   NPU) e l'header del modello, poi imposta la dimensione della cache, cosa resta residente, e quale dispositivo esegue
-  il prompt e quale la risposta. Le sue regole non nominano alcuna piattaforma o dispositivo. Le impostazioni date a mano
-  vengono mantenute.
+  il prompt e quale la risposta. Dopo un primo run pianifica dal registro del routing del modello stesso
+  (il server ne tiene uno per modello), e la prima risposta misura thread e overlap. Le sue regole non nominano
+  alcuna piattaforma o dispositivo. Le impostazioni date a mano vengono mantenute.
 - **Modelli.** Qualsiasi gguf MoE che llama.cpp carica, in qualsiasi quantizzazione. I tensori degli esperti vengono individuati dal
   file, quindi una nuova architettura non richiede codice qui.
-- **Backend.** CPU, Metal, Vulkan, OpenCL e Hexagon NPU, caricati come moduli; i moduli CUDA, HIP e SYCL
-  compilati con le rispettive toolchain si caricano allo stesso modo.
+- **Backend.** CPU, Metal, Vulkan, OpenCL, CUDA, HIP e Hexagon NPU, caricati come moduli; un modulo SYCL
+  compilato con la sua toolchain si carica allo stesso modo. Su una GPU gli esperti più usati restano in cache
+  nella sua memoria e gli altri arrivano in streaming dietro una cache in RAM; un modello che entra nella scheda
+  gira tutto su di essa.
 - **App e server.** App native su Android e iOS, una web app sul desktop, e un
-  server compatibile OpenAI su tutti.
+  server compatibile OpenAI su tutti, utilizzabile dagli agenti di coding (Claude Code, Codex CLI, opencode).
 
 ## Prestazioni
 
@@ -65,23 +68,27 @@ più potente va più veloce.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/speed-dark.svg">
-    <img src="docs/assets/diagrams/speed-light.svg" width="820" alt="Velocità di decodifica di Qwen3.6-35B-A3B Q4_K_M: 18-24 tok/s su un portatile Apple silicon da 16 GB, 4.8 su un portatile Windows da 16 GB, 4.8-5.0 su un telefono Android da 12 GB, 2.6-3.0 su un iPhone da 12 GB.">
+    <img src="docs/assets/diagrams/speed-light.svg" width="820" alt="Velocità di decodifica di Qwen3.6-35B-A3B Q4_K_M: 18-24 tok/s su un portatile Apple silicon da 16 GB, 5 su un portatile Windows da 16 GB, 5 su un telefono Android da 12 GB, 3 su un iPhone da 12 GB.">
   </picture>
 </p>
 
-| Modello | Su disco | Dispositivo | Modello / RAM | Decodifica |
-|---|---:|---|---:|---:|
-| DeepSeek V4 Flash 284B | 91 GB | Telefono Android da 12 GB | 7.6× | 0.94 tok/s |
-| Qwen3.8-Flash-Next 125B | 80 GB | Telefono Android da 12 GB | 6.7× | 2.2-3.5 tok/s |
-| gpt-oss-120b | 60 GB | Telefono Android da 12 GB | 5× | 1.3 tok/s |
-| Qwen3.6-35B-A3B | 21 GB | Telefono Android da 12 GB | 1.9× | 4.8-5.0 tok/s |
-| Qwen3.6-35B-A3B | 21 GB | iPhone da 12 GB | 1.9× | 2.6-3.0 tok/s |
-| Qwen3-30B-A3B | 18.5 GB | Telefono Android da 12 GB | 1.5× | 5.2 tok/s |
-| Gemma-4-26B-A4B | 17 GB | Telefono Android da 12 GB | 1.4× | 4.1 tok/s |
-| Qwen3.8-Flash-Next 125B | 76 GB | Portatile Apple silicon da 16 GB | 4.8× | 6.5-9 tok/s |
-| Qwen3.6-35B-A3B | 21 GB | Portatile Apple silicon da 16 GB | 1.3× | 18-24 tok/s |
-| Qwen3-Coder-30B-A3B | 18.6 GB | Portatile Apple silicon da 16 GB | 1.2× | 23 tok/s; 7-9 dentro opencode |
-| Qwen3.6-35B-A3B | 21 GB | Portatile Windows da 16 GB | 1.3× | 4.8 tok/s |
+| Hardware | Memoria | Modello | Su disco | Esperti da | Decodifica tok/s |
+|---|---|---|---:|---|---:|
+| **Telefono Android** | 12 GB | DeepSeek V4 Flash 284B | 91 GB | flash | 1 |
+|  |  | Qwen3.8-Flash-Next 125B | 80 GB | flash | 2-4 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | flash | 5 |
+| **iPhone** | 12 GB | Qwen3.6-35B-A3B | 21 GB | flash | 3 |
+| **Portatile Apple silicon** | 16 GB | Qwen3.8-Flash-Next 125B | 76 GB | flash | 7-9 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | flash | 18-24 |
+| **Portatile Windows** | 16 GB | Qwen3.6-35B-A3B | 21 GB | flash | 5 |
+| **GPU desktop** (NVIDIA) | 16 GB + 32 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | flash, cache GPU | 19-21 |
+| **GPU desktop** (NVIDIA) | 24 GB + 96 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM, cache GPU | 70 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
+| **GPU datacenter** (AMD, ROCm) | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
+
+Token al secondo interi; un intervallo è la variazione tra i run. "Esperti da" indica da dove
+vengono letti gli esperti: in streaming dalla flash, tenuti in RAM o sulla GPU, con una cache
+dei più usati nella memoria della GPU.
 
 Configurazioni e metodo: [docs/benchmarks.md](docs/benchmarks.md). Per aggiungere una macchina, esegui
 `scripts/bench-report.sh /path/to/model.gguf` e incolla la tabella in un
@@ -100,17 +107,15 @@ modello in **Models**.
   Senza diritti di amministratore; avvia BigMoeOnEdge dal menu Start e chiudi la sua finestra per fermarlo.
 - **Linux**: `chmod +x BigMoeOnEdge-<versione>-linux-x86_64.AppImage` (o `-linux-aarch64`) ed eseguilo.
   Avviato da un file manager si apre in una finestra di terminale; chiudila per fermarlo.
-- **Android**: aggiungi l'app a [Obtainium][obtainium], che installa ogni release come aggiornamento,
-  oppure installa `app-dev-release.apk` a mano. **Settings → Serve on the network** condivide il motore
-  del telefono, con una chiave.
+- **Android**: installa `app-dev-release.apk` dalla pagina della release; ogni release si installa
+  sopra la precedente. **Settings → Serve on the network** condivide il motore del telefono, con una
+  chiave.
 
 **iOS.** Compila l'app con Xcode da [examples/ios](examples/ios/README.md). Sperimentale.
 
 **Archivi.** L'archivio `bmoe-desktop` contiene la stessa app come cartella, per le installazioni da
 script: estrailo ed esegui `bmoe-server --open`. L'archivio `bmoe-cli` contiene il motore da riga di
 comando.
-
-[obtainium]: https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22io.bigmoeonedge.example.dev%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FHelldez%2FBigMoeOnEdge%22%2C%22author%22%3A%22Helldez%22%2C%22name%22%3A%22BigMoeOnEdge%22%2C%22additionalSettings%22%3A%22%7B%5C%22apkFilterRegEx%5C%22%3A%5C%22-release%5C%5C%5C%5C.apk%24%5C%22%7D%22%7D
 
 **Riga di comando.**
 
@@ -156,7 +161,7 @@ overlap, sessioni e modelli suddivisi ([docs/architecture.md](docs/architecture.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/plan-dark.svg">
-    <img src="docs/assets/diagrams/plan-light.svg" width="820" alt="Cosa ha scelto --auto per Qwen3.6-35B-A3B su un portatile Apple silicon da 16 GB: 1.7 GiB di pesi densi e una cache di esperti da 7.2 GiB in RAM, 85% di hit della cache, 69.6 MiB letti dalla flash per token, il prompt sulla GPU e la decodifica su 8 thread CPU a 17.6 tok/s.">
+    <img src="docs/assets/diagrams/plan-light.svg" width="820" alt="Cosa ha scelto --auto per Qwen3.6-35B-A3B su un portatile Apple silicon da 16 GB: 1.7 GiB di pesi densi e una cache di esperti da 7.2 GiB in RAM, 85% di hit della cache, 69.6 MiB letti dalla flash per token, il prompt sulla GPU e la decodifica su 8 thread CPU a 18 tok/s.">
   </picture>
 </p>
 
@@ -171,8 +176,8 @@ ciascun dispositivo, e il motivo di ogni decisione.
 |---|---|---|---|---|---|
 | Motore e CLI | arm64 | Apple silicon | x86_64, arm64 | x86_64, aarch64 | arm64 (nell'app) |
 | App e server | app nativa | web app | web app | web app | app nativa, compilata dai sorgenti |
-| Acceleratori | Hexagon NPU, Vulkan, OpenCL | Metal | Vulkan, OpenCL (arm64), Hexagon NPU (arm64, opt-in) | Vulkan | Metal |
-| Eseguito su hardware | telefono da 12 GB | portatile da 16 GB | portatile da 16 GB | CI, community | iPhone da 12 GB ([#235](https://github.com/Helldez/BigMoeOnEdge/issues/235)) |
+| Acceleratori | Hexagon NPU, Vulkan, OpenCL | Metal | Vulkan, CUDA (x86_64, download separato), OpenCL (arm64), Hexagon NPU (arm64, opt-in) | Vulkan, CUDA e HIP (x86_64; CUDA un download separato, HIP dove è installato ROCm 7) | Metal |
+| Eseguito su hardware | telefono da 12 GB | portatile da 16 GB | portatile da 16 GB | CI; schede NVIDIA da 12-24 GB e AMD da 192 GB a noleggio | iPhone da 12 GB ([#235](https://github.com/Helldez/BigMoeOnEdge/issues/235)) |
 
 Dettagli e cosa è stato misurato dove: [docs/platforms.md](docs/platforms.md).
 

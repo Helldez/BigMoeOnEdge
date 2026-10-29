@@ -179,6 +179,16 @@ Semantic Versioning.
 - **Local-only routes are one list** (`local_only_routes()`, `server/access.h`), enforced before
   routing with `403` and `code: "local_only"`; deleting a model and adding one from a link moved
   onto it, with the pack and update routes.
+- **The README's speed table is grouped by hardware, in whole tokens per second.** `README.md` and its
+  five translations list each machine once (phone, iPhone, Apple-silicon laptop, Windows laptop, two
+  NVIDIA desktop cards, an AMD datacenter card), with its memory and where the experts are read from
+  (flash, RAM, GPU). The phone rows of gpt-oss-120b, Qwen3-30B-A3B and Gemma-4-26B-A4B and the
+  laptop row of Qwen3-Coder-30B-A3B repeated what the others show: they are in `docs/benchmarks.md`
+  now, with every exact figure. `scripts/readme-diagrams.py` labels its
+  figures the same way (the bars keep the measured values). The description catches up with what
+  shipped since 0.36: CUDA and HIP among the released backends, the device memory as a tier of the
+  expert cache, plans from the model's own routing record, and the coding agents the server serves.
+  The translations also gain the CUDA and HIP accelerators and the rented-card runs they lacked.
 
 ### Security
 - The agent's routes that reach this computer's files, processes or keys answer only to a
@@ -194,6 +204,33 @@ Semantic Versioning.
   repository's configuration can make `git status` run one), and so do `sort --compress-program`
   and the abbreviated long options of the refused ones.
 
+- **The first run on ROCm: a rented 192 GB AMD datacenter card, the model resident**
+  (`docs/bench-data/2026-10-28-rented-rocm/`, `docs/benchmarks.md`, `docs/platforms.md`, the README
+  table). Qwen3.8-Flash-Next Q2_0 fits the card whole: `--auto` decodes 53.4 tok/s over 1024 tokens
+  against llama.cpp's own 55.6-55.8, and long prompts prefill at 2.1-2.3k tok/s. With ROCm's clang
+  the build hangs on ggml-cpu's AMX kernels; the bench notes give the line that builds the host code
+  with gcc.
+
+### Removed
+- **The Obtainium link for Android.** `README.md` (and its translations), `examples/android/README.md`
+  and `docs/platforms.md` no longer point to an Obtainium entry: its redirect page depends on the
+  browser handing the link to the app, which often does nothing, and Android's developer verification
+  (from 2026-2027) makes a third-party installer a second thing that has to keep working. The APK is
+  installed from the release page, as before.
+
+### Fixed
+- **`bmoe-server`'s launch flags outrank saved settings, as `--help` says** (#435). The settings
+  layers applied a value saved by an earlier run after the flags of this one, so
+  `bmoe-server -m A.gguf -c 32768` loaded the model and context `settings.json` held instead. The
+  order is now defaults < plan < saved values < launch flags; a value set from a client while the
+  server runs still replaces the flag's, as before.
+- **An answer cut by a full context is said in the server's log** (#436). A request that fits is
+  served with only the room its prompt left; an agent that summarizes its conversation near the limit
+  then got a cut or empty summary and reported only that compaction failed, while the server logged
+  nothing. It now logs a `warn` line with the tokens asked and given and the parameter that raises
+  the context. The README and `docs/server-api.md` size an agent's context from its first request:
+  measured on a 16 GB Mac, an agent whose first request is ~17k tokens failed to compact at 32768 and
+  answered ten consecutive questions at 65536.
 
 ## [0.38.0] - 2026-10-27
 

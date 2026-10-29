@@ -27,7 +27,7 @@ server on each.
 <td align="center">12 GB iPhone</td>
 </tr>
 <tr>
-<td align="center" colspan="2"><img src="docs/assets/screens/desktop.gif" width="620" alt="Qwen3.6-35B-A3B generating an answer in the desktop app on a 16 GB Apple-silicon laptop, in real time, at 19.9 tok/s."></td>
+<td align="center" colspan="2"><img src="docs/assets/screens/desktop.gif" width="620" alt="Qwen3.6-35B-A3B generating an answer in the desktop app on a 16 GB Apple-silicon laptop, in real time, at 20 tok/s."></td>
 </tr>
 <tr>
 <td align="center" colspan="2">16 GB Apple-silicon laptop</td>
@@ -46,14 +46,17 @@ the tests check it.
 
 - **Planner.** `--auto` measures the machine (available memory, storage speed, each CPU, GPU and
   NPU) and the model's header, then sets the cache size, what stays resident, and which device runs
-  the prompt and which the answer. Its rules name no platform or device. Settings given by hand are
-  kept.
+  the prompt and which the answer. After a first run it plans from the model's own routing record
+  (the server keeps one per model), and the first answer measures the threads and overlap. Its rules
+  name no platform or device. Settings given by hand are kept.
 - **Models.** Any MoE gguf that llama.cpp loads, in any quantization. Expert tensors are found from
   the file, so a new architecture needs no code here.
-- **Backends.** CPU, Metal, Vulkan, OpenCL and Hexagon NPU, loaded as modules; CUDA, HIP and SYCL
-  modules built with their own toolchains load the same way.
+- **Backends.** CPU, Metal, Vulkan, OpenCL, CUDA, HIP and Hexagon NPU, loaded as modules; a SYCL
+  module built with its own toolchain loads the same way. On a GPU, the experts used most are cached
+  in its memory and the others stream behind a RAM cache; a model that fits the card runs on it whole.
 - **Apps and server.** Native apps on Android and iOS, a web app on the desktop, and an
-  OpenAI-compatible server on all of them.
+  OpenAI-compatible server on all of them, which coding agents (Claude Code, Codex CLI, opencode) can
+  use.
 
 ## Performance
 
@@ -63,26 +66,27 @@ hardware runs faster.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/speed-dark.svg">
-    <img src="docs/assets/diagrams/speed-light.svg" width="820" alt="Qwen3.6-35B-A3B Q4_K_M decode speed: 18-24 tok/s on a 16 GB Apple-silicon laptop, 4.8 on a 16 GB Windows laptop, 4.8-5.0 on a 12 GB Android phone, 2.6-3.0 on a 12 GB iPhone.">
+    <img src="docs/assets/diagrams/speed-light.svg" width="820" alt="Qwen3.6-35B-A3B Q4_K_M decode speed: 18-24 tok/s on a 16 GB Apple-silicon laptop, 5 on a 16 GB Windows laptop, 5 on a 12 GB Android phone, 3 on a 12 GB iPhone.">
   </picture>
 </p>
 
-| Model | On disk | Device | Model / RAM | Decode |
-|---|---:|---|---:|---:|
-| DeepSeek V4 Flash 284B | 91 GB | 12 GB Android phone | 7.6× | 0.94 tok/s |
-| Qwen3.8-Flash-Next 125B | 80 GB | 12 GB Android phone | 6.7× | 2.2-3.5 tok/s |
-| gpt-oss-120b | 60 GB | 12 GB Android phone | 5× | 1.3 tok/s |
-| Qwen3.6-35B-A3B | 21 GB | 12 GB Android phone | 1.9× | 4.8-5.0 tok/s |
-| Qwen3.6-35B-A3B | 21 GB | 12 GB iPhone | 1.9× | 2.6-3.0 tok/s |
-| Qwen3-30B-A3B | 18.5 GB | 12 GB Android phone | 1.5× | 5.2 tok/s |
-| Gemma-4-26B-A4B | 17 GB | 12 GB Android phone | 1.4× | 4.1 tok/s |
-| Qwen3.8-Flash-Next 125B | 76 GB | 16 GB Apple-silicon laptop | 4.8× | 6.5-9 tok/s |
-| Qwen3.6-35B-A3B | 21 GB | 16 GB Apple-silicon laptop | 1.3× | 18-24 tok/s |
-| Qwen3-Coder-30B-A3B | 18.6 GB | 16 GB Apple-silicon laptop | 1.2× | 23 tok/s; 7-9 inside opencode |
-| Qwen3.6-35B-A3B | 21 GB | 16 GB Windows laptop | 1.3× | 4.8 tok/s |
-| Qwen3.8-Flash-Next 125B | 66 GB | 16 GB desktop GPU, 32 GB RAM | 2.1× | 19-21 tok/s; 27 from the 768th token |
-| Qwen3.8-Flash-Next 125B | 66 GB | 24 GB desktop GPU, 89 GiB RAM | 0.7× | 70 tok/s |
-| Qwen3.6-35B-A3B | 21 GB | 24 GB desktop GPU | resident | 217 tok/s |
+| Hardware | Memory | Model | On disk | Experts from | Decode tok/s |
+|---|---|---|---:|---|---:|
+| **Android phone** | 12 GB | DeepSeek V4 Flash 284B | 91 GB | flash | 1 |
+|  |  | Qwen3.8-Flash-Next 125B | 80 GB | flash | 2-4 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | flash | 5 |
+| **iPhone** | 12 GB | Qwen3.6-35B-A3B | 21 GB | flash | 3 |
+| **Apple-silicon laptop** | 16 GB | Qwen3.8-Flash-Next 125B | 76 GB | flash | 7-9 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | flash | 18-24 |
+| **Windows laptop** | 16 GB | Qwen3.6-35B-A3B | 21 GB | flash | 5 |
+| **Desktop GPU** (NVIDIA) | 16 GB + 32 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | flash, GPU cache | 19-21 |
+| **Desktop GPU** (NVIDIA) | 24 GB + 96 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM, GPU cache | 70 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
+| **Datacenter GPU** (AMD, ROCm) | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
+
+Whole tokens per second; a range is the spread across runs. "Experts from" is where the
+routed experts are read: streamed from flash, held in RAM, or on the GPU, with a cache of the
+ones used most in the GPU's memory.
 
 Configurations and method: [docs/benchmarks.md](docs/benchmarks.md). To add a machine, run
 `scripts/bench-report.sh /path/to/model.gguf` and paste the table into a
@@ -105,9 +109,8 @@ downloaded and checked against the release's signed feed ([docs/desktop-app.md](
 - **Linux**: `chmod +x BigMoeOnEdge-<version>-linux-x86_64.AppImage` (or `-linux-aarch64`) and run it.
   The window needs WebKitGTK 4.1, which common desktops have; without it the UI opens in the
   browser. `--server` runs the server alone.
-- **Android**: add the app to [Obtainium][obtainium], which then installs every release as an
-  update, or install `app-dev-release.apk` by hand. **Settings → Serve on the network** shares the
-  phone's engine, with a key.
+- **Android**: install `app-dev-release.apk` from the release page; each release installs over the
+  previous one. **Settings → Serve on the network** shares the phone's engine, with a key.
 
 **iOS.** Build the app with Xcode from [examples/ios](examples/ios/README.md). Experimental.
 
@@ -124,8 +127,6 @@ irm https://github.com/Helldez/BigMoeOnEdge/releases/latest/download/install.ps1
 ```
 
 The `bmoe-cli` archives on the release page hold the same tools, for an install by hand.
-
-[obtainium]: https://apps.obtainium.imranr.dev/redirect?r=obtainium://app/%7B%22id%22%3A%22io.bigmoeonedge.example.dev%22%2C%22url%22%3A%22https%3A%2F%2Fgithub.com%2FHelldez%2FBigMoeOnEdge%22%2C%22author%22%3A%22Helldez%22%2C%22name%22%3A%22BigMoeOnEdge%22%2C%22additionalSettings%22%3A%22%7B%5C%22apkFilterRegEx%5C%22%3A%5C%22-release%5C%5C%5C%5C.apk%24%5C%22%7D%22%7D
 
 **Command line.**
 
@@ -151,8 +152,12 @@ Streaming, tool calls and reasoning are supported. For opencode, add the server 
 OpenAI-compatible provider with `baseURL` set to `http://127.0.0.1:8765/v1`. To serve other machines,
 start the server with `--host` and `--api-key`. API reference: [docs/server-api.md](docs/server-api.md).
 
-Coding agents send a large system prompt and tool list on every request: load the model with a
-context of at least 32768 tokens (`-c 32768`).
+Coding agents send a large system prompt and tool list on every request, read files into the
+conversation, and summarize it when the context fills: the context has to hold all three. Size it
+from the agent's first request (the server's `count_tokens` or its `usage` says how large): one of
+~10k tokens ran a six-step task in 32768 (`-c 32768`); one of ~17k could not compact at 32768 and ran
+ten consecutive questions at 65536 (`-c 65536`). See
+[Sizing the context for a client](docs/server-api.md#sizing-the-context-for-a-client).
 
 **Claude Code** speaks the Anthropic Messages API, which the server also serves (`/v1/messages`).
 Use the model id `GET /v1/models` lists, and tell Claude Code the context you loaded so it compacts
@@ -163,7 +168,7 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:8765
 export ANTHROPIC_API_KEY=local            # or the server's --api-key
 export ANTHROPIC_MODEL=<model id from /v1/models>
 export ANTHROPIC_DEFAULT_HAIKU_MODEL=$ANTHROPIC_MODEL
-export CLAUDE_CODE_MAX_CONTEXT_TOKENS=32768
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=65536   # the context you loaded
 claude
 ```
 
@@ -216,7 +221,7 @@ settings, and a metrics CSV or routing record when asked for.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/plan-dark.svg">
-    <img src="docs/assets/diagrams/plan-light.svg" width="820" alt="What --auto chose for Qwen3.6-35B-A3B on a 16 GB Apple-silicon laptop: 1.7 GiB of dense weights and a 7.2 GiB expert cache in RAM, 85% cache hits, 69.6 MiB read from flash per token, the prompt on the GPU and decoding on 8 CPU threads at 17.6 tok/s.">
+    <img src="docs/assets/diagrams/plan-light.svg" width="820" alt="What --auto chose for Qwen3.6-35B-A3B on a 16 GB Apple-silicon laptop: 1.7 GiB of dense weights and a 7.2 GiB expert cache in RAM, 85% cache hits, 69.6 MiB read from flash per token, the prompt on the GPU and decoding on 8 CPU threads at 18 tok/s.">
   </picture>
 </p>
 
@@ -232,7 +237,7 @@ each device does, and the reason for each decision.
 | Engine and CLI | arm64 | Apple silicon | x86_64, arm64 | x86_64, aarch64 | arm64 (in the app) |
 | App and server | native app | web app | web app | web app | native app, built from source |
 | Accelerators | Hexagon NPU, Vulkan, OpenCL | Metal | Vulkan, CUDA (x86_64, separate download), OpenCL (arm64), Hexagon NPU (arm64, opt-in) | Vulkan, CUDA and HIP (x86_64; CUDA a separate download, HIP where ROCm 7 is installed) | Metal |
-| Run on hardware | 12 GB phone | 16 GB laptop | 16 GB laptop | CI, community | 12 GB iPhone ([#235](https://github.com/Helldez/BigMoeOnEdge/issues/235)) |
+| Run on hardware | 12 GB phone | 16 GB laptop | 16 GB laptop | CI; rented 12-24 GB NVIDIA and 192 GB AMD cards | 12 GB iPhone ([#235](https://github.com/Helldez/BigMoeOnEdge/issues/235)) |
 
 Details and what was measured where: [docs/platforms.md](docs/platforms.md).
 

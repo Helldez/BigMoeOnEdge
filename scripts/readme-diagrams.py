@@ -31,6 +31,16 @@ SPEED = [("16 GB Apple-silicon laptop", 18, 24), ("16 GB Windows laptop", 4.8, 4
          ("12 GB Android phone", 4.8, 5.0), ("12 GB iPhone", 2.6, 3.0)]
 
 
+def tps(v):
+    """A speed as the README writes it: whole tokens per second; the bars keep the measured value."""
+    return str(int(v + 0.5))
+
+
+def tps_range(lo, hi):
+    a, b = tps(lo), tps(hi)
+    return a if a == b else f"{a}-{b}"
+
+
 def esc(s):
     return s.replace("&", "&amp;").replace("<", "&lt;")
 
@@ -93,8 +103,8 @@ def plan(t):
                      ("cache size", "set by --auto")],
              ("cache hits", f"{RUN['hits']}%")),
             ("Compute", [("prompt", RUN["prompt_on"]), ("decode", f"CPU, {RUN['threads']} threads"),
-                         ("prefill", f"{RUN['prefill']} tok/s")],
-             ("decode", f"{RUN['decode']} tok/s"))]
+                         ("prefill", f"{tps(RUN['prefill'])} tok/s")],
+             ("decode", f"{tps(RUN['decode'])} tok/s"))]
     w, gap = 260, 40
     b = []
     for i, (title, rows, key) in enumerate(cols):
@@ -124,8 +134,7 @@ def speed(t):
         if hi > lo:
             xa, xb = x0 + lo * unit, x0 + hi * unit
             b.append(line(xa, y + 11, xb, y + 11, t["text"]) + line(xb, y + 5, xb, y + 17, t["text"]))
-        label = f"{lo:g}" if hi == lo else f"{lo:.1f}-{hi:.1f}" if lo < 10 else f"{lo:g}-{hi:g}"
-        b.append(text(x0 + hi * unit + 8, y + 16, label, t["text"]))
+        b.append(text(x0 + hi * unit + 8, y + 16, tps_range(lo, hi), t["text"]))
     b.append(line(x0, 44, x0, 52 + len(SPEED) * 40, t["text"]))
     for v in range(0, 25, 5):
         b.append(text(x0 + v * unit, 230, str(v), t["muted"], 11, anchor="middle"))

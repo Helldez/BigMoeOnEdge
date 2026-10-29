@@ -304,7 +304,9 @@ without editing; the field is absent otherwise. The prompt's device and reads ar
 
 `values` holds every parameter. `user_keys` are the operator's keys (the launch flags and the
 values a client set); `launch_keys` are the ones of them the server was launched with, which a
-client's "reset all my values" leaves alone. `args` is the equivalent `bmoe-cli` command line (for "copy as
+client's "reset all my values" leaves alone. A launch flag outranks the value an earlier run saved
+for its key, so `-m` and `-c` given at start are what loads; a value a client sets while the server
+runs replaces the flag's. `args` is the equivalent `bmoe-cli` command line (for "copy as
 command"). `reload_required` is true when a session-scoped value differs from the loaded
 session's, and `reload_keys` names those parameters in table order (empty with no session). `plan` is the last applied plan's decisions (see below), or `null`. `auto_plan` is
 whether every load plans first: on by default in a build with the planner, always false without
@@ -468,7 +470,14 @@ request alone is 9911 tokens, so at 4096 every request it makes is refused with 
 `context_full` before it has done anything, and some clients show that only as an unknown error.
 Load the model with at least 16384 tokens (`-c 16384` on the server's command line, or the Context
 setting) for an agent; a long agent session grows past that, and one six-step opencode run that
-fixed two bugs fit in 32768. The cost is memory: the KV cache and the compute buffers are reserved
+fixed two bugs fit in 32768. An agent also needs room at the end of the context: when its
+conversation nears the limit it asks for a summary of it, and that request is served with only the
+tokens the prompt left, so a context sized to the prompt alone gives a cut or empty summary and an
+agent that compacts again and again. A client whose first request is ~17k tokens failed that way at
+32768 on every question after its first, and answered ten consecutive questions over three
+compactions at 65536. Size the context to a few times the agent's first request. When an answer
+stops because the context ran out before the budget it asked for, the server logs a `warn` line
+(on stderr and as a `log` event) with both numbers, so the person at the server sees why. The cost is memory: the KV cache and the compute buffers are reserved
 for the whole context, and they come out of the same RAM as the expert cache, so a larger context
 leaves a smaller cache and a slower decode on a machine that is short of memory. The plan's
 `kv-budget` note (`GET /api/plan`) says what the loaded context takes. `ctx_advice` in

@@ -79,6 +79,17 @@ std::string engine_message(const std::string & message) {
     return name_params(message, ParamNames::Labels);
 }
 
+// The other end of a full context: a request that fits is served, but its answer gets only the room
+// the prompt left. A client that summarizes its history when the context fills (an agent compacting)
+// then gets a cut or empty summary and may only say it failed, so the cut is said here.
+static void log_context_cut(int n_ctx, int asked, int given) {
+    log_printf(LogLevel::Warn,
+               "an answer stopped at %d tokens of the %d asked: the prompt left no more room in the context "
+               "of %d tokens. A client that summarizes a long conversation gets a cut summary; load the model "
+               "with a larger context (%s)",
+               given, asked, n_ctx, flag_spelling(k_ctx_param).c_str());
+}
+
 std::unique_ptr<HostedSession> open_real_session(const SessionConfig & cfg, std::string & error) {
     std::unique_ptr<Session> s = Session::open(cfg, error);
     if (!s) return nullptr;
@@ -373,6 +384,8 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
     out.n_predict = gr.n_predict;
     out.result = std::move(r);
     const RunSummary & sum = out.result.summary;
+    if (!out.result.cancelled && sum.n_predict > 0 && sum.n_predict < gr.n_predict && sum.n_generated >= sum.n_predict)
+        log_context_cut(s->n_ctx(), gr.n_predict, sum.n_predict);
     // A cancelled turn is no measurement: it stopped at a moment the person chose, often mid-load.
     if (!out.result.cancelled && sum.n_generated > 0 && sum.s_per_token > 0) {
         std::lock_guard<std::mutex> lk(m_);
