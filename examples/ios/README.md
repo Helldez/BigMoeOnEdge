@@ -27,8 +27,8 @@ app/
   Sources/
     App/        the entry point, the four tabs and the links between them, the status line
     Engine/     the server's life in the app: paths, launch, key, the state the screens observe
-    Chat/       the conversations over the server, the transcript, the composer, Markdown,
-                choose-from-options
+    Chat/       the conversations over the server, the transcript, the composer, the answer's
+                Markdown theme, choose-from-options
     Models/     one list of what is here and what the catalog offers, Hugging Face, a link, a file
     Plan/       the verdict and its three figures, the planner's measurements and decisions
     Settings/   the engine parameters a form offers, one card per group of GET /api/params, and
@@ -37,6 +37,8 @@ app/
                 the Metrics switch is on
     Design/     the visual language (docs/design.md): the tokens, Inter and JetBrains Mono, the
                 boxes, the logo
+  MarkdownUI/   the image providers that load nothing, compiled into the vendored MarkdownUI
+                in place of its network ones
   Resources/    the app icon, rendered from the logo by make-icon.swift; Fonts/, the bundled
                 faces with their SIL OFL licences
 BmoeKit/        the client side with no UI: the API client, the event stream, the conversations'
@@ -79,7 +81,13 @@ The app starts its server with `--chat-only`: the conversations are the server's
 and the screen follows it on the event stream (`conversation`, `item`, `delta`), but they are plain
 chat, with no tools, no workspaces and no tasks. The agent is the desktop's: a small model on a
 phone is not one. The transcript shows the person's messages, the model's answers as Markdown with
-their thinking folded above, and the server's notices. Holding a message offers Copy and Edit and
+their thinking folded above, and the server's notices. The Markdown is GitHub-flavoured (tables,
+task lists, strikethrough, autolinks), rendered by [MarkdownUI](https://github.com/gonzalezreal/swift-markdown-ui)
+over cmark-gfm in the app's tokens: Inter, JetBrains Mono for code on the second surface, tables
+with borders in the line token that scroll sideways when wider than the screen, as code blocks do.
+Nothing in an answer runs or fetches: raw HTML is shown as text, an image is not loaded (MarkdownUI
+is built without its NetworkImage dependency; `app/MarkdownUI/` draws images as nothing, their alt
+text kept for VoiceOver), and a link opens only when tapped. Holding a message offers Copy and Edit and
 send again; under each answer is Copy, and under the last one **Answer again**, which sends the
 last question again as it was (the server drops the old answer). Stop stops the answer. The
 conversations sheet lists them newest first; swipe a row to rename or delete it. With no model
@@ -134,6 +142,12 @@ scripts/build-ios.sh            # the simulator, unsigned: BigMoeOnEdge.app and 
 BMOE_IOS_TEAM=<team id> BMOE_IOS_APP_BUNDLE_ID=<your.own.id> scripts/build-ios.sh device
 swift test --package-path examples/ios/BmoeKit   # the app's client side, on the Mac
 ```
+
+The chat's Markdown libraries are vendored and built as CMake targets beside the app, since the app
+is not a SwiftPM package: MarkdownUI 2.4.1 (`third_party/swift-markdown-ui`, MIT) as a Swift static
+library, and swift-cmark 0.5.0 (`third_party/swift-cmark`, cmark-gfm, BSD-2-Clause) as a C static
+library whose module maps MarkdownUI imports. Both are upstream's files unmodified, at the tags and
+commits `app/CMakeLists.txt` records; `THIRD_PARTY_LICENSES` carries their licences.
 
 The script generates an Xcode project (`build-ios-sim/bigmoeonedge.xcodeproj`), which opens in
 Xcode to run, debug and profile either app. `BMOE_IOS_TARGETS=bmoe-app` builds one of the two.

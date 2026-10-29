@@ -87,6 +87,13 @@ enum Grid {
     static let line: CGFloat = 1
 }
 
+/// The bundled faces by family, for whatever builds a font from a family and a weight itself (the
+/// chat's Markdown renderer) rather than through `Font.ui` and `Font.mono` below.
+enum Typeface {
+    static let ui = "Inter"
+    static let mono = "JetBrains Mono"
+}
+
 extension Font {
     /// Inter, bundled (Resources/Fonts), scaled with the person's text size from the nearest
     /// system style. Every word of the app is set in it.

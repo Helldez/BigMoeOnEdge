@@ -209,9 +209,11 @@ on a phone is not one. The drawer lists the conversations, newest first, with a 
 being answered; a row's menu renames or deletes it.
 
 - **The transcript.** Your messages on the right; long-press one to copy it or to edit it and send
-  it again (everything after it is dropped). The model's answers as Markdown, its thinking folded
-  above them, with Copy under each and **Answer again** under the last one, which sends the last
-  question again as it was (the server drops the old answer). A notice says, in words, why
+  it again (everything after it is dropped). The model's answers as GitHub-flavoured Markdown
+  (tables bordered and scrolling sideways when wide, drawn by multiplatform-markdown-renderer in
+  the app's tokens; images are not loaded and HTML is not run), its thinking folded above them,
+  with Copy under each and **Answer again** under the last one, which sends the last question
+  again as it was (the server drops the old answer). A notice says, in words, why
   something did not happen. Stop ends the answer.
 - **The composer.** The prompt, Send, or Stop while an answer is written; the + beside the prompt
   holds **Choose from options** (below). With no model loaded the empty chat says to load one from

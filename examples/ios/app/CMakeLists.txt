@@ -18,6 +18,38 @@ set_target_properties(BmoeKit PROPERTIES
     XCODE_ATTRIBUTE_SWIFT_VERSION "5.0"
 )
 
+# The chat's Markdown: MarkdownUI 2.4.1 (third_party/swift-markdown-ui, its Sources/MarkdownUI at
+# tag 2.4.1, commit 5f613358148239d0292c0cef674a3c2314737f9e, without the DocC catalog; MIT) over
+# swift-cmark 0.5.0 (third_party/swift-cmark, its src/ and extensions/ at tag 0.5.0, commit
+# 3ccff77b2dc5b96b77db3da0d68d28068593fa53, the version MarkdownUI's own Package.resolved pins;
+# BSD-2-Clause and others, COPYING). Both unmodified, built here because the app is a CMake target,
+# not a SwiftPM package. MarkdownUI's NetworkImage dependency is left out: its two files that use
+# it are swapped at build time for MarkdownUI/NoNetworkImageProviders.swift, so an answer that names
+# an image fetches nothing.
+enable_language(C)
+set(_cmark "${PROJECT_SOURCE_DIR}/third_party/swift-cmark")
+file(GLOB _cmark_sources CONFIGURE_DEPENDS "${_cmark}/src/*.c")
+file(GLOB _cmark_ext_sources CONFIGURE_DEPENDS "${_cmark}/extensions/*.c")
+# CMARK_THREADING as swift-cmark's Package.swift builds it: MarkdownUI parses on whatever thread
+# SwiftUI renders on. Upstream's code, upstream's warnings.
+add_library(bmoe_cmark_gfm STATIC ${_cmark_sources} ${_cmark_ext_sources})
+target_include_directories(bmoe_cmark_gfm SYSTEM PUBLIC "${_cmark}/src/include" "${_cmark}/extensions/include")
+target_compile_definitions(bmoe_cmark_gfm PUBLIC CMARK_THREADING)
+target_compile_options(bmoe_cmark_gfm PRIVATE -w)
+
+file(GLOB_RECURSE _mdui_sources CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/third_party/swift-markdown-ui/Sources/MarkdownUI/*.swift")
+list(FILTER _mdui_sources EXCLUDE REGEX "/Default(Inline)?ImageProvider\\.swift$")
+add_library(MarkdownUI STATIC ${_mdui_sources} "${CMAKE_CURRENT_SOURCE_DIR}/MarkdownUI/NoNetworkImageProviders.swift")
+target_link_libraries(MarkdownUI PUBLIC bmoe_cmark_gfm)
+set_target_properties(MarkdownUI PROPERTIES
+    Swift_MODULE_NAME MarkdownUI
+    XCODE_ATTRIBUTE_SWIFT_VERSION "5.0"
+    # The module maps of cmark_gfm and cmark_gfm_extensions, which MarkdownUI imports
+    # implementation-only, so the app never sees them.
+    XCODE_ATTRIBUTE_SWIFT_INCLUDE_PATHS "$(inherited) ${_cmark}/src/include ${_cmark}/extensions/include"
+    XCODE_ATTRIBUTE_OTHER_SWIFT_FLAGS "$(inherited) -Xcc -DCMARK_THREADING -suppress-warnings"
+)
+
 # What the app carries beside its code: the catalog the server lists, the logo the screens draw,
 # and the faces every word is set in (Inter, JetBrains Mono: static instances of their official
 # releases, with their SIL OFL licences beside them). Each from its one place in the repository.
@@ -41,6 +73,7 @@ target_include_directories(bmoe-app PRIVATE Bridge)
 
 target_link_libraries(bmoe-app PRIVATE
     BmoeKit
+    MarkdownUI
     bmoe_server
     "-framework UIKit"
     "-framework SwiftUI"
@@ -57,7 +90,7 @@ set_target_properties(bmoe-app PROPERTIES
     MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
     XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${BMOE_IOS_APP_BUNDLE_ID}"
     XCODE_ATTRIBUTE_SWIFT_VERSION "5.0"
-    # Where Xcode writes the kit's module: the app's Swift imports it from there.
+    # Where Xcode writes the kit's and MarkdownUI's modules: the app's Swift imports them from there.
     XCODE_ATTRIBUTE_SWIFT_INCLUDE_PATHS "$(inherited) ${CMAKE_CURRENT_BINARY_DIR}/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)"
     XCODE_ATTRIBUTE_SWIFT_OBJC_BRIDGING_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/Bridge/BmoeApp-Bridging-Header.h"
     XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME "AppIcon"
