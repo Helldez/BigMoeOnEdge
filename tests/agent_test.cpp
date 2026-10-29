@@ -971,8 +971,8 @@ static void command_tests() {
 static void access_tests() {
     check(agent_route_locality("POST", "/api/workspaces") == Locality::Always &&
               agent_route_locality("DELETE", "/api/workspaces/w1") == Locality::Always &&
-              agent_route_locality("GET", "/api/workspaces") == Locality::Anywhere,
-          "workspaces: adding and removing are local only, listing is not");
+              agent_route_locality("GET", "/api/workspaces") == Locality::Always,
+          "workspaces: listing, adding and removing are local only (a workspace names a folder here)");
     check(agent_route_locality("POST", "/api/conversations/c1/approval") == Locality::Always,
           "an approval is local only");
     for (const auto & [m, p] :
@@ -1003,9 +1003,8 @@ static void access_tests() {
                            "/api/providers/p", "/api/connect/codex"})
         check(agent_route_locality("POST", p) == Locality::Always || agent_route_locality("PUT", p) == Locality::Always,
               std::string("writing is local only: ") + p);
-    check(agent_route_locality("GET", "/api/providers") == Locality::Anywhere &&
-              agent_route_locality("GET", "/api/connect") == Locality::Anywhere,
-          "reading providers (without keys) and the client list is not");
+    for (const char * p : {"/api/skills", "/api/tasks", "/api/providers", "/api/connect", "/api/connect/codex"})
+        check(agent_route_locality("GET", p) == Locality::Always, std::string("reading is local only too: ") + p);
     check(agent_route_locality("POST", "/api/skillsx") == Locality::Anywhere, "a prefix is matched on a path boundary");
 }
 

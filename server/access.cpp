@@ -189,10 +189,11 @@ Locality agent_route_locality(const std::string & method, const std::string & pa
         const std::string p = prefix;
         return path == p || path.compare(0, p.size() + 1, p + "/") == 0;
     };
-    const bool read = method == "GET" || method == "HEAD";
+    // Reads too: a workspace names a folder on this disk, a skill or a task carries its text, a
+    // provider its address, Connect the settings of other programs here. None of it is the network's.
     if (under("/api/workspaces") || under("/api/skills") || under("/api/tasks") || under("/api/providers") ||
         under("/api/connect"))
-        return read ? Locality::Anywhere : Locality::Always;
+        return Locality::Always;
     static const std::string conv = "/api/conversations/";
     if (path.compare(0, conv.size(), conv) == 0) {
         const size_t slash = path.find('/', conv.size());
