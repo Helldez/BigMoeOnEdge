@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.39.0] - 2026-10-29
 
 ### Added
 - **How it compares** (`docs/comparison.md`, a section in `README.md` and its five translations). What
