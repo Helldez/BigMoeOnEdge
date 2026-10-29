@@ -61,3 +61,18 @@ fun diagnosticText(args: List<String>, explain: String): String {
     val cmd = if (args.isNotEmpty()) "bmoe-cli " + args.joinToString(" ") else "(no arguments: the plan declines streaming)"
     return if (explain.isNotBlank()) "$cmd\n\n${explain.trim()}\n" else "$cmd\n"
 }
+
+/**
+ * The model file the Plan screen is for, by its base name: the plan's own (`model`, the path it
+ * measured for) while a plan is shown, else what a load would open (the first read-only row with a
+ * value, the one Models sets), else the loaded model; "" with none. A plan is for one model, so the
+ * screen says which before anyone taps Measure. Same rule as the web UI.
+ */
+fun planModelName(plan: PlanResult?, params: List<ParamSpec>?, cfg: ConfigState?, loadedPath: String?): String {
+    val planned = plan?.takeIf { it.available && !it.none && it.error.isEmpty() }?.model.orEmpty()
+    val target = cfg?.let { c ->
+        params.orEmpty().filter { it.groupReadOnly }.map { paramValueText(c.value(it.key)) }.firstOrNull { it.isNotEmpty() }
+    }.orEmpty()
+    val path = planned.ifEmpty { target }.ifEmpty { loadedPath.orEmpty() }
+    return path.substringAfterLast('/').substringAfterLast('\\')
+}

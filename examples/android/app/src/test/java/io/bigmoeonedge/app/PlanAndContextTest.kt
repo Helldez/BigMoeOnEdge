@@ -7,6 +7,8 @@ import io.bigmoeonedge.app.engine.appliedChanges
 import io.bigmoeonedge.app.engine.contextWarning
 import io.bigmoeonedge.app.engine.diagnosticText
 import io.bigmoeonedge.app.engine.planFigures
+import io.bigmoeonedge.app.engine.planModelName
+import io.bigmoeonedge.app.engine.ConfigState
 import io.bigmoeonedge.app.engine.text
 import org.json.JSONArray
 import org.json.JSONObject
@@ -54,6 +56,21 @@ class PlanAndContextTest {
         assertNull(bare.deltaPct)
         assertNull(bare.measuredHitPct)
         assertNull(bare.capBytes)
+    }
+
+    @Test
+    fun thePlanSaysWhichModelItIsForByItsFileName() {
+        val params = ParamSpec.parse(
+            JSONArray("""[{"key":"m","label":"Model","type":"path","group":"model","group_read_only":true,"level":"basic"}]"""),
+        )
+        val cfg = ConfigState.of(JSONObject("""{"values":{"m":"/sdcard/models/Next.gguf"}}"""))
+        val shown = PlanResult.of(JSONObject("""{"available":true,"model":"/data/models/Qwen3-30B.gguf"}"""))
+        val none = PlanResult.of(JSONObject("""{"available":true,"none":true,"model":"/data/models/Qwen3-30B.gguf"}"""))
+        // The plan's own model while it is shown; else what a load would open; else the loaded one.
+        assertEquals("Qwen3-30B.gguf", planModelName(shown, params, cfg, "/x/Loaded.gguf"))
+        assertEquals("Next.gguf", planModelName(none, params, cfg, "/x/Loaded.gguf"))
+        assertEquals("Loaded.gguf", planModelName(null, params, ConfigState.of(JSONObject("""{"values":{"m":""}}""")), "/x/Loaded.gguf"))
+        assertEquals("", planModelName(null, params, null, null))
     }
 
     @Test

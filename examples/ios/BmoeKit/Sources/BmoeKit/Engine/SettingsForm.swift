@@ -62,6 +62,22 @@ public enum SettingsForm {
         return params.contains { $0.groupReadOnly && !config[$0.key].display.isEmpty }
     }
 
+    /// The file name of the model a plan is for, without its folder, or nil with none: the plan's
+    /// own `model` when one is shown, else the model a load would open (a path in a read-only
+    /// group, the model from Models), else the loaded one. The Plan screen's "For <name>".
+    public static func planTarget(_ plan: PlanResult?, params: [ParamSpec], config: ConfigState?,
+                                  info: ServerInfo?) -> String?
+    {
+        let chosen = config.flatMap { c in
+            params.lazy.filter { $0.groupReadOnly && $0.kind == .path }.map { c[$0.key].display }.first { !$0.isEmpty }
+        }
+        let loaded = info?.model.map { $0.path.isEmpty ? $0.name : $0.path }
+        let shown = plan.flatMap { $0.available && !$0.model.isEmpty ? $0.model : nil }
+        guard let path = [shown, chosen, loaded].compactMap({ $0 }).first(where: { !$0.isEmpty }) else { return nil }
+        // A plan made on another system may carry its separators: either ends the folder.
+        return path.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last.map(String.init) ?? path
+    }
+
     /// The rows shown though the form does not offer them: the ones holding a value the person set.
     public static func userSet(_ params: [ParamSpec], config: ConfigState?) -> Set<String> {
         guard let config else { return [] }

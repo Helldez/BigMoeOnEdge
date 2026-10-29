@@ -126,7 +126,7 @@ private fun Root() {
         when (screen) {
             Screen.CHAT -> ChatScreen(m, ChatNav(openModels = { screen = Screen.MODELS }, openSetting = openSetting))
             Screen.MODELS -> ModelsScreen(m, onOpenChat = { screen = Screen.CHAT })
-            Screen.PLAN -> PlanScreen(m, onOpenSetting = openSetting)
+            Screen.PLAN -> PlanScreen(m, onOpenSetting = openSetting, onOpenModels = { screen = Screen.MODELS })
             Screen.SETTINGS -> SettingsScreen(m, target = settingTarget, onLanded = { settingTarget = "" }, onOpenMetrics = { screen = Screen.METRICS })
             Screen.METRICS -> MetricsScreen(m, onBack = { screen = Screen.SETTINGS })
         }

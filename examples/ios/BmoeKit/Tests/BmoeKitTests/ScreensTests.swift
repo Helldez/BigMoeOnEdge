@@ -292,6 +292,21 @@ final class ScreensTests: XCTestCase {
         XCTAssertEqual(SettingsForm.cards(specs).first?.rows.map(\.key), ["a", "c"])
     }
 
+    func testThePlanNamesTheModelItIsFor() throws {
+        let params = try table()
+        let set = ConfigState(try JSON(parsing: #"{"values":{"model":"/d/chosen.gguf"}}"#))
+        let none = ConfigState(try JSON(parsing: #"{"values":{"model":""}}"#))
+        let loaded = ServerInfo(try JSON(parsing: #"{"state":"ready","model":{"name":"loaded.gguf","path":"/d/loaded.gguf"}}"#))
+        let plan = PlanResult(try JSON(parsing: #"{"available":true,"model":"C:\\m\\planned.gguf"}"#))
+        let unavailable = PlanResult(try JSON(parsing: #"{"available":false,"model":"/d/planned.gguf"}"#))
+        // The plan's own model first, then what a load would open, then what is loaded.
+        XCTAssertEqual(SettingsForm.planTarget(plan, params: params, config: set, info: loaded), "planned.gguf")
+        XCTAssertEqual(SettingsForm.planTarget(unavailable, params: params, config: set, info: loaded), "chosen.gguf")
+        XCTAssertEqual(SettingsForm.planTarget(nil, params: params, config: none, info: loaded), "loaded.gguf")
+        XCTAssertNil(SettingsForm.planTarget(nil, params: params, config: none, info: nil))
+        XCTAssertNil(SettingsForm.planTarget(nil, params: params, config: nil, info: nil))
+    }
+
     func testWhereAValueCameFromAndWhatResetAllRemoves() throws {
         let params = try table()
         let c = ConfigState(try JSON(parsing: #"""

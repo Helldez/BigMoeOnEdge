@@ -37,6 +37,10 @@ import io.bigmoeonedge.app.engine.PlanPool
 import io.bigmoeonedge.app.engine.PlanProgress
 import io.bigmoeonedge.app.engine.PlanResult
 import kotlinx.coroutines.launch
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
+import io.bigmoeonedge.app.engine.planModelName
 import java.util.Locale
 
 /**
@@ -49,7 +53,7 @@ import java.util.Locale
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PlanScreen(modifier: Modifier = Modifier, onOpenSetting: (key: String) -> Unit = {}) {
+fun PlanScreen(modifier: Modifier = Modifier, onOpenSetting: (key: String) -> Unit = {}, onOpenModels: () -> Unit = {}) {
     val engine by Engine.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
@@ -73,6 +77,7 @@ fun PlanScreen(modifier: Modifier = Modifier, onOpenSetting: (key: String) -> Un
     // A plan is for the model a load opens: chosen on Models, which the table marks as a read-only group.
     val chosen = engine.info?.model != null || loadTargetChosen(engine.params, cfg)
     val canMeasure = planner && chosen && !busy && engine.serverUp
+    val modelName = planModelName(plan, engine.params, cfg, engine.info?.model?.path)
     // One banner for whatever went wrong: the request, or a plan the server could not make.
     val shownError = engine.planError.ifEmpty { plan?.takeIf { it.available }?.error.orEmpty() }
 
@@ -91,7 +96,19 @@ fun PlanScreen(modifier: Modifier = Modifier, onOpenSetting: (key: String) -> Un
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             if (!planner) Text("This build does not include the hardware planner.", color = MaterialTheme.colorScheme.error)
-            if (!chosen && engine.params != null) {
+            // Which model the plan is for, said first: a plan is for one model, and Measure is about it.
+            if (modelName.isNotEmpty()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        buildAnnotatedString {
+                            append("For ")
+                            withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(modelName) }
+                        },
+                        fontSize = 14.sp, modifier = Modifier.weight(1f),
+                    )
+                    TextButton(shape = Corner, onClick = onOpenModels) { Text("Change") }
+                }
+            } else if (!chosen && engine.params != null) {
                 Text("Choose a model from Models: a plan is for one model on this phone.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             // A failed plan can be retried where it says so: measuring is the person's tap, never automatic.
@@ -108,7 +125,9 @@ fun PlanScreen(modifier: Modifier = Modifier, onOpenSetting: (key: String) -> Un
                 p.error.isNotEmpty() -> {} // in the banner above
                 p.none -> Tile {
                     Text("Not measured yet.", fontSize = 22.sp, lineHeight = 26.sp)
-                    Text("Measure this phone to see what the plan does with the chosen model.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        if (modelName.isNotEmpty()) "Measure this phone for $modelName." else "Measure this phone to see what the plan does with the chosen model.",
+                        fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     PrimaryAction(if (busy) "Measuring..." else "Measure", enabled = canMeasure) { measure() }
                 }
                 else -> PlanBody(
