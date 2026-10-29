@@ -14,7 +14,7 @@ namespace bmoe::server {
 inline constexpr const char * kFeedPublicKey = BMOE_FEED_PUBLIC_KEY_OVERRIDE;
 #else
 // Set by the maintainer when the signing key is first made, and only changed with it.
-inline constexpr const char * kFeedPublicKey = "";
+inline constexpr const char * kFeedPublicKey = "hWYiUVrOmwFy6spf89ydGA6axhPdYVECUFflk0SLr/I=";
 #endif
 
 } // namespace bmoe::server
