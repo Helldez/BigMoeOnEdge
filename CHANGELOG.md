@@ -121,6 +121,18 @@ Semantic Versioning.
   server and the web UI; the separate desktop archive remains for the NPU build only.
 
 ### Changed
+- **The Android chat renders Markdown with multiplatform-markdown-renderer** (0.41.0, Apache-2.0),
+  GitHub-flavoured: tables (bordered in the line token, cells wrapping, scrolling sideways when
+  wide), task lists, strikethrough and autolinks now render, in the app's tokens and fonts. No image
+  loader is included, so an answer still fetches nothing, and HTML is not run; a link opens on tap.
+  The hand-written parser is gone. The app now builds with Kotlin 2.3 and its Compose compiler
+  plugin, AGP 8.13, Gradle 8.13, compileSdk 36 and Compose BOM 2026.06.01 (minSdk and targetSdk
+  unchanged), which the library requires.
+- **The iOS chat renders Markdown with MarkdownUI**, GitHub-flavoured: tables (bordered in the line
+  token, scrolling sideways when wide), task lists, strikethrough and autolinks now render, in the
+  app's tokens. MarkdownUI 2.4.1 and swift-cmark 0.5.0 are vendored under `third_party/` and built
+  as CMake targets; their network image loading is left out, so an answer still fetches nothing and
+  runs no HTML. The hand-written parser is gone.
 - **Engine messages name settings the way the reader sets them.** A refusal from `validate()` or a
   model that will not load names a setting as a `{key}` placeholder from the parameter table
   instead of a flag or a field (`n_ubatch=… exceeds n_ctx=…`, `--device-cache-mb`); one function,

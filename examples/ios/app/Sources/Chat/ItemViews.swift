@@ -52,7 +52,7 @@ struct AssistantMessageView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Grid.s) {
             if !item.reasoning.isEmpty { ThinkingView(text: item.reasoning, streaming: item.streaming && item.text.isEmpty) }
-            if !item.text.isEmpty { MarkdownText(source: item.text).foregroundStyle(Palette.text) }
+            if !item.text.isEmpty { AnswerMarkdown(source: item.text).foregroundStyle(Palette.text) }
             if !item.streaming {
                 HStack(spacing: Grid.m) {
                     if !item.text.isEmpty {

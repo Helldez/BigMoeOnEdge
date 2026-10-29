@@ -81,7 +81,7 @@ private fun AssistantMessage(item: ChatItem, answerAgain: Boolean, enabled: Bool
     val clipboard = LocalClipboardManager.current
     Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
         if (item.reasoning.isNotEmpty()) ReasoningBlock(item.reasoning, openWhileStreaming = item.streaming && item.text.isEmpty())
-        if (item.text.isNotEmpty()) SelectionContainer { MarkdownText(item.text) }
+        if (item.text.isNotEmpty()) SelectionContainer { ChatMarkdown(item.text) }
         if (!item.streaming) {
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 if (item.text.isNotEmpty()) {
