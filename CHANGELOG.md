@@ -34,6 +34,18 @@ Semantic Versioning.
   installed from the release page, as before.
 
 ### Fixed
+- **A row-gathered table larger than RAM is no longer copied beside the expert cache.** With a routing
+  record, the plan priced the expert cache past the device's share on the record's curve, which is
+  flat past the experts a few hundred tokens touched, so DeepSeek V4.1's 194 GB Engram table outranked
+  it for 0.1 ms a token, was called resident, and was copied by the dense policy outside the ledger
+  (417 GB committed against 215, the run killed when the cache filled). A row-gathered table now
+  competes at the cache's linear credit; one the ranking does call resident is held back unless its
+  bytes are charged or fit; and a table left mapped keeps `release-mmap` off (`docs/hardware-planning.md`).
+- **The device expert cache fits itself beside the context.** The capacity fitter measures a graph
+  without the cache, and with it a wide graph needs a layer's experts in the device's compute buffers:
+  on a 24 GB card a 15.3 GB cache left DeepSeek V4.1's 2.4 GB of prefill buffers no room and the run
+  could not start. The session now retries the context with the cache a quarter smaller at a time,
+  down to one token cycle, and reports the size it kept.
 - **`bmoe-server`'s launch flags outrank saved settings, as `--help` says** (#435). The settings
   layers applied a value saved by an earlier run after the flags of this one, so
   `bmoe-server -m A.gguf -c 32768` loaded the model and context `settings.json` held instead. The

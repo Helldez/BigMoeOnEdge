@@ -417,6 +417,19 @@ std::vector<Candidate> price_lanes(Pricing & c) {
         if (!std::isfinite(p.seconds_worst_case) || !std::isfinite(compute)) continue;
         const double saved = p.seconds_worst_case - compute;
         if (saved <= 0.0) continue;
+
+        // A table the graph only gathers rows from saves one small refault a token, so its saving per
+        // byte is tiny, and it can only win the ranking where the cache's own price has gone flat. A
+        // routing record of a few hundred tokens is flat past the experts it touched, which is a
+        // record too short to see the rest, not proof that RAM there is worth nothing (the remainder
+        // rule below gives that RAM to the cache for the same reason). So such a table competes with
+        // the cache at the cache's linear credit, the price it has without a record: measured where it
+        // did not, a 194 GB Engram table outranked the cache for 0.1 ms a token.
+        if (d.row_gatherable && model.is_moe && c.in.cacheable_bytes > 0 && c.stream_mibs > 0.0) {
+            const double linear = seconds_at_mibs(model.token_cycle_bytes, c.stream_mibs) *
+                                  std::min(1.0f, c.pol.cache_hit_optimism) / (double) c.in.cacheable_bytes;
+            if (std::isfinite(linear) && saved / (double) d.bytes < linear) continue;
+        }
         candidates.push_back(
             {g, resident_lane, d.bytes, saved, saved / (double) d.bytes, false, 0, "read whole, every token"});
     }

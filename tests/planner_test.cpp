@@ -2506,5 +2506,63 @@ int main() {
         }
     }
 
+    // ── a row-gathered table larger than the budget, with the model's routing recorded ───────
+    // Shaped after DeepSeek V4.1 Flash on a 283 GB control group: a 194 GB Engram table the graph
+    // gathers a few KiB of per token, 270 GB of experts, a 210 GB budget. With a recorded hit curve
+    // the plan once made the table resident (194 GB held) beside a 210 GB cache, 417 GB committed
+    // against 210, and the run was killed when the cache filled.
+    {
+        ModelProfile big = model;
+        big.embedding_tensors = {"token_embd.weight", "per_layer_token_embd.weight"};
+        big.group(WeightGroup::Embedding) = {194 * GiB, 13 * KiB, true, true};
+        big.expert_bytes = 270 * GiB;
+        big.group(WeightGroup::Experts) = {270 * GiB, big.token_cycle_bytes, false, true};
+        big.dense_bytes = 194 * GiB + 3 * GiB;
+        big.file_bytes = big.expert_bytes + big.dense_bytes;
+        big.largest_dense_tensor = 194 * GiB;
+        HardwareProfile h = desktop();
+        h.residency_budget = 210 * GiB;
+        h.memory_total = 2048 * GiB; // a shared host: the control group, not the host, is the bound
+        h.host_bandwidth_gibs = 100.0;
+        h.storage.refault_mibs = 160.0;
+        h.devices.clear();
+        ModelProfile curved = big;
+        curved.hit_curve.measured = true;
+        curved.hit_curve.decode_tokens = 256;
+        curved.hit_curve.prefill_tokens = 26;
+        curved.hit_curve.points = {{0, 0.0},
+                                   {(uint64_t) (0.05 * (double) curved.expert_bytes), 0.30},
+                                   {(uint64_t) (0.30 * (double) curved.expert_bytes), 0.85},
+                                   {curved.expert_bytes, 0.95}};
+        // A short record touches few experts: its curve is flat past them, so a byte of cache there
+        // prices at nothing and the table's tiny per-byte saving outranks it.
+        ModelProfile flat = big;
+        flat.hit_curve.measured = true;
+        flat.hit_curve.decode_tokens = 256;
+        flat.hit_curve.prefill_tokens = 26;
+        flat.hit_curve.points = {{0, 0.0}, {2 * flat.token_cycle_bytes, 0.91}, {flat.expert_bytes, 0.91}};
+        for (const auto & mc : {std::make_pair("no record", big), std::make_pair("a record", curved),
+                                std::make_pair("a short record", flat)}) {
+            const Plan p = plan_run(base_cfg(), h, mc.second, PlanRequest{});
+            const GroupPlacement & e = p.allocation.at(WeightGroup::Embedding);
+            check(e.lane != Lane::Resident && e.lane != Lane::Pinned && e.resident_bytes == 0,
+                  std::string("big table, ") + mc.first + ": a 194 GB row-gathered table is not made resident",
+                  std::string(lane_name(e.lane)) + ", " + std::to_string(e.resident_bytes >> 20) + " MiB");
+            uint64_t held = p.allocation.cache_bytes;
+            for (int i = 0; i < (int) WeightGroup::count; ++i)
+                if ((WeightGroup) i != WeightGroup::Experts) held += p.allocation.at((WeightGroup) i).resident_bytes;
+            check(held <= h.residency_budget, std::string("big table, ") + mc.first + ": what is held fits the budget",
+                  std::to_string(held >> 20) + " MiB held");
+            check(p.config.moe.dense_mapped == big.embedding_tensors,
+                  std::string("big table, ") + mc.first + ": the run is told to leave the tables mapped");
+            // This storage measures a live mapping slowing its reads, which alone would release it;
+            // the tables are read through it all run, so it stays.
+            const Decision * rel = find(p, "release-mmap");
+            check(rel && rel->value == "off" && !p.config.moe.release_mmap,
+                  std::string("big table, ") + mc.first + ": a table left mapped keeps the mapping",
+                  rel ? rel->value : "no decision");
+        }
+    }
+
     return failures ? 1 : 0;
 }
