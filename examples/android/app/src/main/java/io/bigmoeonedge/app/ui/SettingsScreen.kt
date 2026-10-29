@@ -39,7 +39,7 @@ import io.bigmoeonedge.app.engine.ValueSource
 import io.bigmoeonedge.app.engine.differsFromPlan
 import io.bigmoeonedge.app.engine.paramValueFromText
 import io.bigmoeonedge.app.engine.paramValueText
-import io.bigmoeonedge.app.engine.pinnedKeys
+import io.bigmoeonedge.app.engine.setByYou
 import io.bigmoeonedge.app.engine.resettableKeys
 import io.bigmoeonedge.app.engine.settingsCards
 import io.bigmoeonedge.app.engine.valueSource
@@ -50,6 +50,7 @@ import kotlinx.coroutines.launch
 private const val APP_SECTION = " app"
 private const val SHARE_SECTION = " share"
 private const val LOOK_SECTION = " appearance"
+private const val MINE_SECTION = " mine"
 
 /**
  * Settings, rendered from the engine's parameter table (`GET /api/params`) and nothing else: one
@@ -73,6 +74,8 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
     var openCards by remember { mutableStateOf(mapOf<String, Boolean>()) }
     var csv by remember { mutableStateOf(AppPrefs.metricsCsv(context)) }
     var landedOn by remember { mutableStateOf("") }
+    // Where the link landed: "Set by you" for a value the person set, else the row's group.
+    var landedMine by remember { mutableStateOf(false) }
     // A link from inside this screen (the context line under "Serve on the network") lands the same way.
     var jump by remember { mutableStateOf("") }
     val landing = target.ifEmpty { jump }
@@ -90,8 +93,9 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
     // A path is set at launch, not over the API: only a read-only group's (chosen on Models) is shown.
     val settable = remember(params) { params?.filter { it.type != "path" || it.groupReadOnly } }
 
-    // A link to one setting lands on it: its card opened (and the row shown even
-    // where the table offers it no form); the row itself scrolls into view. Once per link, so editing
+    // A link to one setting lands on it: its card opened ("Set by you" for a value the person set;
+    // else its group, the row shown even where the table offers it no form); the row itself scrolls
+    // into view. Once per link, so editing
     // another field afterwards does not jump back.
     LaunchedEffect(landing, settable, cfg != null) {
         if (landing.isEmpty() || settable == null || cfg == null) return@LaunchedEffect
@@ -99,7 +103,8 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
         onLanded()
         jump = ""
         if (spec == null) return@LaunchedEffect
-        openCards = openCards + (spec.group to true)
+        landedMine = !spec.groupReadOnly && spec.key in cfg.userKeys
+        openCards = openCards + ((if (landedMine) MINE_SECTION else spec.group) to true)
         landedOn = spec.key
     }
 
@@ -148,8 +153,10 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
                 settable == null || cfg == null -> if (engine.serverUp) Text("Waiting for the engine…", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 else -> {
                     val decisions = remember(cfg.plan) { cfg.plan.orEmpty().associateBy { it.knob } }
-                    val cards = remember(settable, cfg, landedOn) {
-                        settingsCards(settable, pinnedKeys(settable, cfg) + setOfNotNull(landedOn.ifEmpty { null }))
+                    val mine = remember(settable, cfg) { setByYou(settable, cfg) }
+                    val cards = remember(settable, mine, landedOn, landedMine) {
+                        val pinned = if (landedMine) emptySet() else setOfNotNull(landedOn.ifEmpty { null })
+                        settingsCards(settable, pinned, mine.map { it.key }.toSet())
                     }
                     val resettable = remember(settable, cfg) { resettableKeys(cfg.userKeys, cfg.launchKeys, settable) }
 
@@ -174,12 +181,25 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
                         )
                     }
 
+                    // Every value the person set, on the form or off it, in one card and only there: nothing
+                    // they set is out of sight, each has its way back, and a reset returns it to its group.
+                    if (mine.isNotEmpty()) {
+                        val open = openCards[MINE_SECTION] == true
+                        FoldCard("Set by you · ${mine.size}", "", open, onToggle = { openCards = openCards + (MINE_SECTION to !open) }) {
+                            mine.forEach { spec ->
+                                ParamRow(
+                                    spec, cfg, decisions[spec.key], readOnly = false, landing = landedMine && spec.key == landedOn,
+                                    onSet = { set(spec.key, it) }, onReset = { reset(listOf(spec.key)) },
+                                )
+                            }
+                        }
+                    }
                     cards.forEach { c ->
                         val open = openCards[c.group] == true
                         FoldCard(c.label, c.help, open, onToggle = { openCards = openCards + (c.group to !open) }) {
                             c.params.forEach { spec ->
                                 ParamRow(
-                                    spec, cfg, decisions[spec.key], readOnly = c.readOnly, landing = spec.key == landedOn,
+                                    spec, cfg, decisions[spec.key], readOnly = c.readOnly, landing = !landedMine && spec.key == landedOn,
                                     onSet = { set(spec.key, it) }, onReset = { reset(listOf(spec.key)) },
                                 )
                             }

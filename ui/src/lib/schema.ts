@@ -19,14 +19,14 @@ export interface SettingsCard {
 
 /**
  * The settings form: one card per group, in the table's group order (`group_order`, else the order
- * groups first appear), rows in table order. A row is shown when the table puts it in forms or when
- * it is `pinned` (a value the person set must never be hidden, or it could not be reset). Nothing
- * here names a group or a parameter.
+ * groups first appear), rows in table order: the rows the table puts in forms, less the ones the
+ * person set, which `setByYou` lists instead (each row appears once). Nothing here names a group or
+ * a parameter.
  */
-export function settingsCards(params: readonly ParamSpec[], pinned?: ReadonlySet<string>): SettingsCard[] {
+export function settingsCards(params: readonly ParamSpec[], userKeys?: ReadonlySet<string>): SettingsCard[] {
   const cards = new Map<string, { card: SettingsCard; order: number; first: number }>();
   params.forEach((p, i) => {
-    if (!inForm(p) && !(pinned?.has(p.key) ?? false)) return;
+    if (!inForm(p) || (p.group_read_only !== true && (userKeys?.has(p.key) ?? false))) return;
     let entry = cards.get(p.group);
     if (!entry) {
       entry = {
@@ -45,6 +45,14 @@ export function settingsCards(params: readonly ParamSpec[], pinned?: ReadonlySet
     entry.card.params.push(p);
   });
   return [...cards.values()].sort((a, b) => a.order - b.order || a.first - b.first).map((e) => e.card);
+}
+
+/**
+ * Every row the person set, in or out of the form, in table order: what "Set by you" lists. Not a
+ * read-only group's (the model, chosen on Models), which Settings cannot reset and keeps in its card.
+ */
+export function setByYou(params: readonly ParamSpec[], userKeys: ReadonlySet<string>): ParamSpec[] {
+  return params.filter((p) => userKeys.has(p.key) && p.group_read_only !== true);
 }
 
 /**

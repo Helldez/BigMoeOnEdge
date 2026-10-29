@@ -99,7 +99,7 @@ final class ServerFactsTests: XCTestCase {
         XCTAssertEqual(specs[2].specialLabel(.double(0)), "greedy")
         XCTAssertNil(specs[3].typical) // a range upside down is no guide
         // Each group's rows sit in its own card, in the table's group order.
-        let cards = SettingsForm.cards(specs, also: ["io-threads", "ctx"])
+        let cards = SettingsForm.cards(specs, revealed: ["io-threads", "ctx"])
         XCTAssertEqual(cards.map(\.label), ["Streaming", "Sampling"])
         XCTAssertEqual(cards.map { $0.rows.map(\.key) }, [["io-threads", "temp"], ["seed", "ctx"]])
     }

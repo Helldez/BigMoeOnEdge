@@ -247,8 +247,10 @@ rows, their bounds and help text. The app names none of them, so a knob added to
 here with no app change, and the same setting means the same thing on the desktop. The page is one
 card per group, in the table's order, with the group's one line of help; every card starts folded
 and lists, in the table's order, the rows the table marks for a form (`form`; a server that does not
-send it offers its basic rows), the same rows the web UI and the iOS app show. A row whose value you
-set is shown too, so it can be seen and reset. Every other parameter is still the engine's, set
+send it offers its basic rows), the same rows the web UI and the iOS app show. Every value you set,
+on the form or off it, sits instead in a **Set by you** card ahead of the groups, with the count in
+its header and hidden while you set nothing: each row appears once on the page, a reset sends it back
+to its group, and a link to a value you set opens that card. Every other parameter is still the engine's, set
 from the command line or the API. Each row carries one chip for where its value came from (default,
 from the plan, set by you); a value you set can be reset, or, where the plan decided
 another, replaced with **Use plan value**. **Reset all my values** removes yours after asking,

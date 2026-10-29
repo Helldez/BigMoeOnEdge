@@ -4,7 +4,7 @@
   import { api } from '../../lib/api';
   import { commandLine } from '../../lib/format';
   import { decisionsByKnob, planDecisions } from '../../lib/plan';
-  import { resettableKeys, settingsCards } from '../../lib/schema';
+  import { resettableKeys, setByYou, settingsCards } from '../../lib/schema';
   import { router } from '../../stores/router.svelte';
   import { server } from '../../stores/server.svelte';
   import { settings } from '../../stores/settings.svelte';
@@ -18,8 +18,11 @@
   let decisions = $derived(decisionsByKnob(planDecisions(config?.plan)));
   let command = $derived(config ? commandLine(config.args) : '');
 
-  // A row the person set is shown even where the form leaves it out, so it can be seen and reset.
+  // What the person set is one card of its own, form or not, so it is all in view and resettable;
+  // the group cards hold the rest of the form.
+  let mine = $derived(setByYou(params, userKeys));
   let cards = $derived(settingsCards(params, userKeys));
+  const MINE = '__set_by_you';
 
   // Open cards, keyed by group: every card starts closed, so the page opens on the groups alone.
   let openCards = $state<Record<string, boolean>>({});
@@ -33,9 +36,9 @@
     if (!key) landedOn = '';
     if (!key || key === landedOn || !config || params.length === 0) return;
     landedOn = key;
-    const card = cards.find((c) => c.params.some((p) => p.key === key));
-    if (!card) return;
-    openCards = { ...openCards, [card.group]: true };
+    const group = mine.some((p) => p.key === key) ? MINE : cards.find((c) => c.params.some((p) => p.key === key))?.group;
+    if (!group) return;
+    openCards = { ...openCards, [group]: true };
     tick().then(() => {
       const el = document.getElementById(`param-${key}`);
       el?.scrollIntoView({ block: 'center' });
@@ -121,6 +124,30 @@
 {#if !server.params || !config}
   <div class="skel" aria-hidden="true">{#each [0, 1, 2] as i (i)}<span class="skeleton card-skel"></span>{/each}</div>
 {:else}
+  {#if mine.length > 0}
+    <details
+      class="card group mine"
+      open={openCards[MINE] === true}
+      ontoggle={(e) => (openCards = { ...openCards, [MINE]: (e.currentTarget as HTMLDetailsElement).open })}
+    >
+      <summary>
+        <span class="title">{t('settings.mine')}</span>
+        <span class="badge">{mine.length}</span>
+        <span class="muted ghelp">{t('settings.mine.help')}</span>
+      </summary>
+      {#each mine as spec (spec.key)}
+        <ParamField
+          {spec}
+          value={config.values[spec.key]}
+          userSet={true}
+          rejected={settings.rejected[spec.key]}
+          decision={decisions.get(spec.key)}
+          needsReload={reloadKeys.has(spec.key)}
+          readOnly={false}
+        />
+      {/each}
+    </details>
+  {/if}
   {#each cards as c (c.group)}
     <details
       class="card group"

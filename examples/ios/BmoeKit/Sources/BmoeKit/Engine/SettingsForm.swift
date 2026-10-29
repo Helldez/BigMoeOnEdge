@@ -1,8 +1,8 @@
 import Foundation
 
-/// The settings form (docs/screens.md, "Settings"): one card per group of the parameter table,
-/// holding the rows the table offers on a form (`form`) and any row the person set, and where each
-/// value came from. All of it from `GET /api/params` and `GET /api/config`; no group or
+/// The settings form (docs/screens.md, "Settings"): "Set by you", every row holding a value the
+/// person set, then one card per group of the parameter table holding the other rows the table
+/// offers on a form (`form`), and where each value came from. Each row appears once. All of it from `GET /api/params` and `GET /api/config`; no group or
 /// parameter is named here. The web UI's `lib/schema.ts`.
 public enum SettingsForm {
     /// One settings card: a group and its shown rows, in table order.
@@ -18,9 +18,10 @@ public enum SettingsForm {
 
     /// The cards for the table, in its group order (`group_order`, else where a group first
     /// appears), rows in table order. A row is shown when the table offers it on a form or its key
-    /// is in `also` (a value the person set, so it can be seen and reset; a row a link points at).
-    /// A card left with no row is dropped.
-    public static func cards(_ params: [ParamSpec], also: Set<String> = []) -> [Card] {
+    /// is in `revealed` (a row a link points at, which has to be somewhere to land on), and its key
+    /// is not in `setByYou` (those live in "Set by you"; a reset sends one back to its group). A
+    /// card left with no row is dropped.
+    public static func cards(_ params: [ParamSpec], revealed: Set<String> = [], setByYou: Set<String> = []) -> [Card] {
         var order: [String] = []
         var cards: [String: Card] = [:]
         var position: [String: (order: Int, first: Int)] = [:]
@@ -30,7 +31,7 @@ public enum SettingsForm {
                 cards[p.group] = Card(group: p.group, label: p.groupLabel, help: p.groupHelp, readOnly: p.groupReadOnly)
                 position[p.group] = (p.groupOrder ?? Int.max, i)
             }
-            guard p.form || also.contains(p.key) else { continue }
+            guard p.form || revealed.contains(p.key), !setByYou.contains(p.key) else { continue }
             cards[p.group]!.rows.append(p)
         }
         return order
@@ -78,10 +79,12 @@ public enum SettingsForm {
         return path.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last.map(String.init) ?? path
     }
 
-    /// The rows shown though the form does not offer them: the ones holding a value the person set.
-    public static func userSet(_ params: [ParamSpec], config: ConfigState?) -> Set<String> {
+    /// "Set by you": every row holding a value the person set, on the form or not, in table order,
+    /// so each can be seen and reset in one place. Not a row of a read-only group: the model is
+    /// chosen in Models and a reset does not remove it.
+    public static func setByYou(_ params: [ParamSpec], config: ConfigState?) -> [ParamSpec] {
         guard let config else { return [] }
-        return Set(params.map(\.key).filter { config.userKeys.contains($0) })
+        return params.filter { config.userKeys.contains($0.key) && !$0.groupReadOnly }
     }
 
     /// Where a value came from, in the one chip a row carries.

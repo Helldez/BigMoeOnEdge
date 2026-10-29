@@ -2,8 +2,9 @@ package io.bigmoeonedge.app.engine
 
 /**
  * The settings form as docs/screens.md ("Settings") describes it, worked out from the parameter
- * table alone: one card per group in the table's group order, each listing the rows the table marks
- * for a form (`form`) in the table's order, and where each value came from.
+ * table alone: "Set by you" first, every value the person set, then one card per group in the
+ * table's group order, each listing the rows the table marks for a form (`form`) that the person has
+ * not set, in the table's order, and where each value came from. Each row appears once on the page.
  * Nothing here names a group or a parameter. Same rules as the web UI (ui/src/lib/schema.ts).
  */
 
@@ -19,13 +20,14 @@ data class SettingsCard(
 
 /**
  * The cards for [params]: the rows the table offers a form, and the rows in [pinned] whatever the
- * table says (a value the person set is never hidden, so it can be seen and reset; a row a link
- * points at is shown so the link lands). A card left with no row is dropped.
+ * table says (a row a link points at is shown so the link lands), less the rows in [mine]: a value
+ * the person set lives in "Set by you" ([setByYou]) and comes back to its group when reset. A card
+ * left with no row is dropped.
  */
-fun settingsCards(params: List<ParamSpec>, pinned: Set<String> = emptySet()): List<SettingsCard> {
+fun settingsCards(params: List<ParamSpec>, pinned: Set<String> = emptySet(), mine: Set<String> = emptySet()): List<SettingsCard> {
     return ParamSpec.grouped(params).mapNotNull { (_, rows) ->
         val first = rows.first()
-        val shown = rows.filter { it.form || it.key in pinned }
+        val shown = rows.filter { (it.form || it.key in pinned) && it.key !in mine }
         if (shown.isEmpty()) return@mapNotNull null
         SettingsCard(
             group = first.group,
@@ -90,6 +92,10 @@ fun ParamSpec.isDefault(value: Any?): Boolean = value == null || sameValue(defau
 fun loadTargetChosen(params: List<ParamSpec>?, cfg: ConfigState?): Boolean =
     cfg != null && params.orEmpty().any { it.groupReadOnly && paramValueText(cfg.value(it.key)).isNotEmpty() }
 
-/** The rows shown whether or not the table offers them a form: the ones the person set. */
-fun pinnedKeys(params: List<ParamSpec>, cfg: ConfigState): Set<String> =
-    params.filter { it.key in cfg.userKeys }.map { it.key }.toSet()
+/**
+ * "Set by you": every row whose value the person set, on the form or off it, in table order, so
+ * each can be seen and reset in one place. A read-only group's row (the model, chosen on Models) is
+ * not one: the form cannot set it back, as with "reset all" ([resettableKeys]).
+ */
+fun setByYou(params: List<ParamSpec>, cfg: ConfigState): List<ParamSpec> =
+    params.filter { it.key in cfg.userKeys && !it.groupReadOnly }

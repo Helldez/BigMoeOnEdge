@@ -6,7 +6,7 @@ import io.bigmoeonedge.app.engine.PlanDecision
 import io.bigmoeonedge.app.engine.ValueSource
 import io.bigmoeonedge.app.engine.differsFromPlan
 import io.bigmoeonedge.app.engine.loadTargetChosen
-import io.bigmoeonedge.app.engine.pinnedKeys
+import io.bigmoeonedge.app.engine.setByYou
 import io.bigmoeonedge.app.engine.resettableKeys
 import io.bigmoeonedge.app.engine.sameValue
 import io.bigmoeonedge.app.engine.settingsCards
@@ -51,7 +51,7 @@ class SettingsFormTest {
     }
 
     @Test
-    fun aRowThePersonSetIsShownEvenOffTheForm() {
+    fun aRowALinkPointsAtIsShownEvenOffTheForm() {
         val pinned = settingsCards(table, pinned = setOf("dbg", "warm"))
         assertEquals(listOf("cache", "warm", "dbg"), pinned[1].params.map { it.key })
     }
@@ -80,16 +80,22 @@ class SettingsFormTest {
     }
 
     @Test
-    fun onlyTheRowsThePersonSetArePinned() {
+    fun setByYouListsEveryValueThePersonSetInTableOrderButTheModel() {
         val cfg = ConfigState.of(
             JSONObject(
-                """{"values":{"model":"/m.gguf","io":4,"cache":"auto","dbg":true,"exp":0},"user_keys":["model"],
+                """{"values":{"model":"/m.gguf","io":4,"cache":"auto","dbg":true,"exp":0},"user_keys":["dbg","model","cache"],
                     "launch_keys":["model"],"reload_keys":["dbg"],"plan":[{"knob":"exp","value":"0","group":"set"}]}""",
             ),
         )
         assertEquals(setOf("model"), cfg.launchKeys)
         assertEquals(listOf("dbg"), cfg.reloadKeys)
-        assertEquals(setOf("model"), pinnedKeys(table, cfg))
+        // On the form (cache) and off it (dbg) alike; the model is chosen on Models, not reset here.
+        assertEquals(listOf("cache", "dbg"), setByYou(table, cfg).map { it.key })
+        // Each row once: a value the person set leaves its group (the cache card, left empty, goes),
+        // and a value set off the form is not pinned into its group either.
+        val mine = setByYou(table, cfg).map { it.key }.toSet()
+        assertEquals(listOf("model", "stream"), settingsCards(table, mine = mine).map { it.group })
+        assertEquals(listOf("cache"), settingsCards(table)[1].params.map { it.key })
     }
 
     @Test

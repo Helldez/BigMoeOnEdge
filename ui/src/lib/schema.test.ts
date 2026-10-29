@@ -5,6 +5,7 @@ import {
   inForm,
   isDefault,
   resettableKeys,
+  setByYou,
   sameValue,
   settingsCards,
   specialLabel,
@@ -41,6 +42,16 @@ const rows = [
 
 const keys = (ps: ParamSpec[]) => ps.map((p) => p.key);
 
+describe('setByYou', () => {
+  it('lists every row the person set, in or out of the form, in table order', () => {
+    expect(keys(setByYou(rows, new Set(['f', 'a', 'd'])))).toEqual(['a', 'd', 'f']);
+    expect(setByYou(rows, new Set())).toEqual([]);
+    const ro = [spec('m', 'model', 'basic', { group_read_only: true }), spec('x', 'g', 'basic')];
+    expect(keys(setByYou(ro, new Set(['m', 'x'])))).toEqual(['x']);
+    expect(settingsCards(ro, new Set(['m', 'x'])).map((c) => c.group)).toEqual(['model']);
+  });
+});
+
 describe('inForm', () => {
   it('follows the table, and takes the basic rows from a server that does not say', () => {
     expect(inForm(spec('x', 'g', 'advanced', { form: true }))).toBe(true);
@@ -59,11 +70,10 @@ describe('settingsCards', () => {
     expect(c[0].label).toBe('g1 label');
   });
 
-  it('shows a pinned row the form leaves out, in its place', () => {
-    const c = settingsCards(rows, new Set(['d', 'f']));
-    expect(c.map((x) => x.group)).toEqual(['g1', 'g2', 'g3']);
-    expect(keys(c[1].params)).toEqual(['b', 'e', 'f']);
-    expect(keys(c[2].params)).toEqual(['d']);
+  it('leaves the rows the person set to Set by you, so each row appears once', () => {
+    const c = settingsCards(rows, new Set(['b', 'd']));
+    expect(c.map((x) => x.group)).toEqual(['g1', 'g2']);
+    expect(keys(c[1].params)).toEqual(['e']);
   });
 
   it('orders cards by the table group order, not by where a group first appears', () => {
