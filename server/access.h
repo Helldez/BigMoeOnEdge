@@ -100,7 +100,7 @@ bool is_loopback_peer(const std::string & remote_addr);
 // workspace or sends to a saved provider, which only the handler can look up. The apps reach the
 // server on loopback, so every route stays theirs.
 enum class Locality { Anywhere, Always, IfConversationReaches };
-Locality agent_route_locality(const std::string & method, const std::string & path);
+Locality agent_route_locality(const std::string & path);
 
 // The code a local-only refusal carries (403).
 inline constexpr const char * k_local_only_code = "local_only";

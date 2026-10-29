@@ -999,25 +999,15 @@ static void command_tests() {
 }
 
 static void access_tests() {
-    check(agent_route_locality("POST", "/api/workspaces") == Locality::Always &&
-              agent_route_locality("DELETE", "/api/workspaces/w1") == Locality::Always &&
-              agent_route_locality("GET", "/api/workspaces") == Locality::Always,
+    check(agent_route_locality("/api/workspaces") == Locality::Always &&
+              agent_route_locality("/api/workspaces/w1") == Locality::Always,
           "workspaces: listing, adding and removing are local only (a workspace names a folder here)");
-    check(agent_route_locality("POST", "/api/conversations/c1/approval") == Locality::Always,
-          "an approval is local only");
-    for (const auto & [m, p] :
-         std::vector<std::pair<const char *, const char *>>{{"POST", "/api/conversations/c1/messages"},
-                                                            {"POST", "/api/conversations/c1/edit"},
-                                                            {"GET", "/api/conversations/c1/file"},
-                                                            {"GET", "/api/conversations/c1"},
-                                                            {"PATCH", "/api/conversations/c1"},
-                                                            {"DELETE", "/api/conversations/c1"},
-                                                            {"POST", "/api/conversations/c1/stop"}})
-        check(agent_route_locality(m, p) == Locality::IfConversationReaches,
-              std::string("depends on the conversation: ") + m + " " + p);
-    check(agent_route_locality("POST", "/api/conversations") == Locality::Anywhere &&
-              agent_route_locality("GET", "/api/conversations") == Locality::Anywhere,
-          "plain chat works from the network");
+    check(agent_route_locality("/api/conversations/c1/approval") == Locality::Always, "an approval is local only");
+    for (const char * p : {"/api/conversations/c1/messages", "/api/conversations/c1/edit", "/api/conversations/c1/file",
+                           "/api/conversations/c1", "/api/conversations/c1/stop"})
+        check(agent_route_locality(p) == Locality::IfConversationReaches,
+              std::string("depends on the conversation: ") + p);
+    check(agent_route_locality("/api/conversations") == Locality::Anywhere, "plain chat works from the network");
 
     // What reaches this computer, and what a client on the network may not set.
     check(!conversation_reaches(json{{"workspace", nullptr}, {"route", "local"}}) &&
@@ -1029,13 +1019,11 @@ static void access_tests() {
     for (const json & f : {json::object(), json{{"workspace", nullptr}, {"route", "local"}, {"mode", "ask"}},
                            json{{"mode", "read_only"}, {"title", "x"}}})
         check(!network_may_not_set(f), "the network may set " + f.dump());
+    // Whatever the method: reading them is as local as changing them.
     for (const char * p : {"/api/skills", "/api/skills/x", "/api/tasks", "/api/tasks/t/run", "/api/providers",
-                           "/api/providers/p", "/api/connect/codex"})
-        check(agent_route_locality("POST", p) == Locality::Always || agent_route_locality("PUT", p) == Locality::Always,
-              std::string("writing is local only: ") + p);
-    for (const char * p : {"/api/skills", "/api/tasks", "/api/providers", "/api/connect", "/api/connect/codex"})
-        check(agent_route_locality("GET", p) == Locality::Always, std::string("reading is local only too: ") + p);
-    check(agent_route_locality("POST", "/api/skillsx") == Locality::Anywhere, "a prefix is matched on a path boundary");
+                           "/api/providers/p", "/api/connect", "/api/connect/codex"})
+        check(agent_route_locality(p) == Locality::Always, std::string("local only: ") + p);
+    check(agent_route_locality("/api/skillsx") == Locality::Anywhere, "a prefix is matched on a path boundary");
 }
 
 // An event for local clients only never reaches a stream from the network.
