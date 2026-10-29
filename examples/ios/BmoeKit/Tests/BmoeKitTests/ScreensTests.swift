@@ -263,10 +263,10 @@ final class ScreensTests: XCTestCase {
         XCTAssertEqual(cards[2].help, "Who computes.")
         // `form` decides, whatever the level: an advanced row on the form, a basic one off it.
         XCTAssertEqual(cards[2].rows.map(\.key), ["threads", "layers"])
-        // A row the person set is shown, in its place in the table.
-        let set = SettingsForm.cards(params, also: ["trace", "probe"])
-        XCTAssertEqual(set.map(\.group), ["model", "cache", "compute", "debugonly"])
-        XCTAssertEqual(set[2].rows.map(\.key), ["threads", "trace", "layers"])
+        // A row a link points at is shown, in its place in the table.
+        let linked = SettingsForm.cards(params, revealed: ["trace", "probe"])
+        XCTAssertEqual(linked.map(\.group), ["model", "cache", "compute", "debugonly"])
+        XCTAssertEqual(linked[2].rows.map(\.key), ["threads", "trace", "layers"])
     }
 
     func testALoadTargetIsReadFromTheReadOnlyGroupNotByName() throws {
@@ -319,8 +319,13 @@ final class ScreensTests: XCTestCase {
         XCTAssertEqual(c.launchKeys, ["spin"])
         // Not the launch flag, not the model a load chose: the person's own values.
         XCTAssertEqual(SettingsForm.resettable(c, params: params), ["threads", "gone"])
-        XCTAssertEqual(SettingsForm.userSet(params, config: c), ["model", "threads", "spin"]) // a key off the table is no row
-        XCTAssertEqual(SettingsForm.userSet(params, config: nil), [])
+        // Form rows and the others alike, in table order; not the model (chosen in Models), not a key off the table.
+        XCTAssertEqual(SettingsForm.setByYou(params, config: c).map(\.key), ["threads", "spin"])
+        XCTAssertEqual(SettingsForm.setByYou(params, config: nil), [])
+        // A row in "Set by you" leaves its group card, and a card left empty goes.
+        let mine = Set(SettingsForm.setByYou(params, config: c).map(\.key))
+        XCTAssertEqual(SettingsForm.cards(params, setByYou: mine).map { $0.rows.map(\.key) }, [["model"], ["cache-mb"], ["layers"]])
+        XCTAssertEqual(SettingsForm.cards(params, setByYou: ["cache-mb"]).map(\.group), ["model", "compute"])
 
         let plan = Dictionary(uniqueKeysWithValues: (c.plan ?? []).map { ($0.knob, $0) })
         XCTAssertEqual(SettingsForm.source(userSet: true, decision: plan["threads"]), .you)

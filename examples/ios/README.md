@@ -62,10 +62,12 @@ state even while it is closed (Off, or On and the first address, or On but not o
 are the switch, each address with Copy, the API key masked with Show, Copy and New key (which
 restarts the engine on the new key), the base URL a client takes, and that prompts and answers
 cross the network unencrypted. Then **Appearance**: the theme (System, Light or Dark, applied at
-once; the web UI's choice) and the Metrics switch. Then one card per engine group, every card
-closed until opened, holding the rows the parameter table offers on a form (`form`) and any the
-person set, with a chip per row for where its value came from, and links from Plan that open a
-row's card and land on it.
+once; the web UI's choice) and the Metrics switch. Then **Set by you · N**, every value the person
+set, on the form or not, in table order, each with its reset or plan action, shown when there is
+one; then one card per engine group holding the other rows the parameter table offers on a form
+(`form`), so each row appears once and a reset sends it back to its group. Every card is closed
+until opened; a row carries a chip for where its value came from, and a link from Plan opens the
+row's card ("Set by you" for a value the person set) and lands on it.
 Metrics is not a tab: the **Metrics** switch in Appearance (off by default) records a per-token CSV
 for every loaded model and adds the Metrics entry to Settings. "This app" starts and stops the
 engine.
