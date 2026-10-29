@@ -1170,6 +1170,26 @@ bool Session::Impl::create_contexts(Opening & o) {
     if (device_cache_armed) cparams.moe_cache_size = (size_t) cfg.moe.device_cache_mb << 20;
 
     llama_context * c = llama_init_from_model(model.get(), cparams);
+    // The device cache is sized from what the capacity fitter left free, and the fitter measured a
+    // graph without the cache; with it, a wide graph gathers a layer's experts into the device's own
+    // compute buffers, which no estimate made before the context exists has counted. Measured on a
+    // 24 GB card with DeepSeek V4.1: a 15.3 GB cache left 2.4 GB of prefill buffers nowhere to go, and
+    // the run could not start. The context is the instrument: the cache gives up a quarter at a time
+    // until it fits, never below one token cycle, under which it would return no hits.
+    if (!c && device_cache_armed && cparams.moe_cache_size > 0) {
+        const size_t floor = n_expert_used > 0 ? source.worst_cycle_bytes(n_expert_used) : 0;
+        size_t size = cparams.moe_cache_size;
+        while (!c && size - size / 4 >= std::max<size_t>(floor, 1)) {
+            const size_t smaller = (size - size / 4) & ~((size_t(1) << 20) - 1);
+            log_printf(LogLevel::Warn,
+                       "the %zu MiB device expert cache did not fit beside the context; retrying at %zu MiB",
+                       size >> 20, smaller >> 20);
+            size = smaller;
+            cparams.moe_cache_size = size;
+            c = llama_init_from_model(model.get(), cparams);
+        }
+        if (c) this->cfg.moe.device_cache_mb = (int) (size >> 20);
+    }
     // A quantized V cache needs flash attention, and whether a backend has it is only known by asking
     // llama.cpp for the context. The default is quantized, so a backend without it must not lose the
     // run: V goes back to F16 (K stays, it needs nothing). The fitter charged the smaller V, which is

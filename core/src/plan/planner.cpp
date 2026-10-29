@@ -1674,9 +1674,28 @@ void settle_mapped_tables(Planning & s, const Allocation & alloc) {
     const GroupPlacement & emb = alloc.at(WeightGroup::Embedding);
     const bool copies =
         c.moe.dense_weights == DenseWeightsMode::Anonymous || c.moe.dense_weights == DenseWeightsMode::Pinned;
-    if (!copies || emb.lane == Lane::Resident || emb.lane == Lane::Pinned || s.model.embedding_tensors.empty()) return;
-    c.moe.dense_mapped = s.model.embedding_tensors;
+    if (!copies || s.model.embedding_tensors.empty()) return;
     const uint64_t bytes = s.model.group(WeightGroup::Embedding).bytes;
+    // The ranking's lane is what residency would be worth; the ledger is what was charged. A table
+    // the ranking calls resident is copied by the dense policy all the same, so it may only be
+    // copied where its bytes are in the reservation or still fit beside what was charged. Measured
+    // where neither held: a 194 GB Engram table ranked resident because a short routing record's
+    // flat curve priced the cache past the device's share at nothing, the reservation (the fitter's
+    // host-resident 199 MiB) never held it, and the copy ended the run beside a 210 GB cache.
+    const bool ranked_resident = emb.lane == Lane::Resident || emb.lane == Lane::Pinned;
+    const bool charged = s.p.dense_pending_bytes >= bytes;
+    const bool fits_uncharged = alloc.ledger.holdable_cap >= alloc.ledger.held + bytes;
+    if (ranked_resident && (charged || fits_uncharged)) return;
+    c.moe.dense_mapped = s.model.embedding_tensors;
+    if (ranked_resident) {
+        // The report follows the run: a placement still claiming the bytes would be a plan that
+        // contradicts the ledger it prints beside it.
+        GroupPlacement & q = s.p.allocation.at(WeightGroup::Embedding);
+        q.lane = Lane::Mmap;
+        q.resident_bytes = 0;
+        q.seconds_per_token = q.seconds_worst_case;
+        q.reason = "left mapped: residency was ranked, but the copy is not in the ledger and does not fit beside it";
+    }
     s.note("dense-mapped", u64s(c.moe.dense_mapped.size()) + " table(s)", Source::Derived,
            "The embedding tables (" + size_brief(bytes) + ") stay mapped: the graph gathers rows from them.",
            "the allocation priced the embedding group as " + std::string(lane_name(emb.lane)) + " (" + emb.reason +
@@ -2005,13 +2024,18 @@ void choose_release_mmap(Planning & s) {
     // mapping. Testing the file instead of the run would silently disable this on every model that
     // merely ships an MTP head, which is most of them.
     const bool mtp_in_use = s.model.has_mtp && s.p.config.spec.is_mtp();
-    const bool safe_shape = !s.model.tied_output_head && !mtp_in_use && moe.dense_weights != DenseWeightsMode::Mmap;
+    // A table the plan leaves mapped (dense_mapped) is read through the mapping for the whole run,
+    // so it is a live pointer like a tied head: the release would have nothing left to drop but the
+    // pages that table is gathered from.
+    const bool safe_shape = !s.model.tied_output_head && !mtp_in_use && moe.dense_weights != DenseWeightsMode::Mmap &&
+                            moe.dense_mapped.empty();
     // Safety is reported before the probe, because it is the stronger constraint: on a shape that
     // keeps a live pointer into the mapping, measuring the storage would change nothing.
     if (!safe_shape) {
         s.note("release-mmap", "off", Source::Derived, "The model's file mapping stays: this run still reads from it.",
-               "this run keeps a live pointer into the mapping (a tied head, a draft block, or a dense "
-               "policy that stays mapped), so the mapping cannot be released whatever the storage does");
+               "this run keeps a live pointer into the mapping (a tied head, a draft block, a dense "
+               "policy that stays mapped, or a table left mapped), so the mapping cannot be released whatever "
+               "the storage does");
     } else if (storage.mapping_serialises_reads == Tri::Yes) {
         moe.release_mmap = true;
         s.note("release-mmap", "on", Source::Measured,

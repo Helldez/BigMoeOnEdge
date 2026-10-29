@@ -329,7 +329,12 @@ and `BMOE_*` env overrides both count as the caller speaking.
    nothing reads) are handed to the run by name (`dense-mapped`), so the `anon`/`pinned` policy
    holds them back as it holds back a tensor too large: measured why on a 12 GB card, where a
    28.8 GB per-layer table that "fits" by the kernel's count was copied beside the cache and the
-   control group ended the run.
+   control group ended the run. A table the ranking does call resident is still held back unless its
+   bytes are in the dense reservation or fit beside what the ledger charged, since the copy is made
+   either way; and a table left mapped keeps the file's mapping, so `release-mmap` stays off. A row-
+   gathered table competes for residency against the cache at the cache's linear credit, not at the
+   tail of a short routing record's curve, which is flat past the experts the record touched:
+   measured why on DeepSeek V4.1, where a 194 GB Engram table outranked the cache for 0.1 ms a token.
 5. **The memory ledger**: one account for everything the run holds — context and compute buffers,
    a chat run's context checkpoints, an armed device, the dense set, the expert cache — against two ceilings, what can be held and
    what can be held reclaim-exempt. The cache is what is left under both, capped at the experts'
@@ -1008,7 +1013,11 @@ the budget is one figure llama.cpp splits as it splits the layers, so it is the 
 card's share fits that card. The floor is the RAM cache's, one token cycle: under it a cache evicts
 an expert before the same token needs it again, and the fitter's placement stands. It needs no
 record of the routing, since the cache fills from use; with one, the plan says how much of a token
-it serves. Where the device is not faster, a fact is missing, or not every dense part fits, the
+it serves. The fitter measured a graph without the cache, and with it a wide graph gathers a layer's
+experts into the device's compute buffers, so the session treats the planned size as a ceiling: where
+the context cannot be created beside the cache, the cache gives up a quarter at a time down to one
+token cycle (measured why on a 24 GB card with DeepSeek V4.1, where a 15.3 GB cache left 2.4 GB of
+prefill buffers nowhere to go). Where the device is not faster, a fact is missing, or not every dense part fits, the
 fitter's placement stands and the plan says which. On a shared pool, or with the caller's own
 placement, it says nothing and changes nothing.
 
