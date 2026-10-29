@@ -71,6 +71,15 @@ sites open in the default browser instead of the window.
 | macOS (Apple silicon) | `BigMoeOnEdge-<tag>-macos-arm64.dmg` | drag to Applications |
 | Linux (x86_64, aarch64) | `BigMoeOnEdge-<tag>-linux-<arch>.AppImage` | runs where it is |
 
+The installers are not signed with an Apple or Windows publisher certificate (the release feed is,
+with the project's own key: below), so the system asks once:
+
+- **macOS**: the first open is blocked. System Settings → Privacy & Security → "Open Anyway"
+  (or `xattr -dr com.apple.quarantine /Applications/BigMoeOnEdge.app`). The binaries carry the
+  ad-hoc signature Apple silicon needs to run.
+- **Windows**: SmartScreen says "Unknown publisher": "More info" → "Run anyway".
+- **Linux**: `chmod +x` the AppImage.
+
 Each carries the app, the server, the web UI, the model catalog, the bundled skills (`skills/`), the
 CPU backend and the backends that need nothing but the system: Metal on macOS; Vulkan elsewhere,
 and OpenCL on Windows ARM64. A backend that needs a vendor's runtime (CUDA, HIP) is a **backend

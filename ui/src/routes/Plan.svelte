@@ -12,7 +12,7 @@
   import { api } from '../lib/api';
   import { commandLine, formatBytes, formatNum } from '../lib/format';
   import { appliedChanges, diagnosticText, planDecisions, speedCheck, type AppliedChange } from '../lib/plan';
-  import { settingHref } from '../lib/route';
+  import { href, settingHref } from '../lib/route';
   import { server } from '../stores/server.svelte';
 
   let error = $state('');
@@ -60,6 +60,11 @@
   });
 
   const plan = $derived(server.plan);
+  // The model the page is about: the one the shown plan measured, else the one a load would open.
+  const modelPath = $derived(
+    (plan?.available ? plan.model : '') || String(server.config?.values?.model ?? '') || server.info?.model?.path || '',
+  );
+  const modelName = $derived(modelPath.split(/[\\/]/).pop() ?? '');
   const measuring = $derived(server.measuring);
   const avail = $derived(plan?.available && !plan.error ? plan : null);
   const check = $derived(avail ? speedCheck(avail.predicted, avail.measured) : null);
@@ -91,6 +96,11 @@
 <div class="page-head">
   <h1>{t('nav.plan')}</h1>
   <p>{t('plan.lead')}</p>
+  {#if modelName}
+    <p class="for">{t('plan.for')} <strong title={modelPath}>{modelName}</strong> · <a href={href('models')}>{t('plan.change')}</a></p>
+  {:else}
+    <p class="for muted">{t('plan.noModel')}</p>
+  {/if}
 </div>
 
 {#if shownError}
@@ -128,7 +138,7 @@
   {#if plan.none}
     <section class="card summary">
       <p class="sentence">Not measured yet.</p>
-      <p class="muted machine">Measure this machine to see what the plan does with the chosen model.</p>
+      <p class="muted machine">{t('plan.measureFor', { name: modelName || t('plan.theModel') })}</p>
       <div class="apply">
         <button type="button" class="primary" onclick={measure} disabled={measuring}>{measuring ? 'Measuring...' : 'Measure'}</button>
       </div>
@@ -273,6 +283,10 @@
 </div>
 
 <style>
+  .for {
+    margin: var(--s2) 0 0;
+    overflow-wrap: anywhere;
+  }
   .auto {
     display: flex;
     gap: 0.6rem;

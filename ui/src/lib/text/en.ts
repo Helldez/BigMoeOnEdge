@@ -280,6 +280,11 @@ export const en = {
   'models.lead': 'The models on this computer, the ones you can download, and the one in use.',
   'models.loaded': 'In use:',
   'models.loadTime': 'loaded in {s} s',
+  'plan.for': 'For',
+  'plan.change': 'Change',
+  'plan.noModel': 'Choose a model on Models: a plan is for one model on this computer.',
+  'plan.theModel': 'the chosen model',
+  'plan.measureFor': 'Measure this machine to see what the plan does with {name}.',
   'plan.lead': 'What this computer can do, measured, and how the engine sets itself up for the chosen model.',
 
   // Settings.

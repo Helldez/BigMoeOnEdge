@@ -213,6 +213,8 @@ export interface PlanAvailable {
   values: Record<string, ParamValue>;
   args: string[];
   explain: string;
+  /** The model file the plan was measured for. */
+  model?: string;
   machine?: string;
   not_applicable?: string[];
   /** Set when the plan was measured with a model loaded, which makes it pessimistic. */

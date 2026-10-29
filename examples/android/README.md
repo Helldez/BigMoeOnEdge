@@ -180,7 +180,9 @@ catalog's Q2_K build has a 2.4 GB dense side instead, which is ~2 GB the expert 
 **Load** on the Models screen opens the model. With **Plan before every load** on (the Plan
 screen; on by default), the engine first measures the phone (storage read rate, what memory it can
 hold and lock, each compute device in a process of its own) and chooses the streaming settings for
-that model, then loads. The Plan screen leads with what the plan decided in one sentence, the
+that model, then loads. The Plan screen first says which model it is for ("For <file name>": the
+planned model, else the one a load would open, with **Change** to Models), then leads with what the
+plan decided in one sentence, the
 machine, which device takes the prompt and which the tokens, and three figures: decode speed
 expected and, after the first answer, measured with the difference; the cache hit rate the plan
 credited and the one measured; and the memory held against what the process may hold. The app
