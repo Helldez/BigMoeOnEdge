@@ -7,6 +7,13 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **How it compares** (`docs/comparison.md`, a section in `README.md` and its five translations). What
+  each engine that runs MoE models larger than a GPU runs on - llama.cpp, Strata, ds4, colibri,
+  KTransformers - which models, how it handles experts beyond RAM, and whether it configures itself,
+  beside the decode and prefill speeds each reports, with the source and date of every figure. It says
+  where the others lead (Strata and its Blackwell fork, two to four times faster where a model fits a
+  gaming GPU and RAM) and where they do not; the CPU-beside-the-GPU work that gap calls for is in
+  `docs/roadmap.md`.
 - **A run with flash, RAM and a GPU cache all in play**: a 466 GiB file on a rented 96 GB
   workstation card with a 283 GB memory limit, so the experts fit neither the card nor the RAM.
   `--auto` put an 84.5 GB expert cache on the card and 207-215 GB in RAM, and decoded 6.2-6.6 tok/s
@@ -145,6 +152,13 @@ Semantic Versioning.
   server and the web UI; the separate desktop archive remains for the NPU build only.
 
 ### Changed
+- **A shorter, plainer README** (`README.md` and its five translations): what it does, install, use and
+  how it works in short sentences. The planner section shows the Plan screen on a 16 GB Apple-silicon
+  laptop (`docs/assets/screens/plan-mac.png`) in place of the drawn plan, the speed figure goes since
+  the table says the same, How it works names the three tiers (flash, RAM, a card's own memory), and
+  How it compares is one row per platform and feature. The translations catch up with the desktop
+  app and the agent. `scripts/readme-diagrams.py` draws the decode step alone, without the font the UI
+  dropped.
 - **llama.cpp moves to upstream `8ca4060` of 2026-10-28**, 132 commits past `d88040c`
   (`docs/seam.md`). The pin is still upstream plus the one expert-ready-hook commit; the 37 gates pass
   on it.

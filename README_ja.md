@@ -14,8 +14,8 @@
 
 > これは翻訳です。英語版 README が正であり、そちらの方が新しい場合があります。
 
-エキスパートをフラッシュストレージからストリーミングすることで、デバイスのメモリより大きな Mixture-of-Experts モデルを実行します。
-llama.cpp の公開 API の上に構築されており、Android、iOS、macOS、Windows、Linux に対応し、それぞれでローカルの OpenAI 互換サーバーを提供します。
+デバイスのメモリより大きな Mixture-of-Experts モデルを実行します。エキスパートは、モデルが必要とするときにフラッシュから読み込まれます。
+Android、iOS、macOS、Windows、Linux に対応し、llama.cpp の上に構築されています。
 
 <table align="center">
 <tr>
@@ -34,27 +34,17 @@ llama.cpp の公開 API の上に構築されており、Android、iOS、macOS�
 </tr>
 </table>
 
-各デバイスで、配布しているアプリ上で Qwen3.6-35B-A3B がリアルタイムに生成している様子です。モデルはいずれのデバイスのメモリよりも大きいサイズです。
+各デバイスでリアルタイムに動作する Qwen3.6-35B-A3B（21 GB）です。モデルはいずれのデバイスのメモリよりも大きいサイズです。
 
-## 概要
+## できること
 
-Mixture-of-Experts モデルは、各トークンでエキスパートのうち少数のみを使用します。BigMoeOnEdge は、すべてのトークンで必要な重みと、最近使用したエキスパートのキャッシュをメモリに保持し、それ以外のエキスパートはルーターが要求したときにフラッシュから読み込みます。出力はモデルを完全にメモリ上で実行した場合と同一であり、テストでそれを確認しています。
-
-- **プランナー。** `--auto` はマシン（利用可能なメモリ、ストレージ速度、各 CPU・GPU・NPU）とモデルのヘッダーを計測し、キャッシュサイズ、常駐させるもの、そしてプロンプトと回答をそれぞれどのデバイスで処理するかを設定します。初回の実行後は、そのモデル自身のルーティング記録（サーバーがモデルごとに保持）から計画し、最初の回答でスレッド数とオーバーラップを計測します。そのルールは特定のプラットフォームやデバイスを名指ししません。手動で指定した設定は維持されます。
-- **モデル。** llama.cpp が読み込める任意の MoE gguf を、任意の量子化で利用できます。エキスパートテンソルはファイルから検出されるため、新しいアーキテクチャにこちら側のコードは不要です。
-- **バックエンド。** CPU、Metal、Vulkan、OpenCL、CUDA、HIP、Hexagon NPU をモジュールとして読み込みます。専用のツールチェーンでビルドした SYCL モジュールも同じ方法で読み込めます。GPU では、よく使われるエキスパートを GPU メモリにキャッシュし、残りは RAM キャッシュの背後でストリーミングします。カードに収まるモデルは、すべてカード上で実行されます。
-- **アプリとサーバー。** Android と iOS ではネイティブアプリ、デスクトップでは Web アプリ、そしてそのすべてで OpenAI 互換サーバーを提供し、コーディングエージェント（Claude Code、Codex CLI、opencode）から利用できます。
+- **メモリに収まらないモデルを実行します。** MoE モデルは、トークンごとに少数のエキスパートしか使いません。エンジンは、すべてのトークンで必要な重みと、よく使われるエキスパートをメモリに保持し、残りはフラッシュから読み込みます。出力はモデル全体をメモリに置いた場合と同じで、テストでそれを確認しています。
+- **自動で設定します。** `--auto` はマシンとモデルを計測し、キャッシュサイズ、スレッド数、どのデバイスが何を処理するかを決めます。Plan 画面には、それぞれの選択とその理由が表示されます。
+- **任意の MoE GGUF。** llama.cpp が読み込めるものなら、どの量子化でも使えます。モデルごとのコードはありません。
+- **すべてのバックエンド。** CPU、Metal、CUDA、HIP、Vulkan、OpenCL、Hexagon NPU。GPU では、よく使われるエキスパートが GPU メモリに残ります。
+- **アプリとサーバー。** デスクトップアプリ、スマートフォンアプリ、そしてコーディングエージェント向けの OpenAI・Anthropic 互換サーバーがあります。
 
 ## パフォーマンス
-
-以下のデバイスで計測したデコード速度です。エンジンはマシンに合わせて自身の規模を調整するため、より強力なハードウェアほど高速に動作します。
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/speed-dark.svg">
-    <img src="docs/assets/diagrams/speed-light.svg" width="820" alt="Qwen3.6-35B-A3B Q4_K_M のデコード速度：16 GB Apple silicon ノート PC で 18-24 tok/s、16 GB Windows ノート PC で 5、12 GB Android スマートフォンで 5、12 GB iPhone で 3。">
-  </picture>
-</p>
 
 | ハードウェア | メモリ | モデル | ディスク上のサイズ | エキスパートの読み出し元 | デコード tok/s |
 |---|---|---|---:|---|---:|
@@ -70,60 +60,88 @@ Mixture-of-Experts モデルは、各トークンでエキスパートのうち�
 |  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
 | **データセンター GPU**（AMD、ROCm） | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
 
-tok/s は整数で示し、範囲は複数回の実行でのばらつきです。「エキスパートの読み出し元」は、ルーティングされた
-エキスパートをどこから読むかを示します：フラッシュからのストリーミング、RAM 上、または GPU 上で、よく使われる
-ものは GPU メモリにキャッシュされます。
+すべて `--auto` での結果です。範囲は複数回の実行でのばらつきです。計測方法とすべての実行結果：
+[docs/benchmarks.md](docs/benchmarks.md)。自分のマシンを追加するには、
+`scripts/bench-report.sh model.gguf` を実行して
+[ベンチマークレポート](https://github.com/Helldez/BigMoeOnEdge/issues/new?template=benchmark-report.yml)を作成してください。
 
-構成と計測方法：[docs/benchmarks.md](docs/benchmarks.md)。マシンを追加するには、
-`scripts/bench-report.sh /path/to/model.gguf` を実行し、その表を
-[ベンチマークレポート](https://github.com/Helldez/BigMoeOnEdge/issues/new?template=benchmark-report.yml)に貼り付けてください。
+## インストール
 
-## クイックスタート
+[最新リリース](https://github.com/Helldez/BigMoeOnEdge/releases/latest)から：
 
-以下はすべて[最新リリース](https://github.com/Helldez/BigMoeOnEdge/releases/latest)から入手できます。
-各パッケージはエンジンを起動し、ブラウザで `http://127.0.0.1:8765/` のアプリを開きます。
-**Models** でモデルを選択します。
+- **macOS**（Apple silicon）：`.dmg` を開き、アプリをアプリケーションにドラッグします。まだ公証されていません。
+  初回起動に必要な 1 つの手順は dmg 内の README.txt にあります。
+- **Windows**：`-setup.exe` を実行します。管理者権限は不要です。
+- **Linux**：`.AppImage` に実行権限を付けて実行します。ウィンドウには WebKitGTK 4.1 が必要です。
+  `--server` でサーバーのみを実行します。
+- **Android**：`app-dev-release.apk` をインストールします。各リリースは前のバージョンの上にインストールされます。
+- **iOS**：[examples/ios](examples/ios/README.md) から Xcode でビルドします。実験的な対応です。
 
-- **macOS**（Apple silicon）：`BigMoeOnEdge-<バージョン>-macos-arm64.dmg` を開き、アプリを
-  アプリケーションにドラッグします。実行中は Dock とメニューバーに表示され、**Stop and Quit** で停止します。
-  まだ公証されていないため、初回起動には dmg 内の README.txt の手順が必要です。
-- **Windows**：`BigMoeOnEdge-<バージョン>-windows-x86_64-setup.exe`（または `-windows-arm64-setup.exe`）
-  を実行します。管理者権限は不要です。スタートメニューから BigMoeOnEdge を起動し、ウィンドウを閉じると停止します。
-- **Linux**：`chmod +x BigMoeOnEdge-<バージョン>-linux-x86_64.AppImage`（または `-linux-aarch64`）
-  して実行します。ファイルマネージャーから起動するとターミナルウィンドウで開き、閉じると停止します。
-- **Android**：リリースページから `app-dev-release.apk` をインストールします。各リリースは前のバージョンの上に
-  インストールされます。**Settings → Serve on the network** で、キー付きでスマートフォンのエンジンを共有できます。
+アプリを開き、**Models** でモデルを選びます。NVIDIA や AMD のカードは、そのバックエンドを
+**Settings** から入手します（[docs/desktop-app.md](docs/desktop-app.md)）。
 
-**iOS。** [examples/ios](examples/ios/README.md) から Xcode でアプリをビルドします。実験的な対応です。
-
-**アーカイブ。** `bmoe-desktop` アーカイブには同じアプリがフォルダーとして入っており、スクリプトによる
-インストール向けです。展開して `bmoe-server --open` を実行します。`bmoe-cli` アーカイブには
-コマンドライン版のエンジンが入っています。
-
-**コマンドライン。**
+コマンドラインツール（`bmoe-cli`、`bmoe-server`）のみ：
 
 ```bash
-bmoe-cli -m model.gguf --auto -p "Explain MoE routing."   # measure, plan, run
-bmoe-cli -m model.gguf --plan                              # print the plan and exit
+curl -fsSL https://github.com/Helldez/BigMoeOnEdge/releases/latest/download/install.sh | sh
 ```
 
-## OpenAI 互換サーバー
+```powershell
+irm https://github.com/Helldez/BigMoeOnEdge/releases/latest/download/install.ps1 | iex
+```
+
+## 使い方
+
+```bash
+bmoe-cli -m model.gguf --auto -p "Explain MoE routing."   # plan and run
+bmoe-cli -m model.gguf --plan                              # print the plan
+bmoe-server -m model.gguf -c 32768                         # the server and its web UI, port 8765
+```
+
+サーバーは OpenAI API（`/v1/chat/completions`、`/v1/responses`）と Anthropic API（`/v1/messages`）に対応し、
+ストリーミング、ツール呼び出し、推論（reasoning）を扱えます。他のマシンに提供するには `--host 0.0.0.0 --api-key KEY`
+を追加します。リファレンス：[docs/server-api.md](docs/server-api.md)。
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(base_url="http://127.0.0.1:8765/v1", api_key="local")
-reply = client.chat.completions.create(
-    model="local",
-    messages=[{"role": "user", "content": "Write a haiku about experts on flash."}],
-)
+reply = client.chat.completions.create(model="local", messages=[{"role": "user", "content": "Hello"}])
 print(reply.choices[0].message.content)
 ```
 
-ストリーミング、ツール呼び出し、推論（reasoning）に対応しています。opencode では、`baseURL` を
-`http://127.0.0.1:8765/v1` に設定して、このサーバーを OpenAI 互換プロバイダーとして追加します。
-他のマシンに提供するには、`--host` と `--api-key` を指定してサーバーを起動します。
-API リファレンス：[docs/server-api.md](docs/server-api.md)。
+**コーディングエージェント**には大きなコンテキストが必要です。目安は最初のリクエストの数倍です。opencode には 32768、
+Claude Code には 65536 で足ります
+（[コンテキストのサイズ設定](docs/server-api.md#sizing-the-context-for-a-client)）。
+
+```bash
+# Claude Code
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8765
+export ANTHROPIC_API_KEY=local
+export ANTHROPIC_MODEL=<model id from /v1/models>
+export ANTHROPIC_DEFAULT_HAIKU_MODEL=$ANTHROPIC_MODEL
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS=65536
+claude
+```
+
+```toml
+# Codex CLI, ~/.codex/config.toml
+model = "<model id from /v1/models>"
+model_provider = "bmoe"
+
+[model_providers.bmoe]
+name = "bmoe"
+base_url = "http://127.0.0.1:8765/v1"
+wire_api = "responses"
+env_key = "BMOE_API_KEY"
+```
+
+opencode では、このサーバーを `http://127.0.0.1:8765/v1` の OpenAI 互換プロバイダーとして追加します。
+**Connect apps** では、アプリが Codex CLI と opencode 向けの設定を書き込み、Claude Code 向けの設定を表示します。
+
+**エージェント。** デスクトップアプリには独自のエージェントがあります。選んだフォルダーの中で作業し、ファイルを読んで編集し、
+コマンドを実行します。許可しない限り、何かを変更する前に確認を求めます。会話は OpenCode、Claude Code、Codex、Pi で
+実行することもできます。[docs/agent.md](docs/agent.md) を参照してください。
 
 ## 仕組み
 
@@ -134,37 +152,57 @@ API リファレンス：[docs/server-api.md](docs/server-api.md)。
   </picture>
 </p>
 
-エンジンは llama.cpp の公開 API を使用しています。llama.cpp が対応するすべての量子化、トークナイザー、
-チャットテンプレートがそのまま動作し、llama.cpp のアップグレードはサブモジュールの更新だけで済みます。
-ルーティングされるエキスパートは、ファイルのテンソルレイアウトに従って読み込まれます
-（[docs/which-models-stream.md](docs/which-models-stream.md)）。
-`ctest` は、キャッシュ、退避、オーバーラップ、セッション、分割モデルにわたって、ストリーミング時の出力が
-完全常駐時の出力と等しいことを確認します（[docs/architecture.md](docs/architecture.md)）。
+3 つの階層があり、それぞれが下の階層のキャッシュです：
+
+- **フラッシュ**にはモデル全体があります。
+- **RAM** には、すべてのトークンが読む重みとエキスパートのキャッシュがあります。
+- **GPU メモリ**（専用メモリを持つカードの場合）には、密な重みとよく使われるエキスパートがあります。
+
+カードにないエキスパートは RAM からアップロードされ、RAM にないものはフラッシュから読み込まれます。カードに収まるモデルは、
+すべてカード上で実行されます。ストリーミングは読み込みだけなので、ドライブを消耗させません。
+
+エンジンは llama.cpp の公開 API を使用しているため、その量子化、トークナイザー、チャットテンプレートがそのまま動作し、
+アップグレードはサブモジュールの更新だけで済みます。どのテンソルがエキスパートかはファイルから読み取ります
+（[docs/which-models-stream.md](docs/which-models-stream.md)）。設計：
+[docs/architecture.md](docs/architecture.md)。
 
 ## プランナー
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/plan-dark.svg">
-    <img src="docs/assets/diagrams/plan-light.svg" width="820" alt="16 GB Apple silicon ノート PC で --auto が Qwen3.6-35B-A3B に選んだ構成：RAM に 1.7 GiB の密な重みと 7.2 GiB のエキスパートキャッシュ、キャッシュヒット率 85%、トークンあたりフラッシュから 69.6 MiB を読み込み、プロンプトは GPU で処理、デコードは 8 つの CPU スレッドで 18 tok/s。">
-  </picture>
+  <img src="docs/assets/screens/plan-mac.png" width="820" alt="16 GB Apple silicon ノート PC で Qwen3.6-35B-A3B Q4_K_M を動かした Plan 画面：エキスパートは 6.6 GiB のキャッシュ付きでフラッシュから読み込まれ、プロンプトは GPU、トークンは CPU で処理。実測 23.9 tok/s、キャッシュヒット率 94%、メモリの内訳。">
 </p>
 
-プランナーはヘッダーからモデルの構造を読み取り、マシンを計測します。同じルールから、スマートフォンと
-ノート PC には異なるプランが導かれます。Plan 画面には結果が表示されます。メモリの割り当て先、
-各デバイスの役割、そして各判断の理由です。
-[docs/hardware-planning.md](docs/hardware-planning.md)。
+プランナーはモデルのヘッダーを読み、マシンを計測します：メモリ、ストレージ速度、各 CPU・GPU・NPU。そのルールは
+特定のデバイスやプラットフォームを名指ししないため、同じコードからスマートフォンとデスクトップに異なるプランが
+導かれます。自分で設定した値は維持されます。[docs/hardware-planning.md](docs/hardware-planning.md) を参照してください。
 
 ## プラットフォーム
 
 | | Android | macOS | Windows | Linux | iOS |
 |---|---|---|---|---|---|
 | エンジンと CLI | arm64 | Apple silicon | x86_64, arm64 | x86_64, aarch64 | arm64（アプリ内） |
-| アプリとサーバー | ネイティブアプリ | Web アプリ | Web アプリ | Web アプリ | ネイティブアプリ（ソースからビルド） |
-| アクセラレーター | Hexagon NPU, Vulkan, OpenCL | Metal | Vulkan, CUDA（x86_64、別途ダウンロード）, OpenCL (arm64), Hexagon NPU (arm64, opt-in) | Vulkan, CUDA, HIP（x86_64。CUDA は別途ダウンロード、HIP は ROCm 7 がインストールされている環境で） | Metal |
-| 実機での動作 | 12 GB スマートフォン | 16 GB ノート PC | 16 GB ノート PC | CI、レンタルした 12-24 GB の NVIDIA カードと 192 GB の AMD カード | 12 GB iPhone（[#235](https://github.com/Helldez/BigMoeOnEdge/issues/235)） |
+| アプリ | ネイティブアプリ | デスクトップアプリ | デスクトップアプリ | デスクトップアプリ | ネイティブアプリ（ソースからビルド） |
+| アクセラレーター | Hexagon NPU, Vulkan, OpenCL | Metal | Vulkan, CUDA, OpenCL (arm64), Hexagon NPU (arm64) | Vulkan, CUDA, HIP | Metal |
+| テスト環境 | 12 GB スマートフォン | 16 GB ノート PC | 16 GB ノート PC | レンタルした 12-24 GB の NVIDIA カードと 192 GB の AMD カード | 12 GB iPhone |
 
-詳細と、どこで何を計測したか：[docs/platforms.md](docs/platforms.md)。
+詳細：[docs/platforms.md](docs/platforms.md)。
+
+## 他のエンジンとの比較
+
+| | **BigMoeOnEdge** | Strata | ds4 | colibri | KTransformers |
+|---|:---:|:---:|:---:|:---:|:---:|
+| Android スマートフォン（NPU も） | ✅ | ❌ | ❌ | ❌ | ❌ |
+| iPhone | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Mac | ✅ | ✅ | ✅ | ✅ | ❌ |
+| Windows / Linux（CPU のみ） | ✅ | ❌ | ✅ | ✅ | ❌ |
+| NVIDIA | ✅ | ✅ | ✅ | ✅ | ✅ |
+| AMD（ROCm） | ✅（MI300X も） | Radeon RX と Strix Halo | Strix Halo と RDNA | Vulkan | ✅ |
+| GGUF の任意の MoE モデル | ✅ | 少数のモデル | 少数のモデル | 独自形式 | 少数のモデル |
+| 自動設定 | ✅ `--auto` | メモリに応じてモデルを選択 | エキスパートキャッシュの予算 | `coli tune` | ❌ |
+
+モデルがゲーミング GPU と RAM の合計に収まる場合、Strata は 2〜4 倍速くなります。フラッシュからストリーミングする場合は、
+どのエンジンも毎秒 10 トークン未満で、速度を決めるのはドライブです。速度と出典：
+[docs/comparison.md](docs/comparison.md)。
 
 ## ソースからのビルド
 
@@ -176,25 +214,23 @@ scripts/build-host.sh
 build/bin/bmoe-server --open
 ```
 
-テスト：`cd build && ctest --output-on-failure`（`gguf` パッケージを入れた `python3` が必要）。Android：
-`scripts/build-android.ps1` の後、[`examples/android`](examples/android) で APK をビルドします。
+テスト：`cd build && ctest --output-on-failure`（`gguf` を入れた `python3` が必要）。Android：
+`scripts/build-android.ps1` の後、[examples/android](examples/android) で APK をビルドします。詳しくは：
 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## ドキュメント
 
-[docs/](docs/README.md) はタスク別に索引付けされています。まずは [hardware-planning.md](docs/hardware-planning.md)、
+[docs/](docs/README.md)。まずは [hardware-planning.md](docs/hardware-planning.md)、
 [settings.md](docs/settings.md)、[server-api.md](docs/server-api.md)、
-[platforms.md](docs/platforms.md)、[limitations.md](docs/limitations.md) から始めてください。
+[limitations.md](docs/limitations.md) から始めてください。
 
 ## 先行研究
 
-AirLLM、Apple の *LLM in a flash*、FlexGen、PowerInfer、EdgeMoE。最も近い最近の取り組みは
-[flash-moe](https://github.com/danveloper/flash-moe) で、Apple silicon 上で 397B の MoE を SSD からストリーミングする
-Metal エンジンです。BigMoeOnEdge は、アーキテクチャやプラットフォームを問わず llama.cpp の公開 API を使用します。
+AirLLM、Apple の *LLM in a flash*、FlexGen、PowerInfer、EdgeMoE、そして
+[flash-moe](https://github.com/danveloper/flash-moe)。flash-moe は Apple silicon 上で 397B の MoE を SSD から
+ストリーミングする Metal エンジンです。
 
 ## ライセンス
 
-Apache-2.0。[LICENSE](LICENSE) を参照してください。バイナリとアプリには llama.cpp と ggml、
-cpp-httplib、nlohmann/json、Web UI の JavaScript ライブラリ(MIT、Apache-2.0)と
-2 つのフォント(SIL OFL 1.1)も含まれます。
-それらのライセンスは [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES) にあり、すべてのアーカイブと APK に同梱されています。
+Apache-2.0（[LICENSE](LICENSE)）。バイナリとアプリには、MIT、Apache-2.0、SIL OFL 1.1 の下で提供される llama.cpp、
+ggml、その他のライブラリも含まれます：[THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES)。
