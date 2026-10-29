@@ -23,9 +23,8 @@ Semantic Versioning.
   with gcc.
 - **The agent, in the server** (`docs/agent.md`, `docs/server-api.md#agent`). A conversation held
   by the server can work in a folder a person adds (a workspace): list, read, search, write and edit
-  its files, run commands, read web pages and search the web, follow skills, and hand parts of a job
-  to helper conversations. Three modes say what it may do without asking (`ask`, `read_only`,
-  `full`); an approval card carries the diff an edit will make, and nothing has run when it
+  its files, run commands, use the tools of MCP servers, and follow skills. Three modes say what
+  it may do without asking (`ask`, `read_only`, `full`); an approval card carries the diff an edit will make, and nothing has run when it
   appears. Paths are confined to the workspace after resolving `..` and links; a command runs in
   the workspace with a time limit as one process group, killed on a stop; a short list of programs
   that only read runs without asking. A run goes on in the server with no page open and reports on
@@ -34,7 +33,7 @@ Semantic Versioning.
   results, and says so. Conversations, workspaces, tasks, skills' switches and providers are kept
   in `<data>/agent/`; a UI can import the conversations it kept before.
 - **Skills**: `SKILL.md` folders shipped beside the server (`review-change`, `write-tests`,
-  `summarize-document`, `web-research`, `explain-codebase`), written in the app, or kept in a
+  `summarize-document`, `explain-codebase`), written in the app, or kept in a
   workspace's `.bmoe/skills/`; switched on and off per name.
 - **Tasks**: a prompt that runs on a schedule (once, every so many minutes, daily, weekly, in local
   time) as a conversation, read-only unless chosen otherwise, with approvals refused at once and
@@ -62,7 +61,7 @@ Semantic Versioning.
   on a phone. Conversations are drawn from the server's items and follow its `item`, `delta` and
   `conversation` events: tool calls with plain titles and states, consecutive calls summarised in a
   line ("Read 3 files, edited 2 files · +14 −3") and expandable, edits as diffs, approval cards
-  that say nothing has happened yet, helper rows and notices; a past question can be edited and
+  that say nothing has happened yet, and notices; a past question can be edited and
   sent again. The composer picks the folder (the app's folder dialog, or a typed path), the mode
   (Ask first, Read only, Full access with a warning), the model (the local one or a saved provider)
   and reasoning. A resizable preview pane shows a file the agent wrote: a page or a drawing runs in
@@ -176,7 +175,7 @@ Semantic Versioning.
   Each app keeps its colour values in one tokens file (`ui/Theme.kt`, `Design/Theme.swift`).
 - **The chat on a phone is the server's agent** (`docs/agent.md`): conversations held by the engine
   process, rendered from its items (Markdown answers, folded thinking, tool cards with their state,
-  runs of tool calls folded under one counting line, diffs, approval cards, helpers, notices), with
+  runs of tool calls folded under one counting line, diffs, approval cards, notices), with
   edit-and-resend and Stop, and a composer that picks the mode (Ask first, Read only, Full access),
   the model (the phone's or a provider's) and the folder. The conversations the apps kept on the
   phone are handed to the server once and deleted only when every message arrived.
@@ -184,6 +183,27 @@ Semantic Versioning.
 - **Local-only routes are one list** (`local_only_routes()`, `server/access.h`), enforced before
   routing with `403` and `code: "local_only"`; deleting a model and adding one from a link moved
   onto it, with the pack and update routes.
+- **The built-in agent follows llama.cpp's agent design** (`docs/agent.md`), so a model used to one
+  works with the other. Its tools are llama.cpp's server tools by name, parameters and results:
+  `read_file` (`start_line`, `end_line`, `append_loc`), `file_glob_search` (`include`, `exclude`,
+  `type`, `max_depth`, `limit`) in place of `list_files`, `grep_search` (a regular expression or a
+  literal, `include`, `exclude`, line numbers, case, context lines) in place of `search_files`,
+  `write_file`, `edit_file` with `edits: [{old_text, new_text}]` (several exact, unique,
+  non-overlapping replacements at once), `exec_shell_command` (`timeout`, default 10 s and at most
+  120, `max_output_size`, its output ending `[exit code: N]`) in place of `run_command`, and
+  `get_info`. Workspace confinement, the modes and their approval cards with diffs, the read-only
+  command allowlist, the process-group kill on a stop and the repeated-failure stop are unchanged.
+- **MCP servers** (`docs/agent.md`, "MCP servers"): `<data>/mcp.json`, or the file
+  `--mcp-servers-config PATH` names, in the common `{"mcpServers": {"<name>": {command, args,
+  env}}}` format, starts stdio servers the first time their tools are wanted and keeps them for the
+  server's life. Their tools reach the agent as `<server>_<tool>` (a name already taken is left
+  out), only in a conversation with a workspace and never for a request from the network; a call
+  is approved like a change (a card in `ask`, refused in `read_only`, run in `full`).
+  `GET /api/agent` lists the servers, their state and their tools to a local client. The JSON-RPC
+  line wire is one class for ACP and MCP (`server/json_rpc.*`).
+- **The system prompt is short** (under 4,000 characters with the tools apart, checked by a test)
+  and carries the workspace's `AGENTS.md`, its first 8 KiB, when the workspace has one.
+
 - **The README's speed table is grouped by hardware, in whole tokens per second.** `README.md` and its
   five translations list each machine once (phone, iPhone, Apple-silicon laptop, Windows laptop, two
   NVIDIA desktop cards, an AMD datacenter card), with its memory and where the experts are read from
@@ -195,16 +215,26 @@ Semantic Versioning.
   expert cache, plans from the model's own routing record, and the coding agents the server serves.
   The translations also gain the CUDA and HIP accelerators and the rented-card runs they lacked.
 
+### Removed
+- The agent's `fetch_url` and `web_search` tools, the `web-research` skill and the per-conversation
+  web approval: the web is an MCP server's job now.
+- `delegate` and helper conversations (the `helper` item, a conversation's `parent`, the UI's helper
+  row): one run per conversation.
+- **The Obtainium link for Android.** `README.md` (and its translations), `examples/android/README.md`
+  and `docs/platforms.md` no longer point to an Obtainium entry: its redirect page depends on the
+  browser handing the link to the app, which often does nothing, and Android's developer verification
+  (from 2026-2027) makes a third-party installer a second thing that has to keep working. The APK is
+  installed from the release page, as before.
+
 ### Security
 - The agent's routes that reach this computer's files, processes or keys answer only to a
   connection from loopback, whatever `--host` and key (`403`, `code: "local_only"`); a message from
-  the network runs with no web tools.
+  the network runs with no file, command or MCP tools.
 - A conversation with a workspace or a provider route is this computer's alone: from the network
   it is not listed, read, changed, deleted or stopped, and its events and the tasks' reach local
   event streams only. A client on the network may not give a conversation a workspace or a
   provider route, nor turn on full access.
-- A run stops when the model repeats the same failing tool call three times, with a notice saying so;
-  `fetch_url` refuses anything but http and https with a reason the model can act on.
+- A run stops when the model repeats the same failing tool call three times, with a notice saying so.
 - Commands that run without asking are only those that cannot run another program: `git` asks (a
   repository's configuration can make `git status` run one), and so do `sort --compress-program`
   and the abbreviated long options of the refused ones.
@@ -215,13 +245,6 @@ Semantic Versioning.
   against llama.cpp's own 55.6-55.8, and long prompts prefill at 2.1-2.3k tok/s. With ROCm's clang
   the build hangs on ggml-cpu's AMX kernels; the bench notes give the line that builds the host code
   with gcc.
-
-### Removed
-- **The Obtainium link for Android.** `README.md` (and its translations), `examples/android/README.md`
-  and `docs/platforms.md` no longer point to an Obtainium entry: its redirect page depends on the
-  browser handing the link to the app, which often does nothing, and Android's developer verification
-  (from 2026-2027) makes a third-party installer a second thing that has to keep working. The APK is
-  installed from the release page, as before.
 
 ### Fixed
 - **A session's teardown no longer frees the gate weights under the router's prediction worker.**

@@ -7,7 +7,10 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <regex>
 #include <set>
+#include <sstream>
 
 namespace fs = std::filesystem;
 
@@ -230,253 +233,6 @@ std::string unified_diff(const std::string & path, const std::string & before, c
     return out;
 }
 
-// ---- web pages ----
-
-namespace {
-
-std::string lower(std::string s) {
-    for (char & c : s)
-        c = (char) std::tolower((unsigned char) c);
-    return s;
-}
-
-void append_utf8(std::string & out, unsigned long cp) {
-    if (cp == 0 || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return;
-    if (cp < 0x80) {
-        out += (char) cp;
-    } else if (cp < 0x800) {
-        out += (char) (0xC0 | (cp >> 6));
-        out += (char) (0x80 | (cp & 0x3F));
-    } else if (cp < 0x10000) {
-        out += (char) (0xE0 | (cp >> 12));
-        out += (char) (0x80 | ((cp >> 6) & 0x3F));
-        out += (char) (0x80 | (cp & 0x3F));
-    } else {
-        out += (char) (0xF0 | (cp >> 18));
-        out += (char) (0x80 | ((cp >> 12) & 0x3F));
-        out += (char) (0x80 | ((cp >> 6) & 0x3F));
-        out += (char) (0x80 | (cp & 0x3F));
-    }
-}
-
-std::string decode_entities(const std::string & s) {
-    std::string out;
-    out.reserve(s.size());
-    for (size_t i = 0; i < s.size(); ++i) {
-        if (s[i] != '&') {
-            out += s[i];
-            continue;
-        }
-        const size_t semi = s.find(';', i);
-        if (semi == std::string::npos || semi - i > 10) {
-            out += '&';
-            continue;
-        }
-        const std::string name = s.substr(i + 1, semi - i - 1);
-        std::string rep;
-        bool known = true;
-        if (name == "amp")
-            rep = "&";
-        else if (name == "lt")
-            rep = "<";
-        else if (name == "gt")
-            rep = ">";
-        else if (name == "quot")
-            rep = "\"";
-        else if (name == "apos")
-            rep = "'";
-        else if (name == "nbsp")
-            rep = " ";
-        else if (name.size() > 1 && name[0] == '#') {
-            char * end = nullptr;
-            const bool hex = name[1] == 'x' || name[1] == 'X';
-            const unsigned long cp = std::strtoul(name.c_str() + (hex ? 2 : 1), &end, hex ? 16 : 10);
-            if (end && *end == '\0')
-                append_utf8(rep, cp);
-            else
-                known = false;
-        } else
-            known = false;
-        if (!known) {
-            out += '&';
-            continue;
-        }
-        out += rep;
-        i = semi;
-    }
-    return out;
-}
-
-bool is_block_tag(const std::string & t) {
-    static const std::set<std::string> blocks = {
-        "p",  "div", "br",      "li",      "h1",     "h2",     "h3",  "h4",         "h5",
-        "h6", "tr",  "section", "article", "header", "footer", "pre", "blockquote", "table",
-        "ul", "ol",  "nav",     "main",    "aside",  "hr",     "dt",  "dd",         "title"};
-    return blocks.count(t) > 0;
-}
-
-} // namespace
-
-std::string html_to_text(const std::string & html) {
-    const std::string low = lower(html);
-    std::string raw;
-    raw.reserve(html.size() / 2);
-    size_t i = 0;
-    while (i < html.size()) {
-        if (html[i] != '<') {
-            raw += html[i++];
-            continue;
-        }
-        if (low.compare(i, 4, "<!--") == 0) {
-            const size_t e = low.find("-->", i + 4);
-            i = e == std::string::npos ? html.size() : e + 3;
-            continue;
-        }
-        const size_t close = html.find('>', i);
-        if (close == std::string::npos) break;
-        size_t n = i + 1;
-        const bool end_tag = n < html.size() && html[n] == '/';
-        if (end_tag) ++n;
-        size_t ne = n;
-        while (ne < close && (std::isalnum((unsigned char) html[ne]) || html[ne] == '-'))
-            ++ne;
-        const std::string tag = low.substr(n, ne - n);
-        // What a browser never shows: skipped to its end tag whole.
-        if (!end_tag && (tag == "script" || tag == "style" || tag == "noscript" || tag == "svg" || tag == "template" ||
-                         tag == "head")) {
-            const size_t e = low.find("</" + tag, close);
-            if (e == std::string::npos) break;
-            const size_t ee = html.find('>', e);
-            i = ee == std::string::npos ? html.size() : ee + 1;
-            raw += '\n';
-            continue;
-        }
-        if (tag == "li")
-            raw += end_tag ? "" : "\n- ";
-        else if (is_block_tag(tag) || tag == "td" || tag == "th")
-            raw += tag == "td" || tag == "th" ? " " : "\n";
-        i = close + 1;
-    }
-    const std::string text = decode_entities(raw);
-    // Blank space as a reader sees it: one space inside a line, no line of only spaces, and at most
-    // one empty line between paragraphs.
-    std::string out;
-    std::string line;
-    int blank = 0;
-    const auto flush = [&] {
-        while (!line.empty() && line.back() == ' ')
-            line.pop_back();
-        if (line.empty()) {
-            if (!out.empty() && blank++ == 0) out += '\n';
-        } else {
-            blank = 0;
-            out += line;
-            out += '\n';
-        }
-        line.clear();
-    };
-    for (char c : text) {
-        if (c == '\n') {
-            flush();
-        } else if (c == ' ' || c == '\t' || c == '\r' || c == '\f' || c == '\v') {
-            if (!line.empty() && line.back() != ' ') line += ' ';
-        } else {
-            line += c;
-        }
-    }
-    flush();
-    while (!out.empty() && out.back() == '\n')
-        out.pop_back();
-    return out;
-}
-
-namespace {
-
-std::string attribute(const std::string & tag, const std::string & name) {
-    const std::string low = lower(tag);
-    size_t at = 0;
-    while ((at = low.find(name + "=", at)) != std::string::npos) {
-        if (at > 0 && !std::isspace((unsigned char) low[at - 1])) {
-            ++at;
-            continue;
-        }
-        size_t v = at + name.size() + 1;
-        if (v >= tag.size()) return "";
-        const char q = tag[v];
-        if (q == '"' || q == '\'') {
-            const size_t e = tag.find(q, v + 1);
-            if (e == std::string::npos) return "";
-            return tag.substr(v + 1, e - v - 1);
-        }
-        size_t e = v;
-        while (e < tag.size() && !std::isspace((unsigned char) tag[e]) && tag[e] != '>')
-            ++e;
-        return tag.substr(v, e - v);
-    }
-    return "";
-}
-
-// The text of the element whose start tag ends at `open_end`, up to `</name`.
-std::string inner_text(const std::string & html, const std::string & low, size_t open_end, const std::string & name) {
-    const size_t e = low.find("</" + name, open_end);
-    if (e == std::string::npos) return "";
-    std::string t = html_to_text(html.substr(open_end + 1, e - open_end - 1));
-    for (char & c : t)
-        if (c == '\n') c = ' ';
-    return t;
-}
-
-std::string unwrap_link(std::string href) {
-    href = decode_entities(href);
-    const size_t u = href.find("uddg=");
-    if (u != std::string::npos) {
-        const size_t amp = href.find('&', u);
-        href = url_decode(href.substr(u + 5, amp == std::string::npos ? std::string::npos : amp - u - 5));
-    }
-    if (starts(href, "//")) href = "https:" + href;
-    return href;
-}
-
-} // namespace
-
-std::vector<SearchHit> parse_search_results(const std::string & html, size_t max_results) {
-    std::vector<SearchHit> hits;
-    const std::string low = lower(html);
-    size_t at = 0;
-    while (hits.size() < max_results) {
-        const size_t mark = low.find("result__a", at);
-        if (mark == std::string::npos) break;
-        at = mark + 9;
-        const size_t open = low.rfind("<a", mark);
-        const size_t open_end = low.find('>', mark);
-        if (open == std::string::npos || open_end == std::string::npos || open_end < open) continue;
-        const std::string tag = html.substr(open, open_end - open + 1);
-        // The class must belong to this anchor, not to text before it.
-        if (low.find('>', open) != open_end) continue;
-        SearchHit h;
-        h.url = unwrap_link(attribute(tag, "href"));
-        h.title = inner_text(html, low, open_end, "a");
-        // An advertisement goes through the engine's own click tracker, not to a page.
-        if ((!starts(h.url, "https://") && !starts(h.url, "http://")) ||
-            h.url.find("duckduckgo.com/y.js") != std::string::npos || h.title.empty())
-            continue;
-        const size_t next = low.find("result__a", at);
-        const size_t snip = low.find("result__snippet", at);
-        if (snip != std::string::npos && (next == std::string::npos || snip < next)) {
-            const size_t s_open = low.rfind('<', snip);
-            const size_t s_end = low.find('>', snip);
-            if (s_open != std::string::npos && s_end != std::string::npos) {
-                size_t ne = s_open + 1;
-                while (ne < low.size() && std::isalpha((unsigned char) low[ne]))
-                    ++ne;
-                h.snippet = inner_text(html, low, s_end, low.substr(s_open + 1, ne - s_open - 1));
-            }
-        }
-        hits.push_back(std::move(h));
-    }
-    return hits;
-}
-
 std::string cap_text(const std::string & text, size_t max) {
     if (text.size() <= max) return text;
     const size_t keep = complete_utf8_prefix_size(text.substr(0, max));
@@ -488,79 +244,398 @@ bool looks_binary(const std::string & bytes) {
     return std::memchr(bytes.data(), '\0', n) != nullptr;
 }
 
-std::string url_decode(const std::string & s) {
-    std::string out;
-    for (size_t i = 0; i < s.size(); ++i) {
-        if (s[i] == '+') {
-            out += ' ';
-        } else if (s[i] == '%' && i + 2 < s.size() && std::isxdigit((unsigned char) s[i + 1]) &&
-                   std::isxdigit((unsigned char) s[i + 2])) {
-            out += (char) std::stoi(s.substr(i + 1, 2), nullptr, 16);
-            i += 2;
+// ---- globs ----
+
+namespace {
+
+// The class `[...]` that starts at p[0] == '[' against `c`; `end` is set past its ']'. False with
+// end == nullptr when the class is not closed (the '[' is then a plain character).
+bool class_match(const char * p, char c, const char *& end) {
+    const char * q = p + 1;
+    const bool negate = *q == '!' || *q == '^';
+    if (negate) ++q;
+    const char * first = q;
+    bool hit = false;
+    while (*q && (*q != ']' || q == first)) {
+        if (q[1] == '-' && q[2] && q[2] != ']') {
+            if ((unsigned char) c >= (unsigned char) q[0] && (unsigned char) c <= (unsigned char) q[2]) hit = true;
+            q += 3;
         } else {
-            out += s[i];
+            if (*q == c) hit = true;
+            ++q;
         }
     }
+    if (*q != ']') {
+        end = nullptr;
+        return false;
+    }
+    end = q + 1;
+    return hit != negate;
+}
+
+bool glob_at(const char * p, const char * s) {
+    for (;;) {
+        if (!*p) return !*s;
+        if (p[0] == '*' && p[1] == '*') {
+            const char * rest = p + 2;
+            if (*rest == '/' && glob_at(rest + 1, s)) return true; // `**/` as no folder at all
+            for (const char * t = s;; ++t) {
+                if (glob_at(rest, t)) return true;
+                if (!*t) return false;
+            }
+        }
+        if (*p == '*') {
+            for (const char * t = s;; ++t) {
+                if (glob_at(p + 1, t)) return true;
+                if (!*t || *t == '/') return false;
+            }
+        }
+        if (*p == '?') {
+            if (!*s || *s == '/') return false;
+            ++p;
+            ++s;
+            continue;
+        }
+        if (*p == '[') {
+            const char * end = nullptr;
+            const bool hit = *s && *s != '/' && class_match(p, *s, end);
+            if (end) {
+                if (!hit) return false;
+                p = end;
+                ++s;
+                continue;
+            }
+        }
+        if (*p != *s) return false;
+        ++p;
+        ++s;
+    }
+}
+
+std::string lower(std::string s) {
+    for (char & c : s)
+        c = (char) std::tolower((unsigned char) c);
+    return s;
+}
+
+std::string arg_string(const json & a, const char * key, const std::string & fallback = "") {
+    return a.contains(key) && a[key].is_string() ? a[key].get<std::string>() : fallback;
+}
+
+long arg_int(const json & a, const char * key, long fallback) {
+    return a.contains(key) && a[key].is_number() ? a[key].get<long>() : fallback;
+}
+
+bool arg_bool(const json & a, const char * key) {
+    return a.contains(key) && a[key].is_boolean() && a[key].get<bool>();
+}
+
+ToolOutput fail(const std::string & why) {
+    return {false, "Error: " + why, "", ""};
+}
+
+struct Entry {
+    std::string rel; // relative to the walked folder, '/'-separated
+    std::string abs;
+    bool dir = false;
+};
+
+// Everything under `base`, `max_depth` levels down (0: no limit), junk folders listed but not
+// entered, in path order. `truncated` when k_walk_max_entries stopped it.
+std::vector<Entry> walk(const std::string & base, long max_depth, bool & truncated) {
+    std::vector<Entry> out;
+    truncated = false;
+    std::error_code ec;
+    const fs::path root = fs::u8path(base);
+    fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end;
+    for (; !ec && it != end; it.increment(ec)) {
+        if (out.size() >= k_walk_max_entries) {
+            truncated = true;
+            break;
+        }
+        Entry e;
+        e.abs = it->path().u8string();
+        e.rel = it->path().lexically_relative(root).generic_u8string();
+        // A link to a folder is not entered (the iterator does not follow it): it may lead out.
+        e.dir = it->is_directory(ec) && !it->is_symlink(ec);
+        if (e.dir) {
+            const std::string name = lower(it->path().filename().u8string());
+            bool skip = false;
+            for (const char * s : k_walk_skip_dirs)
+                skip = skip || name == s;
+            if (skip || (max_depth > 0 && it.depth() + 1 >= max_depth)) it.disable_recursion_pending();
+        }
+        out.push_back(std::move(e));
+    }
+    std::sort(out.begin(), out.end(), [](const Entry & a, const Entry & b) { return a.rel < b.rel; });
     return out;
 }
 
-std::string url_encode(const std::string & s) {
-    static const char * hex = "0123456789ABCDEF";
-    std::string out;
-    for (unsigned char c : s) {
-        if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
-            out += (char) c;
-        } else {
-            out += '%';
-            out += hex[c >> 4];
-            out += hex[c & 15];
-        }
-    }
-    return out;
+} // namespace
+
+bool glob_match(const std::string & pattern, const std::string & path) {
+    return glob_at(pattern.c_str(), path.c_str());
 }
 
-bool url_names_private_host(const std::string & url) {
-    size_t at = url.find("://");
-    std::string host = url.substr(at == std::string::npos ? 0 : at + 3);
-    host = host.substr(0, host.find_first_of("/?#"));
-    const size_t cred = host.rfind('@');
-    if (cred != std::string::npos) host = host.substr(cred + 1);
-    if (!host.empty() && host[0] == '[') {
-        // An IPv6 literal: loopback, unspecified, unique-local (fc00::/7), link-local (fe80::/10),
-        // or an IPv4 address mapped into it.
-        host = lower(host.substr(1, host.find(']') - 1));
-        if (host == "::1" || host == "::" || starts(host, "fc") || starts(host, "fd") || starts(host, "fe8") ||
-            starts(host, "fe9") || starts(host, "fea") || starts(host, "feb"))
-            return true;
-        if (starts(host, "::ffff:"))
-            host = host.substr(7);
-        else
-            return false;
-    } else {
-        host = lower(host.substr(0, host.find(':')));
+bool path_glob_match(const std::string & pattern, const std::string & rel_path) {
+    if (pattern.find('/') == std::string::npos) {
+        const size_t slash = rel_path.rfind('/');
+        return glob_match(pattern, slash == std::string::npos ? rel_path : rel_path.substr(slash + 1));
     }
-    while (!host.empty() && host.back() == '.')
-        host.pop_back();
-    const auto ends = [&](const char * s) {
-        const size_t n = std::strlen(s);
-        return host.size() >= n && host.compare(host.size() - n, n, s) == 0;
+    if (pattern[0] == '/') return glob_match(pattern.substr(1), rel_path);
+    if (pattern.compare(0, 3, "**/") == 0 || pattern == "**") return glob_match(pattern, rel_path);
+    return glob_match("**/" + pattern, rel_path);
+}
+
+// ---- edits ----
+
+bool apply_edits(const std::string & before, const json & edits, std::string & after, std::string & err) {
+    if (!edits.is_array() || edits.empty()) {
+        err = "\"edits\" must be a non-empty array of {old_text, new_text}";
+        return false;
+    }
+    struct Match {
+        size_t index, at, len;
+        std::string text;
     };
-    if (host.empty() || host == "localhost" || ends(".localhost") || ends(".local") || ends(".internal") ||
-        ends(".lan") || ends(".home.arpa"))
-        return true;
-    unsigned a[4];
-    char tail = 0;
-    if (std::sscanf(host.c_str(), "%u.%u.%u.%u%c", &a[0], &a[1], &a[2], &a[3], &tail) != 4) {
-        // A bare number is an address to curl too (2130706433 and 0x7f000001 are 127.0.0.1).
-        return host.find_first_not_of("0123456789") == std::string::npos ||
-               (starts(host, "0x") && host.find_first_not_of("0123456789abcdef", 2) == std::string::npos);
+    std::vector<Match> matches;
+    for (size_t i = 0; i < edits.size(); ++i) {
+        const json & e = edits[i];
+        const std::string old_text = e.is_object() ? arg_string(e, "old_text") : "";
+        const std::string tag = "edits[" + std::to_string(i) + "]";
+        if (!e.is_object() || !e.contains("new_text") || !e["new_text"].is_string()) {
+            err = tag + " must be an object with old_text and new_text";
+            return false;
+        }
+        if (old_text.empty()) {
+            err = tag + ".old_text must not be empty";
+            return false;
+        }
+        const size_t at = before.find(old_text);
+        if (at == std::string::npos) {
+            err = "could not find " + tag +
+                  ".old_text, it must match the file's current content exactly: read the "
+                  "file again and copy it";
+            return false;
+        }
+        size_t count = 0;
+        for (size_t p = at; p != std::string::npos; p = before.find(old_text, p + 1))
+            ++count;
+        if (count > 1) {
+            err = "found " + std::to_string(count) + " occurrences of " + tag +
+                  ".old_text, it must be unique: include more surrounding lines";
+            return false;
+        }
+        matches.push_back({i, at, old_text.size(), e["new_text"].get<std::string>()});
     }
-    // An octet written with a leading zero is octal to some resolvers: not a form a public page uses.
-    for (size_t i = 0; i + 1 < host.size(); ++i)
-        if (host[i] == '0' && (i == 0 || host[i - 1] == '.') && std::isdigit((unsigned char) host[i + 1])) return true;
-    return a[0] == 0 || a[0] == 10 || a[0] == 127 || (a[0] == 169 && a[1] == 254) ||
-           (a[0] == 172 && a[1] >= 16 && a[1] <= 31) || (a[0] == 192 && a[1] == 168) ||
-           (a[0] == 100 && a[1] >= 64 && a[1] <= 127);
+    std::sort(matches.begin(), matches.end(), [](const Match & a, const Match & b) { return a.at < b.at; });
+    for (size_t i = 1; i < matches.size(); ++i)
+        if (matches[i - 1].at + matches[i - 1].len > matches[i].at) {
+            err = "edits[" + std::to_string(matches[i - 1].index) + "] and edits[" + std::to_string(matches[i].index) +
+                  "] overlap; merge them into one edit or target disjoint regions";
+            return false;
+        }
+    after.clear();
+    size_t from = 0;
+    for (const Match & m : matches) {
+        after.append(before, from, m.at - from);
+        after += m.text;
+        from = m.at + m.len;
+    }
+    after.append(before, from, std::string::npos);
+    if (after == before) {
+        err = "no changes made: the replacement(s) produced identical content";
+        return false;
+    }
+    return true;
+}
+
+// ---- files ----
+
+bool read_whole(const std::string & path, std::string & out, std::string & err) {
+    std::error_code ec;
+    const auto size = fs::file_size(fs::u8path(path), ec);
+    if (ec) {
+        err = "cannot read the file (" + ec.message() + ")";
+        return false;
+    }
+    if (size > k_read_max_file_bytes) {
+        err = "the file is " + std::to_string(size) + " bytes, more than the " + std::to_string(k_read_max_file_bytes) +
+              " a tool reads";
+        return false;
+    }
+    std::ifstream f(fs::u8path(path), std::ios::binary);
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    out = ss.str();
+    if (!f && !f.eof()) {
+        err = "cannot read the file";
+        return false;
+    }
+    return true;
+}
+
+bool write_whole(const std::string & path, const std::string & content, std::string & err) {
+    std::error_code ec;
+    fs::create_directories(fs::u8path(path).parent_path(), ec);
+    std::ofstream f(fs::u8path(path), std::ios::binary | std::ios::trunc);
+    f << content;
+    if (!f) {
+        err = "cannot write the file";
+        return false;
+    }
+    return true;
+}
+
+ToolOutput read_file(const std::string & ws, const json & a) {
+    std::string path, err, text;
+    if (!resolve_in_workspace(ws, arg_string(a, "path"), path, err)) return fail(err);
+    std::error_code ec;
+    if (fs::is_directory(fs::u8path(path), ec))
+        return fail(arg_string(a, "path") + " is a folder: use file_glob_search");
+    if (!read_whole(path, text, err)) return fail(err);
+    if (looks_binary(text)) return fail(arg_string(a, "path") + " is not a text file");
+    const long first = std::max(1L, arg_int(a, "start_line", 1));
+    const long last = arg_int(a, "end_line", -1);
+    const bool loc = arg_bool(a, "append_loc");
+    std::string out;
+    long n = 0, cut_at = 0;
+    size_t i = 0;
+    while (i < text.size()) {
+        const size_t nl = text.find('\n', i);
+        const std::string line = text.substr(i, nl == std::string::npos ? std::string::npos : nl - i);
+        i = nl == std::string::npos ? text.size() : nl + 1;
+        ++n;
+        if (n < first || (last > 0 && n > last) || cut_at) continue;
+        // "N→text", the numbering llama.cpp's read_file uses.
+        const std::string piece = (loc ? std::to_string(n) + "\xE2\x86\x92" : std::string()) + line + "\n";
+        if (out.size() + piece.size() > k_tool_result_max_bytes) {
+            cut_at = n;
+            continue;
+        }
+        out += piece;
+    }
+    if (cut_at)
+        out += "[output truncated at line " + std::to_string(cut_at) + " of " + std::to_string(n) +
+               ": read on with start_line=" + std::to_string(cut_at) + "]";
+    else if (out.empty())
+        out = n == 0 ? "(empty file)" : "(no lines in that range: the file has " + std::to_string(n) + ")";
+    return {true, out, "", workspace_relative(ws, path)};
+}
+
+ToolOutput file_glob_search(const std::string & ws, const json & a) {
+    const std::string req = arg_string(a, "path", ".");
+    std::string base, err;
+    if (!resolve_in_workspace(ws, req, base, err)) return fail(err);
+    std::error_code ec;
+    if (!fs::is_directory(fs::u8path(base), ec)) return fail(req + " is not a folder");
+    const std::string include = arg_string(a, "include", "**");
+    const std::string exclude = arg_string(a, "exclude");
+    const std::string type = arg_string(a, "type", "file");
+    if (type != "file" && type != "dir" && type != "all")
+        return fail("invalid type: " + type + " (expected \"file\", \"dir\" or \"all\")");
+    const long limit_req = arg_int(a, "limit", k_glob_max_results);
+    if (limit_req < 1) return fail("invalid limit: " + std::to_string(limit_req) + " (expected 1 or more)");
+    const size_t limit = (size_t) std::min<long>(limit_req, k_glob_max_results);
+    bool truncated = false;
+    std::string out;
+    size_t total = 0;
+    for (const Entry & e : walk(base, std::max(0L, arg_int(a, "max_depth", 0)), truncated)) {
+        if ((e.dir && type == "file") || (!e.dir && type == "dir")) continue;
+        if (!path_glob_match(include, e.rel) || (!exclude.empty() && path_glob_match(exclude, e.rel))) continue;
+        if (total++ < limit) out += e.rel + (e.dir ? "/" : "") + "\n";
+    }
+    out += "\n---\nTotal matches: " + std::to_string(total) + "\n";
+    if (total > limit)
+        out += "[" + std::to_string(limit) + " results limit reached (" + std::to_string(total) +
+               " total matches). Refine the glob pattern to narrow the search.]\n";
+    if (truncated)
+        out += "[results truncated: the folder holds more than " + std::to_string(k_walk_max_entries) + " entries]\n";
+    return {true, out, "", ""};
+}
+
+ToolOutput grep_search(const std::string & ws, const json & a) {
+    const std::string req = arg_string(a, "path", ".");
+    const std::string pattern = arg_string(a, "pattern");
+    if (pattern.empty()) return fail("pattern is empty");
+    std::string src = pattern;
+    if (arg_bool(a, "literal")) {
+        src.clear();
+        for (char c : pattern) {
+            if (std::strchr("\\^$.|?*+()[]{}", c)) src += '\\';
+            src += c;
+        }
+    }
+    std::regex re;
+    try {
+        auto flags = std::regex::ECMAScript;
+        if (arg_bool(a, "ignore_case")) flags |= std::regex::icase;
+        re = std::regex(src, flags);
+    } catch (const std::regex_error & e) {
+        return fail(std::string("invalid regex: ") + e.what());
+    }
+    std::string base, err;
+    if (!resolve_in_workspace(ws, req, base, err)) return fail(err);
+    const std::string include = arg_string(a, "include", "**");
+    const std::string exclude = arg_string(a, "exclude");
+    const long ctx = std::max(0L, arg_int(a, "context_lines", 0));
+    const bool numbers = arg_bool(a, "return_line_numbers") || ctx > 0;
+    std::vector<std::pair<std::string, std::string>> files; // absolute, as shown
+    std::error_code ec;
+    if (fs::is_regular_file(fs::u8path(base), ec)) {
+        files.emplace_back(base, req);
+    } else if (fs::is_directory(fs::u8path(base), ec)) {
+        bool truncated = false;
+        for (const Entry & e : walk(base, 0, truncated)) {
+            if (e.dir || !path_glob_match(include, e.rel) || (!exclude.empty() && path_glob_match(exclude, e.rel)))
+                continue;
+            // A link may lead out of the workspace; only what resolves inside it is read.
+            std::string real;
+            if (!resolve_in_workspace(ws, e.abs, real, err)) continue;
+            files.emplace_back(real, e.rel);
+        }
+    } else {
+        return fail("path does not exist: " + req);
+    }
+    std::string out;
+    size_t total = 0;
+    bool full = false;
+    for (const auto & [abs, shown] : files) {
+        if (full) break;
+        if (fs::file_size(fs::u8path(abs), ec) > k_search_max_file_bytes || ec) continue;
+        std::string text;
+        if (!read_whole(abs, text, err) || looks_binary(text)) continue;
+        std::vector<std::string> lines;
+        std::istringstream in(text);
+        for (std::string l; std::getline(in, l);)
+            lines.push_back(l);
+        for (size_t i = 0; i < lines.size(); ++i) {
+            // A pattern is tried on the start of a very long line only: std::regex recurses per
+            // character, and a minified file's one line would exhaust the stack.
+            const std::string & l = lines[i];
+            const bool hit = l.size() <= k_grep_max_line_bytes
+                                 ? std::regex_search(l, re)
+                                 : std::regex_search(l.begin(), l.begin() + k_grep_max_line_bytes, re);
+            if (!hit) continue;
+            if (total >= k_grep_max_matches) {
+                full = true;
+                break;
+            }
+            ++total;
+            const size_t from = i >= (size_t) ctx ? i - ctx : 0, to = std::min(lines.size() - 1, i + ctx);
+            for (size_t j = from; j <= to; ++j) {
+                const char mark = j == i ? ':' : '-';
+                out += shown + mark + (numbers ? std::to_string(j + 1) + mark : std::string()) +
+                       cap_text(lines[j], 500) + "\n";
+            }
+            if (ctx > 0) out += "--\n";
+        }
+    }
+    out += "\n---\nTotal matches: " + std::to_string(total) + "\n";
+    if (full)
+        out += "[" + std::to_string(k_grep_max_matches) +
+               " matches limit reached. Narrow the path/pattern/include to see more.]\n";
+    return {true, out, "", ""};
 }
 
 } // namespace bmoe::server::agent

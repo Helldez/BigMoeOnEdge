@@ -131,6 +131,7 @@ struct Options {
     int port = kDefaultPort;
     std::string ui_dir, models_dir, data_dir, catalog;
     std::string skills_dir;             // the agent's bundled skills; default skills/ beside this binary
+    std::string mcp_config;             // the MCP servers' config; default <data>/mcp.json
     std::vector<std::string> scan_dirs; // more directories whose models are listed, never written
     std::vector<std::string> allow_origins;
     std::string api_key;
@@ -178,6 +179,9 @@ void print_usage(const char * argv0) {
                 "  --catalog PATH       the model catalog (default: catalog/models.json beside this binary);\n"
                 "                       the client catalog (clients.json) is read from the same folder\n"
                 "  --skills-dir PATH    the agent's bundled skills (default: skills/ beside this binary)\n"
+                "  --mcp-servers-config PATH\n"
+                "                       the MCP servers whose tools the agent offers, as {\"mcpServers\": ...}\n"
+                "                       (default: mcp.json in the data folder, when it exists)\n"
                 "  --allow-origin URL   also accept requests from this browser origin (a UI dev server)\n"
                 "  --api-key KEY        require this key on the API (Authorization: Bearer KEY); needed\n"
                 "                       with a --host beyond loopback. Other local users can read a\n"
@@ -236,6 +240,8 @@ int parse_args(int argc, char ** argv, Options & o) {
             o.catalog = next();
         else if (a == "--skills-dir")
             o.skills_dir = next();
+        else if (a == "--mcp-servers-config")
+            o.mcp_config = next();
         else if (a == "--allow-origin")
             o.allow_origins.push_back(next());
         else if (a == "--api-key")
@@ -443,6 +449,7 @@ struct App {
     // The agent (docs/agent.md): what it keeps, its runs and scheduler, and what its routes reach.
     // Declared after the host, so it is destroyed, and its runs stopped and joined, before the host.
     std::unique_ptr<agent::AgentStore> agent_store;
+    std::unique_ptr<McpHub> mcp; // before the agent, so it outlives it
     std::unique_ptr<agent::Agent> agent;
     AgentRouteDeps agent_routes;
 
@@ -1414,6 +1421,26 @@ int run(int argc, char ** argv, const Embedding & embedding) {
             }
         }
     }
+    if (!o.chat_only && platform::can_run_commands()) {
+        // The MCP servers (docs/agent.md): an explicit file must exist; the default one may not.
+        const std::string path = o.mcp_config.empty() ? (fs::u8path(data_dir) / "mcp.json").u8string() : o.mcp_config;
+        std::error_code ec;
+        if (fs::exists(fs::u8path(path), ec)) {
+            std::ifstream in(fs::u8path(path), std::ios::binary);
+            std::vector<std::string> warnings;
+            std::vector<McpServerConfig> servers;
+            try {
+                servers = parse_mcp_config(json::parse(in), warnings);
+            } catch (const std::exception & e) {
+                warnings.push_back(path + " does not parse: " + e.what());
+            }
+            for (const std::string & w : warnings)
+                std::fprintf(stderr, "warning: %s\n", w.c_str());
+            if (!servers.empty()) app.mcp = std::make_unique<McpHub>(std::move(servers));
+        } else if (!o.mcp_config.empty()) {
+            std::fprintf(stderr, "warning: --mcp-servers-config %s does not exist\n", path.c_str());
+        }
+    }
     {
         agent::AgentDeps deps;
         deps.bus = &app.bus;
@@ -1424,6 +1451,7 @@ int run(int argc, char ** argv, const Embedding & embedding) {
         };
         deps.config = [&app] { return app.store.config(); };
         deps.net = app.net.get();
+        deps.mcp = app.mcp.get();
         deps.bundled_skills_dir = o.skills_dir.empty() ? (exe / "skills").u8string() : o.skills_dir;
         deps.user_skills_dir = (fs::u8path(data_dir) / "skills").u8string();
         deps.tools = !o.chat_only;

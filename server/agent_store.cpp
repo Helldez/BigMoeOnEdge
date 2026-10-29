@@ -178,7 +178,7 @@ json AgentStore::list_conversations() const {
     {
         std::lock_guard<std::mutex> lk(m_);
         for (const auto & [id, c] : conversations_)
-            if (c.value("parent", json(nullptr)).is_null()) out.push_back(summary(c));
+            out.push_back(summary(c));
     }
     std::sort(out.begin(), out.end(),
               [](const json & a, const json & b) { return a.value("updated", 0LL) > b.value("updated", 0LL); });
@@ -226,8 +226,6 @@ json AgentStore::create_conversation(json fields) {
            {"created", t},
            {"updated", t},
            {"task", fields.value("task", json(nullptr))},
-           {"parent", fields.value("parent", json(nullptr))},
-           {"web_allowed", false},
            {"items", fields.contains("items") && fields["items"].is_array() ? fields["items"] : json::array()}};
     std::lock_guard<std::mutex> lk(m_);
     conversations_[c["id"].get<std::string>()] = c;

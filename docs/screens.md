@@ -103,12 +103,10 @@ conversation with no folder.
   are one run, summarised in a line ("Read 3 files, edited 2 files · +14 −3") that is open while the
   run works and folded once it is done; a call alone is shown as itself.
 - **Approvals.** A call that waits for the person is a card that says nothing has happened yet,
-  shows what would run (the command, the diff, the text to write), and offers Allow and Deny. It is
-  never folded away inside a run. In the desktop app a notification says so when the window is in
-  the background.
-- **Helpers and notices.** A helper the agent handed part of the job to is a row with its task, its
-  state, its summary when done, and a way into its own conversation. A notice says in plain words
-  why something did not happen.
+  shows what would run (the command, the diff, the text to write, an MCP tool's arguments), and
+  offers Allow and Deny. It is never folded away inside a run. In the desktop app a notification
+  says so when the window is in the background.
+- **Notices.** A notice says in plain words why something did not happen.
 - **The composer.** The text (Enter sends, Shift+Enter starts a line), and chips: the **agent**,
   where the server offers more than its own (a computer that runs programs; `GET /api/agent`): the
   built-in agent, or OpenCode, Claude Code, Codex or Pi, each saying whether it is installed and
@@ -396,7 +394,7 @@ a phone is not an agent; the agent is the desktop's. What that leaves out of the
 only that:
 
 - **No agent.** No workspaces, mode, model route or providers in the composer; no tool calls,
-  approvals, helpers or file preview in the transcript; no Skills, Tasks or Connect apps screens,
+  approvals or file preview in the transcript; no Skills, Tasks or Connect apps screens,
   and no notification of a run. The conversation list is by date, its rows marked while they are
   being answered or after an error.
 - **Messages as above.** The person's text with Copy and Edit and send again (on a long press),

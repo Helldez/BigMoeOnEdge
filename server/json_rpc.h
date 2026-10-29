@@ -1,12 +1,14 @@
-// The Agent Client Protocol's wire (docs/agent.md, "Other agents"): JSON-RPC 2.0, one message a
-// line, over a transport that is a program's stdin and stdout in the server and a pair of queues in
-// a test. A request sent waits for its answer; a request the agent sends (a permission, a file read
-// or write) runs its handler on a thread of its own, so one waiting for a person never holds up the
-// messages behind it; a notification (session/update) runs its handler on the reading thread, in
-// the order the agent sent it.
+// JSON-RPC 2.0, one message a line, the wire both the Agent Client Protocol (another coding agent,
+// docs/agent.md "Other agents") and the Model Context Protocol (a tool server, docs/agent.md "MCP
+// servers") speak, over a transport that is a program's stdin and stdout in the server and a pair
+// of queues in a test. A request sent waits for its answer; a request the other side sends (a
+// permission, a file read or write) runs its handler on a thread of its own, so one waiting for a
+// person never holds up the messages behind it; a notification runs its handler on the reading
+// thread, in the order it was sent.
 #pragma once
 
 #include "json_util.h"
+#include "platform.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -23,18 +25,30 @@ namespace bmoe::server {
 
 // One line at a time each way. read_line() blocks and returns false at the end; stop() ends the
 // other side and makes a blocked read_line() return.
-class AcpTransport {
+class JsonRpcTransport {
 public:
-    virtual ~AcpTransport() = default;
+    virtual ~JsonRpcTransport() = default;
     virtual bool write_line(const std::string & line) = 0;
     virtual bool read_line(std::string & line) = 0;
     virtual void stop() = 0;
 };
 
-class AcpConnection {
+// A program started with platform::LineProcess as a transport: its stdin and stdout.
+class ProcessTransport : public JsonRpcTransport {
+public:
+    explicit ProcessTransport(std::unique_ptr<platform::LineProcess> p) : p_(std::move(p)) {}
+    bool write_line(const std::string & line) override { return p_->write_line(line); }
+    bool read_line(std::string & line) override { return p_->read_line(line); }
+    void stop() override { p_->stop(); }
+
+private:
+    std::unique_ptr<platform::LineProcess> p_;
+};
+
+class JsonRpcConnection {
 public:
     struct Handlers {
-        // A request from the agent: true with `result`, or false with `error` (answered as a
+        // A request from the other side: true with `result`, or false with `error` (answered as a
         // JSON-RPC error). A method it does not know is answered "method not found" without it.
         std::function<bool(const std::string & method, const json & params, json & result, std::string & error)>
             request;
@@ -42,17 +56,17 @@ public:
     };
 
     // Starts reading at once.
-    AcpConnection(std::unique_ptr<AcpTransport> transport, Handlers handlers);
+    JsonRpcConnection(std::unique_ptr<JsonRpcTransport> transport, Handlers handlers);
     // Stops the transport and joins every thread. A request handler still waiting (an approval)
     // must have been released by its owner first.
-    ~AcpConnection();
-    AcpConnection(const AcpConnection &) = delete;
-    AcpConnection & operator=(const AcpConnection &) = delete;
+    ~JsonRpcConnection();
+    JsonRpcConnection(const JsonRpcConnection &) = delete;
+    JsonRpcConnection & operator=(const JsonRpcConnection &) = delete;
 
     // Sends a request and waits for its answer. `cancelled` is asked every poll; the first time it
-    // says true, `on_cancel` runs once (it sends session/cancel) and the wait goes on, for the agent
-    // answers a cancelled prompt too (`cancelled` may close() the connection when it takes too long).
-    // False with `err` when the agent answers an error or ends.
+    // says true, `on_cancel` runs once (ACP sends session/cancel) and the wait goes on, for an agent
+    // answers a cancelled prompt too (`cancelled` may close() the connection when it takes too long,
+    // or at once). False with `err` when the other side answers an error or ends.
     bool call(const std::string & method,
               const json & params,
               json & result,
@@ -60,9 +74,9 @@ public:
               const std::function<bool()> & cancelled = nullptr,
               const std::function<void()> & on_cancel = nullptr);
     void notify(const std::string & method, const json & params);
-    // False once the agent's output has ended.
+    // False once the other side's output has ended.
     bool alive() const { return alive_; }
-    // Ends the agent now (its transport), failing whatever waits on it.
+    // Ends the other side now (its transport), failing whatever waits on it.
     void close();
 
 private:
@@ -77,7 +91,7 @@ private:
     void answer(const json & id, const json * result, const std::string & error, int code);
     bool send(const json & message);
 
-    std::unique_ptr<AcpTransport> transport_;
+    std::unique_ptr<JsonRpcTransport> transport_;
     Handlers handlers_;
     std::atomic<bool> alive_{true};
     std::mutex m_; // pending_, next_id_, workers_

@@ -25,12 +25,13 @@ server/         bmoe-server: the application framework every UI speaks to (docs/
                 url_entry (which direct gguf links are taken and the catalog entry they become),
                 model_delete (which files deleting a listed model removes, inside the models folder),
                 the agent's rules (docs/agent.md): agent_tools (path confinement, the read-only
-                command classifier, diffs, web pages as text, search results), agent_skills,
+                command classifier, diffs, globs, the workspace tools that read, edits), agent_skills,
                 agent_schedule (a task's next run), agent_store (conversations, workspaces, tasks,
                 providers and their keys, on disk), provider_protocol (an OpenAI-compatible
                 service's request and streamed answer), connect (a client's settings, written with a
-                backup, and the catalog's coding agents), acp_connection (the Agent Client
-                Protocol's JSON-RPC over a transport a test replaces),
+                backup, and the catalog's coding agents), json_rpc (the JSON-RPC line wire the
+                Agent Client Protocol and MCP speak, over a transport a test replaces), mcp (the
+                MCP servers: config, lazy start, their tools and calls),
                 feed (the signed release feed: Ed25519 over Monocypher, its shape held to its rules),
                 backend_packs (which packs apply, where installed ones live, which archives may be
                 unpacked), update_service (packs and updates downloaded, checked, put in place):
@@ -41,7 +42,7 @@ server/         bmoe-server: the application framework every UI speaks to (docs/
                 downloads; planner_adapter: /api/plan when the planner is built in; routing_store:
                 each model's routing record and knob verdicts, kept by content fingerprint for the
                 next plan;
-                agent: the agent's runs (one thread each, approvals, stop, helpers) and its task
+                agent: the agent's runs (one thread each, approvals, stop, MCP tools) and its task
                 scheduler, over EngineHost::chat or a provider; agent_external: a conversation
                 another coding agent works, over ACP; agent_routes: its HTTP routes;
                 access: who may reach the API (host, origin, key, content type, the local-only

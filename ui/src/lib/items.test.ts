@@ -130,15 +130,16 @@ describe('runs of tool calls', () => {
 
   it('says a run in one line', () => {
     expect(summaryText(runSummary(run), t)).toBe('Read 2 files, edited 2 files · +4 −2');
-    expect(summaryText(runSummary([tool('1', 'run_command')]), t)).toBe('Ran 1 command');
-    expect(summaryText(runSummary([tool('1', 'web_search'), tool('2', 'fetch_url'), tool('3', 'read_file')]), t)).toBe(
-      'Read 1 file, opened 1 web page, searched the web once',
-    );
+    expect(summaryText(runSummary([tool('1', 'exec_shell_command')]), t)).toBe('Ran 1 command');
+    expect(
+      summaryText(runSummary([tool('1', 'file_glob_search'), tool('2', 'grep_search'), tool('3', 'read_file')]), t),
+    ).toBe('Read 1 file, looked in 1 folder, searched the files once');
+    expect(summaryText(runSummary([tool('1', 'docs_search')]), t)).toBe('Took 1 other step');
   });
 
   it("counts another agent's tool calls by their protocol kind", () => {
-    expect(summaryText(runSummary([tool('1', 'execute'), tool('2', 'read'), tool('3', 'think')]), t)).toBe(
-      'Read 1 file, ran 1 command, took 1 other step',
+    expect(summaryText(runSummary([tool('1', 'execute'), tool('2', 'read'), tool('3', 'think'), tool('4', 'fetch')]), t)).toBe(
+      'Read 1 file, ran 1 command, opened 1 web page, took 1 other step',
     );
   });
 
@@ -149,7 +150,7 @@ describe('runs of tool calls', () => {
   });
 
   it('finds the call waiting for an answer and the newest file', () => {
-    const items: Item[] = [tool('1', 'write_file', { file: 'out/index.html' }), tool('2', 'run_command', { state: 'waiting' })];
+    const items: Item[] = [tool('1', 'write_file', { file: 'out/index.html' }), tool('2', 'exec_shell_command', { state: 'waiting' })];
     expect(waitingApproval(items)?.id).toBe('2');
     expect(latestFile(items)).toBe('out/index.html');
   });

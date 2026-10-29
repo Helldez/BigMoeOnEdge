@@ -6,9 +6,9 @@ description: Summarize a long document, report, paper, transcript or web page fa
 
 # Summarizing a document
 
-1. **Read all of it.** For a long file, read it in line ranges until the end; for a web page, use
-   `fetch_url`. Do not summarize from the first pages only. Note the kind of document (paper,
-   contract, meeting notes, specification) and who it is for.
+1. **Read all of it.** For a long file, read it in line ranges until the end (`read_file` with
+   `start_line` and `end_line`). Do not summarize from the first pages only. Note the kind of
+   document (paper, contract, meeting notes, specification) and who it is for.
 2. **Collect, while reading:** the main claim or decision, the supporting points, every number
    that matters (with its unit and what it measures), dates and deadlines, names of people and
    systems, obligations ("must", "shall"), and what the document says is unknown or open.

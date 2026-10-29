@@ -19,7 +19,7 @@ namespace bmoe::server::agent {
 
 // One external agent, kept for its conversation between messages.
 struct Agent::External {
-    std::unique_ptr<AcpConnection> conn;
+    std::unique_ptr<JsonRpcConnection> conn;
     std::string agent; // its catalog id
     std::string session;
     std::string cwd; // the workspace, absolute
@@ -31,18 +31,6 @@ struct Agent::External {
 };
 
 namespace {
-
-// A LineProcess as the connection's transport.
-class ProcessTransport : public AcpTransport {
-public:
-    explicit ProcessTransport(std::unique_ptr<platform::LineProcess> p) : p_(std::move(p)) {}
-    bool write_line(const std::string & line) override { return p_->write_line(line); }
-    bool read_line(std::string & line) override { return p_->read_line(line); }
-    void stop() override { p_->stop(); }
-
-private:
-    std::unique_ptr<platform::LineProcess> p_;
-};
 
 // A tool call's state in the agent's words, as the item's.
 std::string item_state(const std::string & status) {
@@ -107,7 +95,7 @@ bool Agent::knows_agent(const std::string & id) const {
     return false;
 }
 
-json Agent::capabilities() const {
+json Agent::capabilities(bool with_mcp) const {
     json agents = json::array();
     const bool commands = d_.tools && d_.can_run_commands;
     if (commands) {
@@ -124,7 +112,10 @@ json Agent::capabilities() const {
                               {"missing", missing}});
         }
     }
-    return {{"tools", d_.tools}, {"commands", commands}, {"agents", agents}};
+    return {{"tools", d_.tools},
+            {"commands", commands},
+            {"agents", agents},
+            {"mcp", d_.mcp && d_.tools && with_mcp ? d_.mcp->describe() : json::array()}};
 }
 
 void Agent::close_external(const std::string & conv_id) {
@@ -159,7 +150,7 @@ Agent::external_for(Run & run, const json & conv, const std::string & ws, std::s
     std::vector<std::string> command;
     for (const json & c : entry["acp"].value("command", json::array()))
         if (c.is_string()) command.push_back(c.get<std::string>());
-    std::unique_ptr<AcpTransport> transport;
+    std::unique_ptr<JsonRpcTransport> transport;
     if (d_.start_agent) {
         transport = d_.start_agent(command, ws, err);
     } else if (auto p = platform::LineProcess::start(command, ws, err)) {
@@ -173,7 +164,7 @@ Agent::external_for(Run & run, const json & conv, const std::string & ws, std::s
     ext->agent = id;
     ext->cwd = ws;
     const std::weak_ptr<External> weak = ext;
-    AcpConnection::Handlers h;
+    JsonRpcConnection::Handlers h;
     h.notification = [this, weak](const std::string & method, const json & params) {
         if (method != "session/update") return;
         if (auto e = weak.lock()) on_external_update(e, params);
@@ -186,7 +177,7 @@ Agent::external_for(Run & run, const json & conv, const std::string & ws, std::s
         }
         return on_external_request(e, method, params, result, error);
     };
-    ext->conn = std::make_unique<AcpConnection>(std::move(transport), std::move(h));
+    ext->conn = std::make_unique<JsonRpcConnection>(std::move(transport), std::move(h));
     // A first start may download the agent (npx): the person can stop it meanwhile.
     const auto stopped = [&run] { return run.stop.load(); };
     json init;

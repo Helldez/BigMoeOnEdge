@@ -2,7 +2,6 @@
   // A run of tool calls as one line ("Read 3 files, edited 2 files · +14 −3"), open while it runs or
   // waits for an answer and folded once it is done; one call alone is shown as itself.
   import Icon from '../Icon.svelte';
-  import HelperRow from './HelperRow.svelte';
   import ToolCard from './ToolCard.svelte';
   import type { Item } from '../../lib/agent';
   import { runSummary, summaryText } from '../../lib/items';
@@ -19,8 +18,6 @@
 {#snippet one(it: Item)}
   {#if it.kind === 'tool'}
     <ToolCard item={it} {conversation} />
-  {:else if it.kind === 'helper'}
-    <HelperRow item={it} />
   {/if}
 {/snippet}
 

@@ -5,12 +5,15 @@
 //     model; a denial reaches the model as a refusal and changes nothing; read-only mode refuses a
 //     change and offers no editing tool, while a command that only reads still runs; a stop while
 //     waiting ends the run and denies the card; the round limit ends a run that never answers; a
-//     context that runs short shortens the oldest tool result and says so; no model is a notice;
-//     a helper's answer comes back as its parent's tool result; a task's approvals are refused at
-//     once; shutdown ends a run that waits for a person;
+//     context that runs short shortens the oldest tool result and says so; no model is a notice; a
+//     task's approvals are refused at once; shutdown ends a run that waits for a person; the system
+//     prompt stays short and carries the workspace's AGENTS.md;
 //   * path confinement: `..`, absolute paths, links out of the workspace and dangling links;
-//   * the read-only command classifier; the diff an edit shows; web pages as text and a search page
-//     as results; skills' front matter; the schedule's next run; a provider's streamed answer;
+//   * the read-only command classifier; the diff an edit shows; the workspace tools (read_file,
+//     file_glob_search, grep_search, edit_file's edits, globs); skills' front matter; the
+//     schedule's next run; a provider's streamed answer;
+//   * MCP servers, in process: the handshake, tools named `<server>_<tool>`, a call's result, an
+//     error, a time limit; through the agent, the modes' approvals and the rules on what offers them;
 //   * connecting a client: a TOML block replaced, a JSON file merged, a backup kept;
 //   * a real command: output, exit code, folder, time limit, stop, a background child, the cap;
 //   * stores: a key is never in a listing or the providers file, and its file is the owner's only;
@@ -19,8 +22,9 @@
 // Checks are explicit (not <cassert>): the Release build defines NDEBUG, which compiles assert out.
 
 #include "access.h"
-#include "acp_connection.h"
 #include "agent.h"
+#include "json_rpc.h"
+#include "mcp.h"
 #include "agent_schedule.h"
 #include "agent_skills.h"
 #include "agent_store.h"
@@ -304,7 +308,7 @@ static void loop_tests() {
         check(slurp(rig->ws.path / "notes" / "hello.txt") == "hi\n", "the approved write happened");
         const json done = rig->items_of(c, "tool")[0];
         check(done.value("state", "") == "done", "the tool item reads done");
-        check(last_tool_message(rig->last_request()).find("Done.") == 0,
+        check(last_tool_message(rig->last_request()).find("File written successfully.") == 0,
               "the model reads the result in the next round");
         const json answers = rig->items_of(c, "assistant");
         check(answers.size() == 2 && answers[1].value("text", "") == "Written." && !answers[1].value("streaming", true),
@@ -315,9 +319,10 @@ static void loop_tests() {
         check(rig->conv(c).value("title", "") == "write a file", "an untitled conversation takes its first message");
         const GenerateRequest r = rig->last_request();
         check(!r.messages.empty() && r.messages[0].role == "system" &&
-                  r.messages[0].content.find(rig->ws.path.u8string()) != std::string::npos &&
+                  r.messages[0].content.find("working directory") != std::string::npos &&
+                  r.messages[0].content.find(rig->ws.path.u8string()) == std::string::npos &&
                   r.messages[0].content.find("Mode: ask") != std::string::npos,
-              "the system prompt names the workspace and the mode");
+              "the system prompt says the work is in the working directory, without its path, and the mode");
         GenerateRequest first;
         {
             std::lock_guard<std::mutex> lk(rig->script.m);
@@ -329,8 +334,9 @@ static void loop_tests() {
     {
         auto rig = std::make_unique<Rig>();
         const std::string c = rig->conversation("ask");
-        rig->say({{"", {call("edit_file", {{"path", "a.txt"}, {"old_text", "one"}, {"new_text", "two"}})}},
-                  {"Fine, I did not change it.", {}}});
+        rig->say(
+            {{"", {call("edit_file", {{"path", "a.txt"}, {"edits", {{{"old_text", "one"}, {"new_text", "two"}}}}})}},
+             {"Fine, I did not change it.", {}}});
         spit(rig->ws.path / "a.txt", "one\n");
         json item;
         rig->agent->send(c, "edit", false, false, item);
@@ -345,8 +351,8 @@ static void loop_tests() {
     {
         auto rig = std::make_unique<Rig>();
         const std::string c = rig->conversation("read_only");
-        rig->say({{"", {call("run_command", {{"command", "rm -rf build"}})}},
-                  {"", {call("run_command", {{"command", "ls -la"}})}},
+        rig->say({{"", {call("exec_shell_command", {{"command", "rm -rf build"}})}},
+                  {"", {call("exec_shell_command", {{"command", "ls -la"}})}},
                   {"I can only read.", {}}});
         json item;
         rig->agent->send(c, "clean up", false, false, item);
@@ -359,13 +365,13 @@ static void loop_tests() {
               "read_only: a command that only reads runs, and only that one ran");
         const GenerateRequest r = rig->last_request();
         check(!declares(r, "write_file") && !declares(r, "edit_file") && declares(r, "read_file") &&
-                  declares(r, "run_command"),
+                  declares(r, "exec_shell_command"),
               "read_only: the editing tools are not offered at all");
     }
     {
         auto rig = std::make_unique<Rig>();
         const std::string c = rig->conversation("ask");
-        rig->say({{"", {call("run_command", {{"command", "make install"}})}}});
+        rig->say({{"", {call("exec_shell_command", {{"command", "make install"}})}}});
         json item;
         rig->agent->send(c, "install", false, false, item);
         check(rig->wait_state(c, "waiting"), "a command that may change something waits");
@@ -382,7 +388,7 @@ static void loop_tests() {
     }
     {
         auto rig = std::make_unique<Rig>();
-        rig->script.fallback = {"", {call("list_files", json::object())}, false};
+        rig->script.fallback = {"", {call("file_glob_search", {{"path", "."}})}, false};
         const std::string c = rig->conversation("full");
         json item;
         rig->agent->send(c, "loop forever", false, false, item);
@@ -422,36 +428,6 @@ static void loop_tests() {
     }
     {
         auto rig = std::make_unique<Rig>();
-        const std::string c = rig->conversation("full", false);
-        rig->say({{"", {call("delegate", {{"task", "find the answer"}, {"title", "Find it"}})}},
-                  {"forty-two", {}},
-                  {"The helper says forty-two.", {}}});
-        json item;
-        rig->agent->send(c, "ask a helper", false, false, item);
-        check(rig->wait_done(c), "a run with a helper ends");
-        const json helpers = rig->items_of(c, "helper");
-        check(helpers.size() == 1 && helpers[0].value("summary", "") == "forty-two" &&
-                  helpers[0].value("state", "") == "done",
-              "the helper item carries the helper's final answer");
-        const std::string hid = helpers[0].value("conversation", "");
-        json h;
-        check(rig->store->conversation(hid, h) && h.value("parent", "") == c &&
-                  h["items"][0].value("text", "") == "find the answer",
-              "the helper has its own conversation, with the task as its message");
-        check(last_tool_message(rig->last_request()) == "forty-two", "the parent model reads the helper's answer");
-        bool listed = false;
-        for (const json & s : rig->agent->list_conversations())
-            listed = listed || s.value("id", "") == hid;
-        check(!listed, "a helper's conversation is not listed on its own");
-        GenerateRequest helper_req;
-        {
-            std::lock_guard<std::mutex> lk(rig->script.m);
-            helper_req = rig->script.requests[1];
-        }
-        check(!declares(helper_req, "delegate"), "a helper is not offered delegate (depth limit)");
-    }
-    {
-        auto rig = std::make_unique<Rig>();
         json task{{"id", "t1"},
                   {"title", "nightly"},
                   {"prompt", "write the report"},
@@ -484,17 +460,19 @@ static void loop_tests() {
     {
         auto rig = std::make_unique<Rig>();
         const std::string c = rig->conversation("ask", false);
-        rig->say({{"", {call("web_search", {{"query", "x"}})}}});
+        rig->say({{"", {call("fetch_url", {{"url", "https://example.com"}})}}});
         json item;
-        rig->agent->send(c, "search", false, false, item);
-        // No network in this rig: web tools are not offered, so the call is an error, not a card.
+        rig->agent->send(c, "fetch", false, false, item);
+        // A tool this server does not have (the web is an MCP server's, when one is configured) is an
+        // error, not a card.
         check(rig->wait_done(c), "a tool the conversation is not offered ends as an error item");
         check(rig->items_of(c, "tool")[0].value("state", "") == "error", "with state error");
     }
     {
         // --chat-only: the model gets the conversation alone, as plain chat did before the agent.
         auto rig = std::make_unique<Rig>(true, false);
-        check(!rig->agent->capabilities().value("tools", true) && !rig->agent->capabilities().value("commands", true),
+        check(!rig->agent->capabilities(true).value("tools", true) &&
+                  !rig->agent->capabilities(true).value("commands", true),
               "chat only: the server says it has no agent");
         const std::string c = rig->conversation("full");
         rig->say({{"Hello.", {}}});
@@ -578,18 +556,6 @@ static void confinement_tests() {
           "a path is shown relative to the workspace");
 }
 
-static void private_host_tests() {
-    for (const char * u :
-         {"https://localhost/x", "https://127.0.0.1:8765/api/info", "https://10.0.0.1", "https://192.168.1.1/admin",
-          "https://172.20.3.4", "https://169.254.169.254/latest", "https://[::1]/", "https://[fd00::1]/",
-          "https://[::ffff:127.0.0.1]/", "https://router.lan/", "https://printer.local", "https://2130706433/",
-          "https://0x7f000001/", "https://0177.0.0.1/", "https://user@127.0.0.1/", "https://LOCALHOST./"})
-        check(url_names_private_host(u), std::string("private: ") + u);
-    for (const char * u : {"https://example.com/", "https://8.8.8.8/", "https://cafe.com", "https://[2606:4700::1]/",
-                           "https://172.32.0.1/", "https://en.wikipedia.org/wiki/Local"})
-        check(!url_names_private_host(u), std::string("public: ") + u);
-}
-
 static void classifier_tests() {
     for (const char * c : {"ls -la", "cat a.txt | grep -n foo | head -3", "find . -name '*.cpp'", "rg TODO src",
                            "wc -l a b", "pwd", "grep -rn \"a b\" .", "sort -r names.txt", "sort --reverse names.txt"})
@@ -648,36 +614,100 @@ static void diff_tests() {
     check(nl.find("-x\n+x\n\\ No newline at end of file") != std::string::npos, "a lost final newline is shown");
 }
 
-static void web_tests() {
-    const std::string page = "<html><head><title>T</title><style>p{}</style></head><body><script>var x=1;</script>"
-                             "<h1>Title</h1><p>One &amp; two&nbsp;three &#233; &#x41;</p><ul><li>a</li><li>b</li></ul>"
-                             "<!-- hidden --><p>Last   line</p></body></html>";
-    const std::string t = html_to_text(page);
-    check(t.find("var x") == std::string::npos && t.find("p{}") == std::string::npos &&
-              t.find("hidden") == std::string::npos,
-          "scripts, styles and comments are gone");
-    check(t.find("Title\n") != std::string::npos && t.find("One & two three \xC3\xA9 A") != std::string::npos,
-          "entities decoded, blocks on lines of their own");
-    check(t.find("- a\n- b") != std::string::npos && t.find("Last line") != std::string::npos,
-          "list items marked, runs of spaces collapsed");
-    const std::string results =
-        "<div class=\"result\"><h2><a rel=\"nofollow\" class=\"result__a\" "
-        "href=\"//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa%3Fb%3D1&amp;rut=x\">Example <b>A</b></a></h2>"
-        "<a class=\"result__snippet\" href=\"x\">The <b>first</b> result.</a></div>"
-        "<div class=\"result\"><a class=\"result__a\" href=\"https://duckduckgo.com/y.js?ad=1\">Ad</a></div>"
-        "<div class=\"result\"><a class=\"result__a\" href=\"https://second.example/\">Second</a></div>";
-    const std::vector<SearchHit> hits = parse_search_results(results);
-    check(hits.size() == 2, "results parsed, the advertisement skipped");
-    check(hits.size() == 2 && hits[0].url == "https://example.com/a?b=1" && hits[0].title == "Example A" &&
-              hits[0].snippet == "The first result." && hits[1].url == "https://second.example/" &&
-              hits[1].snippet.empty(),
-          "a redirect link is unwrapped, title and snippet read as text");
-    check(parse_search_results("<html>a page of another shape</html>").empty(),
-          "a page of another shape gives nothing");
+static std::string tool_text(const ToolOutput & o) {
+    return o.text;
+}
+
+static void workspace_tool_tests() {
+    check(glob_match("*.cpp", "a.cpp") && !glob_match("*.cpp", "src/a.cpp"), "glob: * stays inside one name");
+    check(glob_match("**/*.cpp", "a.cpp") && glob_match("**/*.cpp", "src/x/a.cpp") &&
+              glob_match("src/**/x.h", "src/x.h"),
+          "glob: ** crosses folders, and **/ matches none");
+    check(glob_match("[ab]?.txt", "a1.txt") && !glob_match("[!a]x", "ax") && glob_match("[a-c]", "b"),
+          "glob: classes, negation and ranges");
+    check(path_glob_match("*.md", "docs/a.md") && path_glob_match("docs/*.md", "x/docs/a.md") &&
+              !path_glob_match("/docs/*.md", "x/docs/a.md") && path_glob_match("/docs/*.md", "docs/a.md"),
+          "glob: a name pattern at any depth, a path pattern from any depth unless anchored");
+
+    std::string after, err;
+    check(
+        apply_edits("one two three",
+                    json::array({{{"old_text", "three"}, {"new_text", "3"}}, {{"old_text", "one"}, {"new_text", "1"}}}),
+                    after, err) &&
+            after == "1 two 3",
+        "edit_file: several edits, matched against the original, applied at once");
+    check(!apply_edits("a a", json::array({{{"old_text", "a"}, {"new_text", "b"}}}), after, err) &&
+              err.find("2 occurrences of edits[0]") != std::string::npos,
+          "edit_file: a passage found twice is refused, by its index");
+    check(!apply_edits("abc", json::array({{{"old_text", "x"}, {"new_text", "y"}}}), after, err) &&
+              err.find("could not find edits[0]") != std::string::npos,
+          "edit_file: a passage not found is refused");
+    check(!apply_edits("abcdef",
+                       json::array({{{"old_text", "abc"}, {"new_text", "1"}}, {{"old_text", "cd"}, {"new_text", "2"}}}),
+                       after, err) &&
+              err.find("overlap") != std::string::npos,
+          "edit_file: overlapping edits are refused");
+    check(!apply_edits("abc", json::array({{{"old_text", "b"}, {"new_text", "b"}}}), after, err) &&
+              err.find("no changes") != std::string::npos,
+          "edit_file: an edit that changes nothing is refused");
+    check(!apply_edits("abc", json::array(), after, err) &&
+              !apply_edits("abc", json::array({{{"old_text", ""}, {"new_text", "b"}}}), after, err),
+          "edit_file: no edits, or an empty old_text, is refused");
+
+    TempDir ws("tools");
+    const std::string w = ws.path.u8string();
+    spit(ws.path / "src" / "a.cpp", "int a;\nint b;\n// TODO fix\n");
+    spit(ws.path / "src" / "deep" / "b.cpp", "int TODO_x;\n");
+    spit(ws.path / "README.md", "line one\nline two\nline three\n");
+    spit(ws.path / "node_modules" / "dep" / "x.js", "TODO\n");
+    spit(ws.path / "bin.dat", std::string("a\0b", 3));
+    std::string t =
+        tool_text(read_file(w, {{"path", "README.md"}, {"start_line", 2}, {"end_line", 3}, {"append_loc", true}}));
+    check(t == "2\xE2\x86\x92line two\n3\xE2\x86\x92line three\n",
+          "read_file: a line range, numbered as N\xE2\x86\x92");
+    check(!read_file(w, {{"path", "bin.dat"}}).ok && !read_file(w, {{"path", "src"}}).ok &&
+              !read_file(w, {{"path", "../x"}}).ok,
+          "read_file: a binary file, a folder and a path outside are refused");
+    spit(ws.path / "big.txt", std::string(k_tool_result_max_bytes, 'x') + "\nnext\n");
+    t = tool_text(read_file(w, {{"path", "big.txt"}}));
+    check(t.find("[output truncated at line 1 of 2: read on with start_line=1]") != std::string::npos,
+          "read_file: a file past the cap says where to read on");
+
+    t = tool_text(file_glob_search(w, {{"path", "."}, {"include", "*.cpp"}}));
+    check(t.find("src/a.cpp\nsrc/deep/b.cpp\n") == 0 && t.find("Total matches: 2") != std::string::npos,
+          "file_glob_search: files by name at any depth, in order, with the total");
+    t = tool_text(file_glob_search(w, {{"path", "."}, {"include", "*.js"}}));
+    check(t.find("x.js") == std::string::npos, "file_glob_search: junk folders are not entered");
+    t = tool_text(file_glob_search(w, {{"path", "."}, {"type", "dir"}, {"max_depth", 1}}));
+    check(t.find("node_modules/\n") != std::string::npos && t.find("src/\n") != std::string::npos &&
+              t.find("src/deep/") == std::string::npos,
+          "file_glob_search: folders with type dir, one level with max_depth 1");
+    t = tool_text(file_glob_search(w, {{"path", "src"}, {"limit", 1}}));
+    check(t.find("a.cpp\n") == 0 && t.find("1 results limit reached (2 total matches)") != std::string::npos,
+          "file_glob_search: paths relative to the folder searched, and the limit said");
+    check(!file_glob_search(w, {{"path", "."}, {"type", "x"}}).ok && !file_glob_search(w, {{"path", ".."}}).ok,
+          "file_glob_search: a bad type and a folder outside are refused");
+
+    t = tool_text(grep_search(w, {{"path", "."}, {"pattern", "TODO"}, {"return_line_numbers", true}}));
+    check(t.find("src/a.cpp:3:// TODO fix\n") != std::string::npos &&
+              t.find("src/deep/b.cpp:1:") != std::string::npos && t.find("x.js") == std::string::npos &&
+              t.find("Total matches: 2") != std::string::npos,
+          "grep_search: path:line:text, junk folders skipped");
+    t = tool_text(grep_search(w, {{"path", "src"}, {"pattern", "int [ab];"}, {"include", "a.cpp"}}));
+    check(t.find("a.cpp:int a;\na.cpp:int b;\n") == 0, "grep_search: a regular expression, include by name");
+    t = tool_text(
+        grep_search(w, {{"path", "README.md"}, {"pattern", "LINE TWO"}, {"ignore_case", true}, {"context_lines", 1}}));
+    check(t.find("README.md-1-line one\nREADME.md:2:line two\nREADME.md-3-line three\n--\n") == 0,
+          "grep_search: one file, ignoring case, with context lines");
+    t = tool_text(grep_search(w, {{"path", "src"}, {"pattern", "int a;"}, {"literal", true}}));
+    check(t.find("Total matches: 1") != std::string::npos, "grep_search: a literal pattern");
+    check(!grep_search(w, {{"path", "."}, {"pattern", "("}}).ok &&
+              !grep_search(w, {{"path", ".."}, {"pattern", "x"}}).ok,
+          "grep_search: a bad expression and a folder outside are refused");
+
     const std::string capped = cap_text(std::string(10, 'a') + "\xC3\xA9", 11);
     check(capped.compare(0, 11, std::string(10, 'a') + "\n") == 0 && capped.find("2 more bytes") != std::string::npos,
           "a cap never splits a character and says what it left out");
-    check(url_encode("a b&c") == "a%20b%26c" && url_decode("a+b%26c") == "a b&c", "query strings round-trip");
 }
 
 static void skill_tests() {
@@ -1025,7 +1055,7 @@ static void audience_tests() {
 // Another agent over the Agent Client Protocol: an in-process stand-in that answers as `behave`
 // says, so the bridge is tested without a program or a model.
 
-class FakeAcpAgent : public AcpTransport {
+class FakeAcpAgent : public JsonRpcTransport {
 public:
     using Behave = std::function<void(FakeAcpAgent &, const json & message)>;
     explicit FakeAcpAgent(Behave b) : behave_(std::move(b)) {
@@ -1119,7 +1149,7 @@ static std::unique_ptr<Rig> acp_rig(FakeAcpAgent::Behave b, FakeAcpAgent ** last
         d.start_agent = [b, last](const std::vector<std::string> &, const std::string &, std::string &) {
             auto a = std::make_unique<FakeAcpAgent>(b);
             if (last) *last = a.get();
-            return std::unique_ptr<AcpTransport>(std::move(a));
+            return std::unique_ptr<JsonRpcTransport>(std::move(a));
         };
     });
 }
@@ -1141,7 +1171,7 @@ static bool handshake(FakeAcpAgent & a, const json & m) {
 static void external_agent_tests() {
     {
         auto rig = acp_rig([](FakeAcpAgent &, const json &) {});
-        const json caps = rig->agent->capabilities();
+        const json caps = rig->agent->capabilities(true);
         check(caps["agents"].size() == 3 && caps["agents"][0].value("id", "") == "builtin" &&
                   caps["agents"][1].value("available", false) && !caps["agents"][2].value("available", true) &&
                   caps["agents"][2]["missing"][0] == "nope",
@@ -1231,12 +1261,236 @@ static void external_agent_tests() {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// MCP servers: FakeAcpAgent's JSON-RPC peer, answering as an MCP server.
+
+struct FakeMcp {
+    std::atomic<int> starts{0};
+    std::atomic<bool> initialized{false};
+    std::string protocol;
+    std::mutex m;
+};
+
+// A server "srv" with tools `echo` (its text back), `boom` (an error) and `slow` (no answer), listed
+// over two pages; with `with_read`, a server "read" whose tool `file` would be named read_file.
+static McpHub::StartFn fake_mcp_start(FakeMcp & state) {
+    return [&state](const McpServerConfig & c, std::string & err) -> std::unique_ptr<JsonRpcTransport> {
+        if (c.name == "broken") {
+            err = "no such program";
+            return nullptr;
+        }
+        ++state.starts;
+        const std::string name = c.name;
+        return std::make_unique<FakeAcpAgent>([&state, name](FakeAcpAgent & a, const json & m) {
+            const std::string method = m.value("method", "");
+            const json p = m.value("params", json::object());
+            if (method == "initialize") {
+                {
+                    std::lock_guard<std::mutex> lk(state.m);
+                    state.protocol = p.value("protocolVersion", "");
+                }
+                a.reply(m,
+                        {{"protocolVersion", k_mcp_protocol_version}, {"capabilities", {{"tools", json::object()}}}});
+            } else if (method == "notifications/initialized") {
+                state.initialized = true;
+            } else if (method == "tools/list" && name == "read") {
+                a.reply(m, {{"tools",
+                             {{{"name", "file"}, {"description", "shadow"}, {"inputSchema", {{"type", "object"}}}}}}});
+            } else if (method == "tools/list" && !p.contains("cursor")) {
+                a.reply(m,
+                        {{"tools",
+                          {{{"name", "echo"},
+                            {"description", "Say it back"},
+                            {"inputSchema", {{"type", "object"}, {"properties", {{"text", {{"type", "string"}}}}}}}}}},
+                         {"nextCursor", "p2"}});
+            } else if (method == "tools/list") {
+                a.reply(m, {{"tools", {{{"name", "boom"}}, {{"name", "slow"}}}}});
+            } else if (method == "tools/call") {
+                const std::string tool = p.value("name", "");
+                if (tool == "echo")
+                    a.reply(m, {{"content",
+                                 {{{"type", "text"}, {"text", p["arguments"].value("text", "")}},
+                                  {{"type", "image"}, {"data", "x"}}}}});
+                else if (tool == "boom")
+                    a.reply(m, {{"content", {{{"type", "text"}, {"text", "it broke"}}}}, {"isError", true}});
+                // slow: never answers
+            }
+        });
+    };
+}
+
+static std::vector<McpServerConfig> mcp_servers(std::initializer_list<const char *> names, int timeout_ms = 2000) {
+    std::vector<McpServerConfig> out;
+    for (const char * n : names) {
+        McpServerConfig c;
+        c.name = n;
+        c.command = {"fake"};
+        c.timeout_ms = timeout_ms;
+        out.push_back(c);
+    }
+    return out;
+}
+
+static void mcp_tests() {
+    {
+        std::vector<std::string> w;
+        const auto cfg =
+            parse_mcp_config(json::parse(R"({"mcpServers":{"fs":{"command":"npx","args":["-y","pkg"],"env":{"K":"v"}},
+                            "web":{"url":"https://x"},"none":{}}})"),
+                             w);
+        check(cfg.size() == 1 && cfg[0].name == "fs" &&
+                  cfg[0].command == std::vector<std::string>{"npx", "-y", "pkg"} && cfg[0].env.at("K") == "v" &&
+                  cfg[0].timeout_ms == k_mcp_call_timeout_ms,
+              "mcp config: command, args and env, in the mcpServers format");
+        check(w.size() == 2 && w[0].find("remote") != std::string::npos, "mcp config: a remote or empty entry is said");
+    }
+    FakeMcp state;
+    McpHub hub(mcp_servers({"srv", "broken"}, 300), fake_mcp_start(state));
+    check(state.starts == 0, "mcp: nothing starts before its tools are wanted");
+    const std::vector<McpTool> tools = hub.tools();
+    check(tools.size() == 3 && tools[0].exposed_name() == "srv_echo" && tools[2].exposed_name() == "srv_slow" &&
+              tools[0].input_schema.value("type", "") == "object",
+          "mcp: the tools of every page, named <server>_<tool>");
+    {
+        std::lock_guard<std::mutex> lk(state.m);
+        check(state.protocol == k_mcp_protocol_version && state.initialized,
+              "mcp: initialize with the protocol version, then notifications/initialized");
+    }
+    std::string text;
+    check(hub.call("srv", "echo", {{"text", "hello"}}, text) && text == "hello\n[image content not shown]",
+          "mcp: a call's text content comes back, other content named");
+    check(!hub.call("srv", "boom", json::object(), text) && text == "it broke", "mcp: isError is a failed call");
+    const auto t0 = std::chrono::steady_clock::now();
+    check(!hub.call("srv", "slow", json::object(), text) && text.find("did not answer") != std::string::npos &&
+              std::chrono::steady_clock::now() - t0 < 3s,
+          "mcp: a call past its time limit fails");
+    check(hub.call("srv", "echo", {{"text", "again"}}, text) && text.find("again") == 0 && state.starts == 2,
+          "mcp: the server ended by the time limit starts again at the next call");
+    std::atomic<bool> stop{false};
+    std::thread stopper([&] {
+        std::this_thread::sleep_for(50ms);
+        stop = true;
+    });
+    check(!hub.call("srv", "slow", json::object(), text, [&] { return stop.load(); }) && text == "stopped",
+          "mcp: a stop ends a call");
+    stopper.join();
+    const json d = hub.describe();
+    check(d.size() == 2 && d[0].value("state", "") == "running" && d[0]["tools"][0].value("name", "") == "srv_echo" &&
+              d[1].value("state", "") == "failed" &&
+              d[1].value("error", "").find("no such program") != std::string::npos,
+          "mcp: describe lists each server, its state and tools, and why one failed");
+    check(!hub.call("broken", "x", json::object(), text) && text.find("not running") != std::string::npos,
+          "mcp: a server that could not start refuses calls");
+    hub.shutdown();
+    check(hub.tools().empty() && !hub.call("srv", "echo", json::object(), text), "mcp: after shutdown nothing starts");
+}
+
+static void mcp_agent_tests() {
+    FakeMcp state;
+    auto hub = std::make_unique<McpHub>(mcp_servers({"srv", "read"}), fake_mcp_start(state));
+    McpHub * h = hub.get();
+    auto rig = std::make_unique<Rig>(true, true, [h](AgentDeps & d) { d.mcp = h; });
+    {
+        const std::string c = rig->conversation("ask");
+        rig->say({{"", {call("srv_echo", {{"text", "hi"}})}}, {"It said hi.", {}}});
+        json item;
+        rig->agent->send(c, "echo", false, false, item);
+        check(rig->wait_state(c, "waiting"), "mcp ask: a call waits for an approval, like a change");
+        const GenerateRequest r = rig->last_request();
+        check(declares(r, "srv_echo") && declares(r, "read_file"),
+              "mcp: its tools are offered beside the built-in ones");
+        size_t read_file_count = 0;
+        for (const ChatTool & t : r.tools)
+            read_file_count += t.name == "read_file";
+        check(read_file_count == 1, "mcp: a tool named like a built-in one is left out");
+        check(rig->agent->approve(c, rig->waiting_item(c), true).ok() && rig->wait_done(c),
+              "mcp ask: approved, it runs");
+        const json tool = rig->items_of(c, "tool")[0];
+        check(tool.value("state", "") == "done" && tool.value("result", "").find("hi") == 0 &&
+                  tool.value("mcp", "") == "srv",
+              "mcp: the result reaches the item, which names its server");
+    }
+    {
+        const std::string c = rig->conversation("full");
+        rig->say({{"", {call("srv_echo", {{"text", "yo"}})}}, {"ok", {}}});
+        json item;
+        rig->agent->send(c, "echo", false, false, item);
+        check(rig->wait_done(c) && rig->items_of(c, "tool")[0].value("state", "") == "done",
+              "mcp full: a call runs without asking");
+    }
+    {
+        const std::string c = rig->conversation("read_only");
+        rig->say({{"", {call("srv_echo", {{"text", "no"}})}}, {"ok", {}}});
+        json item;
+        rig->agent->send(c, "echo", false, false, item);
+        check(rig->wait_done(c) && !declares(rig->last_request(), "srv_echo") &&
+                  rig->items_of(c, "tool")[0].value("state", "") == "error",
+              "mcp read_only: not offered, and a call is refused");
+    }
+    {
+        const std::string c = rig->conversation("full", false);
+        rig->say({{"ok", {}}});
+        json item;
+        rig->agent->send(c, "hi", false, false, item);
+        check(rig->wait_done(c) && !declares(rig->last_request(), "srv_echo"), "mcp: no workspace, no MCP tools");
+    }
+    {
+        const std::string c = rig->conversation("full");
+        rig->say({{"ok", {}}});
+        json item;
+        rig->agent->send(c, "hi", false, true, item);
+        check(rig->wait_done(c) && !declares(rig->last_request(), "srv_echo"),
+              "mcp: a request from the network gets no MCP tool");
+    }
+    const json caps = rig->agent->capabilities(true);
+    check(caps["mcp"].size() == 2 && caps["mcp"][0].value("name", "") == "srv" &&
+              rig->agent->capabilities(false)["mcp"].empty(),
+          "mcp: GET /api/agent lists the servers and their tools to a local client only");
+    rig.reset();
+    hub.reset();
+}
+
+static void prompt_tests() {
+    // The real bundled skills, as a release ships them beside the server.
+    const fs::path skills = fs::path(__FILE__).parent_path().parent_path() / "skills";
+    auto rig = std::make_unique<Rig>(true, true, [&](AgentDeps & d) {
+        d.bundled_skills_dir = skills.u8string();
+        d.os_name = "macOS 26.0";
+    });
+    const std::string c = rig->conversation("ask");
+    rig->say({{"ok", {}}});
+    json item;
+    rig->agent->send(c, "hi", false, false, item);
+    rig->wait_done(c);
+    const std::string prompt = rig->last_request().messages[0].content;
+    std::printf("system prompt of a workspace conversation: %zu characters, %zu tools\n", prompt.size(),
+                rig->last_request().tools.size());
+    check(prompt.size() < 4000, "the system prompt (tools apart) stays under 4,000 characters (~1,000 tokens)");
+    check(prompt.find("AGENTS.md") == std::string::npos, "no AGENTS.md, none mentioned");
+
+    spit(rig->ws.path / "AGENTS.md", "Use tabs.\n" + std::string(20000, 'x'));
+    const std::string c2 = rig->conversation("ask");
+    rig->say({{"ok", {}}});
+    rig->agent->send(c2, "hi", false, false, item);
+    rig->wait_done(c2);
+    const std::string with = rig->last_request().messages[0].content;
+    check(with.find("AGENTS.md:\nUse tabs.") != std::string::npos &&
+              with.size() < prompt.size() + k_agents_md_max_bytes + 200,
+          "the workspace's AGENTS.md is appended, capped");
+    const std::string c3 = rig->conversation("ask");
+    rig->say({{"ok", {}}});
+    rig->agent->send(c3, "hi", false, true, item);
+    rig->wait_done(c3);
+    check(rig->last_request().messages[0].content.find("Use tabs.") == std::string::npos,
+          "a request from the network does not get the workspace's AGENTS.md");
+}
+
 int main() {
     confinement_tests();
     classifier_tests();
-    private_host_tests();
     diff_tests();
-    web_tests();
+    workspace_tool_tests();
+    mcp_tests();
     skill_tests();
     schedule_tests();
     provider_tests();
@@ -1247,6 +1501,8 @@ int main() {
     external_agent_tests();
     command_tests();
     loop_tests();
+    prompt_tests();
+    mcp_agent_tests();
     if (failures) {
         std::printf("\n%d check(s) FAILED\n", failures);
         return 1;

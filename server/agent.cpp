@@ -19,8 +19,10 @@ namespace bmoe::server::agent {
 
 namespace {
 
-// Tool names, the categories the mode rules apply to, and the words of a tool item's title.
-enum class Kind { Read, Change, Web, Skill, Delegate };
+// The categories the mode rules apply to: a read runs, a change runs, waits for a person or is
+// refused, a skill is the agent's own instructions. An MCP server's tool is a change: what it does
+// is the server's, unknown here.
+enum class Kind { Read, Change, Skill };
 
 struct ToolSpec {
     const char * name;
@@ -29,37 +31,40 @@ struct ToolSpec {
     const char * parameters;
 };
 
-// The tools as the model reads them. Every schema is an object with its required fields; the
-// descriptions say what the tool cannot do, so a model does not try it.
+// The tools as the model reads them: llama.cpp's server tools, by name, parameters and meaning, so
+// a model used to one works with the other. Paths are the workspace's.
 const ToolSpec kTools[] = {
-    {"list_files", Kind::Read, "List a folder of the workspace: its files with sizes, and its subfolders.",
-     R"({"type":"object","properties":{"path":{"type":"string","description":"Folder, relative to the workspace. Default: the workspace itself."}}})"},
     {"read_file", Kind::Read,
-     "Read a text file of the workspace, whole or a range of lines. Long files are cut; ask for a line range then.",
-     R"({"type":"object","properties":{"path":{"type":"string"},"start_line":{"type":"integer","description":"First line, from 1."},"end_line":{"type":"integer","description":"Last line, included."}},"required":["path"]})"},
-    {"search_files", Kind::Read,
-     "Find the lines that contain a text (case-insensitive, not a regular expression) in the files under a folder.",
-     R"({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string","description":"Folder to search, relative to the workspace. Default: all of it."}},"required":["pattern"]})"},
-    {"write_file", Kind::Change, "Create a file, or replace a file's whole content. Folders are created as needed.",
-     R"({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]})"},
+     "Read the contents of a file. Optionally specify a 1-based line range. If append_loc is true, each line is "
+     "prefixed with its line number (e.g. \"1\xE2\x86\x92...\").",
+     R"j({"type":"object","properties":{"path":{"type":"string","description":"Path to the file"},"start_line":{"type":"integer","description":"First line to read, 1-based (default: 1)"},"end_line":{"type":"integer","description":"Last line to read, 1-based inclusive (default: end of file)"},"append_loc":{"type":"boolean","description":"Prefix each line with its line number"}},"required":["path"]})j"},
+    {"file_glob_search", Kind::Read,
+     "Recursively search for files matching a glob pattern under a directory. Skips common junk directories (.git, "
+     "node_modules, build, dist, etc.). A pattern with no '/' (e.g. \"*.cpp\") matches the file's basename at any "
+     "depth. A pattern containing '/' matches the full relative path; unless anchored with \"**/\" or a leading "
+     "'/', it is prefixed with \"**/\". Use type=\"dir\" or \"all\" to also list directories; directory entries end "
+     "with '/'.",
+     R"j({"type":"object","properties":{"path":{"type":"string","description":"Base directory to search in"},"include":{"type":"string","description":"Glob pattern for files to include (e.g. \"*.cpp\" or \"src/**/*.cpp\"). Default: **"},"exclude":{"type":"string","description":"Glob pattern for files to exclude"},"type":{"type":"string","description":"Entry type to return: \"file\" (default), \"dir\" or \"all\""},"max_depth":{"type":"integer","description":"Maximum depth to descend into subdirectories (default: 0 = unlimited; 1 = direct children only)"},"limit":{"type":"integer","description":"Maximum number of results to return, capped at 100 (default 100)"}},"required":["path"]})j"},
+    {"grep_search", Kind::Read,
+     "Search for a pattern in files under a path. Returns matching lines with file paths (relative to the given "
+     "directory). Skips common junk directories. include/exclude: a pattern with no '/' matches the basename at any "
+     "depth; a pattern containing '/' matches the full relative path.",
+     R"j({"type":"object","properties":{"path":{"type":"string","description":"File or directory to search in"},"pattern":{"type":"string","description":"Pattern to search for (regular expression unless literal is true)"},"include":{"type":"string","description":"Glob pattern to filter files (default: **)"},"exclude":{"type":"string","description":"Glob pattern to exclude files"},"return_line_numbers":{"type":"boolean","description":"If true, include line numbers in results"},"literal":{"type":"boolean","description":"Treat pattern as a literal string instead of a regular expression (default: false)"},"ignore_case":{"type":"boolean","description":"Case-insensitive search (default: false)"},"context_lines":{"type":"integer","description":"Number of lines of context to show before and after each match (default: 0)"}},"required":["path","pattern"]})j"},
+    {"get_info", Kind::Read, "Returns runtime info: the OS name/version and the current working directory",
+     R"j({"type":"object","properties":{}})j"},
+    {"write_file", Kind::Change,
+     "Write content to a file, creating it (including parent directories) if it does not exist. May use with "
+     "edit_file for more complex edits.",
+     R"j({"type":"object","properties":{"path":{"type":"string","description":"Path of the file to write"},"content":{"type":"string","description":"Content to write"}},"required":["path","content"]})j"},
     {"edit_file", Kind::Change,
-     "Replace one exact passage of a file with new text. The passage must appear exactly once: include enough "
-     "surrounding lines to make it unique.",
-     R"({"type":"object","properties":{"path":{"type":"string"},"old_text":{"type":"string"},"new_text":{"type":"string"}},"required":["path","old_text","new_text"]})"},
-    {"run_command", Kind::Change,
-     "Run a shell command in the workspace folder, with a time limit; stdout and stderr come back, cut if long. "
-     "No input can be typed into it.",
-     R"({"type":"object","properties":{"command":{"type":"string"}},"required":["command"]})"},
-    {"fetch_url", Kind::Web, "Read a web page (https) as plain text.",
-     R"({"type":"object","properties":{"url":{"type":"string"}},"required":["url"]})"},
-    {"web_search", Kind::Web, "Search the web: result titles, links and snippets. Read a result with fetch_url.",
-     R"({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]})"},
+     "Edit a file using exact text replacement. Each edits[].old_text must be unique in the file and is matched "
+     "against the original content, not incrementally. Merge nearby changes into one edit instead of overlapping "
+     "edits. Use write_file to replace the whole file.",
+     R"j({"type":"object","properties":{"path":{"type":"string","description":"Path to the file to edit"},"edits":{"type":"array","description":"One or more exact text replacements to apply","items":{"type":"object","properties":{"old_text":{"type":"string","description":"Exact text to find; must be unique in the file and must not overlap with other edits"},"new_text":{"type":"string","description":"Text to replace old_text with"}},"required":["old_text","new_text"]}}},"required":["path","edits"]})j"},
+    {"exec_shell_command", Kind::Change, "Execute a shell command and return its output (stdout and stderr combined).",
+     R"j({"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute"},"timeout":{"type":"integer","description":"Timeout in seconds (default 10, max 120)"},"max_output_size":{"type":"integer","description":"Maximum output size in bytes (default 12288)"}},"required":["command"]})j"},
     {"use_skill", Kind::Skill, "Read the instructions of one of the skills listed in the system prompt.",
-     R"({"type":"object","properties":{"name":{"type":"string"}},"required":["name"]})"},
-    {"delegate", Kind::Delegate,
-     "Hand a self-contained part of the job to a helper, which works on it with the same tools and returns its "
-     "final answer. Say everything it needs in `task`: it does not see this conversation.",
-     R"({"type":"object","properties":{"task":{"type":"string"},"title":{"type":"string","description":"A few words for the person."}},"required":["task"]})"},
+     R"j({"type":"object","properties":{"name":{"type":"string"}},"required":["name"]})j"},
 };
 
 const ToolSpec * find_tool(const std::string & name) {
@@ -84,165 +89,23 @@ std::string short_text(const std::string & s, size_t max_chars) {
 }
 
 std::string title_for(const std::string & tool, const json & a) {
-    if (tool == "list_files") return "List " + (arg(a, "path").empty() ? std::string(".") : arg(a, "path"));
     if (tool == "read_file") return "Read " + arg(a, "path");
-    if (tool == "search_files") return "Search for \"" + short_text(arg(a, "pattern"), 40) + "\"";
+    if (tool == "file_glob_search") {
+        const std::string inc = arg(a, "include");
+        const std::string where = arg(a, "path").empty() ? std::string(".") : arg(a, "path");
+        return inc.empty() || inc == "**" ? "List " + where : "Find " + short_text(inc, 40) + " in " + where;
+    }
+    if (tool == "grep_search") return "Search for \"" + short_text(arg(a, "pattern"), 40) + "\"";
+    if (tool == "get_info") return "Get the system's info";
     if (tool == "write_file") return "Write " + arg(a, "path");
     if (tool == "edit_file") return "Edit " + arg(a, "path");
-    if (tool == "run_command") return "Run " + short_text(arg(a, "command"), 60);
-    if (tool == "fetch_url") return "Read " + short_text(arg(a, "url"), 80);
-    if (tool == "web_search") return "Search the web for \"" + short_text(arg(a, "query"), 50) + "\"";
+    if (tool == "exec_shell_command") return "Run " + short_text(arg(a, "command"), 60);
     if (tool == "use_skill") return "Use the skill " + arg(a, "name");
-    if (tool == "delegate")
-        return "Helper: " + (arg(a, "title").empty() ? short_text(arg(a, "task"), 50) : arg(a, "title"));
     return tool;
 }
 
-bool read_whole(const std::string & path, std::string & out, std::string & err) {
-    std::error_code ec;
-    const auto size = fs::file_size(fs::u8path(path), ec);
-    if (ec) {
-        err = "cannot read the file (" + ec.message() + ")";
-        return false;
-    }
-    if (size > k_read_max_file_bytes) {
-        err = "the file is " + std::to_string(size) + " bytes, more than the " + std::to_string(k_read_max_file_bytes) +
-              " a tool reads";
-        return false;
-    }
-    std::ifstream f(fs::u8path(path), std::ios::binary);
-    std::ostringstream ss;
-    ss << f.rdbuf();
-    out = ss.str();
-    if (!f && !f.eof()) {
-        err = "cannot read the file";
-        return false;
-    }
-    return true;
-}
-
-bool write_whole(const std::string & path, const std::string & content, std::string & err) {
-    std::error_code ec;
-    fs::create_directories(fs::u8path(path).parent_path(), ec);
-    std::ofstream f(fs::u8path(path), std::ios::binary | std::ios::trunc);
-    f << content;
-    if (!f) {
-        err = "cannot write the file";
-        return false;
-    }
-    return true;
-}
-
-bool skip_dir(const fs::path & p) {
-    const std::string n = p.filename().u8string();
-    for (const char * s : k_search_skip_dirs)
-        if (n == s) return true;
-    return false;
-}
-
-std::string lower(std::string s) {
-    for (char & c : s)
-        c = (char) std::tolower((unsigned char) c);
-    return s;
-}
-
-// What a tool did: the text the model reads, and for an edit, the diff and the file a UI previews.
-struct ToolOutput {
-    bool ok = true;
-    std::string text;
-    std::string diff;
-    std::string file;
-};
-
 ToolOutput fail(const std::string & why) {
     return {false, "Error: " + why, "", ""};
-}
-
-ToolOutput list_files(const std::string & ws, const json & a) {
-    std::string dir, err;
-    if (!resolve_in_workspace(ws, arg(a, "path"), dir, err)) return fail(err);
-    std::error_code ec;
-    if (!fs::is_directory(fs::u8path(dir), ec)) return fail(arg(a, "path") + " is not a folder");
-    std::vector<std::string> dirs, files;
-    for (fs::directory_iterator it(fs::u8path(dir), ec), end; !ec && it != end; it.increment(ec)) {
-        const std::string n = it->path().filename().u8string();
-        if (it->is_directory(ec))
-            dirs.push_back(n + "/");
-        else
-            files.push_back(n + "  (" + std::to_string(it->file_size(ec)) + " bytes)");
-    }
-    std::sort(dirs.begin(), dirs.end());
-    std::sort(files.begin(), files.end());
-    std::string out;
-    size_t shown = 0;
-    for (const auto * list : {&dirs, &files})
-        for (const std::string & e : *list) {
-            if (shown++ >= k_list_max_entries) break;
-            out += e + "\n";
-        }
-    const size_t total = dirs.size() + files.size();
-    if (total > k_list_max_entries)
-        out += "[" + std::to_string(total - k_list_max_entries) + " more entries not shown]\n";
-    if (total == 0) out = "(empty folder)\n";
-    return {true, out, "", ""};
-}
-
-ToolOutput read_file(const std::string & ws, const json & a) {
-    std::string path, err, text;
-    if (!resolve_in_workspace(ws, arg(a, "path"), path, err)) return fail(err);
-    if (!read_whole(path, text, err)) return fail(err);
-    if (looks_binary(text)) return fail(arg(a, "path") + " is not a text file");
-    const long first =
-        a.contains("start_line") && a["start_line"].is_number_integer() ? a["start_line"].get<long>() : 1;
-    const long last = a.contains("end_line") && a["end_line"].is_number_integer() ? a["end_line"].get<long>() : 0;
-    if (first <= 1 && last <= 0) return {true, text.empty() ? "(empty file)" : text, "", workspace_relative(ws, path)};
-    std::istringstream in(text);
-    std::string line, out;
-    long n = 0;
-    while (std::getline(in, line)) {
-        ++n;
-        if (n >= first && (last <= 0 || n <= last)) out += line + "\n";
-    }
-    return {true,
-            "[lines " + std::to_string(first) + "-" + std::to_string(last > 0 ? std::min(last, n) : n) + " of " +
-                std::to_string(n) + "]\n" + out,
-            "", workspace_relative(ws, path)};
-}
-
-ToolOutput search_files(const std::string & ws, const json & a) {
-    const std::string pattern = lower(arg(a, "pattern"));
-    if (pattern.empty()) return fail("pattern is empty");
-    std::string dir, err;
-    if (!resolve_in_workspace(ws, arg(a, "path"), dir, err)) return fail(err);
-    std::string out;
-    size_t hits = 0;
-    std::error_code ec;
-    fs::recursive_directory_iterator it(fs::u8path(dir), fs::directory_options::skip_permission_denied, ec), end;
-    for (; !ec && it != end && hits < k_search_max_hits; it.increment(ec)) {
-        if (it->is_directory(ec)) {
-            if (skip_dir(it->path())) it.disable_recursion_pending();
-            continue;
-        }
-        // A link may lead out of the workspace; search only what resolves inside it.
-        std::string real;
-        if (it->is_symlink(ec) && !resolve_in_workspace(ws, it->path().u8string(), real, err)) continue;
-        if (!it->is_regular_file(ec) || it->file_size(ec) > k_search_max_file_bytes) continue;
-        std::string text;
-        if (!read_whole(it->path().u8string(), text, err) || looks_binary(text)) continue;
-        std::istringstream in(text);
-        std::string line;
-        long n = 0;
-        const std::string rel = workspace_relative(ws, it->path().u8string());
-        while (std::getline(in, line) && hits < k_search_max_hits) {
-            ++n;
-            if (lower(line).find(pattern) == std::string::npos) continue;
-            out += rel + ":" + std::to_string(n) + ": " + short_text(line, 300) + "\n";
-            ++hits;
-        }
-    }
-    if (hits == 0) return {true, "No matches.", "", ""};
-    if (hits >= k_search_max_hits) out += "[stopped at " + std::to_string(k_search_max_hits) + " matches]\n";
-    return {true, out, "", ""};
 }
 
 // The change write_file or edit_file would make: the new content and its diff. Run before an
@@ -264,102 +127,33 @@ bool plan_change(const std::string & ws,
     const bool exists = fs::exists(fs::u8path(path), ec);
     if (exists && !read_whole(path, before, err)) return false;
     if (tool == "write_file") {
-        content = arg(a, "content");
+        if (!a.contains("content") || !a["content"].is_string()) {
+            err = "content is missing";
+            return false;
+        }
+        content = a["content"].get<std::string>();
     } else {
         if (!exists) {
-            err = arg(a, "path") + " does not exist";
+            err = arg(a, "path") + " does not exist: create it with write_file";
             return false;
         }
-        const std::string old_text = arg(a, "old_text");
-        if (old_text.empty()) {
-            err = "old_text is empty";
+        if (!apply_edits(before, a.value("edits", json()), content, err)) {
+            err += " (in " + arg(a, "path") + ")";
             return false;
         }
-        size_t count = 0, at = 0, first = std::string::npos;
-        while ((at = before.find(old_text, at)) != std::string::npos) {
-            if (first == std::string::npos) first = at;
-            ++count;
-            at += old_text.size();
-        }
-        if (count == 0) {
-            err = "the passage was not found in " + arg(a, "path") + ": read the file again and copy it exactly";
-            return false;
-        }
-        if (count > 1) {
-            err = "the passage appears " + std::to_string(count) + " times: include more surrounding lines";
-            return false;
-        }
-        content = before.substr(0, first) + arg(a, "new_text") + before.substr(first + old_text.size());
     }
     diff = unified_diff(workspace_relative(ws, path), before, content);
     return true;
 }
 
-ToolOutput fetch_url(HttpFetch * net, const json & a, const std::atomic<bool> & stop) {
-    const std::string url = arg(a, "url");
-    if (!net) return fail("this server cannot make web requests");
-    const std::string scheme = lower(url.substr(0, url.find("://")));
-    if (url.find("://") == std::string::npos || (scheme != "http" && scheme != "https"))
-        return fail("fetch_url reads web pages (http or https) only, not " + url +
-                    ". Files are reached with the file tools, in a conversation that has a workspace.");
-    if (url_names_private_host(url))
-        return fail("the agent reads the public web only: " + url + " is this computer or a private network");
-    HttpFetch::Request r;
-    r.url = url;
-    r.timeout_s = k_web_timeout_s;
-    r.accept = "text/html,text/plain,application/json;q=0.9,*/*;q=0.5";
-    std::string body;
-    bool cut = false;
-    int status = 0;
-    std::string err;
-    const bool ok = net->stream(
-        r,
-        [&](const char * d, size_t n) {
-            const size_t room = k_web_max_page_bytes - body.size();
-            body.append(d, std::min(n, room));
-            if (n >= room) cut = true;
-            return !cut && !stop.load();
-        },
-        status, err);
-    if (!ok) return fail(err);
-    if (stop.load()) return fail("stopped");
-    if (status >= 400) return fail("the page answered HTTP " + std::to_string(status));
-    const std::string low = lower(body.substr(0, 2048));
-    const bool html = low.find("<html") != std::string::npos || low.find("<!doctype html") != std::string::npos ||
-                      low.find("<body") != std::string::npos || low.find("<head") != std::string::npos;
-    std::string text = html ? html_to_text(body) : body;
-    if (looks_binary(text)) return fail("the page is not text");
-    if (cut) text += "\n[the page was cut at " + std::to_string(k_web_max_page_bytes) + " bytes]";
-    return {true, text, "", ""};
-}
-
-ToolOutput web_search(HttpFetch * net, const json & a, const std::atomic<bool> & stop) {
-    const std::string q = arg(a, "query");
-    if (q.empty()) return fail("query is empty");
-    if (!net) return fail("this server cannot make web requests");
-    HttpFetch::Request r;
-    r.method = "POST";
-    r.url = k_web_search_endpoint;
-    r.body = "q=" + url_encode(q);
-    r.content_type = "application/x-www-form-urlencoded";
-    r.timeout_s = k_web_timeout_s;
-    std::string body, err;
-    int status = 0;
-    if (!net->stream(
-            r,
-            [&](const char * d, size_t n) {
-                body.append(d, std::min(n, k_web_max_page_bytes - body.size()));
-                return body.size() < k_web_max_page_bytes && !stop.load();
-            },
-            status, err))
-        return fail(err);
-    if (status >= 400) return fail("the search answered HTTP " + std::to_string(status));
-    const std::vector<SearchHit> hits = parse_search_results(body);
-    if (hits.empty()) return {true, "No results (or the search page could not be read).", "", ""};
-    std::string out;
-    for (size_t i = 0; i < hits.size(); ++i)
-        out += std::to_string(i + 1) + ". " + hits[i].title + "\n   " + hits[i].url + "\n   " + hits[i].snippet + "\n";
-    return {true, out, "", ""};
+// The AGENTS.md at the workspace's root, the instructions a project keeps for any coding agent:
+// cut at k_agents_md_max_bytes, "" when there is none.
+std::string agents_md(const std::string & ws) {
+    std::string path, err, text;
+    if (ws.empty() || !resolve_in_workspace(ws, "AGENTS.md", path, err)) return "";
+    std::error_code ec;
+    if (!fs::is_regular_file(fs::u8path(path), ec) || !read_whole(path, text, err) || looks_binary(text)) return "";
+    return cap_text(text, k_agents_md_max_bytes);
 }
 
 std::string today() {
@@ -370,13 +164,11 @@ std::string today() {
 }
 
 const char * mode_words(const std::string & mode) {
-    if (mode == "full") return "Mode: full. You may change files, run commands and use the web without asking.";
+    if (mode == "full") return "Mode: full. Changes and commands run without asking.";
     if (mode == "read_only")
-        return "Mode: read-only. You may read, but every change to a file and every command that could change "
-               "something is refused. Say what you would change instead of trying it.";
-    return "Mode: ask. Reading needs no permission. A change to a file, a command that could change something, and "
-           "the first use of the web wait for the person's approval. If the person declines, do not try the same "
-           "thing again: say what you would have done.";
+        return "Mode: read-only. Changes are refused and only commands that read run; say what you would change.";
+    return "Mode: ask. Reading needs no permission; a change, a command that could change something and a connected "
+           "tool wait for the person's approval. If one is declined, do not retry it: say what you would have done.";
 }
 
 } // namespace
@@ -435,6 +227,7 @@ void Agent::shutdown() {
     }
     for (const std::string & id : open)
         close_external(id);
+    if (d_.mcp) d_.mcp->shutdown();
 }
 
 // ---- state and events ----
@@ -448,9 +241,7 @@ std::string Agent::live_state(const std::string & id, const std::string & stored
         r = it->second;
     }
     std::lock_guard<std::mutex> lk(r->m);
-    for (const auto & [item, conv] : r->waiting_in)
-        if (conv == id || id == r->root) return "waiting";
-    return "running";
+    return r->waiting_in.empty() ? "running" : "waiting";
 }
 
 bool Agent::conversation(const std::string & id, json & out) const {
@@ -486,8 +277,7 @@ void Agent::publish_conversation(const std::string & id) {
                     json{{"id", id},
                          {"title", c.value("title", "")},
                          {"state", c.value("state", "idle")},
-                         {"updated", c.value("updated", 0LL)},
-                         {"parent", c.value("parent", json(nullptr))}},
+                         {"updated", c.value("updated", 0LL)}},
                     conversation_audience(c));
 }
 
@@ -535,37 +325,44 @@ std::vector<std::pair<Skill, bool>> Agent::skills(const std::string & workspace_
 
 std::string Agent::system_prompt(const json & conv, bool remote) const {
     if (!d_.tools) return ""; // plain chat: the model as it is, as before the agent
-    const std::string ws = workspace_path(conv);
-    std::string s = "You are the agent of BigMoeOnEdge, working for the person at this computer. Today is " + today() +
-                    ". The computer runs " + d_.os_name + ".\n";
-    if (!ws.empty() && !remote) {
-        json w;
-        d_.store->workspace(conv.value("workspace", ""), w);
-        s += "Workspace: \"" + w.value("name", "") + "\" at " + ws +
-             ". Every path you give a tool is relative to it, and nothing outside it can be reached.\n";
+    const std::string ws = remote ? std::string() : workspace_path(conv);
+    // Short on purpose: every token here is prefilled on every new conversation, and a small model
+    // follows a few plain rules better than many. What each tool does is in its own definition.
+    std::string s = "You are a coding agent working for the person at this computer. Today is " + today() +
+                    "; the "
+                    "computer runs " +
+                    d_.os_name + ".\n";
+    if (!ws.empty()) {
+        // Neither the folder's absolute path nor its name: a small model handed either prefixes it to
+        // what it writes (a folder tree, or a folder of that name, inside the workspace). Commands start
+        // there already; get_info gives the path when one is needed.
+        s += "You work in the person's project folder, which is the working directory. Give tools paths relative "
+             "to it, like `src/main.py` or `.`; nothing outside it can be reached.\n";
     } else {
-        s += "This conversation has no workspace: there are no file or command tools, and no other way to reach "
-             "files. If the person asks you to create, read or change files, tell them to pick a folder for this "
-             "conversation first.\n";
+        s += "No workspace: there are no file or command tools. If the person asks to create, read or change "
+             "files, tell them to pick a folder for this conversation first.\n";
     }
     s += mode_words(conv.value("mode", "ask"));
     s += "\n";
     bool any = false;
     for (const auto & [skill, enabled] : skills(ws)) {
         if (!enabled) continue;
-        if (!any) s += "Skills you can follow (read one with use_skill when the task matches its description):\n";
+        if (!any) s += "Skills (read one with use_skill when the task matches):\n";
         any = true;
         s += "- " + skill.name + ": " + skill.description + "\n";
     }
     s += "Work step by step with the tools, check what you change, and end with a short answer that says what you "
          "did and what is left.";
+    const std::string project = agents_md(ws);
+    if (!project.empty()) s += "\n\nThe workspace's AGENTS.md:\n" + project;
     return s;
 }
 
-std::vector<ChatTool> Agent::tools_for(const json & conv, bool remote, int depth) const {
+std::vector<ChatTool> Agent::tools_for(const json & conv, bool remote, std::map<std::string, McpTool> * mcp) const {
     if (!d_.tools) return {};
     const std::string ws = workspace_path(conv);
     const std::string mode = conv.value("mode", "ask");
+    const bool local_ws = !ws.empty() && !remote;
     bool any_skill = false;
     for (const auto & [s, on] : skills(ws))
         any_skill = any_skill || on;
@@ -575,39 +372,46 @@ std::vector<ChatTool> Agent::tools_for(const json & conv, bool remote, int depth
         bool offered = false;
         switch (t.kind) {
         case Kind::Read:
-            offered = !ws.empty() && !remote;
+            offered = local_ws;
             break;
         case Kind::Change:
             // A change in read-only mode could only be refused, so it is not offered; a command still
             // is, since one that only reads runs.
-            offered = !ws.empty() && !remote && (n == "run_command" ? d_.can_run_commands : mode != "read_only");
-            break;
-        case Kind::Web:
-            offered = d_.net != nullptr && !remote;
+            offered = local_ws && (n == "exec_shell_command" ? d_.can_run_commands : mode != "read_only");
             break;
         case Kind::Skill:
             offered = any_skill;
             break;
-        case Kind::Delegate:
-            offered = depth < k_max_delegate_depth;
-            break;
         }
         if (offered) out.push_back({t.name, t.description, t.parameters});
+    }
+    // An MCP server's tools, beside the built-in ones under the name `<server>_<tool>`: a name already
+    // taken is left out, so a server cannot stand in for a built-in tool. Like a change, none is
+    // offered where it could only be refused.
+    if (d_.mcp && local_ws && mode != "read_only") {
+        for (const McpTool & t : d_.mcp->tools()) {
+            const std::string name = t.exposed_name();
+            bool taken = false;
+            for (const ChatTool & c : out)
+                taken = taken || c.name == name;
+            if (taken) continue;
+            out.push_back({name, t.description, t.input_schema.dump()});
+            if (mcp) (*mcp)[name] = t;
+        }
     }
     return out;
 }
 
-ChatRequest
-Agent::build_request(const json & conv, const std::string & system, bool remote, int depth, bool think) const {
+ChatRequest Agent::build_request(const json & conv, const std::string & system, bool remote, bool think) const {
     ChatRequest req;
     if (!system.empty()) req.messages.push_back({"system", system});
     const json & items = conv["items"];
-    // What each call got back, by its id: a tool item's result, or a helper's summary.
+    // What each call got back, by its id.
     std::map<std::string, std::string> answers;
     for (const json & it : items) {
         const std::string call = it.value("call_id", "");
         if (call.empty()) continue;
-        std::string r = it.value("kind", "") == "helper" ? it.value("summary", "") : it.value("result", "");
+        std::string r = it.value("result", "");
         if (it.value("shortened", false)) r = cap_text(r, k_shortened_result_bytes);
         answers[call] = r;
     }
@@ -634,7 +438,7 @@ Agent::build_request(const json & conv, const std::string & system, bool remote,
             }
         }
     }
-    req.tools = tools_for(conv, remote, depth);
+    req.tools = tools_for(conv, remote);
     const RunConfig cfg = d_.config ? d_.config() : RunConfig{};
     req.n_predict = cfg.n_predict;
     req.think = think;
@@ -747,7 +551,6 @@ bool Agent::wait_approval(Run & run, const std::string & conv_id, json & item) {
         run.waiting_in[id] = conv_id;
     }
     publish_conversation(conv_id);
-    if (conv_id != run.root) publish_conversation(run.root);
     int decision = 0;
     {
         std::unique_lock<std::mutex> lk(run.m);
@@ -757,7 +560,6 @@ bool Agent::wait_approval(Run & run, const std::string & conv_id, json & item) {
         run.waiting_in.erase(id);
     }
     publish_conversation(conv_id);
-    if (conv_id != run.root) publish_conversation(run.root);
     return decision == 1;
 }
 
@@ -782,7 +584,7 @@ Refusal Agent::approve(const std::string & conversation, const std::string & ite
 
 // ---- tools ----
 
-json Agent::run_tool(Run & run, const json & conv, const ChatToolCall & call, int depth) {
+json Agent::run_tool(Run & run, const json & conv, const ChatToolCall & call) {
     const std::string conv_id = conv.value("id", "");
     json args = json::object();
     bool args_ok = true;
@@ -803,22 +605,25 @@ json Agent::run_tool(Run & run, const json & conv, const ChatToolCall & call, in
     };
     if (!args_ok) return finish("error", "Error: the arguments are not a JSON object.");
     const ToolSpec * spec = find_tool(call.name);
+    std::map<std::string, McpTool> mcp;
     bool offered = false;
-    for (const ChatTool & t : tools_for(conv, run.remote, depth))
+    for (const ChatTool & t : tools_for(conv, run.remote, &mcp))
         offered = offered || t.name == call.name;
-    if (!spec || !offered) return finish("error", "Error: there is no tool " + call.name + " in this conversation.");
+    const auto mcp_tool = mcp.find(call.name);
+    const bool is_mcp = !spec && mcp_tool != mcp.end();
+    if ((!spec && !is_mcp) || !offered)
+        return finish("error", "Error: there is no tool " + call.name + " in this conversation.");
+    if (is_mcp) item["mcp"] = mcp_tool->second.server;
 
     const std::string ws = workspace_path(conv);
     const std::string mode = conv.value("mode", "ask");
     bool needs_approval = false;
-    if (spec->kind == Kind::Change) {
-        const bool reads = call.name == "run_command" && is_read_only_command(arg(args, "command"));
+    if (is_mcp || spec->kind == Kind::Change) {
+        const bool reads = call.name == "exec_shell_command" && is_read_only_command(arg(args, "command"));
         if (!reads && mode == "read_only")
             return finish("denied", "Refused: this conversation is read-only, so nothing may be changed. Say what you "
                                     "would change instead.");
         needs_approval = !reads && mode != "full";
-    } else if (spec->kind == Kind::Web) {
-        needs_approval = mode != "full" && !conv.value("web_allowed", false);
     }
 
     // What an edit will write is computed before the card is shown, so the person approves the diff
@@ -837,93 +642,63 @@ json Agent::run_tool(Run & run, const json & conv, const ChatToolCall & call, in
                                                   : "The person declined this. Do not try it again; say what you "
                                                     "would have done instead.");
         }
-        if (spec->kind == Kind::Web) d_.store->edit_conversation(conv_id, [](json & c) { c["web_allowed"] = true; });
         item["state"] = "running";
-        publish_item(conv_id, item, false);
-    } else {
-        publish_item(conv_id, item, false);
     }
+    publish_item(conv_id, item, false);
 
     ToolOutput o;
-    if (call.name == "list_files")
-        o = list_files(ws, args);
-    else if (call.name == "read_file")
+    if (is_mcp) {
+        std::string text;
+        const bool ok = d_.mcp->call(mcp_tool->second.server, mcp_tool->second.name, args, text,
+                                     [&run] { return run.stop.load(); });
+        o = {ok, ok ? (text.empty() ? "(no output)" : text) : "Error: " + text, "", ""};
+    } else if (call.name == "read_file")
         o = read_file(ws, args);
-    else if (call.name == "search_files")
-        o = search_files(ws, args);
+    else if (call.name == "file_glob_search")
+        o = file_glob_search(ws, args);
+    else if (call.name == "grep_search")
+        o = grep_search(ws, args);
+    else if (call.name == "get_info")
+        o = {true, json{{"os", d_.os_name}, {"cwd", ws}}.dump(), "", ""};
     else if (call.name == "write_file" || call.name == "edit_file") {
         // Planned again: the file may have changed while the card waited.
         if (!plan_change(ws, call.name, args, target, content, diff, err) || !write_whole(target, content, err))
             o = fail(err);
         else {
             item["diff"] = diff;
-            o = {true, diff.empty() ? "No change: the file already had that content." : "Done.\n" + diff, diff,
-                 workspace_relative(ws, target)};
+            o = {true,
+                 diff.empty()
+                     ? "No change: the file already had that content."
+                     : (call.name == "write_file" ? "File written successfully.\n" : "File edited successfully.\n") +
+                           diff,
+                 diff, workspace_relative(ws, target)};
         }
-    } else if (call.name == "run_command") {
-        const platform::CommandResult r =
-            d_.run_command(arg(args, "command"), ws, k_command_timeout_s, k_tool_result_max_bytes, run.stop);
+    } else if (call.name == "exec_shell_command") {
+        const long asked_s = args.contains("timeout") && args["timeout"].is_number() ? args["timeout"].get<long>() : 0;
+        const int timeout_s =
+            asked_s > 0 ? (int) std::min<long>(asked_s, k_command_max_timeout_s) : k_command_default_timeout_s;
+        const long asked_out = args.contains("max_output_size") && args["max_output_size"].is_number()
+                                   ? args["max_output_size"].get<long>()
+                                   : 0;
+        const size_t max_out =
+            asked_out > 0 ? std::min<size_t>((size_t) asked_out, k_tool_result_max_bytes) : k_tool_result_max_bytes;
+        const platform::CommandResult r = d_.run_command(arg(args, "command"), ws, timeout_s, max_out, run.stop);
         if (!r.started)
             o = fail(r.error);
         else {
-            std::string head = r.timed_out
-                                   ? "Ended after the " + std::to_string(k_command_timeout_s) + " s time limit.\n"
-                               : r.stopped ? "Stopped.\n"
-                                           : "Exit code " + std::to_string(r.exit_code) + ".\n";
-            o = {r.exit_code == 0,
-                 head + (r.output.empty() ? "(no output)" : r.output) +
-                     (r.truncated ? "\n[output cut at " + std::to_string(k_tool_result_max_bytes) + " bytes]" : ""),
-                 "", ""};
-            if (!o.ok && !r.timed_out && !r.stopped) o.ok = true; // a failing command is a result, not a tool error
+            // The output, then "[exit code: N]", as llama.cpp's exec_shell_command reports it. A failing
+            // command is a result, not a tool error: the model reads why.
+            std::string text =
+                r.output + (r.truncated ? "\n[output cut at " + std::to_string(max_out) + " bytes]" : "");
+            text += "\n[exit code: " + std::to_string(r.exit_code) + "]";
+            if (r.timed_out) text += " [exit due to timed out after " + std::to_string(timeout_s) + " s]";
+            if (r.stopped) text += " [stopped]";
+            o = {!r.timed_out && !r.stopped, text, "", ""};
         }
-    } else if (call.name == "fetch_url")
-        o = fetch_url(d_.net, args, run.stop);
-    else if (call.name == "web_search")
-        o = web_search(d_.net, args, run.stop);
-    else if (call.name == "use_skill") {
+    } else if (call.name == "use_skill") {
         o = fail("no switched-on skill is named " + arg(args, "name"));
         for (const auto & [s, on] : skills(ws))
             if (on && s.name == arg(args, "name")) o = {true, s.body, "", ""};
-    } else if (call.name == "delegate") {
-        const std::string task = arg(args, "task");
-        if (task.empty()) return finish("error", "Error: task is empty.");
-        if (run.helpers >= k_max_helpers_per_message)
-            return finish("error", "Error: this message already started " + std::to_string(k_max_helpers_per_message) +
-                                       " helpers; do the rest yourself.");
-        ++run.helpers;
-        json h{{"workspace", conv.value("workspace", json(nullptr))},
-               {"mode", mode},
-               {"route", conv.value("route", "local")},
-               {"title", item.value("title", "Helper")},
-               {"parent", conv_id}};
-        const json helper = d_.store->create_conversation(h);
-        const std::string hid = helper.value("id", "");
-        json hitem{{"id", item.value("id", "")}, {"kind", "helper"}, {"title", item.value("title", "")},
-                   {"state", "running"},         {"summary", ""},    {"conversation", hid},
-                   {"call_id", call.id}};
-        {
-            std::lock_guard<std::mutex> lk(m_);
-            runs_[hid] = runs_[run.root];
-        }
-        publish_item(conv_id, hitem);
-        publish_item(hid, json{{"id", new_id("i")}, {"kind", "user"}, {"text", task}});
-        publish_conversation(hid);
-        const bool failed_before = run.failed;
-        std::string answer = run_rounds(run, hid, depth + 1);
-        const bool helper_failed = run.failed && !failed_before;
-        run.failed = failed_before;
-        {
-            std::lock_guard<std::mutex> lk(m_);
-            runs_.erase(hid);
-        }
-        d_.store->edit_conversation(hid, [&](json & c) { c["state"] = helper_failed ? "error" : "idle"; });
-        publish_conversation(hid);
-        if (answer.empty())
-            answer = run.stop.load() ? "The helper was stopped." : "The helper ended without an answer.";
-        hitem["state"] = run.stop.load() || helper_failed ? "error" : "done";
-        hitem["summary"] = cap_text(answer, k_tool_result_max_bytes);
-        publish_item(conv_id, hitem);
-        return hitem;
     }
     if (!o.file.empty()) item["file"] = o.file;
     if (!o.diff.empty()) item["diff"] = o.diff;
@@ -932,7 +707,7 @@ json Agent::run_tool(Run & run, const json & conv, const ChatToolCall & call, in
 
 // ---- the rounds ----
 
-std::string Agent::run_rounds(Run & run, const std::string & conv_id, int depth) {
+std::string Agent::run_rounds(Run & run, const std::string & conv_id) {
     json conv;
     if (!d_.store->conversation(conv_id, conv)) return "";
     // One system prompt for every round of this message: the engine reuses the prompt the KV holds
@@ -956,7 +731,7 @@ std::string Agent::run_rounds(Run & run, const std::string & conv_id, int depth)
             return final_text;
         }
         d_.store->conversation(conv_id, conv);
-        const ChatRequest req = build_request(conv, system, run.remote, depth, run.think);
+        const ChatRequest req = build_request(conv, system, run.remote, run.think);
 
         json item{{"id", new_id("i")}, {"kind", "assistant"}, {"text", ""}, {"reasoning", ""}, {"streaming", true}};
         std::string sent_text, sent_reasoning;
@@ -1003,10 +778,8 @@ std::string Agent::run_rounds(Run & run, const std::string & conv_id, int depth)
                 bool cut = false;
                 d_.store->edit_conversation(conv_id, [&](json & c) {
                     for (json & it : c["items"]) {
-                        const std::string k = it.value("kind", "");
-                        const std::string r = k == "helper" ? it.value("summary", "") : it.value("result", "");
-                        if ((k == "tool" || k == "helper") && !it.value("shortened", false) &&
-                            r.size() > k_shortened_result_bytes) {
+                        if (it.value("kind", "") == "tool" && !it.value("shortened", false) &&
+                            it.value("result", "").size() > k_shortened_result_bytes) {
                             it["shortened"] = true;
                             cut = true;
                             return;
@@ -1055,7 +828,7 @@ std::string Agent::run_rounds(Run & run, const std::string & conv_id, int depth)
         for (const ChatToolCall & c : r.tool_calls) {
             if (run.stop.load()) break;
             d_.store->conversation(conv_id, conv);
-            const json done = run_tool(run, conv, c, depth);
+            const json done = run_tool(run, conv, c);
             if (done.value("state", "") != "error") {
                 last_failure.clear();
                 same_failures = 0;
@@ -1089,8 +862,6 @@ Refusal Agent::start(const std::string & conversation,
     if (text.empty()) return {400, "the message is empty", "invalid_request"};
     json conv;
     if (!d_.store->conversation(conversation, conv)) return {404, "no such conversation", "not_found"};
-    if (!conv.value("parent", json(nullptr)).is_null())
-        return {409, "a helper's conversation takes no messages: it runs inside its parent's", "busy"};
     auto run = std::make_shared<Run>();
     run->remote = remote;
     run->auto_deny = auto_deny;
@@ -1130,7 +901,7 @@ Refusal Agent::start(const std::string & conversation,
             json c;
             d_.store->conversation(conversation, c);
             if (c.value("agent", std::string(k_builtin_agent)) == k_builtin_agent)
-                run_rounds(*run, conversation, 0);
+                run_rounds(*run, conversation);
             else
                 run_external(*run, conversation);
         } catch (const std::exception & e) {
@@ -1215,8 +986,6 @@ Refusal Agent::remove_conversation(const std::string & id) {
     if (running(id)) return {409, "this conversation is running: stop it first", "busy"};
     json c;
     if (!d_.store->conversation(id, c)) return {404, "no such conversation", "not_found"};
-    for (const json & it : c["items"])
-        if (it.value("kind", "") == "helper") d_.store->remove_conversation(it.value("conversation", ""));
     d_.store->remove_conversation(id);
     close_external(id);
     return {};

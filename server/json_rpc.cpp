@@ -1,4 +1,4 @@
-#include "acp_connection.h"
+#include "json_rpc.h"
 
 #include <chrono>
 
@@ -12,12 +12,12 @@ constexpr int kMethodNotFound = -32601;
 constexpr int kInternalError = -32603;
 } // namespace
 
-AcpConnection::AcpConnection(std::unique_ptr<AcpTransport> transport, Handlers handlers)
+JsonRpcConnection::JsonRpcConnection(std::unique_ptr<JsonRpcTransport> transport, Handlers handlers)
     : transport_(std::move(transport)), handlers_(std::move(handlers)) {
     reader_ = std::thread([this] { read_loop(); });
 }
 
-AcpConnection::~AcpConnection() {
+JsonRpcConnection::~JsonRpcConnection() {
     close();
     if (reader_.joinable()) reader_.join();
     std::vector<std::thread> workers;
@@ -29,25 +29,25 @@ AcpConnection::~AcpConnection() {
         if (t.joinable()) t.join();
 }
 
-void AcpConnection::close() {
+void JsonRpcConnection::close() {
     transport_->stop();
 }
 
-bool AcpConnection::send(const json & message) {
+bool JsonRpcConnection::send(const json & message) {
     // One line: dump() never writes a raw line break, the wire's one rule.
     return transport_->write_line(message.dump(-1, ' ', false, json::error_handler_t::replace));
 }
 
-void AcpConnection::notify(const std::string & method, const json & params) {
+void JsonRpcConnection::notify(const std::string & method, const json & params) {
     send(json{{"jsonrpc", "2.0"}, {"method", method}, {"params", params}});
 }
 
-bool AcpConnection::call(const std::string & method,
-                         const json & params,
-                         json & result,
-                         std::string & err,
-                         const std::function<bool()> & cancelled,
-                         const std::function<void()> & on_cancel) {
+bool JsonRpcConnection::call(const std::string & method,
+                             const json & params,
+                             json & result,
+                             std::string & err,
+                             const std::function<bool()> & cancelled,
+                             const std::function<void()> & on_cancel) {
     int64_t id = 0;
     {
         std::lock_guard<std::mutex> lk(m_);
@@ -57,7 +57,7 @@ bool AcpConnection::call(const std::string & method,
     if (!alive_ || !send(json{{"jsonrpc", "2.0"}, {"id", id}, {"method", method}, {"params", params}})) {
         std::lock_guard<std::mutex> lk(m_);
         pending_.erase(id);
-        err = "the agent is not running";
+        err = "the program is not running";
         return false;
     }
     bool told = false;
@@ -66,7 +66,7 @@ bool AcpConnection::call(const std::string & method,
         if (pending_[id].done) break;
         if (!alive_) {
             pending_.erase(id);
-            err = "the agent ended before it answered " + method;
+            err = "the program ended before it answered " + method;
             return false;
         }
         if (cancelled) {
@@ -89,7 +89,7 @@ bool AcpConnection::call(const std::string & method,
     return true;
 }
 
-void AcpConnection::answer(const json & id, const json * result, const std::string & error, int code) {
+void JsonRpcConnection::answer(const json & id, const json * result, const std::string & error, int code) {
     json m{{"jsonrpc", "2.0"}, {"id", id}};
     if (result)
         m["result"] = *result;
@@ -98,7 +98,7 @@ void AcpConnection::answer(const json & id, const json * result, const std::stri
     send(m);
 }
 
-void AcpConnection::read_loop() {
+void JsonRpcConnection::read_loop() {
     std::string line;
     while (transport_->read_line(line)) {
         if (line.empty()) continue;
@@ -134,7 +134,7 @@ void AcpConnection::read_loop() {
             it->second.done = true;
             if (m.contains("error")) {
                 const json & e = m["error"];
-                it->second.error = e.is_object() ? e.value("message", std::string("the agent refused")) : e.dump();
+                it->second.error = e.is_object() ? e.value("message", std::string("refused")) : e.dump();
             } else {
                 it->second.ok = true;
                 it->second.result = m.value("result", json::object());

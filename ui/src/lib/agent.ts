@@ -60,20 +60,15 @@ export interface ToolItem extends ItemBase {
   result?: string;
   diff?: string;
   file?: string;
-}
-export interface HelperItem extends ItemBase {
-  kind: 'helper';
-  title: string;
-  state: ToolState;
-  summary?: string;
-  conversation?: string;
+  /** The MCP server whose tool this is (`tool` is then `<server>_<tool>`). */
+  mcp?: string;
 }
 export interface NoticeItem extends ItemBase {
   kind: 'notice';
   text: string;
   level: NoticeLevel;
 }
-export type Item = UserItem | AssistantItem | ToolItem | HelperItem | NoticeItem;
+export type Item = UserItem | AssistantItem | ToolItem | NoticeItem;
 
 /** `GET /api/conversations/<id>`: the summary and its items. */
 export interface Conversation extends ConversationSummary {
@@ -194,7 +189,7 @@ export interface UpdateDownloaded {
 
 const isStr = (v: unknown): v is string => typeof v === 'string';
 
-const ITEM_KINDS = new Set(['user', 'assistant', 'tool', 'helper', 'notice']);
+const ITEM_KINDS = new Set(['user', 'assistant', 'tool', 'notice']);
 
 export function isItem(v: unknown): v is Item {
   return isObject(v) && isStr(v.id) && isStr(v.kind) && ITEM_KINDS.has(v.kind);
@@ -210,10 +205,20 @@ export interface AgentChoice {
 }
 
 /** What a conversation on this server can do (GET /api/agent). */
+/** One MCP server of `GET /api/agent` (local clients only): its tools as the model calls them. */
+export interface McpServerInfo {
+  name: string;
+  command: string;
+  state: 'running' | 'stopped' | 'failed' | (string & {});
+  error?: string;
+  tools: { name: string; description: string }[];
+}
+
 export interface AgentCapabilities {
   tools: boolean;
   commands: boolean;
   agents: AgentChoice[];
+  mcp?: McpServerInfo[];
 }
 
 export const BUILTIN_AGENT = 'builtin';

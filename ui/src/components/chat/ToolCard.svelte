@@ -2,15 +2,13 @@
   import type { IconName } from '../Icon.svelte';
   export const TOOL_ICON: Record<string, IconName> = {
     read_file: 'file',
-    list_files: 'folder',
-    search_files: 'search',
+    file_glob_search: 'folder',
+    grep_search: 'search',
+    get_info: 'info',
     write_file: 'file',
     edit_file: 'edit',
-    run_command: 'terminal',
-    fetch_url: 'globe',
-    web_search: 'globe',
+    exec_shell_command: 'terminal',
     use_skill: 'spark',
-    delegate: 'helper',
     // Another agent's tool calls, by the kind the Agent Client Protocol gives them.
     read: 'file',
     edit: 'edit',
@@ -45,14 +43,17 @@
     return typeof v === 'string' ? v : '';
   };
   // What the call would do, in the form a person checks it in: the command, the address, the text.
-  let detail = $derived(arg('command') || arg('url') || arg('query') || '');
+  // An MCP server's tool has arguments of its own: the card shows them whole.
+  let detail = $derived(
+    arg('command') || arg('url') || arg('query') || (item.mcp && item.args ? JSON.stringify(item.args, null, 2) : ''),
+  );
   let content = $derived(item.tool === 'write_file' ? arg('content') : '');
   let answering = $derived(!!agent.answering[item.id]);
 </script>
 
 <div class="tool" class:waiting role="group" aria-label={item.title}>
   <div class="head">
-    <span class="ico"><Icon name={TOOL_ICON[item.tool] ?? 'more'} size={16} /></span>
+    <span class="ico"><Icon name={TOOL_ICON[item.tool] ?? (item.mcp ? 'plug' : 'more')} size={16} /></span>
     <span class="title">{item.title || item.tool}</span>
     {#if item.diff && (stat.added || stat.removed)}
       <span class="stat figure"><span class="add">+{stat.added}</span> <span class="del">−{stat.removed}</span></span>

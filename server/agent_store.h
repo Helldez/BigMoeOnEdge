@@ -51,10 +51,8 @@ public:
     std::vector<std::string> load();
 
     // ---- conversations ----
-    // {id, title, workspace, mode, route, agent, acp_session?, state, created, updated, task, parent,
-    // web_allowed, items}
-    // Summaries without items, newest first; a helper (one with a parent) is left out: it is
-    // reached through its parent's `helper` item.
+    // {id, title, workspace, mode, route, agent, acp_session?, state, created, updated, task, items}
+    // Summaries without items, newest first.
     json list_conversations() const;
     bool conversation(const std::string & id, json & out) const;
     // conversation_reaches() of a conversation, read in place (no copy: asked on every streamed
