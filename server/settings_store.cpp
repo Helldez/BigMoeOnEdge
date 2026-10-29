@@ -89,7 +89,7 @@ void SettingsStore::apply_plan(std::map<std::string, std::string> values, json d
 RunConfig SettingsStore::build_locked() const {
     RunConfig c = defaults_;
     std::string err;
-    for (const auto * layer : {&plan_, &launch_, &user_})
+    for (const auto * layer : {&plan_, &user_, &launch_})
         for (const auto & kv : *layer)
             if (const ParamDesc * d = find_param(kv.first)) d->set(c, kv.second, err);
     return c;
@@ -104,7 +104,7 @@ RunConfig SettingsStore::planning_config() const {
     std::lock_guard<std::mutex> lk(m_);
     RunConfig c = defaults_;
     std::string err;
-    for (const auto * layer : {&launch_, &user_})
+    for (const auto * layer : {&user_, &launch_})
         for (const auto & kv : *layer)
             if (const ParamDesc * d = find_param(kv.first)) d->set(c, kv.second, err);
     return c;
