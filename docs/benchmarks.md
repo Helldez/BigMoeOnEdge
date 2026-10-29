@@ -537,6 +537,17 @@ handed back so the kernel does not swap the cache out): **19.3-20.8 tok/s**, 27 
 with its expert profile and its drafting, 36-67 (50-66 over 1024): it computes the experts its card
 does not hold on the CPU, where this engine uploads each one over the bus.
 
+On a rented 96 GB workstation card (RTX PRO 6000 Blackwell class) with a 283 GB memory limit and
+the provider's network file system, DeepSeek V4.1 Flash with its native MXFP4 experts (unsloth's
+UD-Q4_K_XL, 466 GiB) fits neither the card nor the RAM: `--auto` put an 84.5 GB cache of the experts
+used most on the card and 207-215 GB of them in RAM, and decoded **6.2-6.6 tok/s** over 1024 tokens
+from a cold page cache, still climbing at the end (10.6-12.6 over the last 128), against 2.8 for
+llama.cpp's own `llama-completion` on the same file
+([bench-data/2026-10-28-rented-96gb](bench-data/2026-10-28-rented-96gb/README.md)). The published
+files keep a table in MXFP8, a type upstream llama.cpp does not have yet, so the run read it with an
+experimental build that is not the pin. A session of long prompts was killed by the control group:
+the plan's margin does not yet cover a long prefill on this model.
+
 On a rented 192 GB AMD datacenter card (MI300X class) through ROCm, the first run of the HIP
 backend, Qwen3.8-Flash-Next Q2_0 fits the card whole: `--auto` put every layer on it and decoded at
 **53.4 tok/s** over 1024 tokens, against 55.6-55.8 for llama.cpp's own `llama-completion` from the
