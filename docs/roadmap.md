@@ -102,9 +102,11 @@ The server half is built: `GET /api/connect` lists the clients with their settin
 this server, and writes a client's settings file with a backup ([agent.md](agent.md)); the views
 that show it in each UI are owed.
 
-**Your own devices, paired directly.** The phone reaches the model on the desktop from anywhere,
-peer to peer, with no port opened and no third party reading the conversation. A device joins by
-scanning a QR code once, which exchanges public keys, and every connection after that is encrypted
+**Your own devices, paired directly.** Remote inference: one device uses the model on another from
+anywhere, a phone with a desktop or one PC with another, peer to peer, with no port opened and no
+third party reading the conversation. The model runs whole on the host and only the chat crosses
+the link; this is not distributed inference. A device joins once, by a QR code or a code typed where
+there is no camera, which exchanges public keys, and every connection after that is encrypted
 between the two. The apps are already clients of the server's API, so the work is the transport
 beneath it and a pairing screen: a small tunnel presents the remote server on a loopback port and
 the rest of the app does not change. Any device running the server can host and any device with
@@ -112,41 +114,35 @@ a client can pair, whatever its OS or hardware: the pairing and the rules are wr
 only what starts the tunnel differs per platform, with no pair of devices special-cased. What it
 has to get right:
 
-- **HyperDHT, as a tunnel beside the engine.** MoEMesh, the sibling project that splits a model
-  across devices, already reaches a phone on mobile data this way: `hyperdht` (MIT) finds a peer by
-  public key, punches through the NAT and encrypts the link with Noise, with no server of ours in
-  the path. It runs under Bare (Apache-2.0) in-process on Android, and what reaches the engine is a
-  plain loopback port, so neither `core/` nor the server learns what a DHT is. Bare's addons are
-  pinned to the runtime shipped in the APK. The desktop packages and iOS owe the same arrangement.
-- **One key per device, not one key per room.** The MoEMesh tunnel derives one keypair from a shared
-  room key, so whoever holds the key can join and can also pose as the host, and nobody can be
-  removed. Here the host keeps its own keypair and each paired device has its own, the QR code
-  carries the public keys and a one-time secret that expires in minutes, and the DHT's firewall
-  callback admits only the paired ones. The host lists its devices and removes one with a tap.
+- **HyperDHT, as a tunnel beside the engine.** `hyperdht` (MIT) finds a peer by public key, punches
+  through the NAT and encrypts the link with Noise, with no server of ours in the path. It runs
+  under Bare (Apache-2.0), a small runtime for desktop and mobile that goes in each package, and what
+  reaches the engine is a plain loopback port, so neither `core/` nor the server learns what a DHT
+  is. Bare's native addons are pinned to the runtime each package ships.
+- **One key per device, not one shared key.** A key shared by all would let whoever holds it join
+  and pose as the host, and nobody could be removed. The host keeps its own keypair and each paired
+  device has its own, the pairing carries the public keys and a one-time secret that expires in
+  minutes, and the DHT's firewall callback admits only the paired ones. The host lists its devices and removes one with a tap.
 - **A paired device chats and nothing more.** It sees its own conversations and picks among the
   models already there. It deletes nothing, changes no setting and runs no agent or tool.
-- **Direct when it can, and an answer for when it cannot.** The tunnel has no relay today, so a
-  failed hole punch is a failed connection, and carrier networks are the hard case. The failure rate
+- **Direct when it can, and an answer for when it cannot.** With no relay, a failed hole punch is a
+  failed connection, and carrier networks are the hard case. The failure rate
   on real mobile networks gets measured first. A relay, if the numbers want one, carries encrypted
   bytes only and is something a person can host. The bootstrap nodes are public by default and see
   which addresses ask for a key; they too can be self-hosted.
 - **A tunnel is not a local client.** Its bytes arrive at the server from loopback, and the server
   gives loopback the rights of the person at the machine. A paired device must count as a network
   client, with its key revocable, or pairing becomes a way around the access rules.
-- **The phone is a client first.** A phone asleep drops its sockets, and iOS does not keep a
+- **A phone sleeps.** A phone asleep drops its sockets, and iOS does not keep a
   suspended app's connections at all, so the answer keeps running on the host and the app collects
   it on return. A phone as the host works on Android through a foreground service and on iOS only
   while the app is open. There is no push notification, which is what a messaging app gives for
   free.
 
-The order: first the existing tunnel as it is, from a phone on mobile data to a desktop server, to
-measure how often it connects, which settles the relay. Then the smallest product: QR, a key per
-device, removal, an Android phone to macOS, Windows and Linux. Then iOS, the answer collected on
-return, and a Telegram notice when an answer is done. Not in scope for now: a phone as the host.
-
-The same tunnel can later carry a model split across paired devices, where the link allows it: a
-hop's round trip is paid on every token, so a three-stage split behind 100 ms cannot pass ten tokens
-a second. A chat through the tunnel pays that once per request, not per token.
+The order: first a plain HyperDHT tunnel to a server, from a phone on mobile data and from a PC on
+another network, to measure how often it connects, which settles the relay. Then the smallest
+product: pairing, a key per device, removal, between any two of Android, macOS, Windows and Linux.
+Then iOS, the answer collected on return, and a Telegram notice when an answer is done.
 
 **Reach your own device from a messaging app.** After that, for a person who wants the app they
 already have, or a notification when an answer is done: they write to the model on their machine from
