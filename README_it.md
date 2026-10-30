@@ -47,8 +47,8 @@ ciascun dispositivo.
   thread e quale dispositivo fa cosa. La schermata Plan mostra ogni scelta e il perché.
 - **Qualsiasi GGUF MoE.** Tutto ciò che llama.cpp carica, in qualsiasi quantizzazione. Nessun codice per
   modello.
-- **Ogni backend.** CPU, Metal, CUDA, HIP, Vulkan, OpenCL e la Hexagon NPU. Su una GPU gli esperti più usati
-  restano nella sua memoria.
+- **Ogni backend.** CPU, Metal, CUDA, HIP, Vulkan, OpenCL e la Hexagon NPU. Su una scheda
+  grafica gli esperti più usati restano nella sua VRAM.
 - **App e un server.** Un'app desktop, app per telefono e un server compatibile OpenAI e Anthropic per gli
   agenti di coding.
 
@@ -68,7 +68,7 @@ ciascun dispositivo.
 |  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
 | **GPU datacenter** (AMD, ROCm) | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
 
-Tutto con `--auto`. Un intervallo è la variazione tra i run. Metodo e tutti i run:
+Un intervallo è la variazione tra i run. Metodo e tutti i run:
 [docs/benchmarks.md](docs/benchmarks.md). Per aggiungere la tua macchina, esegui
 `scripts/bench-report.sh model.gguf` e apri un
 [benchmark report](https://github.com/Helldez/BigMoeOnEdge/issues/new?template=benchmark-report.yml).
@@ -141,7 +141,7 @@ model_provider = "bmoe"
 name = "bmoe"
 base_url = "http://127.0.0.1:8765/v1"
 wire_api = "responses"
-env_key = "BMOE_API_KEY"
+env_key = "BMOE_API_KEY"   # export BMOE_API_KEY=local
 ```
 
 Per opencode, aggiungi il server come provider compatibile OpenAI su `http://127.0.0.1:8765/v1`. In
@@ -154,22 +154,16 @@ anche essere gestita da OpenCode, Claude Code, Codex o Pi. Vedi [docs/agent.md](
 
 ## Come funziona
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/token-dark.svg">
-    <img src="docs/assets/diagrams/token-light.svg" width="820" alt="Un passo di decodifica: l'intero modello è sulla flash; la RAM contiene i pesi densi e una cache di esperti. Il router sceglie k esperti per layer; quelli in cache non costano nulla, gli altri vengono letti dalla flash.">
-  </picture>
-</p>
+Per ogni token, il router di ogni layer sceglie pochi esperti. Il motore li cerca in un massimo di tre
+livelli, ciascuno una cache per quello sottostante:
 
-Tre livelli, ciascuno una cache per quello sottostante:
+- **VRAM**, su una scheda grafica: i pesi che ogni token legge e gli esperti più usati.
+- **RAM**: una cache di esperti. Senza scheda grafica, anche i pesi che ogni token legge.
+- **Flash** (il disco): l'intero modello.
 
-- **La flash** contiene l'intero modello.
-- **La RAM** contiene i pesi che ogni token legge e una cache di esperti.
-- **La memoria della GPU**, su una scheda che ne ha una propria, contiene i pesi densi e gli esperti più
-  usati.
-
-Un esperto che manca alla scheda viene caricato dalla RAM; uno che manca alla RAM viene letto dalla flash.
-Un modello che entra nella scheda gira tutto su di essa. Lo streaming legge soltanto, quindi non usura il
+Un esperto che manca alla VRAM viene copiato dalla RAM; uno che manca alla RAM viene letto dalla flash.
+Su un telefono o un Mac Apple silicon la GPU usa la stessa RAM della CPU, quindi i livelli sono due. Un
+modello che entra nella scheda gira tutto su di essa. Lo streaming legge soltanto, quindi non usura il
 disco.
 
 Il motore usa l'API pubblica di llama.cpp, quindi le sue quantizzazioni, i tokenizer e i chat template
@@ -206,7 +200,7 @@ Dettagli: [docs/platforms.md](docs/platforms.md).
 | Telefono Android (anche NPU) | ✅ | ❌ | ❌ | ❌ | ❌ |
 | iPhone | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Mac | ✅ | ✅ | ✅ | ✅ | ❌ |
-| Windows / Linux, solo CPU | ✅ | ❌ | ✅ | ✅ | ❌ |
+| Windows / Linux, solo CPU | ✅ | ❌ | Linux, per il debug | ✅ | ❌ |
 | NVIDIA | ✅ | ✅ | ✅ | ✅ | ✅ |
 | AMD (ROCm) | ✅ (anche MI300X) | Radeon RX e Strix Halo | Strix Halo e RDNA | Vulkan | ✅ |
 | Qualsiasi modello MoE in GGUF | ✅ | pochi modelli | pochi modelli | formato suo | pochi modelli |
@@ -245,4 +239,4 @@ da SSD su Apple silicon.
 ## Licenza
 
 Apache-2.0 ([LICENSE](LICENSE)). I binari e le app includono anche llama.cpp, ggml e altre librerie
-sotto MIT, Apache-2.0 e SIL OFL 1.1: [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES).
+sotto MIT, BSD, Apache-2.0 e SIL OFL 1.1: [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES).

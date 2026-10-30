@@ -41,7 +41,7 @@ Qwen3.6-35B-A3B（21 GB）在各设备上实时运行。该模型大于每台设
 - **运行装不下的模型。** MoE 模型每个 token 只使用少数几个专家。引擎将每个 token 都需要的权重和最常用的专家保留在内存中，其余从闪存读取。输出与将整个模型放在内存中时相同；测试会对此进行验证。
 - **自动配置。** `--auto` 测量机器和模型，选择缓存大小、线程数以及由哪个设备做什么。Plan 界面展示每项选择及其原因。
 - **任意 MoE GGUF。** llama.cpp 能加载的都可以，任意量化格式。没有针对单个模型的代码。
-- **所有后端。** CPU、Metal、CUDA、HIP、Vulkan、OpenCL 和 Hexagon NPU。在 GPU 上，最常用的专家保留在显存中。
+- **所有后端。** CPU、Metal、CUDA、HIP、Vulkan、OpenCL 和 Hexagon NPU。在显卡上，最常用的专家保留在 VRAM 中。
 - **应用与服务器。** 桌面应用、手机应用，以及面向编程智能体的 OpenAI 和 Anthropic 兼容服务器。
 
 ## 性能
@@ -60,7 +60,7 @@ Qwen3.6-35B-A3B（21 GB）在各设备上实时运行。该模型大于每台设
 |  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
 | **数据中心 GPU**（AMD，ROCm） | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
 
-全部使用 `--auto`。范围表示多次运行之间的差异。方法与每次运行：
+范围表示多次运行之间的差异。方法与每次运行：
 [docs/benchmarks.md](docs/benchmarks.md)。如需添加你的机器，请运行
 `scripts/bench-report.sh model.gguf` 并提交一份
 [基准测试报告](https://github.com/Helldez/BigMoeOnEdge/issues/new?template=benchmark-report.yml)。
@@ -132,7 +132,7 @@ model_provider = "bmoe"
 name = "bmoe"
 base_url = "http://127.0.0.1:8765/v1"
 wire_api = "responses"
-env_key = "BMOE_API_KEY"
+env_key = "BMOE_API_KEY"   # export BMOE_API_KEY=local
 ```
 
 对于 opencode，将该服务器添加为 OpenAI 兼容的提供方，地址为 `http://127.0.0.1:8765/v1`。在
@@ -143,20 +143,14 @@ env_key = "BMOE_API_KEY"
 
 ## 工作原理
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/token-dark.svg">
-    <img src="docs/assets/diagrams/token-light.svg" width="820" alt="一次解码步骤：整个模型位于闪存中；RAM 保存稠密权重和专家缓存。路由器为每层选择 k 个专家；已缓存的专家没有开销，其余专家从闪存读取。">
-  </picture>
-</p>
+对每个 token，每一层的路由器选出几个专家。引擎最多在三个层级中查找它们，每一层都是下一层的缓存：
 
-三个层级，每一层都是下一层的缓存：
+- **VRAM**（在显卡上）：每个 token 都要读取的权重，以及最常用的专家。
+- **RAM**：专家缓存。没有显卡时，也保存每个 token 都要读取的权重。
+- **闪存**（硬盘）：整个模型。
 
-- **闪存**保存整个模型。
-- **RAM** 保存每个 token 都要读取的权重和专家缓存。
-- **显存**（显卡有独立显存时）保存稠密权重和最常用的专家。
-
-显卡缺少的专家从 RAM 上传；RAM 缺少的专家从闪存读取。能装进显卡的模型会完整地在显卡上运行。
+VRAM 缺少的专家从 RAM 复制；RAM 缺少的专家从闪存读取。在手机或 Apple silicon Mac 上，GPU 与 CPU 使用同一块
+RAM，因此只有两个层级。能装进显卡的模型会完整地在显卡上运行。
 流式读取只读不写，因此不会磨损硬盘。
 
 引擎使用 llama.cpp 的公开 API，因此其量化格式、分词器和对话模板都可直接使用，升级只需更新子模块。
@@ -191,7 +185,7 @@ env_key = "BMOE_API_KEY"
 | Android 手机（含 NPU） | ✅ | ❌ | ❌ | ❌ | ❌ |
 | iPhone | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Mac | ✅ | ✅ | ✅ | ✅ | ❌ |
-| Windows / Linux（仅 CPU） | ✅ | ❌ | ✅ | ✅ | ❌ |
+| Windows / Linux（仅 CPU） | ✅ | ❌ | Linux，用于调试 | ✅ | ❌ |
 | NVIDIA | ✅ | ✅ | ✅ | ✅ | ✅ |
 | AMD（ROCm） | ✅（含 MI300X） | Radeon RX 和 Strix Halo | Strix Halo 和 RDNA | Vulkan | ✅ |
 | 任意 GGUF 格式的 MoE 模型 | ✅ | 少数模型 | 少数模型 | 自有格式 | 少数模型 |
@@ -227,5 +221,5 @@ AirLLM、Apple 的 *LLM in a flash*、FlexGen、PowerInfer、EdgeMoE，以及
 
 ## 许可证
 
-Apache-2.0（[LICENSE](LICENSE)）。二进制文件和应用还包含 llama.cpp、ggml 以及采用 MIT、Apache-2.0 和
+Apache-2.0（[LICENSE](LICENSE)）。二进制文件和应用还包含 llama.cpp、ggml 以及采用 MIT、BSD、Apache-2.0 和
 SIL OFL 1.1 许可的其他库：[THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES)。

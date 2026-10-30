@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Changed
+- **The README's How it works names the tiers as they are** (`README.md` and its five translations):
+  VRAM on a graphics card, RAM, flash, and two tiers where the GPU shares the RAM (a phone, an
+  Apple-silicon Mac). The decode-step figure, which showed RAM and flash only, leaves with
+  `scripts/readme-diagrams.py`. Corrected on the way: the speed table is not all `--auto` (the oldest
+  rows predate it), Codex CLI's settings say to export `BMOE_API_KEY`, ds4 runs on the CPU on Linux for
+  debugging only, and the licenses list BSD too.
+
 ## [0.39.0] - 2026-10-29
 
 ### Added
