@@ -6,6 +6,13 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+- **The roadmap has a way to reach your own devices from anywhere** (`docs/roadmap.md`). Two entries:
+  devices paired once by QR code and connected peer to peer, on any OS and hardware, with a key per
+  device, a chat-only access and removal from the host; and, for those who want their usual app, one
+  connector to Telegram, then Signal, with WhatsApp left to a bridge a person brings. Each says what
+  the research found and what is owed.
+
 ### Changed
 - **The README's How it works names the tiers as they are** (`README.md` and its five translations):
   VRAM on a graphics card, RAM, flash, and two tiers where the GPU shares the RAM (a phone, an
