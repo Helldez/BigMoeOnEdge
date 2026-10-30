@@ -41,7 +41,7 @@ Android、iOS、macOS、Windows、Linux に対応し、llama.cpp の上に構築
 - **メモリに収まらないモデルを実行します。** MoE モデルは、トークンごとに少数のエキスパートしか使いません。エンジンは、すべてのトークンで必要な重みと、よく使われるエキスパートをメモリに保持し、残りはフラッシュから読み込みます。出力はモデル全体をメモリに置いた場合と同じで、テストでそれを確認しています。
 - **自動で設定します。** `--auto` はマシンとモデルを計測し、キャッシュサイズ、スレッド数、どのデバイスが何を処理するかを決めます。Plan 画面には、それぞれの選択とその理由が表示されます。
 - **任意の MoE GGUF。** llama.cpp が読み込めるものなら、どの量子化でも使えます。モデルごとのコードはありません。
-- **すべてのバックエンド。** CPU、Metal、CUDA、HIP、Vulkan、OpenCL、Hexagon NPU。GPU では、よく使われるエキスパートが GPU メモリに残ります。
+- **すべてのバックエンド。** CPU、Metal、CUDA、HIP、Vulkan、OpenCL、Hexagon NPU。グラフィックカードでは、よく使われるエキスパートが VRAM に残ります。
 - **アプリとサーバー。** デスクトップアプリ、スマートフォンアプリ、そしてコーディングエージェント向けの OpenAI・Anthropic 互換サーバーがあります。
 
 ## パフォーマンス
@@ -60,7 +60,7 @@ Android、iOS、macOS、Windows、Linux に対応し、llama.cpp の上に構築
 |  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
 | **データセンター GPU**（AMD、ROCm） | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
 
-すべて `--auto` での結果です。範囲は複数回の実行でのばらつきです。計測方法とすべての実行結果：
+範囲は複数回の実行でのばらつきです。計測方法とすべての実行結果：
 [docs/benchmarks.md](docs/benchmarks.md)。自分のマシンを追加するには、
 `scripts/bench-report.sh model.gguf` を実行して
 [ベンチマークレポート](https://github.com/Helldez/BigMoeOnEdge/issues/new?template=benchmark-report.yml)を作成してください。
@@ -133,7 +133,7 @@ model_provider = "bmoe"
 name = "bmoe"
 base_url = "http://127.0.0.1:8765/v1"
 wire_api = "responses"
-env_key = "BMOE_API_KEY"
+env_key = "BMOE_API_KEY"   # export BMOE_API_KEY=local
 ```
 
 opencode では、このサーバーを `http://127.0.0.1:8765/v1` の OpenAI 互換プロバイダーとして追加します。
@@ -145,20 +145,15 @@ opencode では、このサーバーを `http://127.0.0.1:8765/v1` の OpenAI �
 
 ## 仕組み
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/token-dark.svg">
-    <img src="docs/assets/diagrams/token-light.svg" width="820" alt="1 回のデコードステップ：モデル全体はフラッシュ上にあり、RAM には密な重みとエキスパートキャッシュが保持されます。ルーターは各層で k 個のエキスパートを選択し、キャッシュ済みのものはコストがかからず、それ以外はフラッシュから読み込まれます。">
-  </picture>
-</p>
+各トークンで、各層のルーターがいくつかのエキスパートを選びます。エンジンはそれを最大 3 つの階層で探します。それぞれが
+下の階層のキャッシュです：
 
-3 つの階層があり、それぞれが下の階層のキャッシュです：
+- **VRAM**（グラフィックカードの場合）：すべてのトークンが読む重みと、よく使われるエキスパート。
+- **RAM**：エキスパートのキャッシュ。グラフィックカードがない場合は、すべてのトークンが読む重みも。
+- **フラッシュ**（ドライブ）：モデル全体。
 
-- **フラッシュ**にはモデル全体があります。
-- **RAM** には、すべてのトークンが読む重みとエキスパートのキャッシュがあります。
-- **GPU メモリ**（専用メモリを持つカードの場合）には、密な重みとよく使われるエキスパートがあります。
-
-カードにないエキスパートは RAM からアップロードされ、RAM にないものはフラッシュから読み込まれます。カードに収まるモデルは、
+VRAM にないエキスパートは RAM からコピーされ、RAM にないものはフラッシュから読み込まれます。スマートフォンや
+Apple silicon の Mac では GPU が CPU と同じ RAM を使うため、階層は 2 つです。カードに収まるモデルは、
 すべてカード上で実行されます。ストリーミングは読み込みだけなので、ドライブを消耗させません。
 
 エンジンは llama.cpp の公開 API を使用しているため、その量子化、トークナイザー、チャットテンプレートがそのまま動作し、
@@ -194,7 +189,7 @@ opencode では、このサーバーを `http://127.0.0.1:8765/v1` の OpenAI �
 | Android スマートフォン（NPU も） | ✅ | ❌ | ❌ | ❌ | ❌ |
 | iPhone | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Mac | ✅ | ✅ | ✅ | ✅ | ❌ |
-| Windows / Linux（CPU のみ） | ✅ | ❌ | ✅ | ✅ | ❌ |
+| Windows / Linux（CPU のみ） | ✅ | ❌ | Linux（デバッグ用） | ✅ | ❌ |
 | NVIDIA | ✅ | ✅ | ✅ | ✅ | ✅ |
 | AMD（ROCm） | ✅（MI300X も） | Radeon RX と Strix Halo | Strix Halo と RDNA | Vulkan | ✅ |
 | GGUF の任意の MoE モデル | ✅ | 少数のモデル | 少数のモデル | 独自形式 | 少数のモデル |
@@ -232,5 +227,5 @@ AirLLM、Apple の *LLM in a flash*、FlexGen、PowerInfer、EdgeMoE、そして
 
 ## ライセンス
 
-Apache-2.0（[LICENSE](LICENSE)）。バイナリとアプリには、MIT、Apache-2.0、SIL OFL 1.1 の下で提供される llama.cpp、
+Apache-2.0（[LICENSE](LICENSE)）。バイナリとアプリには、MIT、BSD、Apache-2.0、SIL OFL 1.1 の下で提供される llama.cpp、
 ggml、その他のライブラリも含まれます：[THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES)。

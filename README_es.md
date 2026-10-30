@@ -46,8 +46,8 @@ dispositivo.
 - **Se configura solo.** `--auto` mide la máquina y el modelo y elige el tamaño de la caché, los hilos y qué
   dispositivo hace qué. La pantalla Plan muestra cada decisión y su motivo.
 - **Cualquier GGUF MoE.** Todo lo que carga llama.cpp, en cualquier cuantización. Sin código por modelo.
-- **Todos los backends.** CPU, Metal, CUDA, HIP, Vulkan, OpenCL y la Hexagon NPU. En una GPU, los expertos
-  más usados se quedan en su memoria.
+- **Todos los backends.** CPU, Metal, CUDA, HIP, Vulkan, OpenCL y la Hexagon NPU. En una tarjeta gráfica,
+  los expertos más usados se quedan en su VRAM.
 - **Apps y un servidor.** Una app de escritorio, apps para el teléfono y un servidor compatible con OpenAI y
   Anthropic para agentes de programación.
 
@@ -67,7 +67,7 @@ dispositivo.
 |  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
 | **GPU de centro de datos** (AMD, ROCm) | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
 
-Todo con `--auto`. Un rango es la variación entre ejecuciones. Método y todas las ejecuciones:
+Un rango es la variación entre ejecuciones. Método y todas las ejecuciones:
 [docs/benchmarks.md](docs/benchmarks.md). Para añadir tu máquina, ejecuta
 `scripts/bench-report.sh model.gguf` y abre un
 [informe de benchmark](https://github.com/Helldez/BigMoeOnEdge/issues/new?template=benchmark-report.yml).
@@ -140,7 +140,7 @@ model_provider = "bmoe"
 name = "bmoe"
 base_url = "http://127.0.0.1:8765/v1"
 wire_api = "responses"
-env_key = "BMOE_API_KEY"
+env_key = "BMOE_API_KEY"   # export BMOE_API_KEY=local
 ```
 
 Para opencode, añade el servidor como proveedor compatible con OpenAI en `http://127.0.0.1:8765/v1`. En
@@ -153,23 +153,16 @@ también la puede llevar OpenCode, Claude Code, Codex o Pi. Consulta [docs/agent
 
 ## Cómo funciona
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/token-dark.svg">
-    <img src="docs/assets/diagrams/token-light.svg" width="820" alt="Un paso de decodificación: el modelo completo está en la flash; la RAM contiene los pesos densos y una caché de expertos. El router elige k expertos por capa; los que están en caché no cuestan nada, los demás se leen de la flash.">
-  </picture>
-</p>
+Para cada token, el router de cada capa elige unos pocos expertos. El motor los busca en hasta tres
+niveles, cada uno una caché del de abajo:
 
-Tres niveles, cada uno una caché del de abajo:
+- **VRAM**, en una tarjeta gráfica: los pesos que lee cada token y los expertos más usados.
+- **RAM**: una caché de expertos. Sin tarjeta gráfica, también los pesos que lee cada token.
+- **Flash** (el disco): el modelo entero.
 
-- **La flash** contiene el modelo entero.
-- **La RAM** contiene los pesos que lee cada token y una caché de expertos.
-- **La memoria de la GPU**, en una tarjeta que tiene la suya propia, contiene los pesos densos y los
-  expertos más usados.
-
-Un experto que falta en la tarjeta se sube desde la RAM; uno que falta en la RAM se lee de la flash. Un
-modelo que cabe en la tarjeta se ejecuta entero en ella. El streaming solo lee, así que no desgasta el
-disco.
+Un experto que falta en la VRAM se copia desde la RAM; uno que falta en la RAM se lee de la flash. En un
+teléfono o un Mac con Apple silicon la GPU usa la misma RAM que la CPU, así que hay dos niveles. Un modelo
+que cabe en la tarjeta se ejecuta entero en ella. El streaming solo lee, así que no desgasta el disco.
 
 El motor usa la API pública de llama.cpp, así que sus cuantizaciones, tokenizadores y plantillas de chat
 funcionan sin cambios, y una actualización es un bump del submódulo. Qué tensores son expertos se lee del
@@ -205,7 +198,7 @@ Detalles: [docs/platforms.md](docs/platforms.md).
 | Teléfono Android (también NPU) | ✅ | ❌ | ❌ | ❌ | ❌ |
 | iPhone | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Mac | ✅ | ✅ | ✅ | ✅ | ❌ |
-| Windows / Linux, solo CPU | ✅ | ❌ | ✅ | ✅ | ❌ |
+| Windows / Linux, solo CPU | ✅ | ❌ | Linux, para depurar | ✅ | ❌ |
 | NVIDIA | ✅ | ✅ | ✅ | ✅ | ✅ |
 | AMD (ROCm) | ✅ (también MI300X) | Radeon RX y Strix Halo | Strix Halo y RDNA | Vulkan | ✅ |
 | Cualquier modelo MoE en GGUF | ✅ | pocos modelos | pocos modelos | formato propio | pocos modelos |
@@ -244,4 +237,4 @@ desde SSD en Apple silicon.
 ## Licencia
 
 Apache-2.0 ([LICENSE](LICENSE)). Los binarios y las apps también incluyen llama.cpp, ggml y otras
-bibliotecas bajo MIT, Apache-2.0 y SIL OFL 1.1: [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES).
+bibliotecas bajo MIT, BSD, Apache-2.0 y SIL OFL 1.1: [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES).

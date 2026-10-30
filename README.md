@@ -43,8 +43,8 @@ Qwen3.6-35B-A3B (21 GB) in real time on each device. The model is larger than ea
 - **Sets itself up.** `--auto` measures the machine and the model and picks the cache size, the
   threads and which device does what. The Plan screen shows each choice and why.
 - **Any MoE GGUF.** Whatever llama.cpp loads, in any quantization. No per-model code.
-- **Every backend.** CPU, Metal, CUDA, HIP, Vulkan, OpenCL and the Hexagon NPU. On a GPU, the
-  experts used most stay in its memory.
+- **Every backend.** CPU, Metal, CUDA, HIP, Vulkan, OpenCL and the Hexagon NPU. On a graphics card,
+  the experts used most stay in its VRAM.
 - **Apps and a server.** A desktop app, phone apps, and an OpenAI- and Anthropic-compatible server
   for coding agents.
 
@@ -64,7 +64,7 @@ Qwen3.6-35B-A3B (21 GB) in real time on each device. The model is larger than ea
 |  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
 | **Datacenter GPU** (AMD, ROCm) | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
 
-All with `--auto`. A range is the spread across runs. Method and every run:
+A range is the spread across runs. Method and every run:
 [docs/benchmarks.md](docs/benchmarks.md). To add your machine, run
 `scripts/bench-report.sh model.gguf` and open a
 [benchmark report](https://github.com/Helldez/BigMoeOnEdge/issues/new?template=benchmark-report.yml).
@@ -137,7 +137,7 @@ model_provider = "bmoe"
 name = "bmoe"
 base_url = "http://127.0.0.1:8765/v1"
 wire_api = "responses"
-env_key = "BMOE_API_KEY"
+env_key = "BMOE_API_KEY"   # export BMOE_API_KEY=local
 ```
 
 For opencode, add the server as an OpenAI-compatible provider at `http://127.0.0.1:8765/v1`. Under
@@ -150,21 +150,16 @@ also be run by OpenCode, Claude Code, Codex or Pi. See [docs/agent.md](docs/agen
 
 ## How it works
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/token-dark.svg">
-    <img src="docs/assets/diagrams/token-light.svg" width="820" alt="One decode step: the whole model is on flash; RAM holds the dense weights and an expert cache. The router picks k experts per layer; cached ones cost nothing, the others are read from flash.">
-  </picture>
-</p>
+For each token, the router of each layer picks a few experts. The engine looks for them in up to
+three tiers, each a cache for the one below:
 
-Three tiers, each a cache for the one below:
+- **VRAM**, on a graphics card: the weights every token reads, and the experts used most.
+- **RAM**: a cache of experts. Without a graphics card, also the weights every token reads.
+- **Flash** (the drive): the whole model.
 
-- **Flash** holds the whole model.
-- **RAM** holds the weights every token reads and a cache of experts.
-- **GPU memory**, on a card that has its own, holds the dense weights and the experts used most.
-
-A miss on the card is uploaded from RAM; a miss in RAM is read from flash. A model that fits the card
-runs on it whole. Streaming only reads, so it does not wear the drive.
+An expert missing from VRAM is copied from RAM; one missing from RAM is read from flash. On a phone or
+an Apple-silicon Mac the GPU uses the same RAM as the CPU, so there are two tiers. A model that fits
+the card runs on it whole. Streaming only reads, so it does not wear the drive.
 
 The engine uses llama.cpp's public API, so its quantizations, tokenizers and chat templates work
 unchanged, and an upgrade is a submodule bump. Which tensors are experts is read from the file
@@ -199,7 +194,7 @@ Details: [docs/platforms.md](docs/platforms.md).
 | Android phone (NPU too) | ✅ | ❌ | ❌ | ❌ | ❌ |
 | iPhone | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Mac | ✅ | ✅ | ✅ | ✅ | ❌ |
-| Windows / Linux, CPU only | ✅ | ❌ | ✅ | ✅ | ❌ |
+| Windows / Linux, CPU only | ✅ | ❌ | Linux, for debugging | ✅ | ❌ |
 | NVIDIA | ✅ | ✅ | ✅ | ✅ | ✅ |
 | AMD (ROCm) | ✅ (MI300X too) | Radeon RX and Strix Halo | Strix Halo and RDNA | Vulkan | ✅ |
 | Any MoE model in GGUF | ✅ | few models | few models | its own format | few models |
@@ -238,4 +233,4 @@ on Apple silicon.
 ## License
 
 Apache-2.0 ([LICENSE](LICENSE)). The binaries and apps also carry llama.cpp, ggml and other libraries
-under MIT, Apache-2.0 and SIL OFL 1.1: [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES).
+under MIT, BSD, Apache-2.0 and SIL OFL 1.1: [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES).
