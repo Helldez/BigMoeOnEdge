@@ -13,6 +13,12 @@ Semantic Versioning.
   setting's help behind More. Text only: no engine behaviour changes.
 - **`scripts/build-host.sh` passes its arguments to CMake**, so a llama.cpp backend is one flag:
   `scripts/build-host.sh -DGGML_VULKAN=ON`.
+- **The roadmap grows Serve on the network to reach your own devices from anywhere**
+  (`docs/roadmap.md`): one feature, not a second server mode. Clients of their own, each with its
+  key, a chat-only role and removal from the host, under one access policy for the LAN and every
+  other way in; a peer-to-peer tunnel as one more way in, for a device outside the LAN; and
+  Telegram, then Signal, as clients of the same kind. Each says what the research found and what is
+  owed.
 
 ### Changed
 - **The CPU temperature is the server's, for every UI** (#465): `bmoe-server` reads the CPU's
