@@ -33,6 +33,8 @@ the model needs them. Android, iOS, macOS, Windows and Linux, built on llama.cpp
 </tr>
 </table>
 
+<p align="center">▶ <a href="https://github.com/Helldez/BigMoeOnEdge/releases/download/v0.39.0/bigmoeonedge-0.39-tour.mp4"><b>Watch the tour</b></a> (2:38): models, the planner, chat, the agent on a folder, tasks and connected apps on a 16 GB Mac.</p>
+
 Qwen3.6-35B-A3B (21 GB) in real time on each device. The model is larger than each device's memory.
 
 ## What it does
