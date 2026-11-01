@@ -205,7 +205,7 @@ other software, or other people, on that machine or on a network it was told to 
   "state": "ready",
   "error": "",
   "model": {"path": "C:/models/Qwen3-30B-A3B-Q4_K_M.gguf", "name": "Qwen3-30B-A3B-Q4_K_M.gguf",
-            "arch": "qwen3moe", "n_ctx": 4096, "n_expert_used": 8, "think_ctl": "template",
+            "arch": "qwen3moe", "n_ctx": 16384, "n_expert_used": 8, "think_ctl": "template",
             "load_s": 12.4, "streaming": true, "compute_threads": 8, "busy_threads": 12,
             "ctx_advice": {"recommended": 16384, "short": true, "param": "ctx-size", "refused": false,
                            "warn": false}},
@@ -336,7 +336,7 @@ Request fields that are read:
 | `tools` | functions the model may call: `{type: "function", function: {name, description, parameters}}`. Any other tool type is refused with `400`. |
 | `tool_choice` | `"auto"` (default), `"none"`, `"required"`. A named function is honoured as `"required"`: the engine can require a call, not choose which. |
 | `stream`, `stream_options.include_usage` | streaming, and a last chunk with the token counts. |
-| `max_tokens` / `max_completion_tokens` | default: the `n-predict` parameter (also for `null` and `0`). Clamped to that parameter's upper bound; a negative or non-integer value is refused with `400`. It is a ceiling, not a reservation: the answer gets at most what the context has left after the prompt and then stops with `finish_reason: "length"`. Only a conversation that leaves no room at all is refused, with `400`. |
+| `max_tokens` / `max_completion_tokens` | default: the `n-predict` parameter (also for `null` and `0`), whose server default `0` means no ceiling but the context. Clamped to that parameter's upper bound; a negative or non-integer value is refused with `400`. It is a ceiling, not a reservation: the answer gets at most what the context has left after the prompt and then stops with `finish_reason: "length"`. Only a conversation that leaves no room at all is refused, with `400`. |
 | `think`, `chat_template_kwargs.enable_thinking`, `reasoning_effort` | thinking on or off, most specific first: this server's own `think` (bool), the template argument llama.cpp clients send, then `reasoning_effort`, where `"none"` turns it off and any other level turns it on. Default: on, unless the person set the `think` parameter (a launch flag or a saved setting), which then holds. The apps' conversations do not use this route and keep `think` off by default; a client that never asks gets the model's own reasoning, as from a llama.cpp server. |
 | `response_format` | `{"type":"json_object"}` requests JSON object output; `{"type":"json_schema","json_schema":{"schema":{...}}}` supplies a schema. Omitted, `null` or `{"type":"text"}` leaves the top-level `json_schema` unchanged; without one, output is ordinary text. See the support boundary below. |
 | `json_schema` | llama.cpp-compatible top-level schema for this request. A JSON object supplies schema keywords; `null` or omission adds no constraint. An empty object defaults to `{"type":"object"}`. |
@@ -464,12 +464,12 @@ sampling.
 
 ### Sizing the context for a client
 
-The server's default context is 4096 tokens: enough for a chat in the web UI, not for a coding
-agent. An agent sends its system prompt and every tool schema with each request; opencode's first
-request alone is 9911 tokens, so at 4096 every request it makes is refused with `400`
-`context_full` before it has done anything, and some clients show that only as an unknown error.
-Load the model with at least 16384 tokens (`-c 16384` on the server's command line, or the Context
-setting) for an agent; a long agent session grows past that, and one six-step opencode run that
+The server's default context is 16384 tokens: room for a long answer in the web UI, and the least
+a coding agent needs. An agent sends its system prompt and every tool schema with each request;
+opencode's first request alone is 9911 tokens, so under about 10k every request it makes is refused
+with `400` `context_full` before it has done anything, and some clients show that only as an
+unknown error. A long agent session grows past 16384 (`-c` on the server's command line, or the
+Context setting), and one six-step opencode run that
 fixed two bugs fit in 32768. An agent also needs room at the end of the context: when its
 conversation nears the limit it asks for a summary of it, and that request is served with only the
 tokens the prompt left, so a context sized to the prompt alone gives a cut or empty summary and an

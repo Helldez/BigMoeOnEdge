@@ -156,7 +156,8 @@ RunConfig server_defaults() {
     c.chatml = true;         // a chat UI always renders the model's own chat template
     c.moe.enabled = true;    // this is the engine the UI exists for; a dense model turns it off at load
     c.moe.cache_auto = true; // with streaming on, no cache re-reads every expert every token (#186)
-    c.n_ctx = kChatContextTokens;
+    c.n_ctx = RunConfig::ctx_for_clients;
+    // No ceiling but the context: a raised context must lengthen the answer (#460).
     c.n_predict = kChatAnswerTokens;
     c.decide.enabled = true; // POST /api/decide; costs nothing until a decision is asked for
     // Byte-identical and the measured best on every device; needs the fork's hook in the CPU

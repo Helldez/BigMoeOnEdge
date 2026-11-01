@@ -18,9 +18,9 @@ inline constexpr int kDefaultPort = 8765;
 
 // What a chat answers with when nobody has said otherwise. The server's defaults, not the engine's
 // (RunConfig keeps the library's own, which the CLI and the gates run at): a conversation needs
-// more context and a longer answer than a one-shot prompt.
-inline constexpr int kChatContextTokens = 4096;
-inline constexpr int kChatAnswerTokens = 1024;
+// a longer answer than a one-shot prompt. Its context is RunConfig::ctx_for_clients, which holds a
+// long answer as well as an agent's first request.
+inline constexpr int kChatAnswerTokens = 0;
 
 // What an app that hosts the server in its own process supplies beyond the command line. Every
 // field is optional: left empty, the server does what the executable does.

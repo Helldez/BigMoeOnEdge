@@ -2435,7 +2435,8 @@ struct Session::Impl::Turn {
                             std::to_string(im.cfg.n_ctx) +
                             " tokens): start a new conversation, or load the model with a larger {ctx-size}");
         }
-        n_predict = std::min(req.n_predict, ctx_room);
+        // No ceiling at all (0) is the context's room: the budget then grows with the context.
+        n_predict = req.n_predict > 0 ? std::min(req.n_predict, ctx_room) : ctx_room;
         return true;
     }
 

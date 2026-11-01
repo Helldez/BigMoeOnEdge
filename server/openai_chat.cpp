@@ -280,8 +280,10 @@ void ensure_tool_call_ids(std::vector<ChatToolCall> & calls, const std::string &
 std::string finish_reason(const RunResult & r, int n_predict) {
     if (r.cancelled) return "cancelled";
     // The session may have cut the budget to the room the context had left; that is a length stop too.
-    const int budget = r.summary.n_predict > 0 ? std::min(n_predict, r.summary.n_predict) : n_predict;
-    if (r.summary.n_generated >= budget) return "length";
+    // Either side may be 0: a request with no ceiling, or a summary the session did not fill in.
+    const int given = r.summary.n_predict;
+    const int budget = n_predict > 0 && given > 0 ? std::min(n_predict, given) : std::max(n_predict, given);
+    if (budget > 0 && r.summary.n_generated >= budget) return "length";
     return r.tool_calls.empty() ? "stop" : "tool_calls";
 }
 

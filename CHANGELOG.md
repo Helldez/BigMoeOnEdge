@@ -7,6 +7,13 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Changed
+- **A raised context now lengthens the answer** (#460): the server's default `n-predict` was a fixed
+  1024 tokens whatever the context, so a long answer stopped there even at a 64000-token context.
+  `n-predict` takes `0`, as far as the context goes, and that is the server's default; a person's
+  own value, and a client's `max_tokens`, still set the ceiling. The CLI's default is unchanged.
+- **The server's default context is 16384 tokens**, up from 4096: a long answer can now fill the
+  context, and at 4096 that left the next message refused. It is the size already recommended for
+  clients, so a default load no longer warns. The memory comes out of the expert cache.
 - **The README's How it works names the tiers as they are** (`README.md` and its five translations):
   VRAM on a graphics card, RAM, flash, and two tiers where the GPU shares the RAM (a phone, an
   Apple-silicon Mac). The decode-step figure, which showed RAM and flash only, leaves with
