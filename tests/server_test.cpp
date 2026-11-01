@@ -338,6 +338,10 @@ static void protocol_tests() {
     check(finish_reason(plain, 1000) == "length", "a budget the context cut short is a length stop");
     plain.summary.n_predict = 8;
     check(finish_reason(plain, 1000) == "stop", "an answer that ended under the cut budget is a stop");
+    plain.summary.n_predict = 8;
+    check(finish_reason(plain, 0) == "stop", "with no ceiling, an answer short of the context's room is a stop");
+    plain.summary.n_predict = 3;
+    check(finish_reason(plain, 0) == "length", "with no ceiling, an answer that filled the context is a length stop");
     plain.summary.n_predict = 0;
     plain.cancelled = true;
     check(finish_reason(plain, 4) == "cancelled", "a cancelled turn says so");

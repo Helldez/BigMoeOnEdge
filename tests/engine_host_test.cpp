@@ -73,7 +73,7 @@ struct Script {
     // do the same while sending a token every millisecond, counted in `tokens`.
     enum class Turn { Ok, Block, Stream, Fail, ContextFull, InvalidOutput } turn = Turn::Ok;
     DecideResult decide_result;
-    int n_ctx = 4096; // the session's context: short of what a server's clients send, as the default is
+    int n_ctx = 4096; // the session's context: short of what a server's clients send
 
     Gate started;
     std::atomic<int> opened{0};
@@ -633,7 +633,7 @@ static void context_tests() {
         auto bus_owner = std::make_unique<EventBus>();
         EventBus & bus = *bus_owner;
         auto q = bus.subscribe();
-        Script script; // a 4096-token session, as the server's default makes
+        Script script; // a 4096-token session, a context set short of the default
         auto host_owner = std::make_unique<EngineHost>(bus, opener(script));
         EngineHost & host = *host_owner;
         host.load(config(), config());

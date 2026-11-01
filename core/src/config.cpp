@@ -86,8 +86,8 @@ ValidationResult validate(const RunConfig & cfg) {
     if (cfg.model_path.empty()) {
         return fail("{model} is required: choose the model file to load");
     }
-    if (cfg.n_predict <= 0) {
-        return fail("{n-predict} must be at least 1");
+    if (cfg.n_predict < 0) {
+        return fail("{n-predict} must be 0 (as far as the context goes) or more");
     }
     if (cfg.n_threads <= 0) {
         return fail("{threads} must be at least 1");

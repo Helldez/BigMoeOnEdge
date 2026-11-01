@@ -1594,6 +1594,14 @@ int main(int argc, char ** argv) {
         } else {
             fails += check("G19 budget past n_ctx == budget of the room", exact.generated_text, big.generated_text);
         }
+        const RunResult uncapped = s->generate(GenerateRequest{stream0.prompt, 0});
+        if (!uncapped || uncapped.summary.n_predict != room) {
+            std::printf("[FAIL] G19 no ceiling must be the room (ok=%d budget=%d room=%d)\n", (int) (bool) uncapped,
+                        uncapped.summary.n_predict, room);
+            ++fails;
+        } else {
+            fails += check("G19 no ceiling == budget of the room", exact.generated_text, uncapped.generated_text);
+        }
         std::string long_prompt;
         for (int i = 0; i < 64; ++i)
             long_prompt += "streaming test words ";

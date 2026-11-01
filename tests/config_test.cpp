@@ -92,8 +92,8 @@ int main() {
     }
     {
         RunConfig c = ok_base();
-        c.n_predict = 0;
-        expect_fail("n_predict must be positive", c);
+        c.n_predict = -1;
+        expect_fail("n_predict must not be negative", c);
     }
     {
         RunConfig c = ok_base();

@@ -249,8 +249,9 @@ std::vector<ParamDesc> build() {
         d.short_flag = "-n";
         d.value_hint = "N";
         d.scope = ParamScope::Request;
-        bounds(d, 1, RunConfig::tokens_max, "tokens");
+        bounds(d, 0, RunConfig::tokens_max, "tokens");
         typical(d, usual::n_predict_lo, usual::n_predict_hi);
+        special(d, "0", "as far as the context goes");
         bind_int(d, [](RunConfig & c) -> int & { return c.n_predict; });
         t.push_back(d);
     }
