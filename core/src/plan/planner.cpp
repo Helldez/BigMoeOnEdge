@@ -1660,6 +1660,27 @@ void settle_dense_pin(Planning & s, bool pin_candidate, const Allocation & alloc
                "part that was refused, so it is held whole as ordinary memory");
 }
 
+// The part of the dense reservation the run will never hold: the embedding tables a copying policy
+// is about to be told to leave mapped (settle_mapped_tables, the case where the ranking did not call
+// them resident). The reservation is the dense policy's whole copy, so it carried them; left in, the
+// ledger charges tens of GB nothing holds and the cache is sized short by exactly that. Measured on a
+// 96 GB machine: a 27 GB per-layer table charged as dense held the cache to 92% of an expert set that
+// fits whole beside what the run really holds. Only where the reservation is the file's own count:
+// a fitted placement's host share is the fitter's figure, and whether it counted the tables is not
+// known here, so it is left as charged. Where the runtime already holds back a tensor too large, it
+// may be one of these tables, so it is not taken out twice.
+uint64_t unheld_table_bytes(const Planning & s, const Allocation & alloc) {
+    const RunConfig & c = s.p.config;
+    if (s.placement.fitted || s.req.is_pinned("dense-mapped") || s.model.embedding_tensors.empty()) return 0;
+    if (c.moe.dense_weights != DenseWeightsMode::Anonymous && c.moe.dense_weights != DenseWeightsMode::Pinned) return 0;
+    const Lane lane = alloc.at(WeightGroup::Embedding).lane;
+    if (lane == Lane::Resident || lane == Lane::Pinned) return 0;
+    uint64_t bytes = s.model.group(WeightGroup::Embedding).bytes;
+    if (s.model.largest_dense_tensor > s.hw.residency_budget)
+        bytes = bytes > s.model.largest_dense_tensor ? bytes - s.model.largest_dense_tensor : 0;
+    return std::min(bytes, s.p.dense_pending_bytes);
+}
+
 // The plan and the run must agree about the embedding tables too. The allocation prices the
 // Embedding group on its own lane, and where that lane is not residency - left mapped or
 // row-streamed, because the graph gathers rows from it - the run's dense policy must leave the
@@ -2528,6 +2549,11 @@ Plan plan_from(const RunConfig & base,
     const bool pin_candidate = choose_dense_policy(s);
     p.dense_pending_bytes = dense_pending_bytes(s);
     s.host_model = host_model(s);
+    // Which lane the tables take is the ranking's answer, and the ranking does not spend the
+    // reservation (it only labels a pinned lane), so one pricing settles what to take out of it
+    // before the one the plan keeps.
+    p.dense_pending_bytes -=
+        unheld_table_bytes(s, allocate(hw, s.host_model, ledger_inputs(s, p.dense_pending_bytes), s.pol));
     AllocationInputs ai = ledger_inputs(s, p.dense_pending_bytes);
     const Allocation alloc = plan_prefill(s, ai);
     if (s.home.priced) {

@@ -209,7 +209,8 @@ scripts/build-host.sh
 build/bin/bmoe-server --open
 ```
 
-テスト：`cd build && ctest --output-on-failure`（`gguf` を入れた `python3` が必要）。Android：
+llama.cpp のバックエンドは CMake のフラグをそのまま渡すだけです：`scripts/build-host.sh -DGGML_VULKAN=ON`
+（または `-DGGML_CUDA=ON`）。テスト：`cd build && ctest --output-on-failure`（`gguf` を入れた `python3` が必要）。Android：
 `scripts/build-android.ps1` の後、[examples/android](examples/android) で APK をビルドします。詳しくは：
 [CONTRIBUTING.md](CONTRIBUTING.md)。
 

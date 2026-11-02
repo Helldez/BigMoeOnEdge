@@ -247,6 +247,38 @@ int main() {
               "tables: a pinned list is the caller's");
     }
 
+    // ── a table left mapped is not charged as dense ─────────────────────────────────
+    // Shaped after a 96 GB host with no device of its own and a 75 GB file: 46 GB of experts, a
+    // 27 GB per-layer table the graph gathers rows from, under 3 GB of dense weights read whole.
+    // The reservation once carried the table the run leaves mapped, so the ledger charged 30 GB of
+    // dense and the cache stopped at 92% of an expert set that fits whole beside what is held.
+    {
+        ModelProfile tabled = model;
+        tabled.embedding_tensors = {"token_embd.weight", "per_layer_token_embd.weight"};
+        tabled.group(WeightGroup::Embedding) = {27 * GiB, 30 * KiB, true, true};
+        tabled.expert_bytes = 46 * GiB;
+        tabled.group(WeightGroup::Experts) = {46 * GiB, tabled.token_cycle_bytes, false, true};
+        tabled.dense_bytes = 27 * GiB + 2728 * MiB;
+        tabled.file_bytes = tabled.expert_bytes + tabled.dense_bytes;
+        tabled.largest_dense_tensor = 27 * GiB - 512 * MiB;
+        HardwareProfile h = desktop();
+        h.residency_budget = 74 * GiB; // what the issue's host offered after its margin
+        h.memory_total = 96 * GiB;
+        h.devices.clear();
+        const Plan p = plan_run(base_cfg(), h, tabled, PlanRequest{});
+        check(p.regime == Regime::ExpertsStream, "mapped table: experts stream");
+        check(p.config.moe.dense_mapped == tabled.embedding_tensors, "mapped table: the run leaves the tables mapped");
+        const LedgerRow * dense = ledger_row(p, "dense");
+        check(dense && dense->bytes < tabled.group(WeightGroup::Embedding).bytes,
+              "mapped table: the ledger's dense row does not carry the table",
+              dense ? std::to_string(dense->bytes >> 20) + " MiB" : "no row");
+        check((uint64_t) p.config.moe.cache_mb * MiB >= tabled.expert_bytes,
+              "mapped table: the cache holds the whole expert set", std::to_string(p.config.moe.cache_mb) + " MiB");
+        check(p.allocation.ledger.held <= p.allocation.ledger.holdable_cap, "mapped table: what is held fits",
+              std::to_string(p.allocation.ledger.held >> 20) + " MiB");
+        check(validate(p.config).ok, "mapped table: the plan is a valid config", validate(p.config).error);
+    }
+
     // ── phone ───────────────────────────────────────────────────────────────────────
     {
         const Plan p = plan_run(base_cfg(), phone(), model, PlanRequest{});

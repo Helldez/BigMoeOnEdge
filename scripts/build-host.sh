@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Configure and build BigMoeOnEdge for the host (Linux/macOS). Env overrides:
 #   BUILD_DIR (default build), BUILD_TYPE (Release), JOBS (nproc).
+# Arguments are passed to the configure step, e.g. a llama.cpp backend:
+#   scripts/build-host.sh -DGGML_VULKAN=ON
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -14,7 +16,7 @@ if [ ! -f third_party/llama.cpp/CMakeLists.txt ]; then
     exit 1
 fi
 
-cmake -S . -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
+cmake -S . -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" "$@"
 cmake --build "$BUILD_DIR" -j "$JOBS"
 
 echo "built: $BUILD_DIR/bin/bmoe-cli"
