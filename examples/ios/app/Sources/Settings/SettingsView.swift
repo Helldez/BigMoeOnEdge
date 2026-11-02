@@ -266,6 +266,7 @@ struct ParamRow: View {
     private var help: some View {
         let parts = spec.helpParts
         let extra = [parts.rest.isEmpty ? nil : parts.rest,
+                     spec.details.isEmpty ? nil : spec.details,
                      spec.special.isEmpty ? nil : spec.special.map { "\($0.value) = \($0.label)" }.joined(separator: "; ")]
             .compactMap { $0 }
         if !parts.lead.isEmpty {

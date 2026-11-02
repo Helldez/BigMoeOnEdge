@@ -34,6 +34,8 @@ export interface ParamSpec {
   form?: boolean;
   scope: ParamScope | (string & {});
   help: string;
+  /** The longer explanation a form folds under the help; absent where the table has none. */
+  details?: string;
   flag: string;
   default: ParamValue;
   short?: string;

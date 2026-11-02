@@ -240,6 +240,7 @@ std::vector<ParamDesc> build() {
         d.short_flag = "-m";
         d.value_hint = "PATH";
         bind_string(d, [](RunConfig & c) -> std::string & { return c.model_path; });
+        d.details = "For a model split into several files, choose the first one. The Models screen sets this for you.";
         t.push_back(d);
     }
 
@@ -253,6 +254,8 @@ std::vector<ParamDesc> build() {
         typical(d, usual::n_predict_lo, usual::n_predict_hi);
         special(d, "0", "as far as the context goes");
         bind_int(d, [](RunConfig & c) -> int & { return c.n_predict; });
+        d.details = "The longest an answer may be. 0 means as long as the context allows; a number cuts long answers, "
+                    "such as a long reasoning, short.";
         t.push_back(d);
     }
     {
@@ -264,6 +267,8 @@ std::vector<ParamDesc> build() {
         d.switches = {{"--think", "true"}, {"--no-think", "false"}};
         d.scope = ParamScope::Request;
         bind_bool(d, [](RunConfig & c) -> bool & { return c.think; });
+        d.details = "On, a reasoning model thinks before answering: better on hard questions, but slower. Models "
+                    "without reasoning ignore it.";
         t.push_back(d);
     }
     {
@@ -275,6 +280,8 @@ std::vector<ParamDesc> build() {
         bounds(d, 1, RunConfig::tokens_max, "tokens");
         typical(d, usual::ctx_lo, usual::ctx_hi);
         bind_int(d, [](RunConfig & c) -> int & { return c.n_ctx; });
+        d.details = "How much of the conversation the model keeps in view. Larger takes RAM from the expert cache; "
+                    "16384 suits chat, long agent sessions want 32768 or more.";
         t.push_back(d);
     }
     {
@@ -284,6 +291,7 @@ std::vector<ParamDesc> build() {
         bounds(d, 1, RunConfig::threads_max, "threads");
         typical(d, usual::threads_lo, usual::threads_hi);
         bind_int(d, [](RunConfig & c) -> int & { return c.n_threads; });
+        d.details = "The plan measures this machine and picks the count. Lower it to leave cores free for other apps.";
         t.push_back(d);
     }
     {
@@ -295,6 +303,8 @@ std::vector<ParamDesc> build() {
         typical(d, usual::threads_batch_lo, usual::threads_batch_hi);
         special(d, "0", "same as the compute threads");
         bind_int(d, [](RunConfig & c) -> int & { return c.n_threads_batch; });
+        d.details = "Reading a prompt is limited by compute, so more threads help here even when they do not help the "
+                    "answer. 0 uses Compute threads.";
         t.push_back(d);
     }
     {
@@ -328,6 +338,8 @@ std::vector<ParamDesc> build() {
             c.trial.threads = std::move(v);
             return true;
         };
+        d.details =
+            "Thread counts tried on the first answer; one is kept only if clearly faster. It never changes the answer.";
         t.push_back(d);
     }
     {
@@ -361,6 +373,8 @@ std::vector<ParamDesc> build() {
         typical(d, usual::temp_lo, usual::temp_hi);
         special(d, "0", "greedy");
         bind_float(d, [](RunConfig & c) -> float & { return c.sampling.temp; });
+        d.details = "0 gives the same answer every time and is needed for speculative drafts. 0.6 to 1.0 reads more "
+                    "naturally and helps a model stuck repeating itself.";
         t.push_back(d);
     }
     {
@@ -371,6 +385,8 @@ std::vector<ParamDesc> build() {
         typical(d, usual::top_k_lo, usual::top_k_hi);
         special(d, "0", "off");
         bind_int(d, [](RunConfig & c) -> int & { return c.sampling.top_k; });
+        d.details =
+            "With Temperature above 0, chooses only among this many likely tokens. 40 is common; 0 turns it off.";
         t.push_back(d);
     }
     {
@@ -381,6 +397,8 @@ std::vector<ParamDesc> build() {
         typical(d, usual::top_p_lo, usual::top_p_hi);
         special(d, "1", "off");
         bind_float(d, [](RunConfig & c) -> float & { return c.sampling.top_p; });
+        d.details = "With Temperature above 0, chooses only among the likeliest tokens covering this share. 0.95 is "
+                    "common; 1 turns it off.";
         t.push_back(d);
     }
     {
@@ -397,6 +415,8 @@ std::vector<ParamDesc> build() {
             c.sampling.seed = (uint32_t) v;
             return true;
         };
+        d.details = "With Temperature above 0, the same seed gives the same answer again. The special value draws a "
+                    "new one each run.";
         t.push_back(d);
     }
 
@@ -409,6 +429,8 @@ std::vector<ParamDesc> build() {
         d.flag.clear();
         d.switches = {{"--moe-stream", "true"}};
         bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.enabled; });
+        d.details = "On, only the experts each token needs are read from storage, and the recent ones stay in RAM. "
+                    "Turn it off only for a model that fits in RAM with room to spare.";
         t.push_back(d);
     }
     {
@@ -420,6 +442,8 @@ std::vector<ParamDesc> build() {
         at_least(d, 0, "MiB");
         special(d, "0", "off");
         bind_int(d, [](RunConfig & c) -> int & { return c.moe.device_cache_mb; });
+        d.details = "Experimental: keeps experts in a graphics card's memory and computes them there. Needs layers on "
+                    "that device; 0 is off.";
         t.push_back(d);
     }
     {
@@ -439,6 +463,7 @@ std::vector<ParamDesc> build() {
         bounds(d, 1, MoeStreamConfig::io_threads_max, "lanes");
         typical(d, usual::io_threads_lo, usual::io_threads_hi);
         bind_int(d, [](RunConfig & c) -> int & { return c.moe.io_threads; });
+        d.details = "Parallel expert reads from storage. The plan measures the storage and picks the fastest count.";
         t.push_back(d);
     }
     {
@@ -448,6 +473,8 @@ std::vector<ParamDesc> build() {
         d.flag.clear();
         d.switches = {{"--no-odirect", "false"}};
         bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.o_direct; });
+        d.details = "Reads experts past the system's file cache, so the same bytes are not held twice. The plan checks "
+                    "it reads correctly on this storage.";
         t.push_back(d);
     }
     {
@@ -458,6 +485,8 @@ std::vector<ParamDesc> build() {
         d.flag.clear();
         d.switches = {{"--overlap", "true"}};
         bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.overlap; });
+        d.details = "Reads the next experts while the current ones are computed. Same answer, often faster; the plan "
+                    "keeps it only where it measures faster.";
         t.push_back(d);
     }
     {
@@ -490,6 +519,8 @@ std::vector<ParamDesc> build() {
         d.flag.clear();
         d.switches = {{"--release-mmap", "true"}};
         bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.release_mmap; });
+        d.details = "Drops the model file's mapping after load; it speeds up reads on Windows. Needs dense weights "
+                    "copied or pinned.";
         t.push_back(d);
     }
 
@@ -525,6 +556,8 @@ std::vector<ParamDesc> build() {
             c.moe.cache_mb = (int) v;
             return true;
         };
+        d.details = "RAM that keeps experts once read: larger means fewer reads and faster tokens, up to the size of "
+                    "all the experts. It fills as experts are first used.";
         t.push_back(d);
     }
     {
@@ -584,6 +617,8 @@ std::vector<ParamDesc> build() {
                         {M::Anonymous, {dense_weights_mode_name(M::Anonymous), "copied into memory"}},
                         {M::Pinned, {dense_weights_mode_name(M::Pinned), "pinned in memory"}}},
                        {{"ahwb", M::Pinned}});
+        d.details = "How the parts every token uses stay in memory. Copied or pinned keeps them from being re-read "
+                    "from storage under memory pressure; pinned memory is taken from other apps.";
         t.push_back(d);
     }
     {
@@ -596,6 +631,8 @@ std::vector<ParamDesc> build() {
         typical(d, usual::ubatch_lo, usual::ubatch_hi);
         special(d, "0", "as wide as the context");
         bind_int(d, [](RunConfig & c) -> int & { return c.n_ubatch; });
+        d.details = "Wider computes a long prompt faster but reserves memory taken from the expert cache. It does not "
+                    "change how fast the answer is written.";
         t.push_back(d);
     }
     {
@@ -652,6 +689,8 @@ std::vector<ParamDesc> build() {
         bounds(d, 0, RunConfig::n_gpu_layers_max, "layers");
         special(d, "0", "all on the host");
         bind_int(d, [](RunConfig & c) -> int & { return c.n_gpu_layers; });
+        d.details = "Layers held and computed on a device with its own memory, such as a graphics card: much faster "
+                    "than streaming. The plan fills the device as far as it fits.";
         t.push_back(d);
     }
     {
@@ -687,6 +726,8 @@ std::vector<ParamDesc> build() {
             }
             return true;
         };
+        d.details = "Tables read only a few rows per token stay mapped from the file instead of copied, which saves "
+                    "gigabytes. Set by the plan.";
         t.push_back(d);
     }
     {
@@ -787,6 +828,7 @@ std::vector<ParamDesc> build() {
                                {{DeviceUse::Auto, {"auto", "auto"}},
                                 {DeviceUse::All, {"all", "all"}},
                                 {DeviceUse::CpuOnly, {"cpu", "CPU only"}}});
+        d.details = "auto uses a device only when the plan places layers on it. The prompt's device is set separately.";
         t.push_back(d);
     }
 
@@ -800,6 +842,8 @@ std::vector<ParamDesc> build() {
         d.type = ParamType::Text;
         d.value_hint = "D";
         bind_string(d, [](RunConfig & c) -> std::string & { return c.prefill.device; });
+        d.details = "An NPU or GPU that reads long prompts faster than the CPU, while the answer is written on the "
+                    "CPU. The plan measures each device and picks the fastest that gives the same results.";
         t.push_back(d);
     }
     {
@@ -967,6 +1011,8 @@ std::vector<ParamDesc> build() {
                                  {{DraftSource::none, {"none", "off"}},
                                   {DraftSource::mtp, {"mtp", "MTP head"}},
                                   {DraftSource::ngram, {"ngram", "n-gram lookup"}}});
+        d.details = "Guesses a few tokens ahead and checks them in one pass; the answer does not change. Needs "
+                    "Temperature 0, and gains depend on the model.";
         t.push_back(d);
     }
     {
@@ -1035,13 +1081,14 @@ std::vector<ParamDesc> build() {
         for (KvCacheType k : k_kv_cache_types)
             kv_types.push_back({k, {kv_cache_type_name(k), kv_cache_type_name(k)}});
         const auto kv_row = [&](const char * key, const char * short_flag, const char * label, const char * help,
-                                Field<KvCacheType> field) {
+                                const char * details, Field<KvCacheType> field) {
             ParamDesc d = row(key, label, G::Lossy, L::Advanced, help);
             d.type = ParamType::Choice;
             d.short_flag = short_flag;
             d.value_hint = "TYPE";
             d.lossy = true;
             d.form = true;
+            d.details = details;
             bind_choice<KvCacheType>(d, field, kv_types);
             t.push_back(d);
         };
@@ -1050,12 +1097,16 @@ std::vector<ParamDesc> build() {
                "q8_0, the default, halves the memory a long context takes against llama.cpp's f16, and q4_0 "
                "quarters it, at a cost in quality that grows as the bits shrink. That memory goes to the "
                "expert cache. f16 is lossless.",
+               "q8_0 halves the memory of f16 with very little quality loss; q4_0 saves more and can show in long "
+               "chats. The memory saved goes to the expert cache.",
                [](RunConfig & c) -> KvCacheType & { return c.cache_type_k; });
-        kv_row("cache-type-v", "-ctv", "Value cache type",
-               "Element type of the attention values kept for the context, as llama.cpp's flag of the same name. "
-               "A quantized type needs flash attention, which llama.cpp uses where the backend has it; "
-               "where it has not, the run falls back to f16.",
-               [](RunConfig & c) -> KvCacheType & { return c.cache_type_v; });
+        kv_row(
+            "cache-type-v", "-ctv", "Value cache type",
+            "Element type of the attention values kept for the context, as llama.cpp's flag of the same name. "
+            "A quantized type needs flash attention, which llama.cpp uses where the backend has it; "
+            "where it has not, the run falls back to f16.",
+            "As Key cache type, for the values. A quantized type needs flash attention; without it the run uses f16.",
+            [](RunConfig & c) -> KvCacheType & { return c.cache_type_v; });
     }
     {
         ParamDesc d = row("n-expert-used", "Active experts", G::Lossy, L::Advanced,
@@ -1067,6 +1118,7 @@ std::vector<ParamDesc> build() {
         bounds(d, 0, RunConfig::n_expert_used_max, "experts");
         special(d, "0", "the model's own");
         bind_int(d, [](RunConfig & c) -> int & { return c.n_expert_used; });
+        d.details = "Fewer experts per token is faster but worsens the answers. 0 keeps the model's own number.";
         t.push_back(d);
     }
     {
@@ -1178,6 +1230,8 @@ std::vector<ParamDesc> build() {
         d.flag.clear();
         d.switches = {{"--no-cache-pin", "false"}};
         bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.cache_pin; });
+        d.details = "Locks the expert cache in RAM so the system cannot swap it. Faster under memory pressure, but the "
+                    "locked memory is taken from other apps.";
         t.push_back(d);
     }
     {
@@ -1577,6 +1631,10 @@ std::string params_json(const RunConfig & defaults) {
         o += d.form ? ",\"form\":true" : ",\"form\":false";
         o += ",\"help\":";
         json_str(o, d.help);
+        if (!d.details.empty()) {
+            o += ",\"details\":";
+            json_str(o, d.details);
+        }
         o += ",\"flag\":";
         json_str(o, d.flag);
         if (!d.short_flag.empty()) {

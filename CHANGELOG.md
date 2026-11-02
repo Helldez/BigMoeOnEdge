@@ -7,6 +7,10 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **Every setting explains itself** (#468, from #465): each row a settings form shows, and each the
+  plan decides, carries `details` in `/api/params`, a sentence or two in plain words on when to
+  change it and what it costs, which the web UI, the Android app and the iOS app fold under the
+  setting's help behind More. Text only: no engine behaviour changes.
 - **`scripts/build-host.sh` passes its arguments to CMake**, so a llama.cpp backend is one flag:
   `scripts/build-host.sh -DGGML_VULKAN=ON`.
 
@@ -39,6 +43,9 @@ Semantic Versioning.
   Appearance, so a person looking for the measurements or the CSV recording found neither. The web UI
   shows the Metrics section always; on Android and iOS the Metrics entry is always in Settings and the
   CSV recording switch, Record, is inside it, beside the files it writes.
+- **The Plan names a special value** (#468): a decision whose value means something other than its
+  number reads as that meaning ("as wide as the context"), not "0 tokens". On Android, a Plan tile's
+  unit sits under its figure, where beside it a narrow screen broke it mid-word ("credite d").
 - **Closing the Android app from the recent apps stops the engine** (#465): its notification
   stayed, and the model held its memory, until a force stop. An engine shared on the network keeps
   running, since other devices are its clients.

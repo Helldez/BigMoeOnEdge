@@ -407,6 +407,7 @@ private fun ParamRow(
         if (lead.isNotEmpty()) Hint(lead)
         val extra = listOfNotNull(
             rest.ifEmpty { null },
+            spec.details.ifEmpty { null },
             spec.special.takeIf { it.isNotEmpty() }?.joinToString("; ") { "${it.first} = ${it.second}" },
         )
         if (extra.isNotEmpty()) {

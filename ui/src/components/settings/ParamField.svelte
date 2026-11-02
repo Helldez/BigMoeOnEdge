@@ -178,6 +178,7 @@
   <details class="help">
     <summary>More <span class="visually-hidden">about {spec.label}</span></summary>
     {#if help.rest}<p>{help.rest}</p>{/if}
+    {#if spec.details}<p>{spec.details}</p>{/if}
     {#if spec.special?.length}
       <p>{spec.special.map((s) => `${displayValue(s.value)} = ${s.label}`).join('; ')}</p>
     {/if}
