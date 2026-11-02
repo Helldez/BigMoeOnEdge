@@ -35,6 +35,10 @@ Semantic Versioning.
   debugging only, and the licenses list BSD too.
 
 ### Fixed
+- **Metrics is always in Settings, on every front-end** (#465): it appeared only after a switch under
+  Appearance, so a person looking for the measurements or the CSV recording found neither. The web UI
+  shows the Metrics section always; on Android and iOS the Metrics entry is always in Settings and the
+  CSV recording switch, Record, is inside it, beside the files it writes.
 - **Closing the Android app from the recent apps stops the engine** (#465): its notification
   stayed, and the model held its memory, until a force stop. An engine shared on the network keeps
   running, since other devices are its clients.

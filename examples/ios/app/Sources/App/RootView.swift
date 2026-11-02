@@ -36,7 +36,7 @@ final class Navigator: ObservableObject {
 }
 
 /// The four screens in a bottom bar, the status line above every one of them. Metrics is not one:
-/// it opens from Settings while the Metrics switch is on.
+/// it opens from Settings, where it always is.
 struct RootView: View {
     typealias Screen = Navigator.Screen
     @EnvironmentObject private var nav: Navigator

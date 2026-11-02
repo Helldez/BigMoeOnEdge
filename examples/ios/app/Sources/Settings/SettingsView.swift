@@ -43,23 +43,22 @@ struct SettingsView: View {
                                                setByYou: Set(mine.map(\.key)))) { c in card(c) }
                 }
                 AppSettingsSection(open: $appOpen)
-                if preferences.metricsCSV {
-                    NavigationLink {
-                        MetricsView()
-                            .background(Palette.bg.ignoresSafeArea())
-                            .navigationTitle("Metrics")
-                            .navigationBarTitleDisplayMode(.inline)
-                    } label: {
-                        HStack(spacing: Grid.s) {
-                            Text("Metrics").font(.ui(18, bold: true)).foregroundStyle(Palette.accentInk)
-                            Spacer()
-                            Image(systemName: "chevron.right").foregroundStyle(Palette.muted)
-                        }
-                        .contentShape(Rectangle())
+                // Always here, on every front-end: a switch elsewhere hid it (#465).
+                NavigationLink {
+                    MetricsView()
+                        .background(Palette.bg.ignoresSafeArea())
+                        .navigationTitle("Metrics")
+                        .navigationBarTitleDisplayMode(.inline)
+                } label: {
+                    HStack(spacing: Grid.s) {
+                        Text("Metrics").font(.ui(18, bold: true)).foregroundStyle(Palette.accentInk)
+                        Spacer()
+                        Image(systemName: "chevron.right").foregroundStyle(Palette.muted)
                     }
-                    .buttonStyle(.plain)
-                    .card(padding: 12)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .card(padding: 12)
             }
             .onAppear { land(proxy) }
             .onChange(of: nav.settingTarget) { _ in land(proxy) }
@@ -512,7 +511,7 @@ struct ShareSection: View {
     }
 }
 
-/// How the app looks and what it shows: the theme, applied at once, and the Metrics switch.
+/// How the app looks: the theme, applied at once.
 struct AppearanceSection: View {
     @EnvironmentObject private var preferences: Preferences
     @Binding var open: Bool
@@ -529,14 +528,6 @@ struct AppearanceSection: View {
                     }
                     .pickerStyle(.segmented)
                 }
-                Toggle(isOn: $preferences.metricsCSV) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Metrics").foregroundStyle(Palette.text)
-                        Text("Record a per-token CSV for every loaded model and show the measurements here.")
-                            .font(.ui(12)).foregroundStyle(Palette.muted)
-                    }
-                }
-                .tint(Palette.accent)
             }
         }
         .card(padding: 12)

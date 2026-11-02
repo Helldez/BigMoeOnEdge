@@ -33,8 +33,8 @@ app/
     Plan/       the verdict and its three figures, the planner's measurements and decisions
     Settings/   the engine parameters a form offers, one card per group of GET /api/params, and
                 the app's own
-    Metrics/    the live card, the recorded runs, the engine's log: opened from Settings while
-                the Metrics switch is on
+    Metrics/    the live card, the recorded runs with their Record switch, the engine's log:
+                opened from Settings, where it always is
     Design/     the visual language (docs/design.md): the tokens, Inter and JetBrains Mono, the
                 boxes, the logo
   MarkdownUI/   the image providers that load nothing, compiled into the vendored MarkdownUI
@@ -64,7 +64,7 @@ state even while it is closed (Off, or On and the first address, or On but not o
 are the switch, each address with Copy, the API key masked with Show, Copy and New key (which
 restarts the engine on the new key), the base URL a client takes, and that prompts and answers
 cross the network unencrypted. Then **Appearance**: the theme (System, Light or Dark, applied at
-once; the web UI's choice) and the Metrics switch. Then **Set by you · N**, every value the person
+once; the web UI's choice). Then **Set by you · N**, every value the person
 set, on the form or not, in table order, each with its reset or plan action, shown when there is
 one; then one card per engine group holding the other rows the parameter table offers on a form
 (`form`), so each row appears once and a reset sends it back to its group. Every card is closed
@@ -107,7 +107,7 @@ lands; a stopped one keeps the system's resume data, so its row reads Resume (X 
 Delete partial download), checks a finished file against its catalog `sha256` before it becomes the
 model (read back in chunks, off the transfers' queue; the file waits under a name of its check's own
 meanwhile, and a mismatch deletes it and says so; a start is refused when the entry does not fit in
-the free space), writes a metrics CSV per loaded model from the event stream while Metrics is on,
+the free space), writes a metrics CSV per loaded model from the event stream while Record (in Metrics) is on,
 and keeps the network key in the keychain. Nothing in it names an engine parameter: the settings
 are rendered from the parameter table, the plan from the planner.
 

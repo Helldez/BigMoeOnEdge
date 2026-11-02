@@ -283,10 +283,9 @@ An **Appearance** card follows **Serve on the network**, folded too:
 
 - **Theme**: System, Light or Dark (the web UI's three). System follows the phone; the choice
   applies at once, status and navigation bars included.
-- **Metrics** (off by default): record one per-token CSV file per loaded model. While it is on,
-  Settings shows a **Metrics** entry that opens the Metrics screen; back returns to Settings.
 
-The engine cards come next, and a folded **This app** card with Stop and Start engine closes the page.
+The engine cards come next, then a folded **This app** card with Stop and Start engine, and the
+**Metrics** entry, always there, which opens the Metrics screen; back returns to Settings.
 
 The prefill device (`prefill-device`) is a row like any other, and the planner chooses it: it
 measures every compute device the build carries (the GPU through Vulkan or OpenCL, a Snapdragon's
@@ -296,7 +295,8 @@ why. Nothing in the app names a device. See `../../docs/npu-prefill.md`.
 
 ## Metrics
 
-The Metrics screen, opened from Settings while **Metrics** is on, shows the live card for the current or last generation (the rate, and each
+The Metrics screen, opened from Settings, has the **Record** switch (off by default: one per-token
+CSV file per model loaded while it is on) and shows the live card for the current or last generation (the rate, and each
 token's time split into compute, flash wait, cache management and what nothing claims), then the
 CSV files: view one, share one, correlate its columns, or compare two on one axis. The chat shows
 the same rate in one line above the prompt while an answer streams. The flash term and the threads

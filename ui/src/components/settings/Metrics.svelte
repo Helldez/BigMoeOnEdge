@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Metrics (docs/screens.md, "Metrics"), a section of Settings once switched on: what the engine
+  // Metrics (docs/screens.md, "Metrics"), a section of Settings: what the engine
   // measured about its own work, live and for the last answer. A calm monitor: four figures with their recent history, where the time of a
   // token goes, and the last answer's account. The per-token CSV the server writes when launched
   // with one stays on disk, where the launch option put it.
