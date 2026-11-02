@@ -71,6 +71,7 @@ target_include_directories(bmoe_monocypher SYSTEM PUBLIC ${CMAKE_SOURCE_DIR}/thi
 add_library(bmoe_server_core STATIC
     access.cpp
     agent_protocol.cpp
+    cpu_thermal.cpp
     anthropic_messages.cpp
     decide_protocol.cpp
     openai_chat.cpp

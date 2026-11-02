@@ -14,7 +14,6 @@ import io.bigmoeonedge.app.data.hfSearchBody
 import io.bigmoeonedge.app.data.hfRequestBody
 import io.bigmoeonedge.app.data.MetricsRecorder
 import io.bigmoeonedge.app.data.Telemetry
-import io.bigmoeonedge.app.data.Thermal
 import io.bigmoeonedge.app.data.applyDone
 import io.bigmoeonedge.app.data.applyToken
 import kotlinx.coroutines.CoroutineScope
@@ -425,10 +424,8 @@ object Engine {
     @Volatile private var api = Api(ServerProcess.baseUrl(), Api.randomKey())
     @Volatile private var connector: Job? = null
     @Volatile private var idleUnload: Job? = null
-    @Volatile private var thermal: Thermal? = null
     @Volatile private var recorder: MetricsRecorder? = null
     @Volatile private var appContext: Context? = null
-    @Volatile private var lastThermalSampleMs = 0L
 
     // Each start of the server is a launch with its own number; what a process reports about itself
     // (its exit) counts only while it is still the current launch. A stop moves the number on, so
@@ -450,12 +447,11 @@ object Engine {
         ContextCompat.startForegroundService(app, Intent(app, EngineService::class.java).setAction(EngineService.ACTION_START))
     }
 
-    /** What follows the server from this process: the event stream, the thermal sensor, the recorder. */
+    /** What follows the server from this process: the event stream and the recorder. */
     @Synchronized
     private fun attach(ctx: Context): Context {
         val app = ctx.applicationContext
         appContext = app
-        if (thermal == null) thermal = Thermal(app)
         if (recorder == null) recorder = MetricsRecorder(app)
         if (connector == null) connector = scope.launch { connectForever() }
         return app
@@ -634,11 +630,8 @@ object Engine {
                 }
                 if (t.step <= 1) t.avgTokensPerSecond = -1.0
                 recorder?.token(o)
-                val now = System.currentTimeMillis()
-                val temp = if (now - lastThermalSampleMs > 1500) {
-                    lastThermalSampleMs = now
-                    thermal?.sampleCelsius()
-                } else null
+                // The server reads the CPU's sensors where the platform has them (`cpu_temp_c`).
+                val temp = o.optDouble("cpu_temp_c", Double.NaN).takeIf { it > 0 }
                 _state.update { it.copy(live = t, cpuTempC = temp ?: it.cpuTempC) }
             }
             "done" -> {

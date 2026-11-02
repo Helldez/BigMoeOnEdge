@@ -407,6 +407,8 @@ export interface TokenEvent {
   cpu_ms: number;
   dense_resident_frac: number;
   mtp_batch: number;
+  /** The mean of the CPU's thermal sensors in °C; absent where the platform publishes none. */
+  cpu_temp_c?: number;
 }
 
 export interface DoneSummary {

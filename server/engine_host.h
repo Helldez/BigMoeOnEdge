@@ -78,6 +78,9 @@ public:
 
     // What /api/info adds about the machine; called on every state publish.
     void set_host_info(std::function<json()> provider);
+    // The CPU's temperature in Celsius (negative: unknown), sampled while a turn generates and
+    // sent on its token events as `cpu_temp_c`. Unset or unknown, the field is left out.
+    void set_cpu_temperature(std::function<double()> provider);
     void set_planner_available(bool available) { planner_available_ = available; }
     // Bound beyond loopback: the clients a short context refuses are there to be warned about.
     void set_serves_network(bool on) { serves_network_ = on; }
@@ -169,6 +172,7 @@ private:
     EventBus & bus_;
     const SessionOpener open_;
     std::function<json()> host_info_;
+    std::function<double()> cpu_temp_;
     std::atomic<bool> planner_available_{false};
     std::atomic<bool> serves_network_{false};
     std::atomic<bool> planning_{false};

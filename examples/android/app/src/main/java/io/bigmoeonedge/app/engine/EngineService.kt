@@ -266,6 +266,17 @@ class EngineService : Service() {
         wake = null
     }
 
+    // Swiped away from the recent apps, the engine stops with the app, its notification and the
+    // model's memory with it (#465). Shared on the network it stays: other devices are its clients.
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        if (!AppPrefs.shareOnNetwork(this)) {
+            Engine.serverStopping()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
         watcher?.cancel()
         // The process outlives this object for the seconds a stop takes: stopped on the lifecycle

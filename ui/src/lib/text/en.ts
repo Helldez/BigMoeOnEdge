@@ -222,6 +222,8 @@ export const en = {
   'live.disk': 'waiting for disk {pct}%',
   'live.disk.hint': 'The share of each token spent waiting for parts of the model to be read from disk.',
   'live.cache': 'in memory {pct}%',
+  'live.temp': 'CPU {temp}°C',
+  'live.temp.hint': 'The mean of the CPU\'s temperature sensors, read by the engine where the system publishes them.',
   'live.cache.hint': 'How often the parts of the model a token needed were already in memory (the expert cache). Higher is faster.',
   'metrics.lead': 'What the engine measured about its own work: live while it writes, and for the last answer.',
   'metrics.noModel': 'No model loaded',

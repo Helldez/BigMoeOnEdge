@@ -702,7 +702,7 @@ limit.
 | event | data |
 |---|---|
 | `state` | the `GET /api/info` object, on every state change |
-| `token` | per generated token: `step`, `steps`, `wall_ms`, `io_ms`, `compute_ms`, `mgmt_ms`, `stall_ms`, `flash_wait_ms`, `read_mib`, `cache_hit_pct` (-1 without a cache), `cache_budget_mib`, `rss_mib`, `mem_available_mib`, `majflt`, `cpu_ms`, `dense_resident_frac` (-1 unmeasured), `mtp_batch` |
+| `token` | per generated token: `step`, `steps`, `wall_ms`, `io_ms`, `compute_ms`, `mgmt_ms`, `stall_ms`, `flash_wait_ms`, `read_mib`, `cache_hit_pct` (-1 without a cache), `cache_budget_mib`, `rss_mib`, `mem_available_mib`, `majflt`, `cpu_ms`, `dense_resident_frac` (-1 unmeasured), `mtp_batch`, `cpu_temp_c` (the mean of the CPU's thermal sensors in °C, sampled every 1.5 s; absent where the platform publishes none a process may read: macOS, iOS, Windows) |
 | `done` | per generation, the CLI's `BMOE_DONE` keys (`docs/telemetry.md`): `cancelled`, `tokens`, `tok_s`, `load_s`, `prefill_s`, `prefill_tps`, `prefill_read_mib`, `prefill_dev_tokens`, `n_prompt`, `n_past`, `cache_hit_pct`, `read_mib`, `io_s_tok`, `compute_s_tok`, `stall_s_tok`, `flash_wait_s_tok`, `mgmt_s_tok`, `majflt_tok`, `cpu_s_tok`, `loop_overhead_s_tok`, `cache_resident_mib`, `cache_budget_mib`, `cache_evictions`, `cache_rereads`, `token_demand_mib`, `mtp_drafted`, `mtp_accepted`, `mtp_decodes`, `drafted_steps`, `mtp_draft_s_tok`, `ttft_s` |
 | `decide` | per decision: the `POST /api/decide` answer |
 | `download` | a download's progress: `id`, `file`, `received`, `total`, `state` (`running`, `done`, `error`, `cancelled`), `error` (with `running`: why the last attempt failed while the server waits to resume) |
