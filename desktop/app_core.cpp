@@ -138,13 +138,16 @@ std::string network_key(const std::string & path, bool replace, std::string & er
 bool port_is_free(int port) {
     constexpr time_t kProbeTimeoutS = 1;
     // Something answering there (on any address the port is bound on) is a no; so is a port this
-    // process cannot bind, whoever holds it.
+    // process cannot bind, whoever holds it. A connect that times out found nothing answering, as
+    // a refused one did: Windows retries a refused loopback connect for about two seconds before it
+    // says so, past this timeout, so there every free port timed out and was taken for in use.
     {
         httplib::Client c("127.0.0.1", port);
         c.set_connection_timeout(kProbeTimeoutS, 0);
         c.set_read_timeout(kProbeTimeoutS, 0);
         const auto res = c.Get("/");
-        if (res || res.error() != httplib::Error::Connection) return false;
+        if (res) return false;
+        if (res.error() != httplib::Error::Connection && res.error() != httplib::Error::ConnectionTimeout) return false;
     }
     httplib::Server s;
     const bool bound = s.bind_to_port("127.0.0.1", port);

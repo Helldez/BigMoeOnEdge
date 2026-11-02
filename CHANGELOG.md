@@ -36,6 +36,13 @@ Semantic Versioning.
   stopped at 92% of an expert set that fits whole; on a 16 GB Mac with Qwen3.6-35B the cache gains the
   272 MiB `token_embd` table. Only where the reservation is the file's own count: a fitted device
   placement's host share is left as charged.
+- **The desktop app starts its server on Windows again.** Before it starts the server, the app checks
+  that the port is free by connecting to it, and took any failure other than a refused connection
+  for something answering there. Windows retries a refused loopback connection for about two seconds
+  before it reports it, past the check's one-second timeout, so every free port timed out and was
+  taken for in use: the app tried ports 8765 to 8784, said "No free port", and never started the
+  server. A connection that times out now counts as nothing answering, and the bind that follows
+  still decides. `desktop_rules` caught it on Windows, where CI does not run the tests.
 
 ## [0.39.0] - 2026-10-29
 
