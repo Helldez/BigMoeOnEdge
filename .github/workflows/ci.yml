@@ -224,7 +224,7 @@ jobs:
     # release is cut, and builds no tests, so this is where F_NOCACHE and the Apple VM paths are
     # proven to stream byte-identically.
     if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/v')
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
         with:
@@ -243,6 +243,7 @@ jobs:
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DBMOE_WARNINGS_AS_ERRORS=ON \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
             -DGGML_OPENMP=OFF \
             -DLLAMA_CURL=OFF
           cmake --build build --config Release -j
@@ -256,7 +257,7 @@ jobs:
     # harness (bmoe-cli inside an app), for the simulator, unsigned, plus the app's client package
     # tested on the runner. Nothing is run in a simulator; its kernel and memory are the runner's.
     if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/v')
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
         with:

@@ -7,6 +7,9 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Changed
+- **The Mac and iOS builds run on macOS 15 runners**: GitHub retired the macOS 14 images on
+  2026-11-02. The Mac release still targets macOS 14 (`CMAKE_OSX_DEPLOYMENT_TARGET`), so a Mac on
+  Sonoma still opens it.
 - **A raised context now lengthens the answer** (#460): the server's default `n-predict` was a fixed
   1024 tokens whatever the context, so a long answer stopped there even at a 64000-token context.
   `n-predict` takes `0`, as far as the context goes, and that is the server's default; a person's
