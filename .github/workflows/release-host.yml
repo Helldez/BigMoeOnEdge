@@ -128,9 +128,11 @@ jobs:
           - os: ubuntu-24.04-arm
             target: linux-aarch64
             cmake_extra: -DGGML_VULKAN=ON
-          - os: macos-14
+          # The runner's SDK would set the minimum macOS to its own (the app's LSMinimumSystemVersion
+          # is read from the binary): pinned, so a Mac on Sonoma still opens the app.
+          - os: macos-15
             target: macos-arm64
-            cmake_extra: ""
+            cmake_extra: -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0
           # Visual Studio 2022, not the latest image's 2026: CUDA 12 accepts host compilers up to
           # 2022 only, as llama.cpp's own Windows CUDA builds run.
           - os: windows-2022
@@ -734,7 +736,7 @@ jobs:
           if-no-files-found: error
 
   ios-harness:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - name: Resolve tag
         id: tag
