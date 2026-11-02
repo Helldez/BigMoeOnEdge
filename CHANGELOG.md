@@ -8,9 +8,9 @@ Semantic Versioning.
 
 ### Added
 - **Every setting explains itself** (#468, from #465): each row a settings form shows, and each the
-  plan decides, carries a `details` paragraph in `/api/params` (what it does, when to change it,
-  what it costs, how the plan sets it), which the web UI, the Android app and the iOS app fold under
-  the setting's help behind More. Text only: no engine behaviour changes.
+  plan decides, carries `details` in `/api/params`, a sentence or two in plain words on when to
+  change it and what it costs, which the web UI, the Android app and the iOS app fold under the
+  setting's help behind More. Text only: no engine behaviour changes.
 - **`scripts/build-host.sh` passes its arguments to CMake**, so a llama.cpp backend is one flag:
   `scripts/build-host.sh -DGGML_VULKAN=ON`.
 

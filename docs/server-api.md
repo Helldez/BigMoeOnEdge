@@ -272,9 +272,8 @@ template). Each element:
 
 Optional fields: `details`, `short`, `switches` (`[{flag, value, deprecated?}]`), `choices`
 (`[{value, label}]`), `min` and `max`, `unit`, `typical`, `special`, `lossy`, `accepts_auto`.
-`details` is the longer explanation a form folds under `help`: what the setting does, when to change
-it, what it costs and how the plan sets it. Every row with `form: true` has one, and so do the rows
-the plan decides.
+`details` is what a form folds under `help`: a sentence or two of plain words on when to change the
+setting and what it costs. Every row with `form: true` has one, and so do the rows the plan decides.
 `min` and `max` are limits: `max` is absent where the only upper limit is the type's, which is no
 range to show a person. `typical` is guidance, not a limit: what a person usually sets, which a form
 shows as the range. `special` names the values that mean something other than their number (`0` is
