@@ -96,6 +96,9 @@ struct ParamDesc {
     // flags of the CLI: the plan sets them, or they are a value nobody types into a phone.
     bool form = false;
     std::string help; // one paragraph, in the user's terms
+    // The longer explanation a form folds under the help: what the setting does, when to change
+    // it, what it costs and how the plan sets it. Every row a form shows has one (#468).
+    std::string details;
 
     std::string flag;       // "--cache-mb": takes a value. Empty when the parameter has only switches
     std::string short_flag; // "-m", or empty

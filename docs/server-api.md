@@ -270,8 +270,11 @@ template). Each element:
  "special": [{"value": 0, "label": "off"}], "accepts_auto": true, "default": "auto"}
 ```
 
-Optional fields: `short`, `switches` (`[{flag, value, deprecated?}]`), `choices`
+Optional fields: `details`, `short`, `switches` (`[{flag, value, deprecated?}]`), `choices`
 (`[{value, label}]`), `min` and `max`, `unit`, `typical`, `special`, `lossy`, `accepts_auto`.
+`details` is the longer explanation a form folds under `help`: what the setting does, when to change
+it, what it costs and how the plan sets it. Every row with `form: true` has one, and so do the rows
+the plan decides.
 `min` and `max` are limits: `max` is absent where the only upper limit is the type's, which is no
 range to show a person. `typical` is guidance, not a limit: what a person usually sets, which a form
 shows as the range. `special` names the values that mean something other than their number (`0` is
@@ -279,7 +282,8 @@ shows as the range. `special` names the values that mean something other than th
 label in place of the number.
 `level` is `basic | advanced | experimental | debug`. `form: true` marks a row a settings form
 offers: every basic row and the few deeper ones a person picks rather than the plan; the others are
-the command line's (a form shows one only when the person has set it). A form shows the groups in `group_order` (a
+the command line's (a form shows one only when the person has set it). A plan decision's `value_text` names a special value the same way ("as wide as the context", not "0
+tokens"). A form shows the groups in `group_order` (a
 row's place in the array is not its group's: a group's rows need not be contiguous), each under its
 short `group_label` and its one-line `group_help`. `group_read_only: true` marks a group a client
 sets with a control of its own (the model file, from the model list), which a settings form shows

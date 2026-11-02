@@ -240,6 +240,10 @@ std::vector<ParamDesc> build() {
         d.short_flag = "-m";
         d.value_hint = "PATH";
         bind_string(d, [](RunConfig & c) -> std::string & { return c.model_path; });
+        d.details = "The model file (.gguf) to load. For a model split into several files (names ending in "
+                    "-00001-of-00003.gguf), choose the first: the others are found beside it. The Models screen lists "
+                    "the models downloaded or added, and choosing one there sets this. Changing it unloads the current "
+                    "model and loads the new one.";
         t.push_back(d);
     }
 
@@ -253,6 +257,10 @@ std::vector<ParamDesc> build() {
         typical(d, usual::n_predict_lo, usual::n_predict_hi);
         special(d, "0", "as far as the context goes");
         bind_int(d, [](RunConfig & c) -> int & { return c.n_predict; });
+        d.details = "The longest answer, in tokens (a token is roughly three quarters of an English word). An answer "
+                    "usually ends sooner, when the model finishes on its own, and it can never be longer than the room "
+                    "the conversation leaves in the context. 0 means no limit but the context. Set a number to cut "
+                    "long answers short, for example to keep a reasoning model from thinking for minutes.";
         t.push_back(d);
     }
     {
@@ -264,6 +272,10 @@ std::vector<ParamDesc> build() {
         d.switches = {{"--think", "true"}, {"--no-think", "false"}};
         d.scope = ParamScope::Request;
         bind_bool(d, [](RunConfig & c) -> bool & { return c.think; });
+        d.details = "For reasoning models, which can write out their thinking before they answer. On, the model "
+                    "reasons first: hard questions usually get better answers, at the cost of many more tokens and "
+                    "more time. The thinking is shown folded above the answer. Off, the model's chat template asks it "
+                    "to answer directly. A model without a reasoning mode ignores this.";
         t.push_back(d);
     }
     {
@@ -275,6 +287,12 @@ std::vector<ParamDesc> build() {
         bounds(d, 1, RunConfig::tokens_max, "tokens");
         typical(d, usual::ctx_lo, usual::ctx_hi);
         bind_int(d, [](RunConfig & c) -> int & { return c.n_ctx; });
+        d.details =
+            "How much text the model keeps in view at once, in tokens: the whole conversation, with the system prompt, "
+            "any tool descriptions and the answer being written. When it is full, the next message is refused until a "
+            "new conversation is started or the context is raised. The memory for it is reserved when the model loads "
+            "and is taken from the expert cache, so on a machine short of RAM a larger context can make every token "
+            "slower. 16384 suits chat and an agent's first requests; long coding-agent sessions want 32768 or more.";
         t.push_back(d);
     }
     {
@@ -284,6 +302,11 @@ std::vector<ParamDesc> build() {
         bounds(d, 1, RunConfig::threads_max, "threads");
         typical(d, usual::threads_lo, usual::threads_hi);
         bind_int(d, [](RunConfig & c) -> int & { return c.n_threads; });
+        d.details = "How many CPU threads compute each token of the answer. More threads help until reading memory, "
+                    "not the cores, is the limit; past that point they only add heat, and on phones whose cores differ "
+                    "in speed they can slow it down. The plan measures this machine and picks a count, and it can try "
+                    "another count on the first answer and keep it only if it is clearly faster. Set it yourself to "
+                    "leave cores free for other work.";
         t.push_back(d);
     }
     {
@@ -295,6 +318,9 @@ std::vector<ParamDesc> build() {
         typical(d, usual::threads_batch_lo, usual::threads_batch_hi);
         special(d, "0", "same as the compute threads");
         bind_int(d, [](RunConfig & c) -> int & { return c.n_threads_batch; });
+        d.details = "How many CPU threads compute a long prompt. Unlike writing the answer, reading a prompt is "
+                    "limited by compute, so it grows with the number of cores; more threads usually help here even "
+                    "where they do not help the answer. 0 uses the same count as Compute threads.";
         t.push_back(d);
     }
     {
@@ -328,6 +354,10 @@ std::vector<ParamDesc> build() {
             c.trial.threads = std::move(v);
             return true;
         };
+        d.details =
+            "Thread counts to try on the first answer besides Compute threads, one or two separated by a comma. Once "
+            "the cache has settled the engine alternates short stretches of the answer between them, and switches only "
+            "to a count that is clearly faster; the next load starts from that result. It never changes the answer.";
         t.push_back(d);
     }
     {
@@ -361,6 +391,11 @@ std::vector<ParamDesc> build() {
         typical(d, usual::temp_lo, usual::temp_hi);
         special(d, "0", "greedy");
         bind_float(d, [](RunConfig & c) -> float & { return c.sampling.temp; });
+        d.details = "How random the choice of each next token is. 0 always takes the most likely token, so the same "
+                    "conversation gives the same answer: best for code, facts and comparisons, and needed for "
+                    "speculative drafts. Between about 0.6 and 1.0 the model chooses among the likely tokens, which "
+                    "reads more naturally and can pull a reasoning model out of a loop where it repeats itself. Higher "
+                    "is more varied and makes more mistakes. Top-k and Top-p narrow the choice further.";
         t.push_back(d);
     }
     {
@@ -371,6 +406,9 @@ std::vector<ParamDesc> build() {
         typical(d, usual::top_k_lo, usual::top_k_hi);
         special(d, "0", "off");
         bind_int(d, [](RunConfig & c) -> int & { return c.sampling.top_k; });
+        d.details =
+            "With Temperature above 0, keeps only this many of the most likely next tokens before choosing among them. "
+            "Lower is more focused, higher more varied; 40 is a common choice. 0 turns this filter off.";
         t.push_back(d);
     }
     {
@@ -381,6 +419,9 @@ std::vector<ParamDesc> build() {
         typical(d, usual::top_p_lo, usual::top_p_hi);
         special(d, "1", "off");
         bind_float(d, [](RunConfig & c) -> float & { return c.sampling.top_p; });
+        d.details = "With Temperature above 0, keeps the smallest set of likely next tokens whose probabilities add up "
+                    "to this share, then chooses among them. 0.95 is a common choice, and lower is more focused. 1 "
+                    "turns this filter off.";
         t.push_back(d);
     }
     {
@@ -397,6 +438,9 @@ std::vector<ParamDesc> build() {
             c.sampling.seed = (uint32_t) v;
             return true;
         };
+        d.details =
+            "Where the random choices start when Temperature is above 0. The same seed, settings and conversation give "
+            "the same answer again, which helps comparisons. The special value draws a new seed for every run.";
         t.push_back(d);
     }
 
@@ -409,6 +453,13 @@ std::vector<ParamDesc> build() {
         d.flag.clear();
         d.switches = {{"--moe-stream", "true"}};
         bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.enabled; });
+        d.details = "How this engine runs a mixture-of-experts model larger than memory. Such a model uses only a few "
+                    "of its experts for each token. On, only those are read from storage when a token needs them, and "
+                    "the ones used recently stay in RAM (the expert cache). Off, the whole file is memory-mapped as "
+                    "plain llama.cpp does: fine when the model fits in RAM with room to spare, but when it does not, "
+                    "the system reads parts in and drops them unpredictably and everything slows down. The plan turns "
+                    "it on when the experts do not fit. When the expert cache can hold every expert, streaming costs "
+                    "little after the first answers: each expert is read once and then stays in RAM.";
         t.push_back(d);
     }
     {
@@ -420,6 +471,9 @@ std::vector<ParamDesc> build() {
         at_least(d, 0, "MiB");
         special(d, "0", "off");
         bind_int(d, [](RunConfig & c) -> int & { return c.moe.device_cache_mb; });
+        d.details = "Experimental. With layers on a graphics card, keeps a cache of experts in the card's own memory "
+                    "and computes them there, instead of moving them from RAM for every token. 0 is off. It needs the "
+                    "layers on that device and streaming on.";
         t.push_back(d);
     }
     {
@@ -439,6 +493,9 @@ std::vector<ParamDesc> build() {
         bounds(d, 1, MoeStreamConfig::io_threads_max, "lanes");
         typical(d, usual::io_threads_lo, usual::io_threads_hi);
         bind_int(d, [](RunConfig & c) -> int & { return c.moe.io_threads; });
+        d.details = "How many expert reads from storage run at the same time. Fast storage (NVMe, UFS) serves several "
+                    "requests at once; 1 reads one at a time. The plan measures this storage at this model's read size "
+                    "and picks the count that reads fastest.";
         t.push_back(d);
     }
     {
@@ -448,6 +505,10 @@ std::vector<ParamDesc> build() {
         d.flag.clear();
         d.switches = {{"--no-odirect", "false"}};
         bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.o_direct; });
+        d.details =
+            "Reads experts straight from storage, past the operating system's file cache. The engine keeps its own "
+            "cache of experts, so the system's copy would hold the same bytes twice and push other apps out of memory. "
+            "The plan checks that direct reads return correct data on this storage before using them.";
         t.push_back(d);
     }
     {
@@ -458,6 +519,10 @@ std::vector<ParamDesc> build() {
         d.flag.clear();
         d.switches = {{"--overlap", "true"}};
         bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.overlap; });
+        d.details =
+            "Reads the next experts from storage while the current ones are computed, instead of waiting for each "
+            "read. The answer is exactly the same; only the timing changes. It helps most when reading and computing "
+            "take similar time. The plan can try it on the first answer and keep it only when it is clearly faster.";
         t.push_back(d);
     }
     {
@@ -490,6 +555,10 @@ std::vector<ParamDesc> build() {
         d.flag.clear();
         d.switches = {{"--release-mmap", "true"}};
         bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.release_mmap; });
+        d.details = "After loading, drops the mapping of the model file once nothing reads through it. On Windows a "
+                    "live mapping slows the parallel expert reads down. It needs Dense weights set to Copied into "
+                    "memory or Pinned in memory, since mapped weights are read through the mapping. The plan sets it "
+                    "where nothing still needs the mapping.";
         t.push_back(d);
     }
 
@@ -525,6 +594,13 @@ std::vector<ParamDesc> build() {
             c.moe.cache_mb = (int) v;
             return true;
         };
+        d.details =
+            "How much RAM holds the experts used recently, so they are not read from storage again. Larger means fewer "
+            "reads and faster tokens, up to the size of all the experts the model uses; past that it buys nothing. "
+            "auto sizes it from the memory free when the model loads, and the plan sizes it from its own measurements. "
+            "0 turns it off, and every expert is read again for every token, which is very slow. Below about one "
+            "token's worth of experts (the floor the plan reports) it keeps evicting what the next token needs. The "
+            "cache fills as experts are first used; nothing is read into it ahead of time.";
         t.push_back(d);
     }
     {
@@ -584,6 +660,13 @@ std::vector<ParamDesc> build() {
                         {M::Anonymous, {dense_weights_mode_name(M::Anonymous), "copied into memory"}},
                         {M::Pinned, {dense_weights_mode_name(M::Pinned), "pinned in memory"}}},
                        {{"ahwb", M::Pinned}});
+        d.details = "How the parts of the model every token uses (attention, shared layers), as opposed to the "
+                    "experts, stay in memory. Mapped from the file leaves them to the operating system, which may drop "
+                    "them under memory pressure and read them from storage again. Mapped and read ahead does the same "
+                    "but reads them all in at load. Copied into memory gives the engine its own copy, which the system "
+                    "can compress but not drop. Pinned in memory locks that copy so the system can neither compress "
+                    "nor drop it, where the platform allows this; locked memory is taken from everything else on the "
+                    "machine. The plan picks among what this machine offers.";
         t.push_back(d);
     }
     {
@@ -596,6 +679,10 @@ std::vector<ParamDesc> build() {
         typical(d, usual::ubatch_lo, usual::ubatch_hi);
         special(d, "0", "as wide as the context");
         bind_int(d, [](RunConfig & c) -> int & { return c.n_ubatch; });
+        d.details = "How many prompt tokens are computed together. Wider is faster on a long prompt but reserves more "
+                    "memory for compute buffers, and that memory comes out of the expert cache. 0 means as wide as the "
+                    "context: any prompt in one pass. The plan narrows it only when the buffers would take too much "
+                    "memory. It does not change how fast the answer is written.";
         t.push_back(d);
     }
     {
@@ -652,6 +739,12 @@ std::vector<ParamDesc> build() {
         bounds(d, 0, RunConfig::n_gpu_layers_max, "layers");
         special(d, "0", "all on the host");
         bind_int(d, [](RunConfig & c) -> int & { return c.n_gpu_layers; });
+        d.details =
+            "How many of the model's layers are held on a device with memory of its own, such as a graphics card, in "
+            "the order llama.cpp fills them. Those layers, experts included, stay in the device's memory and are "
+            "computed there, which is much faster than streaming them. 0 keeps everything on the CPU and in RAM. The "
+            "plan fills the device as far as its memory allows, with llama.cpp's own capacity fitter. Where the device "
+            "shares the computer's RAM (a phone, an Apple-silicon Mac), moving layers onto it frees no memory.";
         t.push_back(d);
     }
     {
@@ -687,6 +780,9 @@ std::vector<ParamDesc> build() {
             }
             return true;
         };
+        d.details = "Large tables the model reads only a few rows of per token (the token embedding, for one), left "
+                    "mapped from the file instead of copied into memory, whatever Dense weights says. A copy would "
+                    "cost gigabytes for bytes that are almost never read. The plan sets it.";
         t.push_back(d);
     }
     {
@@ -787,6 +883,10 @@ std::vector<ParamDesc> build() {
                                {{DeviceUse::Auto, {"auto", "auto"}},
                                 {DeviceUse::All, {"all", "all"}},
                                 {DeviceUse::CpuOnly, {"cpu", "CPU only"}}});
+        d.details = "Which compute devices (graphics cards, NPUs) llama.cpp may use for the model's layers. auto uses "
+                    "them only when a layer is placed on one and otherwise stays on the CPU, because a device that "
+                    "holds nothing still adds work at every step. all always offers every device; CPU only never uses "
+                    "one. The device for long prompts (Prefill device) is chosen on its own and is not affected.";
         t.push_back(d);
     }
 
@@ -800,6 +900,11 @@ std::vector<ParamDesc> build() {
         d.type = ParamType::Text;
         d.value_hint = "D";
         bind_string(d, [](RunConfig & c) -> std::string & { return c.prefill.device; });
+        d.details = "The device that computes long prompts (the prefill), such as an NPU (HTP0 on Snapdragon) or a "
+                    "GPU, while writing the answer stays on the CPU. Reading a prompt is heavy on compute, where these "
+                    "devices are strongest; writing an answer is limited by reading memory, where the CPU is often as "
+                    "fast. The plan measures each device on this model and arms the fastest one that gives the same "
+                    "results as the CPU. Empty keeps everything on the CPU.";
         t.push_back(d);
     }
     {
@@ -967,6 +1072,13 @@ std::vector<ParamDesc> build() {
                                  {{DraftSource::none, {"none", "off"}},
                                   {DraftSource::mtp, {"mtp", "MTP head"}},
                                   {DraftSource::ngram, {"ngram", "n-gram lookup"}}});
+        d.details =
+            "A way to write several tokens per step without changing the answer. The engine guesses a few tokens "
+            "ahead, then checks them all in one pass, and keeps the guesses that match what the model would have "
+            "written. MTP head uses a small prediction block that some models include (in the file, or as a separate "
+            "head file). n-gram lookup reuses text already in the prompt or the answer, which pays off when the model "
+            "repeats or edits text it has seen. Both need Temperature 0. The gain depends on the model and the "
+            "machine: where memory is short, an extra head can cost more than it saves.";
         t.push_back(d);
     }
     {
@@ -1035,13 +1147,14 @@ std::vector<ParamDesc> build() {
         for (KvCacheType k : k_kv_cache_types)
             kv_types.push_back({k, {kv_cache_type_name(k), kv_cache_type_name(k)}});
         const auto kv_row = [&](const char * key, const char * short_flag, const char * label, const char * help,
-                                Field<KvCacheType> field) {
+                                const char * details, Field<KvCacheType> field) {
             ParamDesc d = row(key, label, G::Lossy, L::Advanced, help);
             d.type = ParamType::Choice;
             d.short_flag = short_flag;
             d.value_hint = "TYPE";
             d.lossy = true;
             d.form = true;
+            d.details = details;
             bind_choice<KvCacheType>(d, field, kv_types);
             t.push_back(d);
         };
@@ -1050,11 +1163,18 @@ std::vector<ParamDesc> build() {
                "q8_0, the default, halves the memory a long context takes against llama.cpp's f16, and q4_0 "
                "quarters it, at a cost in quality that grows as the bits shrink. That memory goes to the "
                "expert cache. f16 is lossless.",
+               "The number format of the attention keys the context keeps, one set per token and layer. q8_0, the "
+               "default, takes half the memory of f16, with a loss of quality that is very small in practice; "
+               "q4_0 takes a quarter, and the loss can show in long conversations. f16 is lossless. The memory "
+               "saved goes to the expert cache, which matters most with long contexts on a machine short of RAM.",
                [](RunConfig & c) -> KvCacheType & { return c.cache_type_k; });
         kv_row("cache-type-v", "-ctv", "Value cache type",
                "Element type of the attention values kept for the context, as llama.cpp's flag of the same name. "
                "A quantized type needs flash attention, which llama.cpp uses where the backend has it; "
                "where it has not, the run falls back to f16.",
+               "The number format of the attention values the context keeps, as Key cache type does for the keys. "
+               "q8_0 halves the memory of f16 and f16 is lossless. A quantized type needs flash attention; where "
+               "the device does not offer it, the run falls back to f16.",
                [](RunConfig & c) -> KvCacheType & { return c.cache_type_v; });
     }
     {
@@ -1067,6 +1187,10 @@ std::vector<ParamDesc> build() {
         bounds(d, 0, RunConfig::n_expert_used_max, "experts");
         special(d, "0", "the model's own");
         bind_int(d, [](RunConfig & c) -> int & { return c.n_expert_used; });
+        d.details = "How many experts the model consults for each token. Each mixture-of-experts model is trained with "
+                    "its own number (8, for example). Fewer means less to read and compute, so faster tokens, but the "
+                    "answers change, and get worse as the number drops. 0 keeps the model's own. Change it only to "
+                    "trade quality for speed on purpose.";
         t.push_back(d);
     }
     {
@@ -1178,6 +1302,10 @@ std::vector<ParamDesc> build() {
         d.flag.clear();
         d.switches = {{"--no-cache-pin", "false"}};
         bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.cache_pin; });
+        d.details =
+            "Locks the expert cache in RAM, so the system can neither compress it nor move it to swap. It keeps tokens "
+            "fast when memory gets tight, but locked memory is taken from every other app, which may be closed "
+            "instead. The plan turns it on only where the platform allows locking and there is room for it.";
         t.push_back(d);
     }
     {
@@ -1577,6 +1705,10 @@ std::string params_json(const RunConfig & defaults) {
         o += d.form ? ",\"form\":true" : ",\"form\":false";
         o += ",\"help\":";
         json_str(o, d.help);
+        if (!d.details.empty()) {
+            o += ",\"details\":";
+            json_str(o, d.details);
+        }
         o += ",\"flag\":";
         json_str(o, d.flag);
         if (!d.short_flag.empty()) {

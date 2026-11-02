@@ -115,6 +115,8 @@ int main() {
     for (const ParamDesc & d : params()) {
         check(d.get && d.set, d.key + ": has accessors");
         check(!d.flag.empty() || !d.switches.empty(), d.key + ": reachable from the command line");
+        // A person reads a form row's help on a phone with nobody to ask: it explains itself (#468).
+        check(!d.form || d.details.size() > d.help.size(), d.key + ": a form row has details longer than its help");
         // A form offers every basic row, and nothing still pending an A/B or kept for tests.
         if (d.level == ParamLevel::Basic) check(d.form, d.key + ": a basic row is in the form");
         if (d.level == ParamLevel::Experimental || d.level == ParamLevel::Debug)

@@ -38,6 +38,8 @@ data class ParamSpec(
     val special: List<Pair<String, String>> = emptyList(),
     /** The group's place in the form (`group_order`); null from a server that does not send it. */
     val groupOrder: Int? = null,
+    /** The longer explanation folded under the help (`details`); empty where the table has none. */
+    val details: String = "",
     /** The group's one line of help (`group_help`). */
     val groupHelp: String = "",
     /** The group is set with a control of its own (the model, from Models): shown, not edited. */
@@ -107,6 +109,7 @@ data class ParamSpec(
                 form = if (o.has("form") && !o.isNull("form")) o.getBoolean("form") else o.optString("level", "basic") == "basic",
                 scope = o.optString("scope", "session"),
                 help = o.optString("help", ""),
+                details = o.optString("details", ""),
                 flag = o.optString("flag", ""),
                 min = if (o.has("min") && !o.isNull("min")) o.getDouble("min") else null,
                 max = if (o.has("max") && !o.isNull("max")) o.getDouble("max") else null,
