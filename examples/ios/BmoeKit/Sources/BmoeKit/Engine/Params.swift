@@ -35,6 +35,8 @@ public struct ParamSpec: Equatable, Sendable, Identifiable {
     public let form: Bool
     public let scope: Scope
     public let help: String
+    /// The longer explanation folded under the help (`details`); empty where the table has none.
+    public let details: String
     public let flag: String
     public let min: Double?
     public let max: Double?
@@ -66,6 +68,7 @@ public struct ParamSpec: Equatable, Sendable, Identifiable {
         form = j["form"].bool(or: level == .basic)
         scope = Scope(rawValue: j["scope"].string(or: "session")) ?? .session
         help = j["help"].string(or: "")
+        details = j["details"].string(or: "")
         flag = j["flag"].string(or: "")
         min = j["min"].double
         max = j["max"].double

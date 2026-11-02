@@ -294,6 +294,9 @@ std::string value_text(const Decision & d) {
     if (const ParamDesc * p = find_param(d.knob)) {
         for (const ParamChoice & c : p->choices)
             if (c.value == v) return c.label;
+        // A value with a meaning of its own reads as that meaning: "as wide as the context", not "0 tokens".
+        for (const ParamSpecial & sp : p->specials)
+            if (sp.value == v) return sp.label;
         if (v == "true") return "on";
         if (v == "false") return "off";
         if (numeric && rest.empty() && p->unit == "MiB") return size_brief((uint64_t) (n * 1048576.0));

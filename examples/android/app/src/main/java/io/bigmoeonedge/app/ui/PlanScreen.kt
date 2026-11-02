@@ -514,8 +514,9 @@ private fun Folded(title: String, hint: String = "", content: @Composable Column
 
 @Composable
 private fun Figure(value: String, unit: String) {
-    Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(value, fontSize = 26.sp, lineHeight = 28.sp)
+    // The unit under the figure, not beside it: beside, a narrow tile broke it mid-word (#468).
+    Column {
+        Text(value, fontSize = 26.sp, lineHeight = 28.sp, maxLines = 1)
         Text(unit, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
