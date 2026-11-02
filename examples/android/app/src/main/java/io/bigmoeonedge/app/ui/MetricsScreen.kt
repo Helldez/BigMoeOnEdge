@@ -25,6 +25,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.bigmoeonedge.app.data.AppPrefs
 import io.bigmoeonedge.app.data.Better
 import io.bigmoeonedge.app.data.ConfigGlossary
 import io.bigmoeonedge.app.data.Csv
@@ -159,6 +160,20 @@ fun MetricsScreen(modifier: Modifier = Modifier, onBack: (() -> Unit)? = null) {
     }
 }
 
+/** The recording switch, where its files are: the same place on every front-end that records. */
+@Composable
+private fun RecordSwitch() {
+    val context = LocalContext.current
+    var on by remember { mutableStateOf(AppPrefs.metricsCsv(context)) }
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+        SwitchRow(
+            "Record",
+            "Write a per-token CSV for each model loaded from now on, to compare runs or attach to a report.",
+            on,
+        ) { v -> on = v; AppPrefs.setMetricsCsv(context, v) }
+    }
+}
+
 @Composable
 private fun FileList(
     files: List<File>,
@@ -174,12 +189,13 @@ private fun FileList(
     val titles = remember(files) { files.associateWith { runTitle(it) } }
     LazyColumn(modifier.fillMaxSize()) {
         item { LiveCard() }
+        item { RecordSwitch() }
         if (files.isEmpty()) {
             item {
                 Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("No metrics files yet.", fontWeight = FontWeight.Medium)
                     Text(
-                        "Turn on Settings → This app → Metrics CSV, then run a prompt. One file is written " +
+                        "Turn on Record above, then load a model and send a message. One file is written " +
                             "per loaded model, covering every turn in it. Tick two to compare them.",
                         fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

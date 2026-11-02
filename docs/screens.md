@@ -3,7 +3,7 @@
 Every UI of this project (the web UI the desktop app and the server show, the Android app, the iOS
 app) is a client of the same `bmoe-server` API ([server-api.md](server-api.md), the agent's routes in
 [agent.md](agent.md)) and shows the same screens: conversations, Models, Plan and Settings (with
-Metrics inside it once switched on), and a first-run setup; the desktop's conversations are the agent's, with Skills, Tasks and
+Metrics inside it), and a first-run setup; the desktop's conversations are the agent's, with Skills, Tasks and
 Connect apps beside them, and the phone apps are chat apps
 ([below](#the-phone-apps-chat-not-the-agent)). This page says what each screen shows, what a
 person can do on it, and what every state means, so the three toolkits render
@@ -132,7 +132,7 @@ conversation with no folder.
   folder (`not_a_folder`). The text of a message that was refused stays in the composer.
 - **The live line.** While an answer streams on the local model and after: the answer speed, the
   shares of computing and of waiting for the disk, how often what a token needed was already in
-  memory, each with a tooltip. The full card is in Metrics, when switched on.
+  memory, each with a tooltip. The full card is in Metrics.
 - **Earlier conversations.** A UI that kept conversations on the device before the server held them
   sends them to the server once (`POST /api/conversations` with their messages), says how many
   moved, and removes its own copy of each once the server has it.
@@ -301,11 +301,11 @@ Write settings, asked once, then the file written and the backup kept beside it.
 ## Settings
 
 What it is: the engine tunables a person sets, rendered from the parameter table, and the settings
-that are the UI's own. Four sections, each a tab (`#/settings/<section>`), and a fifth, Metrics,
-once switched on:
+that are the UI's own. Five sections, each a tab (`#/settings/<section>`), the fifth Metrics, always
+there on every front-end (#465):
 
-- **General.** Appearance: the theme (system, light, dark), the text size (90 to 125%), and
-  Metrics (off until switched on); all kept on the device. Inside the desktop app, the app's own
+- **General.** Appearance: the theme (system, light, dark) and the text size (90 to 125%), kept on
+  the device. Inside the desktop app, the app's own
   preferences through its bridge ([desktop-app.md](desktop-app.md)): keep running in the tray when
   the window closes, notifications, the interface size, and the port (a new one restarts the
   engine).
@@ -352,14 +352,13 @@ once switched on:
   own whose closed header says whether it is on and at which address; open, the switch, each
   address on the local network to copy, the key (hidden until shown, copyable, replaceable with New
   key, which restarts the engine), the line a client needs (base URL and key) and a warning that
-  the traffic is unencrypted. Then **Appearance**: the theme (System, Light, Dark, as on the web)
-  and Metrics. Then **This app**: Stop/Start engine. Never an engine parameter.
+  the traffic is unencrypted. Then **Appearance**: the theme (System, Light, Dark, as on the web).
+  Then **This app**: Stop/Start engine. Then **Metrics**, always. Never an engine parameter.
 
 ## Metrics
 
 What it is: what the engine measured about its own work, live and recorded: a section of Settings,
-shown once the Metrics switch is on (off by default; on a phone the same switch records the per-token
-CSV). A calm monitor: four
+always there. A calm monitor: four
 figures with their recent history (answer speed, disk reads, memory in use against what is free,
 how often what a token needed was already in memory, with the cache's size), where a token's time
 goes as one bar, then the last answer's account. With no model loaded it says so and leads to
@@ -374,7 +373,8 @@ Models; a model loaded without streaming says which figures it cannot have.
   from the `token` and `done` events and nowhere else.
 - **Records.** The desktop server writes its own per-token CSV when launched with one, which the
   web UI does not read yet; the phone writes one per loaded model from the same events, in the
-  same shape. The phone's screen lists them,
+  same shape, once **Record** is on (off by default, the switch at the top of the phone's Records,
+beside the files it writes). The phone's screen lists them,
   shows one with its configuration preamble and per-turn summaries, correlates columns of one
   file, compares one column of two files on one axis, and shares a file. A glossary names every
   column and every configuration key.

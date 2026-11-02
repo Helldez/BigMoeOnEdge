@@ -39,6 +39,10 @@ Semantic Versioning.
   debugging only, and the licenses list BSD too.
 
 ### Fixed
+- **Metrics is always in Settings, on every front-end** (#465): it appeared only after a switch under
+  Appearance, so a person looking for the measurements or the CSV recording found neither. The web UI
+  shows the Metrics section always; on Android and iOS the Metrics entry is always in Settings and the
+  CSV recording switch, Record, is inside it, beside the files it writes.
 - **The Plan names a special value** (#468): a decision whose value means something other than its
   number reads as that meaning ("as wide as the context"), not "0 tokens". On Android, a Plan tile's
   unit sits under its figure, where beside it a narrow screen broke it mid-word ("credite d").

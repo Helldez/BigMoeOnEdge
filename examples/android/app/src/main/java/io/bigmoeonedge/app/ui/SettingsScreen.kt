@@ -72,7 +72,6 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
     // Open state per card, by group: every card starts folded, so the page opens as a short list of
     // what can be set and a person opens the one they came for.
     var openCards by remember { mutableStateOf(mapOf<String, Boolean>()) }
-    var csv by remember { mutableStateOf(AppPrefs.metricsCsv(context)) }
     var landedOn by remember { mutableStateOf("") }
     // Where the link landed: "Set by you" for a value the person set, else the row's group.
     var landedMine by remember { mutableStateOf(false) }
@@ -123,7 +122,7 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
             ShareSection(openCards[SHARE_SECTION] == true, { openCards = openCards + (SHARE_SECTION to it) }, ctx) { jump = it }
             val lookOpen = openCards[LOOK_SECTION] == true
             FoldCard("Appearance", "", lookOpen, onToggle = { openCards = openCards + (LOOK_SECTION to !lookOpen) }) {
-                Appearance(csv, onCsv = { csv = it })
+                Appearance()
             }
             if (cfg != null && engine.ready && (cfg.reloadRequired || cfg.reloadKeys.isNotEmpty())) {
                 ElevatedCard(Modifier.fillMaxWidth()) {
@@ -213,15 +212,13 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
             FoldCard("This app", "How this phone runs the engine.", appOpen, onToggle = { openCards = openCards + (APP_SECTION to !appOpen) }) {
                 AppSettings(engine.serverUp)
             }
-            // The measurements are a tool for whoever switched the recording on, not a screen of their own.
-            if (csv) {
-                BmoeCard(Modifier.clickable(onClick = onOpenMetrics), padding = 12.dp) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Metrics", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
-                        Text(">", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Hint("The live figures of the current generation and the recorded CSV files.")
+            // Always here, on every front-end: a switch elsewhere hid it, and the person could not find it (#465).
+            BmoeCard(Modifier.clickable(onClick = onOpenMetrics), padding = 12.dp) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Metrics", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
+                    Text(">", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                Hint("The live figures of the current answer, and the CSV recording.")
             }
             engine.info?.let { Text("Engine ${it.version}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             Spacer(Modifier.height(24.dp))
@@ -331,10 +328,10 @@ private fun ShareSection(open: Boolean, onOpen: (Boolean) -> Unit, ctx: ContextW
     }
 }
 
-/** How the app looks and what it shows: the theme, applied at once, and whether metrics are recorded. */
+/** How the app looks: the theme, applied at once. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun Appearance(csv: Boolean, onCsv: (Boolean) -> Unit) {
+private fun Appearance() {
     val context = LocalContext.current
     val theme by AppPrefs.theme(context).collectAsStateWithLifecycle()
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -350,11 +347,6 @@ private fun Appearance(csv: Boolean, onCsv: (Boolean) -> Unit) {
             }
         }
     }
-    SwitchRow(
-        "Metrics",
-        "Record a per-token CSV for every loaded model and show the measurements here.",
-        csv,
-    ) { on -> onCsv(on); AppPrefs.setMetricsCsv(context, on) }
 }
 
 /** The engine process: the settings that are this app's own besides sharing and appearance. */

@@ -303,8 +303,6 @@ export const en = {
   'settings.theme.dark': 'Dark',
   'settings.textSize': 'Text size',
   'settings.textSize.help': 'Makes every word on these screens larger or smaller.',
-  'settings.metrics': 'Metrics',
-  'settings.metrics.help': 'Show what the engine measures about its own work as a section of Settings.',
   'settings.app': 'App',
   'app.version': 'Version {version} ({target})',
   'app.tray': 'Keep running when the window is closed',

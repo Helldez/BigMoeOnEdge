@@ -1,7 +1,6 @@
 <script lang="ts">
   // Settings (docs/screens.md, "Settings"): the UI's own (appearance, the desktop app), the saved
-  // providers, graphics backends and updates, every engine tunable a form offers, and Metrics once
-  // switched on. A link to one parameter (`#/settings/<key>`) opens the engine section on it.
+  // providers, graphics backends and updates, every engine tunable a form offers, and Metrics. A link to one parameter (`#/settings/<key>`) opens the engine section on it.
   import AppSettings from '../components/settings/AppSettings.svelte';
   import Appearance from '../components/settings/Appearance.svelte';
   import Backends from '../components/settings/Backends.svelte';
@@ -12,20 +11,19 @@
   import Updates from '../components/settings/Updates.svelte';
   import { desktopState } from '../stores/desktop.svelte';
   import { t } from '../lib/text';
-  import { prefs } from '../stores/prefs.svelte';
   import { router } from '../stores/router.svelte';
 
   const ALL_SECTIONS = ['general', 'providers', 'system', 'engine', 'metrics'] as const;
   type Section = (typeof ALL_SECTIONS)[number];
-  let sections = $derived(ALL_SECTIONS.filter((s) => s !== 'metrics' || prefs.metrics));
+  // Metrics is always a section, on every front-end: a switch elsewhere hid it (#465).
+  const sections = ALL_SECTIONS;
   let picked = $state<Section | null>(null);
   // A named section in the address wins; any other name is a parameter, which lives under Engine.
   let fromLink = $derived<Section | null>(
     router.target ? ((sections as readonly string[]).includes(router.target) ? (router.target as Section) : 'engine') : null,
   );
   let wanted = $derived<Section>(picked ?? fromLink ?? 'general');
-  // Metrics switched off while open: back to the first section.
-  let section = $derived<Section>(sections.includes(wanted) ? wanted : 'general');
+  let section = $derived<Section>(wanted);
   $effect(() => {
     void router.target;
     picked = null;

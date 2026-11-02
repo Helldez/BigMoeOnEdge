@@ -5,6 +5,7 @@ import SwiftUI
 /// Metrics (docs/screens.md): what the engine measured about its own work, live and recorded.
 struct MetricsView: View {
     @EnvironmentObject private var engine: Engine
+    @EnvironmentObject private var preferences: Preferences
     @State private var files: [URL] = []
 
     var body: some View {
@@ -21,8 +22,19 @@ struct MetricsView: View {
     private var records: some View {
         VStack(alignment: .leading, spacing: Grid.s) {
             SectionTitle("Records", trailing: files.isEmpty ? nil : "\(files.count)")
+            // The recording switch, where its files are: the same place on every front-end that records.
+            Toggle(isOn: $preferences.metricsCSV) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Record").foregroundStyle(Palette.text)
+                    Text("Write a per-token CSV for each model loaded from now on, to compare runs or attach to a report.")
+                        .font(.ui(12)).foregroundStyle(Palette.muted)
+                }
+            }
+            .tint(Palette.accent)
             if files.isEmpty {
-                Text("A file per loaded model appears here once it has answered.")
+                Text(preferences.metricsCSV
+                     ? "A file per loaded model appears here once it has answered."
+                     : "Turn on Record, then load a model and send a message.")
                     .font(.ui(15)).foregroundStyle(Palette.muted)
             }
             ForEach(files, id: \.self) { url in
