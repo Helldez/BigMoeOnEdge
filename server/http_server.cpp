@@ -11,6 +11,7 @@
 #include "agent.h"
 #include "agent_routes.h"
 #include "agent_store.h"
+#include "cpu_thermal.h"
 #include "anthropic_messages.h"
 #include "connect.h"
 #include "decide_protocol.h"
@@ -1394,6 +1395,8 @@ int run(int argc, char ** argv, const Embedding & embedding) {
         std::fprintf(stderr, "warning: %s\n", w.c_str());
     app.store.set_launch_values(o.launch);
     app.host.set_host_info(platform::host_info);
+    auto thermal = std::make_shared<CpuThermal>(platform::thermal_zone_root());
+    app.host.set_cpu_temperature([thermal] { return thermal->sample(); });
     app.host.set_planner_available(planner_available());
     app.host.set_serves_network(!is_loopback_host(o.host));
     {

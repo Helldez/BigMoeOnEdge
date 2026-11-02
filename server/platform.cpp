@@ -187,6 +187,14 @@ void prepare_compute_backends(const std::string & data_dir) {
 #endif
 }
 
+std::string thermal_zone_root() {
+#if defined(__linux__)
+    return "/sys/class/thermal";
+#else
+    return "";
+#endif
+}
+
 const char * build_target() {
 #if defined(BMOE_BUILD_TARGET)
     return BMOE_BUILD_TARGET;

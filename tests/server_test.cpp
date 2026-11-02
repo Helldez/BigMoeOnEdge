@@ -25,6 +25,7 @@
 #include "access.h"
 #include "agent_protocol.h"
 #include "anthropic_messages.h"
+#include "cpu_thermal.h"
 #include "decide_protocol.h"
 #include "download_policy.h"
 #include "event_bus.h"
@@ -49,6 +50,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <set>
 #include <string>
@@ -2053,7 +2055,53 @@ static void model_delete_tests() {
     fs::remove_all(dir, ec);
 }
 
+// The CPU temperature is the mean of the sensors, and a threshold published as a zone is not one
+// (#311, #465): a fake thermal directory with a trip zone and moving sensors.
+static void thermal_tests() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path root = fs::temp_directory_path() / "bmoe_thermal_test";
+    const auto zone = [&](const fs::path & r, int n, const std::string & type, int milli, std::vector<int> trips = {}) {
+        const fs::path z = r / ("thermal_zone" + std::to_string(n));
+        fs::create_directories(z, ec);
+        std::ofstream(z / "type") << type << "\n";
+        std::ofstream(z / "temp") << milli << "\n";
+        for (size_t i = 0; i < trips.size(); ++i)
+            std::ofstream(z / ("trip_point_" + std::to_string(i) + "_temp")) << trips[i] << "\n";
+        return z;
+    };
+    const auto set = [](const fs::path & z, int milli) { std::ofstream(z / "temp") << milli << "\n"; };
+
+    fs::remove_all(root, ec);
+    zone(root / "a", 64, "cpu-hw-trip-0", 95000, {95000});
+    zone(root / "a", 3, "cpu-0-2-1", 47000, {110000});
+    zone(root / "a", 7, "cpu-0-4-1", 55000, {110000});
+    check(CpuThermal((root / "a").u8string()).sample() == 51.0,
+          "thermal: a zone reading its own trip point is not a sensor");
+
+    zone(root / "b", 0, "cpu-trip", 95000);
+    const fs::path a = zone(root / "b", 1, "cpu-0-0", 47000);
+    const fs::path b = zone(root / "b", 2, "cpu-0-1", 50000);
+    CpuThermal moving((root / "b").u8string());
+    check(moving.sample() == 50.0, "thermal: before anything moves, the median, not the constant");
+    set(a, 58000);
+    set(b, 61000);
+    check(moving.sample() == 59.5, "thermal: the mean of the sensors that moved");
+
+    zone(root / "c", 10, "cpu-a", 52000);
+    zone(root / "c", 2, "cpu-b", 52000);
+    zone(root / "c", 1, "gpu", 80000);
+    check(CpuThermal((root / "c").u8string()).sample() == 52.0, "thermal: only zones that name the CPU");
+
+    zone(root / "d", 0, "battery", 30000);
+    check(CpuThermal((root / "d").u8string()).sample() < 0, "thermal: no CPU zone is unknown");
+    check(CpuThermal((root / "missing").u8string()).sample() < 0 && CpuThermal("").sample() < 0,
+          "thermal: no thermal directory is unknown");
+    fs::remove_all(root, ec);
+}
+
 int main() {
+    thermal_tests();
     protocol_tests();
     block_stream_tests();
     anthropic_tests();

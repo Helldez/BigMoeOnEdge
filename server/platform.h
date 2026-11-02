@@ -22,6 +22,11 @@ namespace bmoe::server::platform {
 // {ram_total_mib, ram_available_mib, cpu_threads}; a field the platform cannot report is 0.
 json host_info();
 
+// Where the kernel publishes its thermal zones (CpuThermal reads the CPU's there), or "" on a
+// platform that publishes none a process may read: macOS, iOS and Windows give no CPU temperature
+// without privileges or private interfaces.
+std::string thermal_zone_root();
+
 // Directory holding the running executable, or "" if it cannot be determined.
 std::string executable_dir();
 

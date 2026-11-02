@@ -13,6 +13,8 @@ public struct Telemetry: Equatable, Sendable {
     public var cacheHitPct = -1.0
     public var majflt = 0.0
     public var cpuMs = 0.0
+    /// The mean of the CPU's thermal sensors in °C, the last the server sent; -1 where it sends none.
+    public var cpuTempC = -1.0
     /// What the CPU figures are read against, from the session that produced them; 0 when unknown,
     /// which leaves the compute bar empty rather than guessed.
     public var computeThreads = 0
@@ -61,6 +63,8 @@ public struct Telemetry: Equatable, Sendable {
         cacheHitPct = o["cache_hit_pct"].double(or: -1)
         majflt = o["majflt"].double(or: 0)
         cpuMs = o["cpu_ms"].double(or: 0)
+        let temp = o["cpu_temp_c"].double(or: -1)
+        if temp > 0 { cpuTempC = temp }
     }
 
     public mutating func apply(done o: JSON) {

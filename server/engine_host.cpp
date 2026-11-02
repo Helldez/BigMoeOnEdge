@@ -7,6 +7,7 @@
 #include "bmoe/params.h"
 #include "bmoe/version.h"
 
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <utility>
@@ -126,6 +127,10 @@ EngineHost::~EngineHost() {
 
 void EngineHost::set_host_info(std::function<json()> provider) {
     host_info_ = std::move(provider);
+}
+
+void EngineHost::set_cpu_temperature(std::function<double()> provider) {
+    cpu_temp_ = std::move(provider);
 }
 
 void EngineHost::begin_planning() {
@@ -359,8 +364,21 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
     // The session is this turn's for as long as generate() runs, so a cancel from inside the
     // callback stops this turn and cannot reach another client's.
     bool client_gone = false;
+    // A sensor read is a few files, but a token can take milliseconds: read at most once a second
+    // and a half, the last reading riding on the tokens between.
+    double temp_c = -1.0;
+    std::chrono::steady_clock::time_point temp_at{};
     RunResult r = s->generate(gr, [&](const TokenMetrics & tm) {
-        bus_.publish("token", token_json(tm));
+        json ev = token_json(tm);
+        if (cpu_temp_) {
+            const auto now = std::chrono::steady_clock::now();
+            if (temp_at == std::chrono::steady_clock::time_point{} || now - temp_at > std::chrono::milliseconds(1500)) {
+                temp_at = now;
+                temp_c = cpu_temp_();
+            }
+            if (temp_c > 0) ev["cpu_temp_c"] = temp_c;
+        }
+        bus_.publish("token", ev);
         if (on_token && !client_gone && !on_token(tm)) {
             client_gone = true;
             s->cancel();

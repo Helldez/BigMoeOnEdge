@@ -36,6 +36,8 @@
     if (compute !== null) out.push({ text: t('live.compute', { pct: Math.round(compute) }), hint: t('live.compute.hint') });
     if (flash !== null) out.push({ text: t('live.disk', { pct: Math.round(flash) }), hint: t('live.disk.hint') });
     if (cache >= 0) out.push({ text: t('live.cache', { pct: Math.round(cache) }), hint: t('live.cache.hint') });
+    const temp = last?.cpu_temp_c;
+    if (temp !== undefined && temp > 0) out.push({ text: t('live.temp', { temp: Math.round(temp) }), hint: t('live.temp.hint') });
     return out;
   });
 </script>

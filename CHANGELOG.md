@@ -11,6 +11,12 @@ Semantic Versioning.
   `scripts/build-host.sh -DGGML_VULKAN=ON`.
 
 ### Changed
+- **The CPU temperature is the server's, for every UI** (#465): `bmoe-server` reads the CPU's
+  thermal zones where the kernel publishes them (Linux, Android) and sends `cpu_temp_c` on each
+  `token` event, so the web UI and the iOS app show it beside the Android app. It is the mean of the
+  sensors, not the hottest one, which read a few busy cores and sat well above what other monitors
+  show. The Android app's own reading, and its battery stand-in, are gone; macOS, iOS and Windows
+  publish no CPU temperature a process may read, so none is shown there.
 - **The Mac and iOS builds run on macOS 15 runners**: GitHub retired the macOS 14 images on
   2026-11-02. The Mac release still targets macOS 14 (`CMAKE_OSX_DEPLOYMENT_TARGET`), so a Mac on
   Sonoma still opens it.
@@ -29,6 +35,9 @@ Semantic Versioning.
   debugging only, and the licenses list BSD too.
 
 ### Fixed
+- **Closing the Android app from the recent apps stops the engine** (#465): its notification
+  stayed, and the model held its memory, until a force stop. An engine shared on the network keeps
+  running, since other devices are its clients.
 - **An embedding table left mapped is no longer charged as dense memory** (#462). The planner hands
   the run the row-gathered embedding tables to leave mapped (`dense-mapped`), but the memory ledger
   still counted them in the dense set the `anon`/`pinned` policy copies, so the expert cache was sized

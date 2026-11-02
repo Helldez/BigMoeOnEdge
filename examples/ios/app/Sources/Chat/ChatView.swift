@@ -247,6 +247,7 @@ struct LiveLine: View {
                 Text("compute \(share(b.computeMs))")
                 Text("flash \(share(b.flashWaitMs))")
                 if t.cacheHitPct >= 0 { Text(String(format: "cache %.0f%%", t.cacheHitPct)) }
+                if t.cpuTempC > 0 { Text(String(format: "CPU %.0f°C", t.cpuTempC)) }
             }
             .font(.figure(13))
             .foregroundStyle(Palette.muted)
