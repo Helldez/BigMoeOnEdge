@@ -204,7 +204,8 @@ scripts/build-host.sh
 build/bin/bmoe-server --open
 ```
 
-测试：`cd build && ctest --output-on-failure`（需要安装了 `gguf` 的 `python3`）。Android：
+llama.cpp 后端只需原样传入一个 CMake 选项：`scripts/build-host.sh -DGGML_VULKAN=ON`
+（或 `-DGGML_CUDA=ON`）。测试：`cd build && ctest --output-on-failure`（需要安装了 `gguf` 的 `python3`）。Android：
 `scripts/build-android.ps1`，然后在 [examples/android](examples/android) 中构建 APK。更多：
 [CONTRIBUTING.md](CONTRIBUTING.md)。
 

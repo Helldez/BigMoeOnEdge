@@ -331,7 +331,10 @@ and `BMOE_*` env overrides both count as the caller speaking.
    28.8 GB per-layer table that "fits" by the kernel's count was copied beside the cache and the
    control group ended the run. A table the ranking does call resident is still held back unless its
    bytes are in the dense reservation or fit beside what the ledger charged, since the copy is made
-   either way; and a table left mapped keeps the file's mapping, so `release-mmap` stays off. A row-
+   either way; and a table left mapped keeps the file's mapping, so `release-mmap` stays off. Nor is a
+   table left mapped charged in the ledger's dense row: the reservation is what the policy copies, and
+   left in it held a 96 GB host's cache to 92% of an expert set that fit whole beside a 27 GB per-layer
+   table (#462). A row-
    gathered table competes for residency against the cache at the cache's linear credit, not at the
    tail of a short routing record's curve, which is flat past the experts the record touched:
    measured why on DeepSeek V4.1, where a 194 GB Engram table outranked the cache for 0.1 ms a token.

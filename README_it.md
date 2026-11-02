@@ -220,7 +220,8 @@ scripts/build-host.sh
 build/bin/bmoe-server --open
 ```
 
-Test: `cd build && ctest --output-on-failure` (richiede `python3` con `gguf`). Android:
+Un backend di llama.cpp è un'opzione CMake passata così com'è: `scripts/build-host.sh -DGGML_VULKAN=ON`
+(o `-DGGML_CUDA=ON`). Test: `cd build && ctest --output-on-failure` (richiede `python3` con `gguf`). Android:
 `scripts/build-android.ps1`, poi l'APK in [examples/android](examples/android). Altro:
 [CONTRIBUTING.md](CONTRIBUTING.md).
 

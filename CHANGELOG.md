@@ -6,6 +6,10 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+- **`scripts/build-host.sh` passes its arguments to CMake**, so a llama.cpp backend is one flag:
+  `scripts/build-host.sh -DGGML_VULKAN=ON`.
+
 ### Changed
 - **The Mac and iOS builds run on macOS 15 runners**: GitHub retired the macOS 14 images on
   2026-11-02. The Mac release still targets macOS 14 (`CMAKE_OSX_DEPLOYMENT_TARGET`), so a Mac on
@@ -23,6 +27,15 @@ Semantic Versioning.
   `scripts/readme-diagrams.py`. Corrected on the way: the speed table is not all `--auto` (the oldest
   rows predate it), Codex CLI's settings say to export `BMOE_API_KEY`, ds4 runs on the CPU on Linux for
   debugging only, and the licenses list BSD too.
+
+### Fixed
+- **An embedding table left mapped is no longer charged as dense memory** (#462). The planner hands
+  the run the row-gathered embedding tables to leave mapped (`dense-mapped`), but the memory ledger
+  still counted them in the dense set the `anon`/`pinned` policy copies, so the expert cache was sized
+  short by the tables' size. On a 96 GB host with a 75 GB file and a 27 GB per-layer table, the cache
+  stopped at 92% of an expert set that fits whole; on a 16 GB Mac with Qwen3.6-35B the cache gains the
+  272 MiB `token_embd` table. Only where the reservation is the file's own count: a fitted device
+  placement's host share is left as charged.
 
 ## [0.39.0] - 2026-10-29
 
