@@ -102,62 +102,72 @@ The server half is built: `GET /api/connect` lists the clients with their settin
 this server, and writes a client's settings file with a backup ([agent.md](agent.md)); the views
 that show it in each UI are owed.
 
-**Your own devices, paired directly.** Remote inference: one device uses the model on another from
-anywhere, a phone with a desktop or one PC with another, peer to peer, with no port opened and no
-third party reading the conversation. The model runs whole on the host and only the chat crosses
-the link; this is not distributed inference. A device joins once, by a QR code or a code typed where
-there is no camera, which exchanges public keys, and every connection after that is encrypted
-between the two. The apps are already clients of the server's API, so the work is the transport
-beneath it and a pairing screen: a small tunnel presents the remote server on a loopback port and
-the rest of the app does not change. Any device running the server can host and any device with
-a client can pair, whatever its OS or hardware: the pairing and the rules are written once, and
-only what starts the tunnel differs per platform, with no pair of devices special-cased. What it
-has to get right:
+**Serve on the network, from anywhere.** Using the model on one device from another is what Serve
+on the network already does ([desktop-app.md](desktop-app.md), [screens.md](screens.md)): the
+server listens beyond loopback, every request carries the key, and a phone, a PC or any
+OpenAI-compatible client is a client of it. This entry grows that one feature; it adds no second
+server mode, no second API and no second set of access rules. The model runs whole on the host and
+only the chat crosses the link: this is remote inference, not distributed inference. Today it has
+three limits, and each is a separate piece of work:
+
+- **One key for everyone.** Every client holds the same key, gets every right the network gets,
+  and none can be removed without replacing the key for all.
+- **The local network only.** A device on mobile data or behind another router cannot reach it
+  without a port opened on the host's router.
+- **Unencrypted.** Prompts and answers cross the network in the clear, which the card says.
+
+**Clients of their own.** The first piece, and it holds for every way in, the local network
+included. The host keeps a list of clients, each with its own key and a role: *chat* (its own
+conversations, the models already there, nothing deleted, no setting changed, no agent or tool run)
+or *full* (what the one key allows today, for a coding agent on the person's own PC). The host
+lists them and removes one with a tap, which ends its access and nobody else's. Adding a client is a
+QR code, or a code typed where there is no camera, that hands over its key. The rule lives once, in
+the server's access policy (`server/access.h`): a request that does not come from the machine
+itself is a client, whatever carried it, and gets its client's role. The one key of today becomes
+the first full client, so nothing that works now stops working.
+
+**A way in from outside the local network.** The second piece, beneath the first: a peer-to-peer
+tunnel, so a client reaches the host from anywhere with no port opened and no third party reading
+the conversation. It changes how the bytes arrive, never who is let in, and it is an option of the
+same card. What it has to get right:
 
 - **HyperDHT, as a tunnel beside the engine.** `hyperdht` (MIT) finds a peer by public key, punches
   through the NAT and encrypts the link with Noise, with no server of ours in the path. It runs
-  under Bare (Apache-2.0), a small runtime for desktop and mobile that goes in each package, and what
-  reaches the engine is a plain loopback port, so neither `core/` nor the server learns what a DHT
-  is. Bare's native addons are pinned to the runtime each package ships.
-- **One key per device, not one shared key.** A key shared by all would let whoever holds it join
-  and pose as the host, and nobody could be removed. The host keeps its own keypair and each paired
-  device has its own, the pairing carries the public keys and a one-time secret that expires in
-  minutes, and the DHT's firewall callback admits only the paired ones. The host lists its devices and removes one with a tap.
-- **A paired device chats and nothing more.** It sees its own conversations and picks among the
-  models already there. It deletes nothing, changes no setting and runs no agent or tool.
+  under Bare (Apache-2.0), a small runtime for desktop and mobile that goes in each package, and
+  presents the remote server on a loopback port on the client's side, so the apps, `core/` and the
+  server's API do not change. Bare's native addons are pinned to the runtime each package ships.
+  Any device running the server can host and any device with a client can join, whatever its OS or
+  hardware: only what starts the tunnel differs per platform.
+- **Keys per device here too.** The host has its own keypair and each client its own; adding a
+  client exchanges the public keys with a one-time secret that expires in minutes, and the DHT's
+  firewall callback admits only listed clients. Removing a client removes it from both.
+- **A tunnel is not the person at the machine.** Its bytes reach the server from loopback, and the
+  server gives a loopback peer what it keeps from the network (files, commands, keys: "Security
+  model" in [server-api.md](server-api.md)). The tunnel must name the client each connection is
+  from, and the server must give it that client's role, or the tunnel becomes a way around the
+  access rules.
 - **Direct when it can, and an answer for when it cannot.** With no relay, a failed hole punch is a
-  failed connection, and carrier networks are the hard case. The failure rate
-  on real mobile networks gets measured first. A relay, if the numbers want one, carries encrypted
-  bytes only and is something a person can host. The bootstrap nodes are public by default and see
-  which addresses ask for a key; they too can be self-hosted.
-- **A tunnel is not a local client.** Its bytes arrive at the server from loopback, and the server
-  gives loopback the rights of the person at the machine. A paired device must count as a network
-  client, with its key revocable, or pairing becomes a way around the access rules.
-- **A phone sleeps.** A phone asleep drops its sockets, and iOS does not keep a
-  suspended app's connections at all, so the answer keeps running on the host and the app collects
-  it on return. A phone as the host works on Android through a foreground service and on iOS only
-  while the app is open. There is no push notification, which is what a messaging app gives for
-  free.
+  failed connection, and carrier networks are the hard case. The failure rate on real mobile
+  networks gets measured first. A relay, if the numbers want one, carries encrypted bytes only and
+  is something a person can host. The bootstrap nodes are public by default and see which addresses
+  ask for a key; they too can be self-hosted.
+- **A phone sleeps.** A phone asleep drops its sockets, and iOS does not keep a suspended app's
+  connections at all, so the answer keeps running on the host and the app collects it on return. A
+  phone as the host works on Android through a foreground service and on iOS only while the app is
+  open.
 
-The order: first a plain HyperDHT tunnel to a server, from a phone on mobile data and from a PC on
-another network, to measure how often it connects, which settles the relay. Then the smallest
-product: pairing, a key per device, removal, between any two of Android, macOS, Windows and Linux.
-Then iOS, the answer collected on return, and a Telegram notice when an answer is done.
-
-**Reach your own device from a messaging app.** After that, for a person who wants the app they
-already have, or a notification when an answer is done: they write to the model on their machine from
-Telegram, Signal or WhatsApp, with no port opened to the internet. The server is the
-place for it, as one connector beside the HTTP API: a single port that receives a message from a
-sender and sends the reply, with the policy behind it written once and a thin adapter per network.
-Every platform that runs the server gets it and no UI owes a line of it. No ready-made tool was
-found that is that small and reaches all three: the bridges found are unmaintained, the rest are
-whole agents. The networks differ in what they allow, so they arrive in this order:
+**A messaging app as a client.** The third piece, for a person who wants the app they already have,
+or a notice when an answer is done: they write to the model on their machine from Telegram or
+Signal. A channel is one more client of the list above, with the chat role and its own removal; it
+is a connector in the server, written once, with a thin adapter per network, so every platform that
+runs the server gets it and no UI owes a line of it. No ready-made tool was found that is that small
+and reaches the networks: the bridges found are unmaintained, the rest are whole agents.
 
 - **Telegram first, native in the server.** The Bot API takes long polling, which needs no public
   endpoint, and the server already reaches the network through the system's curl (`http_fetch.h`).
   Its bot token sits in the request URL, so it must reach curl by a route a process list cannot show.
-  What a person has to be told: a bot chat is not end-to-end encrypted, so Telegram's servers carry
-  the conversation, and the model's privacy ends at the device for that chat.
+  A bot chat is not end-to-end encrypted, so Telegram's servers carry the conversation, and the
+  person is told so.
 - **Signal as an optional companion process.** `signal-cli` links as a secondary device and speaks
   JSON-RPC, with the keys on the local disk. It is GPLv3 and needs a Java 25 runtime, so it is run
   beside the server and never linked or shipped in the APK, and its releases go stale in about
@@ -172,13 +182,17 @@ whole agents. The networks differ in what they allow, so they arrive in this ord
   bridges (AGPL, separate processes) to all three networks. Its bridge host reads messages in the
   clear and a homeserver is a heavy thing to ask of a person, so it follows the others.
 
-The rules hold for every channel. Off by default, and with no allowlist of sender ids it refuses to
-start. A channel is a network client, not a local one: it never gets the rights of the person at
-the machine. It chats and nothing else: no tools, no model or settings changes, because an inbound
-message is untrusted input and a forwarded one can carry instructions. Tokens stay out of
-`GET /api/config` and message text stays out of the logs. Its turns wait in the one turn line and
-its conversation is kept apart from the UI's, since two conversations taking turns evict each
-other's context.
+What a channel adds to the client rules: off by default, and with no allowlist of sender ids it
+refuses to start; the chat role only, since an inbound message is untrusted input and a forwarded
+one can carry instructions; tokens stay out of `GET /api/config` and message text stays out of the
+logs. Its turns wait in the one turn line and its conversation is kept apart from the UI's, since
+two conversations taking turns evict each other's context.
+
+The order: clients of their own on the local network first, on every UI, since everything after
+rests on them. Then a plain HyperDHT tunnel to a server, from a phone on mobile data and from a PC
+on another network, to measure how often it connects, which settles the relay; then the tunnel as
+an option of the card, between any two of Android, macOS, Windows and Linux. Then iOS, the answer
+collected on return, and Telegram.
 
 **The planner, drawn.** One diagram of the whole solution, as logic rather than code: the facts
 the probes measure, the rules that read them, the ledger that keeps memory honest, and the plan
