@@ -231,6 +231,11 @@ two of those. The init system keeps the rest: systemd's journal has what a crash
 (`journalctl --user -u io.bigmoeonedge.server`), and the launchd agent sends the server's own
 output to the same file.
 
+Every answer leaves one line there, whichever client asked for it, with the figures the UI's
+metrics show for that answer: tokens generated and the decode speed, prompt tokens prefilled and
+in how long, the context length after the turn, the expert bytes read and the cache hit rate.
+A server that served an agent for a day answers "how much did it read" from its log.
+
 **With the desktop app.** The app looks for a free port from 8765 up, so a service on 8765 and the
 app's own server live side by side; the app's conversations and tasks are the app's. A service
 listening beyond loopback is what the phone and the apps connect to over the network, with the

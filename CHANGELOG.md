@@ -16,8 +16,10 @@ Semantic Versioning.
   loopback with no key. Two new server flags give the service what it needs of the server:
   `--autoload` loads the model the settings name at start and again when a request finds none
   loaded (the request waits for the load instead of a `503 no_model`), and `--log-file PATH` sends
-  the console's output to a file, moved aside at 16 MiB. `docs/server-api.md`, "Running as a
-  service". The service text is rendered by pure functions tested in `bmoe_server_test`; the
+  the console's output to a file, moved aside at 16 MiB. Each answer, whichever client asked, now
+  leaves one line in the log with its tokens, speed, prompt size and time, context length, expert
+  bytes read and cache hit rate, so a server that ran for a day can be read afterwards (#462 asked).
+  `docs/server-api.md`, "Running as a service". The service text is rendered by pure functions tested in `bmoe_server_test`; the
   install itself is owed a run at a login on each platform.
 - **Every setting explains itself** (#468, from #465): each row a settings form shows, and each the
   plan decides, carries `details` in `/api/params`, a sentence or two in plain words on when to
