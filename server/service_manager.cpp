@@ -75,8 +75,10 @@ public:
     virtual bool keeps_journal() const { return false; }
     virtual Exec install(const std::string & unit) = 0; // register the written text, enabled, started
     virtual Exec uninstall(const std::string & unit) = 0;
-    virtual Exec start() = 0;
-    virtual Exec stop() = 0;
+    // `unit` again: an init system that keeps the service alive stops it by taking the written
+    // text out of the session, and starts it by putting it back.
+    virtual Exec start(const std::string & unit) = 0;
+    virtual Exec stop(const std::string & unit) = 0;
     virtual Exec status() = 0;
     // How a person reads what the init system kept, when it keeps anything.
     virtual std::string journal_hint() const { return ""; }
@@ -113,8 +115,8 @@ public:
         run({"systemctl", "--user", "daemon-reload"});
         return e;
     }
-    Exec start() override { return run({"systemctl", "--user", "start", kServiceLabel}); }
-    Exec stop() override { return run({"systemctl", "--user", "stop", kServiceLabel}); }
+    Exec start(const std::string &) override { return run({"systemctl", "--user", "start", kServiceLabel}); }
+    Exec stop(const std::string &) override { return run({"systemctl", "--user", "stop", kServiceLabel}); }
     Exec status() override { return run({"systemctl", "--user", "status", kServiceLabel, "--no-pager"}); }
     std::string journal_hint() const override { return "journalctl --user -u " + std::string(kServiceLabel); }
 };
@@ -143,13 +145,23 @@ public:
         return run({"launchctl", "bootstrap", domain(), unit});
     }
     Exec uninstall(const std::string & unit) override {
+        // A stopped agent is already out of the session: bootout then has nothing to do, and the
+        // uninstall is the plist going.
         Exec e = run({"launchctl", "bootout", target()});
         std::error_code ec;
         fs::remove(fs::u8path(unit), ec);
+        if (e.started && !fs::exists(fs::u8path(unit), ec)) e.code = 0;
         return e;
     }
-    Exec start() override { return run({"launchctl", "kickstart", target()}); }
-    Exec stop() override { return run({"launchctl", "kill", "TERM", target()}); }
+    // KeepAlive starts the server again after any end but a clean exit, a signal included, so a
+    // stop is the agent taken out of the session (it comes back at the next login, the plist being
+    // still there) and a start is the agent put back, or kicked when it is already in.
+    Exec start(const std::string & unit) override {
+        const Exec e = run({"launchctl", "bootstrap", domain(), unit});
+        if (e.started && e.code == 0) return e;
+        return run({"launchctl", "kickstart", target()});
+    }
+    Exec stop(const std::string &) override { return run({"launchctl", "bootout", target()}); }
     Exec status() override {
         // `launchctl print` says everything about the service; the lines a person asks for are
         // whether it runs, as what, and how it last ended.
@@ -187,8 +199,8 @@ public:
         fs::remove(fs::u8path(unit), ec);
         return e;
     }
-    Exec start() override { return run({"schtasks", "/Run", "/TN", kServiceLabel}); }
-    Exec stop() override { return run({"schtasks", "/End", "/TN", kServiceLabel}); }
+    Exec start(const std::string &) override { return run({"schtasks", "/Run", "/TN", kServiceLabel}); }
+    Exec stop(const std::string &) override { return run({"schtasks", "/End", "/TN", kServiceLabel}); }
     Exec status() override { return run({"schtasks", "/Query", "/TN", kServiceLabel, "/V", "/FO", "LIST"}); }
 };
 
@@ -367,8 +379,8 @@ int run_service_command(int argc, char ** argv, const ArgsValidator & validate) 
         if (rc == 0) std::printf("bmoe-server service: removed from %s (%s)\n", init->name(), unit.c_str());
         return rc;
     }
-    if (verb == "start") return report(init->start(), "start the service");
-    if (verb == "stop") return report(init->stop(), "stop the service");
+    if (verb == "start") return report(init->start(unit), "start the service");
+    if (verb == "stop") return report(init->stop(unit), "stop the service");
     if (verb == "status") {
         std::error_code ec;
         const bool registered = fs::exists(fs::u8path(unit), ec);
@@ -378,7 +390,17 @@ int run_service_command(int argc, char ** argv, const ArgsValidator & validate) 
         if (!init->journal_hint().empty()) std::printf("journal:     %s\n", init->journal_hint().c_str());
         std::fflush(stdout);
         if (!registered) return 3;
-        return report(init->status(), "read the service's status");
+        // An init system answers a registered service that is not running with a non-zero exit
+        // (systemd 3, launchd "could not find service"): that is a state, not a failure.
+        const Exec e = init->status();
+        if (!e.started) return report(e, "read the service's status");
+        if (!e.output.empty()) std::printf("%s", e.output.c_str());
+        if (e.code != 0) {
+            std::printf(
+                "state:       not running (stopped, or not started at this login; `service start` starts it)\n");
+            return 3;
+        }
+        return 0;
     }
     std::fprintf(stderr, "bmoe-server service: unknown verb '%s'\n", verb.c_str());
     print_service_usage();
