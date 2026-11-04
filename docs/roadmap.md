@@ -60,6 +60,14 @@ installer signed, and an app that updates itself. In the engine, what Windows la
 probes in a process of their own, the cache lock, the byte-identity gates in its CI job, and one
 documented planner run.
 
+**The box that stays on.** The first always-on use is in the field: a mini-PC serving a 400B MoE
+to a coding agent for hours on one prompt, built from source and started by hand in a terminal
+(#462). `bmoe-server service install` now registers the server with the person's init system on
+every desktop platform, and `--autoload` brings the model back after a restart and on the first
+request. Owed, in [#472](https://github.com/Helldez/BigMoeOnEdge/issues/472): an idle policy,
+management from the command line, discovery and the apps' remote mode, and updates for an
+installed service.
+
 **iOS, with the community.** The app is on the framework: `bmoe_server` runs on a thread inside it
 and the five SwiftUI screens speak to it on loopback, as the other UIs do (`examples/ios`); it
 builds and runs in the simulator. What it owes is a device: a run on an iPhone or iPad, signed by

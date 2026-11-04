@@ -99,6 +99,8 @@ add_library(bmoe_server_core STATIC
     feed.cpp
     backend_packs.cpp
     update_service.cpp
+    service_spec.cpp
+    log_file.cpp
 )
 # The platform's calendar time (platform.h) for the schedule and the backups' stamps.
 target_link_libraries(bmoe_server_core PUBLIC bmoe_core PRIVATE bmoe_monocypher bmoe_server_platform)
@@ -117,6 +119,7 @@ add_library(bmoe_server STATIC
     model_inspect.cpp
     planner_adapter.cpp
     routing_store.cpp
+    service_manager.cpp
     agent.cpp
     agent_external.cpp
     agent_routes.cpp
