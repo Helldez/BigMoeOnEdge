@@ -38,7 +38,8 @@ int main() {
         check(s.media_at(1) == nullptr && s.media_at(2) && s.media_at(4) && s.media_at(5) == nullptr,
               "media_at knows which indices an image holds");
         PromptStream text;
-        for (llama_token t : {1, 2, 3}) text.push_token(t);
+        for (llama_token t : {1, 2, 3})
+            text.push_token(t);
         check(text.pos_at(3) == 3 && !text.has_media(), "a text-only stream maps every index to itself");
     }
     {
@@ -55,7 +56,8 @@ int main() {
         check(kv.common_prefix(shifted, 10) == 1, "the same image at another place is not shared");
         check(kv.common_prefix(next, 3) == 2, "a limit inside the image stops before it, never inside");
         PromptStream text;
-        for (llama_token t : {10, 11, 12}) text.push_token(t);
+        for (llama_token t : {10, 11, 12})
+            text.push_token(t);
         check(kv.common_prefix(text, 10) == 2, "text where the image was ends the prefix at the image");
     }
     {

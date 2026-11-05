@@ -24,9 +24,10 @@ namespace {
 void mtmd_to_bmoe_log(ggml_log_level level, const char * text, void *) {
     if (!text || !*text) return;
     std::string line(text);
-    while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.pop_back();
+    while (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
+        line.pop_back();
     if (line.empty()) return;
-    const LogLevel lv = level == GGML_LOG_LEVEL_ERROR ? LogLevel::Error
+    const LogLevel lv = level == GGML_LOG_LEVEL_ERROR  ? LogLevel::Error
                         : level == GGML_LOG_LEVEL_WARN ? LogLevel::Warn
                                                        : LogLevel::Info;
     log_printf(lv, "projector: %s", line.c_str());
@@ -34,10 +35,8 @@ void mtmd_to_bmoe_log(ggml_log_level level, const char * text, void *) {
 
 } // namespace
 
-std::unique_ptr<MediaInput> MediaInput::open(const std::string & mmproj,
-                                             const llama_model * model,
-                                             int n_threads,
-                                             std::string & err) {
+std::unique_ptr<MediaInput>
+MediaInput::open(const std::string & mmproj, const llama_model * model, int n_threads, std::string & err) {
     mtmd_helper_log_set(mtmd_to_bmoe_log, nullptr);
     mtmd_context_params p = mtmd_context_params_default();
     // A device when the registry has one, the host otherwise: the library asks the registry, so a
@@ -72,7 +71,8 @@ const char * MediaInput::marker() const {
 }
 
 MediaInput::Tokenized::~Tokenized() {
-    for (mtmd_input_chunk * c : chunks) mtmd_input_chunk_free(c);
+    for (mtmd_input_chunk * c : chunks)
+        mtmd_input_chunk_free(c);
 }
 
 bool MediaInput::tokenize(const std::string & text,
@@ -83,7 +83,8 @@ bool MediaInput::tokenize(const std::string & text,
                           bool & mismatch) const {
     mismatch = false;
     out.stream.clear();
-    for (mtmd_input_chunk * c : out.chunks) mtmd_input_chunk_free(c);
+    for (mtmd_input_chunk * c : out.chunks)
+        mtmd_input_chunk_free(c);
     out.chunks.clear();
 
     std::vector<mtmd_bitmap *> bitmaps;
@@ -114,7 +115,8 @@ bool MediaInput::tokenize(const std::string & text,
     if (ok) {
         const std::string mk = marker();
         size_t n_markers = 0;
-        for (size_t at = text.find(mk); at != std::string::npos; at = text.find(mk, at + mk.size())) ++n_markers;
+        for (size_t at = text.find(mk); at != std::string::npos; at = text.find(mk, at + mk.size()))
+            ++n_markers;
         if (n_markers != images.size()) {
             mismatch = true;
             err = "the prompt places " + std::to_string(n_markers) + " image marker(s) (" + mk + ") and carries " +
@@ -149,8 +151,7 @@ bool MediaInput::tokenize(const std::string & text,
             }
             case MTMD_INPUT_CHUNK_TYPE_IMAGE: {
                 const char * id = mtmd_input_chunk_get_id(c);
-                out.stream.push_media(mtmd_input_chunk_get_n_tokens(c), mtmd_input_chunk_get_n_pos(c),
-                                      id ? id : "");
+                out.stream.push_media(mtmd_input_chunk_get_n_tokens(c), mtmd_input_chunk_get_n_pos(c), id ? id : "");
                 out.chunks.push_back(mtmd_input_chunk_copy(c));
                 break;
             }
@@ -162,10 +163,12 @@ bool MediaInput::tokenize(const std::string & text,
         }
     }
     if (chunks) mtmd_input_chunks_free(chunks);
-    for (mtmd_bitmap * b : bitmaps) mtmd_bitmap_free(b);
+    for (mtmd_bitmap * b : bitmaps)
+        mtmd_bitmap_free(b);
     if (!ok) {
         out.stream.clear();
-        for (mtmd_input_chunk * c : out.chunks) mtmd_input_chunk_free(c);
+        for (mtmd_input_chunk * c : out.chunks)
+            mtmd_input_chunk_free(c);
         out.chunks.clear();
     }
     return ok;

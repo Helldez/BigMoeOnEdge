@@ -28,10 +28,8 @@ class MediaInput {
 public:
     // Open the projector `mmproj` for `model`. The encoder runs on a device of the backends loaded
     // when one is registered, on the host otherwise: the library's choice, from the registry.
-    static std::unique_ptr<MediaInput> open(const std::string & mmproj,
-                                            const llama_model * model,
-                                            int n_threads,
-                                            std::string & err);
+    static std::unique_ptr<MediaInput>
+    open(const std::string & mmproj, const llama_model * model, int n_threads, std::string & err);
     ~MediaInput();
 
     bool vision() const;

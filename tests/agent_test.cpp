@@ -417,7 +417,8 @@ static void loop_tests() {
         auto rig = std::make_unique<Rig>(false);
         const std::string c = rig->conversation("ask", false);
         json item;
-        check(rig->agent->send(c, "hello", json::array(), false, false, item).ok(), "a message with no model is accepted");
+        check(rig->agent->send(c, "hello", json::array(), false, false, item).ok(),
+              "a message with no model is accepted");
         check(rig->wait_done(c), "and its run ends");
         const json notes = rig->items_of(c, "notice");
         check(notes.size() == 1 && notes[0].value("level", "") == "error" &&
@@ -514,7 +515,8 @@ static void loop_tests() {
         check(std::chrono::steady_clock::now() - t0 < 3s && !rig->agent->running(c),
               "shutdown ends a waiting run and returns (an embedding app's stop)");
         json late;
-        check(rig->agent->send(c, "more", json::array(), false, false, late).status == 503, "after shutdown no run starts");
+        check(rig->agent->send(c, "more", json::array(), false, false, late).status == 503,
+              "after shutdown no run starts");
     }
 }
 
@@ -1210,7 +1212,8 @@ static void external_agent_tests() {
             rig->store->create_conversation({{"mode", "ask"}, {"workspace", rig->workspace_id}, {"agent", "fake"}})
                 .value("id", "");
         json item;
-        check(rig->agent->send(c, "write a file", json::array(), false, false, item).ok(), "acp: a message starts the other agent");
+        check(rig->agent->send(c, "write a file", json::array(), false, false, item).ok(),
+              "acp: a message starts the other agent");
         check(rig->wait_state(c, "waiting"), "acp: its permission request is an approval card");
         const json card = rig->items_of(c, "tool")[0];
         check(card.value("diff", "").find("+hi") != std::string::npos && card.value("file", "") == "a.txt",
