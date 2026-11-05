@@ -39,6 +39,13 @@ Semantic Versioning.
   debugging only, and the licenses list BSD too.
 
 ### Fixed
+- **A cut-off tool call no longer breaks the conversation for good**: a call whose arguments the
+  model never finished (a page cut mid-string by the context or a token limit) was refused, but the
+  broken arguments stayed in the history, and the chat template, which parses every call's
+  arguments, rejected the whole conversation at every turn after. The call is now refused with
+  the parser's reason and what to do, the record keeps what was written, and the model is shown an
+  empty object in its place; a conversation saved before this is healed the same way when it is
+  next rendered (`docs/agent.md`, "Tools").
 - **Metrics is always in Settings, on every front-end** (#465): it appeared only after a switch under
   Appearance, so a person looking for the measurements or the CSV recording found neither. The web UI
   shows the Metrics section always; on Android and iOS the Metrics entry is always in Settings and the
