@@ -1101,7 +1101,11 @@ bool Session::Impl::read_model(Opening & o) {
     // does not match the model is refused here, with the reason, not at the first image.
     if (!cfg.mmproj.empty()) {
         std::string merr;
-        media = detail::MediaInput::open(cfg.mmproj, m, cfg.n_threads, merr);
+        // On the devices by the rule the model's own placement follows (load_model): a layer placed
+        // on one means they are wanted. The planner prices the projector by the same rule.
+        const bool devices_wanted =
+            cfg.device_use == DeviceUse::All || (cfg.device_use == DeviceUse::Auto && cfg.n_gpu_layers > 0);
+        media = detail::MediaInput::open(cfg.mmproj, m, cfg.n_threads, devices_wanted, merr);
         if (!media) return o.fail(merr);
         if (!media->vision()) {
             media.reset();

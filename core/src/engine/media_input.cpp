@@ -35,13 +35,13 @@ void mtmd_to_bmoe_log(ggml_log_level level, const char * text, void *) {
 
 } // namespace
 
-std::unique_ptr<MediaInput>
-MediaInput::open(const std::string & mmproj, const llama_model * model, int n_threads, std::string & err) {
+std::unique_ptr<MediaInput> MediaInput::open(
+    const std::string & mmproj, const llama_model * model, int n_threads, bool use_devices, std::string & err) {
     mtmd_helper_log_set(mtmd_to_bmoe_log, nullptr);
     mtmd_context_params p = mtmd_context_params_default();
-    // A device when the registry has one, the host otherwise: the library asks the registry, so a
-    // GPU-less box and a laptop with a GPU run the same code with no branch here.
-    p.use_gpu = true;
+    // A device when wanted and the registry has one, the host otherwise: the library asks the
+    // registry, so a GPU-less box and a laptop with a GPU run the same code with no branch here.
+    p.use_gpu = use_devices;
     p.n_threads = n_threads;
     p.print_timings = false;
     p.warmup = false; // the first image pays the graph's allocation instead of every load paying it

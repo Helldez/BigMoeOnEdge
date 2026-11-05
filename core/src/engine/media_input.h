@@ -26,10 +26,11 @@ namespace bmoe::detail {
 
 class MediaInput {
 public:
-    // Open the projector `mmproj` for `model`. The encoder runs on a device of the backends loaded
-    // when one is registered, on the host otherwise: the library's choice, from the registry.
+    // Open the projector `mmproj` for `model`. With `use_devices` the encoder and its weights go on
+    // a device of the backends loaded, when one is registered (the library's choice, from the
+    // registry); without, on the host. The caller decides by the rule its model follows.
     static std::unique_ptr<MediaInput>
-    open(const std::string & mmproj, const llama_model * model, int n_threads, std::string & err);
+    open(const std::string & mmproj, const llama_model * model, int n_threads, bool use_devices, std::string & err);
     ~MediaInput();
 
     bool vision() const;

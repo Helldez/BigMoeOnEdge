@@ -291,7 +291,7 @@ void measure_rates(Pricing & c) {
 void charge_fixed(Pricing & c) {
     const AllocationInputs & in = c.in;
     Allocation & a = c.a;
-    c.fixed = in.fixed_bytes + in.checkpoint_bytes + in.device_bytes;
+    c.fixed = in.fixed_bytes + in.projector_bytes + in.checkpoint_bytes + in.device_bytes;
     c.spendable = in.budget_bytes > c.fixed ? in.budget_bytes - c.fixed : 0;
     c.locked = in.device_locked ? in.device_bytes : 0;
 
@@ -598,7 +598,8 @@ void bound_cache(Pricing & c) {
         // less than the rows that really are: an unpinned dense set is memory the machine can take
         // back however much lock is left unused beside it.
         const uint64_t locked_all = c.locked + std::min(cache_lock_room, in.cacheable_bytes);
-        const uint64_t ordinary_rows = in.fixed_bytes + in.checkpoint_bytes + (in.device_locked ? 0 : in.device_bytes) +
+        const uint64_t ordinary_rows = in.fixed_bytes + in.projector_bytes + in.checkpoint_bytes +
+                                       (in.device_locked ? 0 : in.device_bytes) +
                                        (a.dense_pinned ? 0 : in.reserved_bytes);
         const uint64_t ordinary =
             std::max(in.holdable_bytes > locked_all ? in.holdable_bytes - locked_all : 0, ordinary_rows);
@@ -852,6 +853,7 @@ void write_ledger(Pricing & c) {
         if (is_locked) a.ledger.locked += bytes;
     };
     row("context and compute", in.fixed_bytes, false);
+    row("projector", in.projector_bytes, false);
     row("context checkpoints", in.checkpoint_bytes, false);
     row("device", in.device_bytes, in.device_locked);
     row("dense", in.reserved_bytes, a.dense_pinned);

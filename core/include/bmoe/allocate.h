@@ -95,6 +95,9 @@ struct AllocationInputs {
     // nothing here chooses them, but they come out of the same memory, so they are a line rather
     // than something the budget is assumed to have left room for.
     uint64_t fixed_bytes = 0;
+    // The multimodal projector, where the run has one and it lands in this pool: dense weights held
+    // whole for the run to read images, never streamed, and not the planner's to size.
+    uint64_t projector_bytes = 0;
     // Held the same way, and filled as a chat goes rather than at load: the context checkpoints the
     // run may keep. A line of its own, so a reader finds what a chat run costs over a one-shot one.
     uint64_t checkpoint_bytes = 0;

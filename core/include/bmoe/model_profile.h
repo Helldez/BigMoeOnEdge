@@ -133,6 +133,10 @@ struct ModelProfile {
     // The MTP head file's size, where the run names one (SpecConfig::mtp_head): what placing the
     // head on a device costs that device. 0 where there is no file or it cannot be read.
     uint64_t mtp_head_bytes = 0;
+    // The multimodal projector's size, where the run names one (RunConfig::mmproj): what llama.cpp's
+    // library holds beside the model to read images, whole, on a device the run uses or on the host.
+    // Dense, so never streamed. 0 where there is no file or it cannot be read.
+    uint64_t projector_bytes = 0;
     // The tensors of the Embedding group, by name: what a plan that prices the group as left
     // mapped hands the run (MoeStreamConfig::dense_mapped), so the run leaves exactly those.
     std::vector<std::string> embedding_tensors;

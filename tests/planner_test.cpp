@@ -212,6 +212,20 @@ int main() {
               "desktop: cache clears the token cycle", std::to_string(p.config.moe.cache_mb) + " MiB");
         check(validate(p.config).ok, "desktop: the plan is a valid config", validate(p.config).error);
 
+        // A projector on a host-only plan is a row of the host's ledger, and the cache is smaller by
+        // it: dense weights the run holds whole, never streamed.
+        {
+            ModelProfile seeing = model;
+            seeing.projector_bytes = 600 * MiB;
+            const Plan v = plan_run(base_cfg(), desktop(), seeing, PlanRequest{});
+            const LedgerRow * pr = ledger_row(v, "projector");
+            check(pr && pr->bytes == 600 * MiB && !pr->locked, "desktop, projector: a ledger row of its size");
+            check(v.config.moe.cache_mb == p.config.moe.cache_mb - 600,
+                  "desktop, projector: the cache gives up exactly the projector's bytes",
+                  std::to_string(v.config.moe.cache_mb) + " vs " + std::to_string(p.config.moe.cache_mb));
+            check(!ledger_row(p, "projector"), "desktop, no projector: no row");
+        }
+
         const Decision * d = find(p, "release-mmap");
         check(d && d->source == Source::Measured, "desktop: release-mmap is a measured decision");
     }
@@ -2123,6 +2137,17 @@ int main() {
             const Plan hp = plan_run(cfg, card, headed, half, pinned, PlannerPolicy::defaults());
             check(!find(hp, "mtp-head-on-devices") && hp.config.moe.device_cache_mb == (int) (9 * 1024),
                   "device tier, head placement pinned: the caller's, and the cache is whole");
+        }
+
+        // The projector goes on the device with every layer: its bytes come off the card's spare
+        // before the cache does, and the host's ledger has no row for it.
+        {
+            ModelProfile seeing = model;
+            seeing.projector_bytes = 1 * GiB;
+            const Plan v = plan_run(base_cfg(), card, seeing, half, PlanRequest{}, PlannerPolicy::defaults());
+            check(v.config.moe.device_cache_mb == (int) (8 * 1024) && !ledger_row(v, "projector"),
+                  "device tier, projector: the device cache is smaller by it, and the host holds none",
+                  std::to_string(v.config.moe.device_cache_mb) + " MiB");
         }
 
         // A device no faster at the experts than the host: the fastest processor is the host, and the
