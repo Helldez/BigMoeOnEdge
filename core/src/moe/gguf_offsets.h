@@ -72,6 +72,9 @@ struct GgufModelInfo {
     int n_block = 0;
     int n_nextn = 0;
     bool reads_target = false;
+    // `general.name`: the base model the conversion wrote this file from. A model and the companion
+    // files of the same conversion (its projector) carry the same one, which is how they are paired.
+    std::string name;
     bool ok = false;
 };
 

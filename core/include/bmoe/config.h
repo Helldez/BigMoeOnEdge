@@ -641,7 +641,14 @@ struct KnobTrialConfig {
 // A full run: model, prompt, decoding, streaming, telemetry.
 struct RunConfig {
     std::string model_path;
+    // The multimodal projector (an `mmproj` GGUF) that gives the model image input, loaded beside it.
+    // Empty: text only. Any model llama.cpp's projector library knows, any quantization of either
+    // file: the projector is read by its own header, nothing here names a family.
+    std::string mmproj;
     std::string prompt = "The capital of Japan is";
+    // Image files the prompt places with image_marker() (bmoe/chat.h), in order: the one-shot run's
+    // input beside `prompt`, read by the front-end and handed to the session as bytes.
+    std::vector<std::string> images;
     int n_predict = 128;
     int n_threads = 4;
     // Threads for prefill, which is a different question from threads for decode: prefill is

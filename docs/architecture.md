@@ -14,7 +14,8 @@ cli/            bmoe-cli — parses flags, the only place env vars are read
 server/         bmoe-server: the application framework every UI speaks to (docs/application-framework.md),
                 and the engine behind the desktop web UI (docs/server-api.md)
                 openai_chat (the chat protocol), anthropic_messages and openai_responses (the
-                agent protocols, over agent_protocol's append-only stream), turn_queue,
+                agent protocols, over agent_protocol's append-only stream), image_part (an image as
+                a protocol carries it, inline, to the engine's ChatImage), turn_queue,
                 settings_store, event_bus, json_util,
                 model_files (which gguf names make one model, the one-level folder scan, and what a
                 file is for by its header: model, projector, draft), plan_view (the plan as the Plan
@@ -127,6 +128,10 @@ core/
                 llama_log — what of llama.cpp's own log reaches stderr: DEBUG dropped unless
                   asked for, a requested cancel's decode errors demoted while it is in flight
                 chat_messages — bmoe/chat.h to and from llama.cpp's chat types, in one place
+                prompt_stream — the prompt as the KV sees it: tokens, with an image as a span of
+                  placeholders over fewer positions than tokens (prefix reuse, cuts, positions)
+                media_input — the one adapter over llama.cpp's projector library (mtmd): the
+                  projector beside the model, images into chunks, an image's embeddings as batches
                 chat_parse — reasoning-parser wiring (llama.cpp `common`, see seam.md)
                 context_checkpoints — the cut-resistant part of the context state, copied at prompt
                   ends and restored when a chat turn diverges inside it (session.md)

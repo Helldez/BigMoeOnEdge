@@ -24,6 +24,8 @@
 #include "cache_brake.h"
 #include "context_checkpoints.h"
 #include "kv_cache_type.h"
+#include "media_input.h"
+#include "prompt_stream.h"
 #include "knob_trial.h"
 #include "../io/platform_io.h"
 #include "../io/mapping_release.h"
@@ -336,6 +338,9 @@ struct Session::Impl {
     int decode_placed(llama_context * c, const llama_batch & b) {
         return prefill ? prefill->decode(c, b) : llama_decode(c, b);
     }
+    int decode_placed_ext(llama_context * c, llama_batch_ext * b) {
+        return prefill ? prefill->decode_ext(c, b) : llama_process(c, LLAMA_PROCESS_TYPE_DECODE, b);
+    }
     // Every exit from a prefill (errors and cancellation included) leaves the weights on the host:
     // the next graph may be a decode, and the CPU cannot read a device buffer.
     struct PlacementGuard {
@@ -408,30 +413,46 @@ struct Session::Impl {
     llama_sampler * smpl = nullptr;
 
     // Multi-turn chat state (chat mode only). chat_history is the running conversation the
-    // template is re-rendered over each turn; kv_tokens mirrors the tokens currently decoded
+    // template is re-rendered over each turn; kv mirrors the tokens currently decoded
     // into the context's KV (seq 0), in order, so the next turn can reuse the common prefix
     // and prefill only the diverging suffix instead of re-running the whole conversation.
     std::vector<common_chat_msg> chat_history;
-    std::vector<llama_token> kv_tokens;
+    // The stream, not a plain token list: an image in it is a span of placeholders over fewer
+    // positions than tokens, and kv.pos_at() is where the context is cut (prompt_stream.h).
+    detail::PromptStream kv;
+    // The projector, when the session was opened with one: the prompt's images go through it.
+    std::unique_ptr<detail::MediaInput> media;
+    // A batch of the session's own for a prompt with images in it: its text runs are placed by
+    // explicit positions, since the image before them took fewer than its tokens.
+    llama_batch media_batch{};
+    bool media_batch_owned = false;
+    // Speculation drafts from the token list, and an image's tokens are not in the vocabulary: a
+    // conversation that has held an image runs without a draft until it is cleared (said once).
+    bool media_in_conversation = false;
+    bool media_spec_logged = false;
     // What a refused cut of the KV rolls back to (context_checkpoints.h). They describe a prefix of
-    // kv_tokens, so they go wherever it goes.
+    // kv, so they go wherever it goes.
     detail::ContextCheckpoints checkpoints;
     bool checkpoint_size_logged = false; // the size is the model's, so said once per session
     detail::CheckpointContexts checkpoint_contexts() { return {ctx.get(), ctx_dft.get(), mtp.get()}; }
     void forget_kv_tokens() {
-        kv_tokens.clear();
+        kv.clear();
         checkpoints.clear();
+        media_in_conversation = false;
     }
     // Keep the first n tokens of the KV and drop the rest. Where the memory refuses the cut, the
     // newest checkpoint at or before n stands in for it; returns how many tokens are still held,
-    // 0 with the context cleared when no checkpoint helps.
+    // 0 with the context cleared when no checkpoint helps. A cut inside an image moves to its
+    // start: an image is held whole or not at all.
     size_t keep_kv_prefix(size_t n) {
+        n = std::min(n, kv.size());
+        if (const detail::MediaSpan * m = kv.media_at(n); m && m->begin < n) n = m->begin;
         size_t kept = n;
-        if (!llama_memory_seq_rm(llama_get_memory(ctx.get()), 0, (llama_pos) n, -1)) {
+        if (!llama_memory_seq_rm(llama_get_memory(ctx.get()), 0, kv.pos_at(n), -1)) {
             kept = (size_t) checkpoints.restore(checkpoint_contexts(), (int64_t) n);
             if (kept == 0) clear_memory(ctx.get());
         }
-        kv_tokens.resize(std::min(kept, kv_tokens.size()));
+        kv.truncate(kept);
         checkpoints.drop_after((int64_t) kept);
         return kept;
     }
@@ -530,6 +551,7 @@ struct Session::Impl {
         // installed on the draft one, so it goes before either context is freed.
         mtp.reset();
         if (mtp_batch_owned) llama_batch_free(mtp_batch);
+        if (media_batch_owned) llama_batch_free(media_batch);
         ctx_dft.reset();
         ctx.reset();
         hook.reset();
@@ -563,6 +585,9 @@ MeasuredKnobs Session::measured_knobs() const {
 }
 ThinkControl Session::think_control() const {
     return impl_->think_ctl;
+}
+bool Session::vision() const {
+    return impl_->media && impl_->media->vision();
 }
 void Session::set_cache_budget_mb(int mib) {
     impl_->source.set_cache_budget((size_t) std::max(0, mib) * 1024ull * 1024ull);
@@ -1071,6 +1096,19 @@ bool Session::Impl::read_model(Opening & o) {
             chat_on = false;
         }
     }
+
+    // The projector beside the model: a session opened with one reads images. A projector that
+    // does not match the model is refused here, with the reason, not at the first image.
+    if (!cfg.mmproj.empty()) {
+        std::string merr;
+        media = detail::MediaInput::open(cfg.mmproj, m, cfg.n_threads, merr);
+        if (!media) return o.fail(merr);
+        if (!media->vision()) {
+            media.reset();
+            return o.fail("the projector in " + cfg.mmproj + " has no vision encoder: this engine reads images only");
+        }
+        log_printf(LogLevel::Info, "projector: %s loaded, images are read", cfg.mmproj.c_str());
+    }
     return true;
 }
 
@@ -1324,6 +1362,11 @@ bool Session::Impl::init_speculation(Opening & o) {
         draft_buf.reserve((size_t) cfg.spec.draft_max);
     }
     checkpoints.configure(cfg.ctx_checkpoints, cfg.checkpoint_min_step, llama_model_n_swa(model.get()));
+    checkpoints.set_position_map([this](int64_t n) { return kv.pos_at((size_t) n); });
+    if (media) {
+        media_batch = llama_batch_init(cfg.n_batch, /*embd*/ 0, /*n_seq_max*/ 1);
+        media_batch_owned = true;
+    }
     return true;
 }
 
@@ -2248,7 +2291,11 @@ struct Session::Impl::Turn {
     common_chat_parser_params parse_params;
     detail::ToolGrammar grammar;        // the template's grammar, off when it has none
     std::vector<llama_token_data> cand; // the full candidate list, built only when the grammar refuses
-    std::vector<llama_token> tokens;
+    // The prompt as tokens, images included as spans of placeholders (prompt_stream.h); `tokens`
+    // is the flat list the text paths read, the same storage.
+    detail::MediaInput::Tokenized tk;
+    std::vector<llama_token> & tokens = tk.stream.tokens;
+    std::vector<ChatImage> images; // the turn's, in marker order
     int n_prompt = 0;
     int n_predict = 0;
     size_t n_common = 0; // leading prompt tokens the KV already held
@@ -2354,7 +2401,22 @@ struct Session::Impl::Turn {
         const bool replace = !req.messages.empty();
         if (replace && !chat_on)
             return fail(RunError::NeedsChatMode, "a message list needs chat turns: open the session with {chatml} on");
-        if (!chat_on) return true;
+        // The images, in the order the rendered prompt places their markers: a message list renders
+        // its messages in order, so their images concatenate.
+        if (replace) {
+            for (const ChatMessage & m : req.messages)
+                images.insert(images.end(), m.images.begin(), m.images.end());
+        } else {
+            images = req.images;
+        }
+        if (!images.empty() && !im.media)
+            return fail(RunError::NoVision, "the request carries " + std::to_string(images.size()) +
+                                                " image(s) and this model was loaded without a projector: load it "
+                                                "with {mmproj} (the mmproj file of the same conversion) to read them");
+        if (!chat_on) {
+            prompt = req.prompt;
+            return true;
+        }
         try {
             if (replace) {
                 history_before = std::move(im.chat_history);
@@ -2410,19 +2472,32 @@ struct Session::Impl::Turn {
 
     // Tokenize the prompt and settle the answer's budget against the room the context has left.
     bool tokenize_prompt() {
-        tokens.resize(prompt.size() + k_tokenize_slack);
-        n_prompt = llama_tokenize(im.vocab, prompt.c_str(), (int) prompt.size(), tokens.data(), (int) tokens.size(),
-                                  /*add_special*/ true, /*parse_special*/ true);
-        if (n_prompt < 0) {
-            tokens.resize(-n_prompt);
+        if (!images.empty()) {
+            // Text and images together: the projector's tokenizer splits the prompt at its markers
+            // and sizes each image in tokens and positions. The text-only path below stays as it
+            // was, byte for byte, for every prompt without an image.
+            std::string err;
+            bool mismatch = false;
+            if (!im.media->tokenize(prompt, images, /*add_special*/ true, tk, err, mismatch)) {
+                undo_history();
+                return fail(mismatch ? RunError::InvalidRequest : RunError::Failed, err);
+            }
+            n_prompt = (int) tokens.size();
+        } else {
+            tokens.resize(prompt.size() + k_tokenize_slack);
             n_prompt = llama_tokenize(im.vocab, prompt.c_str(), (int) prompt.size(), tokens.data(), (int) tokens.size(),
-                                      true, true);
+                                      /*add_special*/ true, /*parse_special*/ true);
+            if (n_prompt < 0) {
+                tokens.resize(-n_prompt);
+                n_prompt = llama_tokenize(im.vocab, prompt.c_str(), (int) prompt.size(), tokens.data(),
+                                          (int) tokens.size(), true, true);
+            }
+            if (n_prompt > 0) tokens.resize(n_prompt);
         }
         if (n_prompt < 1) {
             undo_history();
             return fail(RunError::EmptyPrompt, "empty prompt after tokenization");
         }
-        tokens.resize(n_prompt);
         // n_predict is a ceiling on the answer, not a reservation: the answer gets what the context
         // has left after the prompt, and stops there with the budget spent, as a length stop. Only a
         // prompt that leaves no room at all is refused. Reserving the whole ceiling refused a
@@ -2472,19 +2547,18 @@ struct Session::Impl::Turn {
     // kv_tokens empty, so n_common = 0 and this reduces to a full prefill — the one-shot path the
     // byte-identity gates exercise stays unchanged.
     void reuse_kv_prefix() {
-        if (!chat_on || im.kv_tokens.empty()) return;
+        if (!chat_on || im.kv.empty()) return;
         const size_t max_common = tokens.size() > 0 ? tokens.size() - 1 : 0;
-        while (n_common < im.kv_tokens.size() && n_common < max_common && im.kv_tokens[n_common] == tokens[n_common])
-            ++n_common;
+        n_common = im.kv.common_prefix(tk.stream, max_common);
         // A memory that cannot be cut here (a recurrent state, a sliding window) goes back to the
         // newest checkpoint before the divergence, and only a context with none starts again.
-        if (n_common < im.kv_tokens.size()) n_common = im.keep_kv_prefix(n_common);
+        if (n_common < im.kv.size()) n_common = im.keep_kv_prefix(n_common);
         // The draft context mirrors the target's positions, so it has to be rewound to the SAME
         // point — including when n_common did not move, since the previous turn left it holding
         // everything it generated. Miss this and the first prefill batch of the turn starts at a
         // position the draft context already has, which llama.cpp rejects outright: the second
         // message of a conversation fails while the first always works.
-        if (im.ctx_dft && !llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), 0, (llama_pos) n_common, -1))
+        if (im.ctx_dft && !llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), 0, im.kv.pos_at(n_common), -1))
             llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
     }
 
@@ -2501,7 +2575,7 @@ struct Session::Impl::Turn {
         // Whatever the target rolled back to, the draft context follows: a cancelled turn that left
         // the two at different positions would fail the NEXT turn, not this one.
         if (im.ctx_dft) {
-            const llama_pos keep = chat_on ? (llama_pos) n_common : 0;
+            const llama_pos keep = chat_on ? im.kv.pos_at(n_common) : 0;
             if (!llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), 0, keep, -1)) {
                 llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
                 // Both contexts must resume at the same prefix after an aborted turn.
@@ -2568,6 +2642,17 @@ struct Session::Impl::Turn {
         const auto t_prefill0 = clock_t_::now();
         spec_on = im.cfg.spec.enabled();
         mtp_on = im.mtp != nullptr;
+        if (tk.stream.has_media()) im.media_in_conversation = true;
+        if (im.media_in_conversation && (spec_on || mtp_on)) {
+            if (!im.media_spec_logged) {
+                im.media_spec_logged = true;
+                log_printf(LogLevel::Info, "speculation is off for a conversation holding an image: the draft "
+                                           "reads tokens, and an image's are embeddings. It is back with a new "
+                                           "conversation");
+            }
+            spec_on = false;
+            mtp_on = false;
+        }
         // With a prefill device the prompt goes in one ubatch per decode, so each graph's width is one
         // we chose and can place: wide pieces on the device, a narrow tail on the CPU. Left to
         // llama_decode, a batch would be split into ubatches whose last one could be one token wide —
@@ -2577,8 +2662,18 @@ struct Session::Impl::Turn {
         arena_read0 = im.prefill ? im.prefill->arena_read_bytes() : 0;
         arena_stall0 = im.prefill ? im.prefill->arena_stall_seconds() : 0.0;
         const long long device_nodes0 = im.hook->device_nodes();
-        for (int i = (int) n_common; i < n_prompt; i += pf_step) {
-            const int chunk = std::min(pf_step, n_prompt - i);
+        size_t next_media = 0; // the first span at or after i
+        for (int i = (int) n_common; i < n_prompt;) {
+            while (next_media < tk.stream.media.size() && tk.stream.media[next_media].begin < (size_t) i)
+                ++next_media;
+            const detail::MediaSpan * span =
+                next_media < tk.stream.media.size() && tk.stream.media[next_media].begin == (size_t) i
+                    ? &tk.stream.media[next_media]
+                    : nullptr;
+            // A text run ends where the next image begins; an image goes in whole, as its own graphs.
+            const int run_end =
+                next_media < tk.stream.media.size() ? (int) tk.stream.media[next_media].begin : n_prompt;
+            const int chunk = span ? (int) span->n_tokens : std::min(pf_step, run_end - i);
             // A long prompt prefilled in pieces leaves checkpoints inside it too, min_step apart.
             if (chat_on && i > (int) n_common && im.checkpoints.wanted(i, /*prompt_end*/ false))
                 im.checkpoints.create(im.checkpoint_contexts(), i);
@@ -2586,17 +2681,32 @@ struct Session::Impl::Turn {
                 const bool on_dev = im.place_prefill(chunk >= im.cfg.prefill.min_tokens);
                 if (on_dev) prefill_device_tokens += chunk;
             }
-            llama_batch pf;
-            if (mtp_on) {
-                // Positions are absolute here — the prompt token at index i sits at position i, reused
-                // prefix included — which is exactly what llama_batch_get_one would have inferred.
-                batch_fill(im.mtp_batch, tokens.data() + i, chunk, /*pos0*/ i, /*all_logits*/ false);
-                pf = im.mtp_batch;
-            } else {
-                pf = llama_batch_get_one(tokens.data() + i, chunk);
-            }
             trace_begin(i, chunk, /*phase*/ 0);
-            if (im.decode_placed(ctx, pf) != 0) {
+            int rc;
+            llama_batch pf{};
+            if (span) {
+                // The image: encoded by the projector, decoded as embeddings at the positions the
+                // projector gives it, through the same placed decode as a text batch.
+                rc = im.media->decode_media(ctx, tk, next_media, tk.stream.pos_at((size_t) i), pf_step,
+                                            [&](llama_batch_ext * b) { return im.decode_placed_ext(ctx, b); });
+            } else {
+                if (mtp_on) {
+                    // Positions are absolute here — the prompt token at index i sits at position i,
+                    // reused prefix included — which is exactly what llama_batch_get_one would have
+                    // inferred.
+                    batch_fill(im.mtp_batch, tokens.data() + i, chunk, /*pos0*/ i, /*all_logits*/ false);
+                    pf = im.mtp_batch;
+                } else if (tk.stream.has_media() || im.kv.has_media()) {
+                    // After an image the positions no longer equal the indices: spelled out.
+                    batch_fill(im.media_batch, tokens.data() + i, chunk, tk.stream.pos_at((size_t) i), false);
+                    pf = im.media_batch;
+                } else {
+                    pf = llama_batch_get_one(tokens.data() + i, chunk);
+                }
+                rc = im.decode_placed(ctx, pf);
+            }
+            i += chunk;
+            if (rc != 0) {
                 if (im.cancel_requested.load(std::memory_order_relaxed)) {
                     rollback_turn();
                     res.ok = true;
@@ -2619,9 +2729,7 @@ struct Session::Impl::Turn {
         im.place_prefill(false); // decode reads the host bindings
         prefill_device_nodes = im.hook->device_nodes() - device_nodes0;
         // The suffix is now in the KV; record it so the next turn can diff against it.
-        if (chat_on)
-            for (int i = (int) n_common; i < n_prompt; ++i)
-                im.kv_tokens.push_back(tokens[i]);
+        if (chat_on) im.kv.append(tk.stream, n_common, (size_t) n_prompt);
         // The end of this prompt is where the next request most often diverges: a client sends the
         // answer back as text, and the template's tokens for it need not be the ones sampled.
         if (chat_on && im.checkpoints.create(im.checkpoint_contexts(), n_prompt) && !im.checkpoint_size_logged) {
@@ -2688,7 +2796,7 @@ struct Session::Impl::Turn {
         // Absolute position the next decoded token occupies. Prefill left the context filled up to
         // n_prompt-1; without speculation this simply tracks n_prompt + n_gen, but a verify decode
         // advances it by a whole accepted group, so it is carried explicitly.
-        n_past = n_prompt;
+        n_past = tk.stream.pos_at((size_t) n_prompt);
         // The token sequence the draft source conditions on: the prompt plus everything confirmed
         // since. Only built when speculating — the plain path has no use for it. The head reads it as
         // the sequence to seed from; the n-gram source searches it, and it IS the whole corpus.
@@ -2934,7 +3042,7 @@ struct Session::Impl::Turn {
             std::string delta = np > 0 ? std::string(piece, np) : std::string();
             if (np < 0 && structured()) delta = common_token_to_piece(im.vocab, out, true);
             gen += delta;
-            if (chat_on) im.kv_tokens.push_back(out); // this token is now in the KV
+            if (chat_on) im.kv.push_token(out); // this token is now in the KV
             if (spec_on) mtp_ctx.push_back(out);
             ++n_gen;
 
@@ -3081,7 +3189,7 @@ struct Session::Impl::Turn {
         loop_overhead_s += secs(loop_mark, clock_t_::now());
         s.loop_overhead_s_per_token = n_gen ? loop_overhead_s / n_gen : 0.0;
         s.n_prompt = n_prompt - (int) n_common; // tokens actually prefilled this turn (after KV reuse)
-        s.n_past = chat_on ? (int) im.kv_tokens.size() : n_prompt + n_gen; // total context length now
+        s.n_past = chat_on ? (int) im.kv.size() : n_prompt + n_gen; // total context length now
         s.load_seconds = im.load_seconds;
         s.prefill_seconds = prefill_seconds;
         s.prefill_device_tokens = prefill_device_tokens;

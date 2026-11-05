@@ -211,6 +211,9 @@
           {:else}
             <span class="badge warn" title="This build does not stream this architecture: it runs as plain mmap">not streamable</span>
           {/if}
+          {#if m.projector}
+            <span class="badge" title="A projector file beside it ({m.projector}): loaded with the model, it reads images">vision</span>
+          {/if}
         {/if}
         {#if e?.added}<span class="badge" title="Added from a repository or a link">added</span>{/if}
       </div>

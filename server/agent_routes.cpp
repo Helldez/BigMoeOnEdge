@@ -360,15 +360,22 @@ void register_agent_routes(httplib::Server & svr, const AgentRouteDeps & d) {
         json conv;
         if (!d.store->conversation(id, conv)) return send_error(res, 404, "no such conversation", "not_found");
         if (hidden_from(req, conv)) return refuse_remote(res);
-        if (!body.contains("text") || !body["text"].is_string() || body["text"].get<std::string>().empty())
+        const json images = body.value("images", json::array());
+        if (!images.is_array()) return send_error(res, 400, "images must be an array of data URLs", "invalid_request");
+        if (!body.contains("text") || !body["text"].is_string() ||
+            (body["text"].get<std::string>().empty() && images.empty()))
             return send_error(res, 400, "text must be a non-empty string", "invalid_request");
-        if (body.contains("images") && body["images"].is_array() && !body["images"].empty())
-            return send_error(res, 400, "images are not supported by the agent yet", "unsupported");
+        // Said here, before the message is kept: a model without a projector would refuse the turn
+        // after the item is on the screen.
+        if (!images.empty() && conv.value("route", "local") == "local" && d.host && !d.host->vision())
+            return send_error(res, 400,
+                              "the loaded model reads no images: load it with its projector (mmproj) file beside it",
+                              "no_vision");
         const bool think = body.contains("think") && body["think"].is_boolean() && body["think"].get<bool>();
         json item;
-        const Refusal r =
-            edit ? d.agent->edit(id, body.value("item", ""), body["text"].get<std::string>(), think, !local(req), item)
-                 : d.agent->send(id, body["text"].get<std::string>(), think, !local(req), item);
+        const Refusal r = edit ? d.agent->edit(id, body.value("item", ""), body["text"].get<std::string>(), images,
+                                               think, !local(req), item)
+                               : d.agent->send(id, body["text"].get<std::string>(), images, think, !local(req), item);
         if (!r.ok()) return send_refusal(res, r);
         send_json(res, json{{"item", item}}, 202);
     };

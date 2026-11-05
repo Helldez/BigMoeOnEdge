@@ -74,6 +74,8 @@ void fill_model_info(const gguf_context * gctx, GgufModelInfo & out) {
     }
     const int64_t type_id = gguf_find_key(gctx, "general.type");
     if (type_id >= 0 && gguf_get_kv_type(gctx, type_id) == GGUF_TYPE_STRING) out.type = gguf_get_val_str(gctx, type_id);
+    const int64_t name_id = gguf_find_key(gctx, "general.name");
+    if (name_id >= 0 && gguf_get_kv_type(gctx, name_id) == GGUF_TYPE_STRING) out.name = gguf_get_val_str(gctx, name_id);
     if (!out.arch.empty()) {
         // Arch-prefixed keys, exactly as llama.cpp names them (LLM_KV_EXPERT_COUNT /
         // LLM_KV_EXPERT_USED_COUNT expand "%s" to the architecture).

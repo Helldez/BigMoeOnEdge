@@ -7,6 +7,18 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **Image input** (#250): a model loaded with its multimodal projector (the `mmproj` GGUF of its own
+  conversion, paired by the two files' headers when it sits in the model's folder, or named with
+  the new `mmproj` parameter) reads images. `/v1/chat/completions` takes `image_url` parts,
+  `/v1/messages` `image` blocks and `/v1/responses` `input_image` parts, all inline as base64 (a
+  URL to fetch is refused); the agent's messages take `images`, and the web UI's composer attaches
+  or pastes them. `bmoe-cli --mmproj FILE --image FILE` does the same on a prompt. The KV prefix is
+  reused through an image, so a conversation that holds one pays for it once; speculation is off
+  while it does. `GET /api/info` says `model.vision` and `model.projector`, `/v1/models` adds
+  `modalities`, a local model's listing names its `projector`, and a projector in a repository is
+  now downloadable beside its model. Through llama.cpp's own `mtmd` library, unpatched: any model it
+  knows, any quantization of either file, on every backend (`docs/server-api.md`, "Images";
+  `docs/seam.md`).
 - **Every setting explains itself** (#468, from #465): each row a settings form shows, and each the
   plan decides, carries `details` in `/api/params`, a sentence or two in plain words on when to
   change it and what it costs, which the web UI, the Android app and the iOS app fold under the

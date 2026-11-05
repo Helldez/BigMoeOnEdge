@@ -79,6 +79,8 @@ public:
     // before and drained after, and a failed expert read fails the decode: the graph would have
     // computed on a slot that never filled.
     int decode(llama_context * ctx, const llama_batch & b);
+    // The same bracket around a batch of embeddings (an image's tokens, media_input.h).
+    int decode_ext(llama_context * ctx, llama_batch_ext * b);
     // For every llama_memory_clear(data) of the target context: llama.cpp clears the buffers it
     // allocated, which the moved model state no longer lives in.
     void clear_state();

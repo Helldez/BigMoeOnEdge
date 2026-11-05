@@ -73,8 +73,14 @@ public:
         std::string arch;
         bool streamable = false;
         std::string role;
+        std::string name; // `general.name`, the base model (model_files.h: projector_for)
     };
     ModelFacts probe(const std::string & path);
+
+    // The projector file that goes with the model at `path`, by the headers of the files in its
+    // folder (model_files.h: projector_for); "" when none does. What a load uses when {mmproj} is
+    // not set by hand, and what the listing shows as the model's `projector`.
+    std::string projector_for(const std::string & path);
 
     // Add (or replace, by id) an entry the server built, and keep it. "" when kept; otherwise
     // why it was not.

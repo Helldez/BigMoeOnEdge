@@ -114,6 +114,8 @@ public:
     bool loaded_or_loading() const;
     bool generating() const { return generating_; }
     std::string model_name() const;
+    // Whether the loaded model reads images (a projector was paired or named at load).
+    bool vision() const;
     // The file of the model loaded or loading, "" when none.
     std::string model_path() const;
 

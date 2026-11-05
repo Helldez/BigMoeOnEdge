@@ -671,6 +671,8 @@ static void print_usage(const char * argv0) {
     std::printf("usage: %s -m <model.gguf> [options]\n"
                 "\n"
                 "  -p, --prompt STR        prompt text\n"
+                "      --image PATH        an image the prompt places with the marker <__media__> (repeatable, in\n"
+                "                          order); needs --mmproj, the model's projector file\n"
                 "      --progress          emit machine telemetry (one JSON line per token)\n"
                 "      --describe-params   print every engine parameter (key, type, bounds, default, help) as\n"
                 "                          JSON and exit: the schema a front-end renders its settings from\n"
@@ -842,6 +844,8 @@ int main(int argc, char ** argv) {
         // configuration. Everything else is an engine parameter and goes through the table.
         if (a == "-p" || a == "--prompt")
             cfg.prompt = next("-p");
+        else if (a == "--image")
+            cfg.images.push_back(next("--image"));
         else if (a == "--progress") {
             progress = true;
             seen.insert("progress");

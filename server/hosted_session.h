@@ -31,6 +31,8 @@ public:
     virtual int n_expert_used() const = 0;
     virtual ThinkControl think_control() const = 0;
     virtual double load_seconds() const = 0;
+    // As Session::vision: whether a request may carry images.
+    virtual bool vision() const { return false; }
     // As Session::routing_record: what the model routed so far, for the next plan. Between turns.
     virtual RoutingTrace routing_record() const { return {}; }
     // As Session::measured_knobs: the knob trial's verdicts so far. Between turns.

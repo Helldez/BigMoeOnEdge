@@ -69,6 +69,10 @@ export interface ModelInfo {
   load_s: number;
   /** Expert streaming is on for this session; off, the engine is plain llama.cpp on mmap. */
   streaming: boolean;
+  /** A projector is loaded beside the model: a message may carry images. */
+  vision?: boolean;
+  /** The projector file's name, "" without one. */
+  projector?: string;
   /** What a CPU figure is read against: compute threads, and every thread busy in a decode. */
   compute_threads: number;
   busy_threads: number;
@@ -260,6 +264,8 @@ export interface LocalModel {
   shards: number;
   arch: string;
   streamable: boolean;
+  /** The projector file beside it that goes with it, by header; "" when there is none. */
+  projector?: string;
   complete: boolean;
 }
 

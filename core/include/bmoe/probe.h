@@ -53,6 +53,7 @@ struct GgufHeaderFacts {
     int n_block = 0;
     int n_nextn = 0;
     bool reads_target = false;
+    std::string name; // `general.name`: the base model, shared by the files of one conversion
     bool ok = false;
 };
 GgufHeaderFacts probe_gguf_header(const char * model_path);

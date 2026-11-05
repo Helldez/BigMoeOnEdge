@@ -57,6 +57,8 @@ inline constexpr int k_scheduler_poll_s = 20;
 // How long a provider's answer may take, whole.
 inline constexpr int k_provider_timeout_s = 600;
 inline constexpr size_t k_title_max_chars = 60;
+// Images on one message of the person: a few screenshots, not a folder of them.
+inline constexpr size_t k_max_images_per_message = 8;
 
 // The model a round asks: the engine's turn, or a test's stand-in.
 using ChatFn = std::function<ChatOutcome(const ChatRequest & req,
@@ -125,11 +127,19 @@ public:
 
     // A message: add it and start the run. `remote`: the request came from beyond loopback; the
     // run then offers no file, command or MCP tool. `item_out` is the user item.
-    Refusal send(const std::string & conversation, const std::string & text, bool think, bool remote, json & item_out);
+    // `images`: data URLs (image_part.h), kept on the item and handed to the model with the text,
+    // at most k_max_images_per_message; an empty array for none.
+    Refusal send(const std::string & conversation,
+                 const std::string & text,
+                 const json & images,
+                 bool think,
+                 bool remote,
+                 json & item_out);
     // Drop `item` (a user item) and everything after it, then send `text`.
     Refusal edit(const std::string & conversation,
                  const std::string & item,
                  const std::string & text,
+                 const json & images,
                  bool think,
                  bool remote,
                  json & item_out);
@@ -169,6 +179,7 @@ private:
 
     Refusal start(const std::string & conversation,
                   const std::string & text,
+                  const json & images,
                   bool think,
                   bool remote,
                   bool auto_deny,

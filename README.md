@@ -45,6 +45,9 @@ Qwen3.6-35B-A3B (21 GB) in real time on each device. The model is larger than ea
 - **Sets itself up.** `--auto` measures the machine and the model and picks the cache size, the
   threads and which device does what. The Plan screen shows each choice and why.
 - **Any MoE GGUF.** Whatever llama.cpp loads, in any quantization. No per-model code.
+- **Sees images.** Put a model's projector file (`mmproj`) beside it and the server reads images on
+  every API; the CLI with `--mmproj` and `--image`. Any vision model llama.cpp's projector library
+  knows, any quantization, every backend.
 - **Every backend.** CPU, Metal, CUDA, HIP, Vulkan, OpenCL and the Hexagon NPU. On a graphics card,
   the experts used most stay in its VRAM.
 - **Apps and a server.** A desktop app, phone apps, and an OpenAI- and Anthropic-compatible server

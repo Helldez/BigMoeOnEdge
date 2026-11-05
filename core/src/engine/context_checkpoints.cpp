@@ -59,14 +59,14 @@ int64_t ContextCheckpoints::restore(const CheckpointContexts & c, int64_t n) {
     for (auto it = list_.rbegin(); it != list_.rend(); ++it) {
         const common_prompt_checkpoint & k = *it;
         if (k.n_tokens > n) continue;
-        const llama_pos pos_eval = (llama_pos) k.n_tokens;
+        const llama_pos pos_eval = pos_of(k.n_tokens);
         const llama_pos thold = std::max<llama_pos>(0, n_swa_ > 0 ? pos_eval - n_swa_ + 2 : pos_eval);
         if (k.pos_max >= pos_eval || !(k.pos_min < thold || k.pos_min == 0)) continue;
         if (!k.load_tgt(c.tgt, k_seq, k_partial) || !k.load_dft(c.dft, k_seq, k_partial)) break;
         if (c.spec) common_speculative_set_state(c.spec, k_seq, k.data_spec);
         // The restored partial state ends at kept; what the rest of the memory holds past it goes.
-        if (!llama_memory_seq_rm(llama_get_memory(c.tgt), k_seq, (llama_pos) k.n_tokens, -1)) break;
-        if (!cut_draft(c.dft, (llama_pos) k.n_tokens)) break;
+        if (!llama_memory_seq_rm(llama_get_memory(c.tgt), k_seq, pos_eval, -1)) break;
+        if (!cut_draft(c.dft, pos_eval)) break;
         const int64_t kept = k.n_tokens;
         drop_after(kept);
         return kept;

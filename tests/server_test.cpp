@@ -31,6 +31,7 @@
 #include "event_bus.h"
 #include "hf_repo.h"
 #include "http_fetch.h"
+#include "image_part.h"
 #include "json_util.h"
 #include "model_delete.h"
 #include "model_files.h"
@@ -129,8 +130,27 @@ static void protocol_tests() {
     }
     parsed(R"j({"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"yo"}]})j", &ok, &err);
     check(!ok && err.find("last message") != std::string::npos, "a conversation ending on an answer is refused");
-    parsed(R"j({"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"x"}}]}]})j", &ok);
-    check(!ok, "an image part is refused, not dropped");
+    {
+        // An image part: the data URL's bytes on the message, its marker in the text where it was.
+        const OpenAiChatRequest r = parsed(
+            R"j({"messages":[{"role":"user","content":[{"type":"text","text":"What is this?"},{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="}}]}]})j",
+            &ok);
+        check(ok && r.turn.messages.size() == 1 && r.turn.messages[0].images.size() == 1 &&
+                  r.turn.messages[0].images[0].mime == "image/png" &&
+                  r.turn.messages[0].images[0].bytes.compare(0, 4, "\x89PNG") == 0 &&
+                  r.turn.messages[0].content == std::string("What is this?\n") + image_marker(),
+              "an image_url part becomes the message's image, placed in the text by the marker");
+        parsed(
+            R"j({"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://x/y.png"}}]}]})j",
+            &ok, &err);
+        check(!ok && err.find("fetches no URLs") != std::string::npos, "an image URL to fetch is refused, not dropped");
+        parsed(
+            R"j({"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,!!"}}]}]})j",
+            &ok, &err);
+        check(!ok && err.find("base64") != std::string::npos, "an image that is not base64 is refused");
+        parsed(R"j({"messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{}}]}]})j", &ok, &err);
+        check(!ok && err.find("audio") != std::string::npos, "an audio part is refused, not dropped");
+    }
     parsed(R"j({"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"web_search"}]})j", &ok);
     check(!ok, "a tool that is not a function is refused");
     parsed(R"j({"messages":[{"role":"user","content":"hi"}],"tool_choice":"sometimes"})j", &ok);
@@ -501,8 +521,23 @@ static void anthropic_tests() {
                   r.turn.n_predict == 100,
               "a tool search result reads as text, and no max_tokens is the configured budget");
     }
-    anthropic(R"j({"messages":[{"role":"user","content":[{"type":"image","source":{}}]}]})j", &ok, &err);
-    check(!ok && err.find("image") != std::string::npos, "an image is refused, not dropped");
+    {
+        const AnthropicRequest r = anthropic(
+            R"j({"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="}},{"type":"text","text":"Describe it"}]}]})j",
+            &ok, &err);
+        check(ok && r.turn.messages.size() == 1 && r.turn.messages[0].images.size() == 1 &&
+                  r.turn.messages[0].images[0].mime == "image/png" &&
+                  r.turn.messages[0].content == std::string(image_marker()) + "\n\nDescribe it",
+              "an image block becomes the message's image, its marker where the block was");
+        anthropic(
+            R"j({"messages":[{"role":"user","content":[{"type":"image","source":{"type":"url","url":"https://x/y.png"}}]}]})j",
+            &ok, &err);
+        check(!ok && err.find("fetches no URLs") != std::string::npos, "an image URL source is refused, not dropped");
+        anthropic(R"j({"messages":[{"role":"user","content":[{"type":"image","source":{}}]}]})j", &ok, &err);
+        check(!ok && err.find("base64") != std::string::npos, "an image block without a source is refused");
+        anthropic(R"j({"messages":[{"role":"user","content":[{"type":"document","source":{}}]}]})j", &ok, &err);
+        check(!ok && err.find("document") != std::string::npos, "a document block is refused, not dropped");
+    }
     anthropic(
         R"j({"messages":[{"role":"user","content":"q"}],"tools":[{"type":"web_search_20250305","name":"web_search"}]})j",
         &ok, &err);
@@ -643,8 +678,21 @@ static void responses_tests() {
     check(!ok && err.find("previous_response_id") != std::string::npos, "previous_response_id is refused clearly");
     responses(R"j({"input":[{"type":"item_reference","id":"x"}]})j", &ok, &err);
     check(!ok && err.find("stores none") != std::string::npos, "a stored item reference is refused");
-    responses(R"j({"input":[{"role":"user","content":[{"type":"input_image","image_url":"x"}]}]})j", &ok, &err);
-    check(!ok && err.find("input_image") != std::string::npos, "an image is refused, not dropped");
+    {
+        const ResponsesRequest r = responses(
+            R"j({"input":[{"role":"user","content":[{"type":"input_text","text":"Look"},{"type":"input_image","image_url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="}]}]})j",
+            &ok, &err);
+        check(ok && r.turn.messages.size() == 1 && r.turn.messages[0].images.size() == 1 &&
+                  r.turn.messages[0].content == std::string("Look\n") + image_marker(),
+              "an input_image part becomes the message's image, its marker after the text");
+        responses(R"j({"input":[{"role":"user","content":[{"type":"input_image","file_id":"f1"}]}]})j", &ok, &err);
+        check(!ok && err.find("stored file") != std::string::npos, "an input_image by file id is refused");
+        responses(R"j({"input":[{"role":"user","content":[{"type":"input_image","image_url":"https://x/y.png"}]}]})j",
+                  &ok, &err);
+        check(!ok && err.find("fetches no URLs") != std::string::npos, "an image URL to fetch is refused, not dropped");
+        responses(R"j({"input":[{"role":"user","content":[{"type":"input_file","file_id":"f1"}]}]})j", &ok, &err);
+        check(!ok && err.find("input_file") != std::string::npos, "a file part is refused, not dropped");
+    }
     responses(R"j({"input":"hi","background":true})j", &ok, &err);
     check(!ok, "a background response is refused");
     responses(R"j({"input":[{"role":"user","content":"q"},{"role":"assistant","content":"a"}]})j", &ok, &err);
@@ -1257,6 +1305,55 @@ static void model_files_tests() {
     check(file_role(h) == FileRole::Projector, "role: a projector says so in general.type");
     h.type.clear();
     check(file_role(h) == FileRole::Projector, "role: and an older one by its projector architecture");
+    {
+        // The projector that goes with a model: by the base model both headers name, else the only one.
+        GgufHeaderFacts model;
+        model.ok = true;
+        model.arch = "qwen35moe";
+        model.type = "model";
+        model.n_block = 40;
+        model.name = "Qwen3.6 35B A3B";
+        auto proj = [](const std::string & name) {
+            GgufHeaderFacts p;
+            p.ok = true;
+            p.arch = "clip";
+            p.type = "mmproj";
+            p.name = name;
+            return p;
+        };
+        GgufHeaderFacts other = model;
+        other.name = "Other 7B";
+        std::vector<CompanionFile> folder = {{"/m/other.gguf", other},
+                                             {"/m/mmproj-other.gguf", proj("Other 7B")},
+                                             {"/m/mmproj-qwen.gguf", proj("Qwen3.6-35B-A3B")}};
+        check(projector_for(model, folder) == "/m/mmproj-qwen.gguf",
+              "pairing: the projector naming the same base model, hyphens and spaces aside");
+        check(projector_for(other, folder) == "/m/mmproj-other.gguf", "pairing: each model finds its own");
+        GgufHeaderFacts unnamed = model;
+        unnamed.name = "Something else";
+        check(projector_for(unnamed, folder).empty(), "pairing: two projectors and no name match is no choice");
+        check(projector_for(unnamed, {{"/m/mmproj-only.gguf", proj("Whatever")}}) == "/m/mmproj-only.gguf",
+              "pairing: the folder's only projector goes with any model in it");
+        check(projector_for(model, {{"/m/draft.gguf", other}}).empty(), "pairing: a folder without a projector");
+        check(name_key("Qwen3.6-35B-A3B") == "qwen3635ba3b" && name_key("Qwen3.6 35B A3B") == "qwen3635ba3b",
+              "pairing: the name key keeps letters and digits only");
+    }
+    {
+        ChatImage img;
+        std::string err;
+        check(image_from_data_url("data:image/jpeg;base64,/9j/4AAQ", img, err) && img.mime == "image/jpeg" &&
+                  img.bytes.size() == 6 && (unsigned char) img.bytes[0] == 0xFF,
+              "image part: a data URL gives the bytes and the type");
+        check(!image_from_data_url("data:image/png,abc", img, err) && err.find("base64") != std::string::npos,
+              "image part: a data URL that is not base64 is refused");
+        check(!image_from_data_url("http://x/y.png", img, err) && err.find("fetches no URLs") != std::string::npos,
+              "image part: an http URL is refused with the reason");
+        check(!image_from_base64("image/png", "", img, err), "image part: an empty body is refused");
+        std::string content = "see";
+        place_images(content, 2);
+        check(content == std::string("see\n") + image_marker() + "\n" + image_marker(),
+              "image part: markers are placed one per image, on their own lines");
+    }
     h = {};
     h.ok = true;
     h.arch = "dflash";
@@ -1416,8 +1513,12 @@ static void hf_tests() {
     in.refusal.clear();
     in.role = "projector";
     v = fit_verdict(in);
-    check(v.mode == "not a model" && !v.downloadable && v.memory.find("projector") != std::string::npos,
-          "hf: a projector is not a model, and is not offered for download");
+    check(v.mode == "not a model" && v.downloadable && v.memory.find("beside the model") != std::string::npos,
+          "hf: a projector is not a model to chat with, and is offered for download beside its model");
+    in.role = "draft";
+    v = fit_verdict(in);
+    check(v.mode == "not a model" && !v.downloadable, "hf: a draft head is not offered for download");
+    in.role = "projector";
     in.role = "draft";
     check(fit_verdict(in).mode == "not a model" && fit_verdict(in).memory.find("draft") != std::string::npos,
           "hf: nor is a draft head");
