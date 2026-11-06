@@ -40,6 +40,12 @@ struct Placement {
 
     // Device-local memory the placement uses, summed over devices with memory of their own.
     uint64_t device_bytes = 0;
+    // The projector's bytes the fitter set aside on a device before placing any layer, when the
+    // run has one and a device with memory of its own to use it on: llama.cpp's library loads it
+    // there whole, on top of whatever the fitter placed, so the fitter is told to leave that room
+    // and the layer count already accounts for it. Counted in `device_bytes` and taken off that
+    // device's `device_spare`. Zero without a projector, or where no device has memory of its own.
+    uint64_t device_projector_bytes = 0;
 
     // True when the fitter had a device to place on, but one whose memory is the host's - so its
     // capacity arithmetic counted the same pool twice and its placement was NOT applied. Carried so

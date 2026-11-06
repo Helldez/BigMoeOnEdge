@@ -98,6 +98,17 @@ Placement probe_placement(const char * model_path,
         o.buft = nullptr;
     }
     std::vector<size_t> margins(llama_max_devices() + 1, fitter_device_margin_bytes);
+    // The projector is memory the fitter never sees: the library loads it whole on the first device
+    // the run uses, after the fitter has filled the card in whole layers, and on a card it had
+    // packed to the margin the load went on top. So the fitter is asked to leave the projector's
+    // room on that device before it places a layer, the way the context is pre-committed: the layer
+    // count and the spare it reports already account for it. Only where a device has memory of its
+    // own; on a shared pool the projector is the host's and the placement is set aside anyway.
+    size_t n_dev_local = 0;
+    for (const ComputeDevice & d : hw.devices)
+        if (d.has_own_memory() && d.memory_total > 0) ++n_dev_local;
+    const uint64_t projector_reserved = n_dev_local ? model.projector_bytes : 0;
+    margins[0] += (size_t) projector_reserved;
     std::vector<ggml_backend_dev_t> listed;
     for (const std::string & n : devices)
         if (ggml_backend_dev_t dev = ggml_backend_dev_by_name(n.c_str())) listed.push_back(dev);
@@ -183,9 +194,6 @@ Placement probe_placement(const char * model_path,
     uint32_t hp_ngl = 0, hp_nct = 0, hp_nex = 0;
     const common_device_memory_data_vec dm = common_get_device_memory_data(model_path, &mparams, &cparams, devs, hp_ngl,
                                                                            hp_nct, hp_nex, GGML_LOG_LEVEL_WARN);
-    size_t n_dev_local = 0;
-    for (const ComputeDevice & d : hw.devices)
-        if (d.has_own_memory() && d.memory_total > 0) ++n_dev_local;
     const ComputeDevice * placed_on_shared = nullptr;
     bool placed_unknown = false;
     for (size_t i = 0; i + 1 < dm.size() && i < devs.size(); ++i) {
@@ -201,6 +209,9 @@ Placement probe_placement(const char * model_path,
     }
     if (placed_on_shared || placed_unknown) n_dev_local = 0;
     pl.n_gpu_layers = n_dev_local ? mparams.n_gpu_layers : 0;
+    // The room left for the projector is a cost of the device only where the run will use one: with
+    // no layer placed the session opens without devices and the library loads it on the host.
+    if (pl.n_gpu_layers > 0) pl.device_projector_bytes = projector_reserved;
     // The fitter writes one layer count per device into tensor_split only when there are several;
     // with one, every placed layer is that device's.
     if (pl.n_gpu_layers > 0) {
@@ -286,15 +297,16 @@ Placement probe_placement(const char * model_path,
             const uint64_t used = (uint64_t) dm[i].model + (uint64_t) dm[i].context + (uint64_t) dm[i].compute;
             pl.device_bytes += used;
             // The remainder of a card the fitter placed layers on: its free memory, as the fitter
-            // read it, less the placement and the fitter's own margin.
+            // read it, less the placement and the margin it was told to leave there (the fitter's
+            // own, plus the projector's room on the first device).
             if (pl.n_gpu_layers > 0 && i < devs.size() && used > 0) {
                 const char * name = ggml_backend_dev_name(devs[i]);
                 const bool placed = name && std::any_of(pl.device_split.begin(), pl.device_split.end(),
                                                         [&](const auto & e) { return e.first == name; });
                 size_t free = 0, total = 0;
                 if (placed) ggml_backend_dev_memory(devs[i], &free, &total);
-                if (placed && free > used + fitter_device_margin_bytes)
-                    pl.device_spare.emplace_back(name, (uint64_t) free - used - fitter_device_margin_bytes);
+                const size_t margin = i < margins.size() ? margins[i] : fitter_device_margin_bytes;
+                if (placed && free > used + margin) pl.device_spare.emplace_back(name, (uint64_t) free - used - margin);
             }
             pl.device_compute_bytes += (uint64_t) dm[i].compute;
             pl.device_context_bytes += (uint64_t) dm[i].context;
@@ -303,6 +315,8 @@ Placement probe_placement(const char * model_path,
                 pl.projected_compute_bytes.push_back((uint64_t) dm[i].compute);
             }
         }
+        // The projector's room is device memory the run takes, beside what the fitter placed.
+        pl.device_bytes += pl.device_projector_bytes;
         pl.compute_width = cparams.n_ubatch;
 
         // The same placement, half as wide: two points of a line. A compute buffer is activations,

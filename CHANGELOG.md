@@ -20,7 +20,12 @@ Semantic Versioning.
   `modalities`, a local model's listing names its `projector`, and a projector in a repository is
   now downloadable beside its model. Through llama.cpp's own `mtmd` library, unpatched: any model it
   knows, any quantization of either file, on every backend (`docs/server-api.md`, "Images";
-  `docs/seam.md`).
+  `docs/seam.md`). The plan prices the projector (#475): its file's size is a `projector` row of
+  the memory ledger on the host, or, where the run uses a device with memory of its own, room the
+  capacity fitter is told to leave on that device before it places a layer (so a partial placement
+  on a small card leaves it too), and the server pairs the projector before it plans, not only at load. The
+  projector goes on the devices by the rule the model follows: a layer placed on one means they are
+  wanted.
 - **The server as a service of the init system** (#472): `bmoe-server service install|uninstall|start|stop|status`
   registers a per-user service started at login and back after a failure, a systemd user unit, a
   launchd agent or a Windows scheduled task, whichever tool answers on the machine, with the server

@@ -498,7 +498,10 @@ struct App {
     // A measurement, with each stage announced as it starts (`plan_progress` events) and its end, so
     // a UI says which probe is running rather than waiting blind. The caller holds measure_m.
     PlanOutcome measure_plan() {
-        const RunConfig cfg = store.planning_config();
+        RunConfig cfg = store.planning_config();
+        // The projector the load pairs (load_current, below) is priced by the plan, so it is paired
+        // here first: a plan made without it would size the cache into the projector's bytes.
+        if (cfg.mmproj.empty()) cfg.mmproj = lib.projector_for(cfg.model_path);
         RoutingTrace kept;
         const bool have = routing.load(cfg.model_path, kept);
         // The knob verdicts kept for this model; a plan here always lets the first answer measure
