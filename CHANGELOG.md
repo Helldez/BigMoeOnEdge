@@ -4,9 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.40.1] - 2026-11-06
 
 ### Changed
+- **llama.cpp moves to upstream tag `v0.9.0`** (`cd959ba` of 2026-11-04), 164 commits past
+  `8ca4060` (`docs/seam.md`). The fork branch `bmoe/expert-ready-hook-0411` is that tag plus the one
+  expert-ready-hook commit, cherry-picked without a conflict: the hook still fires ahead of
+  upstream's tiled `mul_mat_id` path, the only seam file upstream touched carries the new FP8 E4M3
+  type and nothing near the scheduler's eval callback, and the backend directories are the same.
+  No engine change was needed. All 41 host tests pass, the overlap gates included, and on a real
+  35B model `--auto` prints the same greedy text as the previous pin at the same CPU time per token
+  (two runs per build). What the tag brings this engine's users: Clover-35B-A3B, Mistral Large 4,
+  Metis-1.6, DeepSeek V4.1 Flash, the LFM3 family, Nemotron Bolt 74B-A9B and Kolibri-1 among the
+  new architectures, the FP8 E4M3 tensor type, and Gemma 4 E2B/E4B prefill work upstream.
 - **Four community rows in `docs/community-benchmarks.md`**: a 96 GB mini-PC with Qwen3.8-Flash-Next Q2_K on the CPU-only and the Vulkan builds (#460, #462), and two phones from #177 (a 12 GB Snapdragon 6 Gen 1 class phone with flint 40B-A2.5B, an 18 GB phone with Qwen3.5-397B).
 
 ## [0.40.0] - 2026-11-06
