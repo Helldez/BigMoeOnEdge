@@ -176,6 +176,10 @@ const char * mode_words(const std::string & mode) {
 // false with `why` the parser's reason and `args` empty. The tool refuses such a call with the
 // reason, and the history renders an empty object in its place: a chat template parses every
 // call's arguments, and one it cannot parse rejects the whole conversation, every turn after.
+// How the tool's answer begins when a call's arguments were not an object: the run's repeat counter
+// reads it, so a call cut again at another column counts as the same failure.
+constexpr const char * k_not_an_object = "Error: the arguments are not a JSON object";
+
 bool call_arguments(const std::string & text, json & args, std::string & why) {
     args = json::object();
     why.clear();
@@ -455,7 +459,8 @@ ChatRequest Agent::build_request(const json & conv, const std::string & system, 
                     json args;
                     std::string why;
                     const bool object = call_arguments(text, args, why);
-                    m.tool_calls.push_back({c.value("id", ""), c.value("name", ""), object ? text : "{}"});
+                    m.tool_calls.push_back(
+                        {c.value("id", ""), c.value("name", ""), object && !text.empty() ? text : "{}"});
                 }
             if (m.content.empty() && m.tool_calls.empty()) continue;
             req.messages.push_back(m);
@@ -631,7 +636,7 @@ json Agent::run_tool(Run & run, const json & conv, const ChatToolCall & call) {
         return item;
     };
     if (!args_ok)
-        return finish("error", "Error: the arguments are not a JSON object (" + why +
+        return finish("error", std::string(k_not_an_object) + " (" + why +
                                    "). Make the call again, with its arguments complete.");
     const ToolSpec * spec = find_tool(call.name);
     std::map<std::string, McpTool> mcp;
@@ -863,8 +868,11 @@ std::string Agent::run_rounds(Run & run, const std::string & conv_id) {
                 same_failures = 0;
                 continue;
             }
-            const std::string failure =
-                c.name + '\n' + done.value("args", json::object()).dump() + '\n' + done.value("result", "");
+            const std::string result = done.value("result", "");
+            const bool not_an_object = result.rfind(k_not_an_object, 0) == 0;
+            const std::string failure = c.name + '\n' +
+                                        (not_an_object ? std::string(k_not_an_object)
+                                                       : done.value("args", json::object()).dump() + '\n' + result);
             same_failures = failure == last_failure ? same_failures + 1 : 1;
             last_failure = failure;
             if (same_failures >= k_max_same_failed_calls) {

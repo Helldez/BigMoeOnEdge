@@ -314,6 +314,29 @@ static void cut_call_tests() {
     check(rendered() == "{}" && rig->items_of(c, "assistant").size() == 3,
           "cut call: the next turn renders the same, and the conversation goes on");
     check(rig->conv(c).value("state", "") == "idle", "cut call: idle again");
+
+    // A call cut again at another column is the same failure: the repeat rule stops the run.
+    rig = std::make_unique<Rig>();
+    const std::string c2 = rig->conversation("full");
+    std::vector<Turn> cuts;
+    for (int i = 0; i < k_max_same_failed_calls + 3; ++i)
+        cuts.push_back({"", {{"c" + std::to_string(i), "write_file", cut.substr(0, cut.size() - 1 - i)}}});
+    cuts.push_back({"Done.", {}});
+    rig->say(cuts);
+    check(rig->agent->send(c2, "write a page", false, false, item).ok() && rig->wait_done(c2),
+          "cut call again: the run ends");
+    check(rig->items_of(c2, "tool").size() == static_cast<size_t>(k_max_same_failed_calls),
+          "cut call again: a call cut at another column each time counts as the same failure, and the run stops");
+
+    // Arguments written as nothing at all render as an empty object too: a template parses them.
+    rig = std::make_unique<Rig>();
+    const std::string c3 = rig->conversation("full");
+    rig->say({{"", {{"e1", "read_file", ""}}}, {"Listed.", {}}});
+    check(rig->agent->send(c3, "list", false, false, item).ok() && rig->wait_done(c3), "empty args: the run ends");
+    bool empty_rendered = false;
+    for (const ChatMessage & m : rig->last_request().messages)
+        if (m.role == "assistant" && !m.tool_calls.empty()) empty_rendered = m.tool_calls[0].arguments == "{}";
+    check(empty_rendered, "empty args: the model is shown an empty object, never an empty string");
 }
 
 static void loop_tests() {
