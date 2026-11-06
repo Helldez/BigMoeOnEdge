@@ -281,7 +281,7 @@ class AgentStore {
   /** The last answer again: the last question, resent as it was. */
   async regenerate(): Promise<void> {
     const last = lastUserItem(this.items);
-    if (last && last.kind === 'user') await this.edit(last.id, last.text);
+    if (last && last.kind === 'user') await this.edit(last.id, last.text, last.images);
   }
 
   async answer(itemId: string, decision: 'approve' | 'deny'): Promise<void> {

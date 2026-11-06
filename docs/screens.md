@@ -128,8 +128,11 @@ conversation with no folder.
   alone. Where the model does not read images the control is still there, disabled, saying that a
   model with its projector file reads them, so the feature is found before it can be used. A
   message shows the images it carried above its text, and Edit and send again sends them again
-  unchanged. The server's limits are the UI's: it refuses a message over them with the reason
-  (`400`, `no_vision` or the count), and the UI shows that reason and keeps the message.
+  unchanged. The count is the server's limit and the size the UIs' own convention, each named
+  once per UI; the server refuses what it will not take with the reason (`400`: `no_vision`, the
+  count, an image over 64 megapixels), and the UI shows that reason and keeps the message. A
+  photo from the iOS camera is encoded once as JPEG by the app, since iOS hands it decoded;
+  everything else goes as picked.
 - **Choose.** Where the server offers `POST /api/decide`: a mode in which the text is a question
   and a second field holds options, one per line; the model picks one without writing an answer,
   and each option comes back with the probability the model put on it, the picked one marked. A

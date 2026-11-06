@@ -8,11 +8,15 @@ Semantic Versioning.
 
 ### Added
 - **Images on the phones** (#484): the Android and iOS composers attach images, from the photos or
-  the camera, the same way the web UI does: at most 8 in a message and 16 MB each, as removable
-  thumbnails above the text until sent, a message of images alone allowed, the two entries shown
+  the camera, with the web UI's rules: at most 8 in a message and 16 MB each, as removable
+  thumbnails above the text until sent, a message of images alone allowed, the entries shown
   disabled with the reason while the loaded model reads none (`model.vision`), and a message shows
-  the images it carried, which Edit and send again sends again unchanged. Nothing in the apps reads
-  an image: they send what `POST /api/conversations/<id>/messages` already takes.
+  the images it carried, which Edit and send again and Answer again send again unchanged. The
+  apps send what `POST /api/conversations/<id>/messages` already takes; a photo from the iOS
+  camera is encoded once as JPEG by the app, everything else goes as picked. The web UI is brought
+  to the same rules on the way: its Image button now stays, disabled with the reason, while the
+  model reads none; Answer again and an edit keep a message's images; a message of images alone can
+  be edited; the first refused file is the one reported.
 
 ### Changed
 - **llama.cpp moves to upstream tag `v0.9.0`** (`cd959ba` of 2026-11-04), 164 commits past
