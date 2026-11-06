@@ -63,6 +63,10 @@ using namespace bmoe;
 using namespace bmoe::server;
 
 static int failures = 0;
+// A 1x1 PNG as a data URL, quoted: the image every protocol's checks send.
+static const char * PNG_DATA_URL =
+    "\"data:image/"
+    "png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==\"";
 
 static void check(bool ok, const std::string & what) {
     std::printf("[%s] %s\n", ok ? "PASS" : "FAIL", what.c_str());
@@ -70,7 +74,7 @@ static void check(bool ok, const std::string & what) {
 }
 
 static OpenAiChatRequest
-parsed(const char * body, bool * ok = nullptr, std::string * err = nullptr, bool think = true) {
+parsed(const std::string & body, bool * ok = nullptr, std::string * err = nullptr, bool think = true) {
     OpenAiChatRequest r;
     std::string e;
     RunConfig cfg;
@@ -150,6 +154,26 @@ static void protocol_tests() {
         check(!ok && err.find("base64") != std::string::npos, "an image that is not base64 is refused");
         parsed(R"j({"messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{}}]}]})j", &ok, &err);
         check(!ok && err.find("audio") != std::string::npos, "an audio part is refused, not dropped");
+        // The per-message limit and the role rule, the same on every protocol (image_part.h).
+        const std::string part = R"j({"type":"image_url","image_url":{"url":)j" + std::string(PNG_DATA_URL) + "}}";
+        std::string many;
+        for (size_t i = 0; i <= k_max_images_per_message; ++i)
+            many += (i ? "," : "") + part;
+        parsed(R"j({"messages":[{"role":"user","content":[)j" + many + "]}]}", &ok, &err);
+        check(!ok && err.find("at most " + std::to_string(k_max_images_per_message)) != std::string::npos,
+              "one image over the per-message limit is refused, naming the limit");
+        many.clear();
+        for (size_t i = 0; i < k_max_images_per_message; ++i)
+            many += (i ? "," : "") + part;
+        parsed(R"j({"messages":[{"role":"user","content":[)j" + many + "]}]}", &ok, &err);
+        check(ok, "the limit itself is allowed");
+        for (const char * role : {"system", "assistant", "tool"}) {
+            parsed(R"j({"messages":[{"role":")j" + std::string(role) + R"j(","content":[)j" + part +
+                       R"j(]},{"role":"user","content":"hi"}]})j",
+                   &ok, &err);
+            check(!ok && err.find("user message") != std::string::npos,
+                  std::string("an image on a ") + role + " message is refused: only a user message carries one");
+        }
     }
     parsed(R"j({"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"web_search"}]})j", &ok);
     check(!ok, "a tool that is not a function is refused");
@@ -535,6 +559,19 @@ static void anthropic_tests() {
         check(!ok && err.find("fetches no URLs") != std::string::npos, "an image URL source is refused, not dropped");
         anthropic(R"j({"messages":[{"role":"user","content":[{"type":"image","source":{}}]}]})j", &ok, &err);
         check(!ok && err.find("base64") != std::string::npos, "an image block without a source is refused");
+        const std::string block =
+            R"j({"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="}})j";
+        std::string many;
+        for (size_t i = 0; i <= k_max_images_per_message; ++i)
+            many += (i ? "," : "") + block;
+        anthropic(R"j({"messages":[{"role":"user","content":[)j" + many + "]}]}", &ok, &err);
+        check(!ok && err.find("at most " + std::to_string(k_max_images_per_message)) != std::string::npos,
+              "one image block over the per-message limit is refused, naming the limit");
+        anthropic(R"j({"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":[)j" + block +
+                      R"j(]},{"role":"user","content":"and"}]})j",
+                  &ok, &err);
+        check(!ok && err.find("user message") != std::string::npos,
+              "an image block on an assistant message is refused: only a user message carries one");
         anthropic(R"j({"messages":[{"role":"user","content":[{"type":"document","source":{}}]}]})j", &ok, &err);
         check(!ok && err.find("document") != std::string::npos, "a document block is refused, not dropped");
     }
@@ -685,6 +722,19 @@ static void responses_tests() {
         check(ok && r.turn.messages.size() == 1 && r.turn.messages[0].images.size() == 1 &&
                   r.turn.messages[0].content == std::string("Look\n") + image_marker(),
               "an input_image part becomes the message's image, its marker after the text");
+        {
+            const std::string part = R"j({"type":"input_image","image_url":)j" + std::string(PNG_DATA_URL) + "}";
+            std::string many;
+            for (size_t i = 0; i <= k_max_images_per_message; ++i)
+                many += (i ? "," : "") + part;
+            responses(R"j({"input":[{"role":"user","content":[)j" + many + "]}]}", &ok, &err);
+            check(!ok && err.find("at most " + std::to_string(k_max_images_per_message)) != std::string::npos,
+                  "one input_image over the per-message limit is refused, naming the limit");
+            responses(R"j({"input":[{"role":"system","content":[)j" + part + R"j(]},{"role":"user","content":"hi"}]})j",
+                      &ok, &err);
+            check(!ok && err.find("user message") != std::string::npos,
+                  "an input_image on a system message is refused: only a user message carries one");
+        }
         responses(R"j({"input":[{"role":"user","content":[{"type":"input_image","file_id":"f1"}]}]})j", &ok, &err);
         check(!ok && err.find("stored file") != std::string::npos, "an input_image by file id is refused");
         responses(R"j({"input":[{"role":"user","content":[{"type":"input_image","image_url":"https://x/y.png"}]}]})j",

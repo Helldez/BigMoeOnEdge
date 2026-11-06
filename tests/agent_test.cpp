@@ -841,6 +841,23 @@ static void provider_tests() {
     err.finish_body("{\"error\":{\"message\":\"bad key\"}}");
     check(err.error() == "bad key", "an error body says why");
     check(provider_error_message("<html>oops</html>") == "<html>oops</html>", "a body that is not JSON is quoted");
+    {
+        // A provider route carries text only: a message with images on it is refused before it is
+        // kept, with the code the no-projector case has, so a client shows the same thing.
+        auto rig = std::make_unique<Rig>();
+        const std::string c = rig->store->create_conversation(json{{"mode", "ask"}, {"route", "p1/m"}}).value("id", "");
+        json item;
+        const Refusal r = rig->agent->send(
+            c, "look",
+            json::array(
+                {"data:image/"
+                 "png;base64,"
+                 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="}),
+            false, false, item);
+        check(r.status == 400 && r.code == "no_vision" && r.error.find("does not carry images") != std::string::npos,
+              "images on a provider route are refused with the reason");
+        check(rig->items_of(c, "user").empty(), "and the message was not kept");
+    }
 }
 
 static void connect_tests() {

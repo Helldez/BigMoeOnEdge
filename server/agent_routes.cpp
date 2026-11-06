@@ -366,8 +366,11 @@ void register_agent_routes(httplib::Server & svr, const AgentRouteDeps & d) {
             (body["text"].get<std::string>().empty() && images.empty()))
             return send_error(res, 400, "text must be a non-empty string", "invalid_request");
         // Said here, before the message is kept: a model without a projector would refuse the turn
-        // after the item is on the screen.
-        if (!images.empty() && conv.value("route", "local") == "local" && d.host && !d.host->vision())
+        // after the item is on the screen. A provider route carries text only (the agent refuses
+        // that one too, for the clients that reach it another way).
+        if (!images.empty() && conv.value("route", "local") != "local")
+            return send_error(res, 400, "this route does not carry images", "no_vision");
+        if (!images.empty() && d.host && !d.host->vision())
             return send_error(res, 400,
                               "the loaded model reads no images: load it with its projector (mmproj) file beside it",
                               "no_vision");

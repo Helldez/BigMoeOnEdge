@@ -10,6 +10,14 @@
 
 namespace bmoe::server {
 
+// Images on one message: a few screenshots, not a folder of them. Named once here and enforced on
+// every API that takes a message (the three chat protocols and the agent), with the same reason.
+inline constexpr size_t k_max_images_per_message = 8;
+
+// The two rules every protocol applies to a message's images: only a user message carries them,
+// and at most k_max_images_per_message. False with `err` (the 400 reason) when `msg` breaks one.
+bool images_allowed(const ChatMessage & msg, std::string & err);
+
 // "data:<mime>;base64,<payload>" into `out`. False with `err` for an http(s) URL or anything else.
 bool image_from_data_url(const std::string & url, ChatImage & out, std::string & err);
 

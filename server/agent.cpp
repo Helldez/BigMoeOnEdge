@@ -405,6 +405,7 @@ std::vector<ChatTool> Agent::tools_for(const json & conv, bool remote, std::map<
 
 ChatRequest Agent::build_request(const json & conv, const std::string & system, bool remote, bool think) const {
     ChatRequest req;
+    const bool provider_route = conv.value("route", "local") != "local";
     if (!system.empty()) req.messages.push_back({"system", system});
     const json & items = conv["items"];
     // What each call got back, by its id.
@@ -421,8 +422,9 @@ ChatRequest Agent::build_request(const json & conv, const std::string & system, 
         if (kind == "user") {
             ChatMessage m{"user", it.value("text", "")};
             // The images the person attached, placed after the text; one the store holds that no
-            // longer decodes is skipped rather than failing the whole conversation.
-            if (it.contains("images") && it["images"].is_array())
+            // longer decodes is skipped rather than failing the whole conversation. A provider
+            // route is sent none, and no marker for them: it carries text only.
+            if (!provider_route && it.contains("images") && it["images"].is_array())
                 for (const json & im : it["images"]) {
                     ChatImage img;
                     std::string err;
@@ -887,6 +889,10 @@ Refusal Agent::start(const std::string & conversation,
         }
     json conv;
     if (!d_.store->conversation(conversation, conv)) return {404, "no such conversation", "not_found"};
+    // A provider route carries text only (provider_protocol.cpp sends role and content): an image on
+    // it would reach the provider as its marker, unseen. Said before the message is kept.
+    if (images.is_array() && !images.empty() && conv.value("route", "local") != "local")
+        return {400, "this route does not carry images", "no_vision"};
     auto run = std::make_shared<Run>();
     run->remote = remote;
     run->auto_deny = auto_deny;

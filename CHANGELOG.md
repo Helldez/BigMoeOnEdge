@@ -12,7 +12,9 @@ Semantic Versioning.
   the new `mmproj` parameter) reads images. `/v1/chat/completions` takes `image_url` parts,
   `/v1/messages` `image` blocks and `/v1/responses` `input_image` parts, all inline as base64 (a
   URL to fetch is refused); the agent's messages take `images`, and the web UI's composer attaches
-  or pastes them. `bmoe-cli --mmproj FILE --image FILE` does the same on a prompt. The KV prefix is
+  or pastes them. A message carries at most 8 images, each of at most 64 megapixels (refused with
+  the reason, before it is decoded), and only a user message carries one; a conversation routed to
+  a provider carries none. `bmoe-cli --mmproj FILE --image FILE` does the same on a prompt. The KV prefix is
   reused through an image, so a conversation that holds one pays for it once; speculation is off
   while it does. `GET /api/info` says `model.vision` and `model.projector`, `/v1/models` adds
   `modalities`, a local model's listing names its `projector`, and a projector in a repository is

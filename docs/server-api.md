@@ -356,7 +356,10 @@ same base model in `general.name`; failing that, the folder's only projector), o
 `mmproj` parameter. Any model llama.cpp's projector library knows, in any quantization of either
 file: nothing here names a family. An image travels inline, as a data URL on every protocol; a URL
 to fetch is refused with `400`, since a server on a network must not be made to fetch what a client
-names. An image part placed between text parts keeps its place in the prompt. The same image sent
+names. Only a user message carries images, at most 8 of them, and one declaring more than 64
+megapixels is refused with the reason before it is decoded (the projector downsizes every image to
+its own few hundred pixels a side, so no photo loses by being sent smaller); each is `400`. An image
+part placed between text parts keeps its place in the prompt. The same image sent
 again in the same conversation is not encoded or prefilled again: the KV prefix is reused through
 it, and a different image at the same place is where the reuse ends. A request with images to a
 model loaded without a projector is `400` with `code: "no_vision"`. While a conversation holds an
@@ -684,7 +687,7 @@ card is a `tool` item in state `waiting`, answered with `POST .../approval` on i
 |---|---|---|
 | 400 | `invalid_request` | a field of the wrong type or value (a mode, a route naming no saved provider, a schedule that cannot run, an imported item that is not `user` / `assistant`) |
 | 400 | `not_a_folder` | `POST /api/workspaces` with a path that is not an absolute, existing folder |
-| 400 | `no_vision` | a message with `images` while the loaded model has no projector (`GET /api/info` `model.vision`) |
+| 400 | `no_vision` | a message with `images` while the loaded model has no projector (`GET /api/info` `model.vision`), or on a conversation routed to a provider (a provider route carries text only) |
 | 403 | `local_only` | a route that reaches this computer, from a client not on loopback (below) |
 | 403 | `outside_workspace` | a preview path that resolves outside the workspace |
 | 404 | `not_found` | no such conversation, workspace, skill, task, provider or client; an approval for an item that is not waiting |

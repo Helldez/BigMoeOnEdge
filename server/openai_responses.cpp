@@ -96,20 +96,12 @@ bool parse_item(const json & item, std::vector<ChatMessage> & out, std::string &
         }
         ChatMessage msg;
         if (!content_parts(item.value("content", json()), msg, err)) return false;
-        if (*role == "assistant") {
-            if (!msg.images.empty()) {
-                err = "an image goes in a user message, not an assistant one";
-                return false;
-            }
+        msg.role = *role == "developer" ? "system" : *role;
+        if (!images_allowed(msg, err)) return false;
+        if (*role == "assistant")
             assistant_turn(out).content += msg.content;
-        } else {
-            if (*role != "user" && !msg.images.empty()) {
-                err = "an image goes in a user message, not a " + *role + " one";
-                return false;
-            }
-            msg.role = *role == "developer" ? "system" : *role;
+        else
             out.push_back(std::move(msg));
-        }
         return true;
     }
     if (type == "function_call") {
