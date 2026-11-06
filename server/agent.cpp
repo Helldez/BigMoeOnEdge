@@ -171,6 +171,36 @@ const char * mode_words(const std::string & mode) {
            "tool wait for the person's approval. If one is declined, do not retry it: say what you would have done.";
 }
 
+// A call's arguments as the object the model meant, or why they are not one: a model stopped in the
+// middle of a call (the context, a token limit) leaves a string cut short. True with the object;
+// false with `why` the parser's reason and `args` empty. The tool refuses such a call with the
+// reason, and the history renders an empty object in its place: a chat template parses every
+// call's arguments, and one it cannot parse rejects the whole conversation, every turn after.
+// How the tool's answer begins when a call's arguments were not an object: the run's repeat counter
+// reads it, so a call cut again at another column counts as the same failure.
+constexpr const char * k_not_an_object = "Error: the arguments are not a JSON object";
+
+bool call_arguments(const std::string & text, json & args, std::string & why) {
+    args = json::object();
+    why.clear();
+    if (text.empty()) return true;
+    try {
+        json parsed = json::parse(text);
+        if (!parsed.is_object()) {
+            why = std::string("a JSON ") + parsed.type_name() + ", not an object";
+            return false;
+        }
+        args = std::move(parsed);
+        return true;
+    } catch (const json::parse_error & e) {
+        // nlohmann's message starts with its own tag: "[json.exception.parse_error.101] parse error
+        // at line 1, column 2134: ...". The reason after the tag is what a reader wants.
+        why = e.what();
+        if (const size_t at = why.find("] "); why.front() == '[' && at != std::string::npos) why.erase(0, at + 2);
+        return false;
+    }
+}
+
 } // namespace
 
 Agent::Agent(AgentDeps deps) : d_(std::move(deps)) {
@@ -422,8 +452,16 @@ ChatRequest Agent::build_request(const json & conv, const std::string & system, 
         } else if (kind == "assistant") {
             ChatMessage m{"assistant", it.value("text", "")};
             if (it.contains("tool_calls") && it["tool_calls"].is_array())
-                for (const json & c : it["tool_calls"])
-                    m.tool_calls.push_back({c.value("id", ""), c.value("name", ""), c.value("arguments", "{}")});
+                for (const json & c : it["tool_calls"]) {
+                    // The record keeps what the model wrote; the model is shown the call it can be
+                    // shown, with the tool's answer saying what was wrong with the original.
+                    const std::string text = c.value("arguments", "{}");
+                    json args;
+                    std::string why;
+                    const bool object = call_arguments(text, args, why);
+                    m.tool_calls.push_back(
+                        {c.value("id", ""), c.value("name", ""), object && !text.empty() ? text : "{}"});
+                }
             if (m.content.empty() && m.tool_calls.empty()) continue;
             req.messages.push_back(m);
             // Every call is answered, in the order it was made; one the run never reached (a stop)
@@ -586,15 +624,9 @@ Refusal Agent::approve(const std::string & conversation, const std::string & ite
 
 json Agent::run_tool(Run & run, const json & conv, const ChatToolCall & call) {
     const std::string conv_id = conv.value("id", "");
-    json args = json::object();
-    bool args_ok = true;
-    try {
-        args = call.arguments.empty() ? json::object() : json::parse(call.arguments);
-        if (!args.is_object()) args_ok = false;
-    } catch (const std::exception &) {
-        args_ok = false;
-    }
-    if (!args_ok) args = json::object();
+    json args;
+    std::string why;
+    const bool args_ok = call_arguments(call.arguments, args, why);
     json item{{"id", new_id("i")}, {"kind", "tool"},     {"tool", call.name}, {"title", title_for(call.name, args)},
               {"args", args},      {"state", "running"}, {"result", ""},      {"call_id", call.id}};
     const auto finish = [&](const std::string & state, const std::string & result) {
@@ -603,7 +635,9 @@ json Agent::run_tool(Run & run, const json & conv, const ChatToolCall & call) {
         publish_item(conv_id, item);
         return item;
     };
-    if (!args_ok) return finish("error", "Error: the arguments are not a JSON object.");
+    if (!args_ok)
+        return finish("error", std::string(k_not_an_object) + " (" + why +
+                                   "). Make the call again, with its arguments complete.");
     const ToolSpec * spec = find_tool(call.name);
     std::map<std::string, McpTool> mcp;
     bool offered = false;
@@ -834,8 +868,11 @@ std::string Agent::run_rounds(Run & run, const std::string & conv_id) {
                 same_failures = 0;
                 continue;
             }
-            const std::string failure =
-                c.name + '\n' + done.value("args", json::object()).dump() + '\n' + done.value("result", "");
+            const std::string result = done.value("result", "");
+            const bool not_an_object = result.rfind(k_not_an_object, 0) == 0;
+            const std::string failure = c.name + '\n' +
+                                        (not_an_object ? std::string(k_not_an_object)
+                                                       : done.value("args", json::object()).dump() + '\n' + result);
             same_failures = failure == last_failure ? same_failures + 1 : 1;
             last_failure = failure;
             if (same_failures >= k_max_same_failed_calls) {

@@ -126,6 +126,12 @@ The walks list `.git`, `node_modules`, `.venv`, `build`, `dist` and the like but
 Unlike llama.cpp's, the tools do not consult `.gitignore` (asking git runs the repository's own
 configuration: see "Mode") and `edit_file` matches exactly, with no whitespace-tolerant fallback.
 
+A call whose arguments are not a JSON object (a model stopped in the middle of one, by its context
+or a token limit, leaves a string cut short) is refused with the parser's reason and what to do,
+like any other failed call; the record keeps the arguments as written, and the model is shown an
+empty object in their place from then on, since a chat template that parsed the original would
+reject the conversation at every turn after.
+
 Which tools a conversation is offered follows from its workspace, its mode, the platform and where
 the message came from: a tool that could only be refused is not declared (`write_file`,
 `edit_file` and the MCP tools in `read_only`; `exec_shell_command` where no process may start). A
