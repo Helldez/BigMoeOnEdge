@@ -76,6 +76,7 @@ add_library(bmoe_server_core STATIC
     decide_protocol.cpp
     openai_chat.cpp
     openai_responses.cpp
+    image_part.cpp
     turn_queue.cpp
     event_bus.cpp
     json_util.cpp

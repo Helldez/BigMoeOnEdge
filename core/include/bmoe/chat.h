@@ -20,6 +20,21 @@ struct ChatToolCall {
     std::string arguments;
 };
 
+// An image a message carries: the bytes of an encoded image file (PNG, JPEG, BMP, GIF, ...) as the
+// client sent them. The projector's own reader decodes them, so the engine names no format and
+// `mime` is what the client said, kept for logs. Read only on a session opened with a projector
+// (SessionConfig::mmproj): without one a message with images is refused, never answered blind.
+struct ChatImage {
+    std::string bytes;
+    std::string mime{};
+};
+
+// Where an image goes inside a message's text: the content holds this marker once per image, in
+// order, and the engine puts the image's tokens there (the model's own image delimiters around them
+// come from the projector). A front-end building content from parts writes it between the text
+// parts; a text that spells it out with no image behind it is refused as a count mismatch.
+const char * image_marker();
+
 // One message of a conversation. `role` is system | user | assistant | tool.
 struct ChatMessage {
     std::string role;
@@ -28,6 +43,7 @@ struct ChatMessage {
     std::vector<ChatToolCall> tool_calls{}; // assistant: the calls this turn made
     std::string tool_call_id{};             // tool: the call this message answers
     std::string name{};                     // tool: the function that produced it
+    std::vector<ChatImage> images{};        // user: the images `content` places, in marker order
 };
 
 // A function the model may call. `parameters` is its JSON schema, as text.

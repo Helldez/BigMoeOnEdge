@@ -295,7 +295,7 @@ All JSON; errors are `{"error", "code"}` as everywhere in the API. Times are Uni
 | `GET /api/conversations/<id>` | the conversation with its `items` |
 | `PATCH /api/conversations/<id>` | `{title?, mode?, route?, workspace?, agent?}` → the conversation without items; `409 busy` for `workspace` or `route` while it runs, and for `agent` once it has items |
 | `DELETE /api/conversations/<id>` | `409 busy` while it runs |
-| `POST /api/conversations/<id>/messages` | `{text, think?, images?}` → `202 {item}`; the run goes on in the server and reports on `/api/events`. `409 busy` while one runs; `images` is not supported yet (`400 unsupported`) |
+| `POST /api/conversations/<id>/messages` | `{text, think?, images?}` → `202 {item}`; the run goes on in the server and reports on `/api/events`. `409 busy` while one runs. `images`: up to 8 data URLs, kept on the item and shown to the model after the text (`400 no_vision` when the loaded model has no projector, server-api.md "Images") |
 | `POST /api/conversations/<id>/edit` | `{item, text, think?}`: drops `item` (a `user` item) and everything after it, then sends `text` → `202 {item}` |
 | `POST /api/conversations/<id>/approval` | `{item, decision: "approve" \| "deny"}`; `404 not_found` when that item is not waiting |
 | `POST /api/conversations/<id>/stop` | stops the run; answers `{stopped}` once it has stopped (`false`: none ran) |

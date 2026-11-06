@@ -217,10 +217,30 @@ ModelLibrary::ModelFacts ModelLibrary::probe(const std::string & path) {
     ModelFacts facts;
     facts.arch = m.arch;
     facts.streamable = m.ok && m.is_moe;
-    facts.role = file_role_name(file_role(probe_gguf_header(path.c_str())));
+    const GgufHeaderFacts header = probe_gguf_header(path.c_str());
+    facts.role = file_role_name(file_role(header));
+    facts.name = header.name;
     std::lock_guard<std::mutex> lk(m_);
     facts_cache_[path] = {size, mt, facts};
     return facts;
+}
+
+std::string ModelLibrary::projector_for(const std::string & path) {
+    const GgufHeaderFacts model = probe_gguf_header(path.c_str());
+    if (!model.ok || file_role(model) != FileRole::Model) return "";
+    std::error_code ec;
+    const fs::path folder = fs::u8path(path).parent_path();
+    std::vector<CompanionFile> files;
+    for (const fs::directory_entry & e : fs::directory_iterator(folder, ec)) {
+        if (ec) break;
+        if (!e.is_regular_file(ec) || e.path().extension() != ".gguf") continue;
+        const std::string p = e.path().u8string();
+        if (p == path) continue;
+        // Headers only (no tensor bytes), of files that are not this model: cheap, and the shards
+        // of a split model are not projectors and fall out at the role check.
+        files.push_back({p, probe_gguf_header(p.c_str())});
+    }
+    return bmoe::server::projector_for(model, files);
 }
 
 const CatalogEntry * ModelLibrary::find(const std::string & id) const {
@@ -290,6 +310,8 @@ void ModelLibrary::list_dir(const std::string & dir, json & out) {
         // Only the first shard carries the metadata; a set without it has no architecture to read.
         const bool has_first = !m.files.empty() && m.files.front() == m.first;
         const ModelFacts facts = has_first ? probe(first.u8string()) : ModelFacts{};
+        // The projector beside it, by header: a model with one reads images once loaded.
+        const std::string projector = has_first && facts.role == "model" ? projector_for(first.u8string()) : "";
         out.push_back({{"name", m.first},
                        {"path", first.generic_u8string()},
                        {"dir", root.generic_u8string()},
@@ -300,6 +322,7 @@ void ModelLibrary::list_dir(const std::string & dir, json & out) {
                        {"arch", facts.arch},
                        {"role", facts.role},
                        {"streamable", facts.streamable},
+                       {"projector", projector.empty() ? "" : fs::u8path(projector).filename().u8string()},
                        {"complete", m.complete()}});
     }
 }

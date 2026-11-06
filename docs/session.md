@@ -48,11 +48,14 @@ turn the parser reads as nothing comes back as the raw generation.
 
 **KV prefix reuse.** Re-rendering the full history would re-tokenize the entire conversation, but
 most of it is already decoded into the KV. Each turn the engine diffs the freshly rendered tokens
-against `kv_tokens` (the tokens currently in the KV, in order), keeps the common prefix, removes the
+against the stream currently in the KV (`prompt_stream.h`: the tokens in order, with an image as a
+span of placeholders identified by its content hash), keeps the common prefix, removes the
 divergent tail with `llama_memory_seq_rm`, and prefills only the suffix. So a follow-up turn pays
 for its own tokens, not a full re-prefill — which matters because prefill is the slow phase on
-device. `BMOE_DONE.n_prompt` reports the tokens actually prefilled this turn; `n_past` is the total
-context length after it.
+device. An image is shared whole or not at all, and a cut never lands inside one. Under M-RoPE an
+image takes fewer positions than tokens, so every cut and every batch after one is placed by the
+stream's position map, not by its index. `BMOE_DONE.n_prompt` reports the tokens actually prefilled
+this turn; `n_past` is the total context length after it.
 
 **Context checkpoints.** Not every memory can be cut at an arbitrary position: a recurrent state
 (Mamba, Gated DeltaNet) holds only its latest step, and a sliding-window cache has already dropped what

@@ -62,6 +62,9 @@ if(BMOE_HAVE_LLAMA)
         src/moe/device_arena.cpp
         src/engine/session.cpp
         src/engine/context_checkpoints.cpp
+        src/engine/prompt_stream.cpp
+        src/engine/media_input.cpp
+        src/engine/image_probe.cpp
         src/engine/llama_log.cpp
         src/engine/prefill_device.cpp
         src/engine/prefill_path.cpp
@@ -78,7 +81,12 @@ if(BMOE_HAVE_LLAMA)
     # `llama` is the stable public API the streaming seam uses. `llama-common` (llama.cpp's
     # `common` utils) supplies chat templates/parsing, speculative decoding and template-generated
     # grammars; it is not a stable API. It propagates the common/ and vendor/ includes.
-    target_link_libraries(bmoe_core PUBLIC llama llama-common)
+    # `mtmd` (llama.cpp's tools/mtmd) is the multimodal projector library: it reads an mmproj file
+    # and encodes images into the embeddings the model decodes (media_input.cpp). Public API of the
+    # tool, built standalone through upstream's own LLAMA_BUILD_MTMD hook; not patched.
+    target_link_libraries(bmoe_core PUBLIC llama llama-common mtmd)
+    # The image header probe (image_probe.cpp) reads with the same stb_image the library decodes with.
+    target_link_libraries(bmoe_core PRIVATE vendor::stb)
     target_compile_definitions(bmoe_core PUBLIC BMOE_HAVE_LLAMA=1)
     find_package(Threads REQUIRED)
     target_link_libraries(bmoe_core PUBLIC Threads::Threads)

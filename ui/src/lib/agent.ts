@@ -44,6 +44,8 @@ interface ItemBase {
 export interface UserItem extends ItemBase {
   kind: 'user';
   text: string;
+  /** The images sent with the text, as data URLs. */
+  images?: string[];
 }
 export interface AssistantItem extends ItemBase {
   kind: 'assistant';

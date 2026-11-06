@@ -1,4 +1,5 @@
 #include "openai_responses.h"
+#include "image_part.h"
 
 namespace bmoe::server {
 
@@ -14,13 +15,15 @@ std::string type_of(const json & o) {
     return t ? *t : "";
 }
 
-// A message's or a tool output's content: a string, or text parts (input_text, output_text, and a
-// refusal, which is text the model wrote). An image or a file is refused, not dropped.
-bool content_text(const json & content, std::string & out, std::string & err) {
-    out.clear();
+// A message's or a tool output's content: a string, or parts (input_text, output_text, a refusal,
+// which is text the model wrote, and input_image as a data URL, which becomes one of the message's
+// images). A file or audio is refused, not dropped.
+bool content_parts(const json & content, ChatMessage & out, std::string & err) {
+    out.content.clear();
+    out.images.clear();
     if (content.is_null()) return true;
     if (content.is_string()) {
-        out = content.get<std::string>();
+        out.content = content.get<std::string>();
         return true;
     }
     if (!content.is_array()) {
@@ -32,15 +35,36 @@ bool content_text(const json & content, std::string & out, std::string & err) {
         const char * field = type == "refusal" ? "refusal" : "text";
         if ((type == "input_text" || type == "output_text" || type == "text" || type == "refusal") &&
             string_at(part, field)) {
-            out += *string_at(part, field);
-        } else if (type == "input_image" || type == "input_file" || type == "input_audio") {
-            err = "this server reads text only: an " + type + " part cannot be answered";
+            out.content += *string_at(part, field);
+        } else if (type == "input_image") {
+            if (string_at(part, "file_id")) {
+                err = "input_image names a stored file, and this server stores none: send image_url as a data URL";
+                return false;
+            }
+            ChatImage img;
+            if (!image_from_data_url(string_at(part, "image_url") ? *string_at(part, "image_url") : "", img, err))
+                return false;
+            place_images(out.content, 1);
+            out.images.push_back(std::move(img));
+        } else if (type == "input_file" || type == "input_audio") {
+            err = "this server reads text and images: an " + type + " part cannot be answered";
             return false;
         } else {
             err = "unsupported content part type '" + type + "'";
             return false;
         }
     }
+    return true;
+}
+
+bool content_text(const json & content, std::string & out, std::string & err) {
+    ChatMessage m;
+    if (!content_parts(content, m, err)) return false;
+    if (!m.images.empty()) {
+        err = "an image goes in a user message, not here";
+        return false;
+    }
+    out = std::move(m.content);
     return true;
 }
 
@@ -66,18 +90,18 @@ bool parse_item(const json & item, std::vector<ChatMessage> & out, std::string &
     const std::string type = type_of(item);
     if (type.empty() || type == "message") {
         const std::string * role = string_at(item, "role");
-        std::string text;
         if (!role || (*role != "user" && *role != "system" && *role != "developer" && *role != "assistant")) {
             err = "a message needs a role: user, system, developer or assistant";
             return false;
         }
-        if (!content_text(item.value("content", json()), text, err)) return false;
-        if (*role == "assistant") {
-            ChatMessage & m = assistant_turn(out);
-            m.content += text;
-        } else {
-            out.push_back({*role == "developer" ? "system" : *role, text});
-        }
+        ChatMessage msg;
+        if (!content_parts(item.value("content", json()), msg, err)) return false;
+        msg.role = *role == "developer" ? "system" : *role;
+        if (!images_allowed(msg, err)) return false;
+        if (*role == "assistant")
+            assistant_turn(out).content += msg.content;
+        else
+            out.push_back(std::move(msg));
         return true;
     }
     if (type == "function_call") {

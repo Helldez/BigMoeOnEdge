@@ -110,6 +110,12 @@ export const en = {
   'composer.stop': 'Stop',
   'composer.think': 'Reasoning',
   'composer.think.hint': 'Let the model reason before it answers: slower, often better on hard questions.',
+  'composer.image': 'Image',
+  'composer.image.hint': 'Attach an image for the model to look at (or paste one)',
+  'composer.image.remove': 'Remove image',
+  'composer.image.max': 'At most {n} images go in one message',
+  'composer.image.notImage': 'Only images can be attached',
+  'composer.image.tooLarge': 'An image can be at most {mb} MB',
 
   'workspace.label': 'Folder',
   'workspace.none': 'No folder (chat only)',

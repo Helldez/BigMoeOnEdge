@@ -23,6 +23,7 @@
 #include "engine_host.h"
 #include "event_bus.h"
 #include "http_fetch.h"
+#include "image_part.h"
 #include "json_rpc.h"
 #include "json_util.h"
 #include "mcp.h"
@@ -125,11 +126,19 @@ public:
 
     // A message: add it and start the run. `remote`: the request came from beyond loopback; the
     // run then offers no file, command or MCP tool. `item_out` is the user item.
-    Refusal send(const std::string & conversation, const std::string & text, bool think, bool remote, json & item_out);
+    // `images`: data URLs (image_part.h), kept on the item and handed to the model with the text,
+    // at most k_max_images_per_message; an empty array for none.
+    Refusal send(const std::string & conversation,
+                 const std::string & text,
+                 const json & images,
+                 bool think,
+                 bool remote,
+                 json & item_out);
     // Drop `item` (a user item) and everything after it, then send `text`.
     Refusal edit(const std::string & conversation,
                  const std::string & item,
                  const std::string & text,
+                 const json & images,
                  bool think,
                  bool remote,
                  json & item_out);
@@ -169,6 +178,7 @@ private:
 
     Refusal start(const std::string & conversation,
                   const std::string & text,
+                  const json & images,
                   bool think,
                   bool remote,
                   bool auto_deny,

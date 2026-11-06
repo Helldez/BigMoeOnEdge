@@ -1,4 +1,5 @@
 #include "agent.h"
+#include "image_part.h"
 #include "agent_run.h"
 
 #include "agent_tools.h"
@@ -434,6 +435,7 @@ std::vector<ChatTool> Agent::tools_for(const json & conv, bool remote, std::map<
 
 ChatRequest Agent::build_request(const json & conv, const std::string & system, bool remote, bool think) const {
     ChatRequest req;
+    const bool provider_route = conv.value("route", "local") != "local";
     if (!system.empty()) req.messages.push_back({"system", system});
     const json & items = conv["items"];
     // What each call got back, by its id.
@@ -448,7 +450,20 @@ ChatRequest Agent::build_request(const json & conv, const std::string & system, 
     for (const json & it : items) {
         const std::string kind = it.value("kind", "");
         if (kind == "user") {
-            req.messages.push_back({"user", it.value("text", "")});
+            ChatMessage m{"user", it.value("text", "")};
+            // The images the person attached, placed after the text; one the store holds that no
+            // longer decodes is skipped rather than failing the whole conversation. A provider
+            // route is sent none, and no marker for them: it carries text only.
+            if (!provider_route && it.contains("images") && it["images"].is_array())
+                for (const json & im : it["images"]) {
+                    ChatImage img;
+                    std::string err;
+                    if (im.is_string() && image_from_data_url(im.get<std::string>(), img, err)) {
+                        place_images(m.content, 1);
+                        m.images.push_back(std::move(img));
+                    }
+                }
+            req.messages.push_back(std::move(m));
         } else if (kind == "assistant") {
             ChatMessage m{"assistant", it.value("text", "")};
             if (it.contains("tool_calls") && it["tool_calls"].is_array())
@@ -891,14 +906,30 @@ std::string Agent::run_rounds(Run & run, const std::string & conv_id) {
 
 Refusal Agent::start(const std::string & conversation,
                      const std::string & text,
+                     const json & images,
                      bool think,
                      bool remote,
                      bool auto_deny,
                      const std::string & task_id,
                      json & item_out) {
-    if (text.empty()) return {400, "the message is empty", "invalid_request"};
+    if (text.empty() && (!images.is_array() || images.empty())) return {400, "the message is empty", "invalid_request"};
+    if (images.is_array() && images.size() > k_max_images_per_message)
+        return {400, "at most " + std::to_string(k_max_images_per_message) + " images go in one message",
+                "invalid_request"};
+    if (images.is_array())
+        for (const json & im : images) {
+            ChatImage probe;
+            std::string err;
+            if (!im.is_string() || !image_from_data_url(im.get<std::string>(), probe, err))
+                return {400, "images must be data URLs: " + (err.empty() ? std::string("not a string") : err),
+                        "invalid_request"};
+        }
     json conv;
     if (!d_.store->conversation(conversation, conv)) return {404, "no such conversation", "not_found"};
+    // A provider route carries text only (provider_protocol.cpp sends role and content): an image on
+    // it would reach the provider as its marker, unseen. Said before the message is kept.
+    if (images.is_array() && !images.empty() && conv.value("route", "local") != "local")
+        return {400, "this route does not carry images", "no_vision"};
     auto run = std::make_shared<Run>();
     run->remote = remote;
     run->auto_deny = auto_deny;
@@ -922,6 +953,7 @@ Refusal Agent::start(const std::string & conversation,
     for (std::thread & t : reap)
         t.join();
     item_out = json{{"id", new_id("i")}, {"kind", "user"}, {"text", text}};
+    if (images.is_array() && !images.empty()) item_out["images"] = images;
     const json item = item_out;
     d_.store->edit_conversation(conversation, [&](json & c) {
         c["state"] = "idle";
@@ -970,14 +1002,19 @@ Refusal Agent::start(const std::string & conversation,
     return {};
 }
 
-Refusal
-Agent::send(const std::string & conversation, const std::string & text, bool think, bool remote, json & item_out) {
-    return start(conversation, text, think, remote, false, "", item_out);
+Refusal Agent::send(const std::string & conversation,
+                    const std::string & text,
+                    const json & images,
+                    bool think,
+                    bool remote,
+                    json & item_out) {
+    return start(conversation, text, images, think, remote, false, "", item_out);
 }
 
 Refusal Agent::edit(const std::string & conversation,
                     const std::string & item,
                     const std::string & text,
+                    const json & images,
                     bool think,
                     bool remote,
                     json & item_out) {
@@ -1001,7 +1038,7 @@ Refusal Agent::edit(const std::string & conversation,
         }))
         return {404, "no such conversation", "not_found"};
     if (!found) return {404, "no message of the person with that id", "not_found"};
-    return send(conversation, text, think, remote, item_out);
+    return send(conversation, text, images, think, remote, item_out);
 }
 
 bool Agent::stop(const std::string & conversation) {
@@ -1063,7 +1100,7 @@ Refusal Agent::run_task(const std::string & id) {
     task["last_run"] = json{{"at", now_s()}, {"conversation", cid}, {"outcome", "running"}};
     d_.store->put_task(task);
     json item;
-    const Refusal r = start(cid, task.value("prompt", ""), false, false, true, id, item);
+    const Refusal r = start(cid, task.value("prompt", ""), json::array(), false, false, true, id, item);
     if (!r.ok()) {
         {
             std::lock_guard<std::mutex> lk(m_);

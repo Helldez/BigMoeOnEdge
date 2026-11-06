@@ -50,6 +50,7 @@ public:
     int n_expert_used() const override { return s_->n_expert_used(); }
     ThinkControl think_control() const override { return s_->think_control(); }
     double load_seconds() const override { return s_->load_seconds(); }
+    bool vision() const override { return s_->vision(); }
     RoutingTrace routing_record() const override { return s_->routing_record(); }
     MeasuredKnobs measured_knobs() const override { return s_->measured_knobs(); }
 
@@ -206,6 +207,12 @@ std::string EngineHost::load(const RunConfig & effective, const RunConfig & requ
                               {"think_ctl", think_control_name(s->think_control())},
                               {"load_s", s->load_seconds()},
                               {"streaming", effective.moe.enabled},
+                              // Whether a request may carry images, and the projector that reads
+                              // them (its file name; "" without one).
+                              {"vision", s->vision()},
+                              {"projector", effective.mmproj.empty()
+                                                ? ""
+                                                : std::filesystem::u8path(effective.mmproj).filename().u8string()},
                               // What a CPU figure is read against: the compute threads, and every
                               // thread busy in a decode, the read lanes included when they run
                               // beside compute. A UI reads these instead of the parameters.
@@ -274,6 +281,11 @@ bool EngineHost::loaded_or_loading() const {
 std::string EngineHost::model_name() const {
     std::lock_guard<std::mutex> lk(m_);
     return model_.is_object() ? model_.value("name", "") : "";
+}
+
+bool EngineHost::vision() const {
+    std::lock_guard<std::mutex> lk(m_);
+    return model_.is_object() && model_.value("vision", false);
 }
 
 std::string EngineHost::model_path() const {

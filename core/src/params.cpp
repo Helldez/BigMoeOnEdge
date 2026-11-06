@@ -243,6 +243,18 @@ std::vector<ParamDesc> build() {
         d.details = "For a model split into several files, choose the first one. The Models screen sets this for you.";
         t.push_back(d);
     }
+    {
+        ParamDesc d = row("mmproj", "Projector file", G::Model, L::Advanced,
+                          "The multimodal projector (an mmproj GGUF from the model's own conversion) that gives the "
+                          "model image input; a request may then carry images. Empty: text only.");
+        d.type = ParamType::Path;
+        d.value_hint = "PATH";
+        bind_string(d, [](RunConfig & c) -> std::string & { return c.mmproj; });
+        d.details = "A vision model ships this as a separate file beside its weights (its name usually starts with "
+                    "mmproj). The server pairs it with the model on its own when both are in the same folder; "
+                    "set it here to choose another. Any quantization of either file works.";
+        t.push_back(d);
+    }
 
     // ── generation ───────────────────────────────────────────────────────────────────
     {

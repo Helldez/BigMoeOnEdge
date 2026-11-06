@@ -14,6 +14,12 @@
 
   let text = $state('');
   let options = $state('');
+  // Images attached to the next message, as data URLs: shown as thumbnails until sent.
+  let images = $state<string[]>([]);
+  let imageError = $state('');
+  let fileInput: HTMLInputElement | undefined = $state();
+  const MAX_IMAGES = 8;
+  const MAX_IMAGE_BYTES = 16 * 1024 * 1024;
   let choose = $state(false);
   let think = $state<boolean | null>(null);
   let area: HTMLTextAreaElement | undefined = $state();
@@ -51,13 +57,63 @@
   let local = $derived(agent.route === 'local');
   let model = $derived(server.info?.model ?? null);
   let canThink = $derived(local && !!model && model.think_ctl !== 'none');
+  // The model reads images: a projector is loaded beside it (GET /api/info, model.vision). A saved
+  // provider is asked as text only here.
+  let canImage = $derived(local && !!model && !!model.vision && !choose);
   let thinkDefault = $derived(server.config?.values?.think === false ? false : true);
   let thinking = $derived(think ?? thinkDefault);
   let localReady = $derived(server.ready);
   let blocked = $derived(!external && local && !localReady);
   let canSend = $derived(
-    !blocked && !needsFolder && !agent.sending && !agent.running && text.trim() !== '' && (!choose || options.trim() !== ''),
+    !blocked &&
+      !needsFolder &&
+      !agent.sending &&
+      !agent.running &&
+      (text.trim() !== '' || (images.length > 0 && !choose)) &&
+      (!choose || options.trim() !== ''),
   );
+
+  function addImageFiles(files: Iterable<File>): void {
+    imageError = '';
+    for (const f of files) {
+      if (!f.type.startsWith('image/')) {
+        imageError = t('composer.image.notImage');
+        continue;
+      }
+      if (f.size > MAX_IMAGE_BYTES) {
+        imageError = t('composer.image.tooLarge', { mb: String(MAX_IMAGE_BYTES / (1024 * 1024)) });
+        continue;
+      }
+      if (images.length >= MAX_IMAGES) {
+        imageError = t('composer.image.max', { n: String(MAX_IMAGES) });
+        break;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === 'string' && images.length < MAX_IMAGES) images = [...images, reader.result];
+      };
+      reader.readAsDataURL(f);
+    }
+  }
+  function pickImages(e: Event) {
+    const input = e.currentTarget as HTMLInputElement;
+    if (input.files) addImageFiles(input.files);
+    input.value = '';
+  }
+  function onPaste(e: ClipboardEvent) {
+    if (!canImage || !e.clipboardData) return;
+    const files = Array.from(e.clipboardData.items)
+      .filter((i) => i.kind === 'file' && i.type.startsWith('image/'))
+      .map((i) => i.getAsFile())
+      .filter((f): f is File => !!f);
+    if (files.length) {
+      e.preventDefault();
+      addImageFiles(files);
+    }
+  }
+  function removeImage(i: number) {
+    images = images.filter((_, k) => k !== i);
+  }
 
   let ws = $derived(agent.workspaces.find((w) => w.id === agent.workspace) ?? null);
   let wsItems = $derived<MenuItem[]>([
@@ -83,8 +139,13 @@
       return;
     }
     text = '';
-    const ok = await agent.send(msg, canThink ? thinking : undefined);
-    if (!ok) text = msg;
+    const attached = images;
+    images = [];
+    const ok = await agent.send(msg, canThink ? thinking : undefined, attached.length ? attached : undefined);
+    if (!ok) {
+      text = msg;
+      images = attached;
+    }
     area?.focus();
   }
 
@@ -153,7 +214,21 @@
       placeholder={blocked ? t('composer.placeholder.noModel') : choose ? t('choose.question.placeholder') : t('composer.placeholder')}
       bind:value={text}
       onkeydown={onKey}
+      onpaste={onPaste}
     ></textarea>
+    {#if images.length}
+      <ul class="attachments" aria-label={t('composer.image')}>
+        {#each images as src, i (src + i)}
+          <li>
+            <img {src} alt="" />
+            <button type="button" class="ghost icon small remove" aria-label={t('composer.image.remove')} title={t('composer.image.remove')} onclick={() => removeImage(i)}>
+              <Icon name="close" size={13} />
+            </button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+    {#if imageError}<p class="err small" role="alert">{imageError}</p>{/if}
     {#if choose}
       <label class="visually-hidden" for="composer-options">{t('choose.options')}</label>
       <textarea id="composer-options" class="options" rows="3" placeholder={t('choose.options.placeholder')} bind:value={options}></textarea>
@@ -197,6 +272,12 @@
           <Icon name="brain" size={15} />{t('composer.think')}
         </button>
       {/if}
+      {#if canImage}
+        <input type="file" accept="image/*" multiple hidden bind:this={fileInput} onchange={pickImages} />
+        <button type="button" class="toggle" title={t('composer.image.hint')} onclick={() => fileInput?.click()}>
+          <Icon name="image" size={15} />{t('composer.image')}
+        </button>
+      {/if}
       {#if local && localReady}
         <button type="button" class="toggle" aria-pressed={choose} title={t('choose.hint')} onclick={() => (choose = !choose)}>{t('choose.toggle')}</button>
       {/if}
@@ -232,6 +313,34 @@
 </Dialog>
 
 <style>
+  /* The images going with the next message: small, removable, above the chips. */
+  .attachments {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s2);
+    list-style: none;
+    margin: 0;
+    padding: 0 var(--s3) var(--s2);
+  }
+  .attachments li {
+    position: relative;
+  }
+  .attachments img {
+    display: block;
+    width: 64px;
+    height: 64px;
+    object-fit: cover;
+    border-radius: var(--radius);
+    border: 1px solid var(--line);
+  }
+  .attachments .remove {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 50%;
+  }
   /* The agent once chosen: shown like a chip, not a control. */
   .static {
     display: inline-flex;

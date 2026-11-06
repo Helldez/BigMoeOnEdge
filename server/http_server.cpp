@@ -83,6 +83,9 @@ constexpr size_t kWorkerThreads = k_max_event_streams + 1 + k_max_waiting_turns 
 // Connections accepted while every worker is busy. Past this the server closes the next one at once:
 // a client that floods the port gets refused rather than an unbounded queue in this process.
 constexpr size_t kMaxQueuedRequests = 64;
+// A request body: a conversation with its images inline as base64 (a screenshot is a few MiB, a
+// third more once encoded), never a model file.
+constexpr size_t kMaxRequestBytes = 64ull << 20;
 // How often an idle event stream is pinged: what keeps it open through a proxy that drops a silent
 // connection, and the write that finds a client that stopped reading.
 constexpr std::chrono::seconds kEventPingInterval{15};
@@ -610,6 +613,9 @@ struct App {
         const ModelLibrary::ModelFacts facts = lib.probe(requested.model_path);
         if (effective.moe.enabled && !pinned && !facts.arch.empty() && !facts.streamable) effective.moe.enabled = false;
         if (!effective.moe.enabled) drop_streaming_only(effective);
+        // The projector beside the model, unless one was named: a model whose folder holds its
+        // mmproj file reads images with nothing set.
+        if (effective.mmproj.empty()) effective.mmproj = lib.projector_for(requested.model_path);
         return host.load(effective, requested);
     }
 
@@ -836,7 +842,13 @@ void register_routes(httplib::Server & svr, App & app) {
     svr.Get("/v1/models", [&](const httplib::Request &, httplib::Response & res) {
         json data = json::array();
         const std::string name = app.host.model_name();
-        if (!name.empty()) data.push_back({{"id", name}, {"object", "model"}, {"owned_by", "local"}});
+        // `modalities` is not OpenAI's field: a client that wants to know whether to send an image
+        // reads it; one that does not never looks.
+        if (!name.empty())
+            data.push_back({{"id", name},
+                            {"object", "model"},
+                            {"owned_by", "local"},
+                            {"modalities", app.host.vision() ? json{"text", "image"} : json{"text"}}});
         send_json(res, json{{"object", "list"}, {"data", data}});
     });
 
@@ -1543,9 +1555,9 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     // once instead of waiting with no bound behind workers that may not come free.
     svr.new_task_queue = [] { return new httplib::ThreadPool(kWorkerThreads, 0, kMaxQueuedRequests); };
     svr.set_socket_options(set_listener_options);
-    // A request body here is a chat history or a handful of settings. The library's default would
-    // let every worker buffer a hundred times that.
-    svr.set_payload_max_length(8ull << 20);
+    // A request body here is a chat history, with its images inline as base64, or a handful of
+    // settings. The library's default would let every worker buffer far more than that.
+    svr.set_payload_max_length(kMaxRequestBytes);
     register_guards(svr, o);
     register_routes(svr, app);
     register_agent_routes(svr, app.agent_routes);

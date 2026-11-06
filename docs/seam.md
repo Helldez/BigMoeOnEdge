@@ -133,6 +133,17 @@ falls back to a content-only parser (it threw on the first token before the 2026
 that seam unit-testable without a model.
 
 A second translation unit, `thinking_control.cpp`, crosses the same boundary for "thinking off".
+
+**Images: llama.cpp's `mtmd`.** `media_input.cpp` is the one file that includes `tools/mtmd`'s
+public headers (`mtmd.h`, `mtmd-helper.h`), the library behind `llama-mtmd-cli` and the upstream
+server's image input. It opens the projector (`mtmd_init_from_file`, on a device of the registry
+when there is one), tokenizes a prompt with its images into text and image chunks
+(`mtmd_tokenize`), encodes an image (`mtmd_encode_chunk`) and hands its embeddings back as
+`llama_batch_ext` batches with the positions the projector gives them (2-D under M-RoPE), which the
+session decodes through its own placed decode, so the arena, the prefill device and the route trace
+see an image's graphs as they see a text batch's. The library is built through upstream's own
+`LLAMA_BUILD_MTMD` hook, as a library of its own (`libmtmd`), and nothing in it is patched. Like
+`common`, it is not a stable API: a submodule bump re-reads these calls.
 `enable_thinking` is only a *request* to the template, and many templates never read it, so the
 engine renders the template to find out (three renders at open, no model names involved) and, where
 the flag is inert *and* reasoning is a structural section of the format, asks for a **continuation**

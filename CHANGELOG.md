@@ -7,6 +7,20 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **Image input** (#250): a model loaded with its multimodal projector (the `mmproj` GGUF of its own
+  conversion, paired by the two files' headers when it sits in the model's folder, or named with
+  the new `mmproj` parameter) reads images. `/v1/chat/completions` takes `image_url` parts,
+  `/v1/messages` `image` blocks and `/v1/responses` `input_image` parts, all inline as base64 (a
+  URL to fetch is refused); the agent's messages take `images`, and the web UI's composer attaches
+  or pastes them. A message carries at most 8 images, each of at most 64 megapixels (refused with
+  the reason, before it is decoded), and only a user message carries one; a conversation routed to
+  a provider carries none. `bmoe-cli --mmproj FILE --image FILE` does the same on a prompt. The KV prefix is
+  reused through an image, so a conversation that holds one pays for it once; speculation is off
+  while it does. `GET /api/info` says `model.vision` and `model.projector`, `/v1/models` adds
+  `modalities`, a local model's listing names its `projector`, and a projector in a repository is
+  now downloadable beside its model. Through llama.cpp's own `mtmd` library, unpatched: any model it
+  knows, any quantization of either file, on every backend (`docs/server-api.md`, "Images";
+  `docs/seam.md`).
 - **The server as a service of the init system** (#472): `bmoe-server service install|uninstall|start|stop|status`
   registers a per-user service started at login and back after a failure, a systemd user unit, a
   launchd agent or a Windows scheduled task, whichever tool answers on the machine, with the server

@@ -164,6 +164,29 @@ FileRole file_role(const GgufHeaderFacts & h) {
     return FileRole::Model;
 }
 
+std::string name_key(const std::string & name) {
+    std::string k;
+    for (char c : name)
+        if (std::isalnum((unsigned char) c)) k += (char) std::tolower((unsigned char) c);
+    return k;
+}
+
+std::string projector_for(const GgufHeaderFacts & model, const std::vector<CompanionFile> & folder) {
+    std::vector<const CompanionFile *> projectors;
+    for (const CompanionFile & f : folder)
+        if (file_role(f.header) == FileRole::Projector) projectors.push_back(&f);
+    if (projectors.empty()) return "";
+    const std::string want = name_key(model.name);
+    if (!want.empty()) {
+        std::vector<const CompanionFile *> same;
+        for (const CompanionFile * p : projectors)
+            if (name_key(p->header.name) == want) same.push_back(p);
+        if (same.size() == 1) return same.front()->path;
+        if (same.size() > 1) return "";
+    }
+    return projectors.size() == 1 ? projectors.front()->path : "";
+}
+
 FileRole file_role_hint(const std::string & name) {
     const size_t slash = name.find_last_of('/');
     const std::string base = lower(slash == std::string::npos ? name : name.substr(slash + 1));

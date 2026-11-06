@@ -36,6 +36,10 @@ class IIoTraceSink;
 // the longest prompt+generation the session will serve.
 struct SessionConfig {
     std::string model_path;
+    // The multimodal projector that gives this model its image input (an `mmproj` GGUF from the same
+    // conversion), loaded beside the model. Empty: text only, and a request with images is refused.
+    // See RunConfig::mmproj.
+    std::string mmproj;
     int n_threads = 4;
     int n_threads_batch = 0; // 0 = same as n_threads. See RunConfig::n_threads_batch.
     int n_ctx = 2048;
@@ -127,6 +131,10 @@ struct GenerateRequest {
     // come back in RunResult::tool_calls. Read only with `messages`: a tool's answer is a message.
     std::vector<ChatTool> tools{};
     ToolChoice tool_choice = ToolChoice::Auto;
+    // The images `prompt` places with image_marker(), in order (the raw-prompt path; a message list
+    // carries each message's own). Needs a session opened with a projector. Last, so a request
+    // written as a positional aggregate before images existed still reads the same.
+    std::vector<ChatImage> images{};
 };
 
 // Teacher-forced quality measurement. The text is fixed, so every cell scores the SAME token
@@ -245,6 +253,10 @@ public:
     // rather than leaving a Thinking toggle that silently does nothing. Always Template when chat
     // mode is off, where no template is rendered and the question does not arise.
     ThinkControl think_control() const;
+
+    // Whether this session reads images: a projector was given at open() and it has a vision
+    // encoder. What a front-end asks before offering an image control.
+    bool vision() const;
 
     // Set the expert-cache budget in MiB and evict down to it now. PRECONDITION: no generate() in
     // flight — call it between generations (e.g. from an app's memory-pressure callback). A no-op

@@ -274,7 +274,8 @@ key, under the same security statement.
   "error": "",
   "model": {"path": "C:/models/Qwen3-30B-A3B-Q4_K_M.gguf", "name": "Qwen3-30B-A3B-Q4_K_M.gguf",
             "arch": "qwen3moe", "n_ctx": 16384, "n_expert_used": 8, "think_ctl": "template",
-            "load_s": 12.4, "streaming": true, "compute_threads": 8, "busy_threads": 12,
+            "load_s": 12.4, "streaming": true, "vision": true, "projector": "mmproj-Qwen3-30B-A3B-Q8_0.gguf",
+            "compute_threads": 8, "busy_threads": 12,
             "ctx_advice": {"recommended": 16384, "short": true, "param": "ctx-size", "refused": false,
                            "warn": false}},
   "generating": false
@@ -403,7 +404,7 @@ Request fields that are read:
 
 | field | meaning |
 |---|---|
-| `messages` | the whole conversation. `role` is `system` (or `developer`), `user`, `assistant` or `tool`; `content` is a string, an array of `{type: "text", text}` parts, or `null` on an assistant turn that only calls tools. An assistant message may carry `tool_calls` and `reasoning_content`; a tool message carries `tool_call_id`. The last message must be from the user or a tool. |
+| `messages` | the whole conversation. `role` is `system` (or `developer`), `user`, `assistant` or `tool`; `content` is a string, an array of `{type: "text", text}` and `{type: "image_url", image_url: {url}}` parts (the URL a `data:<type>;base64,...` one; see Images below), or `null` on an assistant turn that only calls tools. An assistant message may carry `tool_calls` and `reasoning_content`; a tool message carries `tool_call_id`. The last message must be from the user or a tool. |
 | `tools` | functions the model may call: `{type: "function", function: {name, description, parameters}}`. Any other tool type is refused with `400`. |
 | `tool_choice` | `"auto"` (default), `"none"`, `"required"`. A named function is honoured as `"required"`: the engine can require a call, not choose which. |
 | `stream`, `stream_options.include_usage` | streaming, and a last chunk with the token counts. |
@@ -414,7 +415,24 @@ Request fields that are read:
 
 Ignored, because the session fixes them: `model`, `temperature`, `top_p`, `seed` and every
 other sampling field. Sampling is configured with the `temp`, `top-k`, `top-p` and `seed`
-parameters. An image or audio content part is refused with `400` rather than dropped.
+parameters. An audio or file content part is refused with `400` rather than dropped.
+
+**Images.** A model loaded with its projector reads them (`GET /api/info` says so: `model.vision`,
+and `model.projector` names the file). The projector is the `mmproj` GGUF the model's own conversion
+writes; put it in the model's folder and the server pairs the two by their headers (both name the
+same base model in `general.name`; failing that, the folder's only projector), or name it with the
+`mmproj` parameter. Any model llama.cpp's projector library knows, in any quantization of either
+file: nothing here names a family. An image travels inline, as a data URL on every protocol; a URL
+to fetch is refused with `400`, since a server on a network must not be made to fetch what a client
+names. Only a user message carries images, at most 8 of them, and one declaring more than 64
+megapixels is refused with the reason before it is decoded (the projector downsizes every image to
+its own few hundred pixels a side, so no photo loses by being sent smaller); each is `400`. An image
+part placed between text parts keeps its place in the prompt. The same image sent
+again in the same conversation is not encoded or prefilled again: the KV prefix is reused through
+it, and a different image at the same place is where the reuse ends. A request with images to a
+model loaded without a projector is `400` with `code: "no_vision"`. While a conversation holds an
+image, speculative decoding is off for it (the draft reads tokens, and an image's are
+embeddings); it is back with a new conversation. The body limit is 64 MiB, for a few screenshots.
 
 **Tools.** The server does not run tools and knows no tool syntax. The tools go to the model's own
 chat template, which writes them the way that model was trained to read them, and the same
@@ -556,8 +574,9 @@ leaves a smaller cache and a slower decode on a machine that is short of memory.
 
 ### `GET /v1/models`
 
-`{"object": "list", "data": [{"id": "<model file name>", "object": "model", "owned_by": "local"}]}`
-with the loaded model, or an empty list.
+`{"object": "list", "data": [{"id": "<model file name>", "object": "model", "owned_by": "local",
+"modalities": ["text", "image"]}]}` with the loaded model, or an empty list. `modalities` is this
+server's addition: `["text"]` without a projector, so a client knows whether to send an image.
 
 ### Agent protocols: what the two below share
 
@@ -590,7 +609,8 @@ each agent at the server. What they share:
   A reasoning model's thinking is sent as thinking (Messages) or reasoning items (Responses)
   whether or not the client asked to see it, so that the client returns it in the next request
   and the prompt still matches the KV.
-- **Images and files** are refused with `400`, as on the chat endpoint, rather than dropped.
+- **Images** are read as on the chat endpoint (Images, above): inline as base64, on a model loaded
+  with its projector. **Files** are refused with `400` rather than dropped.
 - **Ignored**: `model` (the loaded one answers), `temperature`, `top_p`, `top_k` and every other
   sampling field, as on the chat endpoint, and the fields that only mean something to a hosted
   service (prompt caching, metadata, `store`, `include`, `prompt_cache_key`, `parallel_tool_calls`).
@@ -602,7 +622,7 @@ The Anthropic Messages API. Request fields that are read:
 | field | meaning |
 |---|---|
 | `system` | a string or an array of `{type: "text", text}` blocks, joined. The per-request `x-anthropic-billing-header:` block Claude Code puts first is client metadata that changes on every request, and is dropped, or no request could reuse the KV. |
-| `messages` | `role` is `user`, `assistant` or `system`; `content` a string or blocks. `user`: `text` and `tool_result` (`tool_use_id`, content a string or `text` blocks; a `tool_reference` from Claude Code's tool search reads as `Tool loaded: <name>`). `assistant`: `text`, `thinking` (the reasoning, sent back), `redacted_thinking` (skipped) and `tool_use` (`id`, `name`, `input`). Any other block type is refused with `400`. The last message must be from the user or carry tool results: a prefilled assistant answer is refused, since the engine does not continue one. |
+| `messages` | `role` is `user`, `assistant` or `system`; `content` a string or blocks. `user`: `text`, `image` (`source: {type: "base64", media_type, data}`; a `url` source is refused) and `tool_result` (`tool_use_id`, content a string or `text` blocks; a `tool_reference` from Claude Code's tool search reads as `Tool loaded: <name>`). `assistant`: `text`, `thinking` (the reasoning, sent back), `redacted_thinking` (skipped) and `tool_use` (`id`, `name`, `input`). Any other block type is refused with `400`. The last message must be from the user or carry tool results: a prefilled assistant answer is refused, since the engine does not continue one. |
 | `tools` | client tools, `{name, description, input_schema}`. A tool with `defer_loading: true` is not described to the model (tool search loads it later). A server tool (one with a `type` such as `web_search_20250305`) is refused with `400`: nothing here runs it. |
 | `tool_choice` | `{type: "auto"}` (default), `"any"` or `"tool"` (both required: the engine can require a call, not choose which), `"none"`. |
 | `max_tokens` | the budget, read as `max_tokens` on the chat endpoint. Required by the protocol; absent, the `n-predict` parameter. |
@@ -643,7 +663,7 @@ state they name; `store` itself is accepted and not read. Request fields that ar
 | field | meaning |
 |---|---|
 | `instructions` | the system prompt. |
-| `input` | a string (one user message) or items: `message` (`role` `user`, `system`, `developer` or `assistant`; content a string or `input_text` / `output_text` / `refusal` parts), `function_call` (`call_id`, `name`, `arguments`), `function_call_output` (`call_id`, `output` a string or `input_text` parts) and `reasoning` (its `content` text; a summary or an encrypted content is not the reasoning, and is not read). The items of one model turn (reasoning, text, calls) become one assistant message. An image or file part, or another item type, is refused with `400`. The last item must be from the user or a `function_call_output`. |
+| `input` | a string (one user message) or items: `message` (`role` `user`, `system`, `developer` or `assistant`; content a string or `input_text` / `output_text` / `refusal` parts, and on a user message `input_image` with `image_url` a data URL; a `file_id` is refused), `function_call` (`call_id`, `name`, `arguments`), `function_call_output` (`call_id`, `output` a string or `input_text` parts) and `reasoning` (its `content` text; a summary or an encrypted content is not the reasoning, and is not read). The items of one model turn (reasoning, text, calls) become one assistant message. A file or audio part, or another item type, is refused with `400`. The last item must be from the user or a `function_call_output`. |
 | `tools` | `{type: "function", name, description, parameters}` tools are described to the model. Every other tool type (`web_search`, `namespace`, `custom`, `local_shell`, ...) is dropped, not refused: nothing here runs it, and Codex sends some whatever the provider has. |
 | `tool_choice` | `"auto"` (default), `"none"`, `"required"`, or `{type: "function", name}`, honoured as required. |
 | `max_output_tokens` | the budget, read as `max_tokens` on the chat endpoint. |
@@ -735,7 +755,7 @@ card is a `tool` item in state `waiting`, answered with `POST .../approval` on i
 |---|---|---|
 | 400 | `invalid_request` | a field of the wrong type or value (a mode, a route naming no saved provider, a schedule that cannot run, an imported item that is not `user` / `assistant`) |
 | 400 | `not_a_folder` | `POST /api/workspaces` with a path that is not an absolute, existing folder |
-| 400 | `unsupported` | a message with `images` |
+| 400 | `no_vision` | a message with `images` while the loaded model has no projector (`GET /api/info` `model.vision`), or on a conversation routed to a provider (a provider route carries text only) |
 | 403 | `local_only` | a route that reaches this computer, from a client not on loopback (below) |
 | 403 | `outside_workspace` | a preview path that resolves outside the workspace |
 | 404 | `not_found` | no such conversation, workspace, skill, task, provider or client; an approval for an item that is not waiting |
@@ -829,7 +849,8 @@ what knows where else models sit (the phone's adb-pushed and shared-storage fold
 what says what they are. `streamable` is whether this build streams the
 architecture. `role` is what the file is for, read from its header and never from its name:
 `model`; `projector` (a multimodal projector: `general.type` is `mmproj`, or the projector
-architecture `clip`); `draft` (a draft head for speculative decoding: it names another model's
+architecture `clip`; a model entry's own `projector` is the name of the one in its folder that goes
+with it, by `general.name`, "" when none does); `draft` (a draft head for speculative decoding: it names another model's
 `<arch>.target_layers`, or every one of its `<arch>.block_count` blocks is a prediction head,
 `<arch>.nextn_predict_layers`); `other` (another `general.type`, or no `<arch>.block_count` at
 all); `""` when the header could not be read. A UI lists anything but `model` and `""` apart from

@@ -66,15 +66,19 @@ export const agentApi = {
   patchConversation: (id: string, body: { title?: string; mode?: Mode; route?: string; workspace?: string | null; agent?: string }) =>
     request<unknown>('PATCH', `api/conversations/${seg(id)}`, body),
   deleteConversation: (id: string) => request<unknown>('DELETE', `api/conversations/${seg(id)}`),
-  send: (id: string, text: string, think?: boolean) =>
+  send: (id: string, text: string, think?: boolean, images?: string[]) =>
     request<{ item: Item }>(
       'POST',
       `api/conversations/${seg(id)}/messages`,
-      think === undefined ? { text } : { text, think },
+      { text, ...(think === undefined ? {} : { think }), ...(images && images.length ? { images } : {}) },
       (v): v is { item: Item } => isObject(v) && isItem(v.item),
     ),
-  edit: (id: string, item: string, text: string) =>
-    request<unknown>('POST', `api/conversations/${seg(id)}/edit`, { item, text }),
+  edit: (id: string, item: string, text: string, images?: string[]) =>
+    request<unknown>('POST', `api/conversations/${seg(id)}/edit`, {
+      item,
+      text,
+      ...(images && images.length ? { images } : {}),
+    }),
   approval: (id: string, item: string, decision: 'approve' | 'deny') =>
     request<unknown>('POST', `api/conversations/${seg(id)}/approval`, { item, decision }),
   stop: (id: string) => request<unknown>('POST', `api/conversations/${seg(id)}/stop`),

@@ -293,7 +293,8 @@ static void cut_call_tests() {
     const std::string cut = "{\"path\":\"index.html\",\"content\":\"<!DOCTYPE html>\\n<html lang=\\\"th";
     rig->say({{"", {{"c1", "write_file", cut}}}, {"That call was cut.", {}}, {"Still here.", {}}});
     json item;
-    check(rig->agent->send(c, "write a page", false, false, item).ok(), "cut call: a message starts a run");
+    check(rig->agent->send(c, "write a page", json::array(), false, false, item).ok(),
+          "cut call: a message starts a run");
     check(rig->wait_done(c), "cut call: the run ends");
     const json tool = rig->items_of(c, "tool")[0];
     const std::string result = tool.value("result", "");
@@ -309,7 +310,7 @@ static void cut_call_tests() {
         return std::string("(no call rendered)");
     };
     check(rendered() == "{}", "cut call: the model is shown an empty object in its place");
-    check(rig->agent->send(c, "go on", false, false, item).ok() && rig->wait_done(c),
+    check(rig->agent->send(c, "go on", json::array(), false, false, item).ok() && rig->wait_done(c),
           "cut call: the next message runs");
     check(rendered() == "{}" && rig->items_of(c, "assistant").size() == 3,
           "cut call: the next turn renders the same, and the conversation goes on");
@@ -323,7 +324,7 @@ static void cut_call_tests() {
         cuts.push_back({"", {{"c" + std::to_string(i), "write_file", cut.substr(0, cut.size() - 1 - i)}}});
     cuts.push_back({"Done.", {}});
     rig->say(cuts);
-    check(rig->agent->send(c2, "write a page", false, false, item).ok() && rig->wait_done(c2),
+    check(rig->agent->send(c2, "write a page", json::array(), false, false, item).ok() && rig->wait_done(c2),
           "cut call again: the run ends");
     check(rig->items_of(c2, "tool").size() == static_cast<size_t>(k_max_same_failed_calls),
           "cut call again: a call cut at another column each time counts as the same failure, and the run stops");
@@ -332,7 +333,8 @@ static void cut_call_tests() {
     rig = std::make_unique<Rig>();
     const std::string c3 = rig->conversation("full");
     rig->say({{"", {{"e1", "read_file", ""}}}, {"Listed.", {}}});
-    check(rig->agent->send(c3, "list", false, false, item).ok() && rig->wait_done(c3), "empty args: the run ends");
+    check(rig->agent->send(c3, "list", json::array(), false, false, item).ok() && rig->wait_done(c3),
+          "empty args: the run ends");
     bool empty_rendered = false;
     for (const ChatMessage & m : rig->last_request().messages)
         if (m.role == "assistant" && !m.tool_calls.empty()) empty_rendered = m.tool_calls[0].arguments == "{}";
@@ -345,7 +347,7 @@ static void loop_tests() {
         const std::string c = rig->conversation("ask");
         rig->say({{"", {call("write_file", {{"path", "notes/hello.txt"}, {"content", "hi\n"}})}}, {"Written.", {}}});
         json item;
-        check(rig->agent->send(c, "write a file", false, false, item).ok(), "a message starts a run");
+        check(rig->agent->send(c, "write a file", json::array(), false, false, item).ok(), "a message starts a run");
         check(item.value("kind", "") == "user" && item.value("text", "") == "write a file",
               "it answers with the user item");
         check(rig->wait_state(c, "waiting"), "ask mode: a write waits for an approval");
@@ -355,7 +357,7 @@ static void loop_tests() {
         check(tool.value("diff", "").find("+hi") != std::string::npos && tool.value("file", "") == "notes/hello.txt",
               "the card carries the diff and the file it will write");
         json again;
-        check(rig->agent->send(c, "again", false, false, again).status == 409,
+        check(rig->agent->send(c, "again", json::array(), false, false, again).status == 409,
               "a second message while it runs is a 409");
         check(rig->agent->approve(c, "nope", true).status == 404,
               "an approval of an item that is not waiting is a 404");
@@ -395,7 +397,7 @@ static void loop_tests() {
              {"Fine, I did not change it.", {}}});
         spit(rig->ws.path / "a.txt", "one\n");
         json item;
-        rig->agent->send(c, "edit", false, false, item);
+        rig->agent->send(c, "edit", json::array(), false, false, item);
         check(rig->wait_state(c, "waiting"), "an edit waits too");
         check(rig->agent->approve(c, rig->waiting_item(c), false).ok(), "a denial is taken");
         check(rig->wait_done(c), "the run ends after a denial");
@@ -411,7 +413,7 @@ static void loop_tests() {
                   {"", {call("exec_shell_command", {{"command", "ls -la"}})}},
                   {"I can only read.", {}}});
         json item;
-        rig->agent->send(c, "clean up", false, false, item);
+        rig->agent->send(c, "clean up", json::array(), false, false, item);
         check(rig->wait_done(c), "a read-only run ends without asking anything");
         const json tools = rig->items_of(c, "tool");
         check(tools.size() == 2 && tools[0].value("state", "") == "denied" &&
@@ -429,7 +431,7 @@ static void loop_tests() {
         const std::string c = rig->conversation("ask");
         rig->say({{"", {call("exec_shell_command", {{"command", "make install"}})}}});
         json item;
-        rig->agent->send(c, "install", false, false, item);
+        rig->agent->send(c, "install", json::array(), false, false, item);
         check(rig->wait_state(c, "waiting"), "a command that may change something waits");
         const auto t0 = std::chrono::steady_clock::now();
         check(rig->agent->stop(c), "stop finds the run");
@@ -447,7 +449,7 @@ static void loop_tests() {
         rig->script.fallback = {"", {call("file_glob_search", {{"path", "."}})}, false};
         const std::string c = rig->conversation("full");
         json item;
-        rig->agent->send(c, "loop forever", false, false, item);
+        rig->agent->send(c, "loop forever", json::array(), false, false, item);
         check(rig->wait_done(c, 20s), "a model that never stops calling is stopped");
         check(rig->requests() == (size_t) k_max_rounds_per_message, "after exactly the round limit");
         const json notes = rig->items_of(c, "notice");
@@ -459,7 +461,7 @@ static void loop_tests() {
         const std::string c = rig->conversation("full");
         rig->say({{"", {call("read_file", {{"path", "big.txt"}})}}, {"", {}, true}, {"Read it.", {}}});
         json item;
-        rig->agent->send(c, "read", false, false, item);
+        rig->agent->send(c, "read", json::array(), false, false, item);
         check(rig->wait_done(c), "a context refusal is not the end of the run");
         const json tool = rig->items_of(c, "tool")[0];
         check(tool.value("shortened", false) && tool.value("result", "").size() > 4000,
@@ -473,7 +475,8 @@ static void loop_tests() {
         auto rig = std::make_unique<Rig>(false);
         const std::string c = rig->conversation("ask", false);
         json item;
-        check(rig->agent->send(c, "hello", false, false, item).ok(), "a message with no model is accepted");
+        check(rig->agent->send(c, "hello", json::array(), false, false, item).ok(),
+              "a message with no model is accepted");
         check(rig->wait_done(c), "and its run ends");
         const json notes = rig->items_of(c, "notice");
         check(notes.size() == 1 && notes[0].value("level", "") == "error" &&
@@ -518,7 +521,7 @@ static void loop_tests() {
         const std::string c = rig->conversation("ask", false);
         rig->say({{"", {call("fetch_url", {{"url", "https://example.com"}})}}});
         json item;
-        rig->agent->send(c, "fetch", false, false, item);
+        rig->agent->send(c, "fetch", json::array(), false, false, item);
         // A tool this server does not have (the web is an MCP server's, when one is configured) is an
         // error, not a card.
         check(rig->wait_done(c), "a tool the conversation is not offered ends as an error item");
@@ -533,7 +536,7 @@ static void loop_tests() {
         const std::string c = rig->conversation("full");
         rig->say({{"Hello.", {}}});
         json item;
-        rig->agent->send(c, "hi", false, false, item);
+        rig->agent->send(c, "hi", json::array(), false, false, item);
         check(rig->wait_done(c), "chat only: a message is answered");
         const GenerateRequest r = rig->last_request();
         check(r.tools.empty() && !r.messages.empty() && r.messages[0].role == "user",
@@ -548,7 +551,7 @@ static void loop_tests() {
             same.push_back({"", {call("read_file", {{"path", "note.md"}})}});
         rig->say(same);
         json item;
-        rig->agent->send(c, "read my note", false, false, item);
+        rig->agent->send(c, "read my note", json::array(), false, false, item);
         check(rig->wait_done(c), "a repeated failing call ends the run");
         check(rig->items_of(c, "tool").size() == static_cast<size_t>(k_max_same_failed_calls),
               "it stops at the repeat limit");
@@ -563,14 +566,15 @@ static void loop_tests() {
         const std::string c = rig->conversation("ask");
         rig->say({{"", {call("write_file", {{"path", "x.txt"}, {"content", "x"}})}}});
         json item;
-        rig->agent->send(c, "write", false, false, item);
+        rig->agent->send(c, "write", json::array(), false, false, item);
         check(rig->wait_state(c, "waiting"), "a run waits for a person");
         const auto t0 = std::chrono::steady_clock::now();
         rig->agent->shutdown();
         check(std::chrono::steady_clock::now() - t0 < 3s && !rig->agent->running(c),
               "shutdown ends a waiting run and returns (an embedding app's stop)");
         json late;
-        check(rig->agent->send(c, "more", false, false, late).status == 503, "after shutdown no run starts");
+        check(rig->agent->send(c, "more", json::array(), false, false, late).status == 503,
+              "after shutdown no run starts");
     }
 }
 
@@ -895,6 +899,23 @@ static void provider_tests() {
     err.finish_body("{\"error\":{\"message\":\"bad key\"}}");
     check(err.error() == "bad key", "an error body says why");
     check(provider_error_message("<html>oops</html>") == "<html>oops</html>", "a body that is not JSON is quoted");
+    {
+        // A provider route carries text only: a message with images on it is refused before it is
+        // kept, with the code the no-projector case has, so a client shows the same thing.
+        auto rig = std::make_unique<Rig>();
+        const std::string c = rig->store->create_conversation(json{{"mode", "ask"}, {"route", "p1/m"}}).value("id", "");
+        json item;
+        const Refusal r = rig->agent->send(
+            c, "look",
+            json::array(
+                {"data:image/"
+                 "png;base64,"
+                 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="}),
+            false, false, item);
+        check(r.status == 400 && r.code == "no_vision" && r.error.find("does not carry images") != std::string::npos,
+              "images on a provider route are refused with the reason");
+        check(rig->items_of(c, "user").empty(), "and the message was not kept");
+    }
 }
 
 static void connect_tests() {
@@ -1266,7 +1287,8 @@ static void external_agent_tests() {
             rig->store->create_conversation({{"mode", "ask"}, {"workspace", rig->workspace_id}, {"agent", "fake"}})
                 .value("id", "");
         json item;
-        check(rig->agent->send(c, "write a file", false, false, item).ok(), "acp: a message starts the other agent");
+        check(rig->agent->send(c, "write a file", json::array(), false, false, item).ok(),
+              "acp: a message starts the other agent");
         check(rig->wait_state(c, "waiting"), "acp: its permission request is an approval card");
         const json card = rig->items_of(c, "tool")[0];
         check(card.value("diff", "").find("+hi") != std::string::npos && card.value("file", "") == "a.txt",
@@ -1285,7 +1307,7 @@ static void external_agent_tests() {
         check(rig->items_of(c, "tool")[0].value("state", "") == "done", "acp: the tool item ends done");
         check(rig->conv(c).value("acp_session", "") == "s1", "acp: the session is kept for the next message");
         json again;
-        check(rig->agent->edit(c, item.value("id", ""), "other", false, false, again).status == 409,
+        check(rig->agent->edit(c, item.value("id", ""), "other", json::array(), false, false, again).status == 409,
               "acp: another agent's session is not rewritten by an edit");
     }
     {
@@ -1307,7 +1329,7 @@ static void external_agent_tests() {
             rig->store->create_conversation({{"mode", "full"}, {"workspace", rig->workspace_id}, {"agent", "fake"}})
                 .value("id", "");
         json item;
-        rig->agent->send(c, "go on forever", false, false, item);
+        rig->agent->send(c, "go on forever", json::array(), false, false, item);
         for (int i = 0; i < 500 && rig->items_of(c, "assistant").empty(); ++i)
             std::this_thread::sleep_for(2ms);
         check(rig->agent->stop(c), "acp: a stop reaches the other agent");
@@ -1450,7 +1472,7 @@ static void mcp_agent_tests() {
         const std::string c = rig->conversation("ask");
         rig->say({{"", {call("srv_echo", {{"text", "hi"}})}}, {"It said hi.", {}}});
         json item;
-        rig->agent->send(c, "echo", false, false, item);
+        rig->agent->send(c, "echo", json::array(), false, false, item);
         check(rig->wait_state(c, "waiting"), "mcp ask: a call waits for an approval, like a change");
         const GenerateRequest r = rig->last_request();
         check(declares(r, "srv_echo") && declares(r, "read_file"),
@@ -1470,7 +1492,7 @@ static void mcp_agent_tests() {
         const std::string c = rig->conversation("full");
         rig->say({{"", {call("srv_echo", {{"text", "yo"}})}}, {"ok", {}}});
         json item;
-        rig->agent->send(c, "echo", false, false, item);
+        rig->agent->send(c, "echo", json::array(), false, false, item);
         check(rig->wait_done(c) && rig->items_of(c, "tool")[0].value("state", "") == "done",
               "mcp full: a call runs without asking");
     }
@@ -1478,7 +1500,7 @@ static void mcp_agent_tests() {
         const std::string c = rig->conversation("read_only");
         rig->say({{"", {call("srv_echo", {{"text", "no"}})}}, {"ok", {}}});
         json item;
-        rig->agent->send(c, "echo", false, false, item);
+        rig->agent->send(c, "echo", json::array(), false, false, item);
         check(rig->wait_done(c) && !declares(rig->last_request(), "srv_echo") &&
                   rig->items_of(c, "tool")[0].value("state", "") == "error",
               "mcp read_only: not offered, and a call is refused");
@@ -1487,14 +1509,14 @@ static void mcp_agent_tests() {
         const std::string c = rig->conversation("full", false);
         rig->say({{"ok", {}}});
         json item;
-        rig->agent->send(c, "hi", false, false, item);
+        rig->agent->send(c, "hi", json::array(), false, false, item);
         check(rig->wait_done(c) && !declares(rig->last_request(), "srv_echo"), "mcp: no workspace, no MCP tools");
     }
     {
         const std::string c = rig->conversation("full");
         rig->say({{"ok", {}}});
         json item;
-        rig->agent->send(c, "hi", false, true, item);
+        rig->agent->send(c, "hi", json::array(), false, true, item);
         check(rig->wait_done(c) && !declares(rig->last_request(), "srv_echo"),
               "mcp: a request from the network gets no MCP tool");
     }
@@ -1516,7 +1538,7 @@ static void prompt_tests() {
     const std::string c = rig->conversation("ask");
     rig->say({{"ok", {}}});
     json item;
-    rig->agent->send(c, "hi", false, false, item);
+    rig->agent->send(c, "hi", json::array(), false, false, item);
     rig->wait_done(c);
     const std::string prompt = rig->last_request().messages[0].content;
     std::printf("system prompt of a workspace conversation: %zu characters, %zu tools\n", prompt.size(),
@@ -1527,7 +1549,7 @@ static void prompt_tests() {
     spit(rig->ws.path / "AGENTS.md", "Use tabs.\n" + std::string(20000, 'x'));
     const std::string c2 = rig->conversation("ask");
     rig->say({{"ok", {}}});
-    rig->agent->send(c2, "hi", false, false, item);
+    rig->agent->send(c2, "hi", json::array(), false, false, item);
     rig->wait_done(c2);
     const std::string with = rig->last_request().messages[0].content;
     check(with.find("AGENTS.md:\nUse tabs.") != std::string::npos &&
@@ -1535,7 +1557,7 @@ static void prompt_tests() {
           "the workspace's AGENTS.md is appended, capped");
     const std::string c3 = rig->conversation("ask");
     rig->say({{"ok", {}}});
-    rig->agent->send(c3, "hi", false, true, item);
+    rig->agent->send(c3, "hi", json::array(), false, true, item);
     rig->wait_done(c3);
     check(rig->last_request().messages[0].content.find("Use tabs.") == std::string::npos,
           "a request from the network does not get the workspace's AGENTS.md");
