@@ -37,6 +37,8 @@
 #include "openai_chat.h"
 #include "openai_responses.h"
 #include "plan_view.h"
+#include "log_file.h"
+#include "service_spec.h"
 #include "settings_store.h"
 #include "sha256.h"
 #include "turn_queue.h"
@@ -57,6 +59,10 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+#include <filesystem>
+
+namespace fs = std::filesystem;
 
 using namespace bmoe;
 using namespace bmoe::server;
@@ -2101,8 +2107,131 @@ static void thermal_tests() {
     fs::remove_all(root, ec);
 }
 
+// ── the server as a service (service_spec.h, log_file.h) ──
+// What each init system is handed, as text, and how an install's arguments are completed.
+static void service_tests() {
+    check(systemd_quote("plain") == "\"plain\"", "systemd: every argument is quoted");
+    check(systemd_quote("a b") == "\"a b\"", "systemd: a space stays inside the quotes");
+    check(systemd_quote("say \"hi\"") == "\"say \\\"hi\\\"\"", "systemd: a quote is escaped");
+    check(systemd_quote("C:\\x") == "\"C:\\\\x\"", "systemd: a backslash is escaped");
+    check(systemd_quote("$HOME 5%") == "\"$$HOME 5%%\"", "systemd: $ and % arrive literally");
+
+    check(windows_quote("plain") == "plain", "windows: a plain argument passes as is");
+    check(windows_quote("a b") == "\"a b\"", "windows: a space is quoted");
+    check(windows_quote("") == "\"\"", "windows: an empty argument is a pair of quotes");
+    check(windows_quote("say \"hi\"") == "\"say \\\"hi\\\"\"", "windows: a quote is escaped");
+    check(windows_quote("C:\\my dir\\") == "\"C:\\my dir\\\\\"",
+          "windows: backslashes before the closing quote are doubled, the others not");
+    check(windows_quote("x\\\\\"y") == "\"x\\\\\\\\\\\"y\"", "windows: backslashes before a quote are doubled");
+
+    check(xml_escape("a<b>&\"c'") == "a&lt;b&gt;&amp;&quot;c&apos;", "xml: the five characters are escaped");
+
+    ServiceSpec s;
+    s.executable = "/opt/bmoe/bmoe-server";
+    s.args = {"--host", "0.0.0.0", "-m", "/models/a b.gguf"};
+    s.working_dir = "/opt/bmoe";
+    s.log_file = "/home/u/.local/share/bigmoeonedge/logs/bmoe-server.log";
+
+    const std::string unit = render_systemd_unit(s);
+    check(unit.find("ExecStart=\"/opt/bmoe/bmoe-server\" \"--host\" \"0.0.0.0\" \"-m\" \"/models/a b.gguf\"\n") !=
+              std::string::npos,
+          "systemd unit: ExecStart is the executable and every argument, quoted");
+    check(unit.find("WorkingDirectory=/opt/bmoe\n") != std::string::npos,
+          "systemd unit: the working directory, as typed (a path setting is not unquoted)");
+    check(systemd_path("/opt/100%/b") == "/opt/100%%/b", "systemd path: the specifier character is escaped");
+    check(unit.find("Restart=on-failure\n") != std::string::npos &&
+              unit.find("[Install]\nWantedBy=default.target\n") != std::string::npos,
+          "systemd unit: restarted on failure, wanted by the user's default target");
+    check(unit.find(s.log_file) == std::string::npos, "systemd unit: names no log file (the journal keeps the output)");
+
+    const std::string plist = render_launchd_plist(s);
+    check(plist.find("<key>Label</key>\n  <string>io.bigmoeonedge.server</string>") != std::string::npos,
+          "launchd plist: the label");
+    check(
+        plist.find("<string>/opt/bmoe/bmoe-server</string>\n    <string>--host</string>\n    <string>0.0.0.0</string>\n"
+                   "    <string>-m</string>\n    <string>/models/a b.gguf</string>\n  </array>") != std::string::npos,
+        "launchd plist: the program and its arguments, one string each, unquoted");
+    check(plist.find("<key>RunAtLoad</key>\n  <true/>") != std::string::npos &&
+              plist.find("<key>SuccessfulExit</key>\n    <false/>") != std::string::npos,
+          "launchd plist: run at load, kept alive after a failure only");
+    check(plist.find("<key>StandardOutPath</key>\n  <string>" + s.log_file + "</string>") != std::string::npos &&
+              plist.find("<key>StandardErrorPath</key>\n  <string>" + s.log_file + "</string>") != std::string::npos,
+          "launchd plist: both outputs to the log file");
+    ServiceSpec quiet = s;
+    quiet.log_file.clear();
+    check(render_launchd_plist(quiet).find("StandardOutPath") == std::string::npos,
+          "launchd plist: no log file, no output paths");
+
+    ServiceSpec w;
+    w.executable = "C:\\Program Files\\BigMoeOnEdge\\bmoe-server.exe";
+    w.args = {
+        "--host", "0.0.0.0", "-m", "C:\\models\\a b.gguf", "--data-dir", "C:\\Users\\u\\AppData\\Local\\BigMoeOnEdge"};
+    w.working_dir = "C:\\Program Files\\BigMoeOnEdge";
+    const std::string task = render_task_scheduler_xml(w);
+    check(task.find("<Command>C:\\Program Files\\BigMoeOnEdge\\bmoe-server.exe</Command>") != std::string::npos,
+          "task xml: the command is the executable, unquoted (its own element)");
+    check(task.find("<Arguments>--host 0.0.0.0 -m &quot;C:\\models\\a b.gguf&quot; --data-dir "
+                    "C:\\Users\\u\\AppData\\Local\\BigMoeOnEdge</Arguments>") != std::string::npos,
+          "task xml: the arguments as one command line, each quoted as Windows parses it, then XML-escaped");
+    check(task.find("<LogonType>S4U</LogonType>") != std::string::npos &&
+              task.find("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>") != std::string::npos &&
+              task.find("<LogonTrigger>") != std::string::npos,
+          "task xml: at logon, as the person with no password stored, with no time limit");
+    ServiceSpec amp = w;
+    amp.executable = "C:\\A&B\\bmoe-server.exe";
+    check(render_task_scheduler_xml(amp).find("<Command>C:\\A&amp;B\\bmoe-server.exe</Command>") != std::string::npos,
+          "task xml: a path is XML-escaped");
+
+    const std::string D = "/home/u/.local/share/bigmoeonedge", L = D + "/logs/bmoe-server.log";
+    ServiceArguments a = service_arguments({}, D, L);
+    check(a.args == std::vector<std::string>{"--data-dir", D, "--log-file", L, "--autoload"} && a.key_file.empty(),
+          "service args: nothing given gets the data folder, the log file and --autoload, and no key");
+    a = service_arguments({"--host", "0.0.0.0"}, D, L);
+    check(a.key_file == D + "/api-key", "service args: a host beyond loopback with no key gets a key file");
+    check(a.args.size() >= 2 && a.args[a.args.size() - 2] == "--api-key-file" && a.args.back() == a.key_file,
+          "service args: ...named on the command line");
+    check(service_arguments({"--host", "0.0.0.0", "--no-api-key"}, D, L).key_file.empty(),
+          "service args: --no-api-key is the person's decision, no key is made");
+    check(service_arguments({"--host", "0.0.0.0", "--api-key-file", "/k"}, D, L).key_file.empty(),
+          "service args: a key file given is kept");
+    check(service_arguments({"--host", "0.0.0.0", "--api-key", "s3cret"}, D, L).key_file.empty(),
+          "service args: a key given is kept");
+    check(service_arguments({"--host", "127.0.0.1"}, D, L).key_file.empty() &&
+              service_arguments({"--host", "localhost"}, D, L).key_file.empty(),
+          "service args: loopback needs no key");
+    {
+        const auto takes = [](const std::string & f) { return f == "-m" || f == "--models-dir"; };
+        const auto abs = [](const std::string & p) { return p[0] == '/' ? p : "/cwd/" + p; };
+        check(with_absolute_paths({"-m", "x.gguf", "--host", "0.0.0.0", "--models-dir", "/m", "-c", "4096", "-m"},
+                                  takes, abs) == std::vector<std::string>{"-m", "/cwd/x.gguf", "--host", "0.0.0.0",
+                                                                          "--models-dir", "/m", "-c", "4096", "-m"},
+              "absolute paths: a path-valued argument is resolved, the rest and a trailing flag are as typed");
+    }
+    a = service_arguments({"--open", "-m", "x.gguf", "--autoload", "--data-dir", "/d2", "--log-file", "/l2"}, D, L);
+    check(a.args == std::vector<std::string>{"-m", "x.gguf", "--autoload", "--data-dir", "/d2", "--log-file", "/l2"},
+          "service args: --open is dropped, what was given is kept once and in its order, nothing added twice");
+
+    // Rotation: the file moves aside at the size, replacing an older one; smaller or missing stays.
+    std::error_code ec;
+    const fs::path root = fs::temp_directory_path(ec) / "bmoe-log-test";
+    fs::remove_all(root, ec);
+    fs::create_directories(root, ec);
+    const std::string log = (root / "s.log").u8string();
+    std::string err;
+    check(rotate_log(log, 5, err) && !fs::exists(root / "s.log.1", ec), "rotate: a missing log is nothing to do");
+    { std::ofstream(log, std::ios::binary) << "abc"; }
+    check(rotate_log(log, 5, err) && fs::exists(root / "s.log", ec) && !fs::exists(root / "s.log.1", ec),
+          "rotate: a log under the size stays");
+    { std::ofstream(log, std::ios::binary) << "0123456789"; }
+    { std::ofstream(root / "s.log.1", std::ios::binary) << "old"; }
+    check(rotate_log(log, 5, err) && !fs::exists(root / "s.log", ec) && fs::file_size(root / "s.log.1", ec) == 10,
+          "rotate: at the size it becomes .1, replacing the older .1");
+    fs::remove_all(root, ec);
+}
+
 int main() {
     thermal_tests();
+    service_tests();
     protocol_tests();
     block_stream_tests();
     anthropic_tests();

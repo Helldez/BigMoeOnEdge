@@ -7,6 +7,21 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **The server as a service of the init system** (#472): `bmoe-server service install|uninstall|start|stop|status`
+  registers a per-user service started at login and back after a failure, a systemd user unit, a
+  launchd agent or a Windows scheduled task, whichever tool answers on the machine, with the server
+  options and engine parameters given at install, parsed as a start would and refused at install
+  when a start would refuse them. The install adds what a service needs: every path made absolute
+  (the service starts from the executable's folder, not the install's shell), the data folder made
+  explicit, a log file, `--autoload`, and a key file of its own making when `--host` reaches beyond
+  loopback with no key. Two new server flags give the service what it needs of the server:
+  `--autoload` loads the model the settings name at start and again when a request finds none
+  loaded (the request waits for the load instead of a `503 no_model`), and `--log-file PATH` sends
+  the console's output to a file, moved aside at 16 MiB. Each answer, whichever client asked, now
+  leaves one line in the log with its tokens, speed, prompt size and time, context length, expert
+  bytes read and cache hit rate, so a server that ran for a day can be read afterwards (#462 asked).
+  `docs/server-api.md`, "Running as a service". The service text is rendered by pure functions tested in `bmoe_server_test`; the
+  install itself is owed a run at a login on each platform.
 - **Every setting explains itself** (#468, from #465): each row a settings form shows, and each the
   plan decides, carries `details` in `/api/params`, a sentence or two in plain words on when to
   change it and what it costs, which the web UI, the Android app and the iOS app fold under the

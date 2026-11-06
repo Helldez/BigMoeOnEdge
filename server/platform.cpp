@@ -114,7 +114,7 @@ json host_info() {
                 {"cpu_threads", std::thread::hardware_concurrency()}};
 }
 
-std::string executable_dir() {
+std::string executable_path() {
 #if defined(_WIN32)
     std::wstring buf(MAX_PATH, L'\0');
     for (;;) {
@@ -126,17 +126,69 @@ std::string executable_dir() {
         }
         buf.resize(buf.size() * 2);
     }
-    return fs::path(buf).parent_path().u8string();
+    return fs::path(buf).u8string();
 #elif defined(__APPLE__)
     char buf[PATH_MAX];
     uint32_t size = sizeof(buf);
     if (_NSGetExecutablePath(buf, &size) != 0) return "";
     std::error_code ec;
-    return fs::canonical(buf, ec).parent_path().u8string();
+    const fs::path p = fs::canonical(buf, ec);
+    return ec ? "" : p.u8string();
 #else
     std::error_code ec;
     const fs::path p = fs::read_symlink("/proc/self/exe", ec);
-    return ec ? "" : p.parent_path().u8string();
+    return ec ? "" : p.u8string();
+#endif
+}
+
+std::string executable_dir() {
+    const std::string p = executable_path();
+    return p.empty() ? "" : fs::u8path(p).parent_path().u8string();
+}
+
+bool redirect_output(const std::string & path, std::string & err) {
+    std::error_code ec;
+    fs::create_directories(fs::u8path(path).parent_path(), ec);
+#if defined(_WIN32)
+    const std::wstring w = widen(path);
+    const bool ok = _wfreopen(w.c_str(), L"a", stdout) && _wfreopen(w.c_str(), L"a", stderr);
+#else
+    const bool ok = std::freopen(path.c_str(), "a", stdout) && std::freopen(path.c_str(), "a", stderr);
+#endif
+    if (!ok) {
+        err = "cannot open the log file " + path;
+        return false;
+    }
+    // A file is fully buffered by default: the "listening" line would reach it minutes later. Line
+    // buffering on Windows' C runtime is full buffering under another name, so there the streams
+    // are not buffered at all: a server's log is a few lines a minute, and a crash keeps its tail.
+#if defined(_WIN32)
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    std::setvbuf(stderr, nullptr, _IONBF, 0);
+#else
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);
+    std::setvbuf(stderr, nullptr, _IOLBF, 0);
+#endif
+    return true;
+}
+
+std::string user_config_dir() {
+#if defined(_WIN32)
+    PWSTR w = nullptr;
+    std::string base;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &w))) base = narrow(w);
+    CoTaskMemFree(w);
+    return base;
+#elif defined(__APPLE__)
+    const char * home = std::getenv("HOME");
+    if (!home || !*home) return "";
+    return (fs::path(home) / "Library").u8string();
+#else
+    const char * xdg = std::getenv("XDG_CONFIG_HOME");
+    if (xdg && *xdg) return xdg;
+    const char * home = std::getenv("HOME");
+    if (!home || !*home) return "";
+    return (fs::path(home) / ".config").u8string();
 #endif
 }
 

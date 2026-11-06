@@ -44,12 +44,17 @@ and one event stream per UI, which is microseconds against the tens of milliseco
 
 ## What stays platform-specific, and where
 
-The server has one file with platform `#if`s (`server/platform.cpp`): the data directory, the
-executable's own directory, the home folder, opening a browser, running the agent's commands
-(and whether it may: not on Android or iOS), and what the compute backends are told before they
-load (on Android, the Hexagon backend's polling and host buffer, set only where the environment has
-not set them). Everything else platform-shaped is an adapter the
-host app supplies or the server does without:
+The server has one file with platform `#if`s (`server/platform.cpp`): the data and configuration
+directories, the executable's own path, the home folder, opening a browser, sending its output to
+a log file, running the agent's commands (and whether it may: not on Android or iOS), and what the
+compute backends are told before they load (on Android, the Hexagon backend's polling and host
+buffer, set only where the environment has not set them). One more, `server/service_manager.cpp`,
+is an adapter around the init systems: it asks the machine which of their tools answers
+(`launchctl`, `systemctl`, `schtasks`) rather than which platform this is, and the one platform
+call it needs (the user's id for launchd's domain) sits in that adapter. The service itself is
+rendered as text by a pure function (`service_spec`), the same on every platform
+([server-api.md](server-api.md#running-as-a-service)). Everything else platform-shaped is an
+adapter the host app supplies or the server does without:
 
 - **Downloads.** The desktop server runs the system `curl`. Android has no `curl`, and the system
   owns background transfers there (a download must survive the app being put away), so the app
