@@ -51,6 +51,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
@@ -366,26 +367,32 @@ private fun Composer() {
     // Where the camera writes: kept across the camera activity, which may have this one killed meanwhile.
     var cameraUri by rememberSaveable { mutableStateOf<String?>(null) }
 
-    // Read off the main thread: a photo is megabytes. The rules (how many, how large, images only)
-    // are the web composer's, in ImageAttachments; the last reason stays under the thumbnails.
+    // The bytes are read off the main thread (a photo is megabytes); the rules (how many, how
+    // large, images only: the web composer's, in ImageAttachments) and every write of the screen's
+    // state run on it. Of a pick with several refusals the first reason stays under the thumbnails,
+    // and nothing past the count limit is read: the rule the three UIs share.
     fun attach(uris: List<Uri>, deleteAfter: Boolean = false) {
         if (uris.isEmpty()) return
-        scope.launch(Dispatchers.IO) {
+        scope.launch {
+            imageError = ""
             for (uri in uris) {
-                val mime = ctx.contentResolver.getType(uri) ?: ImageAttachments.DEFAULT_MIME
-                val bytes = runCatching { ctx.contentResolver.openInputStream(uri)?.use { readUpTo(it, ImageAttachments.MAX_BYTES + 1) } }.getOrNull()
-                if (deleteAfter) runCatching { ctx.contentResolver.delete(uri, null, null) }
-                if (bytes == null) {
-                    imageError = "The image could not be read"
-                    continue
+                if (images.size >= ImageAttachments.MAX_IMAGES) {
+                    if (imageError.isEmpty()) imageError = ImageAttachments.accept(ImageAttachments.DEFAULT_MIME, 0, images.size).orEmpty()
+                    if (deleteAfter) withContext(Dispatchers.IO) { runCatching { ctx.contentResolver.delete(uri, null, null) } }
+                    break
                 }
-                val why = ImageAttachments.accept(mime, bytes.size.toLong(), images.size)
+                val (mime, bytes) = withContext(Dispatchers.IO) {
+                    val mime = ctx.contentResolver.getType(uri)
+                    val bytes = runCatching { ctx.contentResolver.openInputStream(uri)?.use { readUpTo(it, ImageAttachments.MAX_BYTES + 1) } }.getOrNull()
+                    if (deleteAfter) runCatching { ctx.contentResolver.delete(uri, null, null) }
+                    mime to bytes
+                }
+                val why = if (bytes == null) "The image could not be read" else ImageAttachments.accept(mime, bytes.size.toLong(), images.size)
                 if (why != null) {
-                    imageError = why
+                    if (imageError.isEmpty()) imageError = why
                     continue
                 }
-                images = images + ImageAttachments.dataUrl(mime, bytes)
-                imageError = ""
+                images = images + ImageAttachments.dataUrl(mime, bytes!!)
             }
         }
     }
@@ -520,8 +527,9 @@ private fun Composer() {
                                 images = emptyList()
                                 imageError = ""
                                 // Not taken: what was to go comes back, and the error card says why.
+                                // The store answers from its own thread; the screen's state is written on Main.
                                 Chat.send(text, attached) { ok ->
-                                    if (!ok) {
+                                    if (!ok) scope.launch {
                                         prompt = text
                                         images = attached
                                     }

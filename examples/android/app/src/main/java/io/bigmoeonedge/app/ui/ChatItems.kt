@@ -64,7 +64,10 @@ private fun UserMessage(item: ChatItem, editable: Boolean) {
                 }
             }
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                DropdownMenuItem(text = { Text("Copy") }, onClick = { clipboard.setText(AnnotatedString(item.text)); menu = false })
+                // Copy copies the words: an item of images alone has none to copy.
+                if (item.text.isNotEmpty()) {
+                    DropdownMenuItem(text = { Text("Copy") }, onClick = { clipboard.setText(AnnotatedString(item.text)); menu = false })
+                }
                 DropdownMenuItem(text = { Text("Edit and send again") }, enabled = editable, onClick = { editing = true; menu = false })
             }
         }
@@ -78,7 +81,7 @@ private fun UserMessage(item: ChatItem, editable: Boolean) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         if (item.images.isEmpty()) "Everything after this message is dropped, then the edited one is sent."
-                        else "Everything after this message is dropped, then the edited one is sent with the same images.",
+                        else "Everything after this message is dropped, then the edited one is sent, with the same images.",
                         style = MaterialTheme.typography.bodySmall, color = tokens.muted,
                     )
                     OutlinedTextField(value = text, onValueChange = { text = it }, modifier = Modifier.fillMaxWidth(), minLines = 2, maxLines = 8)
