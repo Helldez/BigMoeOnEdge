@@ -111,6 +111,15 @@ The server speaks the OpenAI API (`/v1/chat/completions`, `/v1/responses`) and t
 (`/v1/messages`), with streaming, tool calls and reasoning. Add `--host 0.0.0.0 --api-key KEY` to
 serve other machines. Reference: [docs/server-api.md](docs/server-api.md).
 
+On a machine that stays on, register it as a service of your login instead: it starts with the
+machine, comes back with its model, and reloads it when a request finds none loaded
+([running as a service](docs/server-api.md#running-as-a-service)).
+
+```bash
+bmoe-server service install --host 0.0.0.0 -m model.gguf -c 65536   # systemd, launchd or Task Scheduler
+bmoe-server service status
+```
+
 ```python
 from openai import OpenAI
 

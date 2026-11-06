@@ -34,6 +34,10 @@
 #include "update_service.h"
 #include "url_entry.h"
 
+#include "log_file.h"
+#include "server_flags.h"
+#include "service_manager.h"
+
 #include "bmoe/config.h"
 #include "bmoe/params.h"
 #include "bmoe/probe.h"
@@ -144,7 +148,9 @@ struct Options {
     bool models_only = false; // every client, local ones too, names models in the models folder only
     bool chat_only = false;   // conversations are plain chat: no agent tools, workspaces or tasks
     bool open_browser = false;
-    bool isolated_probes = true;                  // the planner asks each device in a child process first
+    bool autoload = false;       // load the model the settings name at start and whenever a request finds none
+    std::string log_file;        // --log-file: the console's output goes here instead, rotated at start
+    bool isolated_probes = true; // the planner asks each device in a child process first
     std::string hf_endpoint = kDefaultHfEndpoint; // where repositories are listed and fetched from
     std::string feed_url = kFeedUrl;              // the release feed, read only when a person asks
     long parent_pid = 0;                          // --parent-pid: stop when that process is gone
@@ -201,12 +207,19 @@ void print_usage(const char * argv0) {
                 "  --feed-url URL       the signed release feed backend packs and updates are read from\n"
                 "                       (https; default: this project's latest release)\n"
                 "  --parent-pid PID     stop when process PID ends (the app that started this server)\n"
+                "  --autoload           load the model the settings name at start, and again when a request\n"
+                "                       finds none loaded (the request waits for it): what a service runs with\n"
+                "  --log-file PATH      write the console's output to PATH instead, appended, moved aside at\n"
+                "                       start once it passes %d MiB\n"
                 "  -h, --help           this text\n"
                 "      --version        print the engine version\n"
                 "\n"
                 "Engine parameters are the bmoe-cli flags (bmoe-cli --help lists them). Given here, they\n"
-                "hold for this run and outrank saved settings; -m loads that model at start.\n",
-                argv0, kDefaultHost, kDefaultPort, kDefaultHfEndpoint);
+                "hold for this run and outrank saved settings; -m loads that model at start.\n"
+                "\n"
+                "%s service install|uninstall|start|stop|status: the server as a service of your init\n"
+                "system, started at login (%s service --help).\n",
+                argv0, kDefaultHost, kDefaultPort, kDefaultHfEndpoint, (int) (kLogRotateBytes >> 20), argv0, argv0);
 }
 
 // -1: continue; otherwise the exit code.
@@ -221,7 +234,7 @@ int parse_args(int argc, char ** argv, Options & o) {
             }
             return argv[++i];
         };
-        if (a == "--host")
+        if (a == flag::host)
             o.host = next();
         else if (a == "--port") {
             long long port = 0;
@@ -231,13 +244,13 @@ int parse_args(int argc, char ** argv, Options & o) {
                 return 2;
             }
             o.port = (int) port;
-        } else if (a == "--open")
+        } else if (a == flag::open)
             o.open_browser = true;
         else if (a == "--models-dir")
             o.models_dir = next();
         else if (a == "--scan-dir")
             o.scan_dirs.push_back(next());
-        else if (a == "--data-dir")
+        else if (a == flag::data_dir)
             o.data_dir = next();
         else if (a == "--ui-dir")
             o.ui_dir = next();
@@ -249,16 +262,20 @@ int parse_args(int argc, char ** argv, Options & o) {
             o.mcp_config = next();
         else if (a == "--allow-origin")
             o.allow_origins.push_back(next());
-        else if (a == "--api-key")
+        else if (a == flag::api_key)
             o.api_key = next();
-        else if (a == "--api-key-file")
+        else if (a == flag::api_key_file)
             o.api_key_file = next();
-        else if (a == "--no-api-key")
+        else if (a == flag::no_api_key)
             o.no_api_key = true;
         else if (a == "--models-only")
             o.models_only = true;
         else if (a == "--chat-only")
             o.chat_only = true;
+        else if (a == flag::autoload)
+            o.autoload = true;
+        else if (a == flag::log_file)
+            o.log_file = next();
         else if (a == "--no-isolated-probes")
             o.isolated_probes = false;
         else if (a == "--probe-device")
@@ -271,7 +288,7 @@ int parse_args(int argc, char ** argv, Options & o) {
                 std::fprintf(stderr, "bmoe-server: --hf-endpoint must be an http(s) URL\n");
                 return 2;
             }
-        } else if (a == "--parent-pid") {
+        } else if (a == flag::parent_pid) {
             long long pid = 0;
             std::string err;
             if (!parse_int_strict(next(), 1, std::numeric_limits<int>::max(), pid, err)) {
@@ -540,8 +557,28 @@ struct App {
     // A model this build does not stream (a dense one) cannot open with streaming on, so streaming
     // follows the model unless the user set it themselves.
     std::string load_current() {
-        if (store.config().model_path.empty()) return "no model selected";
         std::lock_guard<std::mutex> load(load_m);
+        return load_current_locked();
+    }
+
+    // A request that needs a model: "" when one is ready, or loading (the turn then waits for it,
+    // as a turn sent during a load does), or, with --autoload, when nothing was loaded and the
+    // load of the model the settings name has just been asked for. Otherwise why the request is
+    // refused (503 `no_model`). The load is asked for under load_m, so the requests that arrive
+    // together ask once and the others find it loading.
+    std::string model_for_request() {
+        if (host.ready()) return "";
+        if (!opt.autoload) return "no model is loaded: load one from the Models page";
+        if (host.loaded_or_loading()) return "";
+        if (store.config().model_path.empty()) return "no model is selected: choose one from the Models page";
+        std::lock_guard<std::mutex> load(load_m);
+        if (host.loaded_or_loading()) return "";
+        return load_current_locked();
+    }
+
+    // The caller holds load_m.
+    std::string load_current_locked() {
+        if (store.config().model_path.empty()) return "no model selected";
         if (auto_plan()) {
             host.unload();
             host.begin_planning();
@@ -822,8 +859,8 @@ void register_routes(httplib::Server & svr, App & app) {
         std::string err;
         if (!parse_chat_request(body, app.store.api_config(), cr, err))
             return send_error(res, 400, err, "invalid_request");
-        if (!app.host.ready())
-            return send_error(res, 503, "no model is loaded: load one from the Models page", error_code::no_model);
+        if (const std::string why = app.model_for_request(); !why.empty())
+            return send_error(res, 503, why, error_code::no_model);
 
         ChatResponseMeta meta;
         meta.id = "chatcmpl-" + std::to_string(++app.chat_seq);
@@ -942,9 +979,8 @@ void register_routes(httplib::Server & svr, App & app) {
         std::string err;
         if (!parse_messages_request(body, app.store.api_config(), ar, err))
             return send_path_error(req.path, res, 400, err, "invalid_request");
-        if (!app.host.ready())
-            return send_path_error(req.path, res, 503, "no model is loaded: load one from the Models page",
-                                   error_code::no_model);
+        if (const std::string why = app.model_for_request(); !why.empty())
+            return send_path_error(req.path, res, 503, why, error_code::no_model);
         ChatResponseMeta meta;
         meta.id = "msg_" + std::to_string(++app.chat_seq);
         meta.created = (long long) std::time(nullptr);
@@ -972,9 +1008,8 @@ void register_routes(httplib::Server & svr, App & app) {
         std::string err;
         if (!parse_responses_request(body, app.store.api_config(), rr, err))
             return send_path_error(req.path, res, 400, err, "invalid_request");
-        if (!app.host.ready())
-            return send_path_error(req.path, res, 503, "no model is loaded: load one from the Models page",
-                                   error_code::no_model);
+        if (const std::string why = app.model_for_request(); !why.empty())
+            return send_path_error(req.path, res, 503, why, error_code::no_model);
         ChatResponseMeta meta;
         meta.id = "resp_" + std::to_string(++app.chat_seq);
         meta.created = (long long) std::time(nullptr);
@@ -991,8 +1026,8 @@ void register_routes(httplib::Server & svr, App & app) {
         DecideRequest dr;
         std::string err;
         if (!parse_decide_request(body, dr, err)) return send_error(res, 400, err);
-        if (!app.host.ready())
-            return send_error(res, 503, "no model is loaded: load one from the Models page", error_code::no_model);
+        if (const std::string why = app.model_for_request(); !why.empty())
+            return send_error(res, 503, why, error_code::no_model);
         DecideOutcome out = app.host.decide(dr, [&req] { return !req.is_connection_closed(); });
         if (out.status != 200) return send_error(res, out.status, out.error, out.code);
         send_json(res, decide_json(out.result));
@@ -1349,9 +1384,31 @@ int run(int argc, char ** argv) {
 }
 
 int run(int argc, char ** argv, const Embedding & embedding) {
+    // `service <verb>`: the server as a service of the init system (service_manager.h). The
+    // installer parses the arguments the service will start with exactly as this start does.
+    if (argc >= 2 && std::string(argv[1]) == "service")
+        return run_service_command(argc - 2, argv + 2, [argv](const std::vector<std::string> & args) {
+            std::vector<char *> av{argv[0]};
+            for (const std::string & a : args)
+                av.push_back(const_cast<char *>(a.c_str()));
+            Options o;
+            const int rc = parse_args((int) av.size(), av.data(), o);
+            if (rc == 0) return std::string("they end the server before it serves (--help, --version)");
+            if (rc > 0) return std::string("refused, as said above");
+            return launch_refusal(o.host, o.api_key, o.no_api_key);
+        });
     Options o;
     const int rc = parse_args(argc, argv, o);
     if (rc >= 0) return rc;
+    if (!o.log_file.empty()) {
+        // From here on everything the console would have shown goes to the file, this start's own
+        // lines included; what came before (an argument refused) was for whoever typed it.
+        std::string err;
+        if (!rotate_log(o.log_file, kLogRotateBytes, err) || !platform::redirect_output(o.log_file, err)) {
+            std::fprintf(stderr, "bmoe-server: %s\n", err.c_str());
+            return 2;
+        }
+    }
     const std::string data_dir = o.data_dir.empty() ? platform::default_data_dir() : o.data_dir;
     // What a backend reads from its environment, set before any backend is loaded.
     platform::prepare_compute_backends(data_dir);
@@ -1464,6 +1521,14 @@ int run(int argc, char ** argv, const Embedding & embedding) {
         deps.store = app.agent_store.get();
         deps.local_chat = [&app](const ChatRequest & req, const std::function<bool(const TokenMetrics &)> & on_token,
                                  const std::function<bool()> & still_wanted) {
+            // The agent's turns need a model as the API's do, --autoload included.
+            if (const std::string why = app.model_for_request(); !why.empty()) {
+                ChatOutcome out;
+                out.status = 503;
+                out.error = why;
+                out.code = error_code::no_model;
+                return out;
+            }
             return app.host.chat(req, on_token, still_wanted);
         };
         deps.config = [&app] { return app.store.config(); };
@@ -1533,7 +1598,7 @@ int run(int argc, char ** argv, const Embedding & embedding) {
             o.host.c_str());
     std::fflush(stdout);
 
-    if (o.launch.count("model")) {
+    if (o.launch.count("model") || o.autoload) {
         const std::string err = app.load_current();
         if (!err.empty()) std::fprintf(stderr, "warning: not loading the model at start: %s\n", err.c_str());
     }

@@ -27,8 +27,19 @@ json host_info();
 // without privileges or private interfaces.
 std::string thermal_zone_root();
 
-// Directory holding the running executable, or "" if it cannot be determined.
+// The running executable's own path, and the directory holding it; "" if it cannot be determined.
+std::string executable_path();
 std::string executable_dir();
+
+// Sends this process's stdout and stderr to `path`, appended, line by line, from here on: what a
+// service writes where its console would have been (--log-file). Both streams in one file, in the
+// order written, as a console shows them. False with `err` when the file cannot be opened.
+bool redirect_output(const std::string & path, std::string & err);
+
+// Where this person's configuration files go on this platform ($XDG_CONFIG_HOME or ~/.config on
+// Linux, ~/Library on macOS, the local application data folder on Windows), or "" when there is
+// none: where an init system reads a per-user service from.
+std::string user_config_dir();
 
 // Per-user data directory for settings and downloaded models (created on first use):
 // %LOCALAPPDATA%\BigMoeOnEdge, ~/Library/Application Support/BigMoeOnEdge,
