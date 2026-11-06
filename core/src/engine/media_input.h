@@ -34,6 +34,13 @@ public:
     ~MediaInput();
 
     bool vision() const;
+
+    // The most pixels an image may decode to. Read from its header before any pixel is allocated:
+    // a small file declaring 20000x20000 would otherwise decode to more than a gigabyte of RGB on
+    // the way to the projector, which then downsizes it to its own few hundred pixels a side.
+    // Generous on purpose, so no photo a phone or a camera takes is refused.
+    static constexpr unsigned long long k_max_image_pixels = 64ull * 1024 * 1024;
+
     // The marker a prompt places an image with: the library's, the same string image_marker() gives.
     const char * marker() const;
 
@@ -46,14 +53,15 @@ public:
         Tokenized & operator=(const Tokenized &) = delete;
         ~Tokenized();
     };
-    // Tokenize `text` with `images` placed at its markers. False with `err` when the marker count
-    // and the image count differ (`mismatch` set), or an image could not be read.
+    // Tokenize `text` with `images` placed at its markers. False with `err` when the request is
+    // at fault (`invalid` set: the marker count and the image count differ, an image is not one the
+    // projector reads, or one declares more than k_max_image_pixels), or the library failed on it.
     bool tokenize(const std::string & text,
                   const std::vector<ChatImage> & images,
                   bool add_special,
                   Tokenized & out,
                   std::string & err,
-                  bool & mismatch) const;
+                  bool & invalid) const;
 
     // Encode span k of `t` and hand its embeddings to `decode`, n_batch tokens at a time, positioned
     // from pos0 (the span's own 2-D positions under M-RoPE, pos0 + i otherwise). The model's

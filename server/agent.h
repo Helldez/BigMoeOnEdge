@@ -23,6 +23,7 @@
 #include "engine_host.h"
 #include "event_bus.h"
 #include "http_fetch.h"
+#include "image_part.h"
 #include "json_rpc.h"
 #include "json_util.h"
 #include "mcp.h"
@@ -57,8 +58,6 @@ inline constexpr int k_scheduler_poll_s = 20;
 // How long a provider's answer may take, whole.
 inline constexpr int k_provider_timeout_s = 600;
 inline constexpr size_t k_title_max_chars = 60;
-// Images on one message of the person: a few screenshots, not a folder of them.
-inline constexpr size_t k_max_images_per_message = 8;
 
 // The model a round asks: the engine's turn, or a test's stand-in.
 using ChatFn = std::function<ChatOutcome(const ChatRequest & req,

@@ -144,8 +144,8 @@ bool parse_message(const json & m, std::vector<ChatMessage> & out, std::string &
         const std::string type = type_of(b);
         if (type == "text" && string_at(b, "text")) {
             join(msg.content, *string_at(b, "text"));
-        } else if (msg.role == "user" && type == "image") {
-            if (!image_block(b, msg, err)) return false;
+        } else if (type == "image") {
+            if (!image_block(b, msg, err)) return false; // the role rule: images_allowed, below
         } else if (msg.role == "assistant" && type == "thinking" && string_at(b, "thinking")) {
             msg.reasoning += *string_at(b, "thinking");
         } else if (msg.role == "assistant" && type == "redacted_thinking") {
@@ -175,6 +175,7 @@ bool parse_message(const json & m, std::vector<ChatMessage> & out, std::string &
             return unsupported_block(type, err);
         }
     }
+    if (!images_allowed(msg, err)) return false;
     // A user message that only answered tools has nothing left to say.
     if (msg.role != "user" || !msg.content.empty() || !msg.images.empty()) out.push_back(std::move(msg));
     return true;

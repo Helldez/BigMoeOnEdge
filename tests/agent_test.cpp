@@ -283,6 +283,64 @@ static std::string last_tool_message(const GenerateRequest & r) {
     return "";
 }
 
+// A call whose arguments the model never finished (a page cut off mid-string, as a context or a
+// token limit leaves it) is refused with the parser's reason, and the conversation goes on: the
+// record keeps what was written, the model is shown an empty object in its place, since a template
+// that parses the original rejects the conversation for good.
+static void cut_call_tests() {
+    auto rig = std::make_unique<Rig>();
+    const std::string c = rig->conversation("full");
+    const std::string cut = "{\"path\":\"index.html\",\"content\":\"<!DOCTYPE html>\\n<html lang=\\\"th";
+    rig->say({{"", {{"c1", "write_file", cut}}}, {"That call was cut.", {}}, {"Still here.", {}}});
+    json item;
+    check(rig->agent->send(c, "write a page", json::array(), false, false, item).ok(),
+          "cut call: a message starts a run");
+    check(rig->wait_done(c), "cut call: the run ends");
+    const json tool = rig->items_of(c, "tool")[0];
+    const std::string result = tool.value("result", "");
+    check(tool.value("state", "") == "error" && result.find("Error: the arguments are not a JSON object (") == 0 &&
+              result.find("column") != std::string::npos && result.find("complete") != std::string::npos,
+          "cut call: refused, with where the parser stopped and what to do");
+    check(last_tool_message(rig->last_request()) == result, "cut call: the model reads the reason");
+    check(rig->items_of(c, "assistant")[0]["tool_calls"][0].value("arguments", "") == cut,
+          "cut call: the record keeps what the model wrote");
+    const auto rendered = [&]() {
+        for (const ChatMessage & m : rig->last_request().messages)
+            if (m.role == "assistant" && !m.tool_calls.empty()) return m.tool_calls[0].arguments;
+        return std::string("(no call rendered)");
+    };
+    check(rendered() == "{}", "cut call: the model is shown an empty object in its place");
+    check(rig->agent->send(c, "go on", json::array(), false, false, item).ok() && rig->wait_done(c),
+          "cut call: the next message runs");
+    check(rendered() == "{}" && rig->items_of(c, "assistant").size() == 3,
+          "cut call: the next turn renders the same, and the conversation goes on");
+    check(rig->conv(c).value("state", "") == "idle", "cut call: idle again");
+
+    // A call cut again at another column is the same failure: the repeat rule stops the run.
+    rig = std::make_unique<Rig>();
+    const std::string c2 = rig->conversation("full");
+    std::vector<Turn> cuts;
+    for (int i = 0; i < k_max_same_failed_calls + 3; ++i)
+        cuts.push_back({"", {{"c" + std::to_string(i), "write_file", cut.substr(0, cut.size() - 1 - i)}}});
+    cuts.push_back({"Done.", {}});
+    rig->say(cuts);
+    check(rig->agent->send(c2, "write a page", json::array(), false, false, item).ok() && rig->wait_done(c2),
+          "cut call again: the run ends");
+    check(rig->items_of(c2, "tool").size() == static_cast<size_t>(k_max_same_failed_calls),
+          "cut call again: a call cut at another column each time counts as the same failure, and the run stops");
+
+    // Arguments written as nothing at all render as an empty object too: a template parses them.
+    rig = std::make_unique<Rig>();
+    const std::string c3 = rig->conversation("full");
+    rig->say({{"", {{"e1", "read_file", ""}}}, {"Listed.", {}}});
+    check(rig->agent->send(c3, "list", json::array(), false, false, item).ok() && rig->wait_done(c3),
+          "empty args: the run ends");
+    bool empty_rendered = false;
+    for (const ChatMessage & m : rig->last_request().messages)
+        if (m.role == "assistant" && !m.tool_calls.empty()) empty_rendered = m.tool_calls[0].arguments == "{}";
+    check(empty_rendered, "empty args: the model is shown an empty object, never an empty string");
+}
+
 static void loop_tests() {
     {
         auto rig = std::make_unique<Rig>();
@@ -841,6 +899,23 @@ static void provider_tests() {
     err.finish_body("{\"error\":{\"message\":\"bad key\"}}");
     check(err.error() == "bad key", "an error body says why");
     check(provider_error_message("<html>oops</html>") == "<html>oops</html>", "a body that is not JSON is quoted");
+    {
+        // A provider route carries text only: a message with images on it is refused before it is
+        // kept, with the code the no-projector case has, so a client shows the same thing.
+        auto rig = std::make_unique<Rig>();
+        const std::string c = rig->store->create_conversation(json{{"mode", "ask"}, {"route", "p1/m"}}).value("id", "");
+        json item;
+        const Refusal r = rig->agent->send(
+            c, "look",
+            json::array(
+                {"data:image/"
+                 "png;base64,"
+                 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="}),
+            false, false, item);
+        check(r.status == 400 && r.code == "no_vision" && r.error.find("does not carry images") != std::string::npos,
+              "images on a provider route are refused with the reason");
+        check(rig->items_of(c, "user").empty(), "and the message was not kept");
+    }
 }
 
 static void connect_tests() {
@@ -1504,6 +1579,7 @@ int main() {
     external_agent_tests();
     command_tests();
     loop_tests();
+    cut_call_tests();
     prompt_tests();
     mcp_agent_tests();
     if (failures) {

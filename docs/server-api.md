@@ -8,7 +8,8 @@ APIs that Claude Code and Codex CLI speak.
 It binds to `127.0.0.1` on port 8765 by default and, unless started with a key (`--api-key-file` or
 `--api-key`), has no authentication:
 it is a local program, like the CLI. See [Security model](#security-model) for exactly what that
-does and does not protect.
+does and does not protect. On a machine that stays on it runs as a service of the person's init
+system, started at login and back after a failure: [Running as a service](#running-as-a-service).
 
 It is also the application framework of this project: the same server, reached the same way,
 stands behind every UI, on the desktop and on a phone ([application-framework.md](application-framework.md)).
@@ -178,6 +179,70 @@ other software, or other people, on that machine or on a network it was told to 
 - **Downloads run the system's `curl`**, found on `PATH`, against the URLs in the catalog file
   beside the executable. Both are trusted as installed.
 
+## Running as a service
+
+A home server is a process that starts with the machine, comes back with its model, and serves
+whoever reaches it on a box nobody looks at. `bmoe-server service` registers the server as a
+service of the person's own init system, and two flags give it what a service needs of the server.
+
+```bash
+bmoe-server service install --host 0.0.0.0 -m /models/Qwen3.8-Flash-Next-Q2_K.gguf -c 65536
+bmoe-server service status
+bmoe-server service stop      # and start, without changing the registration
+bmoe-server service uninstall # settings, models and the key file stay in the data folder
+```
+
+**What `install` registers.** A per-user service, started at the person's login and started again
+after a failure (not after a stop asked for): a systemd user unit (`~/.config/systemd/user/`), a
+launchd agent (`~/Library/LaunchAgents/`) or a Windows scheduled task (registered from an XML kept in
+the data folder), whichever of the three tools answers on the machine (`systemctl`, `launchctl`,
+`schtasks`); the init system's name is `io.bigmoeonedge.server` on all three. No administrator
+rights. On Linux the install also asks `loginctl` to let the user linger, so the service survives
+the last session ending; where that needs an administrator, the install says what to run. On
+Windows the task runs as the person with no password stored (S4U), so it starts whether or not they
+sign in at the desktop. The server runs from the executable's own folder, where its backends, the
+UI and the catalog sit, so an archive extracted anywhere is a service from there; an installed
+desktop app's server is the same.
+
+**The arguments.** Everything after `install` is the server's own command line, options and
+engine parameters alike, parsed exactly as a start would parse them: a mistake is refused at
+install with its reason, not at the next login with nobody reading. A path typed relative to the
+shell (`-m model.gguf`, a models folder) is made absolute, since the service starts from the
+executable's folder, not from that shell. To them the install adds what a service needs and the
+person did not say: `--data-dir`, made explicit so the service and the person's shell agree on it;
+`--log-file`; `--autoload`; and, when `--host` reaches beyond loopback
+with no key given and no `--no-api-key`, a key of the install's own making, written to `api-key`
+in the data folder (readable by its owner only), named with `--api-key-file` and printed once. A
+key file an earlier install wrote is kept, so the clients that hold its key keep working. `--open`
+is dropped: a service has no browser to open. The launch rules in [Security model](#security-model)
+hold unchanged: an install that would be refused at start is refused at install.
+
+**`--autoload`.** Loads the model the settings name at start, and again whenever a request finds
+none loaded: the request waits for the load instead of being refused, as a request that arrives
+during a load already does. With auto-plan on, that load measures the machine first, as a load
+from the Models page does, so the first answer after a start or an unload is some seconds away. With
+no model selected yet, a start says so in the log and a request gets `503` with
+`code: "no_model"` and a message that says to choose one. Without the flag the server behaves as
+before: nothing is loaded at start unless `-m` says so, and a request with nothing loaded is a
+`503 no_model`. The desktop app does not set it.
+
+**`--log-file PATH`.** Everything the console would have shown, the server's lines and the
+engine's, appended to `PATH` in the order written, line by line. At start the file is moved to
+`PATH.1` once it is 16 MiB or more, replacing an earlier `.1`, so a service's log never grows past
+two of those. The init system keeps the rest: systemd's journal has what a crash leaves
+(`journalctl --user -u io.bigmoeonedge.server`), and the launchd agent sends the server's own
+output to the same file.
+
+Every answer leaves one line there, whichever client asked for it, with the figures the UI's
+metrics show for that answer: tokens generated and the decode speed, prompt tokens prefilled and
+in how long, the context length after the turn, the expert bytes read and the cache hit rate.
+A server that served an agent for a day answers "how much did it read" from its log.
+
+**With the desktop app.** The app looks for a free port from 8765 up, so a service on 8765 and the
+app's own server live side by side; the app's conversations and tasks are the app's. A service
+listening beyond loopback is what the phone and the apps connect to over the network, with the
+key, under the same security statement.
+
 ## Concepts
 
 - **Parameters** come from the engine's parameter table (`bmoe/params.h`). `GET /api/params`
@@ -191,6 +256,9 @@ other software, or other people, on that machine or on a network it was told to 
   Everything else follows the server's defaults, so improving a default reaches existing users.
   The same set is what the planner treats as pinned: a value a person chose is never overruled.
 - **One generation at a time.** A chat request that arrives while one runs waits its turn.
+- **A request needs a model.** With nothing loaded it is refused (`503`, `code: "no_model"`), unless
+  the server runs with `--autoload`, which loads the model the settings name and lets the request
+  wait for it ([Running as a service](#running-as-a-service)).
 
 ## Server and session state
 
@@ -356,7 +424,10 @@ same base model in `general.name`; failing that, the folder's only projector), o
 `mmproj` parameter. Any model llama.cpp's projector library knows, in any quantization of either
 file: nothing here names a family. An image travels inline, as a data URL on every protocol; a URL
 to fetch is refused with `400`, since a server on a network must not be made to fetch what a client
-names. An image part placed between text parts keeps its place in the prompt. The same image sent
+names. Only a user message carries images, at most 8 of them, and one declaring more than 64
+megapixels is refused with the reason before it is decoded (the projector downsizes every image to
+its own few hundred pixels a side, so no photo loses by being sent smaller); each is `400`. An image
+part placed between text parts keeps its place in the prompt. The same image sent
 again in the same conversation is not encoded or prefilled again: the KV prefix is reused through
 it, and a different image at the same place is where the reuse ends. A request with images to a
 model loaded without a projector is `400` with `code: "no_vision"`. While a conversation holds an
@@ -684,7 +755,7 @@ card is a `tool` item in state `waiting`, answered with `POST .../approval` on i
 |---|---|---|
 | 400 | `invalid_request` | a field of the wrong type or value (a mode, a route naming no saved provider, a schedule that cannot run, an imported item that is not `user` / `assistant`) |
 | 400 | `not_a_folder` | `POST /api/workspaces` with a path that is not an absolute, existing folder |
-| 400 | `no_vision` | a message with `images` while the loaded model has no projector (`GET /api/info` `model.vision`) |
+| 400 | `no_vision` | a message with `images` while the loaded model has no projector (`GET /api/info` `model.vision`), or on a conversation routed to a provider (a provider route carries text only) |
 | 403 | `local_only` | a route that reaches this computer, from a client not on loopback (below) |
 | 403 | `outside_workspace` | a preview path that resolves outside the workspace |
 | 404 | `not_found` | no such conversation, workspace, skill, task, provider or client; an approval for an item that is not waiting |

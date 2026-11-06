@@ -2481,10 +2481,12 @@ struct Session::Impl::Turn {
             // and sizes each image in tokens and positions. The text-only path below stays as it
             // was, byte for byte, for every prompt without an image.
             std::string err;
-            bool mismatch = false;
-            if (!im.media->tokenize(prompt, images, /*add_special*/ true, tk, err, mismatch)) {
+            bool invalid = false;
+            if (!im.media->tokenize(prompt, images, /*add_special*/ true, tk, err, invalid)) {
                 undo_history();
-                return fail(mismatch ? RunError::InvalidRequest : RunError::Failed, err);
+                // Nothing was decoded yet: a request at fault (a marker count, an image the
+                // projector cannot read or one too large) leaves the session usable.
+                return fail(invalid ? RunError::InvalidRequest : RunError::Failed, err);
             }
             n_prompt = (int) tokens.size();
         } else {
@@ -3170,8 +3172,13 @@ struct Session::Impl::Turn {
         if (!spec_on) return;
         const llama_pos emitted_end = (llama_pos) n_prompt + n_gen;
         // A memory that refuses the cut keeps what a checkpoint still describes, at worst nothing,
-        // rather than leave kv_tokens asserting a prefix the context no longer holds.
-        im.keep_kv_prefix((size_t) emitted_end);
+        // rather than leave kv_tokens asserting a prefix the context no longer holds. The
+        // bookkeeping is kept in chat mode only: outside it the cut goes to the memory directly,
+        // or the prefix clamp would read an empty record as "keep nothing".
+        if (chat_on)
+            im.keep_kv_prefix((size_t) emitted_end);
+        else if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, emitted_end, -1))
+            im.clear_memory(ctx);
         // The draft context mirrors the target's positions (process() decodes the same batches into
         // it), so it is trimmed to the same point — not cleared, or a continued chat turn would
         // feed it only the new suffix and draft from a state that never saw the conversation.

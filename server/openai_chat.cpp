@@ -82,6 +82,7 @@ bool parse_message(const json & m, ChatMessage & out, std::string & err) {
         return false;
     }
     if (!message_content(m.value("content", json()), out, err)) return false;
+    if (!images_allowed(out, err)) return false;
     if (m.contains("reasoning_content") && m["reasoning_content"].is_string())
         out.reasoning = m["reasoning_content"].get<std::string>();
     if (out.role == "tool") {

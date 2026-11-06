@@ -1,4 +1,5 @@
 #include "media_input.h"
+#include "image_probe.h"
 
 #include "bmoe/log.h"
 
@@ -80,8 +81,8 @@ bool MediaInput::tokenize(const std::string & text,
                           bool add_special,
                           Tokenized & out,
                           std::string & err,
-                          bool & mismatch) const {
-    mismatch = false;
+                          bool & invalid) const {
+    invalid = false;
     out.stream.clear();
     for (mtmd_input_chunk * c : out.chunks)
         mtmd_input_chunk_free(c);
@@ -91,6 +92,18 @@ bool MediaInput::tokenize(const std::string & text,
     bool ok = true;
     for (size_t i = 0; i < images.size() && ok; ++i) {
         const ChatImage & img = images[i];
+        // The decoded size, from the header: refused before the decode, through the path an
+        // unreadable image takes, so every API says why with the same status.
+        int w_px = 0, h_px = 0;
+        if (image_dimensions(reinterpret_cast<const unsigned char *>(img.bytes.data()), img.bytes.size(), w_px, h_px) &&
+            (unsigned long long) w_px * (unsigned long long) h_px > k_max_image_pixels) {
+            err = "image " + std::to_string(i + 1) + " is " + std::to_string(w_px) + "x" + std::to_string(h_px) +
+                  " pixels, and this engine decodes at most " + std::to_string(k_max_image_pixels >> 20) +
+                  " megapixels: send it downsized";
+            invalid = true;
+            ok = false;
+            break;
+        }
         mtmd_helper_bitmap_wrapper w = mtmd_helper_bitmap_init_from_buf(
             ctx_, reinterpret_cast<const unsigned char *>(img.bytes.data()), img.bytes.size(),
             /*placeholder*/ false, mtmd_helper_init_opt_default());
@@ -98,12 +111,14 @@ bool MediaInput::tokenize(const std::string & text,
         if (!w.bitmap) {
             err = "image " + std::to_string(i + 1) + " could not be decoded" +
                   (img.mime.empty() ? "" : " (" + img.mime + ")") + ": not an image format the projector reads";
+            invalid = true;
             ok = false;
             break;
         }
         if (mtmd_bitmap_is_audio(w.bitmap)) {
             err = "input " + std::to_string(i + 1) + " is audio, and this engine reads images only";
             mtmd_bitmap_free(w.bitmap);
+            invalid = true;
             ok = false;
             break;
         }
@@ -118,7 +133,7 @@ bool MediaInput::tokenize(const std::string & text,
         for (size_t at = text.find(mk); at != std::string::npos; at = text.find(mk, at + mk.size()))
             ++n_markers;
         if (n_markers != images.size()) {
-            mismatch = true;
+            invalid = true;
             err = "the prompt places " + std::to_string(n_markers) + " image marker(s) (" + mk + ") and carries " +
                   std::to_string(images.size()) + " image(s): one marker per image, in order";
             ok = false;

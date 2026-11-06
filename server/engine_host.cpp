@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <string>
 #include <utility>
 
 namespace bmoe::server {
@@ -84,6 +85,20 @@ std::string engine_message(const std::string & message) {
 // The other end of a full context: a request that fits is served, but its answer gets only the room
 // the prompt left. A client that summarizes its history when the context fills (an agent compacting)
 // then gets a cut or empty summary and may only say it failed, so the cut is said here.
+// One line per answer in the log, whatever client asked for it: a server left running for days has
+// no UI watching its event stream, and the question "how much did it read, how fast did it go" is
+// otherwise unanswerable afterwards. The figures are the summary's (docs/telemetry.md names them).
+static void log_answer(const RunSummary & sum, bool cancelled) {
+    log_printf(LogLevel::Info,
+               "answer%s: %d tokens at %.1f tok/s, prompt %d tokens prefilled in %.1f s (%.0f tok/s, %.0f MiB "
+               "read), context %d tokens, experts %.0f MiB read%s",
+               cancelled ? " (cancelled)" : "", sum.n_generated, sum.tokens_per_second, sum.n_prompt,
+               sum.prefill_seconds, sum.prefill_seconds > 0 ? sum.n_prompt / sum.prefill_seconds : 0.0,
+               sum.prefill_read_mib, sum.n_past, sum.moe_read_mib,
+               sum.cache_hit_pct >= 0 ? (", cache hit " + std::to_string((int) (sum.cache_hit_pct + 0.5)) + "%").c_str()
+                                      : "");
+}
+
 static void log_context_cut(int n_ctx, int asked, int given) {
     if (asked <= 0) {
         log_printf(LogLevel::Warn,
@@ -433,6 +448,7 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
         const double hit = sum.cache_hit_decode_pct >= 0.0 ? sum.cache_hit_decode_pct : sum.cache_hit_pct;
         last_turn_ = json{{"s_per_token", sum.s_per_token}, {"cache_hit_pct", hit}, {"tokens", sum.n_generated}};
     }
+    log_answer(sum, out.result.cancelled);
     bus_.publish("done", summary_json(out.result.summary, out.result.cancelled));
     publish_state();
     keep_routing(*s);

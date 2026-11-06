@@ -4,6 +4,21 @@
 
 namespace bmoe::server {
 
+bool images_allowed(const ChatMessage & msg, std::string & err) {
+    if (msg.images.empty()) return true;
+    if (msg.role != "user") {
+        err = "an image goes in a user message, not " + std::string(msg.role == "assistant" ? "an " : "a ") + msg.role +
+              " one";
+        return false;
+    }
+    if (msg.images.size() > k_max_images_per_message) {
+        err = "at most " + std::to_string(k_max_images_per_message) + " images go in one message (this one has " +
+              std::to_string(msg.images.size()) + ")";
+        return false;
+    }
+    return true;
+}
+
 bool image_from_base64(const std::string & mime, const std::string & data, ChatImage & out, std::string & err) {
     std::string bytes;
     if (!base64_decode(data, bytes) || bytes.empty()) {

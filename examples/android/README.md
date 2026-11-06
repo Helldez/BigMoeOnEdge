@@ -37,7 +37,7 @@ cannot update the release one.
    ```
 
    This fills `app/src/main/jniLibs/arm64-v8a/` with `libbmoe-server.so`, the engine the app
-   starts as a child process, and the `libllama`/`libggml` shared libraries it links.
+   starts as a child process, and the `libllama`/`libggml`/`libmtmd` shared libraries it links.
    `libbmoe-cli.so` is still staged beside them, but the app does not start it.
 
    The release build adds the Hexagon, Vulkan and OpenCL backends. It runs inside upstream's

@@ -2,6 +2,8 @@
 // images in it. Pure data, so these checks need no model: an image is a span of placeholders over
 // fewer positions than tokens, a prefix is shared whole-image or not at all, and a cut never lands
 // inside one.
+#include "image_probe.h"
+#include "media_input.h"
 #include "prompt_stream.h"
 
 #include <cstdio>
@@ -78,6 +80,36 @@ int main() {
         PromptStream bad;
         check(!bad.append(s, 0, 3) && bad.empty(), "a range that cuts an image is refused whole");
         check(kv.pos_at(7) == 6, "the appended stream maps positions as the source did");
+    }
+    {
+        // The header probe behind the pixel cap: a PNG's declared size is read from its IHDR alone,
+        // so a small file declaring a huge image is refused before any pixel is allocated.
+        auto png = [](unsigned w, unsigned h) {
+            std::string s("\x89PNG\r\n\x1a\n", 8);
+            s += std::string("\0\0\0\x0dIHDR", 8);
+            for (unsigned v : {w, h})
+                for (int b = 24; b >= 0; b -= 8)
+                    s += (char) ((v >> b) & 0xff);
+            s += std::string("\x08\x02\0\0\0", 5);        // 8-bit RGB, no interlace
+            s += std::string("\0\0\0\0", 4);              // a CRC the header read does not check
+            s += std::string("\0\0\0\0IDAT\0\0\0\0", 12); // the header read ends at the first data chunk
+            return s;
+        };
+        int w = 0, h = 0;
+        // 16000x16000 RGB: 768 MB decoded, under the reader's own 1 GiB refusal and over the budget.
+        const std::string huge = png(16000, 16000);
+        check(bmoe::detail::image_dimensions((const unsigned char *) huge.data(), huge.size(), w, h) && w == 16000 &&
+                  h == 16000,
+              "a PNG header gives its declared size without a decode");
+        check((unsigned long long) w * h > bmoe::detail::MediaInput::k_max_image_pixels,
+              "16000x16000 is over the pixel budget");
+        const std::string photo = png(8000, 6000);
+        check(bmoe::detail::image_dimensions((const unsigned char *) photo.data(), photo.size(), w, h) &&
+                  (unsigned long long) w * h <= bmoe::detail::MediaInput::k_max_image_pixels,
+              "a 48-megapixel photo is within it");
+        const std::string text = "not an image at all";
+        check(!bmoe::detail::image_dimensions((const unsigned char *) text.data(), text.size(), w, h),
+              "a header no reader knows is not probed: the library decides what it is");
     }
     if (failures) {
         std::printf("%d check(s) FAILED\n", failures);

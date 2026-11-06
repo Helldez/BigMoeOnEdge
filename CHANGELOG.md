@@ -12,7 +12,9 @@ Semantic Versioning.
   the new `mmproj` parameter) reads images. `/v1/chat/completions` takes `image_url` parts,
   `/v1/messages` `image` blocks and `/v1/responses` `input_image` parts, all inline as base64 (a
   URL to fetch is refused); the agent's messages take `images`, and the web UI's composer attaches
-  or pastes them. `bmoe-cli --mmproj FILE --image FILE` does the same on a prompt. The KV prefix is
+  or pastes them. A message carries at most 8 images, each of at most 64 megapixels (refused with
+  the reason, before it is decoded), and only a user message carries one; a conversation routed to
+  a provider carries none. `bmoe-cli --mmproj FILE --image FILE` does the same on a prompt. The KV prefix is
   reused through an image, so a conversation that holds one pays for it once; speculation is off
   while it does. `GET /api/info` says `model.vision` and `model.projector`, `/v1/models` adds
   `modalities`, a local model's listing names its `projector`, and a projector in a repository is
@@ -23,6 +25,21 @@ Semantic Versioning.
   with memory of its own, and the server pairs the projector before it plans, not only at load. The
   projector goes on the devices by the rule the model follows: a layer placed on one means they are
   wanted.
+- **The server as a service of the init system** (#472): `bmoe-server service install|uninstall|start|stop|status`
+  registers a per-user service started at login and back after a failure, a systemd user unit, a
+  launchd agent or a Windows scheduled task, whichever tool answers on the machine, with the server
+  options and engine parameters given at install, parsed as a start would and refused at install
+  when a start would refuse them. The install adds what a service needs: every path made absolute
+  (the service starts from the executable's folder, not the install's shell), the data folder made
+  explicit, a log file, `--autoload`, and a key file of its own making when `--host` reaches beyond
+  loopback with no key. Two new server flags give the service what it needs of the server:
+  `--autoload` loads the model the settings name at start and again when a request finds none
+  loaded (the request waits for the load instead of a `503 no_model`), and `--log-file PATH` sends
+  the console's output to a file, moved aside at 16 MiB. Each answer, whichever client asked, now
+  leaves one line in the log with its tokens, speed, prompt size and time, context length, expert
+  bytes read and cache hit rate, so a server that ran for a day can be read afterwards (#462 asked).
+  `docs/server-api.md`, "Running as a service". The service text is rendered by pure functions tested in `bmoe_server_test`; the
+  install itself is owed a run at a login on each platform.
 - **Every setting explains itself** (#468, from #465): each row a settings form shows, and each the
   plan decides, carries `details` in `/api/params`, a sentence or two in plain words on when to
   change it and what it costs, which the web UI, the Android app and the iOS app fold under the
@@ -55,6 +72,13 @@ Semantic Versioning.
   debugging only, and the licenses list BSD too.
 
 ### Fixed
+- **A cut-off tool call no longer breaks the conversation for good**: a call whose arguments the
+  model never finished (a page cut mid-string by the context or a token limit) was refused, but the
+  broken arguments stayed in the history, and the chat template, which parses every call's
+  arguments, rejected the whole conversation at every turn after. The call is now refused with
+  the parser's reason and what to do, the record keeps what was written, and the model is shown an
+  empty object in its place; a conversation saved before this is healed the same way when it is
+  next rendered (`docs/agent.md`, "Tools").
 - **Metrics is always in Settings, on every front-end** (#465): it appeared only after a switch under
   Appearance, so a person looking for the measurements or the CSV recording found neither. The web UI
   shows the Metrics section always; on Android and iOS the Metrics entry is always in Settings and the
