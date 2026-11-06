@@ -14,12 +14,10 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.AccountBox
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
@@ -30,6 +28,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -37,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.bigmoeonedge.app.R
 import io.bigmoeonedge.app.chat.Chat
 import io.bigmoeonedge.app.chat.ConversationSummary
 import io.bigmoeonedge.app.chat.ImageAttachments
@@ -472,13 +472,13 @@ private fun Composer() {
                         HorizontalDivider(color = tokens.line)
                         DropdownMenuItem(
                             text = { Text("Image") },
-                            leadingIcon = { Icon(Icons.Filled.AccountBox, null) },
+                            leadingIcon = { Icon(painterResource(R.drawable.ic_image), null) },
                             enabled = imageWhy == null,
                             onClick = { more = false; pickImages.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                         )
                         DropdownMenuItem(
                             text = { Text("Take a photo") },
-                            leadingIcon = { Icon(Icons.Filled.Face, null) },
+                            leadingIcon = { Icon(painterResource(R.drawable.ic_photo_camera), null) },
                             enabled = imageWhy == null,
                             onClick = { more = false; capture() },
                         )
