@@ -21,8 +21,9 @@ Semantic Versioning.
   now downloadable beside its model. Through llama.cpp's own `mtmd` library, unpatched: any model it
   knows, any quantization of either file, on every backend (`docs/server-api.md`, "Images";
   `docs/seam.md`). The plan prices the projector (#475): its file's size is a `projector` row of
-  the memory ledger on the host, or comes off the device cache's budget where the run uses a device
-  with memory of its own, and the server pairs the projector before it plans, not only at load. The
+  the memory ledger on the host, or, where the run uses a device with memory of its own, room the
+  capacity fitter is told to leave on that device before it places a layer (so a partial placement
+  on a small card leaves it too), and the server pairs the projector before it plans, not only at load. The
   projector goes on the devices by the rule the model follows: a layer placed on one means they are
   wanted.
 - **The server as a service of the init system** (#472): `bmoe-server service install|uninstall|start|stop|status`

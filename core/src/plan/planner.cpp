@@ -456,10 +456,13 @@ void choose_device_tier(Planning & s) {
     // fitter left free under one more whole layer, which on a small card is everything past the dense
     // part. The same budget as the RAM cache's: what the memory can hold, floored at one token cycle.
     const uint64_t spare = device_spare_budget(pl);
-    // The projector is on this device too (every layer is), so its bytes come off what the card has
-    // before the cache does; where the card's memory is the host's it is charged there instead.
+    // The projector is on this device too (every layer is). The fitter reserved its room before
+    // placing layers (Placement::device_projector_bytes, already off the spare and in the device's
+    // bytes); whatever it did not reserve - a placement made without the fitter - comes off what the
+    // card has before the cache does. Where the card's memory is the host's it is charged there.
+    const uint64_t unreserved = m.projector_bytes - std::min(m.projector_bytes, pl.device_projector_bytes);
     const uint64_t projector = s.p.config.device_use != DeviceUse::CpuOnly && !devices_share_host_memory(s.hw)
-                                   ? std::min(on_devices + spare, m.projector_bytes)
+                                   ? std::min(on_devices + spare, unreserved)
                                    : 0;
     const uint64_t budget = on_devices + spare - projector;
     if (budget == 0) return;
@@ -518,6 +521,7 @@ void choose_device_tier(Planning & s) {
             pl.host_expert_layers.push_back(il);
     pl.override_patterns = pl.all_expert_patterns;
     pl.device_bytes = pl.device_bytes > on_devices ? pl.device_bytes - on_devices : 0;
+    pl.device_bytes += projector; // the part the fitter had not reserved is the device's all the same
     s.host_layers = s.n_moe_layer;
     s.host_expert_bytes = m.expert_bytes;
     // The MTP head of a file of its own follows the experts to the processor that computes them
@@ -911,8 +915,9 @@ void classify_regime(Planning & s) {
     s.host_fixed = host_fixed;
     // The projector goes where llama.cpp's library puts it, by the session's rule for the devices: a
     // layer placed on one means they are wanted, none means they are not. On a device with memory
-    // of its own it is that device's cost (choose_device_tier); here it is the host's, which on a
-    // machine whose devices share the host's memory is both.
+    // of its own it is that device's cost: the fitter reserved its room there before placing layers
+    // (Placement::device_projector_bytes), and choose_device_tier charges what it did not. Here it
+    // is the host's, which on a machine whose devices share the host's memory is both.
     {
         const RunConfig & c = s.p.config;
         const bool devices_wanted =

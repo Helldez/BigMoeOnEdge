@@ -2148,6 +2148,48 @@ int main() {
             check(v.config.moe.device_cache_mb == (int) (8 * 1024) && !ledger_row(v, "projector"),
                   "device tier, projector: the device cache is smaller by it, and the host holds none",
                   std::to_string(v.config.moe.device_cache_mb) + " MiB");
+
+            // The fitter reserved its room before placing layers: the spare already excludes it and
+            // the device's bytes include it, so the tier charges it no second time.
+            Placement reserved = half;
+            reserved.device_projector_bytes = 1 * GiB;
+            reserved.device_bytes += 1 * GiB;
+            const Plan r = plan_run(base_cfg(), card, seeing, reserved, PlanRequest{}, PlannerPolicy::defaults());
+            const Decision * pn = find(r, "placement");
+            check(r.config.moe.device_cache_mb == (int) (9 * 1024) && !ledger_row(r, "projector"),
+                  "device tier, projector reserved by the fitter: the cache is whole, charged once, no host row",
+                  std::to_string(r.config.moe.device_cache_mb) + " MiB");
+            // The experts' bytes became the cache: what the device still holds is the dense part and
+            // the projector, once.
+            check(pn && pn->reason.find("on devices " + std::to_string(4 * 1024) + " MiB") != std::string::npos,
+                  "device tier, projector reserved by the fitter: the placement counts it on the device",
+                  pn ? pn->reason : "none");
+
+            // A partial placement, the common case on a small card: fewer layers than the model has,
+            // so no tier is armed, and the projector is still the device's, through the fitter's
+            // reservation alone - nowhere else charges it.
+            Placement part = reserved;
+            part.n_gpu_layers = (int32_t) model.n_layer - 8;
+            const Plan q = plan_run(base_cfg(), card, seeing, part, PlanRequest{}, PlannerPolicy::defaults());
+            pn = find(q, "placement");
+            check(q.config.moe.device_cache_mb == 0 && !ledger_row(q, "projector") &&
+                      q.config.n_gpu_layers == part.n_gpu_layers,
+                  "device tier, partial placement with a projector: no tier, no host row, the fitter's layers stand",
+                  std::to_string(q.config.moe.device_cache_mb) + " MiB, " + std::to_string(q.config.n_gpu_layers) +
+                      " layers");
+            check(pn && pn->reason.find("on devices " + std::to_string(13 * 1024) + " MiB") != std::string::npos,
+                  "device tier, partial placement with a projector: counted on the device once",
+                  pn ? pn->reason : "none");
+
+            // A device whose memory is the host's: the fitter's placement is set aside, and the
+            // projector is a row of the host's ledger, as on a machine with no device at all.
+            Placement aside;
+            aside.shared_memory_placement = true;
+            aside.device_bytes = 3 * GiB;
+            const Plan sh = plan_run(base_cfg(), phone(), seeing, aside, PlanRequest{}, PlannerPolicy::defaults());
+            const LedgerRow * pr = ledger_row(sh, "projector");
+            check(pr && pr->bytes == 1 * GiB && sh.config.moe.device_cache_mb == 0,
+                  "shared-memory device, projector: a host row of its size, no device cache");
         }
 
         // A device no faster at the experts than the host: the fastest processor is the host, and the

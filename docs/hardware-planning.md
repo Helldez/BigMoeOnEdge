@@ -503,7 +503,7 @@ alone is how a plan comes to ask for locks the machine stops granting part way.
 | row | from | charged to |
 |---|---|---|
 | context and compute buffers | llama.cpp's own projection for this model and context | holdable |
-| projector (a run with an `mmproj` file) | the file's size: llama.cpp's library holds it whole to read images, on a device where the run uses one (then off that device's cache budget instead, unless its memory is the host's) and on the host otherwise | holdable |
+| projector (a run with an `mmproj` file) | the file's size: llama.cpp's library holds it whole to read images, on a device where the run uses one and on the host otherwise. On a device with memory of its own the capacity fitter is told to leave that room before it places a layer, so the layer count and the spare it reports already account for it (a placement with no such reservation charges it off the device cache instead); on a device whose memory is the host's it is the host's row | holdable |
 | context checkpoints (a chat run) | `--ctx-checkpoints` copies of the context's fixed part: llama.cpp's projection at the context and at half of it, twice the half less the whole (a recurrent state, a sliding window; nothing for a context that is all attention) | holdable |
 | a device armed for prefill | two of the model's largest expert layer, plus the compute buffer llama.cpp projects for that device (none for one it never places layers on, such as an NPU) | holdable; lockable too where its buffers are |
 | dense set | the gguf | holdable; lockable if it is pinned |
