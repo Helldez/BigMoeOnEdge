@@ -206,9 +206,11 @@ desktop app's server is the same.
 
 **The arguments.** Everything after `install` is the server's own command line, options and
 engine parameters alike, parsed exactly as a start would parse them: a mistake is refused at
-install with its reason, not at the next login with nobody reading. To them the install adds what
-a service needs and the person did not say: `--data-dir`, made explicit so the service and the
-person's shell agree on it; `--log-file`; `--autoload`; and, when `--host` reaches beyond loopback
+install with its reason, not at the next login with nobody reading. A path typed relative to the
+shell (`-m model.gguf`, a models folder) is made absolute, since the service starts from the
+executable's folder, not from that shell. To them the install adds what a service needs and the
+person did not say: `--data-dir`, made explicit so the service and the person's shell agree on it;
+`--log-file`; `--autoload`; and, when `--host` reaches beyond loopback
 with no key given and no `--no-api-key`, a key of the install's own making, written to `api-key`
 in the data folder (readable by its owner only), named with `--api-key-file` and printed once. A
 key file an earlier install wrote is kept, so the clients that hold its key keep working. `--open`

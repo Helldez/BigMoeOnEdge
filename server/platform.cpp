@@ -159,9 +159,16 @@ bool redirect_output(const std::string & path, std::string & err) {
         err = "cannot open the log file " + path;
         return false;
     }
-    // A file is fully buffered by default: the "listening" line would reach it minutes later.
+    // A file is fully buffered by default: the "listening" line would reach it minutes later. Line
+    // buffering on Windows' C runtime is full buffering under another name, so there the streams
+    // are not buffered at all: a server's log is a few lines a minute, and a crash keeps its tail.
+#if defined(_WIN32)
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    std::setvbuf(stderr, nullptr, _IONBF, 0);
+#else
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
     std::setvbuf(stderr, nullptr, _IOLBF, 0);
+#endif
     return true;
 }
 

@@ -4,6 +4,8 @@
 #include "server_flags.h"
 #include "service_spec.h"
 
+#include "bmoe/params.h"
+
 // See model_library.cpp for why the subprocess header's chdir support is off.
 #define SUBPROCESS_HAVE_CWD 0
 #include "sheredom/subprocess.h"
@@ -279,15 +281,33 @@ int report(const Exec & e, const char * what) {
     return e.code;
 }
 
-int do_install(InitSystem & init, const std::vector<std::string> & given, const ArgsValidator & validate) {
+// Whether `arg` is a flag whose value is a path: one of the server's own, or an engine parameter
+// the table types as a path (by its long or short flag).
+bool takes_path(const std::string & arg) {
+    for (const char * f : flag::path_valued)
+        if (arg == f) return true;
+    for (const ParamDesc & d : params())
+        if (d.type == ParamType::Path && (arg == d.flag || (!d.short_flag.empty() && arg == d.short_flag))) return true;
+    return false;
+}
+
+int do_install(InitSystem & init, const std::vector<std::string> & typed, const ArgsValidator & validate) {
     const std::string exe = platform::executable_path();
     if (exe.empty()) {
         std::fprintf(stderr, "bmoe-server service: cannot tell this executable's own path\n");
         return 1;
     }
+    // The service starts from the executable's folder: a path typed relative to this shell is made
+    // absolute here, or the install passes and the start at login finds nothing where it looks.
+    const std::vector<std::string> given = with_absolute_paths(typed, takes_path, absolute);
     const std::string data_dir = data_dir_of(given);
     const std::string log_file = (fs::u8path(data_dir) / "logs" / "bmoe-server.log").u8string();
     const ServiceArguments sa = service_arguments(given, data_dir, log_file);
+    {
+        // The init system opens the log file itself where it keeps no journal, and makes no folder.
+        std::error_code ec;
+        fs::create_directories(fs::u8path(log_file).parent_path(), ec);
+    }
 
     std::string err;
     std::string key;
@@ -333,7 +353,14 @@ int do_install(InitSystem & init, const std::vector<std::string> & given, const 
         std::printf("  API key: %s (clients send it as Authorization: Bearer ...)\n",
                     key.empty() ? ("kept in " + sa.key_file).c_str() : key.c_str());
     std::fflush(stdout);
-    return report(init.install(unit), "register and start the service");
+    const int rc = report(init.install(unit), "register and start the service");
+    if (rc != 0) {
+        // A registration the init system refused is not left behind: `status` would call it
+        // registered, and the next login would try it again with nobody reading.
+        std::error_code ec;
+        fs::remove(fs::u8path(unit), ec);
+    }
+    return rc;
 }
 
 } // namespace

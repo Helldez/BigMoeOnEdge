@@ -24,6 +24,15 @@ std::string systemd_quote(const std::string & arg) {
     return out;
 }
 
+std::string systemd_path(const std::string & path) {
+    std::string out;
+    for (const char c : path) {
+        if (c == '%') out += '%';
+        out += c;
+    }
+    return out;
+}
+
 std::string windows_quote(const std::string & arg) {
     // What CommandLineToArgvW undoes: an argument with no space or quote passes as is; otherwise it
     // is wrapped in quotes, a quote inside is \", and backslashes right before a quote (or the closing
@@ -87,7 +96,7 @@ std::string render_systemd_unit(const ServiceSpec & s) {
     unit += "Description=" + std::string(kServiceDescription) + "\n";
     unit += "\n[Service]\n";
     unit += "ExecStart=" + exec + "\n";
-    if (!s.working_dir.empty()) unit += "WorkingDirectory=" + systemd_quote(s.working_dir) + "\n";
+    if (!s.working_dir.empty()) unit += "WorkingDirectory=" + systemd_path(s.working_dir) + "\n";
     // A failure is started again; a stop asked for is not. The journal keeps the output the server
     // writes before --log-file takes it, and whatever a crash leaves.
     unit += "Restart=on-failure\n";
@@ -170,6 +179,18 @@ std::string render_task_scheduler_xml(const ServiceSpec & s) {
     x += "    </Exec>\n  </Actions>\n";
     x += "</Task>\n";
     return x;
+}
+
+std::vector<std::string> with_absolute_paths(const std::vector<std::string> & given,
+                                             const std::function<bool(const std::string &)> & takes_path,
+                                             const std::function<std::string(const std::string &)> & absolute) {
+    std::vector<std::string> out;
+    out.reserve(given.size());
+    for (size_t i = 0; i < given.size(); ++i) {
+        out.push_back(given[i]);
+        if (takes_path(given[i]) && i + 1 < given.size()) out.push_back(absolute(given[++i]));
+    }
+    return out;
 }
 
 ServiceArguments

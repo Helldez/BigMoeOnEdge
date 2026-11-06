@@ -2136,7 +2136,9 @@ static void service_tests() {
     check(unit.find("ExecStart=\"/opt/bmoe/bmoe-server\" \"--host\" \"0.0.0.0\" \"-m\" \"/models/a b.gguf\"\n") !=
               std::string::npos,
           "systemd unit: ExecStart is the executable and every argument, quoted");
-    check(unit.find("WorkingDirectory=\"/opt/bmoe\"\n") != std::string::npos, "systemd unit: the working directory");
+    check(unit.find("WorkingDirectory=/opt/bmoe\n") != std::string::npos,
+          "systemd unit: the working directory, as typed (a path setting is not unquoted)");
+    check(systemd_path("/opt/100%/b") == "/opt/100%%/b", "systemd path: the specifier character is escaped");
     check(unit.find("Restart=on-failure\n") != std::string::npos &&
               unit.find("[Install]\nWantedBy=default.target\n") != std::string::npos,
           "systemd unit: restarted on failure, wanted by the user's default target");
@@ -2197,6 +2199,14 @@ static void service_tests() {
     check(service_arguments({"--host", "127.0.0.1"}, D, L).key_file.empty() &&
               service_arguments({"--host", "localhost"}, D, L).key_file.empty(),
           "service args: loopback needs no key");
+    {
+        const auto takes = [](const std::string & f) { return f == "-m" || f == "--models-dir"; };
+        const auto abs = [](const std::string & p) { return p[0] == '/' ? p : "/cwd/" + p; };
+        check(with_absolute_paths({"-m", "x.gguf", "--host", "0.0.0.0", "--models-dir", "/m", "-c", "4096", "-m"},
+                                  takes, abs) == std::vector<std::string>{"-m", "/cwd/x.gguf", "--host", "0.0.0.0",
+                                                                          "--models-dir", "/m", "-c", "4096", "-m"},
+              "absolute paths: a path-valued argument is resolved, the rest and a trailing flag are as typed");
+    }
     a = service_arguments({"--open", "-m", "x.gguf", "--autoload", "--data-dir", "/d2", "--log-file", "/l2"}, D, L);
     check(a.args == std::vector<std::string>{"-m", "x.gguf", "--autoload", "--data-dir", "/d2", "--log-file", "/l2"},
           "service args: --open is dropped, what was given is kept once and in its order, nothing added twice");

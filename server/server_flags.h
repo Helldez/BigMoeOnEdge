@@ -15,4 +15,11 @@ inline constexpr const char * autoload = "--autoload";
 inline constexpr const char * open = "--open";
 inline constexpr const char * parent_pid = "--parent-pid";
 
+// The server's own flags whose value is a path. The installer makes each absolute, since the service
+// starts from the executable's folder, not the shell the install was typed in; the engine's own
+// path parameters are told apart by the parameter table (ParamType::Path).
+inline constexpr const char * path_valued[] = {"--models-dir", "--scan-dir",   "--ui-dir",
+                                               "--catalog",    "--skills-dir", "--mcp-servers-config",
+                                               data_dir,       log_file,       api_key_file};
+
 } // namespace bmoe::server::flag

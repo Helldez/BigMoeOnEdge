@@ -7,6 +7,7 @@
 // agent and a Windows scheduled task are the three ways the platforms spell that.
 #pragma once
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -42,6 +43,9 @@ std::string render_task_scheduler_xml(const ServiceSpec & s);
 // How each spells one argument on its command line: systemd's quoting (ExecStart), and the rules
 // Windows programs parse their command line with (CommandLineToArgvW). launchd takes an array.
 std::string systemd_quote(const std::string & arg);
+// A path setting of a unit (WorkingDirectory=) is read as typed, quotes included: only the
+// specifier character is escaped there.
+std::string systemd_path(const std::string & path);
 std::string windows_quote(const std::string & arg);
 std::string xml_escape(const std::string & s);
 
@@ -52,6 +56,14 @@ struct ServiceArguments {
     // its own making, because the server is to listen beyond loopback and the install gave no key.
     std::string key_file;
 };
+
+// `given` with the value of every path-valued argument made absolute, the rest as typed. The
+// service starts from the executable's folder, not the shell the install was typed in, so a
+// relative model or folder would name a different place at the next login. `takes_path` says which
+// flags take a path (the server's own and the engine's path parameters), `absolute` resolves one.
+std::vector<std::string> with_absolute_paths(const std::vector<std::string> & given,
+                                             const std::function<bool(const std::string &)> & takes_path,
+                                             const std::function<std::string(const std::string &)> & absolute);
 
 // `given` as typed at install, then what a service needs that the install did not say: the data
 // folder, made explicit so the service and the person's shell agree on it; the log file; --autoload,

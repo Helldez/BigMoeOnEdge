@@ -11,7 +11,8 @@ Semantic Versioning.
   registers a per-user service started at login and back after a failure, a systemd user unit, a
   launchd agent or a Windows scheduled task, whichever tool answers on the machine, with the server
   options and engine parameters given at install, parsed as a start would and refused at install
-  when a start would refuse them. The install adds what a service needs: the data folder made
+  when a start would refuse them. The install adds what a service needs: every path made absolute
+  (the service starts from the executable's folder, not the install's shell), the data folder made
   explicit, a log file, `--autoload`, and a key file of its own making when `--host` reaches beyond
   loopback with no key. Two new server flags give the service what it needs of the server:
   `--autoload` loads the model the settings name at start and again when a request finds none
