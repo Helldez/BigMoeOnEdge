@@ -4,6 +4,11 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Changed
+- **Four community rows in `docs/community-benchmarks.md`**: a 96 GB mini-PC with Qwen3.8-Flash-Next Q2_K on the CPU-only and the Vulkan builds (#460, #462), and two phones from #177 (a 12 GB Snapdragon 6 Gen 1 class phone with flint 40B-A2.5B, an 18 GB phone with Qwen3.5-397B).
+
 ## [0.40.0] - 2026-11-06
 
 ### Added
