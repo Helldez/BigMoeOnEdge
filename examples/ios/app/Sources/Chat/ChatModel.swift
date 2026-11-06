@@ -145,7 +145,7 @@ final class ChatModel: ObservableObject {
     /// shows the entries disabled with this, never hidden.
     var imageReason: String? {
         guard engine.ready, let model = engine.info?.model else {
-            return "Load a model that reads images: one with its projector file"
+            return "No model is loaded: one loaded with its projector file reads images"
         }
         return model.vision ? nil : "The loaded model does not read images: load one with its projector file"
     }

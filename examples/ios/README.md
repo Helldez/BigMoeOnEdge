@@ -93,9 +93,10 @@ last question again as it was (the server drops the old answer). Stop stops the 
 conversations sheet lists them newest first; swipe a row to rename or delete it. With no model
 loaded the empty chat says to load one, with the way to Models. The composer's **Add** menu
 attaches an image from the library or the camera (`NSCameraUsageDescription`; the photo picker
-needs no entry), up to 8 a message of at most 16 MB each, as the web UI's composer does; the bytes
-go as picked (data URLs in `images`, docs/server-api.md "Images"), the engine decodes them and the
-projector downsizes. With a model that has no projector loaded the two entries stay in the menu,
+needs no entry), up to 8 a message of at most 16 MB each, as the web UI's composer does. A photo
+from the camera is encoded once as JPEG by the app (the camera hands over a decoded image, not a
+file); everything else goes as picked (data URLs in `images`, docs/server-api.md "Images"), the
+engine decodes them and the projector downsizes. With a model that has no projector loaded the two entries stay in the menu,
 disabled, with the reason (`GET /api/info` `model.vision`). A message shows the images it carried
 above its words, and Edit and send again resends them unchanged. Choose from options stays: the
 model picks one option from one read of the prompt, shown as a card under the conversation and not

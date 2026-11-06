@@ -176,7 +176,7 @@ struct Composer: View {
         }
         .fullScreenCover(isPresented: $takingPhoto) {
             CameraPicker { data in
-                imageError = PickedImage.attach(mime: "image/jpeg", data: data, to: &images)
+                imageError = PickedImage.attach(mime: ImageAttachments.fallbackMIME, data: data, to: &images)
             }
             .ignoresSafeArea()
         }
@@ -215,7 +215,7 @@ struct Composer: View {
     /// Why an image cannot be attached now: a decision is its question and options only; otherwise
     /// what the loaded model can read.
     private var imageReason: String? {
-        choosing ? "Images do not go in a decision" : chat.imageReason
+        choosing ? "An image goes with a message, not with a choice" : chat.imageReason
     }
 
     /// The images attached so far, each with its remove button, above the words.
@@ -240,12 +240,18 @@ struct Composer: View {
     }
 
     /// Reads what was picked and attaches each under the composer's rules; the first refusal is
-    /// shown and the rest still go in.
+    /// shown and the rest still go in, until the message is full (nothing more is read then).
     private func attach(_ items: [PhotosPickerItem]) async {
         var refused: String?
         for item in items {
+            if images.count >= ImageAttachments.maxImages {
+                refused = refused ?? ImageAttachments.accept(mime: ImageAttachments.fallbackMIME, bytes: 0, count: images.count)
+                break
+            }
+            // A library item that loads nothing: a photo still in iCloud, or one the system could
+            // not hand over.
             guard let loaded = await PickedImage.load(item) else {
-                refused = refused ?? "Only images can be attached"
+                refused = refused ?? "The image could not be read"
                 continue
             }
             if let why = PickedImage.attach(mime: loaded.mime, data: loaded.data, to: &images) { refused = refused ?? why }
@@ -432,8 +438,6 @@ struct EditMessageSheet: View {
                         ForEach(Array(item.images.enumerated()), id: \.offset) { _, url in DataURLThumbnail(dataURL: url, side: 64) }
                     }
                     .padding(.horizontal, Grid.m).padding(.top, Grid.s)
-                    Text(item.images.count == 1 ? "The image goes again with the new words." : "The images go again with the new words.")
-                        .font(.ui(13)).foregroundStyle(Palette.muted).padding(.horizontal, Grid.m)
                 }
                 TextEditor(text: $text)
                     .font(.ui(17))
@@ -444,7 +448,9 @@ struct EditMessageSheet: View {
             .navigationTitle("Edit and send again")
             .navigationBarTitleDisplayMode(.inline)
             .safeAreaInset(edge: .bottom) {
-                Text("What came after this message is dropped and the model answers the new one.")
+                Text(item.images.isEmpty
+                    ? "What came after this message is dropped and the model answers the new one."
+                    : "Everything after this message is dropped, then the edited one is sent, with the same images.")
                     .font(.ui(13)).foregroundStyle(Palette.muted).padding(Grid.m)
             }
             .toolbar {

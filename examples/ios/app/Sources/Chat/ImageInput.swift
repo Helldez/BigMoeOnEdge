@@ -5,7 +5,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// An image attached to the message being written: the data URL the server takes, as the file
-/// was picked (the engine decodes it and the projector downsizes; nothing is re-encoded here).
+/// was picked (the engine decodes it and the projector downsizes).
 struct PendingImage: Identifiable, Equatable {
     let id = UUID()
     let dataURL: String
@@ -35,6 +35,10 @@ enum PickedImage {
 /// gives a decoded image, not a file, so this is the one encode on the way to the server).
 struct CameraPicker: UIViewControllerRepresentable {
     static var available: Bool { UIImagePickerController.isSourceTypeAvailable(.camera) }
+    /// The one encode's quality: high, since the projector downsizes the photo to its own few
+    /// hundred pixels a side and loses nothing to the file's size, so this is a platform fact of
+    /// the camera's decoded image, not a knob of the model.
+    static let jpegQuality: CGFloat = 0.92
     let onPhoto: (Data) -> Void
     @Environment(\.dismiss) private var dismiss
 
@@ -54,7 +58,7 @@ struct CameraPicker: UIViewControllerRepresentable {
         init(_ parent: CameraPicker) { self.parent = parent }
 
         func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
-            if let image = info[.originalImage] as? UIImage, let data = image.jpegData(compressionQuality: 0.92) {
+            if let image = info[.originalImage] as? UIImage, let data = image.jpegData(compressionQuality: CameraPicker.jpegQuality) {
                 parent.onPhoto(data)
             }
             parent.dismiss()
@@ -68,7 +72,7 @@ struct CameraPicker: UIViewControllerRepresentable {
 /// and downsampled on the way in (an attached photo can be 16 MB; the thumbnail is a few pixels).
 struct DataURLThumbnail: View {
     let dataURL: String
-    var side: CGFloat = 72
+    let side: CGFloat
     @State private var image: UIImage?
 
     var body: some View {
