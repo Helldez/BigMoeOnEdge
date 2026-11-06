@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.40.0] - 2026-11-06
 
 ### Added
 - **Image input** (#250): a model loaded with its multimodal projector (the `mmproj` GGUF of its own
