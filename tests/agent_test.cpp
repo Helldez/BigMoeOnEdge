@@ -293,7 +293,8 @@ static void cut_call_tests() {
     const std::string cut = "{\"path\":\"index.html\",\"content\":\"<!DOCTYPE html>\\n<html lang=\\\"th";
     rig->say({{"", {{"c1", "write_file", cut}}}, {"That call was cut.", {}}, {"Still here.", {}}});
     json item;
-    check(rig->agent->send(c, "write a page", false, false, item).ok(), "cut call: a message starts a run");
+    check(rig->agent->send(c, "write a page", json::array(), false, false, item).ok(),
+          "cut call: a message starts a run");
     check(rig->wait_done(c), "cut call: the run ends");
     const json tool = rig->items_of(c, "tool")[0];
     const std::string result = tool.value("result", "");
@@ -309,7 +310,7 @@ static void cut_call_tests() {
         return std::string("(no call rendered)");
     };
     check(rendered() == "{}", "cut call: the model is shown an empty object in its place");
-    check(rig->agent->send(c, "go on", false, false, item).ok() && rig->wait_done(c),
+    check(rig->agent->send(c, "go on", json::array(), false, false, item).ok() && rig->wait_done(c),
           "cut call: the next message runs");
     check(rendered() == "{}" && rig->items_of(c, "assistant").size() == 3,
           "cut call: the next turn renders the same, and the conversation goes on");
@@ -323,7 +324,7 @@ static void cut_call_tests() {
         cuts.push_back({"", {{"c" + std::to_string(i), "write_file", cut.substr(0, cut.size() - 1 - i)}}});
     cuts.push_back({"Done.", {}});
     rig->say(cuts);
-    check(rig->agent->send(c2, "write a page", false, false, item).ok() && rig->wait_done(c2),
+    check(rig->agent->send(c2, "write a page", json::array(), false, false, item).ok() && rig->wait_done(c2),
           "cut call again: the run ends");
     check(rig->items_of(c2, "tool").size() == static_cast<size_t>(k_max_same_failed_calls),
           "cut call again: a call cut at another column each time counts as the same failure, and the run stops");
@@ -332,7 +333,8 @@ static void cut_call_tests() {
     rig = std::make_unique<Rig>();
     const std::string c3 = rig->conversation("full");
     rig->say({{"", {{"e1", "read_file", ""}}}, {"Listed.", {}}});
-    check(rig->agent->send(c3, "list", false, false, item).ok() && rig->wait_done(c3), "empty args: the run ends");
+    check(rig->agent->send(c3, "list", json::array(), false, false, item).ok() && rig->wait_done(c3),
+          "empty args: the run ends");
     bool empty_rendered = false;
     for (const ChatMessage & m : rig->last_request().messages)
         if (m.role == "assistant" && !m.tool_calls.empty()) empty_rendered = m.tool_calls[0].arguments == "{}";
