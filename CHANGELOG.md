@@ -6,6 +6,14 @@ Semantic Versioning.
 
 ## [0.40.1] - 2026-11-06
 
+### Added
+- **Images on the phones** (#484): the Android and iOS composers attach images, from the photos or
+  the camera, the same way the web UI does: at most 8 in a message and 16 MB each, as removable
+  thumbnails above the text until sent, a message of images alone allowed, the two entries shown
+  disabled with the reason while the loaded model reads none (`model.vision`), and a message shows
+  the images it carried, which Edit and send again sends again unchanged. Nothing in the apps reads
+  an image: they send what `POST /api/conversations/<id>/messages` already takes.
+
 ### Changed
 - **llama.cpp moves to upstream tag `v0.9.0`** (`cd959ba` of 2026-11-04), 164 commits past
   `8ca4060` (`docs/seam.md`). The fork branch `bmoe/expert-ready-hook-0411` is that tag plus the one

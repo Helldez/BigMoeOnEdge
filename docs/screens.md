@@ -117,10 +117,19 @@ conversation with no folder.
   typed path elsewhere), the **mode** (Ask first, Read only, Full access, each with a line saying
   what it allows; Full access warns above the composer while a folder is set), the **model**
   (the local model, or a saved provider's model, saying that messages then go there), **Reasoning**
-  where the local model has a switch for it, and **Choose** (below). Send, or Stop while a run
-  works. Before the first message the chips are the new conversation's; after it they change the
+  where the local model has a switch for it, **Image** (below), and **Choose** (below). Send, or
+  Stop while a run works. Before the first message the chips are the new conversation's; after it they change the
   open one. With no model loaded and the local model picked, Send is disabled and the line under
   the composer says why and leads to Models.
+- **Image.** The same on every UI: when the loaded model reads images (`GET /api/info`,
+  `model.vision`: a projector is loaded beside it) the composer attaches them, from the files (or a
+  paste) on the desktop, from the photos or the camera on a phone, at most 8 in a message and 16 MB
+  each, shown as small removable thumbnails above the text until sent; a message may be images
+  alone. Where the model does not read images the control is still there, disabled, saying that a
+  model with its projector file reads them, so the feature is found before it can be used. A
+  message shows the images it carried above its text, and Edit and send again sends them again
+  unchanged. The server's limits are the UI's: it refuses a message over them with the reason
+  (`400`, `no_vision` or the count), and the UI shows that reason and keeps the message.
 - **Choose.** Where the server offers `POST /api/decide`: a mode in which the text is a question
   and a second field holds options, one per line; the model picks one without writing an answer,
   and each option comes back with the probability the model put on it, the picked one marked. A
@@ -399,7 +408,9 @@ only that:
   being answered or after an error.
 - **Messages as above.** The person's text with Copy and Edit and send again (on a long press),
   the answer as Markdown with its reasoning folded above it, Copy under it and Answer again on the
-  last one, the server's notices, Stop. Choose from options stays, in the composer.
+  last one, the server's notices, Stop. Choose from options stays, in the composer, and so does
+  Image: the composer's + offers an image from the photos or the camera, disabled with the reason
+  while the loaded model reads none, and a message shows the images it carried.
 - **The empty chat** says the model runs on the phone and leads to Models while none is loaded.
 - **Serve on the network** (Settings) is the address and key a client of the phone needs; there is
   no client configuration to write on a phone.

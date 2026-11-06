@@ -216,7 +216,9 @@ being answered; a row's menu renames or deletes it.
   again as it was (the server drops the old answer). A notice says, in words, why
   something did not happen. Stop ends the answer.
 - **The composer.** The prompt, Send, or Stop while an answer is written; the + beside the prompt
-  holds **Choose from options** (below). With no model loaded the empty chat says to load one from
+  holds **Image** and **Take a photo**, when the loaded model reads images (a projector file beside
+  it; otherwise the two say so, disabled), at most 8 in a message, shown as thumbnails above the
+  prompt until sent and on the message after, and **Choose from options** (below). With no model loaded the empty chat says to load one from
   Models.
 
 The conversations earlier versions kept on the phone are handed to the server once, on the first
