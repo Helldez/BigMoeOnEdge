@@ -101,13 +101,13 @@ class Api(private val baseUrl: String, private val apiKey: String) : Conversatio
         send("DELETE", "/api/conversations/" + seg(id), null, QUICK_MS)
     }
 
-    /** Answers `202 {item}` at once; the answer streams on the event stream. */
-    fun sendMessage(id: String, text: String): JSONObject =
-        send("POST", "/api/conversations/" + seg(id) + "/messages", JSONObject().put("text", text), QUICK_MS)
+    /** Answers `202 {item}` at once; the answer streams on the event stream. [images]: data URLs, sent only when there are any. */
+    fun sendMessage(id: String, text: String, images: List<String> = emptyList()): JSONObject =
+        send("POST", "/api/conversations/" + seg(id) + "/messages", ItemReducer.messageBody(text, images), QUICK_MS)
 
-    /** Drops [item] and what follows it, then sends [text] in its place: edit, and Answer again. */
-    fun editMessage(id: String, item: String, text: String): JSONObject =
-        send("POST", "/api/conversations/" + seg(id) + "/edit", ItemReducer.editBody(item, text), QUICK_MS)
+    /** Drops [item] and what follows it, then sends [text] and [images] in its place: edit, and Answer again. */
+    fun editMessage(id: String, item: String, text: String, images: List<String> = emptyList()): JSONObject =
+        send("POST", "/api/conversations/" + seg(id) + "/edit", ItemReducer.editBody(item, text, images), QUICK_MS)
 
     // A stop answers once the run has stopped: a generation ends at its next token.
     fun stopConversation(id: String): JSONObject = send("POST", "/api/conversations/" + seg(id) + "/stop", null, SLOW_MS)

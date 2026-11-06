@@ -1,15 +1,25 @@
 package io.bigmoeonedge.app.ui
 
+import android.content.ActivityNotFoundException
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.AccountBox
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
@@ -19,14 +29,17 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.bigmoeonedge.app.chat.Chat
 import io.bigmoeonedge.app.chat.ConversationSummary
+import io.bigmoeonedge.app.chat.ImageAttachments
 import io.bigmoeonedge.app.chat.ItemReducer
 import io.bigmoeonedge.app.data.breakdown
 import io.bigmoeonedge.app.engine.ApiException
@@ -34,9 +47,13 @@ import io.bigmoeonedge.app.engine.Decide
 import io.bigmoeonedge.app.engine.Decisions
 import io.bigmoeonedge.app.engine.Engine
 import io.bigmoeonedge.app.engine.contextWarning
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.InputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -326,16 +343,77 @@ private fun DecisionCard(d: io.bigmoeonedge.app.engine.DecisionUi, onOpenModels:
     }
 }
 
-/** The composer: the live line while the engine works, then the prompt and Send, or Stop while an answer is written. */
+/**
+ * The composer: the live line while the engine works, then the images going with the next message,
+ * the prompt and Send, or Stop while an answer is written. The "+" menu holds the other ways in: a
+ * question with options to choose from, an image from the photos, a photo taken now.
+ */
 @Composable
 private fun Composer() {
     val chat by Chat.state.collectAsStateWithLifecycle()
     val decision by Decisions.state.collectAsStateWithLifecycle()
     val engine by Engine.state.collectAsStateWithLifecycle()
     val focus = LocalFocusManager.current
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
     var prompt by rememberSaveable { mutableStateOf("") }
     var choose by rememberSaveable { mutableStateOf(false) }
     var optionsText by rememberSaveable { mutableStateOf("") }
+    // The images going with the next message, as the data URLs they will be sent as. Not saved
+    // across a process death: a few photos are more than a saved state may hold.
+    var images by remember { mutableStateOf(listOf<String>()) }
+    var imageError by remember { mutableStateOf("") }
+    // Where the camera writes: kept across the camera activity, which may have this one killed meanwhile.
+    var cameraUri by rememberSaveable { mutableStateOf<String?>(null) }
+
+    // Read off the main thread: a photo is megabytes. The rules (how many, how large, images only)
+    // are the web composer's, in ImageAttachments; the last reason stays under the thumbnails.
+    fun attach(uris: List<Uri>, deleteAfter: Boolean = false) {
+        if (uris.isEmpty()) return
+        scope.launch(Dispatchers.IO) {
+            for (uri in uris) {
+                val mime = ctx.contentResolver.getType(uri) ?: ImageAttachments.DEFAULT_MIME
+                val bytes = runCatching { ctx.contentResolver.openInputStream(uri)?.use { readUpTo(it, ImageAttachments.MAX_BYTES + 1) } }.getOrNull()
+                if (deleteAfter) runCatching { ctx.contentResolver.delete(uri, null, null) }
+                if (bytes == null) {
+                    imageError = "The image could not be read"
+                    continue
+                }
+                val why = ImageAttachments.accept(mime, bytes.size.toLong(), images.size)
+                if (why != null) {
+                    imageError = why
+                    continue
+                }
+                images = images + ImageAttachments.dataUrl(mime, bytes)
+                imageError = ""
+            }
+        }
+    }
+
+    // The system photo picker: several at once, image types only, and no storage permission.
+    val pickImages = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(ImageAttachments.MAX_IMAGES)) { uris ->
+        attach(uris)
+    }
+    // The camera app writes into this app's cache through the FileProvider; the bytes are read
+    // into the message and the file dropped. The contract needs no CAMERA permission.
+    val takePicture = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { taken ->
+        val uri = cameraUri?.let(Uri::parse)
+        cameraUri = null
+        if (uri != null) {
+            if (taken) attach(listOf(uri), deleteAfter = true) else runCatching { ctx.contentResolver.delete(uri, null, null) }
+        }
+    }
+    fun capture() {
+        val dir = File(ctx.cacheDir, "camera").apply { mkdirs() }
+        val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", File(dir, "capture-${System.currentTimeMillis()}.jpg"))
+        cameraUri = uri.toString()
+        try {
+            takePicture.launch(uri)
+        } catch (_: ActivityNotFoundException) {
+            cameraUri = null
+            imageError = "No camera app is installed"
+        }
+    }
 
     Surface(color = tokens.surface, shadowElevation = 2.dp) {
         Column(Modifier.fillMaxWidth().imePadding()) {
@@ -348,12 +426,41 @@ private fun Composer() {
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(top = 8.dp), minLines = 2, maxLines = 6,
                 )
             }
+            if (images.isNotEmpty()) {
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp).padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    images.forEachIndexed { i, src ->
+                        Box {
+                            ImageThumb(src, ComposerThumb)
+                            FilledIconButton(
+                                onClick = { images = images.filterIndexed { k, _ -> k != i } },
+                                modifier = Modifier.align(Alignment.TopEnd).padding(2.dp).size(20.dp),
+                                colors = IconButtonDefaults.filledIconButtonColors(containerColor = tokens.surface, contentColor = tokens.text),
+                            ) { Icon(Icons.Filled.Close, contentDescription = "Remove image", Modifier.size(14.dp)) }
+                        }
+                    }
+                }
+            }
+            if (imageError.isNotEmpty()) {
+                Text(imageError, color = tokens.err, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp).padding(top = 6.dp))
+            }
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.Bottom,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 var more by remember { mutableStateOf(false) }
+                // Whether an image can go: the loaded model reads them (GET /api/info, model.vision).
+                // The entries stay, disabled, with the reason: the feature is learnt by seeing it.
+                val model = engine.info?.model
+                val imageWhy = when {
+                    choose -> "An image goes with a message, not with a choice"
+                    !engine.ready || model == null -> "No model is loaded: one loaded with its projector file reads images"
+                    !model.vision -> "The loaded model does not read images: load one with its projector file"
+                    else -> null
+                }
                 Box {
                     IconButton(onClick = { more = true }) { Icon(Icons.Filled.Add, contentDescription = "More") }
                     DropdownMenu(expanded = more, onDismissRequest = { more = false }) {
@@ -362,6 +469,25 @@ private fun Composer() {
                             leadingIcon = { Icon(Icons.Filled.Build, null) },
                             onClick = { choose = !choose; more = false },
                         )
+                        HorizontalDivider(color = tokens.line)
+                        DropdownMenuItem(
+                            text = { Text("Image") },
+                            leadingIcon = { Icon(Icons.Filled.AccountBox, null) },
+                            enabled = imageWhy == null,
+                            onClick = { more = false; pickImages.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Take a photo") },
+                            leadingIcon = { Icon(Icons.Filled.Face, null) },
+                            enabled = imageWhy == null,
+                            onClick = { more = false; capture() },
+                        )
+                        if (imageWhy != null) {
+                            Text(
+                                imageWhy, style = MaterialTheme.typography.bodySmall, color = tokens.muted,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp).widthIn(max = 240.dp),
+                            )
+                        }
                     }
                 }
                 OutlinedTextField(
@@ -384,16 +510,48 @@ private fun Composer() {
                         onClick = {
                             // Drop focus so the keyboard retracts: the answer streams into the space it covered.
                             focus.clearFocus()
-                            if (choose) Decisions.choose(prompt, options) else Chat.send(prompt)
-                            prompt = ""
+                            if (choose) {
+                                Decisions.choose(prompt, options)
+                                prompt = ""
+                            } else {
+                                val text = prompt
+                                val attached = images
+                                prompt = ""
+                                images = emptyList()
+                                imageError = ""
+                                // Not taken: what was to go comes back, and the error card says why.
+                                Chat.send(text, attached) { ok ->
+                                    if (!ok) {
+                                        prompt = text
+                                        images = attached
+                                    }
+                                }
+                            }
                         },
-                        enabled = prompt.isNotBlank() && engine.serverUp && !chat.sending && decision?.running != true &&
-                            (!choose || options.size >= 2),
+                        enabled = (prompt.isNotBlank() || (images.isNotEmpty() && !choose)) && engine.serverUp && !chat.sending &&
+                            decision?.running != true && (!choose || options.size >= 2),
                     ) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = if (choose) "Choose" else "Send") }
                 }
             }
         }
     }
+}
+
+/** The thumbnail of an image waiting to be sent: smaller than in the transcript, it sits above the keyboard. */
+private val ComposerThumb = 64.dp
+
+/** Up to [limit] bytes of [input]: a file past the largest image allowed is refused without being read whole. */
+private fun readUpTo(input: InputStream, limit: Long): ByteArray {
+    val out = ByteArrayOutputStream()
+    val buf = ByteArray(64 * 1024)
+    var left = limit
+    while (left > 0) {
+        val n = input.read(buf, 0, minOf(buf.size.toLong(), left).toInt())
+        if (n < 0) break
+        out.write(buf, 0, n)
+        left -= n
+    }
+    return out.toByteArray()
 }
 
 /** The rate and where the time goes, one line, while generating and after; the full card is in Metrics. */

@@ -5,6 +5,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Info
@@ -37,8 +38,11 @@ fun ItemView(item: ChatItem, answerAgain: Boolean, running: Boolean) {
     }
 }
 
-/** The person's message, on the right: long-press to copy it, or to edit it and send again. */
-@OptIn(ExperimentalFoundationApi::class)
+/**
+ * The person's message, on the right, its images above its words: long-press to copy it, or to
+ * edit it and send again. An edit changes the words; the images go again as they were.
+ */
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 private fun UserMessage(item: ChatItem, editable: Boolean) {
     val clipboard = LocalClipboardManager.current
@@ -50,7 +54,14 @@ private fun UserMessage(item: ChatItem, editable: Boolean) {
                 color = tokens.accentTint, shape = Corner,
                 modifier = Modifier.widthIn(max = 320.dp).clip(Corner).combinedClickable(onClick = {}, onLongClick = { menu = true }),
             ) {
-                Text(item.text, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
+                Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (item.images.isNotEmpty()) {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            item.images.forEach { src -> ImageThumb(src, MessageThumb) }
+                        }
+                    }
+                    if (item.text.isNotEmpty()) Text(item.text, style = MaterialTheme.typography.bodyLarge)
+                }
             }
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                 DropdownMenuItem(text = { Text("Copy") }, onClick = { clipboard.setText(AnnotatedString(item.text)); menu = false })
@@ -65,11 +76,20 @@ private fun UserMessage(item: ChatItem, editable: Boolean) {
             title = { Text("Edit and send again") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Everything after this message is dropped, then the edited one is sent.", style = MaterialTheme.typography.bodySmall, color = tokens.muted)
+                    Text(
+                        if (item.images.isEmpty()) "Everything after this message is dropped, then the edited one is sent."
+                        else "Everything after this message is dropped, then the edited one is sent with the same images.",
+                        style = MaterialTheme.typography.bodySmall, color = tokens.muted,
+                    )
                     OutlinedTextField(value = text, onValueChange = { text = it }, modifier = Modifier.fillMaxWidth(), minLines = 2, maxLines = 8)
                 }
             },
-            confirmButton = { TextButton(onClick = { Chat.editAndResend(item.id, text); editing = false }, enabled = text.isNotBlank()) { Text("Send") } },
+            confirmButton = {
+                TextButton(
+                    onClick = { Chat.editAndResend(item.id, text, item.images); editing = false },
+                    enabled = text.isNotBlank() || item.images.isNotEmpty(),
+                ) { Text("Send") }
+            },
             dismissButton = { TextButton(onClick = { editing = false }) { Text("Cancel") } },
         )
     }
