@@ -18,8 +18,8 @@ struct ItemView: View {
     }
 }
 
-/// The person's words, verbatim, on the accent's tint at the trailing edge. Held, it offers Copy
-/// and Edit and send again.
+/// The person's words, verbatim, on the accent's tint at the trailing edge, the images sent with
+/// them above. Held, it offers Copy and Edit and send again.
 struct UserMessageView: View {
     @EnvironmentObject private var chat: ChatModel
     let item: ConversationItem
@@ -28,16 +28,28 @@ struct UserMessageView: View {
     var body: some View {
         HStack {
             Spacer(minLength: Grid.xl)
-            Text(item.text)
-                .font(.ui(16))
-                .foregroundStyle(Palette.text)
-                .padding(12)
-                .background(RoundedRectangle(cornerRadius: Grid.radius * 1.5, style: .continuous).fill(Palette.accentTint))
-                .contextMenu {
-                    Button { UIPasteboard.general.string = item.text } label: { Label("Copy", systemImage: "doc.on.doc") }
-                    Button { edit(item) } label: { Label("Edit and send again", systemImage: "pencil") }
-                        .disabled(chat.running)
+            VStack(alignment: .trailing, spacing: Grid.s) {
+                if !item.images.isEmpty {
+                    WrapRow {
+                        ForEach(Array(item.images.enumerated()), id: \.offset) { _, url in DataURLThumbnail(dataURL: url, side: 96) }
+                    }
+                    .accessibilityLabel(item.images.count == 1 ? "1 image" : "\(item.images.count) images")
                 }
+                if !item.text.isEmpty {
+                    Text(item.text)
+                        .font(.ui(16))
+                        .foregroundStyle(Palette.text)
+                        .padding(12)
+                        .background(RoundedRectangle(cornerRadius: Grid.radius * 1.5, style: .continuous).fill(Palette.accentTint))
+                }
+            }
+            .contextMenu {
+                if !item.text.isEmpty {
+                    Button { UIPasteboard.general.string = item.text } label: { Label("Copy", systemImage: "doc.on.doc") }
+                }
+                Button { edit(item) } label: { Label("Edit and send again", systemImage: "pencil") }
+                    .disabled(chat.running)
+            }
         }
     }
 }

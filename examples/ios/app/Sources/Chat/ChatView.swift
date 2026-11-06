@@ -1,4 +1,5 @@
 import BmoeKit
+import PhotosUI
 import SwiftUI
 
 /// Chat (docs/screens.md, docs/chat.md): a conversation held by the server, plain chat on a phone,
@@ -118,17 +119,28 @@ struct ChatView: View {
     }
 }
 
-/// The composer: the message, or a question and its options to choose from.
+/// The composer: the message with the images attached to it, or a question and its options to
+/// choose from.
 struct Composer: View {
     @EnvironmentObject private var engine: Engine
     @EnvironmentObject private var chat: ChatModel
     @State private var input = ""
     @State private var choosing = false
     @State private var options = ""
+    /// The images going with the message, until the server takes it: a refused message keeps them.
+    @State private var images: [PendingImage] = []
+    @State private var imageError: String?
+    @State private var picking = false
+    @State private var picked: [PhotosPickerItem] = []
+    @State private var takingPhoto = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Grid.s) {
             controls
+            if !images.isEmpty { attachments }
+            if let imageError {
+                Text(imageError).font(.ui(13)).foregroundStyle(Palette.err).fixedSize(horizontal: false, vertical: true)
+            }
             if choosing {
                 Text("Choose: the model picks one option, scored from one read of the prompt")
                     .font(.ui(13)).foregroundStyle(Palette.muted)
@@ -154,16 +166,91 @@ struct Composer: View {
         .padding(.vertical, 12)
         .background(Palette.surface)
         .overlay(alignment: .top) { Rectangle().fill(Palette.line).frame(height: Grid.line) }
+        // The system's photo picker, up to what the message still has room for, images only.
+        .photosPicker(isPresented: $picking, selection: $picked, maxSelectionCount: max(1, ImageAttachments.maxImages - images.count),
+                      matching: .images)
+        .onChange(of: picked) { items in
+            guard !items.isEmpty else { return }
+            picked = []
+            Task { await attach(items) }
+        }
+        .fullScreenCover(isPresented: $takingPhoto) {
+            CameraPicker { data in
+                imageError = PickedImage.attach(mime: "image/jpeg", data: data, to: &images)
+            }
+            .ignoresSafeArea()
+        }
     }
 
-    /// Choose from options, as a chip that turns the composer into a question and its options.
+    /// What goes with the message: Choose from options, which turns the composer into a question
+    /// and its options, and an image, from the library or the camera. The image entries stay in
+    /// the menu when the model cannot read one, disabled, with the reason.
     private var controls: some View {
         HStack(spacing: Grid.s) {
-            Button { choosing.toggle() } label: {
-                chip(choosing ? "Choosing" : "Choose", icon: choosing ? "checklist.checked" : "checklist", on: choosing)
+            Menu {
+                Button { choosing.toggle() } label: {
+                    Label(choosing ? "Back to chat" : "Choose from options", systemImage: choosing ? "bubble.left" : "checklist")
+                }
+                Button { picking = true } label: {
+                    Text("Image")
+                    if let imageReason { Text(imageReason) }
+                    Image(systemName: "photo")
+                }
+                .disabled(imageReason != nil)
+                if CameraPicker.available {
+                    Button { takingPhoto = true } label: {
+                        Text("Take a photo")
+                        if let imageReason { Text(imageReason) }
+                        Image(systemName: "camera")
+                    }
+                    .disabled(imageReason != nil)
+                }
+            } label: {
+                chip(choosing ? "Choosing" : "Add", icon: choosing ? "checklist.checked" : "plus", on: choosing)
             }
-            .accessibilityLabel(choosing ? "Back to chat" : "Choose from options")
+            .accessibilityLabel(choosing ? "Choosing from options" : "Add to the message")
         }
+    }
+
+    /// Why an image cannot be attached now: a decision is its question and options only; otherwise
+    /// what the loaded model can read.
+    private var imageReason: String? {
+        choosing ? "Images do not go in a decision" : chat.imageReason
+    }
+
+    /// The images attached so far, each with its remove button, above the words.
+    private var attachments: some View {
+        WrapRow {
+            ForEach(images) { image in
+                DataURLThumbnail(dataURL: image.dataURL, side: 64)
+                    .overlay(alignment: .topTrailing) {
+                        Button {
+                            images.removeAll { $0.id == image.id }
+                            imageError = nil
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.ui(18))
+                                .foregroundStyle(Palette.text, Palette.surface)
+                                .padding(2)
+                        }
+                        .accessibilityLabel("Remove image")
+                    }
+            }
+        }
+    }
+
+    /// Reads what was picked and attaches each under the composer's rules; the first refusal is
+    /// shown and the rest still go in.
+    private func attach(_ items: [PhotosPickerItem]) async {
+        var refused: String?
+        for item in items {
+            guard let loaded = await PickedImage.load(item) else {
+                refused = refused ?? "Only images can be attached"
+                continue
+            }
+            if let why = PickedImage.attach(mime: loaded.mime, data: loaded.data, to: &images) { refused = refused ?? why }
+        }
+        imageError = refused
     }
 
     private func chip(_ text: String, icon: String, on: Bool = false) -> some View {
@@ -179,18 +266,28 @@ struct Composer: View {
 
     private var canSubmit: Bool {
         let hasText = !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        guard engine.serverUp, hasText else { return false }
-        if choosing { return engine.ready && !chat.deciding && Decide.parseOptions(options).count >= 2 }
-        return !chat.sending
+        guard engine.serverUp else { return false }
+        if choosing { return hasText && engine.ready && !chat.deciding && Decide.parseOptions(options).count >= 2 }
+        return (hasText || !images.isEmpty) && !chat.sending
     }
 
     private func submit() {
         if choosing {
             chat.choose(input, options: Decide.parseOptions(options))
-        } else {
-            chat.send(input)
+            input = ""
+            return
         }
-        input = ""
+        // The words and the images stay in the composer until the server takes them: a refused
+        // message (a model without its projector, an image too large to decode) is still there to
+        // change and send again, with the server's reason in the error banner.
+        let text = input, sent = images
+        imageError = nil
+        Task {
+            if await chat.send(text, images: sent.map(\.dataURL)) {
+                input = ""
+                images.removeAll { image in sent.contains { $0.id == image.id } }
+            }
+        }
     }
 }
 
@@ -319,7 +416,8 @@ struct ConversationsView: View {
     }
 }
 
-/// Edit and send again: the person's message, changed, replaces it and everything after it.
+/// Edit and send again: the person's message, changed, replaces it and everything after it. The
+/// images it carried go again as they were (the web UI's rule: an edit changes the words).
 struct EditMessageSheet: View {
     @EnvironmentObject private var chat: ChatModel
     @Environment(\.dismiss) private var dismiss
@@ -328,27 +426,37 @@ struct EditMessageSheet: View {
 
     var body: some View {
         NavigationStack {
-            TextEditor(text: $text)
-                .font(.ui(17))
-                .padding(Grid.s)
-                .scrollContentBackground(.hidden)
-                .background(Palette.surface)
-                .navigationTitle("Edit and send again")
-                .navigationBarTitleDisplayMode(.inline)
-                .safeAreaInset(edge: .bottom) {
-                    Text("What came after this message is dropped and the model answers the new one.")
-                        .font(.ui(13)).foregroundStyle(Palette.muted).padding(Grid.m)
-                }
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Send") {
-                            chat.edit(item, to: text)
-                            dismiss()
-                        }
-                        .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            VStack(alignment: .leading, spacing: Grid.s) {
+                if !item.images.isEmpty {
+                    WrapRow {
+                        ForEach(Array(item.images.enumerated()), id: \.offset) { _, url in DataURLThumbnail(dataURL: url, side: 64) }
                     }
+                    .padding(.horizontal, Grid.m).padding(.top, Grid.s)
+                    Text(item.images.count == 1 ? "The image goes again with the new words." : "The images go again with the new words.")
+                        .font(.ui(13)).foregroundStyle(Palette.muted).padding(.horizontal, Grid.m)
                 }
+                TextEditor(text: $text)
+                    .font(.ui(17))
+                    .padding(Grid.s)
+                    .scrollContentBackground(.hidden)
+            }
+            .background(Palette.surface)
+            .navigationTitle("Edit and send again")
+            .navigationBarTitleDisplayMode(.inline)
+            .safeAreaInset(edge: .bottom) {
+                Text("What came after this message is dropped and the model answers the new one.")
+                    .font(.ui(13)).foregroundStyle(Palette.muted).padding(Grid.m)
+            }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Send") {
+                        chat.edit(item, to: text, images: item.images)
+                        dismiss()
+                    }
+                    .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && item.images.isEmpty)
+                }
+            }
         }
         .onAppear { text = item.text }
     }

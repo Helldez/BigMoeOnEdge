@@ -27,8 +27,8 @@ app/
   Sources/
     App/        the entry point, the four tabs and the links between them, the status line
     Engine/     the server's life in the app: paths, launch, key, the state the screens observe
-    Chat/       the conversations over the server, the transcript, the composer, the answer's
-                Markdown theme, choose-from-options
+    Chat/       the conversations over the server, the transcript, the composer and the images it
+                attaches, the answer's Markdown theme, choose-from-options
     Models/     one list of what is here and what the catalog offers, Hugging Face, a link, a file
     Plan/       the verdict and its three figures, the planner's measurements and decisions
     Settings/   the engine parameters a form offers, one card per group of GET /api/params, and
@@ -91,7 +91,13 @@ text kept for VoiceOver), and a link opens only when tapped. Holding a message o
 send again; under each answer is Copy, and under the last one **Answer again**, which sends the
 last question again as it was (the server drops the old answer). Stop stops the answer. The
 conversations sheet lists them newest first; swipe a row to rename or delete it. With no model
-loaded the empty chat says to load one, with the way to Models. Choose from options stays: the
+loaded the empty chat says to load one, with the way to Models. The composer's **Add** menu
+attaches an image from the library or the camera (`NSCameraUsageDescription`; the photo picker
+needs no entry), up to 8 a message of at most 16 MB each, as the web UI's composer does; the bytes
+go as picked (data URLs in `images`, docs/server-api.md "Images"), the engine decodes them and the
+projector downsizes. With a model that has no projector loaded the two entries stay in the menu,
+disabled, with the reason (`GET /api/info` `model.vision`). A message shows the images it carried
+above its words, and Edit and send again resends them unchanged. Choose from options stays: the
 model picks one option from one read of the prompt, shown as a card under the conversation and not
 kept, since a decision is not a turn. An answer holds the background time iOS grants, so one nearly
 done when the person switches apps still finishes.
