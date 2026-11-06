@@ -19,6 +19,16 @@ Semantic Versioning.
   new architectures, the FP8 E4M3 tensor type, and Gemma 4 E2B/E4B prefill work upstream.
 - **Four community rows in `docs/community-benchmarks.md`**: a 96 GB mini-PC with Qwen3.8-Flash-Next Q2_K on the CPU-only and the Vulkan builds (#460, #462), and two phones from #177 (a 12 GB Snapdragon 6 Gen 1 class phone with flint 40B-A2.5B, an 18 GB phone with Qwen3.5-397B).
 
+### Fixed
+- **A projector that names another model is never paired with it.** The pairing by header fell
+  back to the folder's only projector whatever its own header said, so a model with no projector of
+  its own (a Gemma beside a Qwen `mmproj`) loaded the wrong one and warned about it. The fallback
+  now holds only when one of the two headers carries no name; `GET /api/models` and the load agree.
+- **A model is listed once, from where it really is.** A scan directory inside the models directory,
+  or a models folder of links into shared storage (the phone's), listed the same file twice, once per
+  path. `GET /api/models` now keeps one row per file on disk, the models directory's listing first.
+
+
 ## [0.40.0] - 2026-11-06
 
 ### Added

@@ -177,14 +177,21 @@ std::string projector_for(const GgufHeaderFacts & model, const std::vector<Compa
         if (file_role(f.header) == FileRole::Projector) projectors.push_back(&f);
     if (projectors.empty()) return "";
     const std::string want = name_key(model.name);
-    if (!want.empty()) {
-        std::vector<const CompanionFile *> same;
-        for (const CompanionFile * p : projectors)
-            if (name_key(p->header.name) == want) same.push_back(p);
-        if (same.size() == 1) return same.front()->path;
-        if (same.size() > 1) return "";
+    // A projector whose header names a base model is that model's: when both sides carry a name
+    // and the names differ, the two are never paired, however alone the projector is in the folder.
+    // The folder's only projector goes with a model only where one of the two has no name to check.
+    std::vector<const CompanionFile *> same, unnamed_side;
+    for (const CompanionFile * p : projectors) {
+        const std::string have = name_key(p->header.name);
+        if (!want.empty() && !have.empty()) {
+            if (have == want) same.push_back(p);
+        } else {
+            unnamed_side.push_back(p);
+        }
     }
-    return projectors.size() == 1 ? projectors.front()->path : "";
+    if (same.size() == 1) return same.front()->path;
+    if (same.size() > 1) return "";
+    return unnamed_side.size() == 1 && projectors.size() == 1 ? unnamed_side.front()->path : "";
 }
 
 FileRole file_role_hint(const std::string & name) {
