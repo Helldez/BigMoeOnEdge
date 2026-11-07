@@ -13,6 +13,7 @@ for the idea the project is built on.
 | [platforms.md](platforms.md) | What runs on each operating system and backend, how far each has been taken, and what each still owes. |
 | [backends.md](backends.md) | Every compute backend the pinned llama.cpp carries, which of them this engine has actually run on, and what each use of a device asks of one. |
 | [limitations.md](limitations.md) | What this does not do, what it cannot do, and the prior art it builds on. |
+| [model-architecture-trends.md](model-architecture-trends.md) | Where MoE model architecture is going (small experts, light attention, token-addressed tables, routers that run early), what the literature measured against this engine, and what to build next. |
 | [roadmap.md](roadmap.md) | Where the project is going as a product, in order; then the research themes, with what was measured and what was refuted. |
 
 ## Using and extending it

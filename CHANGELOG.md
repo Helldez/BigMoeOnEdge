@@ -17,6 +17,12 @@ Semantic Versioning.
   to the same rules on the way: its Image button now stays, disabled with the reason, while the
   model reads none; Answer again and an edit keep a message's images; a message of images alone can
   be edited; the first refused file is the one reported.
+- **`docs/model-architecture-trends.md`**: where MoE model architecture went in 2025-2026 and what it
+  means for streaming. Covers smaller and more numerous experts, attention with a fixed or sparse
+  state, lookup tables addressed by token ids (Engram, the `qwen4exp` n-gram table), and routers that
+  run before attention. Sets what other work reports against this engine's own measurements, says
+  where they agree and where they do not, and lists what to build next, starting with
+  token-addressed tables as their own storage tier and exact route-ahead on pre-gated models.
 
 ### Changed
 - **llama.cpp moves to upstream tag `v0.9.0`** (`cd959ba` of 2026-11-04), 164 commits past
