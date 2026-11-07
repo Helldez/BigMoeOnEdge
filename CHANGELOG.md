@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [0.40.1] - 2026-11-06
+## [0.40.1] - 2026-11-07
 
 ### Added
 - **`image-max-tokens`**: the most tokens one image may take, for a projector whose count follows
@@ -24,6 +24,13 @@ Semantic Versioning.
   the checkpoint before the image, so the image was encoded and prefilled again. A checkpoint is now
   taken after every image, as at the end of a prompt; the turn after a photo prefills its own tokens
   only.
+- **A projector that names another model is never paired with it.** The pairing by header fell
+  back to the folder's only projector whatever its own header said, so a model with no projector of
+  its own (a Gemma beside a Qwen `mmproj`) loaded the wrong one and warned about it. The fallback
+  now holds only when one of the two headers carries no name; `GET /api/models` and the load agree.
+- **A model is listed once, from where it really is.** A scan directory inside the models directory,
+  or a models folder of links into shared storage (the phone's), listed the same file twice, once per
+  path. `GET /api/models` now keeps one row per file on disk, the models directory's listing first.
 
 ### Changed
 - **llama.cpp moves to upstream tag `v0.9.0`** (`cd959ba` of 2026-11-04), 164 commits past

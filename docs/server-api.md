@@ -420,9 +420,11 @@ parameters. An audio or file content part is refused with `400` rather than drop
 
 **Images.** A model loaded with its projector reads them (`GET /api/info` says so: `model.vision`,
 and `model.projector` names the file). The projector is the `mmproj` GGUF the model's own conversion
-writes; put it in the model's folder and the server pairs the two by their headers (both name the
-same base model in `general.name`; failing that, the folder's only projector), or name it with the
-`mmproj` parameter. Any model llama.cpp's projector library knows, in any quantization of either
+writes; put it in the model's folder and the server pairs the two by their headers: both name the
+same base model in `general.name`, letters and digits compared. A projector that names another
+model is never paired, however alone it is in the folder; the folder's only projector goes with a
+model only when one of the two headers has no name to check. Or name it with the `mmproj`
+parameter. Any model llama.cpp's projector library knows, in any quantization of either
 file: nothing here names a family. An image travels inline, as a data URL on every protocol; a URL
 to fetch is refused with `400`, since a server on a network must not be made to fetch what a client
 names. Only a user message carries images, at most 8 of them, and one declaring more than 64
@@ -848,7 +850,9 @@ the directory a model was found in, `folder` the folder inside it ("" for the di
 and `files`
 every file of it that is present, in shard order, so a client that deletes a model deletes the set
 and never has to know how shards are named. A scan directory is only read: downloads land in the
-models directory, and a model in a scan directory is loaded in place by its `path`. The host app is
+models directory, and a model in a scan directory is loaded in place by its `path`. A file reachable
+from two of the listed places (a scan directory inside the models directory, a link) is one row, from
+the first place that listed it. The host app is
 what knows where else models sit (the phone's adb-pushed and shared-storage folders); the server is
 what says what they are. `streamable` is whether this build streams the
 architecture. `role` is what the file is for, read from its header and never from its name:
