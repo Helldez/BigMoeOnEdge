@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.40.2] - 2026-11-07
+
+### Fixed
+- **The knob trial halved the cache and tripled the first answer.** The trial runs a candidate
+  thread count in windows of a real answer; on a phone with four fast cores the eight-thread window
+  ran at ten times the seconds per token, and the cache brake, which reads every token's compute
+  against the run's own reference, took that stall with one sampled page out as reclaim and halved
+  the expert cache for the rest of the session (18.8 tok/s to 10.7 on the same prompts). The brake
+  no longer reads a token decoded under a trial candidate, and a candidate stops being measured once
+  the rounds left cannot make it a winner (two losing rounds of three settle the median), instead
+  of running a third round that could only repeat them.
+
 ## [0.40.1] - 2026-11-07
 
 ### Added

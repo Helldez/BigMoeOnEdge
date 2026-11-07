@@ -68,6 +68,15 @@ public:
     double gain(int cand) const;
     // Complete rounds measured for arm `cand`.
     int rounds(int cand) const;
+    // Whether arm `cand` stopped being measured because the rounds left could not make it a winner:
+    // the median of `rounds` ratios is past the margin once more than half of them are, so a
+    // candidate with that many losing rounds on record has its verdict, and its other windows leave
+    // the schedule. No constant of its own: the margin and the round count decide it. Measured on a
+    // phone: eight decode threads against four ran every window at ten times the seconds per token,
+    // and the third such round would only have repeated what two had settled.
+    bool abandoned(int cand) const { return cand > 0 && cand <= n_cand_ && dead_[(size_t) cand]; }
+    // The arm the last record() gave up, 0 when none: for the session's log line.
+    int last_abandoned() const { return last_abandoned_; }
 
     // The windows in the order they are run, and their seconds per token so far: for a log line.
     const std::vector<int> & schedule() const { return schedule_; }
@@ -76,6 +85,7 @@ public:
 private:
     enum class Phase { Settle, Measure, Done };
     void close_window();
+    void abandon(int cand);
     void decide();
     std::vector<double> ratios(int cand) const;
 
@@ -91,6 +101,8 @@ private:
     double last_hit_ = -1.0;
     int settle_windows_ = 0;
     int winner_ = 0;
+    std::vector<char> dead_; // per arm, 1 once given up
+    int last_abandoned_ = 0;
 };
 
 } // namespace bmoe
