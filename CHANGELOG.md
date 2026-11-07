@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.40.2] - 2026-11-07
+
+### Fixed
+- **iOS chat rendering with the tested Apple Swift 6.4 toolchain.** Compile MarkdownUI alone
+  without Swift optimization to avoid the observed `Markdown.Body` conformance abort when an
+  assistant reply is rendered. The app and C++ engine keep their Release optimization, and
+  vendored sources are unchanged. A model-free rendering app reproduces the optimized failure;
+  turning off linker dead stripping does not avoid it.
+
 ## [0.40.1] - 2026-11-07
 
 ### Added
