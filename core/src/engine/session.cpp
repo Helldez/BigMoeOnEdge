@@ -1105,7 +1105,8 @@ bool Session::Impl::read_model(Opening & o) {
         // on one means they are wanted. The planner prices the projector by the same rule.
         const bool devices_wanted =
             cfg.device_use == DeviceUse::All || (cfg.device_use == DeviceUse::Auto && cfg.n_gpu_layers > 0);
-        media = detail::MediaInput::open(cfg.mmproj, m, cfg.n_threads, devices_wanted, merr);
+        media = detail::MediaInput::open(cfg.mmproj, m, cfg.n_threads, devices_wanted, cfg.image_max_tokens,
+                                         &cancel_requested, merr);
         if (!media) return o.fail(merr);
         if (!media->vision()) {
             media.reset();
@@ -2724,6 +2725,12 @@ struct Session::Impl::Turn {
                 return fail(RunError::Failed, "prefill decode failed");
             }
             trace_flush();
+            // The end of an image is a prompt end's equal: it is what costs the most to redo, and the
+            // next turn can diverge a few tokens past it (a template drops a past turn's empty think
+            // block), where a memory that cannot be cut falls back to the newest checkpoint before the
+            // divergence. Without one here that was the one before the image, and the image was
+            // encoded and prefilled again on every turn after it.
+            if (chat_on && span) im.checkpoints.create(im.checkpoint_contexts(), i);
             // The draft context has to walk the prompt too: its KV must reach the last prompt position
             // or the first draft is made from a hidden state that never saw the prompt. It is a second
             // context on the host's backends, so the weights go home for its walk, slots kept, and the

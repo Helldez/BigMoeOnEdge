@@ -4,9 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [0.40.1] - 2026-11-06
+## [0.40.1] - 2026-11-07
 
 ### Added
+- **`image-max-tokens`**: the most tokens one image may take, for a projector whose count follows
+  the image's size (0, the default, keeps the projector's own cap). A camera photo took the cap's
+  thousands of tokens, each prefilled like a prompt token, which on a phone, where image tokens are
+  prefilled on the CPU, was twenty minutes for one picture; a few hundred reads the same scene in
+  under one. Rendered in every UI's settings from the parameter table, like every tunable.
 - **Images on the phones** (#484): the Android and iOS composers attach images, from the photos or
   the camera, with the web UI's rules: at most 8 in a message and 16 MB each, as removable
   thumbnails above the text until sent, a message of images alone allowed, the entries shown
@@ -17,6 +22,25 @@ Semantic Versioning.
   to the same rules on the way: its Image button now stays, disabled with the reason, while the
   model reads none; Answer again and an edit keep a message's images; a message of images alone can
   be edited; the first refused file is the one reported.
+
+### Fixed
+- **Stop during an image.** A cancel reached the engine only at a decode boundary, and an image's
+  encoder has none: Stop pressed while a photo was encoded waited for the whole encoder. The
+  encoder now stops where it is through the library's eval callback, and the turn ends as
+  cancelled at once, on every UI and API.
+- **An image paid again on every turn after it**, on a model whose memory cannot be cut anywhere
+  (a recurrent or hybrid one, Qwen3.6 among them): the next turn diverges a few tokens past the
+  image, where the template drops the previous turn's empty think block, and the reuse fell back to
+  the checkpoint before the image, so the image was encoded and prefilled again. A checkpoint is now
+  taken after every image, as at the end of a prompt; the turn after a photo prefills its own tokens
+  only.
+- **A projector that names another model is never paired with it.** The pairing by header fell
+  back to the folder's only projector whatever its own header said, so a model with no projector of
+  its own (a Gemma beside a Qwen `mmproj`) loaded the wrong one and warned about it. The fallback
+  now holds only when one of the two headers carries no name; `GET /api/models` and the load agree.
+- **A model is listed once, from where it really is.** A scan directory inside the models directory,
+  or a models folder of links into shared storage (the phone's), listed the same file twice, once per
+  path. `GET /api/models` now keeps one row per file on disk, the models directory's listing first.
 
 ### Changed
 - **llama.cpp moves to upstream tag `v0.9.0`** (`cd959ba` of 2026-11-04), 164 commits past
@@ -30,16 +54,6 @@ Semantic Versioning.
   Metis-1.6, DeepSeek V4.1 Flash, the LFM3 family, Nemotron Bolt 74B-A9B and Kolibri-1 among the
   new architectures, the FP8 E4M3 tensor type, and Gemma 4 E2B/E4B prefill work upstream.
 - **Four community rows in `docs/community-benchmarks.md`**: a 96 GB mini-PC with Qwen3.8-Flash-Next Q2_K on the CPU-only and the Vulkan builds (#460, #462), and two phones from #177 (a 12 GB Snapdragon 6 Gen 1 class phone with flint 40B-A2.5B, an 18 GB phone with Qwen3.5-397B).
-
-### Fixed
-- **A projector that names another model is never paired with it.** The pairing by header fell
-  back to the folder's only projector whatever its own header said, so a model with no projector of
-  its own (a Gemma beside a Qwen `mmproj`) loaded the wrong one and warned about it. The fallback
-  now holds only when one of the two headers carries no name; `GET /api/models` and the load agree.
-- **A model is listed once, from where it really is.** A scan directory inside the models directory,
-  or a models folder of links into shared storage (the phone's), listed the same file twice, once per
-  path. `GET /api/models` now keeps one row per file on disk, the models directory's listing first.
-
 
 ## [0.40.0] - 2026-11-06
 

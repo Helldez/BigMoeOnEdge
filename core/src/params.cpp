@@ -255,6 +255,19 @@ std::vector<ParamDesc> build() {
                     "set it here to choose another. Any quantization of either file works.";
         t.push_back(d);
     }
+    {
+        ParamDesc d = row("image-max-tokens", "Image tokens", G::Model, L::Advanced,
+                          "Most tokens one image may take, for a projector whose count follows the image's size. "
+                          "0 = the projector's own cap.");
+        d.value_hint = "N";
+        bounds(d, 0, RunConfig::tokens_max, "tokens");
+        bind_int(d, [](RunConfig & c) -> int & { return c.image_max_tokens; });
+        d.details = "Every image token is prefilled like a prompt token, and a photo takes thousands at a projector's "
+                    "own cap: on a phone, where image tokens are prefilled on the CPU, that is minutes. A few hundred "
+                    "reads a scene or a page; the projector sizes the image down to fit. A projector with a fixed "
+                    "token count ignores this.";
+        t.push_back(d);
+    }
 
     // ── generation ───────────────────────────────────────────────────────────────────
     {
