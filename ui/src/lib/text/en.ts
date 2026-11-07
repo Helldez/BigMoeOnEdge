@@ -116,6 +116,9 @@ export const en = {
   'composer.image.max': 'At most {n} images go in one message',
   'composer.image.notImage': 'Only images can be attached',
   'composer.image.tooLarge': 'An image can be at most {mb} MB',
+  'composer.image.noModel': 'No model is loaded: one loaded with its projector file reads images',
+  'composer.image.noVision': 'The loaded model does not read images: load one with its projector file',
+  'composer.image.choose': 'An image goes with a message, not with a choice',
 
   'workspace.label': 'Folder',
   'workspace.none': 'No folder (chat only)',

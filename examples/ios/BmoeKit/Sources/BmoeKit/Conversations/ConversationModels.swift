@@ -42,16 +42,20 @@ public struct ConversationItem: Equatable, Sendable, Identifiable {
     public var kind: Kind
     /// user, assistant, notice
     public var text: String
+    /// user: the images sent with the words, as data URLs, in their order.
+    public var images: [String]
     /// assistant
     public var reasoning: String
     public var streaming: Bool
     /// notice: `info`, `warn`, `error`
     public var level: String
 
-    public init(id: String, kind: Kind, text: String = "", reasoning: String = "", streaming: Bool = false, level: String = "") {
+    public init(id: String, kind: Kind, text: String = "", images: [String] = [], reasoning: String = "", streaming: Bool = false,
+                level: String = "") {
         self.id = id
         self.kind = kind
         self.text = text
+        self.images = images
         self.reasoning = reasoning
         self.streaming = streaming
         self.level = level
@@ -61,7 +65,8 @@ public struct ConversationItem: Equatable, Sendable, Identifiable {
         self.init(
             id: j["id"].string ?? j["id"].int64.map { String($0) } ?? "",
             kind: Kind(rawValue: j["kind"].string(or: "")) ?? .other,
-            text: j["text"].string(or: ""), reasoning: j["reasoning"].string(or: ""),
+            text: j["text"].string(or: ""), images: (j["images"].array ?? []).compactMap(\.string),
+            reasoning: j["reasoning"].string(or: ""),
             streaming: j["streaming"].bool(or: false), level: j["level"].string(or: ""))
     }
 }

@@ -433,10 +433,10 @@ interesting lever for long prompts, and it gives up the byte identity the gates 
 Asked in #250 and built on llama.cpp's own projector library (`mtmd`): a model loaded with its
 `mmproj` file reads images on every API, the agent and the CLI, with the KV prefix reused through
 an image ([server-api.md](server-api.md#chat), "Images"; [seam.md](seam.md)). What is still owed:
-a run of a streamed MoE vision model on each platform other than the laptop it ran on, an image on the
-Android and iOS apps' composers (the server side is the same), the agent taking a screenshot of its
-own page for a coding harness, and speculation beside an image (today it is off while a
-conversation holds one).
+a run of a streamed MoE vision model on each platform other than the laptop and the phone it ran
+on, the image encoder beside an armed prefill device (#478), the projector freed between images on
+a phone (#475), the agent taking a screenshot of its own page for a coding harness, and speculation
+beside an image (today it is off while a conversation holds one).
 
 ## Not on this list
 

@@ -41,6 +41,58 @@ final class ConversationTests: XCTestCase {
         XCTAssertEqual(c.items[2].level, "warn")
     }
 
+    func testAUserItemCarriesItsImages() throws {
+        let c = ServerConversation(try json(#"""
+            {"id":"c","items":[
+              {"id":"1","kind":"user","text":"what is this?","images":["data:image/png;base64,AAAA","data:image/jpeg;base64,BBBB"]},
+              {"id":"2","kind":"user","text":"plain"}]}
+            """#))
+        XCTAssertEqual(c.items[0].images, ["data:image/png;base64,AAAA", "data:image/jpeg;base64,BBBB"])
+        XCTAssertEqual(c.items[1].images, [], "a message without the key reads as words only")
+    }
+
+    // MARK: the bodies
+
+    func testMessageBodyCarriesImagesOnlyWhenThereAreAny() {
+        XCTAssertEqual(Transcript.messageBody(text: "hi"), ["text": "hi"])
+        XCTAssertEqual(Transcript.messageBody(text: "look", images: ["data:image/png;base64,AAAA"]),
+                       ["text": "look", "images": ["data:image/png;base64,AAAA"]])
+    }
+
+    func testEditBodyResendsTheImagesUnchanged() {
+        XCTAssertEqual(Transcript.editBody(item: "3", text: "again?"), ["item": "3", "text": "again?"])
+        XCTAssertEqual(Transcript.editBody(item: "3", text: "again?", images: ["data:image/png;base64,AAAA"]),
+                       ["item": "3", "text": "again?", "images": ["data:image/png;base64,AAAA"]])
+    }
+
+    // MARK: the attachment rules
+
+    func testAttachmentRulesAreTheWebComposers() {
+        XCTAssertEqual(ImageAttachments.maxImages, 8)
+        XCTAssertEqual(ImageAttachments.maxBytes, 16 * 1024 * 1024)
+        XCTAssertNil(ImageAttachments.accept(mime: "image/png", bytes: 1024, count: 0))
+        XCTAssertNil(ImageAttachments.accept(mime: "IMAGE/HEIC", bytes: ImageAttachments.maxBytes, count: 7))
+        XCTAssertEqual(ImageAttachments.accept(mime: "application/pdf", bytes: 10, count: 0), "Only images can be attached")
+        XCTAssertEqual(ImageAttachments.accept(mime: nil, bytes: 10, count: 0), "Only images can be attached")
+        XCTAssertEqual(ImageAttachments.accept(mime: "image/png", bytes: ImageAttachments.maxBytes + 1, count: 0),
+                       "An image can be at most 16 MB")
+        XCTAssertEqual(ImageAttachments.accept(mime: "image/png", bytes: 10, count: 8), "At most 8 images go in one message")
+    }
+
+    func testDataURLRoundTripsWithTheFallbackType() {
+        let bytes = Data([0xFF, 0xD8, 0xFF, 0xE0, 0x00])
+        let url = ImageAttachments.dataURL(mime: "image/png", data: bytes)
+        XCTAssertEqual(url, "data:image/png;base64,/9j/4AA=")
+        XCTAssertFalse(url.contains("\n"), "base64 on one line")
+        XCTAssertEqual(ImageAttachments.dataURL(mime: nil, data: bytes), "data:image/jpeg;base64,/9j/4AA=")
+        XCTAssertEqual(ImageAttachments.dataURL(mime: "", data: bytes), "data:image/jpeg;base64,/9j/4AA=")
+        let back = ImageAttachments.decode(dataURL: url)
+        XCTAssertEqual(back?.mime, "image/png")
+        XCTAssertEqual(back?.data, bytes)
+        XCTAssertNil(ImageAttachments.decode(dataURL: "https://x/y.png"))
+        XCTAssertNil(ImageAttachments.decode(dataURL: "data:image/png,notbase64"))
+    }
+
     // MARK: the transcript
 
     func testItemUpsertsInPlaceAndAppendsInOrder() throws {

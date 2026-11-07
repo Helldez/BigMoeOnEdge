@@ -63,6 +63,10 @@
   let thinkDefault = $derived(server.config?.values?.think === false ? false : true);
   let thinking = $derived(think ?? thinkDefault);
   let localReady = $derived(server.ready);
+  // Why not, in one line under the button's title: the same three reasons the phone apps give.
+  let imageWhyNot = $derived(
+    !model || !localReady ? t('composer.image.noModel') : !model.vision ? t('composer.image.noVision') : choose ? t('composer.image.choose') : '',
+  );
   let blocked = $derived(!external && local && !localReady);
   let canSend = $derived(
     !blocked &&
@@ -73,19 +77,23 @@
       (!choose || options.trim() !== ''),
   );
 
+  // The first refusal is the one shown, as on the phones: a later file that is fine does not hide it.
   function addImageFiles(files: Iterable<File>): void {
     imageError = '';
+    const refuse = (why: string) => {
+      if (!imageError) imageError = why;
+    };
     for (const f of files) {
       if (!f.type.startsWith('image/')) {
-        imageError = t('composer.image.notImage');
+        refuse(t('composer.image.notImage'));
         continue;
       }
       if (f.size > MAX_IMAGE_BYTES) {
-        imageError = t('composer.image.tooLarge', { mb: String(MAX_IMAGE_BYTES / (1024 * 1024)) });
+        refuse(t('composer.image.tooLarge', { mb: String(MAX_IMAGE_BYTES / (1024 * 1024)) }));
         continue;
       }
       if (images.length >= MAX_IMAGES) {
-        imageError = t('composer.image.max', { n: String(MAX_IMAGES) });
+        refuse(t('composer.image.max', { n: String(MAX_IMAGES) }));
         break;
       }
       const reader = new FileReader();
@@ -272,9 +280,11 @@
           <Icon name="brain" size={15} />{t('composer.think')}
         </button>
       {/if}
-      {#if canImage}
+      {#if local}
+        <!-- Shown whenever the local model is the route, disabled with the reason while it reads no
+             images: the feature is found before it can be used, as on the phones. -->
         <input type="file" accept="image/*" multiple hidden bind:this={fileInput} onchange={pickImages} />
-        <button type="button" class="toggle" title={t('composer.image.hint')} onclick={() => fileInput?.click()}>
+        <button type="button" class="toggle" disabled={!canImage} title={canImage ? t('composer.image.hint') : imageWhyNot} onclick={() => fileInput?.click()}>
           <Icon name="image" size={15} />{t('composer.image')}
         </button>
       {/if}

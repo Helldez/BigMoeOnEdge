@@ -1,5 +1,6 @@
 package io.bigmoeonedge.app.chat
 
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -79,6 +80,15 @@ object ItemReducer {
         return if (i < 0) items else items.take(i)
     }
 
-    /** The body of `POST /api/conversations/<id>/edit`: the message [itemId] replaced by [text]. */
-    fun editBody(itemId: String, text: String): JSONObject = JSONObject().put("item", itemId).put("text", text)
+    /** The body of `POST /api/conversations/<id>/messages`: [text], with [images] (data URLs) when there are any. */
+    fun messageBody(text: String, images: List<String> = emptyList()): JSONObject = withImages(JSONObject().put("text", text), images)
+
+    /** The body of `POST /api/conversations/<id>/edit`: the message [itemId] replaced by [text] and [images]. */
+    fun editBody(itemId: String, text: String, images: List<String> = emptyList()): JSONObject =
+        withImages(JSONObject().put("item", itemId).put("text", text), images)
+
+    // `images` only when there are any: a text-only message to a model without a projector must not
+    // carry an empty list the server could read as a vision request.
+    private fun withImages(body: JSONObject, images: List<String>): JSONObject =
+        if (images.isEmpty()) body else body.put("images", JSONArray(images))
 }

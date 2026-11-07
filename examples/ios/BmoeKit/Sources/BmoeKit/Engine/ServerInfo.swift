@@ -12,6 +12,9 @@ public struct ModelInfo: Equatable, Sendable {
     public let loadSeconds: Double
     /// Whether experts stream from flash; off, the engine is plain llama.cpp on mmap.
     public let streaming: Bool
+    /// Whether the model reads images: its projector is loaded beside it. Without it a message
+    /// with images is refused (`no_vision`).
+    public let vision: Bool
     /// What a CPU figure is read against: the session's compute threads, and every busy thread.
     public let computeThreads: Int
     public let busyThreads: Int
@@ -41,6 +44,7 @@ public struct ModelInfo: Equatable, Sendable {
         thinkControl = j["think_ctl"].string(or: "template")
         loadSeconds = j["load_s"].double(or: 0)
         streaming = j["streaming"].bool(or: false)
+        vision = j["vision"].bool(or: false)
         computeThreads = j["compute_threads"].int(or: 0)
         busyThreads = j["busy_threads"].int(or: 0)
         let a = j["ctx_advice"]
