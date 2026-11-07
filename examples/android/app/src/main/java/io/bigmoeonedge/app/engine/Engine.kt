@@ -393,6 +393,11 @@ data class EngineUi(
     /** The stage a measurement is in; null when none runs. */
     val planProgress: PlanProgress? = null,
     /**
+     * When the load in progress began (wall clock, ms), 0 when none is: the engine's, so a screen
+     * that shows the seconds since can be left and come back to without starting from zero.
+     */
+    val loadStartedAt: Long = 0L,
+    /**
      * The plan the server holds for the chosen model (`GET /api/plan?cached=1`, never a measurement):
      * read when the server is reached, when a session opens and when a turn ends, so the Plan screen
      * opens on it at once and its measured figures land when the answer does, whichever screen is open.
@@ -607,7 +612,18 @@ object Engine {
             "state" -> {
                 val info = ServerInfo.of(o)
                 val before = _state.value.info
-                _state.update { it.copy(info = info) }
+                val loadingNow = info.state == "loading" || info.state == "planning"
+                val loadingBefore = before?.state == "loading" || before?.state == "planning"
+                _state.update {
+                    it.copy(
+                        info = info,
+                        loadStartedAt = when {
+                            !loadingNow -> 0L
+                            loadingBefore && it.loadStartedAt != 0L -> it.loadStartedAt
+                            else -> System.currentTimeMillis()
+                        },
+                    )
+                }
                 if (info.ready && (before?.model?.path != info.model?.path || before?.model?.loadS != info.model?.loadS)) {
                     // A new session: a fresh metrics file for it, and the models list may have changed.
                     recorder?.sessionOpened(info, _state.value.config)
