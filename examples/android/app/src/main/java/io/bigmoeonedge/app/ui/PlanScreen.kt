@@ -114,9 +114,20 @@ fun PlanScreen(modifier: Modifier = Modifier, onOpenSetting: (key: String) -> Un
             // A failed plan can be retried where it says so: measuring is the person's tap, never automatic.
             if (shownError.isNotEmpty()) RetryLine(shownError, canMeasure) { measure() }
             if (busy || engine.planProgress != null) PlanProgressCard(engine.planProgress)
+            // While a model loads, the plan the server holds is the previous session's: the new one
+            // lands when the session opens. Said so, rather than shown as the loaded model's.
+            val loading = engine.loading
+            if (loading && engine.planProgress == null) {
+                Text(
+                    "Loading the model; the plan of this load shows once it is open." +
+                        if (plan?.available == true) " Below: the previous plan." else "",
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
 
             val p = plan
-            if (p?.available == true && cfg != null) {
+            if (p?.available == true && cfg != null && !loading) {
                 AutoPlanSwitch(cfg.autoPlan, planner) { on -> scope.launch { Engine.setAutoPlan(on) } }
             }
             when {

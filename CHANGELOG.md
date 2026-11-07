@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.40.2] - 2026-11-07
+
+### Fixed
+- **Android: the loading count restarted on every screen change, and Plan showed the previous
+  model's plan as the loaded one while a model loaded.** The seconds since a load began are now the
+  engine's, kept across screens; while a load is under way the Plan screen says the plan of this
+  load comes when the session opens, and shows nothing as the loaded model's until then.
+
 ## [0.40.1] - 2026-11-07
 
 ### Added
