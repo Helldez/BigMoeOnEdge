@@ -40,6 +40,7 @@ struct SessionConfig {
     // conversion), loaded beside the model. Empty: text only, and a request with images is refused.
     // See RunConfig::mmproj.
     std::string mmproj;
+    int image_max_tokens = 0; // the most tokens one image may take, 0 = the projector's own cap. See RunConfig.
     int n_threads = 4;
     int n_threads_batch = 0; // 0 = same as n_threads. See RunConfig::n_threads_batch.
     int n_ctx = 2048;

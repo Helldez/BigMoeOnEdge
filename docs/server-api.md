@@ -321,7 +321,8 @@ Cancels any generation and closes the session. `state` becomes `empty`.
 
 ### `POST /api/cancel`
 
-Stops the running generation at the next decode boundary. Always `200`.
+Stops the running generation at the next decode boundary, or where an image's encoder is when one
+is being encoded. Always `200`.
 
 ## Parameters and config
 
@@ -425,9 +426,12 @@ same base model in `general.name`; failing that, the folder's only projector), o
 file: nothing here names a family. An image travels inline, as a data URL on every protocol; a URL
 to fetch is refused with `400`, since a server on a network must not be made to fetch what a client
 names. Only a user message carries images, at most 8 of them, and one declaring more than 64
-megapixels is refused with the reason before it is decoded (the projector downsizes every image to
-its own few hundred pixels a side, so no photo loses by being sent smaller); each is `400`. An image
-part placed between text parts keeps its place in the prompt. The same image sent
+megapixels is refused with the reason before it is decoded; each is `400`. What an image costs is
+its tokens, each prefilled like a prompt token: a fixed-size projector takes the same few hundred
+from any image, one whose count follows the image's size takes thousands from a photo at its own
+cap, and the `image-max-tokens` parameter lowers that cap (the projector sizes the image down to
+fit), which a host that prefills image tokens slowly wants. An image part placed between text parts
+keeps its place in the prompt. The same image sent
 again in the same conversation is not encoded or prefilled again: the KV prefix is reused through
 it, and a different image at the same place is where the reuse ends. A request with images to a
 model loaded without a projector is `400` with `code: "no_vision"`. While a conversation holds an

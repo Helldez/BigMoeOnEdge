@@ -1105,7 +1105,8 @@ bool Session::Impl::read_model(Opening & o) {
         // on one means they are wanted. The planner prices the projector by the same rule.
         const bool devices_wanted =
             cfg.device_use == DeviceUse::All || (cfg.device_use == DeviceUse::Auto && cfg.n_gpu_layers > 0);
-        media = detail::MediaInput::open(cfg.mmproj, m, cfg.n_threads, devices_wanted, merr);
+        media = detail::MediaInput::open(cfg.mmproj, m, cfg.n_threads, devices_wanted, cfg.image_max_tokens,
+                                         &cancel_requested, merr);
         if (!media) return o.fail(merr);
         if (!media->vision()) {
             media.reset();

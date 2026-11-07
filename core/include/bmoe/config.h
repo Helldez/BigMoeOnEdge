@@ -645,6 +645,10 @@ struct RunConfig {
     // Empty: text only. Any model llama.cpp's projector library knows, any quantization of either
     // file: the projector is read by its own header, nothing here names a family.
     std::string mmproj;
+    // The most tokens one image may take, for a projector whose token count follows the image's
+    // size (0 = the projector's own cap, thousands for a photo). Each is prefilled as a prompt token,
+    // so the cap is what an image costs: a host that prefills image tokens slowly wants few.
+    int image_max_tokens = 0;
     std::string prompt = "The capital of Japan is";
     // Image files the prompt places with image_marker() (bmoe/chat.h), in order: the one-shot run's
     // input beside `prompt`, read by the front-end and handed to the session as bytes.

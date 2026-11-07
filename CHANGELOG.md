@@ -6,6 +6,19 @@ Semantic Versioning.
 
 ## [0.40.1] - 2026-11-06
 
+### Added
+- **`image-max-tokens`**: the most tokens one image may take, for a projector whose count follows
+  the image's size (0, the default, keeps the projector's own cap). A camera photo took the cap's
+  thousands of tokens, each prefilled like a prompt token, which on a phone, where image tokens are
+  prefilled on the CPU, was twenty minutes for one picture; a few hundred reads the same scene in
+  under one. Rendered in every UI's settings from the parameter table, like every tunable.
+
+### Fixed
+- **Stop during an image.** A cancel reached the engine only at a decode boundary, and an image's
+  encoder has none: Stop pressed while a photo was encoded waited for the whole encoder. The
+  encoder now stops where it is through the library's eval callback, and the turn ends as
+  cancelled at once, on every UI and API.
+
 ### Changed
 - **llama.cpp moves to upstream tag `v0.9.0`** (`cd959ba` of 2026-11-04), 164 commits past
   `8ca4060` (`docs/seam.md`). The fork branch `bmoe/expert-ready-hook-0411` is that tag plus the one
