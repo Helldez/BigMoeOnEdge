@@ -104,6 +104,42 @@ completing on a 125B model on a mini-PC and on a 35B model on a 16 GB laptop, bo
 - **Give the agent room.** 64k of context left room to spare here (22k used); opencode's first
   request was 11k tokens. See [sizing the context for a client](../../server-api.md#sizing-the-context-for-a-client).
 
+## A second run the same evening
+
+The same archive, model, command line, prompt, `AGENTS.md` and opencode config, on the same laptop
+five hours later (10 646 MiB free at start; 1 962 MiB once the session was ready). The page was
+written again with no human input, in **35 min 15 s**: [`voxel-pagoda-garden.html`](voxel-pagoda-garden.html).
+
+![The second run's scene as the page opens](scene-run2.png)
+
+| # | What | Prompt tokens (prefill) | Answer tokens | Decode | Cache hit | Context |
+|---:|---|---:|---:|---:|---:|---:|
+| 1 | opencode's title request | 645 (2.8 s) | 1 238 | 15.2 tok/s | 82 % | 1 883 |
+| 2 | turn 1: system prompt, tools, task | 10 952 (32.6 s, 336 tok/s) | 326 | 13.7 tok/s | 84 % | 11 278 |
+| 3 | turn 2: writes the page to `/tmp`, **denied** | 61 (3.3 s) | 10 566 | 13.6 tok/s | 88 % | 21 905 |
+| 4 | turn 3: writes it again, in the project folder | 1 417 (6.5 s) | 10 377 | 9.1 tok/s | 84 % | 33 699 |
+| 5-6 | checks the file, summary to the user | 21 / 60 | 80 / 304 | 8.0 / 10.8 tok/s | 84 % | 34 164 |
+
+- **The extra eleven minutes were the model's.** Its first write targeted `/tmp`, which `AGENTS.md`
+  tells it not to use and the config's permission rules deny; it then rewrote the whole page. The
+  page, 25.6 KB, Three.js 0.164.1, has a five-tier pagoda, eight cherry
+  trees, pines, bamboo, lanterns, a pond with an arched bridge, falling petals and fireflies.
+- **Decode ran faster than the afternoon's**, 13.6-15.2 tok/s against 8.2-8.6, until the second
+  long write, which fell to 9.1 tok/s as memory pressure grew. The knob trial chose differently
+  this time: overlap off (10.7 % faster in the median of 3 rounds), 8 decode threads held. The
+  cache got 6.2 GiB against the afternoon's 5.5.
+
+## Claude Code on the same server
+
+The same task under Claude Code 2.1.319 (`claude -p`, on the server's `/v1/messages`) did not
+finish: Claude Code gave up on the long write and asked again, with the same result each time.
+While the model generates a tool call the server sends nothing on the stream, since a call's input
+is sent whole once it is parsed, and the `ping` keep-alive is only sent while a turn waits in the
+queue. A 7 478-token write at 14.7 tok/s is about 510 s of silence; Claude Code drops a stream
+that is silent for 300 s and retries, and the deterministic model produced the same 7 478 tokens
+on the retry. Until the server pings during a turn, `CLAUDE_STREAM_IDLE_TIMEOUT_MS=1800000` lifts
+the limit on the client side. opencode was run with its timeouts off and is not affected.
+
 ## Reproducing it
 
 ```bash
