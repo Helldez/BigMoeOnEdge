@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **A streamed turn is never silent for long** (`server/stream_keepalive.h`). While a turn ran, a
+  stream wrote only what the model produced, and a tool call is sent once parsed, so an agent's
+  long write (thousands of tokens) or a long prefill left the stream silent for minutes. Claude
+  Code drops a stream silent for 300 s and asks again, and the same prompt brought the same
+  silence: an agent writing a large file never finished. Now any 15 s of a turn with nothing to
+  send gets the protocol's keep-alive (`event: ping` on `/v1/messages`, a `: ping` comment on
+  `/v1/responses` and `/v1/chat/completions`), bounded by time rather than tokens, so it holds
+  whatever the machine's speed, the model or the call's length.
+
 ## [0.40.1] - 2026-11-07
 
 ### Added
