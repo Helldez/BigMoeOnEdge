@@ -96,7 +96,10 @@ the same on every platform:
    A page the cache wrote and the kernel then compressed, swapped or trimmed is reclaim by definition.
 
 A slow token with every sampled page in place (the cores, the clock, a neighbour) moves nothing. A
-run that never stalls never pays for a sample.
+run that never stalls never pays for a sample. A token decoded under a knob trial's candidate
+([measured-planning.md](measured-planning.md)) is read by neither the stall test nor the reference:
+it is slow by choice, and on a phone one such token with a single sampled page out once halved the
+cache for the rest of the session.
 
 What it answers is what the planner cannot know at load: how much of the budget this machine will
 let the process keep, now. A 12 GB phone given a 6 GB share compressed 2.5 GB of an engine holding

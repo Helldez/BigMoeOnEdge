@@ -40,6 +40,12 @@ struct KnobTrialPolicy {
     // How much faster a candidate must be than the incumbent before it replaces it, as a fraction:
     // the planner's own margin for "a device is faster than the host", for the same reason.
     double min_win = PlannerPolicy::defaults().min_backend_win;
+    // A candidate whose first two windows both run this many times slower than the incumbent is
+    // given up there: its other rounds leave the schedule and the answer goes on at the incumbent's
+    // pace. Two, not one: a single stalled window is what the median is there to absorb. Measured on
+    // a phone: eight decode threads against four ran every window at ten times the seconds per
+    // token, and three such rounds tripled the first answer. 0 keeps every round.
+    double hopeless = 2.0;
 };
 
 class KnobTrial {
@@ -68,6 +74,10 @@ public:
     double gain(int cand) const;
     // Complete rounds measured for arm `cand`.
     int rounds(int cand) const;
+    // Whether arm `cand` was given up after two hopeless windows (KnobTrialPolicy::hopeless).
+    bool abandoned(int cand) const { return cand > 0 && cand <= n_cand_ && dead_[(size_t) cand]; }
+    // The arm the last record() gave up, 0 when none: for the session's log line.
+    int last_abandoned() const { return last_abandoned_; }
 
     // The windows in the order they are run, and their seconds per token so far: for a log line.
     const std::vector<int> & schedule() const { return schedule_; }
@@ -76,6 +86,7 @@ public:
 private:
     enum class Phase { Settle, Measure, Done };
     void close_window();
+    void abandon(int cand);
     void decide();
     std::vector<double> ratios(int cand) const;
 
@@ -91,6 +102,8 @@ private:
     double last_hit_ = -1.0;
     int settle_windows_ = 0;
     int winner_ = 0;
+    std::vector<char> dead_; // per arm, 1 once given up
+    int last_abandoned_ = 0;
 };
 
 } // namespace bmoe

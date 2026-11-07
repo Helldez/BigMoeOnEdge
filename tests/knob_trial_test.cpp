@@ -316,6 +316,48 @@ int main() {
               "fingerprint: another device or another processor is another machine");
     }
 
+    // ── hopeless: a candidate ten times slower is given up after two windows ──
+    // Three rounds of eight tokens at ten times the pace tripled a phone's first answer; two windows
+    // in a row say all there is to say (one is the stall the median absorbs, above), and the brake
+    // must not read them either (the session's concern).
+    {
+        KnobTrial k(1, false, pol);
+        Sim sim;
+        sim.spt = [](int arm, int) { return arm == 1 ? 0.500 : 0.050; };
+        const Outcome o = run(k, sim, 1);
+        int cand_steps = 0;
+        for (int a : o.arms)
+            cand_steps += a == 1;
+        check(o.done && o.winner == 0, "hopeless: ten times slower holds the incumbent");
+        check(k.abandoned(1) && k.rounds(1) == 2,
+              "hopeless: the candidate was given up with two rounds on record (" + std::to_string(k.rounds(1)) + ")");
+        check(cand_steps == 2 * (pol.window_tokens + pol.warm_tokens),
+              "hopeless: the candidate ran two windows and their warm-ups only (" + std::to_string(cand_steps) +
+                  " steps)");
+        // Incumbent, candidate, incumbent, candidate, incumbent: five windows, each after a warm-up.
+        check(o.steps <= 5 * (pol.window_tokens + pol.warm_tokens),
+              "hopeless: the trial ended after the bracketing window (" + std::to_string(o.steps) + " steps)");
+    }
+    // ── hopeless beside a real win: the slow candidate is dropped, the fast one still measured and wins ──
+    {
+        KnobTrial k(2, false, pol);
+        Sim sim;
+        sim.spt = [](int arm, int) { return arm == 1 ? 0.500 : arm == 2 ? 0.040 : 0.050; };
+        sim.noise = 0.05;
+        const Outcome o = run(k, sim, 2);
+        check(o.done && o.winner == 2 && k.abandoned(1) && !k.abandoned(2) && k.rounds(2) == pol.rounds,
+              "hopeless: the slow candidate is dropped, the 25% faster one keeps its rounds and wins");
+    }
+    // ── a slow window inside the factor is not given up: 1.8x once is noise the median absorbs ──
+    {
+        KnobTrial k(1, false, pol);
+        Sim sim;
+        sim.spt = [](int arm, int t) { return arm == 1 && t < 12 ? 0.090 : 0.050; };
+        const Outcome o = run(k, sim, 1);
+        check(o.done && !k.abandoned(1) && k.rounds(1) == pol.rounds,
+              "hopeless: a first window 1.8x slower is measured through its rounds");
+    }
+
     if (failures) {
         std::printf("\n%d check(s) FAILED\n", failures);
         return 1;

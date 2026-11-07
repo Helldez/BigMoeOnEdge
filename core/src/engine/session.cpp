@@ -2107,6 +2107,17 @@ void Session::Impl::trial_step(double seconds, int tokens) {
     if (settling && !k.settling())
         log_printf(LogLevel::Info, "knob trial: the cache has settled; measuring %s",
                    trials.stage == 0 ? "the decode thread count" : "overlap");
+    if (const int dead = k.last_abandoned()) {
+        const std::vector<double> & w = k.window_seconds_per_token();
+        const size_t n = w.size();
+        if (trials.stage == 0)
+            log_printf(LogLevel::Info,
+                       "knob trial: %d decode threads given up after two windows: %.0f ms/token against %.0f",
+                       trials.threads[(size_t) dead], 1e3 * w[n - 1], 1e3 * w[n - 2]);
+        else
+            log_printf(LogLevel::Info, "knob trial: overlap %s given up after two windows: %.0f ms/token against %.0f",
+                       trials.overlap[(size_t) dead] ? "on" : "off", 1e3 * w[n - 1], 1e3 * w[n - 2]);
+    }
     if (k.done()) {
         finish_trial_stage();
         return;
@@ -3093,6 +3104,11 @@ struct Session::Impl::Turn {
     // only to confirm it, so a run that never stalls never pays for it.
     void brake_cache() {
         if (!moe.enabled || !moe.cache_brake || im.source.cache_budget() == 0) return;
+        // A token decoded under a knob trial's candidate is slow by choice, not by reclaim: eight
+        // threads on four fast cores ran one at ten times the reference, the sample found a page
+        // out, and the cache was halved for the rest of the session (a phone: 18.8 tok/s to 10.7).
+        // Neither the stall test nor the reference reads such a token.
+        if (im.trials.stage < 2 && im.trials.cur && im.trials.cur->arm() != 0) return;
         const double ref = im.brake.reference();
         if (!im.brake.stalled(last_compute_s)) return;
         const double lost = im.source.cache_lost_frac(k_brake_sample);
