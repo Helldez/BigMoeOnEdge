@@ -316,10 +316,10 @@ int main() {
               "fingerprint: another device or another processor is another machine");
     }
 
-    // ── hopeless: a candidate ten times slower is given up after two windows ──
-    // Three rounds of eight tokens at ten times the pace tripled a phone's first answer; two windows
-    // in a row say all there is to say (one is the stall the median absorbs, above), and the brake
-    // must not read them either (the session's concern).
+    // ── settled: a candidate that can no longer win stops being measured ──
+    // Three rounds of eight tokens at ten times the pace tripled a phone's first answer; with three
+    // rounds, two losing ones settle the median, and the third would only repeat them. The brake
+    // must not read those windows either (the session's concern).
     {
         KnobTrial k(1, false, pol);
         Sim sim;
@@ -328,17 +328,17 @@ int main() {
         int cand_steps = 0;
         for (int a : o.arms)
             cand_steps += a == 1;
-        check(o.done && o.winner == 0, "hopeless: ten times slower holds the incumbent");
+        check(o.done && o.winner == 0, "settled: ten times slower holds the incumbent");
         check(k.abandoned(1) && k.rounds(1) == 2,
-              "hopeless: the candidate was given up with two rounds on record (" + std::to_string(k.rounds(1)) + ")");
+              "settled: the candidate stopped with two rounds on record (" + std::to_string(k.rounds(1)) + ")");
         check(cand_steps == 2 * (pol.window_tokens + pol.warm_tokens),
-              "hopeless: the candidate ran two windows and their warm-ups only (" + std::to_string(cand_steps) +
+              "settled: the candidate ran two windows and their warm-ups only (" + std::to_string(cand_steps) +
                   " steps)");
         // Incumbent, candidate, incumbent, candidate, incumbent: five windows, each after a warm-up.
         check(o.steps <= 5 * (pol.window_tokens + pol.warm_tokens),
-              "hopeless: the trial ended after the bracketing window (" + std::to_string(o.steps) + " steps)");
+              "settled: the trial ended after the bracketing window (" + std::to_string(o.steps) + " steps)");
     }
-    // ── hopeless beside a real win: the slow candidate is dropped, the fast one still measured and wins ──
+    // ── settled beside a real win: the slow candidate stops, the fast one is measured through and wins ──
     {
         KnobTrial k(2, false, pol);
         Sim sim;
@@ -346,16 +346,25 @@ int main() {
         sim.noise = 0.05;
         const Outcome o = run(k, sim, 2);
         check(o.done && o.winner == 2 && k.abandoned(1) && !k.abandoned(2) && k.rounds(2) == pol.rounds,
-              "hopeless: the slow candidate is dropped, the 25% faster one keeps its rounds and wins");
+              "settled: the slow candidate stops, the 25% faster one keeps its rounds and wins");
     }
-    // ── a slow window inside the factor is not given up: 1.8x once is noise the median absorbs ──
+    // ── one losing round settles nothing: a 25% faster candidate whose first window stalled at 1.8x ──
     {
         KnobTrial k(1, false, pol);
         Sim sim;
-        sim.spt = [](int arm, int t) { return arm == 1 && t < 12 ? 0.090 : 0.050; };
+        sim.spt = [](int arm, int t) { return arm == 1 ? (t < 12 ? 0.090 : 0.040) : 0.050; };
         const Outcome o = run(k, sim, 1);
-        check(o.done && !k.abandoned(1) && k.rounds(1) == pol.rounds,
-              "hopeless: a first window 1.8x slower is measured through its rounds");
+        check(o.done && o.winner == 1 && !k.abandoned(1) && k.rounds(1) == pol.rounds,
+              "settled: one stalled round is measured through, and the candidate still wins");
+    }
+    // ── a tie inside the margin is settled too: measured for two rounds, not three ──
+    {
+        KnobTrial k(1, false, pol);
+        Sim sim;
+        sim.spt = [](int arm, int) { return arm == 1 ? 0.050 / 1.05 : 0.050; };
+        const Outcome o = run(k, sim, 1);
+        check(o.done && o.winner == 0 && k.abandoned(1) && k.rounds(1) == 2,
+              "settled: 5% faster cannot reach the margin after two rounds and stops there");
     }
 
     if (failures) {

@@ -165,10 +165,11 @@ output with the gates (`bmoe_moe_gates`), since every knob here is lossless.
   a round is its seconds per token over the mean of the two incumbent windows around it, so a drift
   that is linear over three windows cancels exactly; the verdict is the median of the ratios, and a
   candidate wins only past `min_backend_win` (the same field the device rule reads). A candidate
-  whose first two windows both run past `hopeless` (2x) the incumbent window before them is given
-  up there, one stalled window being what the median absorbs: its third round leaves the schedule
-  and the answer goes on at the incumbent's pace (eight threads on a phone with four fast cores ran
-  every window at ten times the seconds per token, and three such rounds tripled the first answer). The cache brake does not read a token decoded under a candidate
+  stops being measured once the rounds left cannot make it a winner: the median of three ratios is
+  past the margin as soon as two are, so two losing rounds settle it and the third leaves the
+  schedule, whatever the hardware (eight threads on a phone with four fast cores ran every window
+  at ten times the seconds per token, and three such rounds tripled the first answer); one stalled
+  round settles nothing, as before. The cache brake does not read a token decoded under a candidate
   ([pressure.md](pressure.md)). The `knob_trial`
   test holds it on synthetic timings: equal arms under 10% noise never win over 50 seeds, a 25% win
   always does, 5% is a tie, 12% wins, a run that slows to twice the time per token measures a 20%

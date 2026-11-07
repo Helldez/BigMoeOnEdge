@@ -71,14 +71,19 @@ void KnobTrial::close_window() {
     }
 
     spt_.push_back(spt);
-    // A candidate window against the incumbent window just before it: the second one in a row past
-    // the hopeless factor ends the candidate's measuring. Both windows stay in the record (the first
-    // round counts, as a loss), so the verdict still says what was seen.
-    const size_t k = spt_.size() - 1;
-    const int cand = schedule_[k];
-    if (cand != 0 && pol_.hopeless > 0.0 && spt_[k - 1] > 0.0 && spt > pol_.hopeless * spt_[k - 1]) {
-        const std::vector<double> r = ratios(cand);
-        if (!r.empty() && r.back() > pol_.hopeless) abandon(cand);
+    // An incumbent window closing completes the ratio of the candidate window before it. A candidate
+    // whose losing rounds already outnumber what the median can overturn is settled: the rounds left
+    // leave the schedule, and what was measured stays in the record.
+    if (schedule_[spt_.size() - 1] == 0) {
+        const double losing = 1.0 / (1.0 + pol_.min_win); // a ratio at or past this is not a win
+        const int overturnable = (pol_.rounds - 1) / 2;   // losing rounds a median of `rounds` can still absorb
+        for (int c = 1; c <= n_cand_; ++c) {
+            if (dead_[(size_t) c]) continue;
+            int lost = 0;
+            for (const double r : ratios(c))
+                lost += r >= losing;
+            if (lost > overturnable) abandon(c);
+        }
     }
     if (spt_.size() == schedule_.size()) {
         decide();
@@ -91,12 +96,13 @@ void KnobTrial::abandon(int cand) {
     dead_[(size_t) cand] = 1;
     last_abandoned_ = cand;
     // The windows still to run, without this arm's, and without an incumbent window that would then
-    // follow another: the one right after the window just closed stays, so its ratio can be taken.
+    // follow another.
     const size_t k = spt_.size() - 1;
     std::vector<int> rest;
     for (size_t j = k + 1; j < schedule_.size(); ++j) {
         if (schedule_[j] == cand) continue;
-        if (schedule_[j] == 0 && !rest.empty() && rest.back() == 0) continue;
+        // An incumbent window after another incumbent one (the one just closed included) brackets nothing.
+        if (schedule_[j] == 0 && (rest.empty() ? schedule_[k] == 0 : rest.back() == 0)) continue;
         rest.push_back(schedule_[j]);
     }
     schedule_.resize(k + 1);

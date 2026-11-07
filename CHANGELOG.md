@@ -12,8 +12,9 @@ Semantic Versioning.
   ran at ten times the seconds per token, and the cache brake, which reads every token's compute
   against the run's own reference, took that stall with one sampled page out as reclaim and halved
   the expert cache for the rest of the session (18.8 tok/s to 10.7 on the same prompts). The brake
-  no longer reads a token decoded under a trial candidate, and a candidate whose first two windows
-  both run past twice the incumbent's is given up there instead of measured for a third round.
+  no longer reads a token decoded under a trial candidate, and a candidate stops being measured once
+  the rounds left cannot make it a winner (two losing rounds of three settle the median), instead
+  of running a third round that could only repeat them.
 
 ## [0.40.1] - 2026-11-07
 

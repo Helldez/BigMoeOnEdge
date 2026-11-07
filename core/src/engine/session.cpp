@@ -2112,11 +2112,12 @@ void Session::Impl::trial_step(double seconds, int tokens) {
         const size_t n = w.size();
         if (trials.stage == 0)
             log_printf(LogLevel::Info,
-                       "knob trial: %d decode threads given up after two windows: %.0f ms/token against %.0f",
-                       trials.threads[(size_t) dead], 1e3 * w[n - 1], 1e3 * w[n - 2]);
+                       "knob trial: %d decode threads settled as no win after %d rounds: %.0f ms/token against %.0f",
+                       trials.threads[(size_t) dead], k.rounds(dead), 1e3 * w[n - 2], 1e3 * w[n - 1]);
         else
-            log_printf(LogLevel::Info, "knob trial: overlap %s given up after two windows: %.0f ms/token against %.0f",
-                       trials.overlap[(size_t) dead] ? "on" : "off", 1e3 * w[n - 1], 1e3 * w[n - 2]);
+            log_printf(LogLevel::Info,
+                       "knob trial: overlap %s settled as no win after %d rounds: %.0f ms/token against %.0f",
+                       trials.overlap[(size_t) dead] ? "on" : "off", k.rounds(dead), 1e3 * w[n - 2], 1e3 * w[n - 1]);
     }
     if (k.done()) {
         finish_trial_stage();
