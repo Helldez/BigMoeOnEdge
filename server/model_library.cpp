@@ -334,6 +334,20 @@ json ModelLibrary::list() {
     list_dir(dir_, local);
     for (const std::string & d : scan_dirs_)
         list_dir(d, local);
+    // One row per file on disk: a scan directory inside the models directory, or a link to a model
+    // listed from where it really is (a phone's models folder pointing into shared storage), would
+    // otherwise list the same model twice. The first listing wins, which is the models directory's.
+    {
+        std::set<std::string> seen;
+        json unique = json::array();
+        for (json & m : local) {
+            std::error_code ec;
+            const fs::path real = fs::weakly_canonical(fs::u8path(m.value("path", "")), ec);
+            const std::string key = ec ? m.value("path", "") : real.generic_u8string();
+            if (seen.insert(key).second) unique.push_back(std::move(m));
+        }
+        local = std::move(unique);
+    }
 
     json catalog = json::array();
     std::lock_guard<std::mutex> lk(m_);
