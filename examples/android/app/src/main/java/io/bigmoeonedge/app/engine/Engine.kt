@@ -50,6 +50,8 @@ data class ModelInfo(
     val busyThreads: Int,
     /** The context against what a client of the server sends; null from a server that does not say. */
     val ctxAdvice: CtxAdvice? = null,
+    /** The model reads images: it was loaded with its projector file (docs/server-api.md, "Images"). */
+    val vision: Boolean = false,
 ) {
     companion object {
         fun of(o: JSONObject?): ModelInfo? {
@@ -58,7 +60,7 @@ data class ModelInfo(
                 o.optString("name"), o.optString("path"), o.optString("arch"), o.optInt("n_ctx"),
                 o.optInt("n_expert_used"), o.optString("think_ctl", "template"), o.optDouble("load_s", 0.0),
                 o.optBoolean("streaming", false), o.optInt("compute_threads", 0), o.optInt("busy_threads", 0),
-                CtxAdvice.of(o.optJSONObject("ctx_advice")),
+                CtxAdvice.of(o.optJSONObject("ctx_advice")), o.optBoolean("vision", false),
             )
         }
     }

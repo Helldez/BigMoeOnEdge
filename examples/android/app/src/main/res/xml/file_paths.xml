@@ -1,9 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- What the FileProvider may hand out: only the metrics CSVs, under the app's own external files
-     dir. Deliberately not the parent (which also holds downloaded multi-GB models) — a share sheet
-     has no business being able to reach those. -->
+<!-- What the FileProvider may hand out: the metrics CSVs, under the app's own external files dir,
+     and the cache folder the camera app writes a photo for the chat into. Deliberately not the
+     parent of either (which also holds downloaded multi-GB models) — a share sheet or a camera has
+     no business being able to reach those. -->
 <paths>
     <external-files-path
         name="metrics"
         path="metrics/" />
+    <cache-path
+        name="camera"
+        path="camera/" />
 </paths>

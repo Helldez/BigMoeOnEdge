@@ -18,10 +18,13 @@ final class ServerFactsTests: XCTestCase {
             {"version":"0.31.0","planner_available":true,"host":{"ram_total_mib":7680,"ram_available_mib":3100,"cpu_threads":6},
              "state":"ready","error":"","generating":false,
              "model":{"path":"/m/a.gguf","name":"a.gguf","arch":"qwen3moe","n_ctx":4096,"n_expert_used":8,"think_ctl":"template",
-                      "load_s":12.4,"streaming":true,"compute_threads":4,"busy_threads":6}}
+                      "load_s":12.4,"streaming":true,"compute_threads":4,"busy_threads":6,"vision":true}}
             """#))
         XCTAssertTrue(info.ready)
         XCTAssertEqual(info.model?.computeThreads, 4)
+        XCTAssertEqual(info.model?.vision, true)
+        XCTAssertEqual(ServerInfo(try JSON(parsing: #"{"state":"ready","model":{"path":"/m/a.gguf"}}"#)).model?.vision, false,
+                       "a server that does not say has no projector loaded")
         XCTAssertEqual(info.ramTotalMiB, 7680)
         let empty = ServerInfo(try JSON(parsing: #"{"state":"planning","model":null}"#))
         XCTAssertFalse(empty.ready)

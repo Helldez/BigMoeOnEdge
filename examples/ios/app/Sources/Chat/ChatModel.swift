@@ -140,17 +140,28 @@ final class ChatModel: ObservableObject {
 
     // MARK: the turn
 
-    /// Sends `text`: into the open conversation, or into a new one. The server's answer is the
-    /// person's item; the model's answer streams on the event stream.
-    func send(_ text: String) {
+    /// Why an image cannot go in a message now, or nil when it can: the loaded model reads images
+    /// only with its projector loaded beside it (`GET /api/info`, `model.vision`). The composer
+    /// shows the entries disabled with this, never hidden.
+    var imageReason: String? {
+        guard engine.ready, let model = engine.info?.model else {
+            return "No model is loaded: one loaded with its projector file reads images"
+        }
+        return model.vision ? nil : "The loaded model does not read images: load one with its projector file"
+    }
+
+    /// Sends `text` with `images` (data URLs): into the open conversation, or into a new one. The
+    /// server's answer is the person's item; the model's answer streams on the event stream.
+    /// Answers whether the server took the message, so the composer keeps what it refused.
+    @discardableResult
+    func send(_ text: String, images: [String] = []) async -> Bool {
         let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !message.isEmpty, !running, canSend() else { return }
+        guard !message.isEmpty || !images.isEmpty, !running, canSend() else { return false }
         sending = true
         error = nil
         holdBackground()
-        Task {
-            defer { sending = false }
-            do {
+        defer { sending = false }
+        do {
                 let id: String
                 if let c = current {
                     id = c.id
@@ -162,28 +173,31 @@ final class ChatModel: ObservableObject {
                     conversations.removeAll { $0.id == id }
                     conversations.insert(made.summary, at: 0)
                 }
-                let item = try await api.sendMessage(conversation: id, text: message)
-                if !item.id.isEmpty, transcript?.conversation == id { transcript?.upsert(item) }
-                // The answer is under way even if its first `conversation` event is still on its way.
-                if current?.id == id, current?.state == "idle" { current?.state = "running" }
-            } catch {
-                self.error = Self.turnError(error)
-                releaseBackground()
-            }
+            let item = try await api.sendMessage(conversation: id, text: message, images: images)
+            if !item.id.isEmpty, transcript?.conversation == id { transcript?.upsert(item) }
+            // The answer is under way even if its first `conversation` event is still on its way.
+            if current?.id == id, current?.state == "idle" { current?.state = "running" }
+            return true
+        } catch {
+            self.error = Self.turnError(error)
+            releaseBackground()
+            return false
         }
     }
 
-    /// Drops the person's message `item` and everything after it, then sends `text` in its place.
-    func edit(_ item: ConversationItem, to text: String) {
+    /// Drops the person's message `item` and everything after it, then sends `text` in its place,
+    /// with `images` (the item's own, as the web UI resends them: an edit changes what was asked,
+    /// not what was shown).
+    func edit(_ item: ConversationItem, to text: String, images: [String] = []) {
         guard let id = current?.id, !running, canSend() else { return }
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty else { return }
+        guard !t.isEmpty || !images.isEmpty else { return }
         error = nil
         holdBackground()
         transcript?.truncate(from: item.id)
         Task {
             do {
-                try await api.editMessage(conversation: id, item: item.id, text: t)
+                try await api.editMessage(conversation: id, item: item.id, text: t, images: images)
             } catch {
                 self.error = Self.turnError(error)
                 await reload(id)
@@ -195,7 +209,7 @@ final class ChatModel: ObservableObject {
     /// Answer again: the last question, resent as it was, as the web UI does.
     func answerAgain() {
         guard let last = transcript?.lastUser else { return }
-        edit(last, to: last.text)
+        edit(last, to: last.text, images: last.images)
     }
 
     func stop() {

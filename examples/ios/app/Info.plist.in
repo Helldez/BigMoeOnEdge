@@ -49,6 +49,10 @@
          asks them once before an app reaches the local network. -->
     <key>NSLocalNetworkUsageDescription</key>
     <string>Serve the engine to other devices on this network, when you turn it on in Settings.</string>
+    <!-- Take a photo, in the chat's composer: the model reads it, on this phone. The photo library
+         needs no entry: its picker runs out of process and hands over only what the person chose. -->
+    <key>NSCameraUsageDescription</key>
+    <string>Take a photo to send to the model, which reads it on this phone.</string>
     <key>UIUserInterfaceStyle</key>
     <string>Automatic</string>
     <key>UISupportedInterfaceOrientations</key>

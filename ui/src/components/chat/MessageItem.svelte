@@ -28,9 +28,10 @@
     editing = true;
   }
   async function resend() {
-    if (!draft.trim()) return;
+    const images = item.kind === 'user' ? item.images : undefined;
+    if (!draft.trim() && !images?.length) return;
     // The images stay with the words sent again: an edit changes what was asked, not what was shown.
-    if (await agent.edit(item.id, draft, item.kind === 'user' ? item.images : undefined)) editing = false;
+    if (await agent.edit(item.id, draft, images)) editing = false;
   }
   function editKey(e: KeyboardEvent) {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
@@ -51,7 +52,7 @@
         <div class="row">
           <span class="spacer"></span>
           <button type="button" onclick={() => (editing = false)}>{t('action.cancel')}</button>
-          <button type="button" class="primary" disabled={!draft.trim() || agent.running} onclick={resend}>{t('message.edit.send')}</button>
+          <button type="button" class="primary" disabled={(!draft.trim() && !(item.kind === 'user' && item.images?.length)) || agent.running} onclick={resend}>{t('message.edit.send')}</button>
         </div>
       </div>
     {:else}

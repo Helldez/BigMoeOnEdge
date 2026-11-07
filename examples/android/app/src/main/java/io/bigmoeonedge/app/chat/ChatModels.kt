@@ -24,6 +24,8 @@ data class ChatItem(
     val streaming: Boolean = false,
     /** A notice's weight: info, warn or error. */
     val level: String = "",
+    /** The images a user item carries, as the data URLs they were sent as. */
+    val images: List<String> = emptyList(),
 ) {
     companion object {
         const val KIND_USER = "user"
@@ -37,7 +39,11 @@ data class ChatItem(
             reasoning = o.str("reasoning"),
             streaming = o.optBoolean("streaming", false),
             level = o.str("level"),
+            images = strings(o.optJSONArray("images")),
         )
+
+        private fun strings(a: JSONArray?): List<String> =
+            a?.let { arr -> (0 until arr.length()).mapNotNull { i -> arr.optString(i, "").takeIf { it.isNotEmpty() } } }.orEmpty()
 
         fun list(a: JSONArray?): List<ChatItem> =
             a?.let { arr -> (0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.let(::of) } }.orEmpty()

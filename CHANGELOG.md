@@ -12,6 +12,16 @@ Semantic Versioning.
   thousands of tokens, each prefilled like a prompt token, which on a phone, where image tokens are
   prefilled on the CPU, was twenty minutes for one picture; a few hundred reads the same scene in
   under one. Rendered in every UI's settings from the parameter table, like every tunable.
+- **Images on the phones** (#484): the Android and iOS composers attach images, from the photos or
+  the camera, with the web UI's rules: at most 8 in a message and 16 MB each, as removable
+  thumbnails above the text until sent, a message of images alone allowed, the entries shown
+  disabled with the reason while the loaded model reads none (`model.vision`), and a message shows
+  the images it carried, which Edit and send again and Answer again send again unchanged. The
+  apps send what `POST /api/conversations/<id>/messages` already takes; a photo from the iOS
+  camera is encoded once as JPEG by the app, everything else goes as picked. The web UI is brought
+  to the same rules on the way: its Image button now stays, disabled with the reason, while the
+  model reads none; Answer again and an edit keep a message's images; a message of images alone can
+  be edited; the first refused file is the one reported.
 
 ### Fixed
 - **Stop during an image.** A cancel reached the engine only at a decode boundary, and an image's

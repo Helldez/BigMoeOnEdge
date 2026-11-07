@@ -71,9 +71,20 @@ public struct Transcript: Equatable, Sendable {
         return last.id
     }
 
-    /// The body of `POST /api/conversations/<id>/edit`: the message `item` replaced by `text`.
-    public static func editBody(item: String, text: String) -> JSON {
-        ["item": .string(item), "text": .string(text)]
+    /// The body of `POST /api/conversations/<id>/messages`: `text`, with `images` (data URLs) only
+    /// when there are any, so a server without image input reads the message as before.
+    public static func messageBody(text: String, images: [String] = []) -> JSON {
+        var body: [String: JSON] = ["text": .string(text)]
+        if !images.isEmpty { body["images"] = .array(images.map(JSON.string)) }
+        return .object(body)
+    }
+
+    /// The body of `POST /api/conversations/<id>/edit`: the message `item` replaced by `text` and
+    /// `images`, the latter only when there are any.
+    public static func editBody(item: String, text: String, images: [String] = []) -> JSON {
+        var body: [String: JSON] = ["item": .string(item), "text": .string(text)]
+        if !images.isEmpty { body["images"] = .array(images.map(JSON.string)) }
+        return .object(body)
     }
 }
 
