@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.40.2] - 2026-11-07
+
+### Fixed
+- **Conversation Stop before the first token.** A local conversation's stop now reaches the
+  session that owns its turn independently of the token callback, so an image's encoder and
+  prompt prefill can observe cancellation before any answer is generated. A stopped round still
+  waiting for the engine withdraws only its own place; it does not cancel another client's
+  running turn, and the cancellation watch ends with the turn it belongs to.
+
 ## [0.40.1] - 2026-11-07
 
 ### Added

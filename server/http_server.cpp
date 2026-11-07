@@ -1532,7 +1532,11 @@ int run(int argc, char ** argv, const Embedding & embedding) {
                 out.code = error_code::no_model;
                 return out;
             }
-            return app.host.chat(req, on_token, still_wanted);
+            // Unlike HTTP queue keepalives, the agent's predicate is only an atomic stop read.
+            // Opt it into active cancellation without polling a socket writer concurrently.
+            const std::function<bool()> cancel_requested =
+                still_wanted ? std::function<bool()>([wanted = still_wanted] { return !wanted(); }) : nullptr;
+            return app.host.chat(req, on_token, still_wanted, cancel_requested);
         };
         deps.config = [&app] { return app.store.config(); };
         deps.net = app.net.get();

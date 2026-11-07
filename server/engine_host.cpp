@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <exception>
 #include <filesystem>
 #include <string>
 #include <utility>
@@ -34,6 +35,66 @@ constexpr const char * k_ctx_param = "ctx-size";
 const char * level_name(LogLevel l) {
     return l == LogLevel::Error ? "error" : l == LogLevel::Warn ? "warn" : "info";
 }
+
+// The host owns gen_m_ for this object's whole lifetime. A stopped conversation must reach
+// its exact session even when encoding or prefill has not produced a token yet. Queue keepalives
+// are deliberately not read here: those callbacks can write to the same socket as on_token.
+constexpr auto k_running_cancel_poll = std::chrono::milliseconds(50);
+
+bool request_cancelled(const std::function<bool()> & requested) {
+    if (!requested) return false;
+    try {
+        return requested();
+    } catch (...) {
+        // Probe failure is confined to this request; it must neither escape the watcher thread
+        // nor leave an unowned turn running.
+        log_printf(LogLevel::Warn, "the request cancellation check failed; stopping its turn");
+        return true;
+    }
+}
+
+class RunningCancel {
+public:
+    RunningCancel(std::shared_ptr<HostedSession> session, std::function<bool()> requested)
+        : session_(std::move(session)), requested_(std::move(requested)) {
+        if (!requested_) return;
+        worker_ = std::thread([this] {
+            bool cancelled = false;
+            std::unique_lock<std::mutex> lock(m_);
+            while (!done_) {
+                lock.unlock();
+                cancelled = cancelled || request_cancelled(requested_);
+                lock.lock();
+                if (done_) break;
+                // generate() resets its latch on entry. Reassert a latched request until it
+                // returns, so a stop racing that reset cannot disappear.
+                if (cancelled) session_->cancel();
+                cv_.wait_for(lock, k_running_cancel_poll, [this] { return done_; });
+            }
+        });
+    }
+
+    ~RunningCancel() {
+        if (!worker_.joinable()) return;
+        {
+            std::lock_guard<std::mutex> lock(m_);
+            done_ = true;
+        }
+        cv_.notify_all();
+        worker_.join(); // no old predicate or cancellation can outlive this turn's ownership
+    }
+
+    RunningCancel(const RunningCancel &) = delete;
+    RunningCancel & operator=(const RunningCancel &) = delete;
+
+private:
+    const std::shared_ptr<HostedSession> session_;
+    const std::function<bool()> requested_;
+    std::mutex m_;
+    std::condition_variable cv_;
+    bool done_ = false;
+    std::thread worker_;
+};
 
 // A Session, as the host sees it.
 class RealSession final : public HostedSession {
@@ -340,7 +401,8 @@ std::unique_lock<std::mutex> EngineHost::take_turn() {
 
 ChatOutcome EngineHost::chat(const ChatRequest & req,
                              const std::function<bool(const TokenMetrics &)> & on_token,
-                             const std::function<bool()> & still_wanted) {
+                             const std::function<bool()> & still_wanted,
+                             const std::function<bool()> & cancel_requested) {
     ChatOutcome out;
     switch (turns_.enter(still_wanted)) {
     case TurnQueue::Admit::Granted:
@@ -361,6 +423,14 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
         ~Leave() { q.leave(); }
     } leave{turns_};
     std::unique_lock<std::mutex> g = take_turn();
+    // A turn may have been stopped after admission while a load held the context. Do not start
+    // it on the new session. Only this pure probe is safe under ownership; queue writes are not.
+    if (request_cancelled(cancel_requested)) {
+        out.status = 499;
+        out.code = error_code::client_gone;
+        out.error = "the client stopped waiting";
+        return out;
+    }
 
     std::shared_ptr<HostedSession> s;
     {
@@ -395,22 +465,33 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
     // and a half, the last reading riding on the tokens between.
     double temp_c = -1.0;
     std::chrono::steady_clock::time_point temp_at{};
-    RunResult r = s->generate(gr, [&](const TokenMetrics & tm) {
-        json ev = token_json(tm);
-        if (cpu_temp_) {
-            const auto now = std::chrono::steady_clock::now();
-            if (temp_at == std::chrono::steady_clock::time_point{} || now - temp_at > std::chrono::milliseconds(1500)) {
-                temp_at = now;
-                temp_c = cpu_temp_();
+    RunResult r;
+    try {
+        RunningCancel cancel(s, cancel_requested);
+        r = s->generate(gr, [&](const TokenMetrics & tm) {
+            json ev = token_json(tm);
+            if (cpu_temp_) {
+                const auto now = std::chrono::steady_clock::now();
+                if (temp_at == std::chrono::steady_clock::time_point{} ||
+                    now - temp_at > std::chrono::milliseconds(1500)) {
+                    temp_at = now;
+                    temp_c = cpu_temp_();
+                }
+                if (temp_c > 0) ev["cpu_temp_c"] = temp_c;
             }
-            if (temp_c > 0) ev["cpu_temp_c"] = temp_c;
-        }
-        bus_.publish("token", ev);
-        if (on_token && !client_gone && !on_token(tm)) {
-            client_gone = true;
-            s->cancel();
-        }
-    });
+            bus_.publish("token", ev);
+            if (on_token && !client_gone && !on_token(tm)) {
+                client_gone = true;
+                s->cancel();
+            }
+        });
+    } catch (const std::exception & error) {
+        r.error = "generation raised an exception: " + std::string(error.what());
+        r.error_kind = RunError::Failed;
+    } catch (...) {
+        r.error = "generation raised an unknown exception";
+        r.error_kind = RunError::Failed;
+    }
     generating_ = false;
 
     if (!r) {
