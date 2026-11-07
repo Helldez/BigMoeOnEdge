@@ -1388,8 +1388,15 @@ static void model_files_tests() {
         GgufHeaderFacts unnamed = model;
         unnamed.name = "Something else";
         check(projector_for(unnamed, folder).empty(), "pairing: two projectors and no name match is no choice");
-        check(projector_for(unnamed, {{"/m/mmproj-only.gguf", proj("Whatever")}}) == "/m/mmproj-only.gguf",
-              "pairing: the folder's only projector goes with any model in it");
+        check(projector_for(unnamed, {{"/m/mmproj-only.gguf", proj("Whatever")}}).empty(),
+              "pairing: the folder's only projector names another model, so it is nobody else's");
+        check(projector_for(unnamed, {{"/m/mmproj-only.gguf", proj("")}}) == "/m/mmproj-only.gguf",
+              "pairing: the folder's only projector with no name of its own goes with the model");
+        GgufHeaderFacts nameless = model;
+        nameless.name = "";
+        check(projector_for(nameless, {{"/m/mmproj-only.gguf", proj("Whatever")}}) == "/m/mmproj-only.gguf",
+              "pairing: a model with no name takes the folder's only projector");
+        check(projector_for(nameless, folder).empty(), "pairing: ...but never one of two");
         check(projector_for(model, {{"/m/draft.gguf", other}}).empty(), "pairing: a folder without a projector");
         check(name_key("Qwen3.6-35B-A3B") == "qwen3635ba3b" && name_key("Qwen3.6 35B A3B") == "qwen3635ba3b",
               "pairing: the name key keeps letters and digits only");
