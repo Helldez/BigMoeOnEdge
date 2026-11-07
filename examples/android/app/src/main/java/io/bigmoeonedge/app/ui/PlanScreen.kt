@@ -117,9 +117,9 @@ fun PlanScreen(modifier: Modifier = Modifier, onOpenSetting: (key: String) -> Un
             // While a model loads, the plan the server holds is the previous session's: the new one
             // lands when the session opens. Said so, rather than shown as the loaded model's.
             val loading = engine.loading
-            if (loading && engine.planProgress == null) {
+            if (loading) {
                 Text(
-                    "Loading the model; the plan of this load shows once it is open." +
+                    "Loading the model; the plan of this load shows once the session opens." +
                         if (plan?.available == true) " Below: the previous plan." else "",
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -127,7 +127,7 @@ fun PlanScreen(modifier: Modifier = Modifier, onOpenSetting: (key: String) -> Un
             }
 
             val p = plan
-            if (p?.available == true && cfg != null && !loading) {
+            if (p?.available == true && cfg != null) {
                 AutoPlanSwitch(cfg.autoPlan, planner) { on -> scope.launch { Engine.setAutoPlan(on) } }
             }
             when {
@@ -155,6 +155,7 @@ fun PlanScreen(modifier: Modifier = Modifier, onOpenSetting: (key: String) -> Un
                     applied = applied,
                     canMeasure = canMeasure,
                     measuring = busy,
+                    loading = loading,
                     onMeasure = { measure() },
                     reloadNeeded = engine.ready && cfg?.reloadRequired == true,
                     onOpenSetting = onOpenSetting,
@@ -206,6 +207,7 @@ private fun PlanBody(
     applied: List<AppliedChange>?,
     canMeasure: Boolean,
     measuring: Boolean,
+    loading: Boolean,
     onMeasure: () -> Unit,
     reloadNeeded: Boolean,
     onOpenSetting: (String) -> Unit,
@@ -215,6 +217,7 @@ private fun PlanBody(
     val f = planFigures(p)
     Tile {
         when {
+            loading -> StatusBadge("From before this load", MaterialTheme.colorScheme.onSurfaceVariant)
             p.fromLastLoad -> StatusBadge("The loaded model runs this plan", okColor())
             p.cached -> StatusBadge("The last plan measured", MaterialTheme.colorScheme.onSurfaceVariant)
         }

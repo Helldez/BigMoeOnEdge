@@ -150,6 +150,10 @@ void EngineHost::set_cpu_temperature(std::function<double()> provider) {
 }
 
 void EngineHost::begin_planning() {
+    {
+        std::lock_guard<std::mutex> lk(m_);
+        if (!planning_.load() && state_ != State::Loading) load_started_ = std::chrono::steady_clock::now();
+    }
     planning_ = true;
     publish_state();
 }
@@ -166,6 +170,7 @@ std::string EngineHost::load(const RunConfig & effective, const RunConfig & requ
     {
         std::lock_guard<std::mutex> lk(m_);
         if (state_ == State::Loading) return "a model is already loading";
+        if (!planning_.load()) load_started_ = std::chrono::steady_clock::now(); // else the planning's clock runs on
         state_ = State::Loading;
         error_.clear();
         model_ = nullptr;
@@ -305,14 +310,20 @@ std::vector<std::string> EngineHost::reload_keys(const RunConfig & current) cons
 json EngineHost::info() const {
     const bool overlap = expert_ready_hook_available();
     std::lock_guard<std::mutex> lk(m_);
-    return json{{"version", version()},
-                {"overlap_available", overlap},
-                {"planner_available", planner_available_.load()},
-                {"host", host_info_ ? host_info_() : json::object()},
-                {"state", planning_.load() && state_ == State::Empty ? "planning" : state_name((int) state_)},
-                {"error", error_},
-                {"model", model_},
-                {"generating", generating_.load()}};
+    const bool planning = planning_.load();
+    json j{{"version", version()},
+           {"overlap_available", overlap},
+           {"planner_available", planner_available_.load()},
+           {"host", host_info_ ? host_info_() : json::object()},
+           {"state", planning && state_ == State::Empty ? "planning" : state_name((int) state_)},
+           {"error", error_},
+           {"model", model_},
+           {"generating", generating_.load()}};
+    // Seconds since the load under way began, planning included: a UI counts on from the value
+    // it received and the moment it received it, so its own clock and the server's never meet.
+    if (planning || state_ == State::Loading)
+        j["load_elapsed_s"] = std::chrono::duration<double>(std::chrono::steady_clock::now() - load_started_).count();
+    return j;
 }
 
 void EngineHost::note_context_full(int n_ctx) {

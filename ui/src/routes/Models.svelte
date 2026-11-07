@@ -33,17 +33,16 @@
   let planning = $derived(server.info?.state === 'planning');
   let loading = $derived(server.info?.state === 'loading' || planning);
 
-  // Seconds since the load began, so a long load reads as progress rather than as a hang.
-  let elapsed = $state(0);
+  // Seconds since the load began, so a long load reads as progress rather than as a hang. Counted
+  // from what the server reported and when (the store's), not from this screen: leaving and coming
+  // back used to restart the count at zero.
+  let now = $state(Date.now());
   $effect(() => {
-    if (!loading) {
-      elapsed = 0;
-      return;
-    }
-    const t0 = Date.now();
-    const id = setInterval(() => (elapsed = Math.round((Date.now() - t0) / 1000)), 1000);
+    if (!loading) return;
+    const id = setInterval(() => (now = Date.now()), 1000);
     return () => clearInterval(id);
   });
+  let elapsed = $derived(server.loadBase ? Math.max(0, Math.round(server.loadBase.elapsed + (now - server.loadBase.at) / 1000)) : 0);
 
   async function refresh() {
     try {

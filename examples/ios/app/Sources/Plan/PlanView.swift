@@ -169,7 +169,12 @@ struct PlanView: View {
     private func summary(_ p: PlanResult) -> some View {
         let f = p.figures
         return VStack(alignment: .leading, spacing: 12) {
-            if p.fromLastLoad {
+            if engine.loading {
+                // While a model loads, the plan the server holds is the previous session's.
+                Text("Loading the model; the plan of this load shows once the session opens. Below: the previous plan.")
+                    .font(.ui(13)).foregroundStyle(Palette.muted)
+                Badge(text: "From before this load")
+            } else if p.fromLastLoad {
                 Badge(text: "The loaded model runs this plan", color: Palette.ok)
             } else if p.cached {
                 Badge(text: "The last plan measured")

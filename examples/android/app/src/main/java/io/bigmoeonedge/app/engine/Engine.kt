@@ -98,6 +98,8 @@ data class ServerInfo(
     val generating: Boolean,
     val ramTotalMib: Long,
     val ramAvailableMib: Long,
+    /** While planning or loading: the seconds since that load began; -1 from an older server. */
+    val loadElapsedS: Double,
 ) {
     val ready get() = state == "ready" && model != null
 
@@ -113,6 +115,7 @@ data class ServerInfo(
                 generating = o.optBoolean("generating", false),
                 ramTotalMib = host?.optLong("ram_total_mib", 0) ?: 0,
                 ramAvailableMib = host?.optLong("ram_available_mib", 0) ?: 0,
+                loadElapsedS = o.optDouble("load_elapsed_s", -1.0),
             )
         }
     }
@@ -393,8 +396,9 @@ data class EngineUi(
     /** The stage a measurement is in; null when none runs. */
     val planProgress: PlanProgress? = null,
     /**
-     * When the load in progress began (wall clock, ms), 0 when none is: the engine's, so a screen
-     * that shows the seconds since can be left and come back to without starting from zero.
+     * When the load in progress began (wall clock, ms), 0 when none is: from the seconds the server
+     * reports (`load_elapsed_s`) and the moment they arrived, so a screen that shows the count can be
+     * left and come back to without starting from zero, and shows the same seconds as every other UI.
      */
     val loadStartedAt: Long = 0L,
     /**
@@ -619,8 +623,9 @@ object Engine {
                         info = info,
                         loadStartedAt = when {
                             !loadingNow -> 0L
+                            info.loadElapsedS >= 0 -> System.currentTimeMillis() - (info.loadElapsedS * 1000).toLong()
                             loadingBefore && it.loadStartedAt != 0L -> it.loadStartedAt
-                            else -> System.currentTimeMillis()
+                            else -> System.currentTimeMillis() // an older server: from its first event
                         },
                     )
                 }

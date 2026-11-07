@@ -7,10 +7,13 @@ Semantic Versioning.
 ## [0.40.2] - 2026-11-07
 
 ### Fixed
-- **Android: the loading count restarted on every screen change, and Plan showed the previous
-  model's plan as the loaded one while a model loaded.** The seconds since a load began are now the
-  engine's, kept across screens; while a load is under way the Plan screen says the plan of this
-  load comes when the session opens, and shows nothing as the loaded model's until then.
+- **The loading count restarted on every screen change, and Plan showed the previous session's
+  plan as the loaded model's while a model loaded, on every UI.** The seconds since a load began are
+  now the server's: `GET /api/info` and the `state` event carry `load_elapsed_s` while a load is
+  under way (planning included), and the web UI, the Android app and the iOS app count on from the
+  value and the moment it arrived, so the same seconds show on every screen and survive a screen
+  change. While a load is under way, each Plan screen says the plan of this load comes when the
+  session opens and marks the one it shows as from before this load.
 
 ## [0.40.1] - 2026-11-07
 
