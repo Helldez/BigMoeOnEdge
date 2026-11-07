@@ -1,0 +1,61 @@
+bmoe: memory: phase=auto-probe-begin process_footprint_mib=95.579 process_headroom_mib=-1.000 rss_mib=114.812 compressed_or_swap_mib=0.000 system_available_mib=10100.875
+bmoe: memory: phase=auto-hardware process_footprint_mib=95.579 process_headroom_mib=-1.000 rss_mib=114.859 compressed_or_swap_mib=0.000 system_available_mib=10100.875
+bmoe: memory: phase=auto-device-support process_footprint_mib=67.673 process_headroom_mib=-1.000 rss_mib=115.344 compressed_or_swap_mib=0.000 system_available_mib=10089.812
+bmoe: memory: phase=auto-bandwidth process_footprint_mib=210.626 process_headroom_mib=-1.000 rss_mib=258.500 compressed_or_swap_mib=0.000 system_available_mib=9977.453
+bmoe: memory: phase=auto-device-costs process_footprint_mib=210.642 process_headroom_mib=-1.000 rss_mib=258.516 compressed_or_swap_mib=0.000 system_available_mib=9977.438
+bmoe: memory: phase=auto-storage process_footprint_mib=220.970 process_headroom_mib=-1.000 rss_mib=268.828 compressed_or_swap_mib=0.000 system_available_mib=9967.453
+bmoe: memory: phase=auto-headroom process_footprint_mib=220.970 process_headroom_mib=-1.000 rss_mib=268.828 compressed_or_swap_mib=0.000 system_available_mib=9967.453
+bmoe: memory: phase=auto-probe-end process_footprint_mib=4918.333 process_headroom_mib=-1.000 rss_mib=5024.828 compressed_or_swap_mib=0.000 system_available_mib=5215.969
+bmoe: memory: phase=model-loaded process_footprint_mib=4929.785 process_headroom_mib=-1.000 rss_mib=8066.016 compressed_or_swap_mib=2169.344 system_available_mib=7449.719
+bmoe: projector: clip_model_loader: model name:   Qwen3.6-35B-A3B
+bmoe: projector: clip_model_loader: description:  
+bmoe: projector: clip_model_loader: GGUF version: 3
+bmoe: projector: clip_model_loader: alignment:    32
+bmoe: projector: clip_model_loader: n_tensors:    334
+bmoe: projector: clip_model_loader: n_kv:         27
+bmoe: projector: clip_model_loader: has vision encoder
+bmoe: projector: clip_ctx: CLIP using CPU backend
+bmoe: projector: load_hparams: Qwen-VL models require at minimum 1024 image tokens to function correctly on grounding tasks
+bmoe: projector: load_hparams: if you encounter problems with accuracy, try adding --image-min-tokens 1024
+bmoe: projector: load_hparams: more info: https://github.com/ggml-org/llama.cpp/issues/16842
+bmoe: projector: load_hparams: projector:          qwen3vl_merger
+bmoe: projector: load_hparams: n_embd:             1152
+bmoe: projector: load_hparams: n_head:             16
+bmoe: projector: load_hparams: n_ff:               4304
+bmoe: projector: load_hparams: n_layer:            27
+bmoe: projector: load_hparams: ffn_op:             gelu
+bmoe: projector: load_hparams: projection_dim:     2048
+bmoe: projector: 
+bmoe: projector: load_hparams: image_size:         768
+bmoe: projector: load_hparams: patch_size:         16
+bmoe: projector: load_hparams: has_llava_proj:     0
+bmoe: projector: load_hparams: minicpmv_version:   0
+bmoe: projector: load_hparams: n_merge:            2
+bmoe: projector: load_hparams: n_wa_pattern: 0
+bmoe: projector: load_hparams: image_min_pixels:   8192
+bmoe: projector: load_hparams: image_max_pixels:   4194304
+bmoe: projector: load_hparams: model size:         585.72 MiB
+bmoe: projector: load_hparams: metadata size:      0.12 MiB
+bmoe: projector: load_tensors: loaded 334 tensors from models/mmproj-Qwen3.6-35B-A3B-Q8_0.gguf
+bmoe: projector: get_dummy_batch: warmup with image size = 1472 x 1472
+bmoe: projector: models/mmproj-Qwen3.6-35B-A3B-Q8_0.gguf loaded, images are read
+bmoe: dense-weights=pinned — 272 MiB in 1 table(s) left mmap'd as the plan priced them: the graph gathers rows from them, outside the warm sweep and the residency sensor
+bmoe: dense-weights=pinned — 1513 MiB in 612 pinned buffers
+bmoe: dense-weights=pinned — dropped 1506 MiB of now-unused mmap pages
+bmoe: expert streaming ON  n_expert=256 o_direct=1 io_threads=4 cache=5661 MiB shards=1
+bmoe: page cache: the model files' read-ahead handed back (1 file(s))
+bmoe: prefill-device model state: 745.5 MiB in CPU
+bmoe: prefill-device dense arena: layer weights through 2 slots, 63.9 MiB; 0 converted to a type the device takes (0.0 MiB)
+bmoe: prefill-device expert arena: 40 layers through 2 slots of 498.0 MiB, 8 loaders, held only during a prefill
+bmoe: prefill-device MTL0: 0 layer tensors, 0.0 MiB copied; graphs >= 32 tokens run there
+bmoe: expert cache pinned in RAM
+bmoe: prefill-device MTL0 confirmation: 64 tokens, 31 compared, top token agrees 94%, logit NMSE 7.54e-04, host 2.19 s, device 1.02 s
+bmoe: memory: phase=session-ready process_footprint_mib=13622.754 process_headroom_mib=-1.000 rss_mib=8674.375 compressed_or_swap_mib=5325.391 system_available_mib=2320.797
+bmoe: context checkpoints: 62.8 MiB each, up to 8 kept
+bmoe: knob trial: the cache has settled; measuring the decode thread count
+bmoe: knob trial: 4 decode threads (against 10): decoded 16.6% faster in the median of 3 rounds
+bmoe: knob trial: overlap on (against on): held: the best candidate was -7.6% in the median of 3 rounds, inside the 10% margin
+bmoe: answer: 1238 tokens at 12.3 tok/s, prompt 645 tokens prefilled in 2.8 s (233 tok/s, 0 MiB read), context 1883 tokens, experts 153804 MiB read, cache hit 78%
+bmoe: answer: 248 tokens at 8.2 tok/s, prompt 10972 tokens prefilled in 33.8 s (325 tok/s, 0 MiB read), context 11220 tokens, experts 23690 MiB read, cache hit 79%
+bmoe: answer: 10400 tokens at 8.6 tok/s, prompt 23 tokens prefilled in 1.2 s (19 tok/s, 2373 MiB read), context 21643 tokens, experts 759981 MiB read, cache hit 86%
+bmoe: answer: 291 tokens at 8.3 tok/s, prompt 21 tokens prefilled in 1.4 s (15 tok/s, 2032 MiB read), context 21955 tokens, experts 14042 MiB read, cache hit 87%
