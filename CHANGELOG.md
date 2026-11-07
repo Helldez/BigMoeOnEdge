@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.40.2] - 2026-11-07
+
+### Fixed
+- **Garbled answers and a stall with `devices=all` on a phone.** With every backend registered and
+  no layer placed on one, llama.cpp's own offload heuristic still handed a wide graph's host-weight
+  ops to the GPU backend, which copies an expert tensor before the streamer rebinds it: wrong weights
+  in the answer, and a boundary crossing per op. On a phone with its Vulkan and OpenCL backends
+  registered, a 15-token prompt that answers in 22 s on the CPU alone had not produced a token after
+  eight minutes, and a longer prompt came back as symbols. A streamed run with nothing placed now
+  keeps every op on the CPU, as a run with layers placed under overlap already did; `devices=all`
+  keeps the devices registered for what the plan places there and for the prefill device.
+
 ## [0.40.1] - 2026-11-07
 
 ### Added
