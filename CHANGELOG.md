@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **A coding agent end to end on a 16 GB laptop** (`docs/bench-data/2026-11-07-agent-pagoda/`,
+  `docs/benchmarks.md`). The released 0.40.1 archive, `bmoe-server -c 65536` and opencode given the
+  pagoda prompt from #462, Qwen3.6-35B-A3B (22 GB) streamed from the SSD: the page was written in
+  23 min 46 s with no human input, one 11k-token prefill and then turns of 21-23 new tokens, the
+  10 400-token write at 8.6 tok/s with an 86 % cache hit. The report has the plan, each answer, the
+  agent's output and screenshots.
+
 ## [0.40.1] - 2026-11-07
 
 ### Added
