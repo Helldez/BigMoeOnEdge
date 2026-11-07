@@ -2725,6 +2725,12 @@ struct Session::Impl::Turn {
                 return fail(RunError::Failed, "prefill decode failed");
             }
             trace_flush();
+            // The end of an image is a prompt end's equal: it is what costs the most to redo, and the
+            // next turn can diverge a few tokens past it (a template drops a past turn's empty think
+            // block), where a memory that cannot be cut falls back to the newest checkpoint before the
+            // divergence. Without one here that was the one before the image, and the image was
+            // encoded and prefilled again on every turn after it.
+            if (chat_on && span) im.checkpoints.create(im.checkpoint_contexts(), i);
             // The draft context has to walk the prompt too: its KV must reach the last prompt position
             // or the first draft is made from a hidden state that never saw the prompt. It is a second
             // context on the host's backends, so the weights go home for its walk, slots kept, and the

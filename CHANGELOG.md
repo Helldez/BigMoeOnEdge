@@ -18,6 +18,12 @@ Semantic Versioning.
   encoder has none: Stop pressed while a photo was encoded waited for the whole encoder. The
   encoder now stops where it is through the library's eval callback, and the turn ends as
   cancelled at once, on every UI and API.
+- **An image paid again on every turn after it**, on a model whose memory cannot be cut anywhere
+  (a recurrent or hybrid one, Qwen3.6 among them): the next turn diverges a few tokens past the
+  image, where the template drops the previous turn's empty think block, and the reuse fell back to
+  the checkpoint before the image, so the image was encoded and prefilled again. A checkpoint is now
+  taken after every image, as at the end of a prompt; the turn after a photo prefills its own tokens
+  only.
 
 ### Changed
 - **llama.cpp moves to upstream tag `v0.9.0`** (`cd959ba` of 2026-11-04), 164 commits past
