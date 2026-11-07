@@ -844,8 +844,9 @@ std::vector<ParamDesc> build() {
         ParamDesc d = row("devices", "Compute devices", G::Memory, L::Advanced,
                           "Which compute devices llama.cpp may use. auto gives it all of them when a layer is "
                           "placed on one and the CPU alone otherwise: a device left registered but unused "
-                          "still takes graph nodes, each one a boundary crossing. The prefill device is "
-                          "named separately and is not affected.");
+                          "still takes graph nodes, each one a boundary crossing (with streaming and nothing "
+                          "placed, none: the experts' ops stay on the CPU). The prefill device is named "
+                          "separately and is not affected.");
         d.form = true;
         d.type = ParamType::Choice;
         d.value_hint = "auto|all|cpu";
