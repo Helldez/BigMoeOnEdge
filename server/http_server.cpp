@@ -468,6 +468,41 @@ struct App {
     // Each model's recorded routing, kept for the next plan of that file (routing_store.h).
     RoutingStore routing;
 
+    // The models folder when none is chosen: <data dir>/models.
+    std::string default_models_dir;
+
+    // The folders the library lists: what the launch names (--models-dir, --scan-dir) over what a
+    // person chose (store.model_folders), over the default. Applied at start and on every change; a
+    // chosen folder that is gone (a drive unplugged) falls back to the default with a warning, and
+    // stays chosen, so it comes back when the drive does.
+    ModelLibrary::FolderRefusal apply_model_folders(const SettingsStore::ModelFolders & chosen) {
+        const std::string dir = !opt.models_dir.empty()      ? opt.models_dir
+                                : !chosen.models_dir.empty() ? chosen.models_dir
+                                                             : default_models_dir;
+        std::vector<std::string> scans = opt.scan_dirs;
+        scans.insert(scans.end(), chosen.scan_dirs.begin(), chosen.scan_dirs.end());
+        return lib.set_folders(dir, scans);
+    }
+
+    // /api/models, with which folders a person may change: those the launch named are fixed.
+    json models_object() {
+        json o = lib.list();
+        const SettingsStore::ModelFolders chosen = store.model_folders();
+        json launch_scans = json::array();
+        for (const std::string & d : opt.scan_dirs)
+            launch_scans.push_back(fs::u8path(d).generic_u8string());
+        json chosen_scans = json::array();
+        for (const std::string & d : chosen.scan_dirs)
+            chosen_scans.push_back(fs::u8path(d).generic_u8string());
+        o["folders"] = {
+            {"default_models_dir", fs::u8path(default_models_dir).generic_u8string()},
+            {"chosen_models_dir", chosen.models_dir.empty() ? "" : fs::u8path(chosen.models_dir).generic_u8string()},
+            {"models_dir_at_launch", !opt.models_dir.empty()},
+            {"launch_scan_dirs", launch_scans},
+            {"chosen_scan_dirs", chosen_scans}};
+        return o;
+    }
+
     // The agent (docs/agent.md): what it keeps, its runs and scheduler, and what its routes reach.
     // Declared after the host, so it is destroyed, and its runs stopped and joined, before the host.
     std::unique_ptr<agent::AgentStore> agent_store;
@@ -1076,7 +1111,36 @@ void register_routes(httplib::Server & svr, App & app) {
             [&app, q](bool) { app.bus.unsubscribe(q); });
     });
 
-    svr.Get("/api/models", [&](const httplib::Request &, httplib::Response & res) { send_json(res, app.lib.list()); });
+    svr.Get("/api/models",
+            [&](const httplib::Request &, httplib::Response & res) { send_json(res, app.models_object()); });
+
+    // Where models are kept: the folder downloads land in and the other folders listed. A path the
+    // server writes to, so a local-only route (access.cpp), and a folder the launch named stays.
+    svr.Put("/api/models/folders", [&](const httplib::Request & req, httplib::Response & res) {
+        json body;
+        if (!parse_body(req, res, body)) return;
+        SettingsStore::ModelFolders chosen = app.store.model_folders();
+        if (body.contains("models_dir")) {
+            if (!body["models_dir"].is_string()) return send_error(res, 400, "models_dir must be a string");
+            const std::string d = body["models_dir"].get<std::string>();
+            if (!app.opt.models_dir.empty() && !d.empty())
+                return send_error(res, 409, "the models folder was set at launch (--models-dir)");
+            chosen.models_dir = d;
+        }
+        if (body.contains("scan_dirs")) {
+            if (!body["scan_dirs"].is_array()) return send_error(res, 400, "scan_dirs must be an array");
+            chosen.scan_dirs.clear();
+            for (const json & d : body["scan_dirs"]) {
+                if (!d.is_string()) return send_error(res, 400, "scan_dirs must hold strings");
+                chosen.scan_dirs.push_back(d.get<std::string>());
+            }
+        }
+        const ModelLibrary::FolderRefusal r = app.apply_model_folders(chosen);
+        if (r.status) return send_error(res, r.status, r.error);
+        app.store.set_model_folders(chosen);
+        app.bus.publish("models_folders", json::object());
+        send_json(res, app.models_object());
+    });
 
     svr.Post("/api/models/download", [&](const httplib::Request & req, httplib::Response & res) {
         json body;
@@ -1449,6 +1513,7 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     };
     const std::string models_dir =
         absolute(o.models_dir.empty() ? (fs::u8path(data_dir) / "models").u8string() : o.models_dir);
+    if (!o.models_dir.empty()) o.models_dir = models_dir; // the launch's folder, absolute like the rest
     for (std::string & d : o.scan_dirs)
         d = absolute(d);
     const std::string ui_dir = o.ui_dir.empty()
@@ -1461,8 +1526,20 @@ int run(int argc, char ** argv, const Embedding & embedding) {
 
     const std::string routing_dir = (fs::u8path(data_dir) / "routing").u8string();
     App app(o, settings, models_dir, catalog, added, scratch, routing_dir, embedding.fetch);
+    app.default_models_dir = absolute((fs::u8path(data_dir) / "models").u8string());
     for (const std::string & w : app.store.load())
         std::fprintf(stderr, "warning: %s\n", w.c_str());
+    {
+        const SettingsStore::ModelFolders chosen = app.store.model_folders();
+        if (!chosen.models_dir.empty() || !chosen.scan_dirs.empty()) {
+            const ModelLibrary::FolderRefusal r = app.apply_model_folders(chosen);
+            if (r.status) {
+                std::fprintf(stderr, "warning: the chosen model folders are not usable (%s); using the default\n",
+                             r.error.c_str());
+                app.apply_model_folders({});
+            }
+        }
+    }
     for (const std::string & w : app.lib.warnings())
         std::fprintf(stderr, "warning: %s\n", w.c_str());
     app.store.set_launch_values(o.launch);

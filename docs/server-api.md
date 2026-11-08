@@ -117,8 +117,8 @@ other software, or other people, on that machine or on a network it was told to 
 - Some routes answer only a client whose connection comes from this machine, whatever `--host`
   and the key say: they install software, read the network on the person's behalf, or change
   files. They are one list, `local_only_routes()` in `server/access.h`, enforced before routing
-  (`403`, `code: "local_only"`): deleting a model, adding one from a link, and the backend-pack and
-  update routes ([Backend packs and updates](#backend-packs-and-updates)).
+  (`403`, `code: "local_only"`): deleting a model, adding one from a link, choosing the folders
+  models are kept in, and the backend-pack and update routes ([Backend packs and updates](#backend-packs-and-updates)).
 - A server started by an app with `--parent-pid PID` stops when that process ends, so an app that
   crashes leaves no server holding the port and a model's memory.
 - Over the API a client may name one file to open, the model, and it is only read (what it may delete is a model as the listing names it, above). Parameters that make
@@ -827,6 +827,8 @@ a UI shows "flash" from them without knowing whether the session overlaps.
 {
   "models_dir": "C:/Users/me/AppData/Local/BigMoeOnEdge/models",
   "scan_dirs": [],
+  "folders": {"default_models_dir": "C:/Users/me/AppData/Local/BigMoeOnEdge/models", "chosen_models_dir": "",
+              "models_dir_at_launch": false, "launch_scan_dirs": [], "chosen_scan_dirs": []},
   "local": [{"name": "Qwen3-30B-A3B-Q4_K_M.gguf", "path": "...", "dir": "C:/Users/me/AppData/Local/BigMoeOnEdge/models",
              "folder": "", "bytes": 18556686912, "shards": 1, "files": ["..."], "arch": "qwen3moe",
              "role": "model", "streamable": true, "complete": true}],
@@ -876,6 +878,31 @@ stopped by a failure, a cancel or a restart of the server (jobs live in memory, 
 not), which downloading again resumes. A UI labels that action **Resume (X of Y GB)** (decimal GB,
 `received` of `bytes`) and offers **Delete partial download** beside it. The phone's app downloads
 into the server's models directory, so the same two fields describe its downloads too.
+
+`folders` says where the two lists come from. The models directory is `--models-dir` when the server
+was started with one (`models_dir_at_launch`), otherwise the one a person chose
+(`chosen_models_dir`, "" for none), otherwise `default_models_dir` (`<data dir>/models`). The scan
+directories are those of `--scan-dir` (`launch_scan_dirs`) followed by the chosen ones
+(`chosen_scan_dirs`). A chosen folder that is gone when the server starts (a drive unplugged) is set
+aside for that run, with a warning in the log, and comes back with the drive.
+
+### `PUT /api/models/folders`
+
+```json
+{"models_dir": "D:/models", "scan_dirs": ["E:/gguf"]}
+```
+
+Chooses where models are kept, as a person would in a settings screen, and keeps the choice in
+`settings.json` (`model_folders`). `models_dir` is the folder downloads land in, "" for the default;
+`scan_dirs` the other folders listed, each read only, replacing the chosen ones (the launch's stay).
+A field left out is left as it is. The change applies at once and the answer is the new
+`GET /api/models`, and a `models_folders` event is published for clients that list on events. Every path must be
+absolute, the models folder is created when missing and must take a new file, each scan folder must
+exist (`400` with the reason otherwise). `409` while a download runs (its files are being written to
+the folder it started in), and for a models folder when the server was started with `--models-dir`.
+Models and partial downloads in the old folder stay where they are, and are listed again only when
+that folder is among the scan folders. Local-only (`403`, `code: "local_only"`, from the network):
+it names a folder the server writes to.
 
 ### `POST /api/models/download`
 
