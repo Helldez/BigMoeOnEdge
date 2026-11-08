@@ -29,6 +29,13 @@ Semantic Versioning.
   `POST /api/update/download` refuses a build with no installer (`409` `no_installer`), and the
   web UI offers Download only where there is one. The phone builds name their target
   (`android-arm64`, `ios-arm64`).
+- **The README draws how the planner decides.** Under "The planner", `README.md` and its five
+  translations show one diagram: the machine and the model go into the plan, the plan places each
+  weight on VRAM, RAM or flash, picks the device that reads the prompt and the one that generates,
+  and sizes the caches and threads; the first answer is measured and what is faster is kept for the
+  next load. One PNG per language in `docs/assets/diagrams/`, drawn by `scripts/plan-diagram.py`
+  (macOS renders them with Quick Look; elsewhere it writes the SVGs). Image input moves to the end of
+  the "What it does" list, and the five translations gain it: they had not listed it.
 
 ### Fixed
 - **Garbled answers and a stall with `devices=all` on a phone.** With every backend registered and
@@ -80,6 +87,7 @@ Semantic Versioning.
   and the installer now carry the app's icon, made from the same picture as the macOS and Linux
   apps by `packaging/windows/make-icon.py`; the notification area takes the small size this
   screen's scale asks for.
+
 
 ## [0.40.1] - 2026-11-07
 

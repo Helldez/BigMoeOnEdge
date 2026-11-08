@@ -51,6 +51,9 @@ ciascun dispositivo.
   grafica gli esperti più usati restano nella sua VRAM.
 - **App e un server.** Un'app desktop, app per telefono e un server compatibile OpenAI e Anthropic per gli
   agenti di coding.
+- **Vede le immagini.** Metti accanto al modello il suo file proiettore (`mmproj`) e il server legge le
+  immagini su ogni API; la CLI con `--mmproj` e `--image`. Qualsiasi modello di visione che la libreria dei
+  proiettori di llama.cpp conosce, in qualsiasi quantizzazione, su ogni backend.
 
 ## Prestazioni
 
@@ -181,6 +184,10 @@ Il planner legge l'header del modello e misura la macchina: memoria, velocità d
 e NPU. Le sue regole non nominano alcun dispositivo o piattaforma, quindi un telefono e un desktop ricevono
 piani diversi dallo stesso codice. I valori che imposti tu vengono mantenuti. Vedi
 [docs/hardware-planning.md](docs/hardware-planning.md).
+
+<p align="center">
+  <img src="docs/assets/diagrams/plan-it.png" width="820" alt="Il planner: la macchina e il modello entrano nel piano; il piano decide dove va ogni peso (VRAM, RAM o flash), quale dispositivo legge il prompt e quale genera i token, e la dimensione delle cache e i thread; la prima risposta viene misurata e ciò che è più veloce resta per il prossimo caricamento.">
+</p>
 
 ## Piattaforme
 

@@ -50,6 +50,9 @@ dispositivo.
   los expertos más usados se quedan en su VRAM.
 - **Apps y un servidor.** Una app de escritorio, apps para el teléfono y un servidor compatible con OpenAI y
   Anthropic para agentes de programación.
+- **Ve imágenes.** Pon junto al modelo su archivo de proyector (`mmproj`) y el servidor lee imágenes en
+  todas las API; la CLI con `--mmproj` e `--image`. Cualquier modelo de visión que conozca la biblioteca de
+  proyectores de llama.cpp, en cualquier cuantización, en todos los backends.
 
 ## Rendimiento
 
@@ -179,6 +182,10 @@ El planificador lee la cabecera del modelo y mide la máquina: memoria, velocida
 CPU, GPU y NPU. Sus reglas no nombran ningún dispositivo ni plataforma, así que un teléfono y un equipo de
 escritorio reciben planes distintos del mismo código. Los valores que fijas tú se respetan. Consulta
 [docs/hardware-planning.md](docs/hardware-planning.md).
+
+<p align="center">
+  <img src="docs/assets/diagrams/plan-es.png" width="820" alt="El planificador: la máquina y el modelo entran en el plan; el plan decide dónde va cada peso (VRAM, RAM o flash), qué dispositivo lee el prompt y cuál genera los tokens, y el tamaño de las cachés y los hilos; se mide la primera respuesta y lo más rápido se guarda para la próxima carga.">
+</p>
 
 ## Plataformas
 
