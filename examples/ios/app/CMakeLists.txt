@@ -50,6 +50,15 @@ set_target_properties(MarkdownUI PROPERTIES
     XCODE_ATTRIBUTE_OTHER_SWIFT_FLAGS "$(inherited) -Xcc -DCMARK_THREADING -suppress-warnings"
 )
 
+# Apple Swift 6.4's optimized MarkdownUI aborts while resolving Markdown.Body on the tested
+# iOS runtime, even in a standalone app with no engine. Keep this workaround on the renderer:
+# the app and engine stay optimized, and the vendored library stays unmodified.
+if(CMAKE_Swift_COMPILER_ID STREQUAL "Apple"
+   AND CMAKE_Swift_COMPILER_VERSION VERSION_GREATER_EQUAL "6.4"
+   AND CMAKE_Swift_COMPILER_VERSION VERSION_LESS "6.5")
+    set_property(TARGET MarkdownUI PROPERTY XCODE_ATTRIBUTE_SWIFT_OPTIMIZATION_LEVEL "-Onone")
+endif()
+
 # What the app carries beside its code: the catalog the server lists, the logo the screens draw,
 # and the faces every word is set in (Inter, JetBrains Mono: static instances of their official
 # releases, with their SIL OFL licences beside them). Each from its one place in the repository.

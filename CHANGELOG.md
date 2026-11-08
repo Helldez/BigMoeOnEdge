@@ -35,7 +35,7 @@ Semantic Versioning.
   assistant reply is rendered. The app and C++ engine keep their Release optimization, and
   vendored sources are unchanged. A model-free rendering app reproduces the optimized failure;
   turning off linker dead stripping does not avoid it. Keep the guard active for the 6.4.x
-  compiler family until an upstream fix is known.
+  compiler family until an upstream fix is known. By @gjjkbssg (#494).
 - **Conversation Stop before the first token.** A local conversation's stop now reaches the
   session that owns its turn independently of the token callback, so an image's encoder and
   prompt prefill can observe cancellation before any answer is generated. A stopped round still
