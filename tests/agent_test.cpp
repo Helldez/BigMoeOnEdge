@@ -122,6 +122,7 @@ public:
     RunResult generate(const GenerateRequest & req,
                        const std::function<void(const TokenMetrics &)> & on_token) override {
         Turn t;
+        const auto stopped = [&] { return cancelled_.load() || (req.stop && req.stop->load()); };
         cancelled_ = false; // a cancel belongs to the generation it lands in
         {
             std::lock_guard<std::mutex> lk(s_.m);
@@ -143,10 +144,12 @@ public:
             std::unique_lock<std::mutex> lk(s_.m);
             s_.before_token_started = true;
             s_.before_token_cv.notify_all();
-            const bool ended =
-                s_.before_token_cv.wait_for(lk, 5s, [&] { return cancelled_.load() || s_.before_token_release; });
+            const auto deadline = std::chrono::steady_clock::now() + 5s;
+            while (!stopped() && !s_.before_token_release && std::chrono::steady_clock::now() < deadline)
+                s_.before_token_cv.wait_for(lk, 1ms);
+            const bool ended = stopped() || s_.before_token_release;
             s_.before_token_timed_out = !ended;
-            if (cancelled_.load()) {
+            if (stopped()) {
                 r.ok = true;
                 r.cancelled = true;
                 return r;
@@ -161,7 +164,7 @@ public:
         ++s_.tokens;
         if (on_token) on_token(m);
         r.ok = true;
-        r.cancelled = cancelled_.exchange(false);
+        r.cancelled = cancelled_.exchange(false) || (req.stop && req.stop->load());
         r.generated_text = t.text;
         r.tool_calls = t.calls;
         r.summary.n_generated = 2;
@@ -220,8 +223,8 @@ struct Rig {
         d.bus = bus.get();
         d.store = store.get();
         d.local_chat = [this](const ChatRequest & r, const std::function<bool(const TokenMetrics &)> & t,
-                              const std::function<bool()> & w) {
-            return host->chat(r, t, w, [w] { return w && !w(); });
+                              const std::atomic<bool> & stop) {
+            return host->chat(r, t, [&stop] { return !stop.load(); }, &stop);
         };
         d.bundled_skills_dir = (data.path / "bundled").u8string();
         d.user_skills_dir = (data.path / "skills").u8string();
@@ -1615,8 +1618,8 @@ static void pretoken_stop_tests() {
         check(ended, "pre-token stop: conversation Stop finishes without releasing the fake or an API cancel");
         if (!ended) rig->host->cancel(); // bound a failed regression without counting this as success
         check(stopping.get() && rig->wait_done(c), "pre-token stop: the stopped conversation is idle");
-        check(rig->script.cancels > 0 && rig->script.tokens == 0 && !rig->script.before_token_timed_out &&
-                  rig->host->ready() && !rig->host->generating(),
+        check(rig->script.cancels == 0 && rig->last_request().stop != nullptr && rig->script.tokens == 0 &&
+                  !rig->script.before_token_timed_out && rig->host->ready() && !rig->host->generating(),
               "pre-token stop: the session was cancelled with zero tokens and remains loaded");
         const json notices = rig->items_of(c, "notice");
         check(!notices.empty() && notices.back().value("text", "") == "Stopped.",

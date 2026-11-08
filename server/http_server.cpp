@@ -1523,7 +1523,7 @@ int run(int argc, char ** argv, const Embedding & embedding) {
         deps.bus = &app.bus;
         deps.store = app.agent_store.get();
         deps.local_chat = [&app](const ChatRequest & req, const std::function<bool(const TokenMetrics &)> & on_token,
-                                 const std::function<bool()> & still_wanted) {
+                                 const std::atomic<bool> & stop) {
             // The agent's turns need a model as the API's do, --autoload included.
             if (const std::string why = app.model_for_request(); !why.empty()) {
                 ChatOutcome out;
@@ -1532,11 +1532,7 @@ int run(int argc, char ** argv, const Embedding & embedding) {
                 out.code = error_code::no_model;
                 return out;
             }
-            // Unlike HTTP queue keepalives, the agent's predicate is only an atomic stop read.
-            // Opt it into active cancellation without polling a socket writer concurrently.
-            const std::function<bool()> cancel_requested =
-                still_wanted ? std::function<bool()>([wanted = still_wanted] { return !wanted(); }) : nullptr;
-            return app.host.chat(req, on_token, still_wanted, cancel_requested);
+            return app.host.chat(req, on_token, [&stop] { return !stop.load(); }, &stop);
         };
         deps.config = [&app] { return app.store.config(); };
         deps.net = app.net.get();

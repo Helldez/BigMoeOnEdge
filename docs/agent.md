@@ -99,8 +99,8 @@ provider's stream ends at its next piece. For a local-model round, the stop reac
 that owns that turn independently of the token callback: the image encoder and prompt prefill
 can observe cancellation at the engine's cancellation points before the first generated token.
 A round still waiting for the engine withdraws only its own place; stopping it does not cancel
-another client's running turn. The cancellation watch ends with its owning turn, so it cannot
-spill into a later turn.
+another client's running turn. The engine borrows the run's atomic flag only for that generation,
+so resetting its own cancel latch cannot lose the stop, and the flag cannot spill into a later turn.
 
 `POST .../stop` requests the stop and waits up to 30 s for the run to finish. Its `stopped` field
 says whether there was a run to stop (`false`: none ran); it is not a completion acknowledgement

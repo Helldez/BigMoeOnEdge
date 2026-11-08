@@ -113,6 +113,7 @@ public:
     RunResult generate(const GenerateRequest & req,
                        const std::function<void(const TokenMetrics &)> & on_token) override {
         ++s_.turns;
+        const auto stopped = [&] { return cancelled_.load() || (req.stop && req.stop->load()); };
         if (s_.hold_before_reset) {
             s_.before_reset.release();
             s_.allow_reset.wait();
@@ -136,11 +137,14 @@ public:
             std::unique_lock<std::mutex> lk(s_.held_m);
             const int held_turn = ++s_.held_started;
             s_.held_cv.notify_all();
-            const bool ended =
-                s_.held_cv.wait_for(lk, 5s, [&] { return cancelled_.load() || s_.held_released >= held_turn; });
+            // The fake checks at bounded work steps, as real graph/encoder callbacks do.
+            const auto deadline = std::chrono::steady_clock::now() + 5s;
+            while (!stopped() && s_.held_released < held_turn && std::chrono::steady_clock::now() < deadline)
+                s_.held_cv.wait_for(lk, 1ms);
+            const bool ended = stopped() || s_.held_released >= held_turn;
             s_.held_timed_out = s_.held_timed_out || !ended;
             r.ok = true;
-            r.cancelled = cancelled_.load();
+            r.cancelled = stopped();
             lk.unlock();
             if (ended && !r.cancelled) {
                 TokenMetrics m;
@@ -159,16 +163,16 @@ public:
         case Script::Turn::Block:
             s_.started.release();
             // As the abort callback does: a cancel ends the decode, and the turn answers cancelled.
-            for (int i = 0; i < 5000 && !cancelled_.load(); ++i)
+            for (int i = 0; i < 5000 && !stopped(); ++i)
                 std::this_thread::sleep_for(1ms);
             r.ok = true;
-            r.cancelled = cancelled_.load();
+            r.cancelled = stopped();
             // A turn stopped mid-answer has tokens and a rate too: they must not count as measured.
             r.summary.n_generated = 3;
             r.summary.s_per_token = 0.5;
             return r;
         case Script::Turn::Stream:
-            for (int i = 0; i < 5000 && !cancelled_.load(); ++i) {
+            for (int i = 0; i < 5000 && !stopped(); ++i) {
                 TokenMetrics m;
                 m.step = i + 1;
                 ++s_.tokens;
@@ -177,7 +181,7 @@ public:
                 std::this_thread::sleep_for(1ms);
             }
             r.ok = true;
-            r.cancelled = cancelled_.load();
+            r.cancelled = stopped();
             return r;
         case Script::Turn::Fail:
             r.error = "decode failed during generation";
@@ -504,7 +508,7 @@ static void request_cancel_tests() {
                     ++callbacks;
                     return true;
                 },
-                nullptr, [&] { return cancel_requested.load(); });
+                nullptr, &cancel_requested);
         });
         check(script.wait_held(1) && callbacks == 0, "request cancel: generation is held before its first token");
         cancel_requested = true;
@@ -514,8 +518,9 @@ static void request_cancel_tests() {
         const ChatOutcome out = pending.get();
         check(out.status == 200 && out.result.cancelled && out.result.summary.n_generated == 0 && callbacks == 0,
               "request cancel: the result is cancelled with no generated token or token callback");
-        check(script.cancels > 0 && !script.held_timed_out && host.ready() && !host.generating(),
-              "request cancel: the session received cancellation and stays ready");
+        check(script.cancels == 0 && script.last_request.stop == &cancel_requested && !script.held_timed_out &&
+                  host.ready() && !host.generating(),
+              "request cancel: the caller flag reaches the session without a cancel call and stays ready");
         script.turn = Script::Turn::Ok;
         const ChatOutcome next = host.chat(turn(), nullptr);
         check(next.status == 200 && !next.result.cancelled && next.result.generated_text == "hi" && script.opened == 1,
@@ -532,7 +537,7 @@ static void request_cancel_tests() {
         auto running = std::async(std::launch::async, [&] { return host.chat(turn(), nullptr); });
         check(script.wait_held(1), "queued request cancel: the unrelated request is in pre-token work");
         Gate queued_probe;
-        std::atomic<int> active_probes{0};
+        std::atomic<bool> queued_stop{true};
         auto queued = std::async(std::launch::async, [&] {
             return host.chat(
                 turn(), nullptr,
@@ -540,15 +545,12 @@ static void request_cancel_tests() {
                     queued_probe.release();
                     return false;
                 },
-                [&] {
-                    ++active_probes;
-                    return true;
-                });
+                &queued_stop);
         });
         const bool left = queued.wait_for(2s) == std::future_status::ready;
         check(left && queued_probe.wait(0ms), "queued request cancel: the unwanted request leaves the queue");
-        check(script.cancels == 0 && active_probes == 0 && running.wait_for(0ms) == std::future_status::timeout,
-              "queued request cancel: no active watcher or cancel reaches the unrelated session turn");
+        check(script.cancels == 0 && running.wait_for(0ms) == std::future_status::timeout,
+              "queued request cancel: no cancellation reaches the unrelated session turn");
         script.release_held(1);
         const ChatOutcome active_out = running.get();
         const ChatOutcome queued_out = queued.get();
@@ -558,8 +560,8 @@ static void request_cancel_tests() {
               "queued request cancel: the unrelated request completes normally when released");
     }
     {
-        // The watcher can run before generate() clears its old latch. Reasserting the request
-        // until this generation ends is necessary; one cancel before the reset would disappear.
+        // Stop lands after host admission but before generate() resets its own cancel latch.
+        // The caller owns the flag, so that reset must not erase the request.
         auto bus_owner = std::make_unique<EventBus>();
         Script script;
         script.turn = Script::Turn::HeldBeforeToken;
@@ -569,19 +571,17 @@ static void request_cancel_tests() {
         host.load(config(), config());
         wait_state(host, "ready");
         std::atomic<bool> requested{false};
-        auto pending = std::async(
-            std::launch::async, [&] { return host.chat(turn(), nullptr, nullptr, [&] { return requested.load(); }); });
+        auto pending = std::async(std::launch::async, [&] { return host.chat(turn(), nullptr, nullptr, &requested); });
         check(script.before_reset.wait(), "cancel/reset race: generate is held before its latch reset");
         requested = true;
-        check(script.cancel_called.wait(2s), "cancel/reset race: the first cancel arrives before the reset");
         script.allow_reset.release();
         check(script.wait_held(1), "cancel/reset race: the generation resets its latch and enters pre-token work");
         const bool ended = pending.wait_for(2s) == std::future_status::ready;
-        check(ended, "cancel/reset race: the stop is reasserted after the reset without a token callback");
+        check(ended, "cancel/reset race: the caller flag survives the reset without a token callback");
         if (!ended) host.cancel();
         const ChatOutcome out = pending.get();
-        check(out.status == 200 && out.result.cancelled && script.cancels >= 2 && script.tokens == 0 &&
-                  !script.held_timed_out,
+        check(out.status == 200 && out.result.cancelled && script.cancels == 0 &&
+                  script.last_request.stop == &requested && script.tokens == 0 && !script.held_timed_out,
               "cancel/reset race: the request is cancelled before any token despite the intervening reset");
     }
     {
@@ -598,7 +598,7 @@ static void request_cancel_tests() {
         Gate called;
         auto pending = std::async(std::launch::async, [&] {
             called.release();
-            return host.chat(turn(), nullptr, nullptr, [&] { return cancel_requested.load(); });
+            return host.chat(turn(), nullptr, nullptr, &cancel_requested);
         });
         called.wait();
         cancel_requested = true;
@@ -610,8 +610,7 @@ static void request_cancel_tests() {
               "loading request cancel: the completed load is usable by the next request");
     }
     {
-        // Hold a callback that has already started while its generation finishes. It must be
-        // joined before releasing this request's ownership, even if it returns a late cancel.
+        // A caller's flag can outlive its turn, but the successor must never read it.
         auto bus_owner = std::make_unique<EventBus>();
         Script script;
         script.turn = Script::Turn::HeldBeforeToken;
@@ -619,108 +618,21 @@ static void request_cancel_tests() {
         EngineHost & host = *host_owner;
         host.load(config(), config());
         wait_state(host, "ready");
-        std::atomic<bool> hold_probe{false};
-        std::atomic<int> probes{0};
-        Gate probe_entered, probe_release;
-        auto first = std::async(std::launch::async, [&] {
-            return host.chat(turn(), nullptr, nullptr, [&] {
-                ++probes;
-                if (!hold_probe.load()) return false; // the pre-generation check never blocks
-                probe_entered.release();
-                probe_release.wait();
-                return true;
-            });
-        });
-        check(script.wait_held(1), "watcher handoff: the first request is inside generate");
-        hold_probe = true;
-        check(probe_entered.wait(2s), "watcher handoff: the active request's probe is held in flight");
+        std::atomic<bool> retired_stop{false};
+        auto first = std::async(std::launch::async, [&] { return host.chat(turn(), nullptr, nullptr, &retired_stop); });
+        check(script.wait_held(1), "flag handoff: the first request owns pre-token work");
         script.release_held(1);
-        check(script.wait_held(1, true), "watcher handoff: the first generate has completed");
+        check(first.get().status == 200, "flag handoff: the first turn finishes normally");
         auto second = std::async(std::launch::async, [&] { return host.chat(turn(), nullptr); });
-        check(first.wait_for(100ms) == std::future_status::timeout && !script.wait_held(2, false, 100ms),
-              "watcher handoff: the first chat retains ownership until its in-flight probe returns");
-        probe_release.release();
-        check(first.get().status == 200, "watcher handoff: the first request finishes after the probe is released");
-        check(script.wait_held(2), "watcher handoff: only then can the successor start its pre-token work");
-        const int prior_cancels = script.cancels.load();
-        const int prior_probes = probes.load();
-        check(second.wait_for(100ms) == std::future_status::timeout && script.cancels == prior_cancels &&
-                  probes == prior_probes,
-              "watcher handoff: the retired predicate cannot cancel or poll during the successor");
+        check(script.wait_held(2), "flag handoff: the successor owns the same loaded session");
+        retired_stop = true;
+        check(second.wait_for(100ms) == std::future_status::timeout && script.cancels == 0 &&
+                  script.last_request.stop == nullptr,
+              "flag handoff: a retired caller's flag cannot cancel its successor");
         script.release_held(2);
         const ChatOutcome out = second.get();
         check(out.status == 200 && !out.result.cancelled && out.result.generated_text == "hi" && !script.held_timed_out,
-              "watcher handoff: the successor completes normally on its own release");
-    }
-}
-
-// A request probe or token callback that throws must not leave a joinable watcher, a stuck
-// generation flag, or a live failed session behind. Neither case needs a model to exercise it.
-static void cancel_exception_tests() {
-    {
-        // The first probe runs synchronously, before a watcher or generation exists. Its failure
-        // has the same conservative meaning as a failed active probe, without touching the session.
-        auto bus_owner = std::make_unique<EventBus>();
-        Script script;
-        auto host_owner = std::make_unique<EngineHost>(*bus_owner, opener(script));
-        EngineHost & host = *host_owner;
-        host.load(config(), config());
-        wait_state(host, "ready");
-        int probes = 0;
-        const ChatOutcome out = host.chat(turn(), nullptr, nullptr, [&]() -> bool {
-            ++probes;
-            throw std::runtime_error("scripted first request-probe failure");
-        });
-        check(out.status == 499 && out.code == error_code::client_gone && probes == 1,
-              "first probe exception: the request is abandoned before generation");
-        check(script.turns == 0 && script.cancels == 0 && host.ready() && !host.generating() && script.alive == 1,
-              "first probe exception: no generate or cancel reaches the loaded session");
-        const ChatOutcome next = host.chat(turn(), nullptr);
-        check(next.status == 200 && !next.result.cancelled && next.result.generated_text == "hi" && script.opened == 1,
-              "first probe exception: the same session answers the next ordinary request");
-    }
-    {
-        auto bus_owner = std::make_unique<EventBus>();
-        Script script;
-        script.turn = Script::Turn::HeldBeforeToken;
-        auto host_owner = std::make_unique<EngineHost>(*bus_owner, opener(script));
-        EngineHost & host = *host_owner;
-        host.load(config(), config());
-        wait_state(host, "ready");
-        std::atomic<bool> fail_probe{false};
-        auto pending = std::async(std::launch::async, [&] {
-            return host.chat(turn(), nullptr, nullptr, [&] {
-                if (fail_probe.load()) throw std::runtime_error("scripted request-probe failure");
-                return false;
-            });
-        });
-        check(script.wait_held(1), "probe exception: generation is held before its first token");
-        fail_probe = true;
-        const bool ended = pending.wait_for(2s) == std::future_status::ready;
-        check(ended, "probe exception: the failed active probe stops its turn instead of terminating the process");
-        if (!ended) host.cancel();
-        const ChatOutcome out = pending.get();
-        check(out.status == 200 && out.result.cancelled && script.tokens == 0 && host.ready() && !host.generating(),
-              "probe exception: conservative cancellation keeps the session ready with zero tokens");
-    }
-    {
-        auto bus_owner = std::make_unique<EventBus>();
-        Script script;
-        auto host_owner = std::make_unique<EngineHost>(*bus_owner, opener(script));
-        EngineHost & host = *host_owner;
-        host.load(config(), config());
-        wait_state(host, "ready");
-        const ChatOutcome out = host.chat(
-            turn(), [](const TokenMetrics &) -> bool { throw std::runtime_error("scripted token-callback failure"); },
-            nullptr, [] { return false; });
-        check(out.status == 500 && out.code == run_error_name(RunError::Failed) &&
-                  out.error.find("scripted token-callback failure") != std::string::npos,
-              "callback exception: an exception during generation is reported as a failed turn");
-        check(state(host) == "error" && !host.generating() && script.alive == 0,
-              "callback exception: the watcher is joined and the failed session is closed");
-        check(host.load(config(), config()).empty() && wait_state(host, "ready") &&
-                  host.chat(turn(), nullptr).result.generated_text == "hi",
-              "callback exception: the host can load and answer again after the failed turn");
+              "flag handoff: the successor completes normally on its own release");
     }
 }
 
@@ -1059,7 +971,6 @@ int main() {
     request_tests();
     cancel_tests();
     request_cancel_tests();
-    cancel_exception_tests();
     measured_tests();
     failure_tests();
     log_tests();

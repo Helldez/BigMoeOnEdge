@@ -62,13 +62,13 @@ inline constexpr size_t k_title_max_chars = 60;
 // The model a round asks: the engine's turn, or a test's stand-in.
 using ChatFn = std::function<ChatOutcome(const ChatRequest & req,
                                          const std::function<bool(const TokenMetrics &)> & on_token,
-                                         const std::function<bool()> & still_wanted)>;
+                                         const std::atomic<bool> & stop)>;
 
 struct AgentDeps {
     EventBus * bus = nullptr;
     AgentStore * store = nullptr;
-    // The liveness predicate supplied to local_chat is a thread-safe, nonblocking atomic read,
-    // valid until local_chat returns; an engine adapter may watch it during the active turn.
+    // The run owns the atomic stop flag for the whole local_chat call; the adapter forwards it
+    // to the engine as well as withdrawing stopped requests from its queue.
     ChatFn local_chat;
     // n_predict and think for a round, from the server's settings; null keeps the server defaults.
     std::function<RunConfig()> config;

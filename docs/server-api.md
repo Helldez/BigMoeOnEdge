@@ -762,7 +762,8 @@ conversation's state or follow its events to observe the end of the run. For the
 route, cancellation reaches the session that owns the turn independently of generated-token
 callbacks, so an image encoder or prompt prefill can stop at the engine's cancellation points
 before any answer token. Stopping a round still queued for the engine withdraws only its own
-place, leaving another client's active turn running. Cancellation belongs to that turn and
+place, leaving another client's active turn running. The engine reads the run's own atomic flag
+alongside its cancel latch, only during that turn, so a latch reset cannot drop the stop and it
 cannot carry over to the next. `POST /api/cancel` remains the route for cancelling the server's
 current generation.
 

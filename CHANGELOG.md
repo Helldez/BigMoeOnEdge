@@ -11,7 +11,8 @@ Semantic Versioning.
   session that owns its turn independently of the token callback, so an image's encoder and
   prompt prefill can observe cancellation before any answer is generated. A stopped round still
   waiting for the engine withdraws only its own place; it does not cancel another client's
-  running turn, and the cancellation watch ends with the turn it belongs to.
+  running turn. The engine reads the run's own atomic flag alongside its resettable cancel latch,
+  without a polling thread; it borrows that flag only until the generation returns.
 
 ## [0.40.1] - 2026-11-07
 
