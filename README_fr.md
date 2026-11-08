@@ -158,20 +158,6 @@ vous l'y autorisez. Une conversation peut aussi être menée par OpenCode, Claud
 
 ## Fonctionnement
 
-```mermaid
-flowchart TD
-  M["Machine :<br/>mémoire, stockage, appareils"] --> P
-  F["Modèle :<br/>taille, experts, routage"] --> P
-  P["Plan"] --> W["Où va chaque poids :<br/>VRAM, RAM ou flash"]
-  P --> D["Quel appareil lit le prompt,<br/>lequel génère les tokens"]
-  P --> S["Taille des caches<br/>et threads"]
-  W --> R["Exécution"]
-  D --> R
-  S --> R
-  R --> T["Mesure la première réponse,<br/>garde ce qui est plus rapide"]
-  T -->|"gardé pour le prochain chargement"| P
-```
-
 Pour chaque token, le routeur de chaque couche choisit quelques experts. Le moteur les cherche dans
 jusqu'à trois niveaux, chacun un cache pour celui du dessous :
 
@@ -199,6 +185,20 @@ Le planificateur lit l'en-tête du modèle et mesure la machine : mémoire, vite
 GPU et NPU. Ses règles ne nomment aucun appareil ni aucune plateforme, donc un téléphone et un ordinateur de
 bureau reçoivent des plans différents du même code. Les valeurs que vous fixez vous-même sont conservées.
 Voir [docs/hardware-planning.md](docs/hardware-planning.md).
+
+```mermaid
+flowchart TD
+  M["Machine :<br/>mémoire, stockage, appareils"] --> P
+  F["Modèle :<br/>taille, experts, routage"] --> P
+  P["Plan"] --> W["Où va chaque poids :<br/>VRAM, RAM ou flash"]
+  P --> D["Quel appareil lit le prompt,<br/>lequel génère les tokens"]
+  P --> S["Taille des caches<br/>et threads"]
+  W --> R["Exécution"]
+  D --> R
+  S --> R
+  R --> T["Mesure la première réponse,<br/>garde ce qui est plus rapide"]
+  T -->|"gardé pour le prochain chargement"| P
+```
 
 ## Plateformes
 

@@ -164,20 +164,6 @@ also be run by OpenCode, Claude Code, Codex or Pi. See [docs/agent.md](docs/agen
 
 ## How it works
 
-```mermaid
-flowchart TD
-  M["Machine:<br/>memory, storage, devices"] --> P
-  F["Model:<br/>size, experts, routing"] --> P
-  P["Plan"] --> W["Where each weight goes:<br/>VRAM, RAM or flash"]
-  P --> D["Which device reads the prompt,<br/>which one generates"]
-  P --> S["Cache sizes<br/>and threads"]
-  W --> R["Run"]
-  D --> R
-  S --> R
-  R --> T["Measure the first answer,<br/>keep what is faster"]
-  T -->|"kept for the next load"| P
-```
-
 For each token, the router of each layer picks a few experts. The engine looks for them in up to
 three tiers, each a cache for the one below:
 
@@ -203,6 +189,20 @@ unchanged, and an upgrade is a submodule bump. Which tensors are experts is read
 The planner reads the model's header and measures the machine: memory, storage speed, each CPU, GPU
 and NPU. Its rules name no device or platform, so a phone and a desktop get different plans from the
 same code. Values you set yourself are kept. See [docs/hardware-planning.md](docs/hardware-planning.md).
+
+```mermaid
+flowchart TD
+  M["Machine:<br/>memory, storage, devices"] --> P
+  F["Model:<br/>size, experts, routing"] --> P
+  P["Plan"] --> W["Where each weight goes:<br/>VRAM, RAM or flash"]
+  P --> D["Which device reads the prompt,<br/>which one generates"]
+  P --> S["Cache sizes<br/>and threads"]
+  W --> R["Run"]
+  D --> R
+  S --> R
+  R --> T["Measure the first answer,<br/>keep what is faster"]
+  T -->|"kept for the next load"| P
+```
 
 ## Platforms
 
