@@ -278,9 +278,14 @@ key, under the same security statement.
             "compute_threads": 8, "busy_threads": 12,
             "ctx_advice": {"recommended": 16384, "short": true, "param": "ctx-size", "refused": false,
                            "warn": false}},
-  "generating": false
+  "generating": false,
+  "load_elapsed_s": 12.4
 }
 ```
+
+`load_elapsed_s` is present while `state` is `planning` or `loading`: the seconds since that load
+began, planning included. A UI that shows them counts on from the value and the moment it received
+it, so the count is the server's, the same on every screen and after a screen change.
 
 `state` is one of `empty` (no model), `planning` (a load in auto mode is measuring the machine
 before it loads: tens of seconds on a phone, nothing loaded meanwhile), `loading`, `ready`, `error`
@@ -534,7 +539,10 @@ other.
 
 **One generation at a time, in order.** A request that arrives while another runs waits its turn;
 while it waits, a streaming response receives SSE comment lines (`: waiting for a turn`) so the
-connection stays open. A client that disconnects while it waits gives its place up and stops
+connection stays open. Once its turn runs, any 15 s with nothing to send (a long prefill, a tool
+call, which is sent only once parsed) gets a keep-alive on every streaming endpoint (a `: ping`
+comment; `event: ping` on `/v1/messages`): a client or proxy that drops a silent stream never sees
+one, however slow the machine or long the call. A client that disconnects while it waits gives its place up and stops
 nothing else; a streaming client that disconnects during its own answer stops that answer. A
 disconnect never ends another client's turn. With 16 requests already waiting the next gets `429`.
 
@@ -650,7 +658,7 @@ run), then content blocks, each `content_block_start` / `content_block_delta` / 
 thinking (`thinking_delta`, closed by an empty `signature_delta`), text (`text_delta`), and one
 `tool_use` block per call with its whole input in one `input_json_delta`. Then `message_delta` with
 the `stop_reason` and the full `usage` (and `bmoe.summary`), and `message_stop`. While the request
-waits its place in line, `event: ping`.
+waits its place in line, and after any 15 s of its turn with nothing else to send, `event: ping`.
 
 ### `POST /v1/messages/count_tokens`
 
@@ -691,7 +699,8 @@ Streaming response: each event named in `event:` and in its data's `type`, numbe
 `response.content_part.done` for a message; `response.function_call_arguments.delta` and `.done`,
 the whole arguments in one delta, for a call) and `response.output_item.done` with the item whole;
 and last `response.completed` (or `response.incomplete`) with the response object, its `output`
-and `usage`. While the request waits its place in line, an SSE comment.
+and `usage`. While the request waits its place in line, and after any 15 s of its turn with
+nothing else to send, an SSE comment.
 
 ## Decide
 
@@ -753,7 +762,19 @@ workspace or a task is `409` with `code: "chat_only"`. A UI reads this and shows
 **Runs.** `POST /api/conversations/<id>/messages` answers `202 {item}` as soon as the person's item
 is stored; everything after that arrives on `/api/events` (`conversation`, `item`, `delta`) and is
 in the stored conversation. A UI that reconnects reads `GET /api/conversations/<id>`. An approval
-card is a `tool` item in state `waiting`, answered with `POST .../approval` on its conversation. `POST .../stop` answers once the run has ended.
+card is a `tool` item in state `waiting`, answered with `POST .../approval` on its conversation.
+
+`POST /api/conversations/<id>/stop` requests cancellation for that conversation and waits up to
+30 s for its run to finish. The response is `{stopped}`: `false` when no run was found, `true`
+when a stop was requested, including if that wait expires before completion. Read the
+conversation's state or follow its events to observe the end of the run. For the local-model
+route, cancellation reaches the session that owns the turn independently of generated-token
+callbacks, so an image encoder or prompt prefill can stop at the engine's cancellation points
+before any answer token. Stopping a round still queued for the engine withdraws only its own
+place, leaving another client's active turn running. The engine reads the run's own atomic flag
+alongside its cancel latch, only during that turn, so a latch reset cannot drop the stop and it
+cannot carry over to the next. `POST /api/cancel` remains the route for cancelling the server's
+current generation.
 
 **Errors.** `{"error", "code"}`, with these codes:
 
