@@ -1195,6 +1195,13 @@ bool Session::Impl::create_contexts(Opening & o) {
     // streaming has every routed expert in place before the matmul's split starts, so only overlap
     // gives the offload up; the decode's one-token graphs are never offloaded either way.
     if (cfg.moe.enabled && cfg.moe.overlap && cfg.n_gpu_layers != 0) cparams.op_offload = false;
+    // With no layer placed at all, a device is registered only because the caller asked for every
+    // one (`devices=all`); the streamer still rebinds the expert tensors at compute time, on the
+    // CPU, and a backend that takes those ops copies whatever the tensors pointed at before. So a
+    // streamed run with nothing placed gives the offload up as well. Measured on a phone with its
+    // GPU backends registered and nothing placed: a 15-token prompt that answers in 22 s on the
+    // CPU alone had not produced a token after eight minutes.
+    if (cfg.moe.enabled && cfg.n_gpu_layers == 0) cparams.op_offload = false;
     // Logit rows are reserved for as many outputs as a graph may return, and left at llama.cpp's
     // default that is the whole ubatch. A row is the whole vocabulary, and the reservation goes where
     // the output layer is: on a CPU-only run of a 35B-A3B at 2048 tokens it was 1.7 GiB of compute
