@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **Choose where models are kept** (#497). Models → "Where models live" changes the folder downloads
+  land in and adds or removes other folders whose models are listed and loaded in place; in the
+  desktop app with the system's folder dialog, in a browser by typing the path. A server setting
+  (`PUT /api/models/folders`, kept in `settings.json`), so it is the same on every system and every
+  UI that speaks the API, and it applies without a restart. Only a client on this machine may change
+  it, since the server writes there; it is refused while a download runs, and a folder the server
+  was started with (`--models-dir`, `--scan-dir`, as the phone apps start it) stays as it is.
+  Models already downloaded stay where they are. `GET /api/models` says which folders are chosen and
+  which the launch fixed (`folders`).
+
+### Fixed
+- **The desktop app's icon on Windows** (#497). `bmoe-desktop.exe` carried no icon, so the taskbar,
+  the shortcuts, the window and the notification area showed Windows' generic one. The executable
+  and the installer now carry the app's icon, made from the same picture as the macOS and Linux
+  apps by `packaging/windows/make-icon.py`; the notification area takes the small size this
+  screen's scale asks for.
+
 ## [0.40.1] - 2026-11-07
 
 ### Added
