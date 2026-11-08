@@ -162,14 +162,16 @@ fun ModelsScreen(modifier: Modifier = Modifier, onOpenChat: () -> Unit = {}) {
             }
             if (engine.loading) {
                 // Seconds since the load began, so a long load reads as progress rather than as a hang.
-                var elapsed by remember { mutableStateOf(0) }
-                LaunchedEffect(Unit) {
-                    val t0 = System.currentTimeMillis()
+                // Counted from the engine's own start time, not this screen's: leaving and coming back
+                // used to restart the count at zero.
+                var now by remember { mutableStateOf(System.currentTimeMillis()) }
+                LaunchedEffect(engine.loadStartedAt) {
                     while (true) {
-                        elapsed = ((System.currentTimeMillis() - t0) / 1000).toInt()
+                        now = System.currentTimeMillis()
                         delay(1000)
                     }
                 }
+                val elapsed = if (engine.loadStartedAt > 0) ((now - engine.loadStartedAt) / 1000).toInt().coerceAtLeast(0) else 0
                 val planning = engine.info?.state == "planning"
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
