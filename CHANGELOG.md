@@ -4,15 +4,44 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [0.40.2] - 2026-11-07
+## [0.40.2] - 2026-11-08
 
 ### Fixed
+- **Garbled answers and a stall with `devices=all` on a phone.** With every backend registered and
+  no layer placed on one, llama.cpp's own offload heuristic still handed a wide graph's host-weight
+  ops to the GPU backend, which copies an expert tensor before the streamer rebinds it: wrong weights
+  in the answer, and a boundary crossing per op. On a phone with its Vulkan and OpenCL backends
+  registered, a 15-token prompt that answers in 22 s on the CPU alone had not produced a token after
+  eight minutes, and a longer prompt came back as symbols. A streamed run with nothing placed now
+  keeps every op on the CPU, as a run with layers placed under overlap already did; `devices=all`
+  keeps the devices registered for what the plan places there and for the prefill device.
+- **The knob trial halved the cache and tripled the first answer.** The trial runs a candidate
+  thread count in windows of a real answer; on a phone with four fast cores the eight-thread window
+  ran at ten times the seconds per token, and the cache brake, which reads every token's compute
+  against the run's own reference, took that stall with one sampled page out as reclaim and halved
+  the expert cache for the rest of the session (18.8 tok/s to 10.7 on the same prompts). The brake
+  no longer reads a token decoded under a trial candidate, and a candidate stops being measured once
+  the rounds left cannot make it a winner (two losing rounds of three settle the median), instead
+  of running a third round that could only repeat them.
+- **The loading count restarted on every screen change, and Plan showed the previous session's
+  plan as the loaded model's while a model loaded, on every UI.** The seconds since a load began are
+  now the server's: `GET /api/info` and the `state` event carry `load_elapsed_s` while a load is
+  under way (planning included), and the web UI, the Android app and the iOS app count on from the
+  value and the moment it arrived, so the same seconds show on every screen and survive a screen
+  change. While a load is under way, each Plan screen says the plan of this load comes when the
+  session opens and marks the one it shows as from before this load.
 - **iOS chat rendering with the tested Apple Swift 6.4 toolchain.** Compile MarkdownUI alone
   without Swift optimization to avoid the observed `Markdown.Body` conformance abort when an
   assistant reply is rendered. The app and C++ engine keep their Release optimization, and
   vendored sources are unchanged. A model-free rendering app reproduces the optimized failure;
   turning off linker dead stripping does not avoid it. Keep the guard active for the 6.4.x
-  compiler family until an upstream fix is known.
+  compiler family until an upstream fix is known. By @gjjkbssg (#494).
+- **Conversation Stop before the first token.** A local conversation's stop now reaches the
+  session that owns its turn independently of the token callback, so an image's encoder and
+  prompt prefill can observe cancellation before any answer is generated. A stopped round still
+  waiting for the engine withdraws only its own place; it does not cancel another client's
+  running turn. The engine reads the run's own atomic flag alongside its resettable cancel latch,
+  without a polling thread; it borrows that flag only until the generation returns.
 
 ## [0.40.1] - 2026-11-07
 
