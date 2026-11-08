@@ -168,19 +168,9 @@ RAM，因此只有两个层级。能装进显卡的模型会完整地在显卡�
 因此同一份代码会为手机和台式机给出不同的方案。你自己设定的值会被保留。参见
 [docs/hardware-planning.md](docs/hardware-planning.md)。
 
-```mermaid
-flowchart TD
-  M["机器：<br/>内存、存储、设备"] --> P
-  F["模型：<br/>大小、专家、路由"] --> P
-  P["方案"] --> W["每个权重放在哪里：<br/>VRAM、RAM 或闪存"]
-  P --> D["哪个设备处理提示词，<br/>哪个生成 token"]
-  P --> S["缓存大小<br/>和线程数"]
-  W --> R["运行"]
-  D --> R
-  S --> R
-  R --> T["测量第一个回答，<br/>保留更快的设置"]
-  T -->|"保存供下次加载使用"| P
-```
+<p align="center">
+  <img src="docs/assets/diagrams/plan-zh.png" width="820" alt="规划器：机器和模型输入方案；方案决定每个权重放在哪里（VRAM、RAM 或闪存）、哪个设备处理提示词、哪个生成 token，以及缓存大小和线程数；测量第一个回答，更快的设置保存供下次加载使用。">
+</p>
 
 ## 平台
 

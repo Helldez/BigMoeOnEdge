@@ -183,19 +183,9 @@ CPU, GPU y NPU. Sus reglas no nombran ningún dispositivo ni plataforma, así qu
 escritorio reciben planes distintos del mismo código. Los valores que fijas tú se respetan. Consulta
 [docs/hardware-planning.md](docs/hardware-planning.md).
 
-```mermaid
-flowchart TD
-  M["Máquina:<br/>memoria, almacenamiento, dispositivos"] --> P
-  F["Modelo:<br/>tamaño, expertos, enrutado"] --> P
-  P["Plan"] --> W["Dónde va cada peso:<br/>VRAM, RAM o flash"]
-  P --> D["Qué dispositivo lee el prompt,<br/>cuál genera los tokens"]
-  P --> S["Tamaño de las cachés<br/>e hilos"]
-  W --> R["Ejecución"]
-  D --> R
-  S --> R
-  R --> T["Mide la primera respuesta,<br/>se queda con lo más rápido"]
-  T -->|"guardado para la próxima carga"| P
-```
+<p align="center">
+  <img src="docs/assets/diagrams/plan-es.png" width="820" alt="El planificador: la máquina y el modelo entran en el plan; el plan decide dónde va cada peso (VRAM, RAM o flash), qué dispositivo lee el prompt y cuál genera los tokens, y el tamaño de las cachés y los hilos; se mide la primera respuesta y lo más rápido se guarda para la próxima carga.">
+</p>
 
 ## Plataformas
 

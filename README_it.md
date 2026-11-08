@@ -185,19 +185,9 @@ e NPU. Le sue regole non nominano alcun dispositivo o piattaforma, quindi un tel
 piani diversi dallo stesso codice. I valori che imposti tu vengono mantenuti. Vedi
 [docs/hardware-planning.md](docs/hardware-planning.md).
 
-```mermaid
-flowchart TD
-  M["Macchina:<br/>memoria, storage, dispositivi"] --> P
-  F["Modello:<br/>dimensione, esperti, routing"] --> P
-  P["Piano"] --> W["Dove va ogni peso:<br/>VRAM, RAM o flash"]
-  P --> D["Quale dispositivo legge il prompt,<br/>quale genera i token"]
-  P --> S["Dimensione delle cache<br/>e thread"]
-  W --> R["Esecuzione"]
-  D --> R
-  S --> R
-  R --> T["Misura la prima risposta,<br/>tiene ciò che è più veloce"]
-  T -->|"salvato per il prossimo caricamento"| P
-```
+<p align="center">
+  <img src="docs/assets/diagrams/plan-it.png" width="820" alt="Il planner: la macchina e il modello entrano nel piano; il piano decide dove va ogni peso (VRAM, RAM o flash), quale dispositivo legge il prompt e quale genera i token, e la dimensione delle cache e i thread; la prima risposta viene misurata e ciò che è più veloce resta per il prossimo caricamento.">
+</p>
 
 ## Piattaforme
 
