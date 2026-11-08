@@ -55,20 +55,6 @@ appareil.
   les images sur chaque API ; la CLI avec `--mmproj` et `--image`. Tout modèle de vision que connaît la
   bibliothèque de projecteurs de llama.cpp, dans n'importe quelle quantification, sur tous les backends.
 
-```mermaid
-flowchart TD
-  M["Machine :<br/>mémoire, stockage, appareils"] --> P
-  F["Modèle :<br/>taille, experts, routage"] --> P
-  P["Plan"] --> W["Où va chaque poids :<br/>VRAM, RAM ou flash"]
-  P --> D["Quel appareil lit le prompt,<br/>lequel génère les tokens"]
-  P --> S["Taille des caches<br/>et threads"]
-  W --> R["Exécution"]
-  D --> R
-  S --> R
-  R --> T["Mesure la première réponse,<br/>garde ce qui est plus rapide"]
-  T -->|"gardé pour le prochain chargement"| P
-```
-
 ## Performances
 
 | Matériel | Mémoire | Modèle | Sur disque | Experts depuis | Décodage tok/s |
@@ -171,6 +157,20 @@ vous l'y autorisez. Une conversation peut aussi être menée par OpenCode, Claud
 [docs/agent.md](docs/agent.md).
 
 ## Fonctionnement
+
+```mermaid
+flowchart TD
+  M["Machine :<br/>mémoire, stockage, appareils"] --> P
+  F["Modèle :<br/>taille, experts, routage"] --> P
+  P["Plan"] --> W["Où va chaque poids :<br/>VRAM, RAM ou flash"]
+  P --> D["Quel appareil lit le prompt,<br/>lequel génère les tokens"]
+  P --> S["Taille des caches<br/>et threads"]
+  W --> R["Exécution"]
+  D --> R
+  S --> R
+  R --> T["Mesure la première réponse,<br/>garde ce qui est plus rapide"]
+  T -->|"gardé pour le prochain chargement"| P
+```
 
 Pour chaque token, le routeur de chaque couche choisit quelques experts. Le moteur les cherche dans
 jusqu'à trois niveaux, chacun un cache pour celui du dessous :
