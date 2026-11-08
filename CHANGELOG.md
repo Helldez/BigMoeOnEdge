@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.40.2] - 2026-11-08
+
+### Added
+- **Check for updates on the phones** (#452): the Android and iOS apps have the button the
+  desktop app has, in Settings, and nothing checks in the background either. The server reads the
+  signed release feed when it is pressed; a newer release opens its page, where Android installs
+  the APK over this one (models and settings stay) and iOS is built again from source. The Play
+  flavor of the Android app shows none: a store updates it.
+
+### Changed
+- **`GET /api/update` says a newer release is out on every build**, not only on one the feed
+  carries an installer for: `available` is now whether the feed's release is newer, and
+  `installer` (null where there is none) whether the app can download it itself.
+  `POST /api/update/download` refuses a build with no installer (`409` `no_installer`), and the
+  web UI offers Download only where there is one. The phone builds name their target
+  (`android-arm64`, `ios-arm64`).
+
 ## [0.40.1] - 2026-11-07
 
 ### Added

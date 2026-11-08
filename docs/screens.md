@@ -327,7 +327,10 @@ there on every front-end (#465):
 - **Graphics and updates.** The graphics backends this engine registered, the packs the release
   offers that apply to this machine (Install, with progress, then a restart: by the app, or by the
   person in a browser) and the others folded; and Check for updates, which reads the release feed
-  only when pressed and, in the app, downloads the checked installer and installs it.
+  only when pressed and, in the app, downloads the checked installer and installs it. The phone
+  apps have the same button at the end of Settings (Android's sideloaded build only: a store
+  updates the Play one); a newer release opens its page, since the feed carries no installer for a
+  phone.
 - **Engine.** The parameter table, below. A link to one parameter (`#/settings/<key>`) opens it here.
 
 - **From the table** (`GET /api/params`): one card per group, in the table's order

@@ -165,6 +165,9 @@ public final class APIClient: @unchecked Sendable {
         ConfigState(try await send("POST", "/api/plan/apply", nil, timeout: Self.quick))
     }
 
+    /// Reads the release feed: the one network request made only when a person asks.
+    public func update() async throws -> UpdateInfo { UpdateInfo(try await get("/api/update", timeout: Self.slow)) }
+
     // MARK: whose server this is
 
     /// Whether the server on the port is the one this app started: it refuses a key it was not

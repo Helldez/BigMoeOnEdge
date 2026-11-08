@@ -741,6 +741,9 @@ object Engine {
         }
     }
 
+    /** The release feed, read by the server when a person taps the button (docs/screens.md, "Updates"). */
+    suspend fun checkUpdate(): Result<UpdateInfo> = withContext(Dispatchers.IO) { catching { UpdateInfo.of(api.update()) } }
+
     /** A model in the server's models directory, deleted by the server by its listed name (every file of a set). */
     suspend fun deleteLocal(name: String): Result<Unit> = withContext(Dispatchers.IO) {
         catching { api.deleteLocal(name); Unit }.also { refreshModels() }

@@ -33,6 +33,7 @@ import io.bigmoeonedge.app.engine.contextWarning
 import io.bigmoeonedge.app.engine.text
 import io.bigmoeonedge.app.engine.Engine
 import io.bigmoeonedge.app.engine.ParamSpec
+import io.bigmoeonedge.app.engine.UpdateInfo
 import io.bigmoeonedge.app.engine.LanAddress
 import io.bigmoeonedge.app.engine.PlanDecision
 import io.bigmoeonedge.app.engine.ValueSource
@@ -220,6 +221,7 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
                 }
                 Hint("The live figures of the current answer, and the CSV recording.")
             }
+            if (io.bigmoeonedge.app.BuildConfig.RELEASE_UPDATES) Updates(engine.serverUp)
             engine.info?.let { Text("Engine ${it.version}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             Spacer(Modifier.height(24.dp))
         }
@@ -325,6 +327,57 @@ private fun ShareSection(open: Boolean, onOpen: (Boolean) -> Unit, ctx: ContextW
             }
         }
         Text("Prompts and answers cross the network unencrypted: use it on a network you trust.", fontSize = 12.sp, color = warnColor())
+    }
+}
+
+/**
+ * Updates, as on every front-end: nothing checks in the background, the button asks the server to
+ * read the signed release feed. A newer release opens its page, where the APK is installed over
+ * this one (the release key is the same every time, so models and settings stay).
+ */
+@Composable
+private fun Updates(serverUp: Boolean) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var info by remember { mutableStateOf<UpdateInfo?>(null) }
+    var checking by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf("") }
+    BmoeCard(padding = 12.dp) {
+        Text("Updates", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = MaterialTheme.colorScheme.primary)
+        val i = info
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.weight(1f)) {
+                if (i == null) {
+                    Hint("Nothing checks in the background. Check when you want to.")
+                } else {
+                    Text("This is version ${i.current}", fontSize = 13.sp)
+                    Text(if (i.available) "Version ${i.latest} is available." else "It is the latest.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            OutlinedButton(
+                shape = Corner,
+                enabled = serverUp && !checking,
+                onClick = {
+                    checking = true
+                    error = ""
+                    scope.launch {
+                        Engine.checkUpdate().onSuccess { info = it }.onFailure { error = it.message ?: "no answer" }
+                        checking = false
+                    }
+                },
+            ) { Text(if (checking) "Checking…" else "Check for updates") }
+        }
+        val page = i?.releasePage
+        if (i != null && i.available && page != null) {
+            Button(shape = Corner, modifier = Modifier.fillMaxWidth(), onClick = {
+                runCatching {
+                    context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(page)))
+                }
+            }) { Text("Get version ${i.latest}") }
+            Hint("Download the APK from the release page and install it over this one: your models and settings stay.")
+        }
+        if (error.isNotEmpty()) Text("The check did not work. Check the connection and try again: $error", fontSize = 12.sp, color = warnColor())
+        if (!serverUp) Hint("The engine checks for updates: start it first.")
     }
 }
 

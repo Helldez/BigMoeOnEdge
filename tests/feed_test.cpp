@@ -188,7 +188,8 @@ static void feed_tests() {
     up = update_answer(feed, "0.39.0", "test-target");
     check(!up["available"].get<bool>(), "update: the same version is not");
     up = update_answer(feed, "0.38.0", "nowhere");
-    check(!up["available"].get<bool>() && up["installer"].is_null(), "update: no installer for this target, none");
+    check(up["available"].get<bool>() && up["installer"].is_null(),
+          "update: no installer for this target, still newer, with no installer to download");
     check(is_pack_id("cuda") && is_pack_id("hip-7") && !is_pack_id("-x") && !is_pack_id("CUDA") && !is_pack_id(""),
           "pack id: lowercase, digits and '-'");
 }
@@ -433,6 +434,28 @@ static void install_tests() {
         UpdateService keyless(bus, net, cfg);
         check(keyless.update().status == 503 && keyless.update().body["code"] == "no_feed_key",
               "feed: a build with no key reads no feed");
+    }
+
+    // A build the feed carries no installer for (a phone: its app ships beside the feed) learns
+    // that a newer release is out, and is refused a download it could not run.
+    {
+        FakeNet net;
+        const std::string text = sample_feed();
+        net.pages[feed_url] = text;
+        net.pages[feed_url + ".sig"] = sign_with_test_key(text);
+        EventBus bus;
+        UpdateConfig cfg;
+        cfg.data_dir = (dir / "data-phone").u8string();
+        cfg.feed_url = feed_url;
+        cfg.public_key = kTestPublicKey;
+        cfg.target = "android-arm64";
+        cfg.version = "0.38.0";
+        UpdateService svc(bus, net, cfg);
+        const UpdateService::Reply u = svc.update();
+        check(u.status == 200 && u.body["available"].get<bool>() && u.body["installer"].is_null(),
+              "update: a target with no installer is told a newer release is out");
+        const UpdateService::Reply d = svc.download_update();
+        check(d.status == 409 && d.body["code"] == "no_installer", "update: and its download is refused");
     }
     fs::remove_all(dir, ec);
 }
