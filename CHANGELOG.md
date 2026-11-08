@@ -35,6 +35,12 @@ Semantic Versioning.
   agent's output and screenshots. A second run the same evening took 35 min 15 s, the model having
   first written the page to a folder its rules forbid; Claude Code on the same server gave up on
   the long write, since the stream stays silent while a tool call is generated (see the report).
+- **The roadmap grows Serve on the network to reach your own devices from anywhere**
+  (`docs/roadmap.md`): one feature, not a second server mode. Clients of their own, each with its
+  key, a chat-only role and removal from the host, under one access policy for the LAN and every
+  other way in; a peer-to-peer tunnel as one more way in, for a device outside the LAN; and
+  Telegram, then Signal, as clients of the same kind. Each says what the research found and what is
+  owed.
 
 ### Changed
 - **`GET /api/update` says a newer release is out on every build**, not only on one the feed
