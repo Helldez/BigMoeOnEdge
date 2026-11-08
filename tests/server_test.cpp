@@ -2225,6 +2225,50 @@ static void model_delete_tests() {
 
 // The CPU temperature is the mean of the sensors, and a threshold published as a zone is not one
 // (#311, #465): a fake thermal directory with a trip zone and moving sensors.
+static void model_folders_tests() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path root = fs::temp_directory_path() / "bmoe_server_test_folders";
+    fs::remove_all(root, ec);
+    fs::create_directories(root / "other", ec);
+    const std::string models = (root / "models").u8string();
+    const std::string other = (root / "other").u8string();
+
+    std::string dir;
+    std::vector<std::string> scans;
+    check(!model_folders_refusal("models", {}, dir, scans).empty(), "a relative models folder is refused");
+    check(!model_folders_refusal("", {}, dir, scans).empty(), "an empty models folder is refused");
+    check(!model_folders_refusal(models, {"other"}, dir, scans).empty(), "a relative scan folder is refused");
+    check(!model_folders_refusal(models, {(root / "missing").u8string()}, dir, scans).empty(),
+          "a scan folder that does not exist is refused");
+    check(model_folders_refusal(models, {other, other, models, ""}, dir, scans).empty(), "absolute folders are taken");
+    check(fs::is_directory(fs::u8path(models)), "the models folder is created when missing");
+    check(scans == std::vector<std::string>{other}, "repeats, empties and the models folder leave the scan list");
+    check(!fs::exists(fs::u8path(models) / ".bmoe-write-test"), "the write test leaves nothing behind");
+
+    // Chosen folders are a server setting: kept across a restart, beside the parameter values.
+    const fs::path path = root / "settings.json";
+    RunConfig defaults;
+    {
+        SettingsStore s(defaults, path.u8string());
+        s.load();
+        check(s.model_folders().models_dir.empty() && s.model_folders().scan_dirs.empty(),
+              "no folders chosen on a clean start");
+        s.set_model_folders({models, {other}});
+    }
+    SettingsStore again(defaults, path.u8string());
+    check(again.load().empty(), "saved folders reload without warnings");
+    check(again.model_folders().models_dir == models &&
+              again.model_folders().scan_dirs == std::vector<std::string>{other},
+          "the chosen folders persist");
+
+    // A folder the server writes to is the person's to choose, never a network client's.
+    check(local_only_route("PUT", "/api/models/folders") != nullptr, "choosing the folders is local-only");
+    check(local_only_route("GET", "/api/models") == nullptr, "listing the models is not");
+
+    fs::remove_all(root, ec);
+}
+
 static void thermal_tests() {
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -2480,6 +2524,7 @@ int main() {
     keepalive_tests();
     url_entry_tests();
     model_delete_tests();
+    model_folders_tests();
     if (failures) {
         std::printf("\n%d check(s) FAILED\n", failures);
         return 1;

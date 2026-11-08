@@ -80,6 +80,21 @@ bool delete_partial_files(const std::string & models_dir,
                           uint64_t & freed,
                           std::string & err);
 
+// The folders a person chose for models, checked before the server uses them: `models_dir` is
+// where downloads land, `scan_dirs` other folders listed beside it. Every path must be absolute (a
+// relative one would resolve against wherever the server was started, which a person choosing a
+// folder in a window cannot see); the models folder is created when missing and must take a new
+// file; each scan folder must exist. On success `out_dir` is the models folder normalised and
+// `out_scans` the scan folders without empty ones, repeats and the models folder itself (any of
+// those would list its models twice). "" when usable, otherwise why not.
+std::string model_folders_refusal(const std::string & models_dir,
+                                  const std::vector<std::string> & scan_dirs,
+                                  std::string & out_dir,
+                                  std::vector<std::string> & out_scans);
+
+// `scan_dirs` without empty ones, repeats and `models_dir` itself, compared as canonical paths.
+std::vector<std::string> distinct_scan_dirs(const std::string & models_dir, std::vector<std::string> scan_dirs);
+
 // "14.2 GB": decimal gigabytes with one decimal, as the model repositories quote sizes and as the
 // Android app writes them, so both front-ends name the same file with the same number.
 std::string gb_label(uint64_t bytes);

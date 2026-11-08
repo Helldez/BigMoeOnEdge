@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import HuggingFace from '../components/models/HuggingFace.svelte';
+  import ModelFolders from '../components/models/ModelFolders.svelte';
   import UrlImport from '../components/models/UrlImport.svelte';
   import PlanProgress from '../components/plan/PlanProgress.svelte';
   import ProgressBar from '../components/ProgressBar.svelte';
@@ -355,10 +356,7 @@
 
   <details class="where">
     <summary class="muted">Where models live</summary>
-    <p class="muted">
-      Downloads land in <code>{data.models_dir}</code>; a gguf you copy there (or into a folder directly inside it) is listed too.
-      {#if data.scan_dirs?.length}Also listed, and loaded in place: {#each data.scan_dirs as d, i (d)}{i ? ', ' : ''}<code>{d}</code>{/each}.{/if}
-    </p>
+    <ModelFolders {data} onChanged={(next) => (data = next)} />
   </details>
 {:else if !error}
   <div class="skel" aria-hidden="true">{#each [0, 1, 2] as i (i)}<span class="skeleton"></span>{/each}</div>

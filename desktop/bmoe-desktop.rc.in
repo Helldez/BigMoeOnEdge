@@ -1,0 +1,6 @@
+// The app's icon (packaging/windows/bigmoeonedge.ico, from packaging/windows/make-icon.py), under the
+// two ids it is asked for by: 1, the first group, which Explorer, the taskbar, shortcuts and the
+// notification area take (os_windows.cpp loads it by that id), and IDI_APPLICATION (32512), which
+// the webview library loads from the executable for its window's class icon.
+1 ICON "@BMOE_DESKTOP_ICON@"
+32512 ICON "@BMOE_DESKTOP_ICON@"
