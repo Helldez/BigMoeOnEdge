@@ -45,13 +45,27 @@ Qwen3.6-35B-A3B (21 GB) in real time on each device. The model is larger than ea
 - **Sets itself up.** `--auto` measures the machine and the model and picks the cache size, the
   threads and which device does what. The Plan screen shows each choice and why.
 - **Any MoE GGUF.** Whatever llama.cpp loads, in any quantization. No per-model code.
-- **Sees images.** Put a model's projector file (`mmproj`) beside it and the server reads images on
-  every API; the CLI with `--mmproj` and `--image`. Any vision model llama.cpp's projector library
-  knows, any quantization, every backend.
 - **Every backend.** CPU, Metal, CUDA, HIP, Vulkan, OpenCL and the Hexagon NPU. On a graphics card,
   the experts used most stay in its VRAM.
 - **Apps and a server.** A desktop app, phone apps, and an OpenAI- and Anthropic-compatible server
   for coding agents.
+- **Sees images.** Put a model's projector file (`mmproj`) beside it and the server reads images on
+  every API; the CLI with `--mmproj` and `--image`. Any vision model llama.cpp's projector library
+  knows, any quantization, every backend.
+
+```mermaid
+flowchart TD
+  M["Machine:<br/>memory, storage, devices"] --> P
+  F["Model:<br/>size, experts, routing"] --> P
+  P["Plan"] --> W["Where each weight goes:<br/>VRAM, RAM or flash"]
+  P --> D["Which device reads the prompt,<br/>which one generates"]
+  P --> S["Cache sizes<br/>and threads"]
+  W --> R["Run"]
+  D --> R
+  S --> R
+  R --> T["Measure the first answer,<br/>keep what is faster"]
+  T -->|"kept for the next load"| P
+```
 
 ## Performance
 
@@ -189,20 +203,6 @@ unchanged, and an upgrade is a submodule bump. Which tensors are experts is read
 The planner reads the model's header and measures the machine: memory, storage speed, each CPU, GPU
 and NPU. Its rules name no device or platform, so a phone and a desktop get different plans from the
 same code. Values you set yourself are kept. See [docs/hardware-planning.md](docs/hardware-planning.md).
-
-```mermaid
-flowchart TD
-  M["Machine:<br/>memory, storage, devices"] --> P
-  F["Model:<br/>size, experts, routing"] --> P
-  P["Plan"] --> W["Where each weight goes:<br/>VRAM, RAM or flash"]
-  P --> D["Which device reads the prompt,<br/>which one generates"]
-  P --> S["Cache sizes<br/>and threads"]
-  W --> R["Run"]
-  D --> R
-  S --> R
-  R --> T["Measure the first answer,<br/>keep what is faster"]
-  T -->|"kept for the next load"| P
-```
 
 ## Platforms
 

@@ -7,11 +7,13 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Changed
-- **The README draws how the planner decides.** Under "The planner", `README.md` and its five
-  translations show one diagram: the machine and the model go into the plan, the plan places each
-  weight on VRAM, RAM or flash, picks the device that reads the prompt and the one that generates,
-  and sizes the caches and threads; the first answer is measured and what is faster is kept for the
-  next load. It is a mermaid block, drawn by GitHub, with its labels in each README's language.
+- **The README draws how the planner decides.** At the end of "What it does", `README.md` and its
+  five translations show one diagram: the machine and the model go into the plan, the plan places
+  each weight on VRAM, RAM or flash, picks the device that reads the prompt and the one that
+  generates, and sizes the caches and threads; the first answer is measured and what is faster is
+  kept for the next load. It is a mermaid block, drawn by GitHub, with its labels in each README's
+  language. Image input moves to the end of that list, and the five translations gain it: they had
+  not listed it.
 
 ## [0.40.1] - 2026-11-07
 

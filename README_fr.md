@@ -51,6 +51,23 @@ appareil.
   les experts les plus utilisés restent dans sa VRAM.
 - **Applications et un serveur.** Une application de bureau, des applications pour téléphone et un serveur
   compatible OpenAI et Anthropic pour les agents de code.
+- **Voit les images.** Placez le fichier de projecteur du modèle (`mmproj`) à côté de lui et le serveur lit
+  les images sur chaque API ; la CLI avec `--mmproj` et `--image`. Tout modèle de vision que connaît la
+  bibliothèque de projecteurs de llama.cpp, dans n'importe quelle quantification, sur tous les backends.
+
+```mermaid
+flowchart TD
+  M["Machine :<br/>mémoire, stockage, appareils"] --> P
+  F["Modèle :<br/>taille, experts, routage"] --> P
+  P["Plan"] --> W["Où va chaque poids :<br/>VRAM, RAM ou flash"]
+  P --> D["Quel appareil lit le prompt,<br/>lequel génère les tokens"]
+  P --> S["Taille des caches<br/>et threads"]
+  W --> R["Exécution"]
+  D --> R
+  S --> R
+  R --> T["Mesure la première réponse,<br/>garde ce qui est plus rapide"]
+  T -->|"gardé pour le prochain chargement"| P
+```
 
 ## Performances
 
@@ -182,20 +199,6 @@ Le planificateur lit l'en-tête du modèle et mesure la machine : mémoire, vite
 GPU et NPU. Ses règles ne nomment aucun appareil ni aucune plateforme, donc un téléphone et un ordinateur de
 bureau reçoivent des plans différents du même code. Les valeurs que vous fixez vous-même sont conservées.
 Voir [docs/hardware-planning.md](docs/hardware-planning.md).
-
-```mermaid
-flowchart TD
-  M["Machine :<br/>mémoire, stockage, appareils"] --> P
-  F["Modèle :<br/>taille, experts, routage"] --> P
-  P["Plan"] --> W["Où va chaque poids :<br/>VRAM, RAM ou flash"]
-  P --> D["Quel appareil lit le prompt,<br/>lequel génère les tokens"]
-  P --> S["Taille des caches<br/>et threads"]
-  W --> R["Exécution"]
-  D --> R
-  S --> R
-  R --> T["Mesure la première réponse,<br/>garde ce qui est plus rapide"]
-  T -->|"gardé pour le prochain chargement"| P
-```
 
 ## Plateformes
 
