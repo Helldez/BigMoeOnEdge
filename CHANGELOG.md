@@ -27,6 +27,14 @@ Semantic Versioning.
   run before attention. Sets what other work reports against this engine's own measurements, says
   where they agree and where they do not, and lists what to build next, starting with
   token-addressed tables as their own storage tier and exact route-ahead on pre-gated models.
+- **A coding agent end to end on a 16 GB laptop** (`docs/bench-data/2026-11-07-agent-pagoda/`,
+  `docs/benchmarks.md`). The released 0.40.1 archive, `bmoe-server -c 65536` and opencode given the
+  pagoda prompt from #462, Qwen3.6-35B-A3B (22 GB) streamed from the SSD: the page was written in
+  23 min 46 s with no human input, one 11k-token prefill and then turns of 21-23 new tokens, the
+  10 400-token write at 8.6 tok/s with an 86 % cache hit. The report has the plan, each answer, the
+  agent's output and screenshots. A second run the same evening took 35 min 15 s, the model having
+  first written the page to a folder its rules forbid; Claude Code on the same server gave up on
+  the long write, since the stream stays silent while a tool call is generated (see the report).
 
 ### Changed
 - **`GET /api/update` says a newer release is out on every build**, not only on one the feed
