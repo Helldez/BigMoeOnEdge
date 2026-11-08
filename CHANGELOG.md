@@ -21,6 +21,12 @@ Semantic Versioning.
   signed release feed when it is pressed; a newer release opens its page, where Android installs
   the APK over this one (models and settings stay) and iOS is built again from source. The Play
   flavor of the Android app shows none: a store updates it.
+- **`docs/model-architecture-trends.md`**: where MoE model architecture went in 2025-2026 and what it
+  means for streaming. Covers smaller and more numerous experts, attention with a fixed or sparse
+  state, lookup tables addressed by token ids (Engram, the `qwen4exp` n-gram table), and routers that
+  run before attention. Sets what other work reports against this engine's own measurements, says
+  where they agree and where they do not, and lists what to build next, starting with
+  token-addressed tables as their own storage tier and exact route-ahead on pre-gated models.
 
 ### Changed
 - **`GET /api/update` says a newer release is out on every build**, not only on one the feed
