@@ -1742,9 +1742,11 @@ bool Session::Impl::bind_streaming(Opening & o) {
 
     if (prefill) prefill->keep_stream_layout(layers, offs.shard_paths);
     if (prefill && cfg.prefill.slots_on_demand) prefill->share_memory_with(&source);
+    if (prefill) prefill->read_experts_from(&source);
     if (!source.init(offs.shard_paths, n_expert, std::move(layers), cfg.moe))
         return o.fail("expert stream source init failed");
     source.set_pin_floor(source.worst_cycle_bytes(n_expert_used));
+    source.set_top_k(n_expert_used);
     hook->set_source(&source);
     // The row policy exists only once dense_.init has taken the tables over; null means nothing
     // qualified or the takeover declined, and the hook then costs exactly nothing per node.
@@ -2201,14 +2203,21 @@ void Session::Impl::warn_about_load(const SessionConfig & cfg) {
     // legal, the run is byte-correct, and cache_min_mb already rejects the band it was drawn for.
     // What this catches is the case that number cannot see — a budget comfortably above the fixed
     // floor and still under THIS model's cycle, which --n-expert-used widens without touching the
-    // budget. Below the cycle no entry survives to the next token, so the run pays management and
-    // RAM for a cache that cannot hit. The engine states the fact; what to do about it is
-    // docs/cache-sizing.md's business, not a knob the engine should editorialize about.
+    // budget. Below the cycle LRU keeps no entry to the next token, so it pays management and RAM
+    // for a cache that cannot hit; decayed-frequency eviction (the default) keeps what recent tokens
+    // shared and still hits, but well under what one more cycle of budget would give. The engine
+    // states the fact; what to do about it is docs/cache-sizing.md's business.
     if (info.cache_mb > 0 && info.cache_cycle_mb > 0 && info.cache_mb < info.cache_cycle_mb) {
-        log_printf(LogLevel::Warn,
-                   "WARNING expert cache %d MiB is below this model's worst-case token cycle of %d MiB "
-                   "at top-k %d — no entry can survive to the next token, so expect a hit rate near zero.",
-                   info.cache_mb, info.cache_cycle_mb, info.n_expert_used);
+        if (cfg.moe.cache_freq_half_life > 0)
+            log_printf(LogLevel::Warn,
+                       "WARNING expert cache %d MiB is below this model's worst-case token cycle of %d MiB "
+                       "at top-k %d — a token's experts cannot all stay, so expect a low hit rate.",
+                       info.cache_mb, info.cache_cycle_mb, info.n_expert_used);
+        else
+            log_printf(LogLevel::Warn,
+                       "WARNING expert cache %d MiB is below this model's worst-case token cycle of %d MiB "
+                       "at top-k %d — no entry can survive to the next token, so expect a hit rate near zero.",
+                       info.cache_mb, info.cache_cycle_mb, info.n_expert_used);
     }
 }
 
@@ -2338,6 +2347,7 @@ struct Session::Impl::Turn {
     bool mtp_on = false;
     int prefill_device_tokens = 0;
     uint64_t arena_read0 = 0;
+    uint64_t arena_cache0 = 0;
     double arena_stall0 = 0.0;
     long long prefill_device_nodes = 0;
     double prefill_seconds = 0.0;
@@ -2686,6 +2696,7 @@ struct Session::Impl::Turn {
         // re-scheduling it.
         const int pf_step = im.prefill ? prefill_piece(im.cfg) : im.cfg.n_batch;
         arena_read0 = im.prefill ? im.prefill->arena_read_bytes() : 0;
+        arena_cache0 = im.prefill ? im.prefill->arena_cache_bytes() : 0;
         arena_stall0 = im.prefill ? im.prefill->arena_stall_seconds() : 0.0;
         const long long device_nodes0 = im.hook->device_nodes();
         size_t next_media = 0; // the first span at or after i
@@ -3239,6 +3250,7 @@ struct Session::Impl::Turn {
         if (im.prefill) {
             s.prefill_device_read_mib = (double) (im.prefill->arena_read_bytes() - arena_read0) / (1024.0 * 1024.0);
             s.prefill_device_stall_seconds = im.prefill->arena_stall_seconds() - arena_stall0;
+            s.prefill_device_cache_mib = (double) (im.prefill->arena_cache_bytes() - arena_cache0) / (1024.0 * 1024.0);
         }
         s.prefill_cpu_seconds = prefill_tally.cpu_seconds;
         s.prefill_read_mib = prefill_tally.read_mib;
@@ -3266,6 +3278,7 @@ struct Session::Impl::Turn {
             s.cache_resizes = st.cache_resizes;
             s.cache_evictions = st.evictions;
             s.cache_rereads = st.rereads;
+            s.cache_cold_admits = st.cold_admits;
             const RowSourceStats rs = im.source.row_stats();
             s.row_table_mib = rs.table_bytes / (1024.0 * 1024.0);
             s.row_resident_mib = rs.resident_bytes / (1024.0 * 1024.0);

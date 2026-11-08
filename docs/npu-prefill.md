@@ -145,9 +145,10 @@ A model larger than RAM cannot give the NPU a copy of itself. The NPU gets two l
 instead, and every layer's weights are bound to one of them, alternating. While the NPU computes
 layer k out of one slot, loader threads fill the other with layer k+1:
 
-- **experts** are read from the gguf with `O_DIRECT`, one expert at a time, and handed to the backend
-  with `ggml_backend_tensor_set` on a per-expert view. That call is where the Hexagon backend repacks
-  them into its matrix-engine tiles, so the repack runs in parallel across the loaders;
+- **experts** are read from the gguf with `O_DIRECT`, one expert at a time, or copied from the expert
+  cache when it holds them (below), and handed to the backend with `ggml_backend_tensor_set` on a
+  per-expert view. That call is where the Hexagon backend repacks them into its matrix-engine tiles,
+  so the repack runs in parallel across the loaders;
 - **the other layer weights** (attention, norms, shared experts) are already resident on the host,
   so filling them is a copy, not a read.
 
@@ -197,6 +198,28 @@ identical between the two:
 | Qwen3.6-35B-A3B Q4_K_M | ~50% of 256 | 9.95 s | 5.37 s | 1.85x |
 | Gemma 4 26B-A4B Q4_K_M | ~58% of 128 | 6.69 s | 3.70 s | 1.81x |
 | Nemotron 3.5 30B-A3B Q4_0 | ~79% of 128 | 7.42 s | 6.81 s | 1.09x |
+
+### Filling from the expert cache (default; `--no-prefill-from-cache` reads everything from flash)
+
+Between prompts the expert cache holds what the conversation has been routing to, and a device graph
+never admits into it or evicts from it. So before a loader reads an expert from flash it asks the
+cache: one that is resident is copied from RAM instead, the same bytes in the same layout, and the
+device receives exactly what the read would have given it. `prefill_dev_cache_mib` counts what came
+that way. It works with whole layers and with routed reads alike, on any device.
+
+Measured on a 16 GB Mac (M5), Qwen3.6-35B-A3B Q4_K_M, prefill on Metal (`--prefill-device MTL0`,
+ubatch 1024, a 7000 MiB cache), a session of four 3.6 - 4.3k-token documents with a short question
+after each, two runs of each in alternation, same text in all four:
+
+| | flash only | from the cache |
+|---|---:|---:|
+| the four documents' prefill | 73.7 s, 50.4 s | 33.2 s, 31.9 s |
+| arena reads from flash | 297 GiB | 178 GiB |
+| copied from the cache | 0 | 119 GiB (36 - 44 % per document) |
+| graph waiting on the arena | 24.4 s, 28.6 s | 9.8 s, 10.5 s |
+
+The share copied is about the share of the expert set the cache holds; a follow-up that stays on
+the topic finds more of its experts there than a new document does.
 
 The gain is what each layer leaves unrouted: Nemotron's prompts route to most of its experts, many
 of its layers cross the 0.85 fallback, and it barely gains. The figures are for top-4 routing; with
@@ -292,7 +315,8 @@ Price it with `--ppl` on the same Q4_0 model with and without the flag before re
 ## Telemetry
 
 `BMOE_DONE` and the CSV trailer carry `prefill_dev_tokens`, `prefill_dev_nodes` (nodes the device
-actually computed), `prefill_dev_read_mib` and `prefill_dev_stall_s`; `BMOE_DECIDE` carries the same
+actually computed), `prefill_dev_read_mib`, `prefill_dev_stall_s` and `prefill_dev_cache_mib` (what
+the arena copied from the expert cache instead of reading); `BMOE_DECIDE` carries the same
 device counters plus, in routed mode, `prefill_dev_routed` and `prefill_dev_demand` (experts routed,
 and those read at the routing node). See [telemetry.md](telemetry.md).
 

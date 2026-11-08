@@ -56,11 +56,17 @@ struct RoutingTrace {
 std::string format_routing_trace(const RoutingTrace & trace);
 bool parse_routing_trace(const std::string & text, RoutingTrace & out, std::string & error);
 
-// The engine's expert cache replayed over a trace: a global LRU over (layer, expert) entries budgeted
+// The engine's expert cache replayed over a trace: a global cache over (layer, expert) entries budgeted
 // in bytes, one lookup per expert per batch (a repeat in the same batch only promotes), a miss made
 // resident at its layer's expert bytes, eviction after the batch that never takes an entry the batch
-// touched. The same accounting as scripts/route-replay.py's LRU row, which reproduces the hit rates
-// runs recorded.
+// touched. `half_life` is the engine's eviction policy (MoeStreamConfig::cache_freq_half_life): 0
+// evicts the least recently used, above 0 the least decayed frequency with ties to the least recently
+// used, a pass (one token, or one prompt) being a batch whose layer does not follow the previous
+// one's - the same arithmetic as the engine, so the two agree entry for entry. A prompt is admitted
+// hot: the trace keeps it as one batch per layer, where the engine prefills it in pieces whose last,
+// narrow one promotes the experts the cold admission (cache_prefill_cold) put at the drop end, so
+// what decode starts from is nearly the same. The LRU row is scripts/route-replay.py's, which
+// reproduces the hit rates runs recorded.
 struct ReplayCounts {
     uint64_t lookups = 0;
     uint64_t hits = 0;
@@ -70,12 +76,16 @@ struct ReplayCounts {
     double hit() const { return lookups ? (double) hits / (double) lookups : 0.0; }
     double decode_hit() const { return decode_lookups ? (double) decode_hits / (double) decode_lookups : 0.0; }
 };
-ReplayCounts replay_lru(const RoutingTrace & trace, uint64_t budget_bytes);
+ReplayCounts replay_cache(const RoutingTrace & trace, uint64_t budget_bytes, int half_life);
+inline ReplayCounts replay_lru(const RoutingTrace & trace, uint64_t budget_bytes) {
+    return replay_cache(trace, budget_bytes, 0);
+}
 
 // The decode hit share at `points` evenly spaced sizes from nothing to the whole set the trace routed
 // through, made non-decreasing (a replay can dip by a lookup where a larger budget evicts in a
 // different order; a curve the ranking walks must not). `measured` is set when the trace decoded.
-HitCurve hit_curve(const RoutingTrace & trace, uint32_t points);
+// `half_life` as replay_cache: the policy the run's cache will evict by.
+HitCurve hit_curve(const RoutingTrace & trace, uint32_t points, int half_life);
 
 // The experts the trace used most, by block and expert id, every routing counted (a token routing an
 // expert is one use, prompt and decode alike). Ranked by uses, ties by block then id, so two calls
@@ -99,6 +109,7 @@ inline constexpr double k_routing_bytes_tolerance = 0.01;
 // Check that `trace` describes this model routed at `n_expert_used` (the run's effective top-k), and
 // set `model.hit_curve` from it. A trace that does not fit leaves the curve absent with the reason in
 // `model.hit_curve.rejected`, so the plan is the one it would be without a trace.
-void attach_routing(ModelProfile & model, const RoutingTrace & trace, uint32_t n_expert_used);
+// `half_life`: the eviction policy the run will use (replay_cache).
+void attach_routing(ModelProfile & model, const RoutingTrace & trace, uint32_t n_expert_used, int half_life);
 
 } // namespace bmoe
