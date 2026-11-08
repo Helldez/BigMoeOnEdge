@@ -2,6 +2,8 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
+#include <set>
 
 namespace fs = std::filesystem;
 
@@ -131,6 +133,48 @@ bool delete_partial_files(const std::string & models_dir,
         freed += n;
     }
     return true;
+}
+
+std::vector<std::string> distinct_scan_dirs(const std::string & models_dir, std::vector<std::string> scan_dirs) {
+    std::set<fs::path> seen;
+    const auto key = [](const std::string & d) {
+        std::error_code ec;
+        const fs::path p = fs::weakly_canonical(fs::u8path(d), ec);
+        return ec ? fs::u8path(d) : p;
+    };
+    seen.insert(key(models_dir));
+    std::vector<std::string> out;
+    for (std::string & d : scan_dirs)
+        if (!d.empty() && seen.insert(key(d)).second) out.push_back(std::move(d));
+    return out;
+}
+
+std::string model_folders_refusal(const std::string & models_dir,
+                                  const std::vector<std::string> & scan_dirs,
+                                  std::string & out_dir,
+                                  std::vector<std::string> & out_scans) {
+    if (models_dir.empty() || !fs::u8path(models_dir).is_absolute())
+        return "the models folder must be an absolute path";
+    std::error_code ec;
+    for (const std::string & d : scan_dirs)
+        if (!d.empty() && !fs::u8path(d).is_absolute()) return "'" + d + "' is not an absolute path";
+    const fs::path dir = fs::u8path(models_dir).lexically_normal();
+    fs::create_directories(dir, ec);
+    if (!fs::is_directory(dir, ec)) return "'" + models_dir + "' could not be created as a folder";
+    for (const std::string & d : scan_dirs)
+        if (!d.empty() && !fs::is_directory(fs::u8path(d), ec)) return "'" + d + "' is not a folder";
+    // Downloads write here: find out now, not halfway through a transfer.
+    const fs::path probe = dir / ".bmoe-write-test";
+    bool ok = false;
+    {
+        std::ofstream f(probe, std::ios::trunc);
+        ok = static_cast<bool>(f << "ok");
+    }
+    fs::remove(probe, ec);
+    if (!ok) return "'" + models_dir + "' does not accept new files";
+    out_dir = dir.u8string();
+    out_scans = distinct_scan_dirs(out_dir, scan_dirs);
+    return "";
 }
 
 } // namespace bmoe::server

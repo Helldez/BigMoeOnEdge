@@ -20,6 +20,7 @@
 #include "bmoe/metrics.h"
 #include "bmoe/runtime.h"
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <string>
@@ -133,9 +134,12 @@ struct GenerateRequest {
     std::vector<ChatTool> tools{};
     ToolChoice tool_choice = ToolChoice::Auto;
     // The images `prompt` places with image_marker(), in order (the raw-prompt path; a message list
-    // carries each message's own). Needs a session opened with a projector. Last, so a request
-    // written as a positional aggregate before images existed still reads the same.
+    // carries each message's own). Needs a session opened with a projector. Kept after the earlier
+    // fields so existing positional aggregate initializers still read the same.
     std::vector<ChatImage> images{};
+    // Optional caller-owned stop flag. It must outlive generate(); the caller may raise it from
+    // another thread. Unlike Session::cancel()'s latch, it is never reset by the session.
+    const std::atomic<bool> * stop = nullptr;
 };
 
 // Teacher-forced quality measurement. The text is fixed, so every cell scores the SAME token
@@ -218,14 +222,14 @@ public:
 
     // Generate one response. Serialized: one generation at a time per session. `on_token`
     // and `sink` receive the same per-token metrics as run(). Cache state carries over from
-    // the previous call. If cancel() fired, returns ok=true with cancelled=true.
+    // the previous call. If cancel() or req.stop ends the turn, returns ok=true with cancelled=true.
     RunResult generate(const GenerateRequest & req,
                        const std::function<void(const TokenMetrics &)> & on_token = nullptr,
                        IMetricsSink * sink = nullptr);
 
     // Request the in-flight generation to stop. Thread-safe; may be called from another
-    // thread while generate() runs. Takes effect at the next decode boundary via the abort
-    // callback and leaves the model/cache intact for the next generate().
+    // thread while generate() runs. Takes effect at an existing decode/encoder cancellation
+    // point and leaves the model/cache intact for the next generate().
     void cancel();
 
     double load_seconds() const;      // model load + streaming setup, measured once at open()

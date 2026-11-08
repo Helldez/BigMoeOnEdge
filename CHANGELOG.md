@@ -4,9 +4,31 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.40.2] - 2026-11-08
+
+### Added
+- **Choose where models are kept** (#497). Models → "Where models live" changes the folder downloads
+  land in and adds or removes other folders whose models are listed and loaded in place; in the
+  desktop app with the system's folder dialog, in a browser by typing the path. A server setting
+  (`PUT /api/models/folders`, kept in `settings.json`), so it is the same on every system and every
+  UI that speaks the API, and it applies without a restart. Only a client on this machine may change
+  it, since the server writes there; it is refused while a download runs, and a folder the server
+  was started with (`--models-dir`, `--scan-dir`, as the phone apps start it) stays as it is.
+  Models already downloaded stay where they are. `GET /api/models` says which folders are chosen and
+  which the launch fixed (`folders`).
+- **Check for updates on the phones** (#452): the Android and iOS apps have the button the
+  desktop app has, in Settings, and nothing checks in the background either. The server reads the
+  signed release feed when it is pressed; a newer release opens its page, where Android installs
+  the APK over this one (models and settings stay) and iOS is built again from source. The Play
+  flavor of the Android app shows none: a store updates it.
 
 ### Changed
+- **`GET /api/update` says a newer release is out on every build**, not only on one the feed
+  carries an installer for: `available` is now whether the feed's release is newer, and
+  `installer` (null where there is none) whether the app can download it itself.
+  `POST /api/update/download` refuses a build with no installer (`409` `no_installer`), and the
+  web UI offers Download only where there is one. The phone builds name their target
+  (`android-arm64`, `ios-arm64`).
 - **The README draws how the planner decides.** Under "The planner", `README.md` and its five
   translations show one diagram: the machine and the model go into the plan, the plan places each
   weight on VRAM, RAM or flash, picks the device that reads the prompt and the one that generates,
@@ -14,6 +36,58 @@ Semantic Versioning.
   next load. One PNG per language in `docs/assets/diagrams/`, drawn by `scripts/plan-diagram.py`
   (macOS renders them with Quick Look; elsewhere it writes the SVGs). Image input moves to the end of
   the "What it does" list, and the five translations gain it: they had not listed it.
+
+### Fixed
+- **Garbled answers and a stall with `devices=all` on a phone.** With every backend registered and
+  no layer placed on one, llama.cpp's own offload heuristic still handed a wide graph's host-weight
+  ops to the GPU backend, which copies an expert tensor before the streamer rebinds it: wrong weights
+  in the answer, and a boundary crossing per op. On a phone with its Vulkan and OpenCL backends
+  registered, a 15-token prompt that answers in 22 s on the CPU alone had not produced a token after
+  eight minutes, and a longer prompt came back as symbols. A streamed run with nothing placed now
+  keeps every op on the CPU, as a run with layers placed under overlap already did; `devices=all`
+  keeps the devices registered for what the plan places there and for the prefill device.
+- **The knob trial halved the cache and tripled the first answer.** The trial runs a candidate
+  thread count in windows of a real answer; on a phone with four fast cores the eight-thread window
+  ran at ten times the seconds per token, and the cache brake, which reads every token's compute
+  against the run's own reference, took that stall with one sampled page out as reclaim and halved
+  the expert cache for the rest of the session (18.8 tok/s to 10.7 on the same prompts). The brake
+  no longer reads a token decoded under a trial candidate, and a candidate stops being measured once
+  the rounds left cannot make it a winner (two losing rounds of three settle the median), instead
+  of running a third round that could only repeat them.
+- **The loading count restarted on every screen change, and Plan showed the previous session's
+  plan as the loaded model's while a model loaded, on every UI.** The seconds since a load began are
+  now the server's: `GET /api/info` and the `state` event carry `load_elapsed_s` while a load is
+  under way (planning included), and the web UI, the Android app and the iOS app count on from the
+  value and the moment it arrived, so the same seconds show on every screen and survive a screen
+  change. While a load is under way, each Plan screen says the plan of this load comes when the
+  session opens and marks the one it shows as from before this load.
+- **iOS chat rendering with the tested Apple Swift 6.4 toolchain.** Compile MarkdownUI alone
+  without Swift optimization to avoid the observed `Markdown.Body` conformance abort when an
+  assistant reply is rendered. The app and C++ engine keep their Release optimization, and
+  vendored sources are unchanged. A model-free rendering app reproduces the optimized failure;
+  turning off linker dead stripping does not avoid it. Keep the guard active for the 6.4.x
+  compiler family until an upstream fix is known. By @gjjkbssg (#494).
+- **Conversation Stop before the first token.** A local conversation's stop now reaches the
+  session that owns its turn independently of the token callback, so an image's encoder and
+  prompt prefill can observe cancellation before any answer is generated. A stopped round still
+  waiting for the engine withdraws only its own place; it does not cancel another client's
+  running turn. The engine reads the run's own atomic flag alongside its resettable cancel latch,
+  without a polling thread; it borrows that flag only until the generation returns.
+  By @gjjkbssg (#495).
+- **A streamed turn is never silent for long** (`server/stream_keepalive.h`). While a turn ran, a
+  stream wrote only what the model produced, and a tool call is sent once parsed, so an agent's
+  long write (thousands of tokens) or a long prefill left the stream silent for minutes. Claude
+  Code drops a stream silent for 300 s and asks again, and the same prompt brought the same
+  silence: an agent writing a large file never finished. Now any 15 s of a turn with nothing to
+  send gets the protocol's keep-alive (`event: ping` on `/v1/messages`, a `: ping` comment on
+  `/v1/responses` and `/v1/chat/completions`), bounded by time rather than tokens, so it holds
+  whatever the machine's speed, the model or the call's length.
+- **The desktop app's icon on Windows** (#497). `bmoe-desktop.exe` carried no icon, so the taskbar,
+  the shortcuts, the window and the notification area showed Windows' generic one. The executable
+  and the installer now carry the app's icon, made from the same picture as the macOS and Linux
+  apps by `packaging/windows/make-icon.py`; the notification area takes the small size this
+  screen's scale asks for.
+
 
 ## [0.40.1] - 2026-11-07
 

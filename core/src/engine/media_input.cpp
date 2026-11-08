@@ -48,7 +48,7 @@ constexpr unsigned k_encoder_stop_grain = 16;
 bool stop_encoder_on_cancel(ggml_tensor *, bool ask, void * user) {
     auto * w = static_cast<MediaInput::EncoderWatch *>(user);
     if (ask) return ++w->asked % k_encoder_stop_grain == 0;
-    return !w->cancel->load(std::memory_order_relaxed);
+    return !w->cancelled();
 }
 
 } // namespace
@@ -230,7 +230,7 @@ int MediaInput::decode_media(llama_context * ctx,
     if (mtmd_encode_chunk(ctx_, chunk) != 0) return -1;
     // A cancel during the encode ended its graph early (stop_encoder_on_cancel): its output is
     // not an image, and the caller reads its own latch to tell a cancel from a failure.
-    if (watch_.cancel && watch_.cancel->load(std::memory_order_relaxed)) return -1;
+    if (watch_.cancelled()) return -1;
     // What an image costs is mostly this: said once per image, so a slow answer has its reason.
     log_printf(LogLevel::Info, "image: %d tokens encoded in %.1f s", (int) mtmd_input_chunk_get_n_tokens(chunk),
                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());

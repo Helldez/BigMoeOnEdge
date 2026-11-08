@@ -271,7 +271,9 @@ json update_answer(const Feed & feed, const std::string & current, const std::st
     const bool has_installer = it != feed.installers.end();
     return json{{"current", current},
                 {"latest", feed.version},
-                {"available", newer && has_installer},
+                // Newer is said whatever this target is: a build the feed carries no installer for (a
+                // phone, whose app the release ships beside the feed) still learns that it is behind.
+                {"available", newer},
                 {"notes", feed.notes},
                 {"published", feed.published},
                 {"target", target},

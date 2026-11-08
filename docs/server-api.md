@@ -117,8 +117,8 @@ other software, or other people, on that machine or on a network it was told to 
 - Some routes answer only a client whose connection comes from this machine, whatever `--host`
   and the key say: they install software, read the network on the person's behalf, or change
   files. They are one list, `local_only_routes()` in `server/access.h`, enforced before routing
-  (`403`, `code: "local_only"`): deleting a model, adding one from a link, and the backend-pack and
-  update routes ([Backend packs and updates](#backend-packs-and-updates)).
+  (`403`, `code: "local_only"`): deleting a model, adding one from a link, choosing the folders
+  models are kept in, and the backend-pack and update routes ([Backend packs and updates](#backend-packs-and-updates)).
 - A server started by an app with `--parent-pid PID` stops when that process ends, so an app that
   crashes leaves no server holding the port and a model's memory.
 - Over the API a client may name one file to open, the model, and it is only read (what it may delete is a model as the listing names it, above). Parameters that make
@@ -278,9 +278,14 @@ key, under the same security statement.
             "compute_threads": 8, "busy_threads": 12,
             "ctx_advice": {"recommended": 16384, "short": true, "param": "ctx-size", "refused": false,
                            "warn": false}},
-  "generating": false
+  "generating": false,
+  "load_elapsed_s": 12.4
 }
 ```
+
+`load_elapsed_s` is present while `state` is `planning` or `loading`: the seconds since that load
+began, planning included. A UI that shows them counts on from the value and the moment it received
+it, so the count is the server's, the same on every screen and after a screen change.
 
 `state` is one of `empty` (no model), `planning` (a load in auto mode is measuring the machine
 before it loads: tens of seconds on a phone, nothing loaded meanwhile), `loading`, `ready`, `error`
@@ -534,7 +539,10 @@ other.
 
 **One generation at a time, in order.** A request that arrives while another runs waits its turn;
 while it waits, a streaming response receives SSE comment lines (`: waiting for a turn`) so the
-connection stays open. A client that disconnects while it waits gives its place up and stops
+connection stays open. Once its turn runs, any 15 s with nothing to send (a long prefill, a tool
+call, which is sent only once parsed) gets a keep-alive on every streaming endpoint (a `: ping`
+comment; `event: ping` on `/v1/messages`): a client or proxy that drops a silent stream never sees
+one, however slow the machine or long the call. A client that disconnects while it waits gives its place up and stops
 nothing else; a streaming client that disconnects during its own answer stops that answer. A
 disconnect never ends another client's turn. With 16 requests already waiting the next gets `429`.
 
@@ -650,7 +658,7 @@ run), then content blocks, each `content_block_start` / `content_block_delta` / 
 thinking (`thinking_delta`, closed by an empty `signature_delta`), text (`text_delta`), and one
 `tool_use` block per call with its whole input in one `input_json_delta`. Then `message_delta` with
 the `stop_reason` and the full `usage` (and `bmoe.summary`), and `message_stop`. While the request
-waits its place in line, `event: ping`.
+waits its place in line, and after any 15 s of its turn with nothing else to send, `event: ping`.
 
 ### `POST /v1/messages/count_tokens`
 
@@ -691,7 +699,8 @@ Streaming response: each event named in `event:` and in its data's `type`, numbe
 `response.content_part.done` for a message; `response.function_call_arguments.delta` and `.done`,
 the whole arguments in one delta, for a call) and `response.output_item.done` with the item whole;
 and last `response.completed` (or `response.incomplete`) with the response object, its `output`
-and `usage`. While the request waits its place in line, an SSE comment.
+and `usage`. While the request waits its place in line, and after any 15 s of its turn with
+nothing else to send, an SSE comment.
 
 ## Decide
 
@@ -753,7 +762,19 @@ workspace or a task is `409` with `code: "chat_only"`. A UI reads this and shows
 **Runs.** `POST /api/conversations/<id>/messages` answers `202 {item}` as soon as the person's item
 is stored; everything after that arrives on `/api/events` (`conversation`, `item`, `delta`) and is
 in the stored conversation. A UI that reconnects reads `GET /api/conversations/<id>`. An approval
-card is a `tool` item in state `waiting`, answered with `POST .../approval` on its conversation. `POST .../stop` answers once the run has ended.
+card is a `tool` item in state `waiting`, answered with `POST .../approval` on its conversation.
+
+`POST /api/conversations/<id>/stop` requests cancellation for that conversation and waits up to
+30 s for its run to finish. The response is `{stopped}`: `false` when no run was found, `true`
+when a stop was requested, including if that wait expires before completion. Read the
+conversation's state or follow its events to observe the end of the run. For the local-model
+route, cancellation reaches the session that owns the turn independently of generated-token
+callbacks, so an image encoder or prompt prefill can stop at the engine's cancellation points
+before any answer token. Stopping a round still queued for the engine withdraws only its own
+place, leaving another client's active turn running. The engine reads the run's own atomic flag
+alongside its cancel latch, only during that turn, so a latch reset cannot drop the stop and it
+cannot carry over to the next. `POST /api/cancel` remains the route for cancelling the server's
+current generation.
 
 **Errors.** `{"error", "code"}`, with these codes:
 
@@ -827,6 +848,8 @@ a UI shows "flash" from them without knowing whether the session overlaps.
 {
   "models_dir": "C:/Users/me/AppData/Local/BigMoeOnEdge/models",
   "scan_dirs": [],
+  "folders": {"default_models_dir": "C:/Users/me/AppData/Local/BigMoeOnEdge/models", "chosen_models_dir": "",
+              "models_dir_at_launch": false, "launch_scan_dirs": [], "chosen_scan_dirs": []},
   "local": [{"name": "Qwen3-30B-A3B-Q4_K_M.gguf", "path": "...", "dir": "C:/Users/me/AppData/Local/BigMoeOnEdge/models",
              "folder": "", "bytes": 18556686912, "shards": 1, "files": ["..."], "arch": "qwen3moe",
              "role": "model", "streamable": true, "complete": true}],
@@ -876,6 +899,31 @@ stopped by a failure, a cancel or a restart of the server (jobs live in memory, 
 not), which downloading again resumes. A UI labels that action **Resume (X of Y GB)** (decimal GB,
 `received` of `bytes`) and offers **Delete partial download** beside it. The phone's app downloads
 into the server's models directory, so the same two fields describe its downloads too.
+
+`folders` says where the two lists come from. The models directory is `--models-dir` when the server
+was started with one (`models_dir_at_launch`), otherwise the one a person chose
+(`chosen_models_dir`, "" for none), otherwise `default_models_dir` (`<data dir>/models`). The scan
+directories are those of `--scan-dir` (`launch_scan_dirs`) followed by the chosen ones
+(`chosen_scan_dirs`). A chosen folder that is gone when the server starts (a drive unplugged) is set
+aside for that run, with a warning in the log, and comes back with the drive.
+
+### `PUT /api/models/folders`
+
+```json
+{"models_dir": "D:/models", "scan_dirs": ["E:/gguf"]}
+```
+
+Chooses where models are kept, as a person would in a settings screen, and keeps the choice in
+`settings.json` (`model_folders`). `models_dir` is the folder downloads land in, "" for the default;
+`scan_dirs` the other folders listed, each read only, replacing the chosen ones (the launch's stay).
+A field left out is left as it is. The change applies at once and the answer is the new
+`GET /api/models`, and a `models_folders` event is published for clients that list on events. Every path must be
+absolute, the models folder is created when missing and must take a new file, each scan folder must
+exist (`400` with the reason otherwise). `409` while a download runs (its files are being written to
+the folder it started in), and for a models folder when the server was started with `--models-dir`.
+Models and partial downloads in the old folder stay where they are, and are listed again only when
+that folder is among the scan folders. Local-only (`403`, `code: "local_only"`, from the network):
+it names a folder the server writes to.
 
 ### `POST /api/models/download`
 
@@ -1204,8 +1252,9 @@ is installed. The engine loads the pack at the next start of the server.
 ### `GET /api/update`
 
 Reads the feed and answers `{current, latest, available, notes, published, target, installer}`:
-`available` when the feed's version is newer than this server's and has an installer for this
-target, `installer` `{url, sha256, size, file}` or `null`. `502` `feed` when the feed cannot be read
+`available` when the feed's version is newer than this server's, `installer` this target's
+`{url, sha256, size, file}`, or `null` where the feed carries none (a phone: its app ships beside
+the feed on the release, and the app sends the person to `notes` for it). `502` `feed` when the feed cannot be read
 or does not verify.
 
 ### `POST /api/update/download`
@@ -1213,4 +1262,4 @@ or does not verify.
 Downloads the installer of the feed last read into `<data>/updates/`, checks its size and SHA-256,
 and answers once it is there: `200` with `{ok, version, path}`; progress as `update` events. The
 desktop app runs `path` (`bmoeDesktop.applyUpdate`), which accepts nothing outside that folder.
-`409` with `no_feed` or `up_to_date`, or `busy`; `502` `failed` when it does not arrive whole.
+`409` with `no_feed`, `up_to_date` or `no_installer` (the feed has none for this target), or `busy`; `502` `failed` when it does not arrive whole.

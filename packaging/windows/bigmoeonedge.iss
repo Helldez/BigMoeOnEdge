@@ -43,6 +43,8 @@ ArchitecturesAllowed={#Arch}
 ArchitecturesInstallIn64BitMode={#Arch}
 LicenseFile={#SourceDir}\LICENSE
 UninstallDisplayIcon={app}\bmoe-desktop.exe
+; The installer's own icon: the app's (make-icon.py), beside this script.
+SetupIconFile=bigmoeonedge.ico
 UninstallDisplayName=BigMoeOnEdge
 OutputDir={#OutputDir}
 OutputBaseFilename={#OutputBaseName}

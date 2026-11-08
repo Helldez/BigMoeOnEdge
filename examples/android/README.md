@@ -26,7 +26,8 @@ Each [release](https://github.com/Helldez/BigMoeOnEdge/releases/latest) carries
 `app-dev-release.apk`, signed with the project's stable key, so each version installs over the
 previous one. Download it from the release page and open it; Android asks once to allow installs
 from the browser. `app-dev-debug.apk`, on the same page, is a debug build signed with another key: it
-cannot update the release one.
+cannot update the release one. Settings → Updates checks for a newer release when you press it
+and opens its page.
 
 ## Build
 

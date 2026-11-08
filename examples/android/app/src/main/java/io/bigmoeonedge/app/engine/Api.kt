@@ -91,6 +91,9 @@ class Api(private val baseUrl: String, private val apiKey: String) : Conversatio
     fun plan(measure: Boolean): JSONObject = getJson(if (measure) "/api/plan?measure=1" else "/api/plan?cached=1", SLOW_MS)
     fun applyPlan(): JSONObject = send("POST", "/api/plan/apply", null, QUICK_MS)
 
+    /** Reads the release feed, the one network request the app makes only when a person asks. */
+    fun update(): JSONObject = getJson("/api/update", SLOW_MS)
+
     // ── conversations (docs/agent.md): held by the server, plain chat under --chat-only ──
 
     fun conversations(): JSONArray = JSONArray(get("/api/conversations", QUICK_MS))

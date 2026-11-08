@@ -144,6 +144,12 @@ session decodes through its own placed decode, so the arena, the prefill device 
 see an image's graphs as they see a text batch's. The library is built through upstream's own
 `LLAMA_BUILD_MTMD` hook, as a library of its own (`libmtmd`), and nothing in it is patched. Like
 `common`, it is not a stable API: a submodule bump re-reads these calls.
+
+Cancellation uses the existing public `llama_set_abort_callback` for decode and `mtmd`'s `cb_eval`
+for image encoding. Each reads the session latch or the current `GenerateRequest::stop` atomic;
+the caller owns that flag and the engine borrows it only until generation returns. The encoder
+checks the same combined state before reading an interrupted graph's output. This adds no upstream
+API or vendor patch.
 `enable_thinking` is only a *request* to the template, and many templates never read it, so the
 engine renders the template to find out (three renders at open, no model names involved) and, where
 the flag is inert *and* reasoning is a structural section of the format, asks for a **continuation**

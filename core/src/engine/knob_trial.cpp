@@ -9,6 +9,7 @@ KnobTrial::KnobTrial(int n_candidates, bool settle, KnobTrialPolicy pol) : pol_(
     pol_.window_tokens = std::max(1, pol_.window_tokens);
     pol_.warm_tokens = std::max(0, pol_.warm_tokens);
     pol_.rounds = std::max(1, pol_.rounds);
+    dead_.assign((size_t) std::max(0, n_candidates) + 1, 0);
     // Every candidate window is bracketed by incumbent ones, so the schedule starts and ends on the
     // incumbent and alternates in between: 0 c1 0 c2 0 c1 0 c2 0 for two candidates over two rounds.
     schedule_.push_back(0);
@@ -38,6 +39,7 @@ void KnobTrial::interrupt() {
 }
 
 void KnobTrial::record(double seconds, int tokens, uint64_t lookups, uint64_t hits) {
+    last_abandoned_ = 0;
     if (phase_ == Phase::Done || tokens <= 0 || !(seconds > 0.0)) return;
     if (warm_left_ > 0) {
         warm_left_ -= tokens; // a step is timed whole or not at all
@@ -69,11 +71,42 @@ void KnobTrial::close_window() {
     }
 
     spt_.push_back(spt);
+    // An incumbent window closing completes the ratio of the candidate window before it. A candidate
+    // whose losing rounds already outnumber what the median can overturn is settled: the rounds left
+    // leave the schedule, and what was measured stays in the record.
+    if (schedule_[spt_.size() - 1] == 0) {
+        const double losing = 1.0 / (1.0 + pol_.min_win); // a ratio at or past this is not a win
+        const int overturnable = (pol_.rounds - 1) / 2;   // losing rounds a median of `rounds` can still absorb
+        for (int c = 1; c <= n_cand_; ++c) {
+            if (dead_[(size_t) c]) continue;
+            int lost = 0;
+            for (const double r : ratios(c))
+                lost += r >= losing;
+            if (lost > overturnable) abandon(c);
+        }
+    }
     if (spt_.size() == schedule_.size()) {
         decide();
         return;
     }
     if (arm() != prev_arm) warm_left_ = pol_.warm_tokens;
+}
+
+void KnobTrial::abandon(int cand) {
+    dead_[(size_t) cand] = 1;
+    last_abandoned_ = cand;
+    // The windows still to run, without this arm's, and without an incumbent window that would then
+    // follow another.
+    const size_t k = spt_.size() - 1;
+    std::vector<int> rest;
+    for (size_t j = k + 1; j < schedule_.size(); ++j) {
+        if (schedule_[j] == cand) continue;
+        // An incumbent window after another incumbent one (the one just closed included) brackets nothing.
+        if (schedule_[j] == 0 && (rest.empty() ? schedule_[k] == 0 : rest.back() == 0)) continue;
+        rest.push_back(schedule_[j]);
+    }
+    schedule_.resize(k + 1);
+    schedule_.insert(schedule_.end(), rest.begin(), rest.end());
 }
 
 std::vector<double> KnobTrial::ratios(int cand) const {
