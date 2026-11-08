@@ -183,6 +183,20 @@ GPU et NPU. Ses règles ne nomment aucun appareil ni aucune plateforme, donc un 
 bureau reçoivent des plans différents du même code. Les valeurs que vous fixez vous-même sont conservées.
 Voir [docs/hardware-planning.md](docs/hardware-planning.md).
 
+```mermaid
+flowchart TD
+  M["Machine :<br/>mémoire, stockage, appareils"] --> P
+  F["Modèle :<br/>taille, experts, routage"] --> P
+  P["Plan"] --> W["Où va chaque poids :<br/>VRAM, RAM ou flash"]
+  P --> D["Quel appareil lit le prompt,<br/>lequel génère les tokens"]
+  P --> S["Taille des caches<br/>et threads"]
+  W --> R["Exécution"]
+  D --> R
+  S --> R
+  R --> T["Mesure la première réponse,<br/>garde ce qui est plus rapide"]
+  T -->|"gardé pour le prochain chargement"| P
+```
+
 ## Plateformes
 
 | | Android | macOS | Windows | Linux | iOS |
