@@ -45,6 +45,9 @@ public:
 
     bool vision() const;
 
+    // A serialized turn borrows its caller's flag; clear it before that caller can return.
+    void set_stop(const std::atomic<bool> * stop) { watch_.stop = stop; }
+
     // The most pixels an image may decode to. Read from its header before any pixel is allocated:
     // a small file declaring 20000x20000 would otherwise decode to more than a gigabyte of RGB on
     // the way to the projector, which then downsizes it to its own few hundred pixels a side.
@@ -91,10 +94,15 @@ private:
     const llama_model * model_ = nullptr;
 
 public:
-    // What the encoder's eval callback reads: the session's cancel latch, and how many nodes it has
+    // What the encoder's eval callback reads: the session latch, the caller's flag, and how many nodes it has
     // been asked about, which paces its answers. Public for the callback alone.
     struct EncoderWatch {
         const std::atomic<bool> * cancel = nullptr;
+        const std::atomic<bool> * stop = nullptr;
+        bool cancelled() const {
+            return (cancel && cancel->load(std::memory_order_relaxed)) ||
+                   (stop && stop->load(std::memory_order_relaxed));
+        }
         unsigned asked = 0;
     };
 

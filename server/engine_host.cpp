@@ -351,7 +351,8 @@ std::unique_lock<std::mutex> EngineHost::take_turn() {
 
 ChatOutcome EngineHost::chat(const ChatRequest & req,
                              const std::function<bool(const TokenMetrics &)> & on_token,
-                             const std::function<bool()> & still_wanted) {
+                             const std::function<bool()> & still_wanted,
+                             const std::atomic<bool> * stop) {
     ChatOutcome out;
     switch (turns_.enter(still_wanted)) {
     case TurnQueue::Admit::Granted:
@@ -372,6 +373,14 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
         ~Leave() { q.leave(); }
     } leave{turns_};
     std::unique_lock<std::mutex> g = take_turn();
+    // A turn may have been stopped after admission while a load held the context. Do not start
+    // it on the new session. Queue callbacks may write, so only the atomic is read here.
+    if (stop && stop->load(std::memory_order_relaxed)) {
+        out.status = 499;
+        out.code = error_code::client_gone;
+        out.error = "the client stopped waiting";
+        return out;
+    }
 
     std::shared_ptr<HostedSession> s;
     {
@@ -396,6 +405,7 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
     gr.think = req.think;
     gr.json_schema = req.json_schema;
     gr.render_text = true;
+    gr.stop = stop;
 
     generating_ = true;
     publish_state();

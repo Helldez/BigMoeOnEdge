@@ -762,7 +762,19 @@ workspace or a task is `409` with `code: "chat_only"`. A UI reads this and shows
 **Runs.** `POST /api/conversations/<id>/messages` answers `202 {item}` as soon as the person's item
 is stored; everything after that arrives on `/api/events` (`conversation`, `item`, `delta`) and is
 in the stored conversation. A UI that reconnects reads `GET /api/conversations/<id>`. An approval
-card is a `tool` item in state `waiting`, answered with `POST .../approval` on its conversation. `POST .../stop` answers once the run has ended.
+card is a `tool` item in state `waiting`, answered with `POST .../approval` on its conversation.
+
+`POST /api/conversations/<id>/stop` requests cancellation for that conversation and waits up to
+30 s for its run to finish. The response is `{stopped}`: `false` when no run was found, `true`
+when a stop was requested, including if that wait expires before completion. Read the
+conversation's state or follow its events to observe the end of the run. For the local-model
+route, cancellation reaches the session that owns the turn independently of generated-token
+callbacks, so an image encoder or prompt prefill can stop at the engine's cancellation points
+before any answer token. Stopping a round still queued for the engine withdraws only its own
+place, leaving another client's active turn running. The engine reads the run's own atomic flag
+alongside its cancel latch, only during that turn, so a latch reset cannot drop the stop and it
+cannot carry over to the next. `POST /api/cancel` remains the route for cancelling the server's
+current generation.
 
 **Errors.** `{"error", "code"}`, with these codes:
 

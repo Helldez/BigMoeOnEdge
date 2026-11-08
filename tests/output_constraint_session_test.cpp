@@ -170,6 +170,48 @@ struct GrammarOracle {
     }
 };
 
+// A caller-owned stop is independent of the session latch and ends with the request, even
+// before a token exists. Exercise real graph callbacks, then another API on the same context.
+void caller_stop_lifecycle(const std::string & model, bool sampled) {
+    const std::string label = sampled ? "caller stop, stochastic: " : "caller stop, greedy: ";
+    auto cfg = config(model, sampled);
+    cfg.decide.enabled = true;
+    std::string error;
+    auto session = bmoe::Session::open(cfg, error);
+    check(session != nullptr, label + "the real session opens", error);
+    if (!session) return;
+    const auto ordinary = request("", 8);
+    const auto reference = generate(*session, ordinary);
+    check(reference.result.ok, label + "the ordinary reference completes", reference.result.error);
+
+    std::atomic<bool> stop{true};
+    auto req = request(R"({"type":"object"})", 16);
+    req.stop = &stop;
+    const auto before_token = generate(*session, req);
+    check(before_token.result.ok && before_token.result.cancelled && before_token.rows.empty() && stop.load(),
+          label + "a pre-existing caller flag survives the session latch reset and cancels before any token",
+          before_token.result.error);
+
+    bmoe::DecideRequest decision;
+    decision.prefix = "Choose a label.";
+    decision.choices = {"A", "B"};
+    const auto decided = session->decide(decision);
+    check(decided.ok && !decided.cancelled && stop.load(),
+          label + "a later decision ignores the retired request's still-raised flag", decided.error);
+
+    stop = false;
+    int emitted = 0;
+    const auto during_decode = session->generate(req, [&](const bmoe::TokenMetrics &) {
+        ++emitted;
+        stop = true;
+    });
+    check(during_decode.ok && during_decode.cancelled && emitted == 1 && stop.load(),
+          label + "a caller flag raised at the first token stops a constrained turn", during_decode.error);
+    const auto recovered = generate(*session, ordinary);
+    check(recovered.result.ok && !recovered.result.cancelled && recovered.pieces == reference.pieces && stop.load(),
+          label + "the next ordinary request ignores that flag and matches its reference", recovered.result.error);
+}
+
 void lifecycle(const std::string & model, bool sampled, const GrammarOracle & oracle) {
     const std::string label = sampled ? "stochastic: " : "greedy: ";
     const std::string object_schema = R"({"type":"object"})";
@@ -329,6 +371,8 @@ int main(int argc, char ** argv) {
     const GrammarOracle oracle(argv[1]);
     check(oracle.model != nullptr, "the fixture's vocabulary-only grammar oracle opens");
     if (!oracle.model) return 1;
+    caller_stop_lifecycle(argv[1], false);
+    caller_stop_lifecycle(argv[1], true);
     lifecycle(argv[1], false, oracle);
     lifecycle(argv[1], true, oracle);
     speculation(argv[1], oracle);

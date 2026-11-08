@@ -35,12 +35,14 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -97,6 +99,7 @@ struct Turn {
     std::string text;
     std::vector<ChatToolCall> calls;
     bool context_full = false;
+    bool hold_before_token = false;
 };
 
 struct Script {
@@ -105,6 +108,12 @@ struct Script {
     Turn fallback{"(the script ran out)", {}, false};
     std::vector<GenerateRequest> requests;
     int n_ctx = 32768;
+    std::condition_variable before_token_cv;
+    bool before_token_started = false;
+    bool before_token_release = false;
+    bool before_token_timed_out = false;
+    std::atomic<int> cancels{0};
+    std::atomic<int> tokens{0};
 };
 
 class ScriptedSession final : public HostedSession {
@@ -113,6 +122,8 @@ public:
     RunResult generate(const GenerateRequest & req,
                        const std::function<void(const TokenMetrics &)> & on_token) override {
         Turn t;
+        const auto stopped = [&] { return cancelled_.load() || (req.stop && req.stop->load()); };
+        cancelled_ = false; // a cancel belongs to the generation it lands in
         {
             std::lock_guard<std::mutex> lk(s_.m);
             s_.requests.push_back(req);
@@ -129,21 +140,43 @@ public:
             r.error_kind = RunError::ContextFull;
             return r;
         }
+        if (t.hold_before_token) {
+            std::unique_lock<std::mutex> lk(s_.m);
+            s_.before_token_started = true;
+            s_.before_token_cv.notify_all();
+            const auto deadline = std::chrono::steady_clock::now() + 5s;
+            while (!stopped() && !s_.before_token_release && std::chrono::steady_clock::now() < deadline)
+                s_.before_token_cv.wait_for(lk, 1ms);
+            const bool ended = stopped() || s_.before_token_release;
+            s_.before_token_timed_out = !ended;
+            if (stopped()) {
+                r.ok = true;
+                r.cancelled = true;
+                return r;
+            }
+        }
         // The answer arrives as two tokens, as a stream would show it.
         TokenMetrics m;
         m.text = t.text.substr(0, t.text.size() / 2);
+        ++s_.tokens;
         if (on_token) on_token(m);
         m.text = t.text;
+        ++s_.tokens;
         if (on_token) on_token(m);
         r.ok = true;
-        r.cancelled = cancelled_.exchange(false);
+        r.cancelled = cancelled_.exchange(false) || (req.stop && req.stop->load());
         r.generated_text = t.text;
         r.tool_calls = t.calls;
         r.summary.n_generated = 2;
         return r;
     }
     DecideResult decide(const DecideRequest &) override { return {}; }
-    void cancel() override { cancelled_ = true; }
+    void cancel() override {
+        std::lock_guard<std::mutex> lk(s_.m);
+        ++s_.cancels;
+        cancelled_ = true;
+        s_.before_token_cv.notify_all();
+    }
     const std::string & arch() const override { return arch_; }
     int n_ctx() const override { return s_.n_ctx; }
     int n_expert_used() const override { return 8; }
@@ -190,7 +223,9 @@ struct Rig {
         d.bus = bus.get();
         d.store = store.get();
         d.local_chat = [this](const ChatRequest & r, const std::function<bool(const TokenMetrics &)> & t,
-                              const std::function<bool()> & w) { return host->chat(r, t, w); };
+                              const std::atomic<bool> & stop) {
+            return host->chat(r, t, [&stop] { return !stop.load(); }, &stop);
+        };
         d.bundled_skills_dir = (data.path / "bundled").u8string();
         d.user_skills_dir = (data.path / "skills").u8string();
         d.tools = tools;
@@ -1563,6 +1598,72 @@ static void prompt_tests() {
           "a request from the network does not get the workspace's AGENTS.md");
 }
 
+// A conversation Stop has to reach local image encoding/prefill, before an on_token callback
+// exists. Drive the real Agent -> local_chat -> EngineHost path and retain the loaded session.
+static void pretoken_stop_tests() {
+    {
+        auto rig = std::make_unique<Rig>(true, false);
+        const std::string c = rig->conversation("ask", false);
+        rig->say({{"must not be emitted", {}, false, true}, {"Recovered.", {}}});
+        json item;
+        check(rig->agent->send(c, "describe an image", json::array(), false, false, item).ok(),
+              "pre-token stop: the conversation starts");
+        {
+            std::unique_lock<std::mutex> lk(rig->script.m);
+            check(rig->script.before_token_cv.wait_for(lk, 2s, [&] { return rig->script.before_token_started; }),
+                  "pre-token stop: the local session is held before any token");
+        }
+        auto stopping = std::async(std::launch::async, [&] { return rig->agent->stop(c); });
+        const bool ended = stopping.wait_for(2s) == std::future_status::ready;
+        check(ended, "pre-token stop: conversation Stop finishes without releasing the fake or an API cancel");
+        if (!ended) rig->host->cancel(); // bound a failed regression without counting this as success
+        check(stopping.get() && rig->wait_done(c), "pre-token stop: the stopped conversation is idle");
+        check(rig->script.cancels == 0 && rig->last_request().stop != nullptr && rig->script.tokens == 0 &&
+                  !rig->script.before_token_timed_out && rig->host->ready() && !rig->host->generating(),
+              "pre-token stop: the session was cancelled with zero tokens and remains loaded");
+        const json notices = rig->items_of(c, "notice");
+        check(!notices.empty() && notices.back().value("text", "") == "Stopped.",
+              "pre-token stop: the conversation records the requested stop");
+        check(rig->agent->send(c, "answer again", json::array(), false, false, item).ok() && rig->wait_done(c),
+              "pre-token stop: a follow-up in the same conversation completes");
+        const json answers = rig->items_of(c, "assistant");
+        check(!answers.empty() && answers.back().value("text", "") == "Recovered." &&
+                  !answers.back().value("streaming", true) && rig->requests() == 2,
+              "pre-token stop: the follow-up answer is complete and no reload was needed");
+    }
+    {
+        auto rig = std::make_unique<Rig>(true, false);
+        const std::string active = rig->conversation("ask", false);
+        const std::string queued = rig->conversation("ask", false);
+        rig->say({{"First finished.", {}, false, true}, {"Next answer.", {}}});
+        json item;
+        rig->agent->send(active, "first", json::array(), false, false, item);
+        {
+            std::unique_lock<std::mutex> lk(rig->script.m);
+            check(rig->script.before_token_cv.wait_for(lk, 2s, [&] { return rig->script.before_token_started; }),
+                  "queued conversation stop: the first conversation owns pre-token work");
+        }
+        check(rig->agent->send(queued, "second", json::array(), false, false, item).ok(),
+              "queued conversation stop: the other conversation starts waiting");
+        auto stopping = std::async(std::launch::async, [&] { return rig->agent->stop(queued); });
+        const bool ended = stopping.wait_for(2s) == std::future_status::ready;
+        check(ended && rig->agent->running(active) && rig->host->generating() && rig->script.cancels == 0 &&
+                  rig->script.tokens == 0,
+              "queued conversation stop: stopping the waiter leaves the active encoding untouched");
+        {
+            std::lock_guard<std::mutex> lk(rig->script.m);
+            rig->script.before_token_release = true;
+            rig->script.before_token_cv.notify_all();
+        }
+        check(stopping.get() && rig->wait_done(queued) && rig->wait_done(active),
+              "queued conversation stop: both runs end after the active request's own release");
+        const json answers = rig->items_of(active, "assistant");
+        check(!answers.empty() && answers.back().value("text", "") == "First finished." && rig->requests() == 1 &&
+                  !rig->script.before_token_timed_out,
+              "queued conversation stop: only the unrelated request reached the model and answered normally");
+    }
+}
+
 int main() {
     confinement_tests();
     classifier_tests();
@@ -1579,6 +1680,7 @@ int main() {
     external_agent_tests();
     command_tests();
     loop_tests();
+    pretoken_stop_tests();
     cut_call_tests();
     prompt_tests();
     mcp_agent_tests();

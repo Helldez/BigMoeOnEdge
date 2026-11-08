@@ -99,6 +99,13 @@ true`. In chat mode a cancel **rolls the turn back** to the reused prefix (dropp
 and un-appending the user message) so prior turns stay usable and the conversation can continue.
 Cancel is distinct from a fatal streaming error, which is sticky and ends the session.
 
+`GenerateRequest::stop` optionally borrows a caller-owned `std::atomic<bool>` until `generate()`
+returns. The decoder's abort callback and the image encoder's eval callback read it alongside the
+session's own cancel latch. The session resets its latch at the start of each generation, but never
+resets the caller's flag: a stop raised before entry or during prefill is preserved. The borrowed
+flag is detached on every exit, so it cannot cancel a later generation or `decide()` call. No polling
+thread is involved. A caller that reuses its flag must clear it before submitting another request.
+
 ## Fixed context
 
 `n_ctx` and `n_batch` are baked into the llama context at `open()`, before any prompt is known, so

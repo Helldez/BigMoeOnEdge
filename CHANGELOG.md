@@ -42,6 +42,7 @@ Semantic Versioning.
   waiting for the engine withdraws only its own place; it does not cancel another client's
   running turn. The engine reads the run's own atomic flag alongside its resettable cancel latch,
   without a polling thread; it borrows that flag only until the generation returns.
+  By @gjjkbssg (#495).
 - **A streamed turn is never silent for long** (`server/stream_keepalive.h`). While a turn ran, a
   stream wrote only what the model produced, and a tool call is sent once parsed, so an agent's
   long write (thousands of tokens) or a long prefill left the stream silent for minutes. Claude
