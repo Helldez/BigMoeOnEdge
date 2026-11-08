@@ -124,6 +124,8 @@ public struct ServerInfo: Equatable, Sendable {
     public let ramTotalMiB: Int64
     public let ramAvailableMiB: Int64
     public let cpuThreads: Int
+    /// While planning or loading: the seconds since that load began; nil from an older server.
+    public let loadElapsedSeconds: Double?
 
     public init(_ j: JSON) {
         version = j["version"].string(or: "")
@@ -135,6 +137,7 @@ public struct ServerInfo: Equatable, Sendable {
         ramTotalMiB = j["host"]["ram_total_mib"].int64(or: 0)
         ramAvailableMiB = j["host"]["ram_available_mib"].int64(or: 0)
         cpuThreads = j["host"]["cpu_threads"].int(or: 0)
+        loadElapsedSeconds = j["load_elapsed_s"].double
     }
 
     public var ready: Bool { state == .ready && model != nil }

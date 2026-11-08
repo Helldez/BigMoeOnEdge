@@ -31,6 +31,7 @@
 #include "platform.h"
 #include "routing_store.h"
 #include "settings_store.h"
+#include "stream_keepalive.h"
 #include "update_service.h"
 #include "url_entry.h"
 
@@ -718,7 +719,8 @@ json hf_model_json(const HfModel & m) {
 // One turn of an agent protocol (Anthropic Messages, OpenAI Responses): the chat endpoint's turn,
 // answered whole through `answer` or streamed through `Stream` (AnthropicStream, ResponsesStream),
 // whose frames are append-only (agent_protocol.h). `keepalive` is what the protocol writes while
-// the turn waits its place in line.
+// the turn waits its place in line, and whenever the turn itself has been silent for a ping
+// interval (stream_keepalive.h).
 template <class Stream, class Answer>
 void agent_turn(App & app,
                 const httplib::Request & req,
@@ -736,36 +738,30 @@ void agent_turn(App & app,
     }
     res.set_header("Cache-Control", "no-cache");
     res.set_header("X-Accel-Buffering", "no");
-    res.set_chunked_content_provider("text/event-stream",
-                                     [&app, turn, meta, keepalive](size_t, httplib::DataSink & sink) {
-                                         // As on the chat endpoint, a failed write marks the client gone, and stopping
-                                         // the work is the host's, through on_token's answer.
-                                         bool alive = true;
-                                         auto write = [&](const std::string & frames) {
-                                             if (alive && !frames.empty() && !sink.write(frames.data(), frames.size()))
-                                                 alive = false;
-                                         };
-                                         Stream s(meta);
-                                         write(s.start());
-                                         ChatOutcome out = app.host.chat(
-                                             turn,
-                                             [&](const TokenMetrics & m) {
-                                                 if (alive) write(s.on_token(m.text, m.reasoning));
-                                                 return alive;
-                                             },
-                                             [&] {
-                                                 write(keepalive);
-                                                 return alive;
-                                             });
-                                         if (out.status != 200) {
-                                             write(s.error(out.status, out.error, out.code));
-                                         } else {
-                                             ensure_tool_call_ids(out.result.tool_calls, meta.id);
-                                             write(s.finish(out.result, finish_reason(out.result, out.n_predict)));
-                                         }
-                                         sink.done();
-                                         return true;
-                                     });
+    res.set_chunked_content_provider(
+        "text/event-stream", [&app, turn, meta, keepalive](size_t, httplib::DataSink & sink) {
+            // As on the chat endpoint, a failed write marks the client gone, and stopping
+            // the work is the host's, through on_token's answer.
+            StreamKeepalive out_stream([&sink](const std::string & f) { return sink.write(f.data(), f.size()); },
+                                       keepalive, kEventPingInterval);
+            Stream s(meta);
+            out_stream.write(s.start());
+            ChatOutcome out = app.host.chat(
+                turn,
+                [&](const TokenMetrics & m) {
+                    return out_stream.alive() && out_stream.write(s.on_token(m.text, m.reasoning));
+                },
+                [&] { return out_stream.write(keepalive); });
+            if (out.status != 200) {
+                out_stream.write(s.error(out.status, out.error, out.code));
+            } else {
+                ensure_tool_call_ids(out.result.tool_calls, meta.id);
+                out_stream.write(s.finish(out.result, finish_reason(out.result, out.n_predict)));
+            }
+            out_stream.stop();
+            sink.done();
+            return true;
+        });
 }
 
 void register_routes(httplib::Server & svr, App & app) {
@@ -884,10 +880,11 @@ void register_routes(httplib::Server & svr, App & app) {
         res.set_chunked_content_provider("text/event-stream", [&app, cr, meta, dump](size_t, httplib::DataSink & sink) {
             // A failed write marks the client gone. Stopping the work is the host's, through
             // on_token's answer: this handler cannot tell whose turn is running when a write fails.
-            bool alive = true;
-            auto write = [&](const std::string & frame) {
-                if (alive && !sink.write(frame.data(), frame.size())) alive = false;
-            };
+            // A silent stretch of the turn (a long prefill, a tool call sent only once parsed) is
+            // bounded by a ping, as on the agent endpoints (stream_keepalive.h).
+            StreamKeepalive out_stream([&sink](const std::string & f) { return sink.write(f.data(), f.size()); },
+                                       ": ping\n\n", kEventPingInterval);
+            auto write = [&](const std::string & frame) { out_stream.write(frame); };
             auto chunk = [&](const json & delta, const json & finish, const json & extra) {
                 json c = chunk_json(meta, delta, finish);
                 if (!extra.is_null()) c["bmoe"] = extra;
@@ -907,7 +904,7 @@ void register_routes(httplib::Server & svr, App & app) {
             ChatOutcome out = app.host.chat(
                 cr.turn,
                 [&](const TokenMetrics & m) {
-                    if (!alive) return false;
+                    if (!out_stream.alive()) return false;
                     json delta = json::object();
                     json extra = nullptr;
                     const std::string text = stream_text(m.text), reasoning = stream_text(m.reasoning);
@@ -927,13 +924,13 @@ void register_routes(httplib::Server & svr, App & app) {
                     sent_text = text;
                     sent_reasoning = reasoning;
                     chunk(delta, nullptr, extra);
-                    return alive;
+                    return out_stream.alive();
                 },
                 // Waiting for a turn: an SSE comment keeps the connection open through proxies
                 // that time out a silent one, and a failed write is how a client that left is seen.
                 [&] {
                     write(": waiting for a turn\n\n");
-                    return alive;
+                    return out_stream.alive();
                 });
             if (out.status != 200) {
                 write("data: " + dump(json{{"error", {{"message", out.error}, {"code", out.code}}}}) + "\n\n");
@@ -943,7 +940,7 @@ void register_routes(httplib::Server & svr, App & app) {
                 // with exactly the answer the turn produced.
                 const std::string ft = stream_text(out.result.generated_text),
                                   fr = stream_text(out.result.reasoning_text);
-                if (alive && (ft != sent_text || fr != sent_reasoning)) {
+                if (out_stream.alive() && (ft != sent_text || fr != sent_reasoning)) {
                     json delta = json::object();
                     json extra = nullptr;
                     if (starts_with(ft, sent_text) && starts_with(fr, sent_reasoning)) {
@@ -968,6 +965,7 @@ void register_routes(httplib::Server & svr, App & app) {
                 if (cr.include_usage) write("data: " + dump(usage_chunk_json(meta, out.result.summary)) + "\n\n");
             }
             write("data: [DONE]\n\n");
+            out_stream.stop();
             sink.done();
             return true;
         });
@@ -1017,8 +1015,7 @@ void register_routes(httplib::Server & svr, App & app) {
         meta.id = "resp_" + std::to_string(++app.chat_seq);
         meta.created = (long long) std::time(nullptr);
         meta.model = app.host.model_name();
-        agent_turn<ResponsesStream>(app, req, res, rr.turn, rr.stream, meta, response_json,
-                                    std::string(": waiting for a turn\n\n"));
+        agent_turn<ResponsesStream>(app, req, res, rr.turn, rr.stream, meta, response_json, std::string(": ping\n\n"));
     });
 
     // A decision: which of a list of choices the model would answer next, from one prefill and no
