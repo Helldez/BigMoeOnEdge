@@ -539,7 +539,10 @@ other.
 
 **One generation at a time, in order.** A request that arrives while another runs waits its turn;
 while it waits, a streaming response receives SSE comment lines (`: waiting for a turn`) so the
-connection stays open. A client that disconnects while it waits gives its place up and stops
+connection stays open. Once its turn runs, any 15 s with nothing to send (a long prefill, a tool
+call, which is sent only once parsed) gets a keep-alive on every streaming endpoint (a `: ping`
+comment; `event: ping` on `/v1/messages`): a client or proxy that drops a silent stream never sees
+one, however slow the machine or long the call. A client that disconnects while it waits gives its place up and stops
 nothing else; a streaming client that disconnects during its own answer stops that answer. A
 disconnect never ends another client's turn. With 16 requests already waiting the next gets `429`.
 
@@ -655,7 +658,7 @@ run), then content blocks, each `content_block_start` / `content_block_delta` / 
 thinking (`thinking_delta`, closed by an empty `signature_delta`), text (`text_delta`), and one
 `tool_use` block per call with its whole input in one `input_json_delta`. Then `message_delta` with
 the `stop_reason` and the full `usage` (and `bmoe.summary`), and `message_stop`. While the request
-waits its place in line, `event: ping`.
+waits its place in line, and after any 15 s of its turn with nothing else to send, `event: ping`.
 
 ### `POST /v1/messages/count_tokens`
 
@@ -696,7 +699,8 @@ Streaming response: each event named in `event:` and in its data's `type`, numbe
 `response.content_part.done` for a message; `response.function_call_arguments.delta` and `.done`,
 the whole arguments in one delta, for a call) and `response.output_item.done` with the item whole;
 and last `response.completed` (or `response.incomplete`) with the response object, its `output`
-and `usage`. While the request waits its place in line, an SSE comment.
+and `usage`. While the request waits its place in line, and after any 15 s of its turn with
+nothing else to send, an SSE comment.
 
 ## Decide
 
