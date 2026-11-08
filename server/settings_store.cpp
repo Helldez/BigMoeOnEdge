@@ -30,6 +30,18 @@ std::vector<std::string> SettingsStore::load() {
         auto_plan_set_ = true;
         auto_plan_ = doc["auto_plan"].get<bool>();
     }
+    if (doc.contains("model_folders")) {
+        const json & f = doc["model_folders"];
+        if (!f.is_object()) {
+            warnings.push_back("dropping saved model folders: not an object");
+        } else {
+            if (f.contains("models_dir") && f["models_dir"].is_string())
+                folders_.models_dir = f["models_dir"].get<std::string>();
+            if (f.contains("scan_dirs") && f["scan_dirs"].is_array())
+                for (const json & d : f["scan_dirs"])
+                    if (d.is_string()) folders_.scan_dirs.push_back(d.get<std::string>());
+        }
+    }
     for (auto it = values.begin(); it != values.end(); ++it) {
         const ParamDesc * d = find_param(it.key());
         std::string s, err;
@@ -147,6 +159,17 @@ void SettingsStore::set_auto_plan(bool on) {
     save_locked();
 }
 
+SettingsStore::ModelFolders SettingsStore::model_folders() const {
+    std::lock_guard<std::mutex> lk(m_);
+    return folders_;
+}
+
+void SettingsStore::set_model_folders(ModelFolders f) {
+    std::lock_guard<std::mutex> lk(m_);
+    folders_ = std::move(f);
+    save_locked();
+}
+
 json SettingsStore::plan_decisions() const {
     std::lock_guard<std::mutex> lk(m_);
     return decisions_;
@@ -158,6 +181,8 @@ void SettingsStore::save_locked() const {
         if (const ParamDesc * d = find_param(kv.first)) values[kv.first] = param_string_to_value(*d, kv.second);
     json doc = {{"version", 1}, {"values", values}};
     if (auto_plan_set_) doc["auto_plan"] = auto_plan_;
+    if (!folders_.models_dir.empty() || !folders_.scan_dirs.empty())
+        doc["model_folders"] = {{"models_dir", folders_.models_dir}, {"scan_dirs", folders_.scan_dirs}};
 
     // Write-then-rename, so a crash mid-write leaves the previous file rather than half of one.
     std::error_code ec;

@@ -181,8 +181,11 @@ export interface Backends {
 export interface UpdateInfo {
   current: string;
   latest: string;
+  /** A newer release is out, whether or not this build can download it. */
   available: boolean;
   notes?: string;
+  /** This build's installer in the feed; null where the release ships none for it. */
+  installer?: { url: string; sha256: string; size: number; file: string } | null;
 }
 export interface UpdateDownloaded {
   /** The checked installer, for `bmoeDesktop.applyUpdate`. */

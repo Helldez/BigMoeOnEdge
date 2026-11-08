@@ -12,7 +12,7 @@
 // that thread waits on, answered by approve() or stop() from an HTTP worker. The scheduler is one
 // more thread. shutdown() raises every run's stop, which ends a waiting approval at once, a command
 // by killing its process group, an MCP call by ending its server, a provider's stream at its next
-// piece, and the engine's turn at its next token, then waits for all of them and ends the MCP
+// piece, and the engine's turn during encoding, prefill or decode, then waits for all of them and ends the MCP
 // servers: an embedding app's stop (server.h) returns only once nothing of the agent is running.
 #pragma once
 
@@ -50,8 +50,8 @@ inline constexpr int k_max_rounds_per_message = 30;
 inline constexpr int k_max_same_failed_calls = 3;
 // The most of a workspace's AGENTS.md the system prompt carries.
 inline constexpr size_t k_agents_md_max_bytes = 8 * 1024;
-// How long a stop waits for the run to end before answering anyway: the engine's turn ends at its
-// next token, which a long prompt's prefill can delay.
+// How long a stop waits for the run to end before answering anyway. Local turns forward their
+// atomic stop signal while they own the session, including encoding and prefill.
 inline constexpr int k_stop_wait_s = 30;
 // How often the scheduler looks at the tasks when nothing wakes it.
 inline constexpr int k_scheduler_poll_s = 20;
@@ -62,11 +62,13 @@ inline constexpr size_t k_title_max_chars = 60;
 // The model a round asks: the engine's turn, or a test's stand-in.
 using ChatFn = std::function<ChatOutcome(const ChatRequest & req,
                                          const std::function<bool(const TokenMetrics &)> & on_token,
-                                         const std::function<bool()> & still_wanted)>;
+                                         const std::atomic<bool> & stop)>;
 
 struct AgentDeps {
     EventBus * bus = nullptr;
     AgentStore * store = nullptr;
+    // The run owns the atomic stop flag for the whole local_chat call; the adapter forwards it
+    // to the engine as well as withdrawing stopped requests from its queue.
     ChatFn local_chat;
     // n_predict and think for a round, from the server's settings; null keeps the server defaults.
     std::function<RunConfig()> config;

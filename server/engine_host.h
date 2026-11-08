@@ -18,6 +18,7 @@
 #include "bmoe/session.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <functional>
 #include <memory>
@@ -134,10 +135,14 @@ public:
     // turn is gone: the host then cancels this turn, and only this one. A front-end never cancels on
     // a failed write itself, since it cannot tell whose turn is running when the write fails (a
     // keep-alive while queued, the last frames after the turn ended). `still_wanted` (nullable) is
-    // asked while the turn waits its place and gives it up by returning false.
+    // asked while the turn waits its place and gives it up by returning false. It may write a
+    // keepalive, so it is never called concurrently with on_token. `stop` (nullable) is the caller's
+    // atomic flag, borrowed until return and forwarded to the engine's cancellation points,
+    // including encoding and prefill before any token exists. It never targets another turn.
     ChatOutcome chat(const ChatRequest & req,
                      const std::function<bool(const TokenMetrics &)> & on_token,
-                     const std::function<bool()> & still_wanted = nullptr);
+                     const std::function<bool()> & still_wanted = nullptr,
+                     const std::atomic<bool> * stop = nullptr);
 
     // Read one decision (bmoe/decide.h) on the calling thread, in the same line as the chat turns:
     // one prefill, no decode. A refused request (no choices, colliding choices, a prompt past
@@ -188,6 +193,9 @@ private:
     mutable std::mutex m_;                     // guards everything below except loader_ (see life_m_)
     mutable std::condition_variable state_cv_; // signalled by publish_state(), after any change
     State state_ = State::Empty;
+    // When the load under way began (its planning, where it plans first): what `load_elapsed_s`
+    // in info() counts from, so every UI shows the same seconds and none keeps a clock of its own.
+    std::chrono::steady_clock::time_point load_started_{};
     std::string error_;
     std::shared_ptr<HostedSession> session_;
     RunConfig requested_;
