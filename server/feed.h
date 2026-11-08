@@ -88,8 +88,9 @@ int compare_versions(const std::array<uint64_t, 3> & a, const std::array<uint64_
 // '-', at most 32 characters.
 bool is_pack_id(const std::string & id);
 
-// What GET /api/update answers: {current, latest, available, notes, target, installer}, where
-// `installer` is this target's (null when the feed has none for it).
+// What GET /api/update answers: {current, latest, available, notes, published, target, installer}:
+// `available` when the feed's release is newer than `current`, `installer` this target's (null when
+// the feed has none for it, and then the app cannot download the update itself).
 json update_answer(const Feed & feed, const std::string & current, const std::string & target);
 
 } // namespace bmoe::server

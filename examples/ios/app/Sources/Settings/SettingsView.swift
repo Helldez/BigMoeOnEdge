@@ -43,6 +43,7 @@ struct SettingsView: View {
                                                setByYou: Set(mine.map(\.key)))) { c in card(c) }
                 }
                 AppSettingsSection(open: $appOpen)
+                UpdatesSection()
                 // Always here, on every front-end: a switch elsewhere hid it (#465).
                 NavigationLink {
                     MetricsView()
@@ -532,6 +533,57 @@ struct AppearanceSection: View {
             }
         }
         .card(padding: 12)
+    }
+}
+
+/// Updates, as on every front-end (docs/screens.md): nothing checks in the background; the button
+/// asks the server to read the signed release feed. This app is built from source with Xcode, so a
+/// newer release opens its page, which says what changed.
+struct UpdatesSection: View {
+    @EnvironmentObject private var engine: Engine
+    @Environment(\.openURL) private var openURL
+    @State private var info: UpdateInfo?
+    @State private var checking = false
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Grid.m) {
+            Text("Updates").font(.ui(18, bold: true)).foregroundStyle(Palette.accentInk)
+            HStack(spacing: Grid.s) {
+                VStack(alignment: .leading, spacing: 2) {
+                    if let i = info {
+                        Text("This is version \(i.current)").foregroundStyle(Palette.text)
+                        Text(i.available ? "Version \(i.latest) is available." : "It is the latest.")
+                            .font(.ui(12)).foregroundStyle(Palette.muted)
+                    } else {
+                        Text("Nothing checks in the background. Check when you want to.")
+                            .font(.ui(12)).foregroundStyle(Palette.muted)
+                    }
+                }
+                Spacer()
+                Button(checking ? "Checking…" : "Check for updates") { check() }
+                    .buttonStyle(.appSecondary)
+                    .disabled(!engine.serverUp || checking)
+            }
+            if let i = info, i.available, let url = i.releasePage {
+                Button("What is new in \(i.latest)") { openURL(url) }.buttonStyle(.appPrimary)
+                Text("Pull the release and build the app again in Xcode.").font(.ui(12)).foregroundStyle(Palette.muted)
+            }
+            if let e = error {
+                Text("The check did not work. Check the connection and try again: \(e)")
+                    .font(.ui(12)).foregroundStyle(Palette.warn)
+            }
+        }
+        .card(padding: 12)
+    }
+
+    private func check() {
+        checking = true
+        error = nil
+        Task {
+            do { info = try await engine.api.update() } catch { self.error = error.localizedDescription }
+            checking = false
+        }
     }
 }
 

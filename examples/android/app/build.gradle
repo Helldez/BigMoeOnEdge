@@ -90,10 +90,14 @@ android {
             applicationIdSuffix '.dev'
             versionNameSuffix '-dev'
             buildConfigField 'boolean', 'SHARED_STORAGE', 'true'
+            // Updated by hand from the GitHub release, so Settings checks for one; a store updates
+            // the play flavor itself.
+            buildConfigField 'boolean', 'RELEASE_UPDATES', 'true'
         }
         play {
             dimension 'distribution'
             buildConfigField 'boolean', 'SHARED_STORAGE', 'false'
+            buildConfigField 'boolean', 'RELEASE_UPDATES', 'false'
         }
     }
 

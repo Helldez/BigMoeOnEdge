@@ -16,6 +16,19 @@ Semantic Versioning.
   was started with (`--models-dir`, `--scan-dir`, as the phone apps start it) stays as it is.
   Models already downloaded stay where they are. `GET /api/models` says which folders are chosen and
   which the launch fixed (`folders`).
+- **Check for updates on the phones** (#452): the Android and iOS apps have the button the
+  desktop app has, in Settings, and nothing checks in the background either. The server reads the
+  signed release feed when it is pressed; a newer release opens its page, where Android installs
+  the APK over this one (models and settings stay) and iOS is built again from source. The Play
+  flavor of the Android app shows none: a store updates it.
+
+### Changed
+- **`GET /api/update` says a newer release is out on every build**, not only on one the feed
+  carries an installer for: `available` is now whether the feed's release is newer, and
+  `installer` (null where there is none) whether the app can download it itself.
+  `POST /api/update/download` refuses a build with no installer (`409` `no_installer`), and the
+  web UI offers Download only where there is one. The phone builds name their target
+  (`android-arm64`, `ios-arm64`).
 
 ### Fixed
 - **Garbled answers and a stall with `devices=all` on a phone.** With every backend registered and
@@ -67,7 +80,6 @@ Semantic Versioning.
   and the installer now carry the app's icon, made from the same picture as the macOS and Linux
   apps by `packaging/windows/make-icon.py`; the notification area takes the small size this
   screen's scale asks for.
-
 
 ## [0.40.1] - 2026-11-07
 

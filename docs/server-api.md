@@ -1252,8 +1252,9 @@ is installed. The engine loads the pack at the next start of the server.
 ### `GET /api/update`
 
 Reads the feed and answers `{current, latest, available, notes, published, target, installer}`:
-`available` when the feed's version is newer than this server's and has an installer for this
-target, `installer` `{url, sha256, size, file}` or `null`. `502` `feed` when the feed cannot be read
+`available` when the feed's version is newer than this server's, `installer` this target's
+`{url, sha256, size, file}`, or `null` where the feed carries none (a phone: its app ships beside
+the feed on the release, and the app sends the person to `notes` for it). `502` `feed` when the feed cannot be read
 or does not verify.
 
 ### `POST /api/update/download`
@@ -1261,4 +1262,4 @@ or does not verify.
 Downloads the installer of the feed last read into `<data>/updates/`, checks its size and SHA-256,
 and answers once it is there: `200` with `{ok, version, path}`; progress as `update` events. The
 desktop app runs `path` (`bmoeDesktop.applyUpdate`), which accepts nothing outside that folder.
-`409` with `no_feed` or `up_to_date`, or `busy`; `502` `failed` when it does not arrive whole.
+`409` with `no_feed`, `up_to_date` or `no_installer` (the feed has none for this target), or `busy`; `502` `failed` when it does not arrive whole.

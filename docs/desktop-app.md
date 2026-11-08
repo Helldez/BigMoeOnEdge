@@ -149,7 +149,8 @@ the server only.
 ```
 
 `target` is the build's own (`macos-arm64`, `linux-x86_64`, `linux-aarch64`, `windows-x86_64`,
-`windows-arm64`), a compile definition of the server and the app. `needs_any` lists the driver
+`windows-arm64`; the phones' servers are `android-arm64` and `ios-arm64`, which the feed carries
+no installer or pack for), a compile definition of the server and the app. `needs_any` lists the driver
 libraries, by the name the system's loader takes, one of which must load for the pack to be of use:
 that is how the server knows a pack applies to this machine without naming a vendor in code. The
 server refuses a feed whose URLs are not `https`, whose digests are not 64 lowercase hex digits,
@@ -196,7 +197,7 @@ folder only, takes one when it is extracted there by hand.
 ## Updates
 
 Nothing checks in the background. `GET /api/update` reads the feed when a person asks (a button in
-Settings) and answers `{current, latest, available, notes, published, target, installer}`;
+Settings, on every UI) and answers `{current, latest, available, notes, published, target, installer}`;
 `POST /api/update/download` fetches the installer for this target into `<data>/updates/`, checks it,
 and answers with its `path`; the app then runs it (`applyUpdate(path)`) and quits. Starting the app,
 loading a model and chatting never use the network.
