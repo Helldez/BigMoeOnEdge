@@ -266,6 +266,10 @@ UpdateService::Reply UpdateService::download_update() {
         const json answer = update_answer(*feed_, cfg_.version, cfg_.target);
         if (!answer["available"].get<bool>())
             return {409, json{{"error", "no newer release for " + cfg_.target}, {"code", "up_to_date"}}};
+        if (answer["installer"].is_null())
+            return {409, json{{"error", "the feed carries no installer for " +
+                                            (cfg_.target.empty() ? std::string("this build") : cfg_.target)},
+                              {"code", "no_installer"}}};
         asset = feed_->installers.at(cfg_.target);
         version = feed_->version;
     }

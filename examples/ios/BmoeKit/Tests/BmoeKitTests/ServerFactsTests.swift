@@ -246,4 +246,17 @@ final class ServerFactsTests: XCTestCase {
         XCTAssertEqual(HF.body(repo: " o/r ", token: " ")["token"], .null)
         XCTAssertEqual(HF.body(repo: "o/r", name: "a", token: "t")["name"].string, "a")
     }
+
+    /// The feed has no installer for a phone, yet the phone is told it is behind.
+    func testANewerReleaseWithNoInstallerIsStillAvailable() throws {
+        let u = UpdateInfo(try JSON(parsing: #"""
+        {"current":"0.40.1","latest":"0.40.2","available":true,"installer":null,
+         "notes":"https://github.com/o/r/releases/tag/v0.40.2","target":"ios-arm64"}
+        """#))
+        XCTAssertTrue(u.available)
+        XCTAssertEqual(u.latest, "0.40.2")
+        XCTAssertEqual(u.releasePage?.absoluteString, "https://github.com/o/r/releases/tag/v0.40.2")
+        XCTAssertNil(UpdateInfo(try JSON(parsing: #"{"available":true,"notes":"file:///x"}"#)).releasePage)
+        XCTAssertFalse(UpdateInfo(try JSON(parsing: #"{"current":"0.40.2","latest":"0.40.2","available":false}"#)).available)
+    }
 }

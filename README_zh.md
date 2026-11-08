@@ -43,6 +43,7 @@ Qwen3.6-35B-A3B（21 GB）在各设备上实时运行。该模型大于每台设
 - **任意 MoE GGUF。** llama.cpp 能加载的都可以，任意量化格式。没有针对单个模型的代码。
 - **所有后端。** CPU、Metal、CUDA、HIP、Vulkan、OpenCL 和 Hexagon NPU。在显卡上，最常用的专家保留在 VRAM 中。
 - **应用与服务器。** 桌面应用、手机应用，以及面向编程智能体的 OpenAI 和 Anthropic 兼容服务器。
+- **识别图像。** 把模型的投影器文件（`mmproj`）放在模型旁边，服务器在每个 API 上都能读取图像；CLI 使用 `--mmproj` 和 `--image`。llama.cpp 投影器库支持的任意视觉模型，任意量化格式，所有后端。
 
 ## 性能
 
@@ -166,6 +167,10 @@ RAM，因此只有两个层级。能装进显卡的模型会完整地在显卡�
 规划器读取模型的文件头并测量机器：内存、存储速度、每个 CPU、GPU 和 NPU。其规则不指定任何设备或平台，
 因此同一份代码会为手机和台式机给出不同的方案。你自己设定的值会被保留。参见
 [docs/hardware-planning.md](docs/hardware-planning.md)。
+
+<p align="center">
+  <img src="docs/assets/diagrams/plan-zh.png" width="820" alt="规划器：机器和模型输入方案；方案决定每个权重放在哪里（VRAM、RAM 或闪存）、哪个设备处理提示词、哪个生成 token，以及缓存大小和线程数；测量第一个回答，更快的设置保存供下次加载使用。">
+</p>
 
 ## 平台
 

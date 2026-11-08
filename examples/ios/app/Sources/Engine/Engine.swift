@@ -30,6 +30,8 @@ final class Engine: ObservableObject {
     @Published private(set) var lastDone: JSON?
     /// The stage a measurement is in (Measure, or an auto load), from `plan_progress`; nil when none runs.
     @Published private(set) var planProgress: PlanProgress?
+    /// The load under way: the seconds the server reported and when; a screen counts on from them.
+    @Published private(set) var loadBase: (elapsed: Double, at: Date)?
     /// The plan the server holds for the chosen model (`GET /api/plan?cached=1`, never a measurement):
     /// read when the server is reached, when a session opens and when a turn ends, so the Plan screen
     /// opens on it at once and its measured figures land when the answer does, whichever screen is open.
@@ -233,6 +235,12 @@ final class Engine: ObservableObject {
             let next = ServerInfo(o)
             let before = info
             info = next
+            if next.busyLoading {
+                // The server's count where it gives one; an older server's load counts from its first event.
+                if let s = next.loadElapsedSeconds { loadBase = (s, Date()) } else if loadBase == nil { loadBase = (0, Date()) }
+            } else {
+                loadBase = nil
+            }
             if next.ready, before?.model?.path != next.model?.path || before?.model?.loadSeconds != next.model?.loadSeconds {
                 // A new session: a fresh metrics file for it, and the models list may have changed.
                 if preferences.metricsCSV { recorder.sessionOpened(info: next, config: config) }

@@ -106,6 +106,7 @@ const std::vector<LocalOnlyRoute> & local_only_routes() {
     static const std::vector<LocalOnlyRoute> routes = {
         {"DELETE", "/api/models/local/**", "delete a model"},
         {"POST", "/api/models/url", "add a model from a link"},
+        {"PUT", "/api/models/folders", "choose the folders models are kept in"},
         {"GET", "/api/backends", "list the backend packs"},
         {"POST", "/api/backends/*/install", "install a backend pack"},
         {"GET", "/api/update", "check for an update"},

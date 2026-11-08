@@ -488,6 +488,11 @@ struct Session::Impl {
     bool info_sent = false;
 
     std::atomic<bool> cancel_requested{false};
+    const std::atomic<bool> * caller_stop = nullptr; // borrowed only by the current generate()
+    bool cancelled() const {
+        return cancel_requested.load(std::memory_order_relaxed) ||
+               (caller_stop && caller_stop->load(std::memory_order_relaxed));
+    }
     // Set while a cancel's abort is in flight, so llama.cpp's report of the aborted decode is not
     // shown as an error (engine/llama_log.h). The abort callback sets it; end_cancel_quiet() clears.
     std::atomic<bool> cancel_quieted{false};
@@ -814,7 +819,7 @@ DecideResult Session::decide(const DecideRequest & req) {
     }
     // The abort callback turns a cancel into a failed decode; that is a request honoured, not a
     // context gone bad, and run_decide has already emptied the sequence.
-    if (!r.ok && r.fatal && im.cancel_requested.load(std::memory_order_relaxed)) {
+    if (!r.ok && r.fatal && im.cancelled()) {
         r.fatal = false;
         r.cancelled = true;
         r.error = "cancelled";
@@ -1105,7 +1110,8 @@ bool Session::Impl::read_model(Opening & o) {
         // on one means they are wanted. The planner prices the projector by the same rule.
         const bool devices_wanted =
             cfg.device_use == DeviceUse::All || (cfg.device_use == DeviceUse::Auto && cfg.n_gpu_layers > 0);
-        media = detail::MediaInput::open(cfg.mmproj, m, cfg.n_threads, devices_wanted, merr);
+        media = detail::MediaInput::open(cfg.mmproj, m, cfg.n_threads, devices_wanted, cfg.image_max_tokens,
+                                         &cancel_requested, merr);
         if (!media) return o.fail(merr);
         if (!media->vision()) {
             media.reset();
@@ -1194,6 +1200,13 @@ bool Session::Impl::create_contexts(Opening & o) {
     // streaming has every routed expert in place before the matmul's split starts, so only overlap
     // gives the offload up; the decode's one-token graphs are never offloaded either way.
     if (cfg.moe.enabled && cfg.moe.overlap && cfg.n_gpu_layers != 0) cparams.op_offload = false;
+    // With no layer placed at all, a device is registered only because the caller asked for every
+    // one (`devices=all`); the streamer still rebinds the expert tensors at compute time, on the
+    // CPU, and a backend that takes those ops copies whatever the tensors pointed at before. So a
+    // streamed run with nothing placed gives the offload up as well. Measured on a phone with its
+    // GPU backends registered and nothing placed: a 15-token prompt that answers in 22 s on the
+    // CPU alone had not produced a token after eight minutes.
+    if (cfg.moe.enabled && cfg.n_gpu_layers == 0) cparams.op_offload = false;
     // Logit rows are reserved for as many outputs as a graph may return, and left at llama.cpp's
     // default that is the whole ubatch. A row is the whole vocabulary, and the reservation goes where
     // the output layer is: on a CPU-only run of a 35B-A3B at 2048 tokens it was 1.7 GiB of compute
@@ -1308,14 +1321,14 @@ void Session::Impl::build_sampler(const SessionConfig & c) {
 }
 
 // One abort callback for the session's whole life, checking two independent predicates:
-// an explicit cancel() request (any mode) and a fatal streaming I/O error (overlap only).
+// an explicit cancel() or the current caller's stop, and a fatal streaming I/O error (overlap only).
 // Installing it unconditionally is what lets cancel() interrupt a serial decode too.
 void Session::Impl::install_abort_callback() {
     llama_set_abort_callback(
         ctx.get(),
         [](void * ud) -> bool {
             auto * p = static_cast<Impl *>(ud);
-            if (p->cancel_requested.load(std::memory_order_relaxed)) {
+            if (p->cancelled()) {
                 // The decode this aborts is about to be logged by llama.cpp as a failure; it is a
                 // request honoured. Opened once per cancelled call (the callback is asked many
                 // times), closed by end_cancel_quiet() when that call returns. A fatal streaming
@@ -2106,6 +2119,18 @@ void Session::Impl::trial_step(double seconds, int tokens) {
     if (settling && !k.settling())
         log_printf(LogLevel::Info, "knob trial: the cache has settled; measuring %s",
                    trials.stage == 0 ? "the decode thread count" : "overlap");
+    if (const int dead = k.last_abandoned()) {
+        const std::vector<double> & w = k.window_seconds_per_token();
+        const size_t n = w.size();
+        if (trials.stage == 0)
+            log_printf(LogLevel::Info,
+                       "knob trial: %d decode threads settled as no win after %d rounds: %.0f ms/token against %.0f",
+                       trials.threads[(size_t) dead], k.rounds(dead), 1e3 * w[n - 2], 1e3 * w[n - 1]);
+        else
+            log_printf(LogLevel::Info,
+                       "knob trial: overlap %s settled as no win after %d rounds: %.0f ms/token against %.0f",
+                       trials.overlap[(size_t) dead] ? "on" : "off", k.rounds(dead), 1e3 * w[n - 2], 1e3 * w[n - 1]);
+    }
     if (k.done()) {
         finish_trial_stage();
         return;
@@ -2713,7 +2738,7 @@ struct Session::Impl::Turn {
             }
             i += chunk;
             if (rc != 0) {
-                if (im.cancel_requested.load(std::memory_order_relaxed)) {
+                if (im.cancelled()) {
                     rollback_turn();
                     res.ok = true;
                     res.cancelled = true;
@@ -2724,6 +2749,12 @@ struct Session::Impl::Turn {
                 return fail(RunError::Failed, "prefill decode failed");
             }
             trace_flush();
+            // The end of an image is a prompt end's equal: it is what costs the most to redo, and the
+            // next turn can diverge a few tokens past it (a template drops a past turn's empty think
+            // block), where a memory that cannot be cut falls back to the newest checkpoint before the
+            // divergence. Without one here that was the one before the image, and the image was
+            // encoded and prefilled again on every turn after it.
+            if (chat_on && span) im.checkpoints.create(im.checkpoint_contexts(), i);
             // The draft context has to walk the prompt too: its KV must reach the last prompt position
             // or the first draft is made from a hidden state that never saw the prompt. It is a second
             // context on the host's backends, so the weights go home for its walk, slots kept, and the
@@ -3086,6 +3117,11 @@ struct Session::Impl::Turn {
     // only to confirm it, so a run that never stalls never pays for it.
     void brake_cache() {
         if (!moe.enabled || !moe.cache_brake || im.source.cache_budget() == 0) return;
+        // A token decoded under a knob trial's candidate is slow by choice, not by reclaim: eight
+        // threads on four fast cores ran one at ten times the reference, the sample found a page
+        // out, and the cache was halved for the rest of the session (a phone: 18.8 tok/s to 10.7).
+        // Neither the stall test nor the reference reads such a token.
+        if (im.trials.stage < 2 && im.trials.cur && im.trials.cur->arm() != 0) return;
         const double ref = im.brake.reference();
         if (!im.brake.stalled(last_compute_s)) return;
         const double lost = im.source.cache_lost_frac(k_brake_sample);
@@ -3128,7 +3164,7 @@ struct Session::Impl::Turn {
             Step s;
             if (!draft(s)) return false;
             if (verify_decode(s) != 0) {
-                if (im.cancel_requested.load(std::memory_order_relaxed)) {
+                if (im.cancelled()) {
                     res.cancelled = true;
                     break;
                 }
@@ -3148,7 +3184,7 @@ struct Session::Impl::Turn {
                 trial_guarded([&] { im.trial_step(step_s, (int) confirmed.size()); });
             }
 
-            if (structured() && im.cancel_requested.load(std::memory_order_relaxed)) {
+            if (structured() && im.cancelled()) {
                 res.cancelled = true;
                 break;
             }
@@ -3376,6 +3412,19 @@ RunResult Session::generate(const GenerateRequest & req,
         res.error = "response schemas cannot be combined with tool_choice required in the current template parser";
         return res;
     }
+    // Callbacks can run on backend workers, but all finish before this serialized call returns.
+    // Clear both borrowed pointers on every exit, before the caller may destroy its flag.
+    struct CallerStop {
+        Impl & im;
+        CallerStop(Impl & owner, const std::atomic<bool> * stop) : im(owner) {
+            im.caller_stop = stop;
+            if (im.media) im.media->set_stop(stop);
+        }
+        ~CallerStop() {
+            im.caller_stop = nullptr;
+            if (im.media) im.media->set_stop(nullptr);
+        }
+    } caller_stop{im, req.stop};
     im.begin_generate(req, sink);
     // Whichever way this call returns, a cancel's quiet window ends with it.
     struct CancelQuiet {

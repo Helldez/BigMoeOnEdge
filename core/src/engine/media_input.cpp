@@ -7,6 +7,7 @@
 #include "mtmd.h"
 
 #include <algorithm>
+#include <chrono>
 
 namespace bmoe {
 
@@ -34,12 +35,41 @@ void mtmd_to_bmoe_log(ggml_log_level level, const char * text, void *) {
     log_printf(lv, "projector: %s", line.c_str());
 }
 
+// The library's encoder has no abort hook; its scheduler's eval callback is the one way in, and the
+// library passes it through. The scheduler asks, before it computes anything, which nodes of the
+// graph are wanted, computes the nodes between two wanted ones in one piece, and after a wanted
+// node asks once more, where a no ends the graph. A callback that wanted nothing would be heard
+// once, at the start; wanting one node in every k makes the graph k-node pieces, each followed by
+// the one question that can end it. k is the grain of a Stop: a few hundred nodes an image, so a
+// few dozen pieces, and one scheduler sync each. An encode ended early returns with an output no
+// one reads: decode_media() reads the latch before it decodes.
+constexpr unsigned k_encoder_stop_grain = 16;
+
+bool stop_encoder_on_cancel(ggml_tensor *, bool ask, void * user) {
+    auto * w = static_cast<MediaInput::EncoderWatch *>(user);
+    if (ask) return ++w->asked % k_encoder_stop_grain == 0;
+    return !w->cancelled();
+}
+
 } // namespace
 
-std::unique_ptr<MediaInput> MediaInput::open(
-    const std::string & mmproj, const llama_model * model, int n_threads, bool use_devices, std::string & err) {
+std::unique_ptr<MediaInput> MediaInput::open(const std::string & mmproj,
+                                             const llama_model * model,
+                                             int n_threads,
+                                             bool use_devices,
+                                             int image_max_tokens,
+                                             const std::atomic<bool> * cancel,
+                                             std::string & err) {
     mtmd_helper_log_set(mtmd_to_bmoe_log, nullptr);
     mtmd_context_params p = mtmd_context_params_default();
+    // The library's own cap stands unless one is given: a fixed-count projector has no use for it.
+    if (image_max_tokens > 0) p.image_max_tokens = image_max_tokens;
+    std::unique_ptr<MediaInput> m(new MediaInput());
+    m->watch_.cancel = cancel;
+    if (cancel) {
+        p.cb_eval = stop_encoder_on_cancel;
+        p.cb_eval_user_data = &m->watch_; // the context is freed by ~MediaInput: the watch outlives it
+    }
     // A device when wanted and the registry has one, the host otherwise: the library asks the
     // registry, so a GPU-less box and a laptop with a GPU run the same code with no branch here.
     p.use_gpu = use_devices;
@@ -53,7 +83,6 @@ std::unique_ptr<MediaInput> MediaInput::open(
               "model, for the same base model)";
         return nullptr;
     }
-    std::unique_ptr<MediaInput> m(new MediaInput());
     m->ctx_ = c;
     m->model_ = model;
     return m;
@@ -197,7 +226,14 @@ int MediaInput::decode_media(llama_context * ctx,
                              const std::function<int(llama_batch_ext *)> & decode) const {
     if (k >= t.chunks.size() || n_batch <= 0) return -1;
     const mtmd_input_chunk * chunk = t.chunks[k];
+    const auto t0 = std::chrono::steady_clock::now();
     if (mtmd_encode_chunk(ctx_, chunk) != 0) return -1;
+    // A cancel during the encode ended its graph early (stop_encoder_on_cancel): its output is
+    // not an image, and the caller reads its own latch to tell a cancel from a failure.
+    if (watch_.cancelled()) return -1;
+    // What an image costs is mostly this: said once per image, so a slow answer has its reason.
+    log_printf(LogLevel::Info, "image: %d tokens encoded in %.1f s", (int) mtmd_input_chunk_get_n_tokens(chunk),
+               std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
     const float * embd = mtmd_get_output_embd(ctx_);
     if (!embd) return -1;
 

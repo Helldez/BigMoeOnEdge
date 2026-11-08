@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import HuggingFace from '../components/models/HuggingFace.svelte';
+  import ModelFolders from '../components/models/ModelFolders.svelte';
   import UrlImport from '../components/models/UrlImport.svelte';
   import PlanProgress from '../components/plan/PlanProgress.svelte';
   import ProgressBar from '../components/ProgressBar.svelte';
@@ -33,17 +34,16 @@
   let planning = $derived(server.info?.state === 'planning');
   let loading = $derived(server.info?.state === 'loading' || planning);
 
-  // Seconds since the load began, so a long load reads as progress rather than as a hang.
-  let elapsed = $state(0);
+  // Seconds since the load began, so a long load reads as progress rather than as a hang. Counted
+  // from what the server reported and when (the store's), not from this screen: leaving and coming
+  // back used to restart the count at zero.
+  let now = $state(Date.now());
   $effect(() => {
-    if (!loading) {
-      elapsed = 0;
-      return;
-    }
-    const t0 = Date.now();
-    const id = setInterval(() => (elapsed = Math.round((Date.now() - t0) / 1000)), 1000);
+    if (!loading) return;
+    const id = setInterval(() => (now = Date.now()), 1000);
     return () => clearInterval(id);
   });
+  let elapsed = $derived(server.loadBase ? Math.max(0, Math.round(server.loadBase.elapsed + (now - server.loadBase.at) / 1000)) : 0);
 
   async function refresh() {
     try {
@@ -356,10 +356,7 @@
 
   <details class="where">
     <summary class="muted">Where models live</summary>
-    <p class="muted">
-      Downloads land in <code>{data.models_dir}</code>; a gguf you copy there (or into a folder directly inside it) is listed too.
-      {#if data.scan_dirs?.length}Also listed, and loaded in place: {#each data.scan_dirs as d, i (d)}{i ? ', ' : ''}<code>{d}</code>{/each}.{/if}
-    </p>
+    <ModelFolders {data} onChanged={(next) => (data = next)} />
   </details>
 {:else if !error}
   <div class="skel" aria-hidden="true">{#each [0, 1, 2] as i (i)}<span class="skeleton"></span>{/each}</div>
