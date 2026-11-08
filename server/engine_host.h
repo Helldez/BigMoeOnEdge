@@ -18,6 +18,7 @@
 #include "bmoe/session.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <functional>
 #include <memory>
@@ -188,6 +189,9 @@ private:
     mutable std::mutex m_;                     // guards everything below except loader_ (see life_m_)
     mutable std::condition_variable state_cv_; // signalled by publish_state(), after any change
     State state_ = State::Empty;
+    // When the load under way began (its planning, where it plans first): what `load_elapsed_s`
+    // in info() counts from, so every UI shows the same seconds and none keeps a clock of its own.
+    std::chrono::steady_clock::time_point load_started_{};
     std::string error_;
     std::shared_ptr<HostedSession> session_;
     RunConfig requested_;

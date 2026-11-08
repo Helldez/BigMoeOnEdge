@@ -1195,6 +1195,13 @@ bool Session::Impl::create_contexts(Opening & o) {
     // streaming has every routed expert in place before the matmul's split starts, so only overlap
     // gives the offload up; the decode's one-token graphs are never offloaded either way.
     if (cfg.moe.enabled && cfg.moe.overlap && cfg.n_gpu_layers != 0) cparams.op_offload = false;
+    // With no layer placed at all, a device is registered only because the caller asked for every
+    // one (`devices=all`); the streamer still rebinds the expert tensors at compute time, on the
+    // CPU, and a backend that takes those ops copies whatever the tensors pointed at before. So a
+    // streamed run with nothing placed gives the offload up as well. Measured on a phone with its
+    // GPU backends registered and nothing placed: a 15-token prompt that answers in 22 s on the
+    // CPU alone had not produced a token after eight minutes.
+    if (cfg.moe.enabled && cfg.n_gpu_layers == 0) cparams.op_offload = false;
     // Logit rows are reserved for as many outputs as a graph may return, and left at llama.cpp's
     // default that is the whole ubatch. A row is the whole vocabulary, and the reservation goes where
     // the output layer is: on a CPU-only run of a 35B-A3B at 2048 tokens it was 1.7 GiB of compute
@@ -2107,6 +2114,18 @@ void Session::Impl::trial_step(double seconds, int tokens) {
     if (settling && !k.settling())
         log_printf(LogLevel::Info, "knob trial: the cache has settled; measuring %s",
                    trials.stage == 0 ? "the decode thread count" : "overlap");
+    if (const int dead = k.last_abandoned()) {
+        const std::vector<double> & w = k.window_seconds_per_token();
+        const size_t n = w.size();
+        if (trials.stage == 0)
+            log_printf(LogLevel::Info,
+                       "knob trial: %d decode threads settled as no win after %d rounds: %.0f ms/token against %.0f",
+                       trials.threads[(size_t) dead], k.rounds(dead), 1e3 * w[n - 2], 1e3 * w[n - 1]);
+        else
+            log_printf(LogLevel::Info,
+                       "knob trial: overlap %s settled as no win after %d rounds: %.0f ms/token against %.0f",
+                       trials.overlap[(size_t) dead] ? "on" : "off", k.rounds(dead), 1e3 * w[n - 2], 1e3 * w[n - 1]);
+    }
     if (k.done()) {
         finish_trial_stage();
         return;
@@ -3093,6 +3112,11 @@ struct Session::Impl::Turn {
     // only to confirm it, so a run that never stalls never pays for it.
     void brake_cache() {
         if (!moe.enabled || !moe.cache_brake || im.source.cache_budget() == 0) return;
+        // A token decoded under a knob trial's candidate is slow by choice, not by reclaim: eight
+        // threads on four fast cores ran one at ten times the reference, the sample found a page
+        // out, and the cache was halved for the rest of the session (a phone: 18.8 tok/s to 10.7).
+        // Neither the stall test nor the reference reads such a token.
+        if (im.trials.stage < 2 && im.trials.cur && im.trials.cur->arm() != 0) return;
         const double ref = im.brake.reference();
         if (!im.brake.stalled(last_compute_s)) return;
         const double lost = im.source.cache_lost_frac(k_brake_sample);

@@ -60,6 +60,9 @@
   });
 
   const plan = $derived(server.plan);
+  // While a model loads, the plan the server holds is the previous session's: this load's comes
+  // when the session opens.
+  const loading = $derived(server.info?.state === 'loading' || server.info?.state === 'planning');
   // The model the page is about: the one the shown plan measured, else the one a load would open.
   const modelPath = $derived(
     (plan?.available ? plan.model : '') || String(server.config?.values?.model ?? '') || server.info?.model?.path || '',
@@ -148,8 +151,13 @@
       <p class="banner warn" role="status">{avail.warning}</p>
     {/if}
 
+    {#if loading}
+      <p class="muted" role="status">Loading the model; the plan of this load shows once the session opens. Below: the previous plan.</p>
+    {/if}
     <section class="card summary">
-      {#if avail.from_last_load}
+      {#if loading}
+        <span class="badge">From before this load</span>
+      {:else if avail.from_last_load}
         <span class="badge ok">The loaded model runs this plan</span>
       {:else if avail.cached}
         <span class="badge">The last plan measured</span>

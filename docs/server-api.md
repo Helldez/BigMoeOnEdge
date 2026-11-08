@@ -278,9 +278,14 @@ key, under the same security statement.
             "compute_threads": 8, "busy_threads": 12,
             "ctx_advice": {"recommended": 16384, "short": true, "param": "ctx-size", "refused": false,
                            "warn": false}},
-  "generating": false
+  "generating": false,
+  "load_elapsed_s": 12.4
 }
 ```
+
+`load_elapsed_s` is present while `state` is `planning` or `loading`: the seconds since that load
+began, planning included. A UI that shows them counts on from the value and the moment it received
+it, so the count is the server's, the same on every screen and after a screen change.
 
 `state` is one of `empty` (no model), `planning` (a load in auto mode is measuring the machine
 before it loads: tens of seconds on a phone, nothing loaded meanwhile), `loading`, `ready`, `error`
