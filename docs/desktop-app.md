@@ -30,10 +30,19 @@ tray menu also has **Restart Server**. Per system:
 | Tray | a menu-bar status item; the Dock icon reopens the window | a notification-area icon | an indicator through libayatana-appindicator3, when the build found it; without it there is no tray and closing the window quits |
 | Notifications | the notification center (from the app bundle) | a balloon from the tray icon | `notify-send`, where installed |
 | Folder dialog | `NSOpenPanel` | `IFileOpenDialog` | GTK's |
+| Icon | `AppIcon.icns` in the bundle (`packaging/macos/make-app.sh`) | `packaging/windows/bigmoeonedge.ico`, built into `bmoe-desktop.exe` (`desktop/bmoe-desktop.rc.in`) and the installer | `bigmoeonedge.png` in the AppImage (`packaging/linux/make-appimage.sh`) |
 | Update | opens the disk image in Finder | runs the setup program | puts the new AppImage in place of the running one and starts it |
 
 The app's preferences are kept in `<data>/desktop.json` (the server's data folder:
 `platform::default_data_dir()`, the one function both use).
+
+The three icons come from one picture, the iOS app's `icon-1024.png`. The Windows `.ico` is written
+from it by `packaging/windows/make-icon.py` (Pillow, or `sips` on macOS) and kept in the repository,
+since the Windows build has no tool to resize it.
+
+**Where models are kept** is the server's setting, not the app's: Models → "Where models live" picks
+the folder downloads land in and other folders to list, with this folder dialog
+([server-api.md](server-api.md#put-apimodelsfolders)). The default is `<data>/models`.
 
 **Serve on the network** (`serveOnNetwork`, off by default): the server is started with `--host
 0.0.0.0 --api-key-file <data>/network-key`, so another computer or a phone uses the engine as an

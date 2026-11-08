@@ -118,6 +118,9 @@ export const api = {
   unload: () => request<unknown>('POST', 'api/session/unload'),
   cancel: () => request<unknown>('POST', 'api/cancel'),
   models: () => request<ModelsResponse>('GET', 'api/models', undefined, isModelsResponse),
+  /** Where models are kept: `models_dir` "" for the default. Local clients only (the server writes there). */
+  setModelFolders: (folders: { models_dir?: string; scan_dirs?: string[] }) =>
+    request<ModelsResponse>('PUT', 'api/models/folders', folders, isModelsResponse),
   download: (id: string) => request<unknown>('POST', 'api/models/download', { id }),
   cancelDownload: (id: string) => request<unknown>('DELETE', `api/models/download/${encodeURIComponent(id)}`),
   /** Delete the partial files a stopped download left; by catalog id, never by path. */

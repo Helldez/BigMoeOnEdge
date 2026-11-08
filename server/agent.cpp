@@ -580,7 +580,7 @@ ChatOutcome Agent::ask_model(Run & run,
     const std::string route = conv.value("route", "local");
     if (!route.empty() && route != "local") return ask_provider(run, route, req, on_token);
     // Waiting in the engine's line, a stop gives the place up.
-    return d_.local_chat(req, on_token, [&run] { return !run.stop.load(); });
+    return d_.local_chat(req, on_token, run.stop);
 }
 
 // ---- approvals ----
