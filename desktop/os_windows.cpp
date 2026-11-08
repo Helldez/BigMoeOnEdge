@@ -135,8 +135,10 @@ bool attach(webview::webview & w, const Hooks & hooks) {
     g_nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
     g_nid.uCallbackMessage = kTrayMessage;
     g_nid.uVersion = NOTIFYICON_VERSION_4;
-    // The executable's own icon when it carries one, the system's application icon otherwise.
-    g_nid.hIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1));
+    // The executable's own icon (bmoe-desktop.rc.in), at the small size this screen's DPI asks for,
+    // the system's application icon when it carries none.
+    if (FAILED(LoadIconMetric(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1), LIM_SMALL, &g_nid.hIcon)))
+        g_nid.hIcon = nullptr;
     // Without UNICODE, IDI_APPLICATION is typed narrow; it is an integer id either way.
     if (!g_nid.hIcon) g_nid.hIcon = LoadIconW(nullptr, reinterpret_cast<LPCWSTR>(IDI_APPLICATION));
     wcsncpy_s(g_nid.szTip, kTitle, _TRUNCATE);

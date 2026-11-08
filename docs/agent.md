@@ -94,10 +94,17 @@ not fit, the run ends with an error notice that says to start a new conversation
 with a larger context.
 
 A stop raises the run's stop: a waiting approval ends at once as denied, a command's whole process
-group is killed, an MCP call ends its server's program (started again by the next call), a
-provider's stream ends at its next piece, and the engine's turn
-ends at its next token (or gives up its place in the line). `POST .../stop` answers once the run
-has ended (waiting at most 30 s, the longest a prompt's prefill may delay that next token).
+group is killed, an MCP call ends its server's program (started again by the next call), and a
+provider's stream ends at its next piece. For a local-model round, the stop reaches the session
+that owns that turn independently of the token callback: the image encoder and prompt prefill
+can observe cancellation at the engine's cancellation points before the first generated token.
+A round still waiting for the engine withdraws only its own place; stopping it does not cancel
+another client's running turn. The engine borrows the run's atomic flag only for that generation,
+so resetting its own cancel latch cannot lose the stop, and the flag cannot spill into a later turn.
+
+`POST .../stop` requests the stop and waits up to 30 s for the run to finish. Its `stopped` field
+says whether there was a run to stop (`false`: none ran); it is not a completion acknowledgement
+if that wait expires. The conversation's state and events say when the run has actually ended.
 
 No model loaded is not a refused message: the message is kept, and the run ends at once with an
 error notice ("No model is loaded ...") and the conversation in state `error`. Sending it again
@@ -125,6 +132,12 @@ A glob's `*` and `?` stay inside one name, `**` crosses folders; an `include` or
 The walks list `.git`, `node_modules`, `.venv`, `build`, `dist` and the like but do not enter them.
 Unlike llama.cpp's, the tools do not consult `.gitignore` (asking git runs the repository's own
 configuration: see "Mode") and `edit_file` matches exactly, with no whitespace-tolerant fallback.
+
+A call whose arguments are not a JSON object (a model stopped in the middle of one, by its context
+or a token limit, leaves a string cut short) is refused with the parser's reason and what to do,
+like any other failed call; the record keeps the arguments as written, and the model is shown an
+empty object in their place from then on, since a chat template that parsed the original would
+reject the conversation at every turn after.
 
 Which tools a conversation is offered follows from its workspace, its mode, the platform and where
 the message came from: a tool that could only be refused is not declared (`write_file`,
@@ -289,10 +302,10 @@ All JSON; errors are `{"error", "code"}` as everywhere in the API. Times are Uni
 | `GET /api/conversations/<id>` | the conversation with its `items` |
 | `PATCH /api/conversations/<id>` | `{title?, mode?, route?, workspace?, agent?}` → the conversation without items; `409 busy` for `workspace` or `route` while it runs, and for `agent` once it has items |
 | `DELETE /api/conversations/<id>` | `409 busy` while it runs |
-| `POST /api/conversations/<id>/messages` | `{text, think?, images?}` → `202 {item}`; the run goes on in the server and reports on `/api/events`. `409 busy` while one runs; `images` is not supported yet (`400 unsupported`) |
+| `POST /api/conversations/<id>/messages` | `{text, think?, images?}` → `202 {item}`; the run goes on in the server and reports on `/api/events`. `409 busy` while one runs. `images`: up to 8 data URLs, kept on the item and shown to the model after the text (`400 no_vision` when the loaded model has no projector, server-api.md "Images") |
 | `POST /api/conversations/<id>/edit` | `{item, text, think?}`: drops `item` (a `user` item) and everything after it, then sends `text` → `202 {item}` |
 | `POST /api/conversations/<id>/approval` | `{item, decision: "approve" \| "deny"}`; `404 not_found` when that item is not waiting |
-| `POST /api/conversations/<id>/stop` | stops the run; answers `{stopped}` once it has stopped (`false`: none ran) |
+| `POST /api/conversations/<id>/stop` | requests a stop and waits up to 30 s; `{stopped}` says whether a run was found (`false`: none ran); state/events report completion |
 | `GET /api/conversations/<id>/file?path=` | a workspace file's bytes for the preview, with its content type (16 MiB at most), sandboxed by its own `Content-Security-Policy` |
 | `GET /api/skills?workspace=<id>` | `[{name, title, description, source: "bundled" \| "user" \| "workspace", enabled, body}]`; the workspace's own with `workspace` |
 | `POST /api/skills`, `PUT /api/skills/<name>` | `{name, description, body, title?}`: a person's own skill (a `PUT` on a bundled one writes the person's version of it); `409 exists` on a `POST` that repeats a name |

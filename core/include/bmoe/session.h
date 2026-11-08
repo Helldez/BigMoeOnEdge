@@ -20,6 +20,7 @@
 #include "bmoe/metrics.h"
 #include "bmoe/runtime.h"
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <string>
@@ -36,6 +37,11 @@ class IIoTraceSink;
 // the longest prompt+generation the session will serve.
 struct SessionConfig {
     std::string model_path;
+    // The multimodal projector that gives this model its image input (an `mmproj` GGUF from the same
+    // conversion), loaded beside the model. Empty: text only, and a request with images is refused.
+    // See RunConfig::mmproj.
+    std::string mmproj;
+    int image_max_tokens = 0; // the most tokens one image may take, 0 = the projector's own cap. See RunConfig.
     int n_threads = 4;
     int n_threads_batch = 0; // 0 = same as n_threads. See RunConfig::n_threads_batch.
     int n_ctx = 2048;
@@ -127,6 +133,13 @@ struct GenerateRequest {
     // come back in RunResult::tool_calls. Read only with `messages`: a tool's answer is a message.
     std::vector<ChatTool> tools{};
     ToolChoice tool_choice = ToolChoice::Auto;
+    // The images `prompt` places with image_marker(), in order (the raw-prompt path; a message list
+    // carries each message's own). Needs a session opened with a projector. Kept after the earlier
+    // fields so existing positional aggregate initializers still read the same.
+    std::vector<ChatImage> images{};
+    // Optional caller-owned stop flag. It must outlive generate(); the caller may raise it from
+    // another thread. Unlike Session::cancel()'s latch, it is never reset by the session.
+    const std::atomic<bool> * stop = nullptr;
 };
 
 // Teacher-forced quality measurement. The text is fixed, so every cell scores the SAME token
@@ -209,14 +222,14 @@ public:
 
     // Generate one response. Serialized: one generation at a time per session. `on_token`
     // and `sink` receive the same per-token metrics as run(). Cache state carries over from
-    // the previous call. If cancel() fired, returns ok=true with cancelled=true.
+    // the previous call. If cancel() or req.stop ends the turn, returns ok=true with cancelled=true.
     RunResult generate(const GenerateRequest & req,
                        const std::function<void(const TokenMetrics &)> & on_token = nullptr,
                        IMetricsSink * sink = nullptr);
 
     // Request the in-flight generation to stop. Thread-safe; may be called from another
-    // thread while generate() runs. Takes effect at the next decode boundary via the abort
-    // callback and leaves the model/cache intact for the next generate().
+    // thread while generate() runs. Takes effect at an existing decode/encoder cancellation
+    // point and leaves the model/cache intact for the next generate().
     void cancel();
 
     double load_seconds() const;      // model load + streaming setup, measured once at open()
@@ -245,6 +258,10 @@ public:
     // rather than leaving a Thinking toggle that silently does nothing. Always Template when chat
     // mode is off, where no template is rendered and the question does not arise.
     ThinkControl think_control() const;
+
+    // Whether this session reads images: a projector was given at open() and it has a vision
+    // encoder. What a front-end asks before offering an image control.
+    bool vision() const;
 
     // Set the expert-cache budget in MiB and evict down to it now. PRECONDITION: no generate() in
     // flight — call it between generations (e.g. from an app's memory-pressure callback). A no-op

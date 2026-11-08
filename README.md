@@ -49,6 +49,9 @@ Qwen3.6-35B-A3B (21 GB) in real time on each device. The model is larger than ea
   the experts used most stay in its VRAM.
 - **Apps and a server.** A desktop app, phone apps, and an OpenAI- and Anthropic-compatible server
   for coding agents.
+- **Sees images.** Put a model's projector file (`mmproj`) beside it and the server reads images on
+  every API; the CLI with `--mmproj` and `--image`. Any vision model llama.cpp's projector library
+  knows, any quantization, every backend.
 
 ## Performance
 
@@ -107,6 +110,15 @@ bmoe-server -m model.gguf -c 32768                         # the server and its 
 The server speaks the OpenAI API (`/v1/chat/completions`, `/v1/responses`) and the Anthropic one
 (`/v1/messages`), with streaming, tool calls and reasoning. Add `--host 0.0.0.0 --api-key KEY` to
 serve other machines. Reference: [docs/server-api.md](docs/server-api.md).
+
+On a machine that stays on, register it as a service of your login instead: it starts with the
+machine, comes back with its model, and reloads it when a request finds none loaded
+([running as a service](docs/server-api.md#running-as-a-service)).
+
+```bash
+bmoe-server service install --host 0.0.0.0 -m model.gguf -c 65536   # systemd, launchd or Task Scheduler
+bmoe-server service status
+```
 
 ```python
 from openai import OpenAI
@@ -177,6 +189,10 @@ unchanged, and an upgrade is a submodule bump. Which tensors are experts is read
 The planner reads the model's header and measures the machine: memory, storage speed, each CPU, GPU
 and NPU. Its rules name no device or platform, so a phone and a desktop get different plans from the
 same code. Values you set yourself are kept. See [docs/hardware-planning.md](docs/hardware-planning.md).
+
+<p align="center">
+  <img src="docs/assets/diagrams/plan-en.png" width="820" alt="The planner: the machine and the model go into the plan; the plan decides where each weight goes (VRAM, RAM or flash), which device reads the prompt and which one generates, and the cache sizes and threads; the first answer is measured and what is faster is kept for the next load.">
+</p>
 
 ## Platforms
 

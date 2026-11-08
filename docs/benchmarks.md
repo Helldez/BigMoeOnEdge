@@ -505,6 +505,14 @@ On a 16 GB Apple-silicon laptop, the same model at a 16384 context with `--auto`
 22.4 tok/s, and a 10850-token prompt prefilled in 31.8 s. One machine. Qwen3-Coder-30B-A3B (18.6 GB)
 on the same laptop: 23 tok/s, and 7-9 inside opencode.
 
+A whole agent session on that laptop, from the released 0.40.1 archive: opencode, one prompt (a
+voxel pagoda garden as one HTML page), Qwen3.6-35B-A3B streamed with `bmoe-server -c 65536` and no
+other flag. 23 min 46 s from prompt to the last answer, with no human input: one 11k-token prefill
+at 325 tok/s, then turns that re-sent only 21-23 new tokens, and a 10 400-token file write decoded
+at 8.6 tok/s with an 86 % cache hit. That run differs from the 22.4 tok/s above in a 64k context, in
+answers 11-22k tokens deep, and in 10 GB free at load
+([bench-data/2026-11-07-agent-pagoda](bench-data/2026-11-07-agent-pagoda/README.md)).
+
 If the model fits in RAM, just run it resident.
 
 #### A discrete GPU

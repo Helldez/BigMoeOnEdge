@@ -1,4 +1,5 @@
 #include "anthropic_messages.h"
+#include "image_part.h"
 
 namespace bmoe::server {
 
@@ -28,11 +29,33 @@ void join(std::string & into, const std::string & text) {
 }
 
 bool unsupported_block(const std::string & type, std::string & err) {
-    if (type == "image" || type == "document")
-        err = "this server reads text only: a message with an " + type + " block cannot be answered";
+    if (type == "document")
+        err = "this server reads text and images: a message with a document block cannot be answered";
     else
         err = "unsupported content block type '" + type + "'";
     return false;
+}
+
+// An image block: {source: {type: "base64", media_type, data}}. A URL source names something to
+// fetch, which this server does not.
+bool image_block(const json & b, ChatMessage & msg, std::string & err) {
+    const json & src = b.value("source", json());
+    const std::string stype = type_of(src);
+    if (stype == "url") {
+        err = "an image is sent inline (source.type base64): this server fetches no URLs";
+        return false;
+    }
+    if (stype != "base64" || !string_at(src, "data")) {
+        err = "an image block needs a source of type base64 with media_type and data";
+        return false;
+    }
+    ChatImage img;
+    if (!image_from_base64(string_at(src, "media_type") ? *string_at(src, "media_type") : "", *string_at(src, "data"),
+                           img, err))
+        return false;
+    place_images(msg.content, 1);
+    msg.images.push_back(std::move(img));
+    return true;
 }
 
 bool parse_system(const json & body, std::string & out, std::string & err) {
@@ -121,6 +144,8 @@ bool parse_message(const json & m, std::vector<ChatMessage> & out, std::string &
         const std::string type = type_of(b);
         if (type == "text" && string_at(b, "text")) {
             join(msg.content, *string_at(b, "text"));
+        } else if (type == "image") {
+            if (!image_block(b, msg, err)) return false; // the role rule: images_allowed, below
         } else if (msg.role == "assistant" && type == "thinking" && string_at(b, "thinking")) {
             msg.reasoning += *string_at(b, "thinking");
         } else if (msg.role == "assistant" && type == "redacted_thinking") {
@@ -150,8 +175,9 @@ bool parse_message(const json & m, std::vector<ChatMessage> & out, std::string &
             return unsupported_block(type, err);
         }
     }
+    if (!images_allowed(msg, err)) return false;
     // A user message that only answered tools has nothing left to say.
-    if (msg.role != "user" || !msg.content.empty()) out.push_back(std::move(msg));
+    if (msg.role != "user" || !msg.content.empty() || !msg.images.empty()) out.push_back(std::move(msg));
     return true;
 }
 

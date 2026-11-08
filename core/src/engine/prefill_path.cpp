@@ -254,6 +254,17 @@ int PrefillPath::decode(llama_context * ctx, const llama_batch & b) {
     return rc;
 }
 
+int PrefillPath::decode_ext(llama_context * ctx, llama_batch_ext * b) {
+    const bool dev = arena_ && dev_ && dev_->on_device();
+    if (dev) arena_->begin_graph();
+    int rc = llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, b);
+    if (dev) {
+        arena_->end_graph();
+        if (rc == 0 && arena_->failed()) rc = -1;
+    }
+    return rc;
+}
+
 void PrefillPath::clear_state() {
     if (dev_) dev_->clear_state();
 }

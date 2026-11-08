@@ -67,9 +67,11 @@
             android:foregroundServiceType="dataSync"
             tools:node="merge" />
         <!-- Hands a metrics CSV to another app (Drive, Gmail, Files) as a content:// URI with a
-             one-shot read grant. A file:// URI would be refused outright since Android 7, and the
-             alternative — telling the user to go find the file — is not a feature. Scoped to the
-             app's own external files dir; it exposes nothing else. -->
+             one-shot read grant, and gives the camera app a content:// URI to write a photo for the
+             chat into (the TakePicture contract: no CAMERA permission). A file:// URI would be
+             refused outright since Android 7, and the alternative — telling the user to go find the
+             file — is not a feature. Scoped to the metrics dir and the camera cache dir
+             (res/xml/file_paths.xml); it exposes nothing else. -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

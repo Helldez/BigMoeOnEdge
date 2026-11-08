@@ -28,8 +28,10 @@
     editing = true;
   }
   async function resend() {
-    if (!draft.trim()) return;
-    if (await agent.edit(item.id, draft)) editing = false;
+    const images = item.kind === 'user' ? item.images : undefined;
+    if (!draft.trim() && !images?.length) return;
+    // The images stay with the words sent again: an edit changes what was asked, not what was shown.
+    if (await agent.edit(item.id, draft, images)) editing = false;
   }
   function editKey(e: KeyboardEvent) {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
@@ -50,11 +52,18 @@
         <div class="row">
           <span class="spacer"></span>
           <button type="button" onclick={() => (editing = false)}>{t('action.cancel')}</button>
-          <button type="button" class="primary" disabled={!draft.trim() || agent.running} onclick={resend}>{t('message.edit.send')}</button>
+          <button type="button" class="primary" disabled={(!draft.trim() && !(item.kind === 'user' && item.images?.length)) || agent.running} onclick={resend}>{t('message.edit.send')}</button>
         </div>
       </div>
     {:else}
-      <div class="bubble">{item.text}</div>
+      {#if item.images?.length}
+        <ul class="images" aria-label={t('composer.image')}>
+          {#each item.images as src, i (i)}
+            <li><img {src} alt="" /></li>
+          {/each}
+        </ul>
+      {/if}
+      {#if item.text}<div class="bubble">{item.text}</div>{/if}
       <div class="tools">
         <button type="button" class="ghost icon small" title={copied ? t('action.copied') : t('action.copy')} aria-label={t('action.copy')} onclick={() => copy(item.text)}>
           <Icon name={copied ? 'check' : 'copy'} size={15} />
@@ -104,6 +113,22 @@
     flex-direction: column;
     align-items: flex-end;
     gap: 2px;
+  }
+  .images {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: var(--s2);
+    list-style: none;
+    margin: 0 0 var(--s1);
+    padding: 0;
+  }
+  .images img {
+    display: block;
+    max-width: 240px;
+    max-height: 180px;
+    border-radius: var(--radius);
+    border: 1px solid var(--line);
   }
   .bubble {
     background: var(--surface-2);

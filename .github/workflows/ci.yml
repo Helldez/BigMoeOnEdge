@@ -324,7 +324,7 @@ jobs:
           # Everything the build put beside the engine: ggml, llama and one module per backend. The
           # OpenCL module's link-time libOpenCL.so stays behind: on the phone it resolves to the
           # system's own, or the module is not loaded.
-          cp build-android/bin/libggml*.so build-android/bin/libllama*.so "$jni/"
+          cp build-android/bin/libggml*.so build-android/bin/libllama*.so build-android/bin/libmtmd*.so "$jni/"
           # bmoe-cli links the c++_shared STL; ship its runtime from the NDK sysroot.
           cp "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" "$jni/"
           ls -la "$jni"

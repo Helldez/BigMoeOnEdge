@@ -1,4 +1,5 @@
 #include "agent.h"
+#include "image_part.h"
 #include "agent_run.h"
 
 #include "agent_tools.h"
@@ -169,6 +170,36 @@ const char * mode_words(const std::string & mode) {
         return "Mode: read-only. Changes are refused and only commands that read run; say what you would change.";
     return "Mode: ask. Reading needs no permission; a change, a command that could change something and a connected "
            "tool wait for the person's approval. If one is declined, do not retry it: say what you would have done.";
+}
+
+// A call's arguments as the object the model meant, or why they are not one: a model stopped in the
+// middle of a call (the context, a token limit) leaves a string cut short. True with the object;
+// false with `why` the parser's reason and `args` empty. The tool refuses such a call with the
+// reason, and the history renders an empty object in its place: a chat template parses every
+// call's arguments, and one it cannot parse rejects the whole conversation, every turn after.
+// How the tool's answer begins when a call's arguments were not an object: the run's repeat counter
+// reads it, so a call cut again at another column counts as the same failure.
+constexpr const char * k_not_an_object = "Error: the arguments are not a JSON object";
+
+bool call_arguments(const std::string & text, json & args, std::string & why) {
+    args = json::object();
+    why.clear();
+    if (text.empty()) return true;
+    try {
+        json parsed = json::parse(text);
+        if (!parsed.is_object()) {
+            why = std::string("a JSON ") + parsed.type_name() + ", not an object";
+            return false;
+        }
+        args = std::move(parsed);
+        return true;
+    } catch (const json::parse_error & e) {
+        // nlohmann's message starts with its own tag: "[json.exception.parse_error.101] parse error
+        // at line 1, column 2134: ...". The reason after the tag is what a reader wants.
+        why = e.what();
+        if (const size_t at = why.find("] "); why.front() == '[' && at != std::string::npos) why.erase(0, at + 2);
+        return false;
+    }
 }
 
 } // namespace
@@ -404,6 +435,7 @@ std::vector<ChatTool> Agent::tools_for(const json & conv, bool remote, std::map<
 
 ChatRequest Agent::build_request(const json & conv, const std::string & system, bool remote, bool think) const {
     ChatRequest req;
+    const bool provider_route = conv.value("route", "local") != "local";
     if (!system.empty()) req.messages.push_back({"system", system});
     const json & items = conv["items"];
     // What each call got back, by its id.
@@ -418,12 +450,33 @@ ChatRequest Agent::build_request(const json & conv, const std::string & system, 
     for (const json & it : items) {
         const std::string kind = it.value("kind", "");
         if (kind == "user") {
-            req.messages.push_back({"user", it.value("text", "")});
+            ChatMessage m{"user", it.value("text", "")};
+            // The images the person attached, placed after the text; one the store holds that no
+            // longer decodes is skipped rather than failing the whole conversation. A provider
+            // route is sent none, and no marker for them: it carries text only.
+            if (!provider_route && it.contains("images") && it["images"].is_array())
+                for (const json & im : it["images"]) {
+                    ChatImage img;
+                    std::string err;
+                    if (im.is_string() && image_from_data_url(im.get<std::string>(), img, err)) {
+                        place_images(m.content, 1);
+                        m.images.push_back(std::move(img));
+                    }
+                }
+            req.messages.push_back(std::move(m));
         } else if (kind == "assistant") {
             ChatMessage m{"assistant", it.value("text", "")};
             if (it.contains("tool_calls") && it["tool_calls"].is_array())
-                for (const json & c : it["tool_calls"])
-                    m.tool_calls.push_back({c.value("id", ""), c.value("name", ""), c.value("arguments", "{}")});
+                for (const json & c : it["tool_calls"]) {
+                    // The record keeps what the model wrote; the model is shown the call it can be
+                    // shown, with the tool's answer saying what was wrong with the original.
+                    const std::string text = c.value("arguments", "{}");
+                    json args;
+                    std::string why;
+                    const bool object = call_arguments(text, args, why);
+                    m.tool_calls.push_back(
+                        {c.value("id", ""), c.value("name", ""), object && !text.empty() ? text : "{}"});
+                }
             if (m.content.empty() && m.tool_calls.empty()) continue;
             req.messages.push_back(m);
             // Every call is answered, in the order it was made; one the run never reached (a stop)
@@ -527,7 +580,7 @@ ChatOutcome Agent::ask_model(Run & run,
     const std::string route = conv.value("route", "local");
     if (!route.empty() && route != "local") return ask_provider(run, route, req, on_token);
     // Waiting in the engine's line, a stop gives the place up.
-    return d_.local_chat(req, on_token, [&run] { return !run.stop.load(); });
+    return d_.local_chat(req, on_token, run.stop);
 }
 
 // ---- approvals ----
@@ -586,15 +639,9 @@ Refusal Agent::approve(const std::string & conversation, const std::string & ite
 
 json Agent::run_tool(Run & run, const json & conv, const ChatToolCall & call) {
     const std::string conv_id = conv.value("id", "");
-    json args = json::object();
-    bool args_ok = true;
-    try {
-        args = call.arguments.empty() ? json::object() : json::parse(call.arguments);
-        if (!args.is_object()) args_ok = false;
-    } catch (const std::exception &) {
-        args_ok = false;
-    }
-    if (!args_ok) args = json::object();
+    json args;
+    std::string why;
+    const bool args_ok = call_arguments(call.arguments, args, why);
     json item{{"id", new_id("i")}, {"kind", "tool"},     {"tool", call.name}, {"title", title_for(call.name, args)},
               {"args", args},      {"state", "running"}, {"result", ""},      {"call_id", call.id}};
     const auto finish = [&](const std::string & state, const std::string & result) {
@@ -603,7 +650,9 @@ json Agent::run_tool(Run & run, const json & conv, const ChatToolCall & call) {
         publish_item(conv_id, item);
         return item;
     };
-    if (!args_ok) return finish("error", "Error: the arguments are not a JSON object.");
+    if (!args_ok)
+        return finish("error", std::string(k_not_an_object) + " (" + why +
+                                   "). Make the call again, with its arguments complete.");
     const ToolSpec * spec = find_tool(call.name);
     std::map<std::string, McpTool> mcp;
     bool offered = false;
@@ -834,8 +883,11 @@ std::string Agent::run_rounds(Run & run, const std::string & conv_id) {
                 same_failures = 0;
                 continue;
             }
-            const std::string failure =
-                c.name + '\n' + done.value("args", json::object()).dump() + '\n' + done.value("result", "");
+            const std::string result = done.value("result", "");
+            const bool not_an_object = result.rfind(k_not_an_object, 0) == 0;
+            const std::string failure = c.name + '\n' +
+                                        (not_an_object ? std::string(k_not_an_object)
+                                                       : done.value("args", json::object()).dump() + '\n' + result);
             same_failures = failure == last_failure ? same_failures + 1 : 1;
             last_failure = failure;
             if (same_failures >= k_max_same_failed_calls) {
@@ -854,14 +906,30 @@ std::string Agent::run_rounds(Run & run, const std::string & conv_id) {
 
 Refusal Agent::start(const std::string & conversation,
                      const std::string & text,
+                     const json & images,
                      bool think,
                      bool remote,
                      bool auto_deny,
                      const std::string & task_id,
                      json & item_out) {
-    if (text.empty()) return {400, "the message is empty", "invalid_request"};
+    if (text.empty() && (!images.is_array() || images.empty())) return {400, "the message is empty", "invalid_request"};
+    if (images.is_array() && images.size() > k_max_images_per_message)
+        return {400, "at most " + std::to_string(k_max_images_per_message) + " images go in one message",
+                "invalid_request"};
+    if (images.is_array())
+        for (const json & im : images) {
+            ChatImage probe;
+            std::string err;
+            if (!im.is_string() || !image_from_data_url(im.get<std::string>(), probe, err))
+                return {400, "images must be data URLs: " + (err.empty() ? std::string("not a string") : err),
+                        "invalid_request"};
+        }
     json conv;
     if (!d_.store->conversation(conversation, conv)) return {404, "no such conversation", "not_found"};
+    // A provider route carries text only (provider_protocol.cpp sends role and content): an image on
+    // it would reach the provider as its marker, unseen. Said before the message is kept.
+    if (images.is_array() && !images.empty() && conv.value("route", "local") != "local")
+        return {400, "this route does not carry images", "no_vision"};
     auto run = std::make_shared<Run>();
     run->remote = remote;
     run->auto_deny = auto_deny;
@@ -885,6 +953,7 @@ Refusal Agent::start(const std::string & conversation,
     for (std::thread & t : reap)
         t.join();
     item_out = json{{"id", new_id("i")}, {"kind", "user"}, {"text", text}};
+    if (images.is_array() && !images.empty()) item_out["images"] = images;
     const json item = item_out;
     d_.store->edit_conversation(conversation, [&](json & c) {
         c["state"] = "idle";
@@ -933,14 +1002,19 @@ Refusal Agent::start(const std::string & conversation,
     return {};
 }
 
-Refusal
-Agent::send(const std::string & conversation, const std::string & text, bool think, bool remote, json & item_out) {
-    return start(conversation, text, think, remote, false, "", item_out);
+Refusal Agent::send(const std::string & conversation,
+                    const std::string & text,
+                    const json & images,
+                    bool think,
+                    bool remote,
+                    json & item_out) {
+    return start(conversation, text, images, think, remote, false, "", item_out);
 }
 
 Refusal Agent::edit(const std::string & conversation,
                     const std::string & item,
                     const std::string & text,
+                    const json & images,
                     bool think,
                     bool remote,
                     json & item_out) {
@@ -964,7 +1038,7 @@ Refusal Agent::edit(const std::string & conversation,
         }))
         return {404, "no such conversation", "not_found"};
     if (!found) return {404, "no message of the person with that id", "not_found"};
-    return send(conversation, text, think, remote, item_out);
+    return send(conversation, text, images, think, remote, item_out);
 }
 
 bool Agent::stop(const std::string & conversation) {
@@ -1026,7 +1100,7 @@ Refusal Agent::run_task(const std::string & id) {
     task["last_run"] = json{{"at", now_s()}, {"conversation", cid}, {"outcome", "running"}};
     d_.store->put_task(task);
     json item;
-    const Refusal r = start(cid, task.value("prompt", ""), false, false, true, id, item);
+    const Refusal r = start(cid, task.value("prompt", ""), json::array(), false, false, true, id, item);
     if (!r.ok()) {
         {
             std::lock_guard<std::mutex> lk(m_);

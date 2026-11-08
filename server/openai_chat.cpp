@@ -1,4 +1,5 @@
 #include "openai_chat.h"
+#include "image_part.h"
 
 #include <algorithm>
 
@@ -18,23 +19,43 @@ bool string_field(const json & o, const char * k, const std::string & if_absent,
     return true;
 }
 
-// A message's text: a string, an array of {type:"text"} parts, or null (an assistant turn that only
-// calls tools has no content). False for anything else - an image part is not something to drop
-// silently.
-bool message_text(const json & content, std::string & out) {
-    out.clear();
+// A message's content: a string, an array of parts, or null (an assistant turn that only calls
+// tools has no content). Text parts concatenate; an image_url part (a data URL) becomes one of the
+// message's images, placed in the text by its marker. Anything else is refused, not dropped.
+bool message_content(const json & content, ChatMessage & out, std::string & err) {
+    out.content.clear();
+    out.images.clear();
     if (content.is_null()) return true;
     if (content.is_string()) {
-        out = content.get<std::string>();
+        out.content = content.get<std::string>();
         return true;
     }
-    if (!content.is_array()) return false;
+    if (!content.is_array()) {
+        err = "message content must be a string or an array of parts";
+        return false;
+    }
     for (const json & part : content) {
         std::string type;
-        if (!part.is_object() || !string_field(part, "type", "", type) || type != "text" || !part.contains("text") ||
-            !part["text"].is_string())
+        if (!part.is_object() || !string_field(part, "type", "", type)) {
+            err = "every content part needs a type";
             return false;
-        out += part["text"].get<std::string>();
+        }
+        if (type == "text" && part.contains("text") && part["text"].is_string()) {
+            out.content += part["text"].get<std::string>();
+        } else if (type == "image_url") {
+            const json & iu = part.value("image_url", json());
+            const std::string url = iu.is_string() ? iu.get<std::string>() : iu.is_object() ? iu.value("url", "") : "";
+            ChatImage img;
+            if (!image_from_data_url(url, img, err)) return false;
+            place_images(out.content, 1);
+            out.images.push_back(std::move(img));
+        } else if (type == "input_audio" || type == "file") {
+            err = "this server reads text and images: a " + type + " part cannot be answered";
+            return false;
+        } else {
+            err = "unsupported content part type '" + type + "'";
+            return false;
+        }
     }
     return true;
 }
@@ -60,10 +81,8 @@ bool parse_message(const json & m, ChatMessage & out, std::string & err) {
         err = "unsupported message role '" + out.role + "' (system, user, assistant and tool are)";
         return false;
     }
-    if (!message_text(m.value("content", json()), out.content)) {
-        err = "message content must be a string or an array of text parts";
-        return false;
-    }
+    if (!message_content(m.value("content", json()), out, err)) return false;
+    if (!images_allowed(out, err)) return false;
     if (m.contains("reasoning_content") && m["reasoning_content"].is_string())
         out.reasoning = m["reasoning_content"].get<std::string>();
     if (out.role == "tool") {

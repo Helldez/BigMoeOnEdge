@@ -46,6 +46,13 @@ target_compile_definitions(bmoe_chat_messages_test PRIVATE
     BMOE_QWEN35_VOCAB_PATH="${CMAKE_SOURCE_DIR}/third_party/llama.cpp/models/ggml-vocab-qwen35.gguf")
 add_test(NAME chat_messages COMMAND bmoe_chat_messages_test)
 
+# The prompt stream: a prompt with images as the KV bookkeeping sees it (prefix reuse, positions,
+# cuts). Pure data, no model.
+add_executable(bmoe_prompt_stream_test prompt_stream_test.cpp)
+target_link_libraries(bmoe_prompt_stream_test PRIVATE bmoe_core)
+target_include_directories(bmoe_prompt_stream_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/engine)
+add_test(NAME prompt_stream COMMAND bmoe_prompt_stream_test)
+
 # The real Session path must apply request-local grammar to both token selection sites.
 add_executable(bmoe_output_constraint_session_test output_constraint_session_test.cpp)
 target_link_libraries(bmoe_output_constraint_session_test PRIVATE bmoe_core)

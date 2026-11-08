@@ -4,21 +4,205 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.40.2] - 2026-11-08
 
 ### Added
-- **Every setting explains itself** (#468, from #465): each row a settings form shows, and each the
-  plan decides, carries `details` in `/api/params`, a sentence or two in plain words on when to
-  change it and what it costs, which the web UI, the Android app and the iOS app fold under the
-  setting's help behind More. Text only: no engine behaviour changes.
-- **`scripts/build-host.sh` passes its arguments to CMake**, so a llama.cpp backend is one flag:
-  `scripts/build-host.sh -DGGML_VULKAN=ON`.
+- **Choose where models are kept** (#497). Models → "Where models live" changes the folder downloads
+  land in and adds or removes other folders whose models are listed and loaded in place; in the
+  desktop app with the system's folder dialog, in a browser by typing the path. A server setting
+  (`PUT /api/models/folders`, kept in `settings.json`), so it is the same on every system and every
+  UI that speaks the API, and it applies without a restart. Only a client on this machine may change
+  it, since the server writes there; it is refused while a download runs, and a folder the server
+  was started with (`--models-dir`, `--scan-dir`, as the phone apps start it) stays as it is.
+  Models already downloaded stay where they are. `GET /api/models` says which folders are chosen and
+  which the launch fixed (`folders`).
+- **Check for updates on the phones** (#452): the Android and iOS apps have the button the
+  desktop app has, in Settings, and nothing checks in the background either. The server reads the
+  signed release feed when it is pressed; a newer release opens its page, where Android installs
+  the APK over this one (models and settings stay) and iOS is built again from source. The Play
+  flavor of the Android app shows none: a store updates it.
+- **`docs/model-architecture-trends.md`**: where MoE model architecture went in 2025-2026 and what it
+  means for streaming. Covers smaller and more numerous experts, attention with a fixed or sparse
+  state, lookup tables addressed by token ids (Engram, the `qwen4exp` n-gram table), and routers that
+  run before attention. Sets what other work reports against this engine's own measurements, says
+  where they agree and where they do not, and lists what to build next, starting with
+  token-addressed tables as their own storage tier and exact route-ahead on pre-gated models.
+- **A coding agent end to end on a 16 GB laptop** (`docs/bench-data/2026-11-07-agent-pagoda/`,
+  `docs/benchmarks.md`). The released 0.40.1 archive, `bmoe-server -c 65536` and opencode given the
+  pagoda prompt from #462, Qwen3.6-35B-A3B (22 GB) streamed from the SSD: the page was written in
+  23 min 46 s with no human input, one 11k-token prefill and then turns of 21-23 new tokens, the
+  10 400-token write at 8.6 tok/s with an 86 % cache hit. The report has the plan, each answer, the
+  agent's output and screenshots. A second run the same evening took 35 min 15 s, the model having
+  first written the page to a folder its rules forbid; Claude Code on the same server gave up on
+  the long write, since the stream stays silent while a tool call is generated (see the report).
 - **The roadmap grows Serve on the network to reach your own devices from anywhere**
   (`docs/roadmap.md`): one feature, not a second server mode. Clients of their own, each with its
   key, a chat-only role and removal from the host, under one access policy for the LAN and every
   other way in; a peer-to-peer tunnel as one more way in, for a device outside the LAN; and
   Telegram, then Signal, as clients of the same kind. Each says what the research found and what is
   owed.
+
+### Changed
+- **`GET /api/update` says a newer release is out on every build**, not only on one the feed
+  carries an installer for: `available` is now whether the feed's release is newer, and
+  `installer` (null where there is none) whether the app can download it itself.
+  `POST /api/update/download` refuses a build with no installer (`409` `no_installer`), and the
+  web UI offers Download only where there is one. The phone builds name their target
+  (`android-arm64`, `ios-arm64`).
+- **The README draws how the planner decides.** Under "The planner", `README.md` and its five
+  translations show one diagram: the machine and the model go into the plan, the plan places each
+  weight on VRAM, RAM or flash, picks the device that reads the prompt and the one that generates,
+  and sizes the caches and threads; the first answer is measured and what is faster is kept for the
+  next load. One PNG per language in `docs/assets/diagrams/`, drawn by `scripts/plan-diagram.py`
+  (macOS renders them with Quick Look; elsewhere it writes the SVGs). Image input moves to the end of
+  the "What it does" list, and the five translations gain it: they had not listed it.
+
+### Fixed
+- **Garbled answers and a stall with `devices=all` on a phone.** With every backend registered and
+  no layer placed on one, llama.cpp's own offload heuristic still handed a wide graph's host-weight
+  ops to the GPU backend, which copies an expert tensor before the streamer rebinds it: wrong weights
+  in the answer, and a boundary crossing per op. On a phone with its Vulkan and OpenCL backends
+  registered, a 15-token prompt that answers in 22 s on the CPU alone had not produced a token after
+  eight minutes, and a longer prompt came back as symbols. A streamed run with nothing placed now
+  keeps every op on the CPU, as a run with layers placed under overlap already did; `devices=all`
+  keeps the devices registered for what the plan places there and for the prefill device.
+- **The knob trial halved the cache and tripled the first answer.** The trial runs a candidate
+  thread count in windows of a real answer; on a phone with four fast cores the eight-thread window
+  ran at ten times the seconds per token, and the cache brake, which reads every token's compute
+  against the run's own reference, took that stall with one sampled page out as reclaim and halved
+  the expert cache for the rest of the session (18.8 tok/s to 10.7 on the same prompts). The brake
+  no longer reads a token decoded under a trial candidate, and a candidate stops being measured once
+  the rounds left cannot make it a winner (two losing rounds of three settle the median), instead
+  of running a third round that could only repeat them.
+- **The loading count restarted on every screen change, and Plan showed the previous session's
+  plan as the loaded model's while a model loaded, on every UI.** The seconds since a load began are
+  now the server's: `GET /api/info` and the `state` event carry `load_elapsed_s` while a load is
+  under way (planning included), and the web UI, the Android app and the iOS app count on from the
+  value and the moment it arrived, so the same seconds show on every screen and survive a screen
+  change. While a load is under way, each Plan screen says the plan of this load comes when the
+  session opens and marks the one it shows as from before this load.
+- **iOS chat rendering with the tested Apple Swift 6.4 toolchain.** Compile MarkdownUI alone
+  without Swift optimization to avoid the observed `Markdown.Body` conformance abort when an
+  assistant reply is rendered. The app and C++ engine keep their Release optimization, and
+  vendored sources are unchanged. A model-free rendering app reproduces the optimized failure;
+  turning off linker dead stripping does not avoid it. Keep the guard active for the 6.4.x
+  compiler family until an upstream fix is known. By @gjjkbssg (#494).
+- **Conversation Stop before the first token.** A local conversation's stop now reaches the
+  session that owns its turn independently of the token callback, so an image's encoder and
+  prompt prefill can observe cancellation before any answer is generated. A stopped round still
+  waiting for the engine withdraws only its own place; it does not cancel another client's
+  running turn. The engine reads the run's own atomic flag alongside its resettable cancel latch,
+  without a polling thread; it borrows that flag only until the generation returns.
+  By @gjjkbssg (#495).
+- **A streamed turn is never silent for long** (`server/stream_keepalive.h`). While a turn ran, a
+  stream wrote only what the model produced, and a tool call is sent once parsed, so an agent's
+  long write (thousands of tokens) or a long prefill left the stream silent for minutes. Claude
+  Code drops a stream silent for 300 s and asks again, and the same prompt brought the same
+  silence: an agent writing a large file never finished. Now any 15 s of a turn with nothing to
+  send gets the protocol's keep-alive (`event: ping` on `/v1/messages`, a `: ping` comment on
+  `/v1/responses` and `/v1/chat/completions`), bounded by time rather than tokens, so it holds
+  whatever the machine's speed, the model or the call's length.
+- **The desktop app's icon on Windows** (#497). `bmoe-desktop.exe` carried no icon, so the taskbar,
+  the shortcuts, the window and the notification area showed Windows' generic one. The executable
+  and the installer now carry the app's icon, made from the same picture as the macOS and Linux
+  apps by `packaging/windows/make-icon.py`; the notification area takes the small size this
+  screen's scale asks for.
+
+
+## [0.40.1] - 2026-11-07
+
+### Added
+- **`image-max-tokens`**: the most tokens one image may take, for a projector whose count follows
+  the image's size (0, the default, keeps the projector's own cap). A camera photo took the cap's
+  thousands of tokens, each prefilled like a prompt token, which on a phone, where image tokens are
+  prefilled on the CPU, was twenty minutes for one picture; a few hundred reads the same scene in
+  under one. Rendered in every UI's settings from the parameter table, like every tunable.
+- **Images on the phones** (#484): the Android and iOS composers attach images, from the photos or
+  the camera, with the web UI's rules: at most 8 in a message and 16 MB each, as removable
+  thumbnails above the text until sent, a message of images alone allowed, the entries shown
+  disabled with the reason while the loaded model reads none (`model.vision`), and a message shows
+  the images it carried, which Edit and send again and Answer again send again unchanged. The
+  apps send what `POST /api/conversations/<id>/messages` already takes; a photo from the iOS
+  camera is encoded once as JPEG by the app, everything else goes as picked. The web UI is brought
+  to the same rules on the way: its Image button now stays, disabled with the reason, while the
+  model reads none; Answer again and an edit keep a message's images; a message of images alone can
+  be edited; the first refused file is the one reported.
+
+### Fixed
+- **Stop during an image.** A cancel reached the engine only at a decode boundary, and an image's
+  encoder has none: Stop pressed while a photo was encoded waited for the whole encoder. The
+  encoder now stops where it is through the library's eval callback, and the turn ends as
+  cancelled at once, on every UI and API.
+- **An image paid again on every turn after it**, on a model whose memory cannot be cut anywhere
+  (a recurrent or hybrid one, Qwen3.6 among them): the next turn diverges a few tokens past the
+  image, where the template drops the previous turn's empty think block, and the reuse fell back to
+  the checkpoint before the image, so the image was encoded and prefilled again. A checkpoint is now
+  taken after every image, as at the end of a prompt; the turn after a photo prefills its own tokens
+  only.
+- **A projector that names another model is never paired with it.** The pairing by header fell
+  back to the folder's only projector whatever its own header said, so a model with no projector of
+  its own (a Gemma beside a Qwen `mmproj`) loaded the wrong one and warned about it. The fallback
+  now holds only when one of the two headers carries no name; `GET /api/models` and the load agree.
+- **A model is listed once, from where it really is.** A scan directory inside the models directory,
+  or a models folder of links into shared storage (the phone's), listed the same file twice, once per
+  path. `GET /api/models` now keeps one row per file on disk, the models directory's listing first.
+
+### Changed
+- **llama.cpp moves to upstream tag `v0.9.0`** (`cd959ba` of 2026-11-04), 164 commits past
+  `8ca4060` (`docs/seam.md`). The fork branch `bmoe/expert-ready-hook-0411` is that tag plus the one
+  expert-ready-hook commit, cherry-picked without a conflict: the hook still fires ahead of
+  upstream's tiled `mul_mat_id` path, the only seam file upstream touched carries the new FP8 E4M3
+  type and nothing near the scheduler's eval callback, and the backend directories are the same.
+  No engine change was needed. All 41 host tests pass, the overlap gates included, and on a real
+  35B model `--auto` prints the same greedy text as the previous pin at the same CPU time per token
+  (two runs per build). What the tag brings this engine's users: Clover-35B-A3B, Mistral Large 4,
+  Metis-1.6, DeepSeek V4.1 Flash, the LFM3 family, Nemotron Bolt 74B-A9B and Kolibri-1 among the
+  new architectures, the FP8 E4M3 tensor type, and Gemma 4 E2B/E4B prefill work upstream.
+- **Four community rows in `docs/community-benchmarks.md`**: a 96 GB mini-PC with Qwen3.8-Flash-Next Q2_K on the CPU-only and the Vulkan builds (#460, #462), and two phones from #177 (a 12 GB Snapdragon 6 Gen 1 class phone with flint 40B-A2.5B, an 18 GB phone with Qwen3.5-397B).
+
+## [0.40.0] - 2026-11-06
+
+### Added
+- **Image input** (#250): a model loaded with its multimodal projector (the `mmproj` GGUF of its own
+  conversion, paired by the two files' headers when it sits in the model's folder, or named with
+  the new `mmproj` parameter) reads images. `/v1/chat/completions` takes `image_url` parts,
+  `/v1/messages` `image` blocks and `/v1/responses` `input_image` parts, all inline as base64 (a
+  URL to fetch is refused); the agent's messages take `images`, and the web UI's composer attaches
+  or pastes them. A message carries at most 8 images, each of at most 64 megapixels (refused with
+  the reason, before it is decoded), and only a user message carries one; a conversation routed to
+  a provider carries none. `bmoe-cli --mmproj FILE --image FILE` does the same on a prompt. The KV prefix is
+  reused through an image, so a conversation that holds one pays for it once; speculation is off
+  while it does. `GET /api/info` says `model.vision` and `model.projector`, `/v1/models` adds
+  `modalities`, a local model's listing names its `projector`, and a projector in a repository is
+  now downloadable beside its model. Through llama.cpp's own `mtmd` library, unpatched: any model it
+  knows, any quantization of either file, on every backend (`docs/server-api.md`, "Images";
+  `docs/seam.md`). The plan prices the projector (#475): its file's size is a `projector` row of
+  the memory ledger on the host, or, where the run uses a device with memory of its own, room the
+  capacity fitter is told to leave on that device before it places a layer (so a partial placement
+  on a small card leaves it too), and the server pairs the projector before it plans, not only at load. The
+  projector goes on the devices by the rule the model follows: a layer placed on one means they are
+  wanted.
+- **The server as a service of the init system** (#472): `bmoe-server service install|uninstall|start|stop|status`
+  registers a per-user service started at login and back after a failure, a systemd user unit, a
+  launchd agent or a Windows scheduled task, whichever tool answers on the machine, with the server
+  options and engine parameters given at install, parsed as a start would and refused at install
+  when a start would refuse them. The install adds what a service needs: every path made absolute
+  (the service starts from the executable's folder, not the install's shell), the data folder made
+  explicit, a log file, `--autoload`, and a key file of its own making when `--host` reaches beyond
+  loopback with no key. Two new server flags give the service what it needs of the server:
+  `--autoload` loads the model the settings name at start and again when a request finds none
+  loaded (the request waits for the load instead of a `503 no_model`), and `--log-file PATH` sends
+  the console's output to a file, moved aside at 16 MiB. Each answer, whichever client asked, now
+  leaves one line in the log with its tokens, speed, prompt size and time, context length, expert
+  bytes read and cache hit rate, so a server that ran for a day can be read afterwards (#462 asked).
+  `docs/server-api.md`, "Running as a service". The service text is rendered by pure functions tested in `bmoe_server_test`; the
+  install itself is owed a run at a login on each platform.
+- **Every setting explains itself** (#468, from #465): each row a settings form shows, and each the
+  plan decides, carries `details` in `/api/params`, a sentence or two in plain words on when to
+  change it and what it costs, which the web UI, the Android app and the iOS app fold under the
+  setting's help behind More. Text only: no engine behaviour changes.
+- **`scripts/build-host.sh` passes its arguments to CMake**, so a llama.cpp backend is one flag:
+  `scripts/build-host.sh -DGGML_VULKAN=ON`.
 
 ### Changed
 - **The CPU temperature is the server's, for every UI** (#465): `bmoe-server` reads the CPU's
@@ -45,6 +229,13 @@ Semantic Versioning.
   debugging only, and the licenses list BSD too.
 
 ### Fixed
+- **A cut-off tool call no longer breaks the conversation for good**: a call whose arguments the
+  model never finished (a page cut mid-string by the context or a token limit) was refused, but the
+  broken arguments stayed in the history, and the chat template, which parses every call's
+  arguments, rejected the whole conversation at every turn after. The call is now refused with
+  the parser's reason and what to do, the record keeps what was written, and the model is shown an
+  empty object in its place; a conversation saved before this is healed the same way when it is
+  next rendered (`docs/agent.md`, "Tools").
 - **Metrics is always in Settings, on every front-end** (#465): it appeared only after a switch under
   Appearance, so a person looking for the measurements or the CSV recording found neither. The web UI
   shows the Metrics section always; on Android and iOS the Metrics entry is always in Settings and the

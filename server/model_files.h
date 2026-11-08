@@ -69,4 +69,20 @@ FileRole file_role(const GgufHeaderFacts & h);
 // read (a repository's): "mmproj" anywhere, or a draft prefix. A hint only; file_role decides.
 FileRole file_role_hint(const std::string & name);
 
+// A file beside a model, with what its header says.
+struct CompanionFile {
+    std::string path;
+    GgufHeaderFacts header;
+};
+
+// The projector that goes with a model, among the files of its folder: the one whose header names
+// the same base model (`general.name`, compared by its letters and digits, since one conversion
+// writes "Qwen3.6 35B A3B" and another "Qwen3.6-35B-A3B"); failing that, the folder's only
+// projector. "" when there is none or more than one fits: a choice the person makes with {mmproj}.
+// Names of files never decide; headers do.
+std::string projector_for(const GgufHeaderFacts & model, const std::vector<CompanionFile> & folder);
+
+// `general.name` as compared above: lowercase letters and digits, nothing else.
+std::string name_key(const std::string & name);
+
 } // namespace bmoe::server

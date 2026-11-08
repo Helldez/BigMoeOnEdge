@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <string>
 #include <utility>
 
 namespace bmoe::server {
@@ -49,6 +50,7 @@ public:
     int n_expert_used() const override { return s_->n_expert_used(); }
     ThinkControl think_control() const override { return s_->think_control(); }
     double load_seconds() const override { return s_->load_seconds(); }
+    bool vision() const override { return s_->vision(); }
     RoutingTrace routing_record() const override { return s_->routing_record(); }
     MeasuredKnobs measured_knobs() const override { return s_->measured_knobs(); }
 
@@ -83,6 +85,20 @@ std::string engine_message(const std::string & message) {
 // The other end of a full context: a request that fits is served, but its answer gets only the room
 // the prompt left. A client that summarizes its history when the context fills (an agent compacting)
 // then gets a cut or empty summary and may only say it failed, so the cut is said here.
+// One line per answer in the log, whatever client asked for it: a server left running for days has
+// no UI watching its event stream, and the question "how much did it read, how fast did it go" is
+// otherwise unanswerable afterwards. The figures are the summary's (docs/telemetry.md names them).
+static void log_answer(const RunSummary & sum, bool cancelled) {
+    log_printf(LogLevel::Info,
+               "answer%s: %d tokens at %.1f tok/s, prompt %d tokens prefilled in %.1f s (%.0f tok/s, %.0f MiB "
+               "read), context %d tokens, experts %.0f MiB read%s",
+               cancelled ? " (cancelled)" : "", sum.n_generated, sum.tokens_per_second, sum.n_prompt,
+               sum.prefill_seconds, sum.prefill_seconds > 0 ? sum.n_prompt / sum.prefill_seconds : 0.0,
+               sum.prefill_read_mib, sum.n_past, sum.moe_read_mib,
+               sum.cache_hit_pct >= 0 ? (", cache hit " + std::to_string((int) (sum.cache_hit_pct + 0.5)) + "%").c_str()
+                                      : "");
+}
+
 static void log_context_cut(int n_ctx, int asked, int given) {
     if (asked <= 0) {
         log_printf(LogLevel::Warn,
@@ -134,6 +150,10 @@ void EngineHost::set_cpu_temperature(std::function<double()> provider) {
 }
 
 void EngineHost::begin_planning() {
+    {
+        std::lock_guard<std::mutex> lk(m_);
+        if (!planning_.load() && state_ != State::Loading) load_started_ = std::chrono::steady_clock::now();
+    }
     planning_ = true;
     publish_state();
 }
@@ -150,6 +170,7 @@ std::string EngineHost::load(const RunConfig & effective, const RunConfig & requ
     {
         std::lock_guard<std::mutex> lk(m_);
         if (state_ == State::Loading) return "a model is already loading";
+        if (!planning_.load()) load_started_ = std::chrono::steady_clock::now(); // else the planning's clock runs on
         state_ = State::Loading;
         error_.clear();
         model_ = nullptr;
@@ -191,6 +212,12 @@ std::string EngineHost::load(const RunConfig & effective, const RunConfig & requ
                               {"think_ctl", think_control_name(s->think_control())},
                               {"load_s", s->load_seconds()},
                               {"streaming", effective.moe.enabled},
+                              // Whether a request may carry images, and the projector that reads
+                              // them (its file name; "" without one).
+                              {"vision", s->vision()},
+                              {"projector", effective.mmproj.empty()
+                                                ? ""
+                                                : std::filesystem::u8path(effective.mmproj).filename().u8string()},
                               // What a CPU figure is read against: the compute threads, and every
                               // thread busy in a decode, the read lanes included when they run
                               // beside compute. A UI reads these instead of the parameters.
@@ -261,6 +288,11 @@ std::string EngineHost::model_name() const {
     return model_.is_object() ? model_.value("name", "") : "";
 }
 
+bool EngineHost::vision() const {
+    std::lock_guard<std::mutex> lk(m_);
+    return model_.is_object() && model_.value("vision", false);
+}
+
 std::string EngineHost::model_path() const {
     std::lock_guard<std::mutex> lk(m_);
     return model_.is_object() ? model_.value("path", "") : "";
@@ -278,14 +310,20 @@ std::vector<std::string> EngineHost::reload_keys(const RunConfig & current) cons
 json EngineHost::info() const {
     const bool overlap = expert_ready_hook_available();
     std::lock_guard<std::mutex> lk(m_);
-    return json{{"version", version()},
-                {"overlap_available", overlap},
-                {"planner_available", planner_available_.load()},
-                {"host", host_info_ ? host_info_() : json::object()},
-                {"state", planning_.load() && state_ == State::Empty ? "planning" : state_name((int) state_)},
-                {"error", error_},
-                {"model", model_},
-                {"generating", generating_.load()}};
+    const bool planning = planning_.load();
+    json j{{"version", version()},
+           {"overlap_available", overlap},
+           {"planner_available", planner_available_.load()},
+           {"host", host_info_ ? host_info_() : json::object()},
+           {"state", planning && state_ == State::Empty ? "planning" : state_name((int) state_)},
+           {"error", error_},
+           {"model", model_},
+           {"generating", generating_.load()}};
+    // Seconds since the load under way began, planning included: a UI counts on from the value
+    // it received and the moment it received it, so its own clock and the server's never meet.
+    if (planning || state_ == State::Loading)
+        j["load_elapsed_s"] = std::chrono::duration<double>(std::chrono::steady_clock::now() - load_started_).count();
+    return j;
 }
 
 void EngineHost::note_context_full(int n_ctx) {
@@ -313,7 +351,8 @@ std::unique_lock<std::mutex> EngineHost::take_turn() {
 
 ChatOutcome EngineHost::chat(const ChatRequest & req,
                              const std::function<bool(const TokenMetrics &)> & on_token,
-                             const std::function<bool()> & still_wanted) {
+                             const std::function<bool()> & still_wanted,
+                             const std::atomic<bool> * stop) {
     ChatOutcome out;
     switch (turns_.enter(still_wanted)) {
     case TurnQueue::Admit::Granted:
@@ -334,6 +373,14 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
         ~Leave() { q.leave(); }
     } leave{turns_};
     std::unique_lock<std::mutex> g = take_turn();
+    // A turn may have been stopped after admission while a load held the context. Do not start
+    // it on the new session. Queue callbacks may write, so only the atomic is read here.
+    if (stop && stop->load(std::memory_order_relaxed)) {
+        out.status = 499;
+        out.code = error_code::client_gone;
+        out.error = "the client stopped waiting";
+        return out;
+    }
 
     std::shared_ptr<HostedSession> s;
     {
@@ -358,6 +405,7 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
     gr.think = req.think;
     gr.json_schema = req.json_schema;
     gr.render_text = true;
+    gr.stop = stop;
 
     generating_ = true;
     publish_state();
@@ -421,6 +469,7 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
         const double hit = sum.cache_hit_decode_pct >= 0.0 ? sum.cache_hit_decode_pct : sum.cache_hit_pct;
         last_turn_ = json{{"s_per_token", sum.s_per_token}, {"cache_hit_pct", hit}, {"tokens", sum.n_generated}};
     }
+    log_answer(sum, out.result.cancelled);
     bus_.publish("done", summary_json(out.result.summary, out.result.cancelled));
     publish_state();
     keep_routing(*s);

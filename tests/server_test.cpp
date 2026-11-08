@@ -15,6 +15,8 @@
 //   * downloads: which curl failures are retried and after how long, what a resume still needs on
 //     disk, and that deleting a partial download stays inside the models folder;
 //   * events: how many streams may be open, and that a stream that ends gives its place back;
+//   * a streamed turn: a stretch with nothing to send is broken by a keep-alive after the ping
+//     interval, whatever the machine's speed, and never between two frames of the turn;
 //   * a model from a link: which links are taken, the entry they become, the size a HEAD gives,
 //     and that a server with no curl leaves the size unknown rather than refuse the link;
 //   * deleting a model: named as the listing names it, a split set whole, nothing outside the
@@ -31,13 +33,17 @@
 #include "event_bus.h"
 #include "hf_repo.h"
 #include "http_fetch.h"
+#include "image_part.h"
 #include "json_util.h"
 #include "model_delete.h"
 #include "model_files.h"
 #include "openai_chat.h"
 #include "openai_responses.h"
 #include "plan_view.h"
+#include "log_file.h"
+#include "service_spec.h"
 #include "settings_store.h"
+#include "stream_keepalive.h"
 #include "sha256.h"
 #include "turn_queue.h"
 #include "url_entry.h"
@@ -58,10 +64,18 @@
 #include <utility>
 #include <vector>
 
+#include <filesystem>
+
+namespace fs = std::filesystem;
+
 using namespace bmoe;
 using namespace bmoe::server;
 
 static int failures = 0;
+// A 1x1 PNG as a data URL, quoted: the image every protocol's checks send.
+static const char * PNG_DATA_URL =
+    "\"data:image/"
+    "png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==\"";
 
 static void check(bool ok, const std::string & what) {
     std::printf("[%s] %s\n", ok ? "PASS" : "FAIL", what.c_str());
@@ -69,7 +83,7 @@ static void check(bool ok, const std::string & what) {
 }
 
 static OpenAiChatRequest
-parsed(const char * body, bool * ok = nullptr, std::string * err = nullptr, bool think = true) {
+parsed(const std::string & body, bool * ok = nullptr, std::string * err = nullptr, bool think = true) {
     OpenAiChatRequest r;
     std::string e;
     RunConfig cfg;
@@ -129,8 +143,47 @@ static void protocol_tests() {
     }
     parsed(R"j({"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"yo"}]})j", &ok, &err);
     check(!ok && err.find("last message") != std::string::npos, "a conversation ending on an answer is refused");
-    parsed(R"j({"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"x"}}]}]})j", &ok);
-    check(!ok, "an image part is refused, not dropped");
+    {
+        // An image part: the data URL's bytes on the message, its marker in the text where it was.
+        const OpenAiChatRequest r = parsed(
+            R"j({"messages":[{"role":"user","content":[{"type":"text","text":"What is this?"},{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="}}]}]})j",
+            &ok);
+        check(ok && r.turn.messages.size() == 1 && r.turn.messages[0].images.size() == 1 &&
+                  r.turn.messages[0].images[0].mime == "image/png" &&
+                  r.turn.messages[0].images[0].bytes.compare(0, 4, "\x89PNG") == 0 &&
+                  r.turn.messages[0].content == std::string("What is this?\n") + image_marker(),
+              "an image_url part becomes the message's image, placed in the text by the marker");
+        parsed(
+            R"j({"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://x/y.png"}}]}]})j",
+            &ok, &err);
+        check(!ok && err.find("fetches no URLs") != std::string::npos, "an image URL to fetch is refused, not dropped");
+        parsed(
+            R"j({"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,!!"}}]}]})j",
+            &ok, &err);
+        check(!ok && err.find("base64") != std::string::npos, "an image that is not base64 is refused");
+        parsed(R"j({"messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{}}]}]})j", &ok, &err);
+        check(!ok && err.find("audio") != std::string::npos, "an audio part is refused, not dropped");
+        // The per-message limit and the role rule, the same on every protocol (image_part.h).
+        const std::string part = R"j({"type":"image_url","image_url":{"url":)j" + std::string(PNG_DATA_URL) + "}}";
+        std::string many;
+        for (size_t i = 0; i <= k_max_images_per_message; ++i)
+            many += (i ? "," : "") + part;
+        parsed(R"j({"messages":[{"role":"user","content":[)j" + many + "]}]}", &ok, &err);
+        check(!ok && err.find("at most " + std::to_string(k_max_images_per_message)) != std::string::npos,
+              "one image over the per-message limit is refused, naming the limit");
+        many.clear();
+        for (size_t i = 0; i < k_max_images_per_message; ++i)
+            many += (i ? "," : "") + part;
+        parsed(R"j({"messages":[{"role":"user","content":[)j" + many + "]}]}", &ok, &err);
+        check(ok, "the limit itself is allowed");
+        for (const char * role : {"system", "assistant", "tool"}) {
+            parsed(R"j({"messages":[{"role":")j" + std::string(role) + R"j(","content":[)j" + part +
+                       R"j(]},{"role":"user","content":"hi"}]})j",
+                   &ok, &err);
+            check(!ok && err.find("user message") != std::string::npos,
+                  std::string("an image on a ") + role + " message is refused: only a user message carries one");
+        }
+    }
     parsed(R"j({"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"web_search"}]})j", &ok);
     check(!ok, "a tool that is not a function is refused");
     parsed(R"j({"messages":[{"role":"user","content":"hi"}],"tool_choice":"sometimes"})j", &ok);
@@ -501,8 +554,36 @@ static void anthropic_tests() {
                   r.turn.n_predict == 100,
               "a tool search result reads as text, and no max_tokens is the configured budget");
     }
-    anthropic(R"j({"messages":[{"role":"user","content":[{"type":"image","source":{}}]}]})j", &ok, &err);
-    check(!ok && err.find("image") != std::string::npos, "an image is refused, not dropped");
+    {
+        const AnthropicRequest r = anthropic(
+            R"j({"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="}},{"type":"text","text":"Describe it"}]}]})j",
+            &ok, &err);
+        check(ok && r.turn.messages.size() == 1 && r.turn.messages[0].images.size() == 1 &&
+                  r.turn.messages[0].images[0].mime == "image/png" &&
+                  r.turn.messages[0].content == std::string(image_marker()) + "\n\nDescribe it",
+              "an image block becomes the message's image, its marker where the block was");
+        anthropic(
+            R"j({"messages":[{"role":"user","content":[{"type":"image","source":{"type":"url","url":"https://x/y.png"}}]}]})j",
+            &ok, &err);
+        check(!ok && err.find("fetches no URLs") != std::string::npos, "an image URL source is refused, not dropped");
+        anthropic(R"j({"messages":[{"role":"user","content":[{"type":"image","source":{}}]}]})j", &ok, &err);
+        check(!ok && err.find("base64") != std::string::npos, "an image block without a source is refused");
+        const std::string block =
+            R"j({"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="}})j";
+        std::string many;
+        for (size_t i = 0; i <= k_max_images_per_message; ++i)
+            many += (i ? "," : "") + block;
+        anthropic(R"j({"messages":[{"role":"user","content":[)j" + many + "]}]}", &ok, &err);
+        check(!ok && err.find("at most " + std::to_string(k_max_images_per_message)) != std::string::npos,
+              "one image block over the per-message limit is refused, naming the limit");
+        anthropic(R"j({"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":[)j" + block +
+                      R"j(]},{"role":"user","content":"and"}]})j",
+                  &ok, &err);
+        check(!ok && err.find("user message") != std::string::npos,
+              "an image block on an assistant message is refused: only a user message carries one");
+        anthropic(R"j({"messages":[{"role":"user","content":[{"type":"document","source":{}}]}]})j", &ok, &err);
+        check(!ok && err.find("document") != std::string::npos, "a document block is refused, not dropped");
+    }
     anthropic(
         R"j({"messages":[{"role":"user","content":"q"}],"tools":[{"type":"web_search_20250305","name":"web_search"}]})j",
         &ok, &err);
@@ -643,8 +724,34 @@ static void responses_tests() {
     check(!ok && err.find("previous_response_id") != std::string::npos, "previous_response_id is refused clearly");
     responses(R"j({"input":[{"type":"item_reference","id":"x"}]})j", &ok, &err);
     check(!ok && err.find("stores none") != std::string::npos, "a stored item reference is refused");
-    responses(R"j({"input":[{"role":"user","content":[{"type":"input_image","image_url":"x"}]}]})j", &ok, &err);
-    check(!ok && err.find("input_image") != std::string::npos, "an image is refused, not dropped");
+    {
+        const ResponsesRequest r = responses(
+            R"j({"input":[{"role":"user","content":[{"type":"input_text","text":"Look"},{"type":"input_image","image_url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="}]}]})j",
+            &ok, &err);
+        check(ok && r.turn.messages.size() == 1 && r.turn.messages[0].images.size() == 1 &&
+                  r.turn.messages[0].content == std::string("Look\n") + image_marker(),
+              "an input_image part becomes the message's image, its marker after the text");
+        {
+            const std::string part = R"j({"type":"input_image","image_url":)j" + std::string(PNG_DATA_URL) + "}";
+            std::string many;
+            for (size_t i = 0; i <= k_max_images_per_message; ++i)
+                many += (i ? "," : "") + part;
+            responses(R"j({"input":[{"role":"user","content":[)j" + many + "]}]}", &ok, &err);
+            check(!ok && err.find("at most " + std::to_string(k_max_images_per_message)) != std::string::npos,
+                  "one input_image over the per-message limit is refused, naming the limit");
+            responses(R"j({"input":[{"role":"system","content":[)j" + part + R"j(]},{"role":"user","content":"hi"}]})j",
+                      &ok, &err);
+            check(!ok && err.find("user message") != std::string::npos,
+                  "an input_image on a system message is refused: only a user message carries one");
+        }
+        responses(R"j({"input":[{"role":"user","content":[{"type":"input_image","file_id":"f1"}]}]})j", &ok, &err);
+        check(!ok && err.find("stored file") != std::string::npos, "an input_image by file id is refused");
+        responses(R"j({"input":[{"role":"user","content":[{"type":"input_image","image_url":"https://x/y.png"}]}]})j",
+                  &ok, &err);
+        check(!ok && err.find("fetches no URLs") != std::string::npos, "an image URL to fetch is refused, not dropped");
+        responses(R"j({"input":[{"role":"user","content":[{"type":"input_file","file_id":"f1"}]}]})j", &ok, &err);
+        check(!ok && err.find("input_file") != std::string::npos, "a file part is refused, not dropped");
+    }
     responses(R"j({"input":"hi","background":true})j", &ok, &err);
     check(!ok, "a background response is refused");
     responses(R"j({"input":[{"role":"user","content":"q"},{"role":"assistant","content":"a"}]})j", &ok, &err);
@@ -1257,6 +1364,62 @@ static void model_files_tests() {
     check(file_role(h) == FileRole::Projector, "role: a projector says so in general.type");
     h.type.clear();
     check(file_role(h) == FileRole::Projector, "role: and an older one by its projector architecture");
+    {
+        // The projector that goes with a model: by the base model both headers name, else the only one.
+        GgufHeaderFacts model;
+        model.ok = true;
+        model.arch = "qwen35moe";
+        model.type = "model";
+        model.n_block = 40;
+        model.name = "Qwen3.6 35B A3B";
+        auto proj = [](const std::string & name) {
+            GgufHeaderFacts p;
+            p.ok = true;
+            p.arch = "clip";
+            p.type = "mmproj";
+            p.name = name;
+            return p;
+        };
+        GgufHeaderFacts other = model;
+        other.name = "Other 7B";
+        std::vector<CompanionFile> folder = {{"/m/other.gguf", other},
+                                             {"/m/mmproj-other.gguf", proj("Other 7B")},
+                                             {"/m/mmproj-qwen.gguf", proj("Qwen3.6-35B-A3B")}};
+        check(projector_for(model, folder) == "/m/mmproj-qwen.gguf",
+              "pairing: the projector naming the same base model, hyphens and spaces aside");
+        check(projector_for(other, folder) == "/m/mmproj-other.gguf", "pairing: each model finds its own");
+        GgufHeaderFacts unnamed = model;
+        unnamed.name = "Something else";
+        check(projector_for(unnamed, folder).empty(), "pairing: two projectors and no name match is no choice");
+        check(projector_for(unnamed, {{"/m/mmproj-only.gguf", proj("Whatever")}}).empty(),
+              "pairing: the folder's only projector names another model, so it is nobody else's");
+        check(projector_for(unnamed, {{"/m/mmproj-only.gguf", proj("")}}) == "/m/mmproj-only.gguf",
+              "pairing: the folder's only projector with no name of its own goes with the model");
+        GgufHeaderFacts nameless = model;
+        nameless.name = "";
+        check(projector_for(nameless, {{"/m/mmproj-only.gguf", proj("Whatever")}}) == "/m/mmproj-only.gguf",
+              "pairing: a model with no name takes the folder's only projector");
+        check(projector_for(nameless, folder).empty(), "pairing: ...but never one of two");
+        check(projector_for(model, {{"/m/draft.gguf", other}}).empty(), "pairing: a folder without a projector");
+        check(name_key("Qwen3.6-35B-A3B") == "qwen3635ba3b" && name_key("Qwen3.6 35B A3B") == "qwen3635ba3b",
+              "pairing: the name key keeps letters and digits only");
+    }
+    {
+        ChatImage img;
+        std::string err;
+        check(image_from_data_url("data:image/jpeg;base64,/9j/4AAQ", img, err) && img.mime == "image/jpeg" &&
+                  img.bytes.size() == 6 && (unsigned char) img.bytes[0] == 0xFF,
+              "image part: a data URL gives the bytes and the type");
+        check(!image_from_data_url("data:image/png,abc", img, err) && err.find("base64") != std::string::npos,
+              "image part: a data URL that is not base64 is refused");
+        check(!image_from_data_url("http://x/y.png", img, err) && err.find("fetches no URLs") != std::string::npos,
+              "image part: an http URL is refused with the reason");
+        check(!image_from_base64("image/png", "", img, err), "image part: an empty body is refused");
+        std::string content = "see";
+        place_images(content, 2);
+        check(content == std::string("see\n") + image_marker() + "\n" + image_marker(),
+              "image part: markers are placed one per image, on their own lines");
+    }
     h = {};
     h.ok = true;
     h.arch = "dflash";
@@ -1416,8 +1579,12 @@ static void hf_tests() {
     in.refusal.clear();
     in.role = "projector";
     v = fit_verdict(in);
-    check(v.mode == "not a model" && !v.downloadable && v.memory.find("projector") != std::string::npos,
-          "hf: a projector is not a model, and is not offered for download");
+    check(v.mode == "not a model" && v.downloadable && v.memory.find("beside the model") != std::string::npos,
+          "hf: a projector is not a model to chat with, and is offered for download beside its model");
+    in.role = "draft";
+    v = fit_verdict(in);
+    check(v.mode == "not a model" && !v.downloadable, "hf: a draft head is not offered for download");
+    in.role = "projector";
     in.role = "draft";
     check(fit_verdict(in).mode == "not a model" && fit_verdict(in).memory.find("draft") != std::string::npos,
           "hf: nor is a draft head");
@@ -2058,6 +2225,50 @@ static void model_delete_tests() {
 
 // The CPU temperature is the mean of the sensors, and a threshold published as a zone is not one
 // (#311, #465): a fake thermal directory with a trip zone and moving sensors.
+static void model_folders_tests() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path root = fs::temp_directory_path() / "bmoe_server_test_folders";
+    fs::remove_all(root, ec);
+    fs::create_directories(root / "other", ec);
+    const std::string models = (root / "models").u8string();
+    const std::string other = (root / "other").u8string();
+
+    std::string dir;
+    std::vector<std::string> scans;
+    check(!model_folders_refusal("models", {}, dir, scans).empty(), "a relative models folder is refused");
+    check(!model_folders_refusal("", {}, dir, scans).empty(), "an empty models folder is refused");
+    check(!model_folders_refusal(models, {"other"}, dir, scans).empty(), "a relative scan folder is refused");
+    check(!model_folders_refusal(models, {(root / "missing").u8string()}, dir, scans).empty(),
+          "a scan folder that does not exist is refused");
+    check(model_folders_refusal(models, {other, other, models, ""}, dir, scans).empty(), "absolute folders are taken");
+    check(fs::is_directory(fs::u8path(models)), "the models folder is created when missing");
+    check(scans == std::vector<std::string>{other}, "repeats, empties and the models folder leave the scan list");
+    check(!fs::exists(fs::u8path(models) / ".bmoe-write-test"), "the write test leaves nothing behind");
+
+    // Chosen folders are a server setting: kept across a restart, beside the parameter values.
+    const fs::path path = root / "settings.json";
+    RunConfig defaults;
+    {
+        SettingsStore s(defaults, path.u8string());
+        s.load();
+        check(s.model_folders().models_dir.empty() && s.model_folders().scan_dirs.empty(),
+              "no folders chosen on a clean start");
+        s.set_model_folders({models, {other}});
+    }
+    SettingsStore again(defaults, path.u8string());
+    check(again.load().empty(), "saved folders reload without warnings");
+    check(again.model_folders().models_dir == models &&
+              again.model_folders().scan_dirs == std::vector<std::string>{other},
+          "the chosen folders persist");
+
+    // A folder the server writes to is the person's to choose, never a network client's.
+    check(local_only_route("PUT", "/api/models/folders") != nullptr, "choosing the folders is local-only");
+    check(local_only_route("GET", "/api/models") == nullptr, "listing the models is not");
+
+    fs::remove_all(root, ec);
+}
+
 static void thermal_tests() {
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -2101,8 +2312,199 @@ static void thermal_tests() {
     fs::remove_all(root, ec);
 }
 
+// ── the server as a service (service_spec.h, log_file.h) ──
+// What each init system is handed, as text, and how an install's arguments are completed.
+static void service_tests() {
+    check(systemd_quote("plain") == "\"plain\"", "systemd: every argument is quoted");
+    check(systemd_quote("a b") == "\"a b\"", "systemd: a space stays inside the quotes");
+    check(systemd_quote("say \"hi\"") == "\"say \\\"hi\\\"\"", "systemd: a quote is escaped");
+    check(systemd_quote("C:\\x") == "\"C:\\\\x\"", "systemd: a backslash is escaped");
+    check(systemd_quote("$HOME 5%") == "\"$$HOME 5%%\"", "systemd: $ and % arrive literally");
+
+    check(windows_quote("plain") == "plain", "windows: a plain argument passes as is");
+    check(windows_quote("a b") == "\"a b\"", "windows: a space is quoted");
+    check(windows_quote("") == "\"\"", "windows: an empty argument is a pair of quotes");
+    check(windows_quote("say \"hi\"") == "\"say \\\"hi\\\"\"", "windows: a quote is escaped");
+    check(windows_quote("C:\\my dir\\") == "\"C:\\my dir\\\\\"",
+          "windows: backslashes before the closing quote are doubled, the others not");
+    check(windows_quote("x\\\\\"y") == "\"x\\\\\\\\\\\"y\"", "windows: backslashes before a quote are doubled");
+
+    check(xml_escape("a<b>&\"c'") == "a&lt;b&gt;&amp;&quot;c&apos;", "xml: the five characters are escaped");
+
+    ServiceSpec s;
+    s.executable = "/opt/bmoe/bmoe-server";
+    s.args = {"--host", "0.0.0.0", "-m", "/models/a b.gguf"};
+    s.working_dir = "/opt/bmoe";
+    s.log_file = "/home/u/.local/share/bigmoeonedge/logs/bmoe-server.log";
+
+    const std::string unit = render_systemd_unit(s);
+    check(unit.find("ExecStart=\"/opt/bmoe/bmoe-server\" \"--host\" \"0.0.0.0\" \"-m\" \"/models/a b.gguf\"\n") !=
+              std::string::npos,
+          "systemd unit: ExecStart is the executable and every argument, quoted");
+    check(unit.find("WorkingDirectory=/opt/bmoe\n") != std::string::npos,
+          "systemd unit: the working directory, as typed (a path setting is not unquoted)");
+    check(systemd_path("/opt/100%/b") == "/opt/100%%/b", "systemd path: the specifier character is escaped");
+    check(unit.find("Restart=on-failure\n") != std::string::npos &&
+              unit.find("[Install]\nWantedBy=default.target\n") != std::string::npos,
+          "systemd unit: restarted on failure, wanted by the user's default target");
+    check(unit.find(s.log_file) == std::string::npos, "systemd unit: names no log file (the journal keeps the output)");
+
+    const std::string plist = render_launchd_plist(s);
+    check(plist.find("<key>Label</key>\n  <string>io.bigmoeonedge.server</string>") != std::string::npos,
+          "launchd plist: the label");
+    check(
+        plist.find("<string>/opt/bmoe/bmoe-server</string>\n    <string>--host</string>\n    <string>0.0.0.0</string>\n"
+                   "    <string>-m</string>\n    <string>/models/a b.gguf</string>\n  </array>") != std::string::npos,
+        "launchd plist: the program and its arguments, one string each, unquoted");
+    check(plist.find("<key>RunAtLoad</key>\n  <true/>") != std::string::npos &&
+              plist.find("<key>SuccessfulExit</key>\n    <false/>") != std::string::npos,
+          "launchd plist: run at load, kept alive after a failure only");
+    check(plist.find("<key>StandardOutPath</key>\n  <string>" + s.log_file + "</string>") != std::string::npos &&
+              plist.find("<key>StandardErrorPath</key>\n  <string>" + s.log_file + "</string>") != std::string::npos,
+          "launchd plist: both outputs to the log file");
+    ServiceSpec quiet = s;
+    quiet.log_file.clear();
+    check(render_launchd_plist(quiet).find("StandardOutPath") == std::string::npos,
+          "launchd plist: no log file, no output paths");
+
+    ServiceSpec w;
+    w.executable = "C:\\Program Files\\BigMoeOnEdge\\bmoe-server.exe";
+    w.args = {
+        "--host", "0.0.0.0", "-m", "C:\\models\\a b.gguf", "--data-dir", "C:\\Users\\u\\AppData\\Local\\BigMoeOnEdge"};
+    w.working_dir = "C:\\Program Files\\BigMoeOnEdge";
+    const std::string task = render_task_scheduler_xml(w);
+    check(task.find("<Command>C:\\Program Files\\BigMoeOnEdge\\bmoe-server.exe</Command>") != std::string::npos,
+          "task xml: the command is the executable, unquoted (its own element)");
+    check(task.find("<Arguments>--host 0.0.0.0 -m &quot;C:\\models\\a b.gguf&quot; --data-dir "
+                    "C:\\Users\\u\\AppData\\Local\\BigMoeOnEdge</Arguments>") != std::string::npos,
+          "task xml: the arguments as one command line, each quoted as Windows parses it, then XML-escaped");
+    check(task.find("<LogonType>S4U</LogonType>") != std::string::npos &&
+              task.find("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>") != std::string::npos &&
+              task.find("<LogonTrigger>") != std::string::npos,
+          "task xml: at logon, as the person with no password stored, with no time limit");
+    ServiceSpec amp = w;
+    amp.executable = "C:\\A&B\\bmoe-server.exe";
+    check(render_task_scheduler_xml(amp).find("<Command>C:\\A&amp;B\\bmoe-server.exe</Command>") != std::string::npos,
+          "task xml: a path is XML-escaped");
+
+    const std::string D = "/home/u/.local/share/bigmoeonedge", L = D + "/logs/bmoe-server.log";
+    ServiceArguments a = service_arguments({}, D, L);
+    check(a.args == std::vector<std::string>{"--data-dir", D, "--log-file", L, "--autoload"} && a.key_file.empty(),
+          "service args: nothing given gets the data folder, the log file and --autoload, and no key");
+    a = service_arguments({"--host", "0.0.0.0"}, D, L);
+    check(a.key_file == D + "/api-key", "service args: a host beyond loopback with no key gets a key file");
+    check(a.args.size() >= 2 && a.args[a.args.size() - 2] == "--api-key-file" && a.args.back() == a.key_file,
+          "service args: ...named on the command line");
+    check(service_arguments({"--host", "0.0.0.0", "--no-api-key"}, D, L).key_file.empty(),
+          "service args: --no-api-key is the person's decision, no key is made");
+    check(service_arguments({"--host", "0.0.0.0", "--api-key-file", "/k"}, D, L).key_file.empty(),
+          "service args: a key file given is kept");
+    check(service_arguments({"--host", "0.0.0.0", "--api-key", "s3cret"}, D, L).key_file.empty(),
+          "service args: a key given is kept");
+    check(service_arguments({"--host", "127.0.0.1"}, D, L).key_file.empty() &&
+              service_arguments({"--host", "localhost"}, D, L).key_file.empty(),
+          "service args: loopback needs no key");
+    {
+        const auto takes = [](const std::string & f) { return f == "-m" || f == "--models-dir"; };
+        const auto abs = [](const std::string & p) { return p[0] == '/' ? p : "/cwd/" + p; };
+        check(with_absolute_paths({"-m", "x.gguf", "--host", "0.0.0.0", "--models-dir", "/m", "-c", "4096", "-m"},
+                                  takes, abs) == std::vector<std::string>{"-m", "/cwd/x.gguf", "--host", "0.0.0.0",
+                                                                          "--models-dir", "/m", "-c", "4096", "-m"},
+              "absolute paths: a path-valued argument is resolved, the rest and a trailing flag are as typed");
+    }
+    a = service_arguments({"--open", "-m", "x.gguf", "--autoload", "--data-dir", "/d2", "--log-file", "/l2"}, D, L);
+    check(a.args == std::vector<std::string>{"-m", "x.gguf", "--autoload", "--data-dir", "/d2", "--log-file", "/l2"},
+          "service args: --open is dropped, what was given is kept once and in its order, nothing added twice");
+
+    // Rotation: the file moves aside at the size, replacing an older one; smaller or missing stays.
+    std::error_code ec;
+    const fs::path root = fs::temp_directory_path(ec) / "bmoe-log-test";
+    fs::remove_all(root, ec);
+    fs::create_directories(root, ec);
+    const std::string log = (root / "s.log").u8string();
+    std::string err;
+    check(rotate_log(log, 5, err) && !fs::exists(root / "s.log.1", ec), "rotate: a missing log is nothing to do");
+    { std::ofstream(log, std::ios::binary) << "abc"; }
+    check(rotate_log(log, 5, err) && fs::exists(root / "s.log", ec) && !fs::exists(root / "s.log.1", ec),
+          "rotate: a log under the size stays");
+    { std::ofstream(log, std::ios::binary) << "0123456789"; }
+    { std::ofstream(root / "s.log.1", std::ios::binary) << "old"; }
+    check(rotate_log(log, 5, err) && !fs::exists(root / "s.log", ec) && fs::file_size(root / "s.log.1", ec) == 10,
+          "rotate: at the size it becomes .1, replacing the older .1");
+    fs::remove_all(root, ec);
+}
+
+// A streamed turn's writer (stream_keepalive.h). Timing-based: the margins are wide (a keep-alive
+// interval of 30 ms checked over 400 ms; writes every 10 ms against an interval of 1 s) so a
+// loaded CI machine does not flip them.
+static void keepalive_tests() {
+    using namespace std::chrono_literals;
+    struct Sink {
+        std::mutex m;
+        std::vector<std::string> frames;
+        bool fail = false;
+        void set_fail(bool v) {
+            std::lock_guard<std::mutex> g(m);
+            fail = v;
+        }
+        bool write(const std::string & f) {
+            std::lock_guard<std::mutex> g(m);
+            if (fail) return false;
+            frames.push_back(f);
+            return true;
+        }
+        int count(const std::string & f) {
+            std::lock_guard<std::mutex> g(m);
+            int n = 0;
+            for (const auto & x : frames)
+                n += x == f;
+            return n;
+        }
+        size_t size() {
+            std::lock_guard<std::mutex> g(m);
+            return frames.size();
+        }
+    };
+    {
+        Sink sink;
+        StreamKeepalive w([&](const std::string & f) { return sink.write(f); }, "PING", 30ms);
+        check(w.write("a"), "keepalive: a write reports the client alive");
+        std::this_thread::sleep_for(400ms);
+        w.stop();
+        const int pings = sink.count("PING");
+        check(pings >= 2, "keepalive: a silent turn is pinged once per interval (" + std::to_string(pings) + ")");
+        const size_t after_stop = sink.size();
+        std::this_thread::sleep_for(100ms);
+        check(sink.size() == after_stop, "keepalive: nothing is written once stopped");
+        w.stop(); // idempotent
+    }
+    {
+        Sink sink;
+        StreamKeepalive w([&](const std::string & f) { return sink.write(f); }, "PING", 1000ms);
+        for (int i = 0; i < 30; ++i) {
+            w.write("t");
+            std::this_thread::sleep_for(10ms);
+        }
+        w.write(""); // an empty frame is no write
+        w.stop();
+        check(sink.count("PING") == 0, "keepalive: a turn that keeps writing is never pinged");
+        check(sink.size() == 30, "keepalive: an empty frame writes nothing");
+    }
+    {
+        Sink sink;
+        StreamKeepalive w([&](const std::string & f) { return sink.write(f); }, "PING", 20ms);
+        sink.set_fail(true);
+        check(!w.write("x"), "keepalive: a failed write marks the client gone");
+        check(!w.alive(), "keepalive: and it stays gone");
+        sink.set_fail(false);
+        std::this_thread::sleep_for(100ms);
+        check(!w.write("y") && sink.size() == 0, "keepalive: nothing is written after a failed write, ping included");
+    }
+}
+
 int main() {
     thermal_tests();
+    service_tests();
     protocol_tests();
     block_stream_tests();
     anthropic_tests();
@@ -2119,8 +2521,10 @@ int main() {
     plan_view_tests();
     download_tests();
     event_bus_tests();
+    keepalive_tests();
     url_entry_tests();
     model_delete_tests();
+    model_folders_tests();
     if (failures) {
         std::printf("\n%d check(s) FAILED\n", failures);
         return 1;

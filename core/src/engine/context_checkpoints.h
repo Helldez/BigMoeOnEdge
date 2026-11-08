@@ -21,6 +21,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 struct common_speculative;
@@ -41,6 +42,10 @@ public:
     // between two of them, in tokens, except for the one at the end of a prompt. n_swa: the model's
     // sliding window (llama_model_n_swa), which decides how far back a checkpoint may reach.
     void configure(int max_count, int min_step, int n_swa);
+    // The context position of the first n tokens' end. Identity until set: a prompt with images in
+    // it takes fewer positions than tokens, and the session says how many (prompt_stream.h).
+    using PositionMap = std::function<llama_pos(int64_t n_tokens)>;
+    void set_position_map(PositionMap map) { pos_of_ = std::move(map); }
 
     bool enabled() const { return max_count_ > 0; }
     // Whether a checkpoint after n_tokens is worth taking: the end of a prompt always is, a point
@@ -61,6 +66,8 @@ public:
     size_t bytes() const;
 
 private:
+    llama_pos pos_of(int64_t n) const { return pos_of_ ? pos_of_(n) : (llama_pos) n; }
+    PositionMap pos_of_;
     std::vector<common_prompt_checkpoint> list_;
     int max_count_ = 0;
     int min_step_ = 0;

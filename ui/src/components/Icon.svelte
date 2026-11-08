@@ -3,6 +3,7 @@
   // "Geometry"). Drawn for this UI; each is one or more path strings.
   export const ICONS = {
     plus: ['M12 5v14', 'M5 12h14'],
+    image: ['M4.5 5.5h15a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1h-15a1 1 0 0 1-1-1v-11a1 1 0 0 1 1-1z', 'M4 16l5-5 4 4 3-3 4.5 4.5', 'M15.5 9.5a1 1 0 1 0 0-2 1 1 0 0 0 0 2z'],
     search: ['M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14z', 'M20 20l-4-4'],
     chat: ['M5 5h14a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H10l-4 3v-3H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z'],
     folder: ['M3.5 7a1.5 1.5 0 0 1 1.5-1.5h4l2 2h8A1.5 1.5 0 0 1 20.5 9v8a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 17z'],

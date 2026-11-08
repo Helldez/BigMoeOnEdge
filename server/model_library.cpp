@@ -99,16 +99,7 @@ ModelLibrary::ModelLibrary(std::string models_dir,
                            std::string hf_endpoint,
                            EventBus & bus)
     : dir_(std::move(models_dir)), added_path_(std::move(added_path)), hf_endpoint_(std::move(hf_endpoint)), bus_(bus) {
-    // A scan directory that is the models directory, or repeats another, would list its models twice.
-    std::set<fs::path> seen;
-    const auto key = [](const std::string & d) {
-        std::error_code ec;
-        const fs::path p = fs::weakly_canonical(fs::u8path(d), ec);
-        return ec ? fs::u8path(d) : p;
-    };
-    seen.insert(key(dir_));
-    for (std::string & d : scan_dirs)
-        if (!d.empty() && seen.insert(key(d)).second) scan_dirs_.push_back(std::move(d));
+    scan_dirs_ = distinct_scan_dirs(dir_, std::move(scan_dirs));
 
     std::error_code ec;
     fs::create_directories(fs::u8path(dir_), ec);
@@ -133,6 +124,32 @@ ModelLibrary::ModelLibrary(std::string models_dir,
         warnings_.push_back("the added models file " + added_path_ + " is malformed and is ignored: " + ex.what());
         added_.clear();
     }
+}
+
+std::string ModelLibrary::models_dir() const {
+    std::lock_guard<std::mutex> lk(dirs_m_);
+    return dir_;
+}
+
+std::vector<std::string> ModelLibrary::model_roots() const {
+    std::lock_guard<std::mutex> lk(dirs_m_);
+    std::vector<std::string> r{dir_};
+    r.insert(r.end(), scan_dirs_.begin(), scan_dirs_.end());
+    return r;
+}
+
+ModelLibrary::FolderRefusal ModelLibrary::set_folders(std::string models_dir, std::vector<std::string> scan_dirs) {
+    std::string dir;
+    std::vector<std::string> scans;
+    const std::string why = model_folders_refusal(models_dir, scan_dirs, dir, scans);
+    if (!why.empty()) return {400, why};
+    std::lock_guard<std::mutex> lk(m_);
+    for (const auto & [id, job] : jobs_)
+        if (!job->finished) return {409, "a download is running: cancel it or let it finish first"};
+    std::lock_guard<std::mutex> dlk(dirs_m_);
+    dir_ = std::move(dir);
+    scan_dirs_ = std::move(scans);
+    return {};
 }
 
 void ModelLibrary::save_added() {
@@ -217,10 +234,30 @@ ModelLibrary::ModelFacts ModelLibrary::probe(const std::string & path) {
     ModelFacts facts;
     facts.arch = m.arch;
     facts.streamable = m.ok && m.is_moe;
-    facts.role = file_role_name(file_role(probe_gguf_header(path.c_str())));
+    const GgufHeaderFacts header = probe_gguf_header(path.c_str());
+    facts.role = file_role_name(file_role(header));
+    facts.name = header.name;
     std::lock_guard<std::mutex> lk(m_);
     facts_cache_[path] = {size, mt, facts};
     return facts;
+}
+
+std::string ModelLibrary::projector_for(const std::string & path) {
+    const GgufHeaderFacts model = probe_gguf_header(path.c_str());
+    if (!model.ok || file_role(model) != FileRole::Model) return "";
+    std::error_code ec;
+    const fs::path folder = fs::u8path(path).parent_path();
+    std::vector<CompanionFile> files;
+    for (const fs::directory_entry & e : fs::directory_iterator(folder, ec)) {
+        if (ec) break;
+        if (!e.is_regular_file(ec) || e.path().extension() != ".gguf") continue;
+        const std::string p = e.path().u8string();
+        if (p == path) continue;
+        // Headers only (no tensor bytes), of files that are not this model: cheap, and the shards
+        // of a split model are not projectors and fall out at the role check.
+        files.push_back({p, probe_gguf_header(p.c_str())});
+    }
+    return bmoe::server::projector_for(model, files);
 }
 
 const CatalogEntry * ModelLibrary::find(const std::string & id) const {
@@ -231,22 +268,22 @@ const CatalogEntry * ModelLibrary::find(const std::string & id) const {
     return nullptr;
 }
 
-bool ModelLibrary::entry_on_disk(const CatalogEntry & e) const {
+bool ModelLibrary::entry_on_disk(const CatalogEntry & e, const std::string & dir) const {
     for (const CatalogFile & f : e.files)
-        if (!has_exact_size(fs::u8path(dir_) / fs::u8path(f.name), f.bytes)) return false;
+        if (!has_exact_size(fs::u8path(dir) / fs::u8path(f.name), f.bytes)) return false;
     return true;
 }
 
-ModelLibrary::OnDisk ModelLibrary::on_disk(const CatalogEntry & e) const {
+ModelLibrary::OnDisk ModelLibrary::on_disk(const CatalogEntry & e, const std::string & dir) const {
     OnDisk d;
     for (const CatalogFile & f : e.files) {
-        const fs::path final_path = fs::u8path(dir_) / fs::u8path(f.name);
+        const fs::path final_path = fs::u8path(dir) / fs::u8path(f.name);
         if (has_exact_size(final_path, f.bytes)) {
             d.received += f.bytes ? f.bytes : file_size_or_zero(final_path);
             continue;
         }
         std::string part;
-        if (!partial_file_path(dir_, f.name, part)) {
+        if (!partial_file_path(dir, f.name, part)) {
             d.still_needed += f.bytes;
             continue;
         }
@@ -290,6 +327,8 @@ void ModelLibrary::list_dir(const std::string & dir, json & out) {
         // Only the first shard carries the metadata; a set without it has no architecture to read.
         const bool has_first = !m.files.empty() && m.files.front() == m.first;
         const ModelFacts facts = has_first ? probe(first.u8string()) : ModelFacts{};
+        // The projector beside it, by header: a model with one reads images once loaded.
+        const std::string projector = has_first && facts.role == "model" ? projector_for(first.u8string()) : "";
         out.push_back({{"name", m.first},
                        {"path", first.generic_u8string()},
                        {"dir", root.generic_u8string()},
@@ -300,6 +339,7 @@ void ModelLibrary::list_dir(const std::string & dir, json & out) {
                        {"arch", facts.arch},
                        {"role", facts.role},
                        {"streamable", facts.streamable},
+                       {"projector", projector.empty() ? "" : fs::u8path(projector).filename().u8string()},
                        {"complete", m.complete()}});
     }
 }
@@ -307,10 +347,25 @@ void ModelLibrary::list_dir(const std::string & dir, json & out) {
 json ModelLibrary::list() {
     // The models directory first, then each scan directory in the order given: the order a host
     // app ranks them in (a real filesystem before an emulated one).
+    const std::vector<std::string> roots = model_roots();
+    const std::string & dir = roots.front();
     json local = json::array();
-    list_dir(dir_, local);
-    for (const std::string & d : scan_dirs_)
+    for (const std::string & d : roots)
         list_dir(d, local);
+    // One row per file on disk: a scan directory inside the models directory, or a link to a model
+    // listed from where it really is (a phone's models folder pointing into shared storage), would
+    // otherwise list the same model twice. The first listing wins, which is the models directory's.
+    {
+        std::set<std::string> seen;
+        json unique = json::array();
+        for (json & m : local) {
+            std::error_code ec;
+            const fs::path real = fs::weakly_canonical(fs::u8path(m.value("path", "")), ec);
+            const std::string key = ec ? m.value("path", "") : real.generic_u8string();
+            if (seen.insert(key).second) unique.push_back(std::move(m));
+        }
+        local = std::move(unique);
+    }
 
     json catalog = json::array();
     std::lock_guard<std::mutex> lk(m_);
@@ -325,10 +380,10 @@ json ModelLibrary::list() {
         for (const CatalogFile & f : e.files)
             bytes += f.bytes;
         const bool running = running_locked(e.id);
-        const char * status = running ? "downloading" : entry_on_disk(e) ? "on_disk" : "available";
+        const char * status = running ? "downloading" : entry_on_disk(e, dir) ? "on_disk" : "available";
         // What is already here, so a download stopped by a failure, a cancel or a restart of the
         // server (jobs live in memory; the `.part` files do not) still shows as one to resume.
-        const OnDisk have = on_disk(e);
+        const OnDisk have = on_disk(e, dir);
         // Every file with its URL: a host that has no curl (a phone) downloads for itself, and the
         // catalog is still the one place the URLs are written. The digest goes with them, so that downloader checks
         // what it fetched as the server does.
@@ -352,9 +407,9 @@ json ModelLibrary::list() {
                            {"note", e.files.size() > 1 ? std::to_string(e.files.size()) + " shards" : ""}});
     }
     json scan = json::array();
-    for (const std::string & d : scan_dirs_)
-        scan.push_back(fs::u8path(d).generic_u8string());
-    return json{{"models_dir", fs::u8path(dir_).generic_u8string()},
+    for (size_t i = 1; i < roots.size(); ++i)
+        scan.push_back(fs::u8path(roots[i]).generic_u8string());
+    return json{{"models_dir", fs::u8path(dir).generic_u8string()},
                 {"scan_dirs", scan},
                 {"local", local},
                 {"catalog", catalog}};
@@ -383,11 +438,13 @@ ModelLibrary::DownloadRefusal ModelLibrary::start_download(const std::string & i
     }
     // Before a byte moves, against what is left: a resume needs only the bytes its `.part` files
     // lack, and a full disk found halfway through a 47 GB transfer is hours lost to a curl write error.
+    const std::string dir = models_dir();
     std::error_code ec;
-    const fs::space_info space = fs::space(fs::u8path(dir_), ec);
-    const std::string refusal = free_space_refusal(on_disk(*e).still_needed, ec ? 0 : (uint64_t) space.available);
+    const fs::space_info space = fs::space(fs::u8path(dir), ec);
+    const std::string refusal = free_space_refusal(on_disk(*e, dir).still_needed, ec ? 0 : (uint64_t) space.available);
     if (!refusal.empty()) return {507, refusal};
     auto job = std::make_unique<Job>();
+    job->dir = dir;
     Job * j = job.get();
     const CatalogEntry entry = *e;
     job->thread = std::thread([this, entry, j] {
@@ -410,7 +467,7 @@ ModelLibrary::DownloadRefusal ModelLibrary::delete_partial(const std::string & i
     for (const CatalogFile & f : e->files)
         names.push_back(f.name);
     std::string err;
-    if (!delete_partial_files(dir_, names, freed, err)) return {500, err};
+    if (!delete_partial_files(models_dir(), names, freed, err)) return {500, err};
     return {};
 }
 
@@ -420,7 +477,8 @@ ModelLibrary::delete_model(const std::string & rel, const std::string & loaded, 
     ModelDeletion d;
     bool not_found = false;
     std::string err;
-    if (!find_model_to_delete(dir_, rel, d, not_found, err)) return {not_found ? 404 : 400, err};
+    const std::string dir = models_dir();
+    if (!find_model_to_delete(dir, rel, d, not_found, err)) return {not_found ? 404 : 400, err};
     if (deletion_touches(d, loaded)) return {409, rel + " is loaded: unload it first"};
     std::lock_guard<std::mutex> lk(m_);
     // A download writes its files at the top of the models folder, by the names its entry lists.
@@ -433,7 +491,7 @@ ModelLibrary::delete_model(const std::string & rel, const std::string & loaded, 
                 for (const std::string & n : d.names)
                     if (f.name == n) return {409, n + " belongs to a download that is running: cancel it first"};
         }
-    const bool ok = delete_model_files(dir_, d, freed, err);
+    const bool ok = delete_model_files(dir, d, freed, err);
     for (const std::string & p : d.paths)
         facts_cache_.erase(p);
     if (!ok) return {500, err};
@@ -458,12 +516,12 @@ void ModelLibrary::run_download(const CatalogEntry & e, Job & job) {
 
     for (const CatalogFile & f : e.files) {
         std::string part_u8;
-        if (!partial_file_path(dir_, f.name, part_u8)) {
+        if (!partial_file_path(job.dir, f.name, part_u8)) {
             publish(e.id, f.name, done, total, "error",
                     "the catalog names '" + f.name + "', which is not a plain file name");
             return;
         }
-        const fs::path final_path = fs::u8path(dir_) / fs::u8path(f.name);
+        const fs::path final_path = fs::u8path(job.dir) / fs::u8path(f.name);
         const fs::path part = fs::u8path(part_u8);
         if (has_exact_size(final_path, f.bytes)) {
             done += f.bytes;
@@ -556,9 +614,9 @@ void ModelLibrary::run_download(const CatalogEntry & e, Job & job) {
 bool ModelLibrary::finish_file(
     const CatalogEntry & e, const CatalogFile & f, Job & job, uint64_t done, uint64_t total) {
     std::string part_u8;
-    if (!partial_file_path(dir_, f.name, part_u8)) return false; // run_download checked it already
+    if (!partial_file_path(job.dir, f.name, part_u8)) return false; // run_download checked it already
     const fs::path part = fs::u8path(part_u8);
-    const fs::path final_path = fs::u8path(dir_) / fs::u8path(f.name);
+    const fs::path final_path = fs::u8path(job.dir) / fs::u8path(f.name);
     const uint64_t size = file_size_or_zero(part);
     if (!f.sha256.empty()) {
         // Reading tens of gigabytes back takes a while: the row says what it waits for, and a cancel

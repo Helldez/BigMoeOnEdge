@@ -164,6 +164,36 @@ FileRole file_role(const GgufHeaderFacts & h) {
     return FileRole::Model;
 }
 
+std::string name_key(const std::string & name) {
+    std::string k;
+    for (char c : name)
+        if (std::isalnum((unsigned char) c)) k += (char) std::tolower((unsigned char) c);
+    return k;
+}
+
+std::string projector_for(const GgufHeaderFacts & model, const std::vector<CompanionFile> & folder) {
+    std::vector<const CompanionFile *> projectors;
+    for (const CompanionFile & f : folder)
+        if (file_role(f.header) == FileRole::Projector) projectors.push_back(&f);
+    if (projectors.empty()) return "";
+    const std::string want = name_key(model.name);
+    // A projector whose header names a base model is that model's: when both sides carry a name
+    // and the names differ, the two are never paired, however alone the projector is in the folder.
+    // The folder's only projector goes with a model only where one of the two has no name to check.
+    std::vector<const CompanionFile *> same, unnamed_side;
+    for (const CompanionFile * p : projectors) {
+        const std::string have = name_key(p->header.name);
+        if (!want.empty() && !have.empty()) {
+            if (have == want) same.push_back(p);
+        } else {
+            unnamed_side.push_back(p);
+        }
+    }
+    if (same.size() == 1) return same.front()->path;
+    if (same.size() > 1) return "";
+    return unnamed_side.size() == 1 && projectors.size() == 1 ? unnamed_side.front()->path : "";
+}
+
 FileRole file_role_hint(const std::string & name) {
     const size_t slash = name.find_last_of('/');
     const std::string base = lower(slash == std::string::npos ? name : name.substr(slash + 1));

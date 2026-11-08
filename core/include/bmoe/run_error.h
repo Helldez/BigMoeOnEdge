@@ -17,6 +17,7 @@ enum class RunError {
     TemplateRejected, // the model's chat template refused the message list
     NeedsChatMode,    // a message list sent to a session opened without the chat template
     InvalidRequest,   // the request itself is malformed (decide: no choices, colliding choices, off)
+    NoVision,         // the request carries images and the session has no projector to read them
     Failed,           // the model did not load, or a decode or the expert stream failed mid-run
     InvalidOutput,    // the requested response contract failed; the turn was rolled back
 };

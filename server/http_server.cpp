@@ -31,8 +31,13 @@
 #include "platform.h"
 #include "routing_store.h"
 #include "settings_store.h"
+#include "stream_keepalive.h"
 #include "update_service.h"
 #include "url_entry.h"
+
+#include "log_file.h"
+#include "server_flags.h"
+#include "service_manager.h"
 
 #include "bmoe/config.h"
 #include "bmoe/params.h"
@@ -79,6 +84,9 @@ constexpr size_t kWorkerThreads = k_max_event_streams + 1 + k_max_waiting_turns 
 // Connections accepted while every worker is busy. Past this the server closes the next one at once:
 // a client that floods the port gets refused rather than an unbounded queue in this process.
 constexpr size_t kMaxQueuedRequests = 64;
+// A request body: a conversation with its images inline as base64 (a screenshot is a few MiB, a
+// third more once encoded), never a model file.
+constexpr size_t kMaxRequestBytes = 64ull << 20;
 // How often an idle event stream is pinged: what keeps it open through a proxy that drops a silent
 // connection, and the write that finds a client that stopped reading.
 constexpr std::chrono::seconds kEventPingInterval{15};
@@ -141,7 +149,9 @@ struct Options {
     bool models_only = false; // every client, local ones too, names models in the models folder only
     bool chat_only = false;   // conversations are plain chat: no agent tools, workspaces or tasks
     bool open_browser = false;
-    bool isolated_probes = true;                  // the planner asks each device in a child process first
+    bool autoload = false;       // load the model the settings name at start and whenever a request finds none
+    std::string log_file;        // --log-file: the console's output goes here instead, rotated at start
+    bool isolated_probes = true; // the planner asks each device in a child process first
     std::string hf_endpoint = kDefaultHfEndpoint; // where repositories are listed and fetched from
     std::string feed_url = kFeedUrl;              // the release feed, read only when a person asks
     long parent_pid = 0;                          // --parent-pid: stop when that process is gone
@@ -198,12 +208,19 @@ void print_usage(const char * argv0) {
                 "  --feed-url URL       the signed release feed backend packs and updates are read from\n"
                 "                       (https; default: this project's latest release)\n"
                 "  --parent-pid PID     stop when process PID ends (the app that started this server)\n"
+                "  --autoload           load the model the settings name at start, and again when a request\n"
+                "                       finds none loaded (the request waits for it): what a service runs with\n"
+                "  --log-file PATH      write the console's output to PATH instead, appended, moved aside at\n"
+                "                       start once it passes %d MiB\n"
                 "  -h, --help           this text\n"
                 "      --version        print the engine version\n"
                 "\n"
                 "Engine parameters are the bmoe-cli flags (bmoe-cli --help lists them). Given here, they\n"
-                "hold for this run and outrank saved settings; -m loads that model at start.\n",
-                argv0, kDefaultHost, kDefaultPort, kDefaultHfEndpoint);
+                "hold for this run and outrank saved settings; -m loads that model at start.\n"
+                "\n"
+                "%s service install|uninstall|start|stop|status: the server as a service of your init\n"
+                "system, started at login (%s service --help).\n",
+                argv0, kDefaultHost, kDefaultPort, kDefaultHfEndpoint, (int) (kLogRotateBytes >> 20), argv0, argv0);
 }
 
 // -1: continue; otherwise the exit code.
@@ -218,7 +235,7 @@ int parse_args(int argc, char ** argv, Options & o) {
             }
             return argv[++i];
         };
-        if (a == "--host")
+        if (a == flag::host)
             o.host = next();
         else if (a == "--port") {
             long long port = 0;
@@ -228,13 +245,13 @@ int parse_args(int argc, char ** argv, Options & o) {
                 return 2;
             }
             o.port = (int) port;
-        } else if (a == "--open")
+        } else if (a == flag::open)
             o.open_browser = true;
         else if (a == "--models-dir")
             o.models_dir = next();
         else if (a == "--scan-dir")
             o.scan_dirs.push_back(next());
-        else if (a == "--data-dir")
+        else if (a == flag::data_dir)
             o.data_dir = next();
         else if (a == "--ui-dir")
             o.ui_dir = next();
@@ -246,16 +263,20 @@ int parse_args(int argc, char ** argv, Options & o) {
             o.mcp_config = next();
         else if (a == "--allow-origin")
             o.allow_origins.push_back(next());
-        else if (a == "--api-key")
+        else if (a == flag::api_key)
             o.api_key = next();
-        else if (a == "--api-key-file")
+        else if (a == flag::api_key_file)
             o.api_key_file = next();
-        else if (a == "--no-api-key")
+        else if (a == flag::no_api_key)
             o.no_api_key = true;
         else if (a == "--models-only")
             o.models_only = true;
         else if (a == "--chat-only")
             o.chat_only = true;
+        else if (a == flag::autoload)
+            o.autoload = true;
+        else if (a == flag::log_file)
+            o.log_file = next();
         else if (a == "--no-isolated-probes")
             o.isolated_probes = false;
         else if (a == "--probe-device")
@@ -268,7 +289,7 @@ int parse_args(int argc, char ** argv, Options & o) {
                 std::fprintf(stderr, "bmoe-server: --hf-endpoint must be an http(s) URL\n");
                 return 2;
             }
-        } else if (a == "--parent-pid") {
+        } else if (a == flag::parent_pid) {
             long long pid = 0;
             std::string err;
             if (!parse_int_strict(next(), 1, std::numeric_limits<int>::max(), pid, err)) {
@@ -448,6 +469,41 @@ struct App {
     // Each model's recorded routing, kept for the next plan of that file (routing_store.h).
     RoutingStore routing;
 
+    // The models folder when none is chosen: <data dir>/models.
+    std::string default_models_dir;
+
+    // The folders the library lists: what the launch names (--models-dir, --scan-dir) over what a
+    // person chose (store.model_folders), over the default. Applied at start and on every change; a
+    // chosen folder that is gone (a drive unplugged) falls back to the default with a warning, and
+    // stays chosen, so it comes back when the drive does.
+    ModelLibrary::FolderRefusal apply_model_folders(const SettingsStore::ModelFolders & chosen) {
+        const std::string dir = !opt.models_dir.empty()      ? opt.models_dir
+                                : !chosen.models_dir.empty() ? chosen.models_dir
+                                                             : default_models_dir;
+        std::vector<std::string> scans = opt.scan_dirs;
+        scans.insert(scans.end(), chosen.scan_dirs.begin(), chosen.scan_dirs.end());
+        return lib.set_folders(dir, scans);
+    }
+
+    // /api/models, with which folders a person may change: those the launch named are fixed.
+    json models_object() {
+        json o = lib.list();
+        const SettingsStore::ModelFolders chosen = store.model_folders();
+        json launch_scans = json::array();
+        for (const std::string & d : opt.scan_dirs)
+            launch_scans.push_back(fs::u8path(d).generic_u8string());
+        json chosen_scans = json::array();
+        for (const std::string & d : chosen.scan_dirs)
+            chosen_scans.push_back(fs::u8path(d).generic_u8string());
+        o["folders"] = {
+            {"default_models_dir", fs::u8path(default_models_dir).generic_u8string()},
+            {"chosen_models_dir", chosen.models_dir.empty() ? "" : fs::u8path(chosen.models_dir).generic_u8string()},
+            {"models_dir_at_launch", !opt.models_dir.empty()},
+            {"launch_scan_dirs", launch_scans},
+            {"chosen_scan_dirs", chosen_scans}};
+        return o;
+    }
+
     // The agent (docs/agent.md): what it keeps, its runs and scheduler, and what its routes reach.
     // Declared after the host, so it is destroyed, and its runs stopped and joined, before the host.
     std::unique_ptr<agent::AgentStore> agent_store;
@@ -478,7 +534,10 @@ struct App {
     // A measurement, with each stage announced as it starts (`plan_progress` events) and its end, so
     // a UI says which probe is running rather than waiting blind. The caller holds measure_m.
     PlanOutcome measure_plan() {
-        const RunConfig cfg = store.planning_config();
+        RunConfig cfg = store.planning_config();
+        // The projector the load pairs (load_current, below) is priced by the plan, so it is paired
+        // here first: a plan made without it would size the cache into the projector's bytes.
+        if (cfg.mmproj.empty()) cfg.mmproj = lib.projector_for(cfg.model_path);
         RoutingTrace kept;
         const bool have = routing.load(cfg.model_path, kept);
         // The knob verdicts kept for this model; a plan here always lets the first answer measure
@@ -537,8 +596,28 @@ struct App {
     // A model this build does not stream (a dense one) cannot open with streaming on, so streaming
     // follows the model unless the user set it themselves.
     std::string load_current() {
-        if (store.config().model_path.empty()) return "no model selected";
         std::lock_guard<std::mutex> load(load_m);
+        return load_current_locked();
+    }
+
+    // A request that needs a model: "" when one is ready, or loading (the turn then waits for it,
+    // as a turn sent during a load does), or, with --autoload, when nothing was loaded and the
+    // load of the model the settings name has just been asked for. Otherwise why the request is
+    // refused (503 `no_model`). The load is asked for under load_m, so the requests that arrive
+    // together ask once and the others find it loading.
+    std::string model_for_request() {
+        if (host.ready()) return "";
+        if (!opt.autoload) return "no model is loaded: load one from the Models page";
+        if (host.loaded_or_loading()) return "";
+        if (store.config().model_path.empty()) return "no model is selected: choose one from the Models page";
+        std::lock_guard<std::mutex> load(load_m);
+        if (host.loaded_or_loading()) return "";
+        return load_current_locked();
+    }
+
+    // The caller holds load_m.
+    std::string load_current_locked() {
+        if (store.config().model_path.empty()) return "no model selected";
         if (auto_plan()) {
             host.unload();
             host.begin_planning();
@@ -573,6 +652,9 @@ struct App {
         const ModelLibrary::ModelFacts facts = lib.probe(requested.model_path);
         if (effective.moe.enabled && !pinned && !facts.arch.empty() && !facts.streamable) effective.moe.enabled = false;
         if (!effective.moe.enabled) drop_streaming_only(effective);
+        // The projector beside the model, unless one was named: a model whose folder holds its
+        // mmproj file reads images with nothing set.
+        if (effective.mmproj.empty()) effective.mmproj = lib.projector_for(requested.model_path);
         return host.load(effective, requested);
     }
 
@@ -672,7 +754,8 @@ json hf_model_json(const HfModel & m) {
 // One turn of an agent protocol (Anthropic Messages, OpenAI Responses): the chat endpoint's turn,
 // answered whole through `answer` or streamed through `Stream` (AnthropicStream, ResponsesStream),
 // whose frames are append-only (agent_protocol.h). `keepalive` is what the protocol writes while
-// the turn waits its place in line.
+// the turn waits its place in line, and whenever the turn itself has been silent for a ping
+// interval (stream_keepalive.h).
 template <class Stream, class Answer>
 void agent_turn(App & app,
                 const httplib::Request & req,
@@ -690,36 +773,30 @@ void agent_turn(App & app,
     }
     res.set_header("Cache-Control", "no-cache");
     res.set_header("X-Accel-Buffering", "no");
-    res.set_chunked_content_provider("text/event-stream",
-                                     [&app, turn, meta, keepalive](size_t, httplib::DataSink & sink) {
-                                         // As on the chat endpoint, a failed write marks the client gone, and stopping
-                                         // the work is the host's, through on_token's answer.
-                                         bool alive = true;
-                                         auto write = [&](const std::string & frames) {
-                                             if (alive && !frames.empty() && !sink.write(frames.data(), frames.size()))
-                                                 alive = false;
-                                         };
-                                         Stream s(meta);
-                                         write(s.start());
-                                         ChatOutcome out = app.host.chat(
-                                             turn,
-                                             [&](const TokenMetrics & m) {
-                                                 if (alive) write(s.on_token(m.text, m.reasoning));
-                                                 return alive;
-                                             },
-                                             [&] {
-                                                 write(keepalive);
-                                                 return alive;
-                                             });
-                                         if (out.status != 200) {
-                                             write(s.error(out.status, out.error, out.code));
-                                         } else {
-                                             ensure_tool_call_ids(out.result.tool_calls, meta.id);
-                                             write(s.finish(out.result, finish_reason(out.result, out.n_predict)));
-                                         }
-                                         sink.done();
-                                         return true;
-                                     });
+    res.set_chunked_content_provider(
+        "text/event-stream", [&app, turn, meta, keepalive](size_t, httplib::DataSink & sink) {
+            // As on the chat endpoint, a failed write marks the client gone, and stopping
+            // the work is the host's, through on_token's answer.
+            StreamKeepalive out_stream([&sink](const std::string & f) { return sink.write(f.data(), f.size()); },
+                                       keepalive, kEventPingInterval);
+            Stream s(meta);
+            out_stream.write(s.start());
+            ChatOutcome out = app.host.chat(
+                turn,
+                [&](const TokenMetrics & m) {
+                    return out_stream.alive() && out_stream.write(s.on_token(m.text, m.reasoning));
+                },
+                [&] { return out_stream.write(keepalive); });
+            if (out.status != 200) {
+                out_stream.write(s.error(out.status, out.error, out.code));
+            } else {
+                ensure_tool_call_ids(out.result.tool_calls, meta.id);
+                out_stream.write(s.finish(out.result, finish_reason(out.result, out.n_predict)));
+            }
+            out_stream.stop();
+            sink.done();
+            return true;
+        });
 }
 
 void register_routes(httplib::Server & svr, App & app) {
@@ -799,7 +876,13 @@ void register_routes(httplib::Server & svr, App & app) {
     svr.Get("/v1/models", [&](const httplib::Request &, httplib::Response & res) {
         json data = json::array();
         const std::string name = app.host.model_name();
-        if (!name.empty()) data.push_back({{"id", name}, {"object", "model"}, {"owned_by", "local"}});
+        // `modalities` is not OpenAI's field: a client that wants to know whether to send an image
+        // reads it; one that does not never looks.
+        if (!name.empty())
+            data.push_back({{"id", name},
+                            {"object", "model"},
+                            {"owned_by", "local"},
+                            {"modalities", app.host.vision() ? json{"text", "image"} : json{"text"}}});
         send_json(res, json{{"object", "list"}, {"data", data}});
     });
 
@@ -810,8 +893,8 @@ void register_routes(httplib::Server & svr, App & app) {
         std::string err;
         if (!parse_chat_request(body, app.store.api_config(), cr, err))
             return send_error(res, 400, err, "invalid_request");
-        if (!app.host.ready())
-            return send_error(res, 503, "no model is loaded: load one from the Models page", error_code::no_model);
+        if (const std::string why = app.model_for_request(); !why.empty())
+            return send_error(res, 503, why, error_code::no_model);
 
         ChatResponseMeta meta;
         meta.id = "chatcmpl-" + std::to_string(++app.chat_seq);
@@ -832,10 +915,11 @@ void register_routes(httplib::Server & svr, App & app) {
         res.set_chunked_content_provider("text/event-stream", [&app, cr, meta, dump](size_t, httplib::DataSink & sink) {
             // A failed write marks the client gone. Stopping the work is the host's, through
             // on_token's answer: this handler cannot tell whose turn is running when a write fails.
-            bool alive = true;
-            auto write = [&](const std::string & frame) {
-                if (alive && !sink.write(frame.data(), frame.size())) alive = false;
-            };
+            // A silent stretch of the turn (a long prefill, a tool call sent only once parsed) is
+            // bounded by a ping, as on the agent endpoints (stream_keepalive.h).
+            StreamKeepalive out_stream([&sink](const std::string & f) { return sink.write(f.data(), f.size()); },
+                                       ": ping\n\n", kEventPingInterval);
+            auto write = [&](const std::string & frame) { out_stream.write(frame); };
             auto chunk = [&](const json & delta, const json & finish, const json & extra) {
                 json c = chunk_json(meta, delta, finish);
                 if (!extra.is_null()) c["bmoe"] = extra;
@@ -855,7 +939,7 @@ void register_routes(httplib::Server & svr, App & app) {
             ChatOutcome out = app.host.chat(
                 cr.turn,
                 [&](const TokenMetrics & m) {
-                    if (!alive) return false;
+                    if (!out_stream.alive()) return false;
                     json delta = json::object();
                     json extra = nullptr;
                     const std::string text = stream_text(m.text), reasoning = stream_text(m.reasoning);
@@ -875,13 +959,13 @@ void register_routes(httplib::Server & svr, App & app) {
                     sent_text = text;
                     sent_reasoning = reasoning;
                     chunk(delta, nullptr, extra);
-                    return alive;
+                    return out_stream.alive();
                 },
                 // Waiting for a turn: an SSE comment keeps the connection open through proxies
                 // that time out a silent one, and a failed write is how a client that left is seen.
                 [&] {
                     write(": waiting for a turn\n\n");
-                    return alive;
+                    return out_stream.alive();
                 });
             if (out.status != 200) {
                 write("data: " + dump(json{{"error", {{"message", out.error}, {"code", out.code}}}}) + "\n\n");
@@ -891,7 +975,7 @@ void register_routes(httplib::Server & svr, App & app) {
                 // with exactly the answer the turn produced.
                 const std::string ft = stream_text(out.result.generated_text),
                                   fr = stream_text(out.result.reasoning_text);
-                if (alive && (ft != sent_text || fr != sent_reasoning)) {
+                if (out_stream.alive() && (ft != sent_text || fr != sent_reasoning)) {
                     json delta = json::object();
                     json extra = nullptr;
                     if (starts_with(ft, sent_text) && starts_with(fr, sent_reasoning)) {
@@ -916,6 +1000,7 @@ void register_routes(httplib::Server & svr, App & app) {
                 if (cr.include_usage) write("data: " + dump(usage_chunk_json(meta, out.result.summary)) + "\n\n");
             }
             write("data: [DONE]\n\n");
+            out_stream.stop();
             sink.done();
             return true;
         });
@@ -930,9 +1015,8 @@ void register_routes(httplib::Server & svr, App & app) {
         std::string err;
         if (!parse_messages_request(body, app.store.api_config(), ar, err))
             return send_path_error(req.path, res, 400, err, "invalid_request");
-        if (!app.host.ready())
-            return send_path_error(req.path, res, 503, "no model is loaded: load one from the Models page",
-                                   error_code::no_model);
+        if (const std::string why = app.model_for_request(); !why.empty())
+            return send_path_error(req.path, res, 503, why, error_code::no_model);
         ChatResponseMeta meta;
         meta.id = "msg_" + std::to_string(++app.chat_seq);
         meta.created = (long long) std::time(nullptr);
@@ -960,15 +1044,13 @@ void register_routes(httplib::Server & svr, App & app) {
         std::string err;
         if (!parse_responses_request(body, app.store.api_config(), rr, err))
             return send_path_error(req.path, res, 400, err, "invalid_request");
-        if (!app.host.ready())
-            return send_path_error(req.path, res, 503, "no model is loaded: load one from the Models page",
-                                   error_code::no_model);
+        if (const std::string why = app.model_for_request(); !why.empty())
+            return send_path_error(req.path, res, 503, why, error_code::no_model);
         ChatResponseMeta meta;
         meta.id = "resp_" + std::to_string(++app.chat_seq);
         meta.created = (long long) std::time(nullptr);
         meta.model = app.host.model_name();
-        agent_turn<ResponsesStream>(app, req, res, rr.turn, rr.stream, meta, response_json,
-                                    std::string(": waiting for a turn\n\n"));
+        agent_turn<ResponsesStream>(app, req, res, rr.turn, rr.stream, meta, response_json, std::string(": ping\n\n"));
     });
 
     // A decision: which of a list of choices the model would answer next, from one prefill and no
@@ -979,8 +1061,8 @@ void register_routes(httplib::Server & svr, App & app) {
         DecideRequest dr;
         std::string err;
         if (!parse_decide_request(body, dr, err)) return send_error(res, 400, err);
-        if (!app.host.ready())
-            return send_error(res, 503, "no model is loaded: load one from the Models page", error_code::no_model);
+        if (const std::string why = app.model_for_request(); !why.empty())
+            return send_error(res, 503, why, error_code::no_model);
         DecideOutcome out = app.host.decide(dr, [&req] { return !req.is_connection_closed(); });
         if (out.status != 200) return send_error(res, out.status, out.error, out.code);
         send_json(res, decide_json(out.result));
@@ -1026,7 +1108,36 @@ void register_routes(httplib::Server & svr, App & app) {
             [&app, q](bool) { app.bus.unsubscribe(q); });
     });
 
-    svr.Get("/api/models", [&](const httplib::Request &, httplib::Response & res) { send_json(res, app.lib.list()); });
+    svr.Get("/api/models",
+            [&](const httplib::Request &, httplib::Response & res) { send_json(res, app.models_object()); });
+
+    // Where models are kept: the folder downloads land in and the other folders listed. A path the
+    // server writes to, so a local-only route (access.cpp), and a folder the launch named stays.
+    svr.Put("/api/models/folders", [&](const httplib::Request & req, httplib::Response & res) {
+        json body;
+        if (!parse_body(req, res, body)) return;
+        SettingsStore::ModelFolders chosen = app.store.model_folders();
+        if (body.contains("models_dir")) {
+            if (!body["models_dir"].is_string()) return send_error(res, 400, "models_dir must be a string");
+            const std::string d = body["models_dir"].get<std::string>();
+            if (!app.opt.models_dir.empty() && !d.empty())
+                return send_error(res, 409, "the models folder was set at launch (--models-dir)");
+            chosen.models_dir = d;
+        }
+        if (body.contains("scan_dirs")) {
+            if (!body["scan_dirs"].is_array()) return send_error(res, 400, "scan_dirs must be an array");
+            chosen.scan_dirs.clear();
+            for (const json & d : body["scan_dirs"]) {
+                if (!d.is_string()) return send_error(res, 400, "scan_dirs must hold strings");
+                chosen.scan_dirs.push_back(d.get<std::string>());
+            }
+        }
+        const ModelLibrary::FolderRefusal r = app.apply_model_folders(chosen);
+        if (r.status) return send_error(res, r.status, r.error);
+        app.store.set_model_folders(chosen);
+        app.bus.publish("models_folders", json::object());
+        send_json(res, app.models_object());
+    });
 
     svr.Post("/api/models/download", [&](const httplib::Request & req, httplib::Response & res) {
         json body;
@@ -1337,9 +1448,31 @@ int run(int argc, char ** argv) {
 }
 
 int run(int argc, char ** argv, const Embedding & embedding) {
+    // `service <verb>`: the server as a service of the init system (service_manager.h). The
+    // installer parses the arguments the service will start with exactly as this start does.
+    if (argc >= 2 && std::string(argv[1]) == "service")
+        return run_service_command(argc - 2, argv + 2, [argv](const std::vector<std::string> & args) {
+            std::vector<char *> av{argv[0]};
+            for (const std::string & a : args)
+                av.push_back(const_cast<char *>(a.c_str()));
+            Options o;
+            const int rc = parse_args((int) av.size(), av.data(), o);
+            if (rc == 0) return std::string("they end the server before it serves (--help, --version)");
+            if (rc > 0) return std::string("refused, as said above");
+            return launch_refusal(o.host, o.api_key, o.no_api_key);
+        });
     Options o;
     const int rc = parse_args(argc, argv, o);
     if (rc >= 0) return rc;
+    if (!o.log_file.empty()) {
+        // From here on everything the console would have shown goes to the file, this start's own
+        // lines included; what came before (an argument refused) was for whoever typed it.
+        std::string err;
+        if (!rotate_log(o.log_file, kLogRotateBytes, err) || !platform::redirect_output(o.log_file, err)) {
+            std::fprintf(stderr, "bmoe-server: %s\n", err.c_str());
+            return 2;
+        }
+    }
     const std::string data_dir = o.data_dir.empty() ? platform::default_data_dir() : o.data_dir;
     // What a backend reads from its environment, set before any backend is loaded.
     platform::prepare_compute_backends(data_dir);
@@ -1377,6 +1510,7 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     };
     const std::string models_dir =
         absolute(o.models_dir.empty() ? (fs::u8path(data_dir) / "models").u8string() : o.models_dir);
+    if (!o.models_dir.empty()) o.models_dir = models_dir; // the launch's folder, absolute like the rest
     for (std::string & d : o.scan_dirs)
         d = absolute(d);
     const std::string ui_dir = o.ui_dir.empty()
@@ -1389,8 +1523,20 @@ int run(int argc, char ** argv, const Embedding & embedding) {
 
     const std::string routing_dir = (fs::u8path(data_dir) / "routing").u8string();
     App app(o, settings, models_dir, catalog, added, scratch, routing_dir, embedding.fetch);
+    app.default_models_dir = absolute((fs::u8path(data_dir) / "models").u8string());
     for (const std::string & w : app.store.load())
         std::fprintf(stderr, "warning: %s\n", w.c_str());
+    {
+        const SettingsStore::ModelFolders chosen = app.store.model_folders();
+        if (!chosen.models_dir.empty() || !chosen.scan_dirs.empty()) {
+            const ModelLibrary::FolderRefusal r = app.apply_model_folders(chosen);
+            if (r.status) {
+                std::fprintf(stderr, "warning: the chosen model folders are not usable (%s); using the default\n",
+                             r.error.c_str());
+                app.apply_model_folders({});
+            }
+        }
+    }
     for (const std::string & w : app.lib.warnings())
         std::fprintf(stderr, "warning: %s\n", w.c_str());
     app.store.set_launch_values(o.launch);
@@ -1451,8 +1597,16 @@ int run(int argc, char ** argv, const Embedding & embedding) {
         deps.bus = &app.bus;
         deps.store = app.agent_store.get();
         deps.local_chat = [&app](const ChatRequest & req, const std::function<bool(const TokenMetrics &)> & on_token,
-                                 const std::function<bool()> & still_wanted) {
-            return app.host.chat(req, on_token, still_wanted);
+                                 const std::atomic<bool> & stop) {
+            // The agent's turns need a model as the API's do, --autoload included.
+            if (const std::string why = app.model_for_request(); !why.empty()) {
+                ChatOutcome out;
+                out.status = 503;
+                out.error = why;
+                out.code = error_code::no_model;
+                return out;
+            }
+            return app.host.chat(req, on_token, [&stop] { return !stop.load(); }, &stop);
         };
         deps.config = [&app] { return app.store.config(); };
         deps.net = app.net.get();
@@ -1478,9 +1632,9 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     // once instead of waiting with no bound behind workers that may not come free.
     svr.new_task_queue = [] { return new httplib::ThreadPool(kWorkerThreads, 0, kMaxQueuedRequests); };
     svr.set_socket_options(set_listener_options);
-    // A request body here is a chat history or a handful of settings. The library's default would
-    // let every worker buffer a hundred times that.
-    svr.set_payload_max_length(8ull << 20);
+    // A request body here is a chat history, with its images inline as base64, or a handful of
+    // settings. The library's default would let every worker buffer far more than that.
+    svr.set_payload_max_length(kMaxRequestBytes);
     register_guards(svr, o);
     register_routes(svr, app);
     register_agent_routes(svr, app.agent_routes);
@@ -1521,7 +1675,7 @@ int run(int argc, char ** argv, const Embedding & embedding) {
             o.host.c_str());
     std::fflush(stdout);
 
-    if (o.launch.count("model")) {
+    if (o.launch.count("model") || o.autoload) {
         const std::string err = app.load_current();
         if (!err.empty()) std::fprintf(stderr, "warning: not loading the model at start: %s\n", err.c_str());
     }

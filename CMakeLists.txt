@@ -21,7 +21,7 @@ cmake_minimum_required(VERSION 3.21)
 # --version, and the run-parameter preamble of every metrics CSV), so a committed benchmark file
 # says which engine produced it. Keep it in step with CHANGELOG.md and the app's versionName:
 # scripts/check-version.sh compares the three, in CI and against the tag before a release builds.
-project(bigmoeonedge VERSION 0.39.0 LANGUAGES CXX)
+project(bigmoeonedge VERSION 0.40.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -119,6 +119,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/CMakeLists.txt")
     set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(LLAMA_BUILD_SERVER  OFF CACHE BOOL "" FORCE)
     set(LLAMA_BUILD_COMMON  ON  CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_MTMD    ON  CACHE BOOL "" FORCE)  # the projector library, for image input
     set(LLAMA_CURL          OFF CACHE BOOL "" FORCE)  # common's model-download path unused
     # cpp-httplib links whatever OpenSSL the build machine has when this is on, and the release
     # archives ship no libssl: bmoe-server speaks plain HTTP on loopback, downloads go through
@@ -177,7 +178,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/CMakeLists.txt")
     add_subdirectory(third_party/llama.cpp EXCLUDE_FROM_ALL)
     # Upstream's headers are upstream's code: included as system headers, so a warning inside one
     # (common/'s jinja headers have unused static functions) is not reported against our sources.
-    foreach(_t llama llama-common ggml ggml-base)
+    foreach(_t llama llama-common ggml ggml-base mtmd)
         if(TARGET ${_t})
             get_target_property(_inc ${_t} INTERFACE_INCLUDE_DIRECTORIES)
             if(_inc)

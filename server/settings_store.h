@@ -64,6 +64,16 @@ public:
     bool auto_plan(bool fallback) const;
     void set_auto_plan(bool on); // persists
 
+    // The folders a person chose for models: where downloads land ("" for the server's default,
+    // <data dir>/models) and the other folders listed beside it. Server settings like auto_plan;
+    // what the server was launched with (--models-dir, --scan-dir) is added over them at start.
+    struct ModelFolders {
+        std::string models_dir;
+        std::vector<std::string> scan_dirs;
+    };
+    ModelFolders model_folders() const;
+    void set_model_folders(ModelFolders f); // persists
+
 private:
     RunConfig build_locked() const;
     void save_locked() const;
@@ -75,6 +85,7 @@ private:
     json decisions_ = nullptr;
     bool auto_plan_set_ = false;
     bool auto_plan_ = false;
+    ModelFolders folders_;
 };
 
 } // namespace bmoe::server

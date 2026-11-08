@@ -168,11 +168,18 @@ object Chat {
         return false
     }
 
-    /** Send [text] to the open conversation, making it first when this is a new chat. */
-    fun send(text: String) {
+    /**
+     * Send [text], with [images] (data URLs) when there are any, to the open conversation, making it
+     * first when this is a new chat. [onDone] hears whether the server took it, so the composer can
+     * put back what it was asked to send when it did not (the error card says why).
+     */
+    fun send(text: String, images: List<String> = emptyList(), onDone: (Boolean) -> Unit = {}) {
         val prompt = text.trim()
         val s = _state.value
-        if (prompt.isEmpty() || s.sending || s.running || !canSend()) return
+        if ((prompt.isEmpty() && images.isEmpty()) || s.sending || s.running || !canSend()) {
+            onDone(false)
+            return
+        }
         _state.update { it.copy(sending = true, error = null, errorCode = "") }
         scope.launch {
             try {
@@ -183,29 +190,35 @@ object Chat {
                     val made = open
                     _state.update { it.copy(open = made, items = emptyList(), conversations = listOf(made) + it.conversations.filter { c -> c.id != made.id }) }
                 }
-                val r = api.sendMessage(open.id, prompt)
+                val r = api.sendMessage(open.id, prompt, images)
                 r.optJSONObject("item")?.let { o -> _state.update { it.copy(items = ItemReducer.upsert(it.items, ChatItem.of(o))) } }
                 _state.update { it.copy(sending = false) }
+                onDone(true)
             } catch (t: Throwable) {
                 fail(t)
                 _state.update { it.copy(sending = false) }
+                onDone(false)
             }
         }
     }
 
-    /** Drop [item] (the person's message) and everything after it, then send [text] in its place. */
-    fun editAndResend(item: String, text: String) {
+    /**
+     * Drop [item] (the person's message) and everything after it, then send [text] in its place,
+     * with [images]: the ones it carried, unchanged, since an edit changes what was asked and not
+     * what was shown.
+     */
+    fun editAndResend(item: String, text: String, images: List<String> = emptyList()) {
         val open = _state.value.open ?: return
-        val t = text.trim().ifEmpty { return }
-        if (_state.value.running || !canSend()) return
+        val t = text.trim()
+        if ((t.isEmpty() && images.isEmpty()) || _state.value.running || !canSend()) return
         _state.update { s -> s.copy(items = ItemReducer.before(s.items, item), error = null, errorCode = "") }
-        scope.launch { catching { Engine.api().editMessage(open.id, item, t) }.onFailure { fail(it); reopen(open.id) } }
+        scope.launch { catching { Engine.api().editMessage(open.id, item, t, images) }.onFailure { fail(it); reopen(open.id) } }
     }
 
-    /** Answer again: the last question, resent as it was, as the web UI does. */
+    /** Answer again: the last question, resent as it was, images included, as the web UI does. */
     fun answerAgain() {
         val last = ItemReducer.lastUser(_state.value.items) ?: return
-        editAndResend(last.id, last.text)
+        editAndResend(last.id, last.text, last.images)
     }
 
     fun stop() {

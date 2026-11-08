@@ -50,6 +50,8 @@ data class ModelInfo(
     val busyThreads: Int,
     /** The context against what a client of the server sends; null from a server that does not say. */
     val ctxAdvice: CtxAdvice? = null,
+    /** The model reads images: it was loaded with its projector file (docs/server-api.md, "Images"). */
+    val vision: Boolean = false,
 ) {
     companion object {
         fun of(o: JSONObject?): ModelInfo? {
@@ -58,7 +60,7 @@ data class ModelInfo(
                 o.optString("name"), o.optString("path"), o.optString("arch"), o.optInt("n_ctx"),
                 o.optInt("n_expert_used"), o.optString("think_ctl", "template"), o.optDouble("load_s", 0.0),
                 o.optBoolean("streaming", false), o.optInt("compute_threads", 0), o.optInt("busy_threads", 0),
-                CtxAdvice.of(o.optJSONObject("ctx_advice")),
+                CtxAdvice.of(o.optJSONObject("ctx_advice")), o.optBoolean("vision", false),
             )
         }
     }
@@ -96,6 +98,8 @@ data class ServerInfo(
     val generating: Boolean,
     val ramTotalMib: Long,
     val ramAvailableMib: Long,
+    /** While planning or loading: the seconds since that load began; -1 from an older server. */
+    val loadElapsedS: Double,
 ) {
     val ready get() = state == "ready" && model != null
 
@@ -111,6 +115,7 @@ data class ServerInfo(
                 generating = o.optBoolean("generating", false),
                 ramTotalMib = host?.optLong("ram_total_mib", 0) ?: 0,
                 ramAvailableMib = host?.optLong("ram_available_mib", 0) ?: 0,
+                loadElapsedS = o.optDouble("load_elapsed_s", -1.0),
             )
         }
     }
@@ -391,6 +396,12 @@ data class EngineUi(
     /** The stage a measurement is in; null when none runs. */
     val planProgress: PlanProgress? = null,
     /**
+     * When the load in progress began (wall clock, ms), 0 when none is: from the seconds the server
+     * reports (`load_elapsed_s`) and the moment they arrived, so a screen that shows the count can be
+     * left and come back to without starting from zero, and shows the same seconds as every other UI.
+     */
+    val loadStartedAt: Long = 0L,
+    /**
      * The plan the server holds for the chosen model (`GET /api/plan?cached=1`, never a measurement):
      * read when the server is reached, when a session opens and when a turn ends, so the Plan screen
      * opens on it at once and its measured figures land when the answer does, whichever screen is open.
@@ -605,7 +616,19 @@ object Engine {
             "state" -> {
                 val info = ServerInfo.of(o)
                 val before = _state.value.info
-                _state.update { it.copy(info = info) }
+                val loadingNow = info.state == "loading" || info.state == "planning"
+                val loadingBefore = before?.state == "loading" || before?.state == "planning"
+                _state.update {
+                    it.copy(
+                        info = info,
+                        loadStartedAt = when {
+                            !loadingNow -> 0L
+                            info.loadElapsedS >= 0 -> System.currentTimeMillis() - (info.loadElapsedS * 1000).toLong()
+                            loadingBefore && it.loadStartedAt != 0L -> it.loadStartedAt
+                            else -> System.currentTimeMillis() // an older server: from its first event
+                        },
+                    )
+                }
                 if (info.ready && (before?.model?.path != info.model?.path || before?.model?.loadS != info.model?.loadS)) {
                     // A new session: a fresh metrics file for it, and the models list may have changed.
                     recorder?.sessionOpened(info, _state.value.config)
@@ -738,6 +761,9 @@ object Engine {
             _state.value.models?.catalog?.firstOrNull { it.id == id } ?: error("the server made entry $id but does not list it")
         }
     }
+
+    /** The release feed, read by the server when a person taps the button (docs/screens.md, "Updates"). */
+    suspend fun checkUpdate(): Result<UpdateInfo> = withContext(Dispatchers.IO) { catching { UpdateInfo.of(api.update()) } }
 
     /** A model in the server's models directory, deleted by the server by its listed name (every file of a set). */
     suspend fun deleteLocal(name: String): Result<Unit> = withContext(Dispatchers.IO) {

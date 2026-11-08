@@ -69,6 +69,10 @@ export interface ModelInfo {
   load_s: number;
   /** Expert streaming is on for this session; off, the engine is plain llama.cpp on mmap. */
   streaming: boolean;
+  /** A projector is loaded beside the model: a message may carry images. */
+  vision?: boolean;
+  /** The projector file's name, "" without one. */
+  projector?: string;
   /** What a CPU figure is read against: compute threads, and every thread busy in a decode. */
   compute_threads: number;
   busy_threads: number;
@@ -87,6 +91,8 @@ export interface Info {
   error: string;
   model: ModelInfo | null;
   generating: boolean;
+  /** While `planning` or `loading`: seconds since that load began (absent from an older server). */
+  load_elapsed_s?: number;
 }
 
 export type PlanSource = 'measured' | 'derived' | 'policy' | 'operator' | 'unprobed';
@@ -260,6 +266,8 @@ export interface LocalModel {
   shards: number;
   arch: string;
   streamable: boolean;
+  /** The projector file beside it that goes with it, by header; "" when there is none. */
+  projector?: string;
   complete: boolean;
 }
 
@@ -382,12 +390,25 @@ export interface HfAdded {
   bytes: number;
 }
 
+/** Which folders the person chose and which the server was launched with (those stay). */
+export interface ModelFolders {
+  default_models_dir: string;
+  /** "" when the default is used. */
+  chosen_models_dir: string;
+  /** The launch named the models folder (`--models-dir`): it is not changed from here. */
+  models_dir_at_launch: boolean;
+  launch_scan_dirs: string[];
+  chosen_scan_dirs: string[];
+}
+
 export interface ModelsResponse {
   models_dir: string;
-  /** Other directories whose models are listed and loaded in place (`--scan-dir`). */
+  /** Other directories whose models are listed and loaded in place: the launch's, then the chosen ones. */
   scan_dirs: string[];
   local: LocalModel[];
   catalog: CatalogEntry[];
+  /** Absent from a server older than the folder setting. */
+  folders?: ModelFolders;
 }
 
 export interface TokenEvent {

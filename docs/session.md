@@ -48,11 +48,14 @@ turn the parser reads as nothing comes back as the raw generation.
 
 **KV prefix reuse.** Re-rendering the full history would re-tokenize the entire conversation, but
 most of it is already decoded into the KV. Each turn the engine diffs the freshly rendered tokens
-against `kv_tokens` (the tokens currently in the KV, in order), keeps the common prefix, removes the
+against the stream currently in the KV (`prompt_stream.h`: the tokens in order, with an image as a
+span of placeholders identified by its content hash), keeps the common prefix, removes the
 divergent tail with `llama_memory_seq_rm`, and prefills only the suffix. So a follow-up turn pays
 for its own tokens, not a full re-prefill — which matters because prefill is the slow phase on
-device. `BMOE_DONE.n_prompt` reports the tokens actually prefilled this turn; `n_past` is the total
-context length after it.
+device. An image is shared whole or not at all, and a cut never lands inside one. Under M-RoPE an
+image takes fewer positions than tokens, so every cut and every batch after one is placed by the
+stream's position map, not by its index. `BMOE_DONE.n_prompt` reports the tokens actually prefilled
+this turn; `n_past` is the total context length after it.
 
 **Context checkpoints.** Not every memory can be cut at an arbitrary position: a recurrent state
 (Mamba, Gated DeltaNet) holds only its latest step, and a sliding-window cache has already dropped what
@@ -95,6 +98,13 @@ overlap alike). It leaves the model and cache intact; the returned `RunResult` h
 true`. In chat mode a cancel **rolls the turn back** to the reused prefix (dropping this turn's KV
 and un-appending the user message) so prior turns stay usable and the conversation can continue.
 Cancel is distinct from a fatal streaming error, which is sticky and ends the session.
+
+`GenerateRequest::stop` optionally borrows a caller-owned `std::atomic<bool>` until `generate()`
+returns. The decoder's abort callback and the image encoder's eval callback read it alongside the
+session's own cancel latch. The session resets its latch at the start of each generation, but never
+resets the caller's flag: a stop raised before entry or during prefill is preserved. The borrowed
+flag is detached on every exit, so it cannot cancel a later generation or `decide()` call. No polling
+thread is involved. A caller that reuses its flag must clear it before submitting another request.
 
 ## Fixed context
 

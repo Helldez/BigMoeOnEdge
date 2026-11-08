@@ -363,11 +363,13 @@ FitVerdict verdict_parts(const FitInputs & in) {
     if (in.role != "model") {
         v.mode = "not a model";
         v.fit = "not_a_model";
-        v.headline = "Not a model to chat with";
-        v.downloadable = false;
+        v.headline = in.role == "projector" ? "Not a model on its own: a projector" : "Not a model to chat with";
+        // A projector is downloaded beside its model, which then reads images; the other companions
+        // have no use here yet.
+        v.downloadable = in.role == "projector";
         v.memory = in.role == "projector"
-                       ? "a multimodal projector, by its header: it gives a model image or audio input and cannot "
-                         "be chatted with on its own, and this engine does not load projectors"
+                       ? "a multimodal projector, by its header: downloaded beside the model of the same conversion, "
+                         "it gives that model image input (the server pairs the two by their headers)"
                    : in.role == "draft"
                        ? "a draft head, by its header: it proposes tokens for the model it was trained beside and "
                          "cannot run on its own"

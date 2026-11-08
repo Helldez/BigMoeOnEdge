@@ -91,6 +91,9 @@ class Api(private val baseUrl: String, private val apiKey: String) : Conversatio
     fun plan(measure: Boolean): JSONObject = getJson(if (measure) "/api/plan?measure=1" else "/api/plan?cached=1", SLOW_MS)
     fun applyPlan(): JSONObject = send("POST", "/api/plan/apply", null, QUICK_MS)
 
+    /** Reads the release feed, the one network request the app makes only when a person asks. */
+    fun update(): JSONObject = getJson("/api/update", SLOW_MS)
+
     // ── conversations (docs/agent.md): held by the server, plain chat under --chat-only ──
 
     fun conversations(): JSONArray = JSONArray(get("/api/conversations", QUICK_MS))
@@ -101,13 +104,13 @@ class Api(private val baseUrl: String, private val apiKey: String) : Conversatio
         send("DELETE", "/api/conversations/" + seg(id), null, QUICK_MS)
     }
 
-    /** Answers `202 {item}` at once; the answer streams on the event stream. */
-    fun sendMessage(id: String, text: String): JSONObject =
-        send("POST", "/api/conversations/" + seg(id) + "/messages", JSONObject().put("text", text), QUICK_MS)
+    /** Answers `202 {item}` at once; the answer streams on the event stream. [images]: data URLs, sent only when there are any. */
+    fun sendMessage(id: String, text: String, images: List<String> = emptyList()): JSONObject =
+        send("POST", "/api/conversations/" + seg(id) + "/messages", ItemReducer.messageBody(text, images), QUICK_MS)
 
-    /** Drops [item] and what follows it, then sends [text] in its place: edit, and Answer again. */
-    fun editMessage(id: String, item: String, text: String): JSONObject =
-        send("POST", "/api/conversations/" + seg(id) + "/edit", ItemReducer.editBody(item, text), QUICK_MS)
+    /** Drops [item] and what follows it, then sends [text] and [images] in its place: edit, and Answer again. */
+    fun editMessage(id: String, item: String, text: String, images: List<String> = emptyList()): JSONObject =
+        send("POST", "/api/conversations/" + seg(id) + "/edit", ItemReducer.editBody(item, text, images), QUICK_MS)
 
     // A stop answers once the run has stopped: a generation ends at its next token.
     fun stopConversation(id: String): JSONObject = send("POST", "/api/conversations/" + seg(id) + "/stop", null, SLOW_MS)

@@ -8,7 +8,8 @@ APIs that Claude Code and Codex CLI speak.
 It binds to `127.0.0.1` on port 8765 by default and, unless started with a key (`--api-key-file` or
 `--api-key`), has no authentication:
 it is a local program, like the CLI. See [Security model](#security-model) for exactly what that
-does and does not protect.
+does and does not protect. On a machine that stays on it runs as a service of the person's init
+system, started at login and back after a failure: [Running as a service](#running-as-a-service).
 
 It is also the application framework of this project: the same server, reached the same way,
 stands behind every UI, on the desktop and on a phone ([application-framework.md](application-framework.md)).
@@ -116,8 +117,8 @@ other software, or other people, on that machine or on a network it was told to 
 - Some routes answer only a client whose connection comes from this machine, whatever `--host`
   and the key say: they install software, read the network on the person's behalf, or change
   files. They are one list, `local_only_routes()` in `server/access.h`, enforced before routing
-  (`403`, `code: "local_only"`): deleting a model, adding one from a link, and the backend-pack and
-  update routes ([Backend packs and updates](#backend-packs-and-updates)).
+  (`403`, `code: "local_only"`): deleting a model, adding one from a link, choosing the folders
+  models are kept in, and the backend-pack and update routes ([Backend packs and updates](#backend-packs-and-updates)).
 - A server started by an app with `--parent-pid PID` stops when that process ends, so an app that
   crashes leaves no server holding the port and a model's memory.
 - Over the API a client may name one file to open, the model, and it is only read (what it may delete is a model as the listing names it, above). Parameters that make
@@ -178,6 +179,70 @@ other software, or other people, on that machine or on a network it was told to 
 - **Downloads run the system's `curl`**, found on `PATH`, against the URLs in the catalog file
   beside the executable. Both are trusted as installed.
 
+## Running as a service
+
+A home server is a process that starts with the machine, comes back with its model, and serves
+whoever reaches it on a box nobody looks at. `bmoe-server service` registers the server as a
+service of the person's own init system, and two flags give it what a service needs of the server.
+
+```bash
+bmoe-server service install --host 0.0.0.0 -m /models/Qwen3.8-Flash-Next-Q2_K.gguf -c 65536
+bmoe-server service status
+bmoe-server service stop      # and start, without changing the registration
+bmoe-server service uninstall # settings, models and the key file stay in the data folder
+```
+
+**What `install` registers.** A per-user service, started at the person's login and started again
+after a failure (not after a stop asked for): a systemd user unit (`~/.config/systemd/user/`), a
+launchd agent (`~/Library/LaunchAgents/`) or a Windows scheduled task (registered from an XML kept in
+the data folder), whichever of the three tools answers on the machine (`systemctl`, `launchctl`,
+`schtasks`); the init system's name is `io.bigmoeonedge.server` on all three. No administrator
+rights. On Linux the install also asks `loginctl` to let the user linger, so the service survives
+the last session ending; where that needs an administrator, the install says what to run. On
+Windows the task runs as the person with no password stored (S4U), so it starts whether or not they
+sign in at the desktop. The server runs from the executable's own folder, where its backends, the
+UI and the catalog sit, so an archive extracted anywhere is a service from there; an installed
+desktop app's server is the same.
+
+**The arguments.** Everything after `install` is the server's own command line, options and
+engine parameters alike, parsed exactly as a start would parse them: a mistake is refused at
+install with its reason, not at the next login with nobody reading. A path typed relative to the
+shell (`-m model.gguf`, a models folder) is made absolute, since the service starts from the
+executable's folder, not from that shell. To them the install adds what a service needs and the
+person did not say: `--data-dir`, made explicit so the service and the person's shell agree on it;
+`--log-file`; `--autoload`; and, when `--host` reaches beyond loopback
+with no key given and no `--no-api-key`, a key of the install's own making, written to `api-key`
+in the data folder (readable by its owner only), named with `--api-key-file` and printed once. A
+key file an earlier install wrote is kept, so the clients that hold its key keep working. `--open`
+is dropped: a service has no browser to open. The launch rules in [Security model](#security-model)
+hold unchanged: an install that would be refused at start is refused at install.
+
+**`--autoload`.** Loads the model the settings name at start, and again whenever a request finds
+none loaded: the request waits for the load instead of being refused, as a request that arrives
+during a load already does. With auto-plan on, that load measures the machine first, as a load
+from the Models page does, so the first answer after a start or an unload is some seconds away. With
+no model selected yet, a start says so in the log and a request gets `503` with
+`code: "no_model"` and a message that says to choose one. Without the flag the server behaves as
+before: nothing is loaded at start unless `-m` says so, and a request with nothing loaded is a
+`503 no_model`. The desktop app does not set it.
+
+**`--log-file PATH`.** Everything the console would have shown, the server's lines and the
+engine's, appended to `PATH` in the order written, line by line. At start the file is moved to
+`PATH.1` once it is 16 MiB or more, replacing an earlier `.1`, so a service's log never grows past
+two of those. The init system keeps the rest: systemd's journal has what a crash leaves
+(`journalctl --user -u io.bigmoeonedge.server`), and the launchd agent sends the server's own
+output to the same file.
+
+Every answer leaves one line there, whichever client asked for it, with the figures the UI's
+metrics show for that answer: tokens generated and the decode speed, prompt tokens prefilled and
+in how long, the context length after the turn, the expert bytes read and the cache hit rate.
+A server that served an agent for a day answers "how much did it read" from its log.
+
+**With the desktop app.** The app looks for a free port from 8765 up, so a service on 8765 and the
+app's own server live side by side; the app's conversations and tasks are the app's. A service
+listening beyond loopback is what the phone and the apps connect to over the network, with the
+key, under the same security statement.
+
 ## Concepts
 
 - **Parameters** come from the engine's parameter table (`bmoe/params.h`). `GET /api/params`
@@ -191,6 +256,9 @@ other software, or other people, on that machine or on a network it was told to 
   Everything else follows the server's defaults, so improving a default reaches existing users.
   The same set is what the planner treats as pinned: a value a person chose is never overruled.
 - **One generation at a time.** A chat request that arrives while one runs waits its turn.
+- **A request needs a model.** With nothing loaded it is refused (`503`, `code: "no_model"`), unless
+  the server runs with `--autoload`, which loads the model the settings name and lets the request
+  wait for it ([Running as a service](#running-as-a-service)).
 
 ## Server and session state
 
@@ -206,12 +274,18 @@ other software, or other people, on that machine or on a network it was told to 
   "error": "",
   "model": {"path": "C:/models/Qwen3-30B-A3B-Q4_K_M.gguf", "name": "Qwen3-30B-A3B-Q4_K_M.gguf",
             "arch": "qwen3moe", "n_ctx": 16384, "n_expert_used": 8, "think_ctl": "template",
-            "load_s": 12.4, "streaming": true, "compute_threads": 8, "busy_threads": 12,
+            "load_s": 12.4, "streaming": true, "vision": true, "projector": "mmproj-Qwen3-30B-A3B-Q8_0.gguf",
+            "compute_threads": 8, "busy_threads": 12,
             "ctx_advice": {"recommended": 16384, "short": true, "param": "ctx-size", "refused": false,
                            "warn": false}},
-  "generating": false
+  "generating": false,
+  "load_elapsed_s": 12.4
 }
 ```
+
+`load_elapsed_s` is present while `state` is `planning` or `loading`: the seconds since that load
+began, planning included. A UI that shows them counts on from the value and the moment it received
+it, so the count is the server's, the same on every screen and after a screen change.
 
 `state` is one of `empty` (no model), `planning` (a load in auto mode is measuring the machine
 before it loads: tens of seconds on a phone, nothing loaded meanwhile), `loading`, `ready`, `error`
@@ -252,7 +326,8 @@ Cancels any generation and closes the session. `state` becomes `empty`.
 
 ### `POST /api/cancel`
 
-Stops the running generation at the next decode boundary. Always `200`.
+Stops the running generation at the next decode boundary, or where an image's encoder is when one
+is being encoded. Always `200`.
 
 ## Parameters and config
 
@@ -335,7 +410,7 @@ Request fields that are read:
 
 | field | meaning |
 |---|---|
-| `messages` | the whole conversation. `role` is `system` (or `developer`), `user`, `assistant` or `tool`; `content` is a string, an array of `{type: "text", text}` parts, or `null` on an assistant turn that only calls tools. An assistant message may carry `tool_calls` and `reasoning_content`; a tool message carries `tool_call_id`. The last message must be from the user or a tool. |
+| `messages` | the whole conversation. `role` is `system` (or `developer`), `user`, `assistant` or `tool`; `content` is a string, an array of `{type: "text", text}` and `{type: "image_url", image_url: {url}}` parts (the URL a `data:<type>;base64,...` one; see Images below), or `null` on an assistant turn that only calls tools. An assistant message may carry `tool_calls` and `reasoning_content`; a tool message carries `tool_call_id`. The last message must be from the user or a tool. |
 | `tools` | functions the model may call: `{type: "function", function: {name, description, parameters}}`. Any other tool type is refused with `400`. |
 | `tool_choice` | `"auto"` (default), `"none"`, `"required"`. A named function is honoured as `"required"`: the engine can require a call, not choose which. |
 | `stream`, `stream_options.include_usage` | streaming, and a last chunk with the token counts. |
@@ -346,7 +421,29 @@ Request fields that are read:
 
 Ignored, because the session fixes them: `model`, `temperature`, `top_p`, `seed` and every
 other sampling field. Sampling is configured with the `temp`, `top-k`, `top-p` and `seed`
-parameters. An image or audio content part is refused with `400` rather than dropped.
+parameters. An audio or file content part is refused with `400` rather than dropped.
+
+**Images.** A model loaded with its projector reads them (`GET /api/info` says so: `model.vision`,
+and `model.projector` names the file). The projector is the `mmproj` GGUF the model's own conversion
+writes; put it in the model's folder and the server pairs the two by their headers: both name the
+same base model in `general.name`, letters and digits compared. A projector that names another
+model is never paired, however alone it is in the folder; the folder's only projector goes with a
+model only when one of the two headers has no name to check. Or name it with the `mmproj`
+parameter. Any model llama.cpp's projector library knows, in any quantization of either
+file: nothing here names a family. An image travels inline, as a data URL on every protocol; a URL
+to fetch is refused with `400`, since a server on a network must not be made to fetch what a client
+names. Only a user message carries images, at most 8 of them, and one declaring more than 64
+megapixels is refused with the reason before it is decoded; each is `400`. What an image costs is
+its tokens, each prefilled like a prompt token: a fixed-size projector takes the same few hundred
+from any image, one whose count follows the image's size takes thousands from a photo at its own
+cap, and the `image-max-tokens` parameter lowers that cap (the projector sizes the image down to
+fit), which a host that prefills image tokens slowly wants. An image part placed between text parts
+keeps its place in the prompt. The same image sent
+again in the same conversation is not encoded or prefilled again: the KV prefix is reused through
+it, and a different image at the same place is where the reuse ends. A request with images to a
+model loaded without a projector is `400` with `code: "no_vision"`. While a conversation holds an
+image, speculative decoding is off for it (the draft reads tokens, and an image's are
+embeddings); it is back with a new conversation. The body limit is 64 MiB, for a few screenshots.
 
 **Tools.** The server does not run tools and knows no tool syntax. The tools go to the model's own
 chat template, which writes them the way that model was trained to read them, and the same
@@ -442,7 +539,10 @@ other.
 
 **One generation at a time, in order.** A request that arrives while another runs waits its turn;
 while it waits, a streaming response receives SSE comment lines (`: waiting for a turn`) so the
-connection stays open. A client that disconnects while it waits gives its place up and stops
+connection stays open. Once its turn runs, any 15 s with nothing to send (a long prefill, a tool
+call, which is sent only once parsed) gets a keep-alive on every streaming endpoint (a `: ping`
+comment; `event: ping` on `/v1/messages`): a client or proxy that drops a silent stream never sees
+one, however slow the machine or long the call. A client that disconnects while it waits gives its place up and stops
 nothing else; a streaming client that disconnects during its own answer stops that answer. A
 disconnect never ends another client's turn. With 16 requests already waiting the next gets `429`.
 
@@ -488,8 +588,9 @@ leaves a smaller cache and a slower decode on a machine that is short of memory.
 
 ### `GET /v1/models`
 
-`{"object": "list", "data": [{"id": "<model file name>", "object": "model", "owned_by": "local"}]}`
-with the loaded model, or an empty list.
+`{"object": "list", "data": [{"id": "<model file name>", "object": "model", "owned_by": "local",
+"modalities": ["text", "image"]}]}` with the loaded model, or an empty list. `modalities` is this
+server's addition: `["text"]` without a projector, so a client knows whether to send an image.
 
 ### Agent protocols: what the two below share
 
@@ -522,7 +623,8 @@ each agent at the server. What they share:
   A reasoning model's thinking is sent as thinking (Messages) or reasoning items (Responses)
   whether or not the client asked to see it, so that the client returns it in the next request
   and the prompt still matches the KV.
-- **Images and files** are refused with `400`, as on the chat endpoint, rather than dropped.
+- **Images** are read as on the chat endpoint (Images, above): inline as base64, on a model loaded
+  with its projector. **Files** are refused with `400` rather than dropped.
 - **Ignored**: `model` (the loaded one answers), `temperature`, `top_p`, `top_k` and every other
   sampling field, as on the chat endpoint, and the fields that only mean something to a hosted
   service (prompt caching, metadata, `store`, `include`, `prompt_cache_key`, `parallel_tool_calls`).
@@ -534,7 +636,7 @@ The Anthropic Messages API. Request fields that are read:
 | field | meaning |
 |---|---|
 | `system` | a string or an array of `{type: "text", text}` blocks, joined. The per-request `x-anthropic-billing-header:` block Claude Code puts first is client metadata that changes on every request, and is dropped, or no request could reuse the KV. |
-| `messages` | `role` is `user`, `assistant` or `system`; `content` a string or blocks. `user`: `text` and `tool_result` (`tool_use_id`, content a string or `text` blocks; a `tool_reference` from Claude Code's tool search reads as `Tool loaded: <name>`). `assistant`: `text`, `thinking` (the reasoning, sent back), `redacted_thinking` (skipped) and `tool_use` (`id`, `name`, `input`). Any other block type is refused with `400`. The last message must be from the user or carry tool results: a prefilled assistant answer is refused, since the engine does not continue one. |
+| `messages` | `role` is `user`, `assistant` or `system`; `content` a string or blocks. `user`: `text`, `image` (`source: {type: "base64", media_type, data}`; a `url` source is refused) and `tool_result` (`tool_use_id`, content a string or `text` blocks; a `tool_reference` from Claude Code's tool search reads as `Tool loaded: <name>`). `assistant`: `text`, `thinking` (the reasoning, sent back), `redacted_thinking` (skipped) and `tool_use` (`id`, `name`, `input`). Any other block type is refused with `400`. The last message must be from the user or carry tool results: a prefilled assistant answer is refused, since the engine does not continue one. |
 | `tools` | client tools, `{name, description, input_schema}`. A tool with `defer_loading: true` is not described to the model (tool search loads it later). A server tool (one with a `type` such as `web_search_20250305`) is refused with `400`: nothing here runs it. |
 | `tool_choice` | `{type: "auto"}` (default), `"any"` or `"tool"` (both required: the engine can require a call, not choose which), `"none"`. |
 | `max_tokens` | the budget, read as `max_tokens` on the chat endpoint. Required by the protocol; absent, the `n-predict` parameter. |
@@ -556,7 +658,7 @@ run), then content blocks, each `content_block_start` / `content_block_delta` / 
 thinking (`thinking_delta`, closed by an empty `signature_delta`), text (`text_delta`), and one
 `tool_use` block per call with its whole input in one `input_json_delta`. Then `message_delta` with
 the `stop_reason` and the full `usage` (and `bmoe.summary`), and `message_stop`. While the request
-waits its place in line, `event: ping`.
+waits its place in line, and after any 15 s of its turn with nothing else to send, `event: ping`.
 
 ### `POST /v1/messages/count_tokens`
 
@@ -575,7 +677,7 @@ state they name; `store` itself is accepted and not read. Request fields that ar
 | field | meaning |
 |---|---|
 | `instructions` | the system prompt. |
-| `input` | a string (one user message) or items: `message` (`role` `user`, `system`, `developer` or `assistant`; content a string or `input_text` / `output_text` / `refusal` parts), `function_call` (`call_id`, `name`, `arguments`), `function_call_output` (`call_id`, `output` a string or `input_text` parts) and `reasoning` (its `content` text; a summary or an encrypted content is not the reasoning, and is not read). The items of one model turn (reasoning, text, calls) become one assistant message. An image or file part, or another item type, is refused with `400`. The last item must be from the user or a `function_call_output`. |
+| `input` | a string (one user message) or items: `message` (`role` `user`, `system`, `developer` or `assistant`; content a string or `input_text` / `output_text` / `refusal` parts, and on a user message `input_image` with `image_url` a data URL; a `file_id` is refused), `function_call` (`call_id`, `name`, `arguments`), `function_call_output` (`call_id`, `output` a string or `input_text` parts) and `reasoning` (its `content` text; a summary or an encrypted content is not the reasoning, and is not read). The items of one model turn (reasoning, text, calls) become one assistant message. A file or audio part, or another item type, is refused with `400`. The last item must be from the user or a `function_call_output`. |
 | `tools` | `{type: "function", name, description, parameters}` tools are described to the model. Every other tool type (`web_search`, `namespace`, `custom`, `local_shell`, ...) is dropped, not refused: nothing here runs it, and Codex sends some whatever the provider has. |
 | `tool_choice` | `"auto"` (default), `"none"`, `"required"`, or `{type: "function", name}`, honoured as required. |
 | `max_output_tokens` | the budget, read as `max_tokens` on the chat endpoint. |
@@ -597,7 +699,8 @@ Streaming response: each event named in `event:` and in its data's `type`, numbe
 `response.content_part.done` for a message; `response.function_call_arguments.delta` and `.done`,
 the whole arguments in one delta, for a call) and `response.output_item.done` with the item whole;
 and last `response.completed` (or `response.incomplete`) with the response object, its `output`
-and `usage`. While the request waits its place in line, an SSE comment.
+and `usage`. While the request waits its place in line, and after any 15 s of its turn with
+nothing else to send, an SSE comment.
 
 ## Decide
 
@@ -659,7 +762,19 @@ workspace or a task is `409` with `code: "chat_only"`. A UI reads this and shows
 **Runs.** `POST /api/conversations/<id>/messages` answers `202 {item}` as soon as the person's item
 is stored; everything after that arrives on `/api/events` (`conversation`, `item`, `delta`) and is
 in the stored conversation. A UI that reconnects reads `GET /api/conversations/<id>`. An approval
-card is a `tool` item in state `waiting`, answered with `POST .../approval` on its conversation. `POST .../stop` answers once the run has ended.
+card is a `tool` item in state `waiting`, answered with `POST .../approval` on its conversation.
+
+`POST /api/conversations/<id>/stop` requests cancellation for that conversation and waits up to
+30 s for its run to finish. The response is `{stopped}`: `false` when no run was found, `true`
+when a stop was requested, including if that wait expires before completion. Read the
+conversation's state or follow its events to observe the end of the run. For the local-model
+route, cancellation reaches the session that owns the turn independently of generated-token
+callbacks, so an image encoder or prompt prefill can stop at the engine's cancellation points
+before any answer token. Stopping a round still queued for the engine withdraws only its own
+place, leaving another client's active turn running. The engine reads the run's own atomic flag
+alongside its cancel latch, only during that turn, so a latch reset cannot drop the stop and it
+cannot carry over to the next. `POST /api/cancel` remains the route for cancelling the server's
+current generation.
 
 **Errors.** `{"error", "code"}`, with these codes:
 
@@ -667,7 +782,7 @@ card is a `tool` item in state `waiting`, answered with `POST .../approval` on i
 |---|---|---|
 | 400 | `invalid_request` | a field of the wrong type or value (a mode, a route naming no saved provider, a schedule that cannot run, an imported item that is not `user` / `assistant`) |
 | 400 | `not_a_folder` | `POST /api/workspaces` with a path that is not an absolute, existing folder |
-| 400 | `unsupported` | a message with `images` |
+| 400 | `no_vision` | a message with `images` while the loaded model has no projector (`GET /api/info` `model.vision`), or on a conversation routed to a provider (a provider route carries text only) |
 | 403 | `local_only` | a route that reaches this computer, from a client not on loopback (below) |
 | 403 | `outside_workspace` | a preview path that resolves outside the workspace |
 | 404 | `not_found` | no such conversation, workspace, skill, task, provider or client; an approval for an item that is not waiting |
@@ -733,6 +848,8 @@ a UI shows "flash" from them without knowing whether the session overlaps.
 {
   "models_dir": "C:/Users/me/AppData/Local/BigMoeOnEdge/models",
   "scan_dirs": [],
+  "folders": {"default_models_dir": "C:/Users/me/AppData/Local/BigMoeOnEdge/models", "chosen_models_dir": "",
+              "models_dir_at_launch": false, "launch_scan_dirs": [], "chosen_scan_dirs": []},
   "local": [{"name": "Qwen3-30B-A3B-Q4_K_M.gguf", "path": "...", "dir": "C:/Users/me/AppData/Local/BigMoeOnEdge/models",
              "folder": "", "bytes": 18556686912, "shards": 1, "files": ["..."], "arch": "qwen3moe",
              "role": "model", "streamable": true, "complete": true}],
@@ -756,12 +873,15 @@ the directory a model was found in, `folder` the folder inside it ("" for the di
 and `files`
 every file of it that is present, in shard order, so a client that deletes a model deletes the set
 and never has to know how shards are named. A scan directory is only read: downloads land in the
-models directory, and a model in a scan directory is loaded in place by its `path`. The host app is
+models directory, and a model in a scan directory is loaded in place by its `path`. A file reachable
+from two of the listed places (a scan directory inside the models directory, a link) is one row, from
+the first place that listed it. The host app is
 what knows where else models sit (the phone's adb-pushed and shared-storage folders); the server is
 what says what they are. `streamable` is whether this build streams the
 architecture. `role` is what the file is for, read from its header and never from its name:
 `model`; `projector` (a multimodal projector: `general.type` is `mmproj`, or the projector
-architecture `clip`); `draft` (a draft head for speculative decoding: it names another model's
+architecture `clip`; a model entry's own `projector` is the name of the one in its folder that goes
+with it, by `general.name`, "" when none does); `draft` (a draft head for speculative decoding: it names another model's
 `<arch>.target_layers`, or every one of its `<arch>.block_count` blocks is a prediction head,
 `<arch>.nextn_predict_layers`); `other` (another `general.type`, or no `<arch>.block_count` at
 all); `""` when the header could not be read. A UI lists anything but `model` and `""` apart from
@@ -779,6 +899,31 @@ stopped by a failure, a cancel or a restart of the server (jobs live in memory, 
 not), which downloading again resumes. A UI labels that action **Resume (X of Y GB)** (decimal GB,
 `received` of `bytes`) and offers **Delete partial download** beside it. The phone's app downloads
 into the server's models directory, so the same two fields describe its downloads too.
+
+`folders` says where the two lists come from. The models directory is `--models-dir` when the server
+was started with one (`models_dir_at_launch`), otherwise the one a person chose
+(`chosen_models_dir`, "" for none), otherwise `default_models_dir` (`<data dir>/models`). The scan
+directories are those of `--scan-dir` (`launch_scan_dirs`) followed by the chosen ones
+(`chosen_scan_dirs`). A chosen folder that is gone when the server starts (a drive unplugged) is set
+aside for that run, with a warning in the log, and comes back with the drive.
+
+### `PUT /api/models/folders`
+
+```json
+{"models_dir": "D:/models", "scan_dirs": ["E:/gguf"]}
+```
+
+Chooses where models are kept, as a person would in a settings screen, and keeps the choice in
+`settings.json` (`model_folders`). `models_dir` is the folder downloads land in, "" for the default;
+`scan_dirs` the other folders listed, each read only, replacing the chosen ones (the launch's stay).
+A field left out is left as it is. The change applies at once and the answer is the new
+`GET /api/models`, and a `models_folders` event is published for clients that list on events. Every path must be
+absolute, the models folder is created when missing and must take a new file, each scan folder must
+exist (`400` with the reason otherwise). `409` while a download runs (its files are being written to
+the folder it started in), and for a models folder when the server was started with `--models-dir`.
+Models and partial downloads in the old folder stay where they are, and are listed again only when
+that folder is among the scan folders. Local-only (`403`, `code: "local_only"`, from the network):
+it names a folder the server writes to.
 
 ### `POST /api/models/download`
 
@@ -1107,8 +1252,9 @@ is installed. The engine loads the pack at the next start of the server.
 ### `GET /api/update`
 
 Reads the feed and answers `{current, latest, available, notes, published, target, installer}`:
-`available` when the feed's version is newer than this server's and has an installer for this
-target, `installer` `{url, sha256, size, file}` or `null`. `502` `feed` when the feed cannot be read
+`available` when the feed's version is newer than this server's, `installer` this target's
+`{url, sha256, size, file}`, or `null` where the feed carries none (a phone: its app ships beside
+the feed on the release, and the app sends the person to `notes` for it). `502` `feed` when the feed cannot be read
 or does not verify.
 
 ### `POST /api/update/download`
@@ -1116,4 +1262,4 @@ or does not verify.
 Downloads the installer of the feed last read into `<data>/updates/`, checks its size and SHA-256,
 and answers once it is there: `200` with `{ok, version, path}`; progress as `update` events. The
 desktop app runs `path` (`bmoeDesktop.applyUpdate`), which accepts nothing outside that folder.
-`409` with `no_feed` or `up_to_date`, or `busy`; `502` `failed` when it does not arrive whole.
+`409` with `no_feed`, `up_to_date` or `no_installer` (the feed has none for this target), or `busy`; `502` `failed` when it does not arrive whole.

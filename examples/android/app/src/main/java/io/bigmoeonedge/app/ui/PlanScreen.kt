@@ -114,6 +114,17 @@ fun PlanScreen(modifier: Modifier = Modifier, onOpenSetting: (key: String) -> Un
             // A failed plan can be retried where it says so: measuring is the person's tap, never automatic.
             if (shownError.isNotEmpty()) RetryLine(shownError, canMeasure) { measure() }
             if (busy || engine.planProgress != null) PlanProgressCard(engine.planProgress)
+            // While a model loads, the plan the server holds is the previous session's: the new one
+            // lands when the session opens. Said so, rather than shown as the loaded model's.
+            val loading = engine.loading
+            if (loading) {
+                Text(
+                    "Loading the model; the plan of this load shows once the session opens." +
+                        if (plan?.available == true) " Below: the previous plan." else "",
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
 
             val p = plan
             if (p?.available == true && cfg != null) {
@@ -144,6 +155,7 @@ fun PlanScreen(modifier: Modifier = Modifier, onOpenSetting: (key: String) -> Un
                     applied = applied,
                     canMeasure = canMeasure,
                     measuring = busy,
+                    loading = loading,
                     onMeasure = { measure() },
                     reloadNeeded = engine.ready && cfg?.reloadRequired == true,
                     onOpenSetting = onOpenSetting,
@@ -195,6 +207,7 @@ private fun PlanBody(
     applied: List<AppliedChange>?,
     canMeasure: Boolean,
     measuring: Boolean,
+    loading: Boolean,
     onMeasure: () -> Unit,
     reloadNeeded: Boolean,
     onOpenSetting: (String) -> Unit,
@@ -204,6 +217,7 @@ private fun PlanBody(
     val f = planFigures(p)
     Tile {
         when {
+            loading -> StatusBadge("From before this load", MaterialTheme.colorScheme.onSurfaceVariant)
             p.fromLastLoad -> StatusBadge("The loaded model runs this plan", okColor())
             p.cached -> StatusBadge("The last plan measured", MaterialTheme.colorScheme.onSurfaceVariant)
         }

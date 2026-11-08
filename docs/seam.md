@@ -133,6 +133,23 @@ falls back to a content-only parser (it threw on the first token before the 2026
 that seam unit-testable without a model.
 
 A second translation unit, `thinking_control.cpp`, crosses the same boundary for "thinking off".
+
+**Images: llama.cpp's `mtmd`.** `media_input.cpp` is the one file that includes `tools/mtmd`'s
+public headers (`mtmd.h`, `mtmd-helper.h`), the library behind `llama-mtmd-cli` and the upstream
+server's image input. It opens the projector (`mtmd_init_from_file`, on a device of the registry
+when there is one), tokenizes a prompt with its images into text and image chunks
+(`mtmd_tokenize`), encodes an image (`mtmd_encode_chunk`) and hands its embeddings back as
+`llama_batch_ext` batches with the positions the projector gives them (2-D under M-RoPE), which the
+session decodes through its own placed decode, so the arena, the prefill device and the route trace
+see an image's graphs as they see a text batch's. The library is built through upstream's own
+`LLAMA_BUILD_MTMD` hook, as a library of its own (`libmtmd`), and nothing in it is patched. Like
+`common`, it is not a stable API: a submodule bump re-reads these calls.
+
+Cancellation uses the existing public `llama_set_abort_callback` for decode and `mtmd`'s `cb_eval`
+for image encoding. Each reads the session latch or the current `GenerateRequest::stop` atomic;
+the caller owns that flag and the engine borrows it only until generation returns. The encoder
+checks the same combined state before reading an interrupted graph's output. This adds no upstream
+API or vendor patch.
 `enable_thinking` is only a *request* to the template, and many templates never read it, so the
 engine renders the template to find out (three renders at open, no model names involved) and, where
 the flag is inert *and* reasoning is a structural section of the format, asks for a **continuation**
@@ -322,9 +339,11 @@ If a future release moves the two hooks (a stable expert-residency API, say) ups
 this seam shrinks further or disappears — `core/` does not change.
 
 Pinned submodule at the time of writing: `Helldez/llama.cpp` branch
-`bmoe/expert-ready-hook-2810-hook`, commit `152dd5c`: the single expert-ready-hook commit
+`bmoe/expert-ready-hook-0411`, commit `7ac98f4`: the single expert-ready-hook commit
 (section 3), in the variant that also answers the CPU registry's `get_proc_address` so a build that
-loads the CPU backend as a module reaches it, on top of upstream `ggml-org/llama.cpp` master
-`8ca4060` of 2026-10-28 (132 commits past the previous base, `d88040c` of 2026-10-22). Each bump gets its own fork branch and the
+loads the CPU backend as a module reaches it, on top of upstream `ggml-org/llama.cpp` tag
+`v0.9.0` (`cd959ba` of 2026-11-04, 164 commits past the previous base, `8ca4060` of 2026-10-28).
+The hook still fires ahead of upstream's tiled `mul_mat_id` path, which G4 proves. Each bump gets
+its own fork branch and the
 previous ones stay, so every commit an old pin names remains reachable (see `.gitmodules` /
 `git submodule status` for the current pin).

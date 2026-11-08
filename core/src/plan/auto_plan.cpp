@@ -53,6 +53,12 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
         const auto head_size = std::filesystem::file_size(cfg.spec.mtp_head, ec);
         if (!ec) r.model.mtp_head_bytes = (uint64_t) head_size;
     }
+    // The projector the same: held whole for the run, so its size is what it costs where it goes.
+    if (!cfg.mmproj.empty()) {
+        std::error_code ec;
+        const auto proj_size = std::filesystem::file_size(cfg.mmproj, ec);
+        if (!ec) r.model.projector_bytes = (uint64_t) proj_size;
+    }
     // The model's own routing, from an earlier run the front-end kept: what its cache will hit.
     if (opt.routing)
         attach_routing(r.model, *opt.routing,

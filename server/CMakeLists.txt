@@ -11,7 +11,7 @@ if(NOT TARGET cpp-httplib)
 endif()
 
 # The release target this build is, as the feed names it (docs/desktop-app.md): which installer,
-# archive and backend packs are this machine's. Empty where the releases ship nothing (a phone).
+# archive and backend packs are this machine's. Empty for an architecture the releases do not build.
 set(BMOE_TARGET_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
 if(APPLE AND CMAKE_OSX_ARCHITECTURES)
     set(BMOE_TARGET_ARCH "${CMAKE_OSX_ARCHITECTURES}")
@@ -25,8 +25,14 @@ else()
     set(BMOE_TARGET_ARCH "")
 endif()
 set(BMOE_BUILD_TARGET "")
-if(BMOE_TARGET_ARCH AND NOT IOS AND NOT ANDROID)
-    if(APPLE)
+if(BMOE_TARGET_ARCH)
+    # The phones are named too, so the update check says which build asked; the feed carries no
+    # installer for them (their apps ship beside it), and their packs list none of these targets.
+    if(ANDROID)
+        set(BMOE_BUILD_TARGET "android-${BMOE_TARGET_ARCH}")
+    elseif(IOS)
+        set(BMOE_BUILD_TARGET "ios-${BMOE_TARGET_ARCH}")
+    elseif(APPLE)
         set(BMOE_BUILD_TARGET "macos-${BMOE_TARGET_ARCH}")
     elseif(WIN32)
         set(BMOE_BUILD_TARGET "windows-${BMOE_TARGET_ARCH}")
@@ -76,6 +82,7 @@ add_library(bmoe_server_core STATIC
     decide_protocol.cpp
     openai_chat.cpp
     openai_responses.cpp
+    image_part.cpp
     turn_queue.cpp
     event_bus.cpp
     json_util.cpp
@@ -99,6 +106,8 @@ add_library(bmoe_server_core STATIC
     feed.cpp
     backend_packs.cpp
     update_service.cpp
+    service_spec.cpp
+    log_file.cpp
 )
 # The platform's calendar time (platform.h) for the schedule and the backups' stamps.
 target_link_libraries(bmoe_server_core PUBLIC bmoe_core PRIVATE bmoe_monocypher bmoe_server_platform)
@@ -117,6 +126,7 @@ add_library(bmoe_server STATIC
     model_inspect.cpp
     planner_adapter.cpp
     routing_store.cpp
+    service_manager.cpp
     agent.cpp
     agent_external.cpp
     agent_routes.cpp

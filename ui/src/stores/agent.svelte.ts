@@ -241,14 +241,14 @@ class AgentStore {
     return c.id;
   }
 
-  async send(text: string, think?: boolean): Promise<boolean> {
+  async send(text: string, think?: boolean, images?: string[]): Promise<boolean> {
     const body = text.trim();
-    if (!body || this.sending) return false;
+    if ((!body && !images?.length) || this.sending) return false;
     this.sending = true;
     this.clearError();
     try {
       const id = await this.ensure();
-      const r = await agentApi.send(id, body, think);
+      const r = await agentApi.send(id, body, think, images);
       if (id === this.currentId) {
         this.items = upsertItem(this.items, r.item);
         if (this.current) this.current = { ...this.current, state: 'running' };
@@ -263,12 +263,12 @@ class AgentStore {
   }
 
   /** Ask again from a past question: it and everything after it go, then the new text is sent. */
-  async edit(itemId: string, text: string): Promise<boolean> {
+  async edit(itemId: string, text: string, images?: string[]): Promise<boolean> {
     const id = this.currentId;
-    if (!id || !text.trim()) return false;
+    if (!id || (!text.trim() && !images?.length)) return false;
     this.clearError();
     try {
-      await agentApi.edit(id, itemId, text.trim());
+      await agentApi.edit(id, itemId, text.trim(), images);
       this.items = truncateFrom(this.items, itemId);
       if (this.current) this.current = { ...this.current, state: 'running' };
       return true;
@@ -281,7 +281,7 @@ class AgentStore {
   /** The last answer again: the last question, resent as it was. */
   async regenerate(): Promise<void> {
     const last = lastUserItem(this.items);
-    if (last && last.kind === 'user') await this.edit(last.id, last.text);
+    if (last && last.kind === 'user') await this.edit(last.id, last.text, last.images);
   }
 
   async answer(itemId: string, decision: 'approve' | 'deny'): Promise<void> {

@@ -36,6 +36,8 @@ class ServerStore {
   lastDone = $state<DoneSummary | null>(null);
   /** The stage a measurement is in, null when none runs (a `done` stage clears it). */
   planProgress = $state<PlanProgress | null>(null);
+  /** The load under way: the seconds the server reported and when; a screen counts on from them. */
+  loadBase = $state<{ elapsed: number; at: number } | null>(null);
   /**
    * The plan the server holds for the chosen model (`GET /api/plan?cached=1`, never a measurement):
    * read when the server is reached, when a session opens and when a turn ends, so the Plan page
@@ -233,6 +235,13 @@ class ServerStore {
   private onInfo(d: Info): void {
     const before = this.info;
     this.info = d;
+    if (d.state === 'planning' || d.state === 'loading') {
+      // The server's count where it gives one; an older server's load counts from its first event.
+      if (typeof d.load_elapsed_s === 'number') this.loadBase = { elapsed: d.load_elapsed_s, at: Date.now() };
+      else this.loadBase ??= { elapsed: 0, at: Date.now() };
+    } else {
+      this.loadBase = null;
+    }
     // A new session runs a plan of its own (an auto load's, or the settings as they were).
     const opened = d.state === 'ready' && d.model !== null && (before?.model?.path !== d.model.path || before?.model?.load_s !== d.model.load_s);
     if (opened) this.refreshPlan();

@@ -27,8 +27,8 @@ app/
   Sources/
     App/        the entry point, the four tabs and the links between them, the status line
     Engine/     the server's life in the app: paths, launch, key, the state the screens observe
-    Chat/       the conversations over the server, the transcript, the composer, the answer's
-                Markdown theme, choose-from-options
+    Chat/       the conversations over the server, the transcript, the composer and the images it
+                attaches, the answer's Markdown theme, choose-from-options
     Models/     one list of what is here and what the catalog offers, Hugging Face, a link, a file
     Plan/       the verdict and its three figures, the planner's measurements and decisions
     Settings/   the engine parameters a form offers, one card per group of GET /api/params, and
@@ -91,7 +91,14 @@ text kept for VoiceOver), and a link opens only when tapped. Holding a message o
 send again; under each answer is Copy, and under the last one **Answer again**, which sends the
 last question again as it was (the server drops the old answer). Stop stops the answer. The
 conversations sheet lists them newest first; swipe a row to rename or delete it. With no model
-loaded the empty chat says to load one, with the way to Models. Choose from options stays: the
+loaded the empty chat says to load one, with the way to Models. The composer's **Add** menu
+attaches an image from the library or the camera (`NSCameraUsageDescription`; the photo picker
+needs no entry), up to 8 a message of at most 16 MB each, as the web UI's composer does. A photo
+from the camera is encoded once as JPEG by the app (the camera hands over a decoded image, not a
+file); everything else goes as picked (data URLs in `images`, docs/server-api.md "Images"), the
+engine decodes them and the projector downsizes. With a model that has no projector loaded the two entries stay in the menu,
+disabled, with the reason (`GET /api/info` `model.vision`). A message shows the images it carried
+above its words, and Edit and send again resends them unchanged. Choose from options stays: the
 model picks one option from one read of the prompt, shown as a card under the conversation and not
 kept, since a decision is not a turn. An answer holds the background time iOS grants, so one nearly
 done when the person switches apps still finishes.
@@ -148,6 +155,14 @@ is not a SwiftPM package: MarkdownUI 2.4.1 (`third_party/swift-markdown-ui`, MIT
 library, and swift-cmark 0.5.0 (`third_party/swift-cmark`, cmark-gfm, BSD-2-Clause) as a C static
 library whose module maps MarkdownUI imports. Both are upstream's files unmodified, at the tags and
 commits `app/CMakeLists.txt` records; `THIRD_PARTY_LICENSES` carries their licences.
+
+With Apple Swift 6.4.x, the MarkdownUI target alone is compiled with `-Onone`. Its optimized
+build aborts when the tested iOS runtime resolves `Markdown.Body`, including in a minimal app
+without the engine or a model. Disabling linker dead stripping did not avoid the abort. This
+workaround keeps the app and the C++ engine optimized and leaves the vendored sources unchanged;
+Markdown rendering performance has not yet been compared. It is scoped to the compiler version
+family until an upstream fix is known: the failure was reproduced with Swift 6.4, not with
+every 6.4.x patch release or iOS version.
 
 The script generates an Xcode project (`build-ios-sim/bigmoeonedge.xcodeproj`), which opens in
 Xcode to run, debug and profile either app. `BMOE_IOS_TARGETS=bmoe-app` builds one of the two.

@@ -26,7 +26,8 @@ Each [release](https://github.com/Helldez/BigMoeOnEdge/releases/latest) carries
 `app-dev-release.apk`, signed with the project's stable key, so each version installs over the
 previous one. Download it from the release page and open it; Android asks once to allow installs
 from the browser. `app-dev-debug.apk`, on the same page, is a debug build signed with another key: it
-cannot update the release one.
+cannot update the release one. Settings → Updates checks for a newer release when you press it
+and opens its page.
 
 ## Build
 
@@ -37,7 +38,7 @@ cannot update the release one.
    ```
 
    This fills `app/src/main/jniLibs/arm64-v8a/` with `libbmoe-server.so`, the engine the app
-   starts as a child process, and the `libllama`/`libggml` shared libraries it links.
+   starts as a child process, and the `libllama`/`libggml`/`libmtmd` shared libraries it links.
    `libbmoe-cli.so` is still staged beside them, but the app does not start it.
 
    The release build adds the Hexagon, Vulkan and OpenCL backends. It runs inside upstream's
@@ -216,7 +217,9 @@ being answered; a row's menu renames or deletes it.
   again as it was (the server drops the old answer). A notice says, in words, why
   something did not happen. Stop ends the answer.
 - **The composer.** The prompt, Send, or Stop while an answer is written; the + beside the prompt
-  holds **Choose from options** (below). With no model loaded the empty chat says to load one from
+  holds **Image** and **Take a photo**, when the loaded model reads images (a projector file beside
+  it; otherwise the two say so, disabled), at most 8 in a message, shown as thumbnails above the
+  prompt until sent and on the message after, and **Choose from options** (below). With no model loaded the empty chat says to load one from
   Models.
 
 The conversations earlier versions kept on the phone are handed to the server once, on the first

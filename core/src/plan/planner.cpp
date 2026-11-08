@@ -285,6 +285,10 @@ struct Planning {
     bool devices_share_host_memory = false;
     uint64_t device_on_host = 0;
     uint64_t host_fixed = 0;
+    // The projector, where the run has one: on a device where the run uses one (the session's own
+    // rule, below), on the host otherwise; `projector_host` is the part this pool holds.
+    bool projector_on_device = false;
+    uint64_t projector_host = 0;
     uint64_t checkpoint_bytes = 0; // the context checkpoints a chat run will keep (checkpoint_reserve)
     uint64_t host_all = 0;
     uint64_t host_dense = 0;
@@ -452,12 +456,21 @@ void choose_device_tier(Planning & s) {
     // fitter left free under one more whole layer, which on a small card is everything past the dense
     // part. The same budget as the RAM cache's: what the memory can hold, floored at one token cycle.
     const uint64_t spare = device_spare_budget(pl);
-    const uint64_t budget = on_devices + spare;
+    // The projector is on this device too (every layer is). The fitter reserved its room before
+    // placing layers (Placement::device_projector_bytes, already off the spare and in the device's
+    // bytes); whatever it did not reserve - a placement made without the fitter - comes off what the
+    // card has before the cache does. Where the card's memory is the host's it is charged there.
+    const uint64_t unreserved = m.projector_bytes - std::min(m.projector_bytes, pl.device_projector_bytes);
+    const uint64_t projector = s.p.config.device_use != DeviceUse::CpuOnly && !devices_share_host_memory(s.hw)
+                                   ? std::min(on_devices + spare, unreserved)
+                                   : 0;
+    const uint64_t budget = on_devices + spare - projector;
     if (budget == 0) return;
 
     const auto mib_s = [](uint64_t b) { return u64s(mib(b)); };
     const std::string held = mib_s(budget) + " MiB (" + mib_s(on_devices) + " the capacity fitter gave " +
                              u64s(s.n_moe_layer - s.host_layers) + " of " + u64s(s.n_moe_layer) + " layers' experts, " +
+                             (projector > 0 ? "less the projector's " + mib_s(projector) + " MiB, " : "") +
                              mib_s(spare) + " it left free under one more whole layer)";
     std::string why;
     const ComputeDevice * dev = device_tier_device(s, why);
@@ -508,6 +521,7 @@ void choose_device_tier(Planning & s) {
             pl.host_expert_layers.push_back(il);
     pl.override_patterns = pl.all_expert_patterns;
     pl.device_bytes = pl.device_bytes > on_devices ? pl.device_bytes - on_devices : 0;
+    pl.device_bytes += projector; // the part the fitter had not reserved is the device's all the same
     s.host_layers = s.n_moe_layer;
     s.host_expert_bytes = m.expert_bytes;
     // The MTP head of a file of its own follows the experts to the processor that computes them
@@ -899,13 +913,27 @@ void classify_regime(Planning & s) {
     // goes: charged up front, at the count the run may keep, so the cache is not sized into it.
     s.checkpoint_bytes = checkpoint_reserve(s.p.config, placement);
     s.host_fixed = host_fixed;
+    // The projector goes where llama.cpp's library puts it, by the session's rule for the devices: a
+    // layer placed on one means they are wanted, none means they are not. On a device with memory
+    // of its own it is that device's cost: the fitter reserved its room there before placing layers
+    // (Placement::device_projector_bytes), and choose_device_tier charges what it did not. Here it
+    // is the host's, which on a machine whose devices share the host's memory is both.
+    {
+        const RunConfig & c = s.p.config;
+        const bool devices_wanted =
+            c.device_use == DeviceUse::All || (c.device_use == DeviceUse::Auto && placement.n_gpu_layers > 0);
+        s.projector_on_device = s.model.projector_bytes > 0 && devices_wanted;
+        s.projector_host = s.projector_on_device && !s.devices_share_host_memory ? 0 : s.model.projector_bytes;
+    }
     const uint64_t unfitted_fixed = placement.fitted ? 0 : host_fixed + s.checkpoint_bytes;
 
     s.host_all = placement.fitted
                      ? placement.host_resident_bytes + s.host_expert_bytes + s.device_on_host + s.checkpoint_bytes
                      : s.model.file_bytes + unfitted_fixed;
+    s.host_all += s.projector_host;
     s.host_dense = placement.fitted ? placement.host_resident_bytes + s.device_on_host + s.checkpoint_bytes
                                     : s.model.dense_bytes + unfitted_fixed;
+    s.host_dense += s.projector_host;
     if (s.host_all <= s.usable) {
         s.p.regime = Regime::Fits;
     } else if (s.host_dense <= s.usable) {
@@ -1282,7 +1310,7 @@ bool choose_dense_policy(Planning & s) {
 uint64_t dense_pending_bytes(const Planning & s) {
     const DenseWeightsMode mode = s.p.config.moe.dense_weights;
     const bool converts_dense = mode == DenseWeightsMode::Anonymous || mode == DenseWeightsMode::Pinned;
-    uint64_t dense_pending = converts_dense ? s.host_dense - s.host_fixed - s.checkpoint_bytes : 0;
+    uint64_t dense_pending = converts_dense ? s.host_dense - s.host_fixed - s.projector_host - s.checkpoint_bytes : 0;
     if (converts_dense && s.model.largest_dense_tensor > s.hw.residency_budget)
         dense_pending = dense_pending > s.model.largest_dense_tensor ? dense_pending - s.model.largest_dense_tensor : 0;
     return dense_pending;
@@ -1325,6 +1353,7 @@ AllocationInputs ledger_inputs(const Planning & s, uint64_t dense_pending) {
     ai.reserved_bytes = dense_pending;
     ai.cacheable_bytes = s.host_expert_bytes;
     ai.fixed_bytes = s.host_fixed;
+    ai.projector_bytes = s.projector_host;
     ai.checkpoint_bytes = s.checkpoint_bytes;
     ai.cache_lock = c.moe.cache_pin;
     ai.holdable_bytes = s.holdable;
