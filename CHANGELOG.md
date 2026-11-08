@@ -11,7 +11,8 @@ Semantic Versioning.
   without Swift optimization to avoid the observed `Markdown.Body` conformance abort when an
   assistant reply is rendered. The app and C++ engine keep their Release optimization, and
   vendored sources are unchanged. A model-free rendering app reproduces the optimized failure;
-  turning off linker dead stripping does not avoid it.
+  turning off linker dead stripping does not avoid it. Keep the guard active for the 6.4.x
+  compiler family until an upstream fix is known.
 
 ## [0.40.1] - 2026-11-07
 
