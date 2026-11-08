@@ -95,9 +95,13 @@ with a larger context.
 
 A stop raises the run's stop: a waiting approval ends at once as denied, a command's whole process
 group is killed, an MCP call ends its server's program (started again by the next call), a
-provider's stream ends at its next piece, and the engine's turn
-ends at its next token (or gives up its place in the line). `POST .../stop` answers once the run
-has ended (waiting at most 30 s, the longest a prompt's prefill may delay that next token).
+provider's stream ends at its next piece, and the engine's turn ends at its next cancellation
+point (or gives up its place in the line). The run's stop goes to the engine with the request, so
+the turn ends during an image's encoding or a long prompt's prefill as readily as between tokens,
+and a stop pressed while the turn was still waiting its place is not lost. It ends that turn alone:
+another conversation's running turn is not touched. `POST .../stop` answers once the run has
+ended, waiting at most 30 s (a command's process group may take a moment to die); its `stopped` is
+whether a run was found, and the conversation's state says when it has ended.
 
 No model loaded is not a refused message: the message is kept, and the run ends at once with an
 error notice ("No model is loaded ...") and the conversation in state `error`. Sending it again
@@ -298,7 +302,7 @@ All JSON; errors are `{"error", "code"}` as everywhere in the API. Times are Uni
 | `POST /api/conversations/<id>/messages` | `{text, think?, images?}` → `202 {item}`; the run goes on in the server and reports on `/api/events`. `409 busy` while one runs. `images`: up to 8 data URLs, kept on the item and shown to the model after the text (`400 no_vision` when the loaded model has no projector, server-api.md "Images") |
 | `POST /api/conversations/<id>/edit` | `{item, text, think?}`: drops `item` (a `user` item) and everything after it, then sends `text` → `202 {item}` |
 | `POST /api/conversations/<id>/approval` | `{item, decision: "approve" \| "deny"}`; `404 not_found` when that item is not waiting |
-| `POST /api/conversations/<id>/stop` | stops the run; answers `{stopped}` once it has stopped (`false`: none ran) |
+| `POST /api/conversations/<id>/stop` | stops the run, wherever its turn is (encoding an image, prefilling, decoding, or waiting its place); answers `{stopped}` once it has stopped, or after 30 s (`true`: a run was found and told to stop; `false`: none ran; the conversation's state and events say when it has ended) |
 | `GET /api/conversations/<id>/file?path=` | a workspace file's bytes for the preview, with its content type (16 MiB at most), sandboxed by its own `Content-Security-Policy` |
 | `GET /api/skills?workspace=<id>` | `[{name, title, description, source: "bundled" \| "user" \| "workspace", enabled, body}]`; the workspace's own with `workspace` |
 | `POST /api/skills`, `PUT /api/skills/<name>` | `{name, description, body, title?}`: a person's own skill (a `PUT` on a bundled one writes the person's version of it); `409 exists` on a `POST` that repeats a name |

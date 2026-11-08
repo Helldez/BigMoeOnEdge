@@ -12,7 +12,8 @@
 // that thread waits on, answered by approve() or stop() from an HTTP worker. The scheduler is one
 // more thread. shutdown() raises every run's stop, which ends a waiting approval at once, a command
 // by killing its process group, an MCP call by ending its server, a provider's stream at its next
-// piece, and the engine's turn at its next token, then waits for all of them and ends the MCP
+// piece, and the engine's turn at its next cancellation point (a graph node, in the prefill or an
+// image's encoder as much as between tokens), then waits for all of them and ends the MCP
 // servers: an embedding app's stop (server.h) returns only once nothing of the agent is running.
 #pragma once
 
@@ -51,7 +52,7 @@ inline constexpr int k_max_same_failed_calls = 3;
 // The most of a workspace's AGENTS.md the system prompt carries.
 inline constexpr size_t k_agents_md_max_bytes = 8 * 1024;
 // How long a stop waits for the run to end before answering anyway: the engine's turn ends at its
-// next token, which a long prompt's prefill can delay.
+// next cancellation point, a graph node away; a command's process group may take longer to die.
 inline constexpr int k_stop_wait_s = 30;
 // How often the scheduler looks at the tasks when nothing wakes it.
 inline constexpr int k_scheduler_poll_s = 20;
@@ -59,10 +60,14 @@ inline constexpr int k_scheduler_poll_s = 20;
 inline constexpr int k_provider_timeout_s = 600;
 inline constexpr size_t k_title_max_chars = 60;
 
-// The model a round asks: the engine's turn, or a test's stand-in.
+// The model a round asks: the engine's turn, or a test's stand-in. `still_wanted` is asked while
+// the turn waits its place in the engine's line; `stop` is the run's own stop, which the engine
+// reads at every cancellation point of the turn (EngineHost::chat), so a Stop pressed during an
+// image's encoding or a long prompt's prefill ends the turn then, not at its next token.
 using ChatFn = std::function<ChatOutcome(const ChatRequest & req,
                                          const std::function<bool(const TokenMetrics &)> & on_token,
-                                         const std::function<bool()> & still_wanted)>;
+                                         const std::function<bool()> & still_wanted,
+                                         const std::atomic<bool> * stop)>;
 
 struct AgentDeps {
     EventBus * bus = nullptr;

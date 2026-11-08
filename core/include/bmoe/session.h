@@ -20,6 +20,7 @@
 #include "bmoe/metrics.h"
 #include "bmoe/runtime.h"
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <string>
@@ -136,6 +137,11 @@ struct GenerateRequest {
     // carries each message's own). Needs a session opened with a projector. Last, so a request
     // written as a positional aggregate before images existed still reads the same.
     std::vector<ChatImage> images{};
+    // The caller's own stop, read wherever cancel()'s latch is: the abort callback under prefill
+    // and decode, and the image encoder's eval callback. The latch is reset when a generation
+    // begins, so a cancel() that lands while the turn is still queued is lost; a flag the caller
+    // owns and raises is not. Must outlive the call. Null: cancel() alone.
+    const std::atomic<bool> * stop = nullptr;
 };
 
 // Teacher-forced quality measurement. The text is fixed, so every cell scores the SAME token

@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.40.2] - 2026-11-08
+
+### Fixed
+- **Conversation Stop before the first token.** A conversation's Stop reached the engine only
+  through the token callback, so during an image's encoding or a long prompt's prefill it waited
+  for the first token, and one pressed while the turn was still waiting its place was lost to the
+  session's cancel reset. The run's stop now goes to the engine with the request
+  (`GenerateRequest::stop`) and is read at every cancellation point, the abort callback and the
+  encoder's eval callback included; a turn whose stop is already raised when its place comes is
+  not started. It stops that turn alone.
+
 ## [0.40.1] - 2026-11-07
 
 ### Added

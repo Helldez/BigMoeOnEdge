@@ -48,7 +48,7 @@ constexpr unsigned k_encoder_stop_grain = 16;
 bool stop_encoder_on_cancel(ggml_tensor *, bool ask, void * user) {
     auto * w = static_cast<MediaInput::EncoderWatch *>(user);
     if (ask) return ++w->asked % k_encoder_stop_grain == 0;
-    return !w->cancel->load(std::memory_order_relaxed);
+    return !w->cancelled();
 }
 
 } // namespace
@@ -58,15 +58,15 @@ std::unique_ptr<MediaInput> MediaInput::open(const std::string & mmproj,
                                              int n_threads,
                                              bool use_devices,
                                              int image_max_tokens,
-                                             const std::atomic<bool> * cancel,
+                                             std::function<bool()> cancelled,
                                              std::string & err) {
     mtmd_helper_log_set(mtmd_to_bmoe_log, nullptr);
     mtmd_context_params p = mtmd_context_params_default();
     // The library's own cap stands unless one is given: a fixed-count projector has no use for it.
     if (image_max_tokens > 0) p.image_max_tokens = image_max_tokens;
     std::unique_ptr<MediaInput> m(new MediaInput());
-    m->watch_.cancel = cancel;
-    if (cancel) {
+    m->watch_.cancelled = std::move(cancelled);
+    if (m->watch_.cancelled) {
         p.cb_eval = stop_encoder_on_cancel;
         p.cb_eval_user_data = &m->watch_; // the context is freed by ~MediaInput: the watch outlives it
     }
@@ -230,7 +230,7 @@ int MediaInput::decode_media(llama_context * ctx,
     if (mtmd_encode_chunk(ctx_, chunk) != 0) return -1;
     // A cancel during the encode ended its graph early (stop_encoder_on_cancel): its output is
     // not an image, and the caller reads its own latch to tell a cancel from a failure.
-    if (watch_.cancel && watch_.cancel->load(std::memory_order_relaxed)) return -1;
+    if (watch_.cancelled && watch_.cancelled()) return -1;
     // What an image costs is mostly this: said once per image, so a slow answer has its reason.
     log_printf(LogLevel::Info, "image: %d tokens encoded in %.1f s", (int) mtmd_input_chunk_get_n_tokens(chunk),
                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());

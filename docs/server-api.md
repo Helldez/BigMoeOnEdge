@@ -753,7 +753,12 @@ workspace or a task is `409` with `code: "chat_only"`. A UI reads this and shows
 **Runs.** `POST /api/conversations/<id>/messages` answers `202 {item}` as soon as the person's item
 is stored; everything after that arrives on `/api/events` (`conversation`, `item`, `delta`) and is
 in the stored conversation. A UI that reconnects reads `GET /api/conversations/<id>`. An approval
-card is a `tool` item in state `waiting`, answered with `POST .../approval` on its conversation. `POST .../stop` answers once the run has ended.
+card is a `tool` item in state `waiting`, answered with `POST .../approval` on its conversation.
+`POST .../stop` answers once the run has ended: the run's stop goes to the engine with the turn's
+request and is read at every cancellation point, so an image's encoding or a long prompt's prefill
+ends at once, not at the next token, and a stop pressed while the turn waited its place is kept. It
+stops that conversation's turn alone. `POST /api/cancel` remains the way to cancel whatever turn
+the server is generating.
 
 **Errors.** `{"error", "code"}`, with these codes:
 

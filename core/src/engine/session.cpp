@@ -488,6 +488,14 @@ struct Session::Impl {
     bool info_sent = false;
 
     std::atomic<bool> cancel_requested{false};
+    // The running generation's caller-owned stop (GenerateRequest::stop); null between calls.
+    // Written by the generating thread before and after the turn, read by the callbacks it runs.
+    const std::atomic<bool> * caller_stop = nullptr;
+    // Whether this call should end: cancel()'s latch, or the caller's own flag.
+    bool cancelled() const {
+        return cancel_requested.load(std::memory_order_relaxed) ||
+               (caller_stop && caller_stop->load(std::memory_order_relaxed));
+    }
     // Set while a cancel's abort is in flight, so llama.cpp's report of the aborted decode is not
     // shown as an error (engine/llama_log.h). The abort callback sets it; end_cancel_quiet() clears.
     std::atomic<bool> cancel_quieted{false};
@@ -814,7 +822,7 @@ DecideResult Session::decide(const DecideRequest & req) {
     }
     // The abort callback turns a cancel into a failed decode; that is a request honoured, not a
     // context gone bad, and run_decide has already emptied the sequence.
-    if (!r.ok && r.fatal && im.cancel_requested.load(std::memory_order_relaxed)) {
+    if (!r.ok && r.fatal && im.cancelled()) {
         r.fatal = false;
         r.cancelled = true;
         r.error = "cancelled";
@@ -1105,8 +1113,8 @@ bool Session::Impl::read_model(Opening & o) {
         // on one means they are wanted. The planner prices the projector by the same rule.
         const bool devices_wanted =
             cfg.device_use == DeviceUse::All || (cfg.device_use == DeviceUse::Auto && cfg.n_gpu_layers > 0);
-        media = detail::MediaInput::open(cfg.mmproj, m, cfg.n_threads, devices_wanted, cfg.image_max_tokens,
-                                         &cancel_requested, merr);
+        media = detail::MediaInput::open(
+            cfg.mmproj, m, cfg.n_threads, devices_wanted, cfg.image_max_tokens, [this] { return cancelled(); }, merr);
         if (!media) return o.fail(merr);
         if (!media->vision()) {
             media.reset();
@@ -1316,7 +1324,7 @@ void Session::Impl::install_abort_callback() {
         ctx.get(),
         [](void * ud) -> bool {
             auto * p = static_cast<Impl *>(ud);
-            if (p->cancel_requested.load(std::memory_order_relaxed)) {
+            if (p->cancelled()) {
                 // The decode this aborts is about to be logged by llama.cpp as a failure; it is a
                 // request honoured. Opened once per cancelled call (the callback is asked many
                 // times), closed by end_cancel_quiet() when that call returns. A fatal streaming
@@ -2250,8 +2258,10 @@ void Session::Impl::begin_generate(const GenerateRequest & req, IMetricsSink * s
     }
 
     // Fresh cancel latch for this generation; a stale request from a prior aborted call must
-    // not carry over. (cancel() sets it; the abort callback reads it.)
+    // not carry over. (cancel() sets it; the abort callback reads it.) The caller's own flag is
+    // what survives that reset: raised before this point, it ends the turn at its first check.
     cancel_requested.store(false, std::memory_order_relaxed);
+    caller_stop = req.stop;
 
     // A kept decide() prefix is worth its RAM only while decisions follow one another. Back in a
     // conversation it would sit, until close, in the memory the expert cache lives in, so it goes
@@ -2714,7 +2724,7 @@ struct Session::Impl::Turn {
             }
             i += chunk;
             if (rc != 0) {
-                if (im.cancel_requested.load(std::memory_order_relaxed)) {
+                if (im.cancelled()) {
                     rollback_turn();
                     res.ok = true;
                     res.cancelled = true;
@@ -3135,7 +3145,7 @@ struct Session::Impl::Turn {
             Step s;
             if (!draft(s)) return false;
             if (verify_decode(s) != 0) {
-                if (im.cancel_requested.load(std::memory_order_relaxed)) {
+                if (im.cancelled()) {
                     res.cancelled = true;
                     break;
                 }
@@ -3155,7 +3165,7 @@ struct Session::Impl::Turn {
                 trial_guarded([&] { im.trial_step(step_s, (int) confirmed.size()); });
             }
 
-            if (structured() && im.cancel_requested.load(std::memory_order_relaxed)) {
+            if (structured() && im.cancelled()) {
                 res.cancelled = true;
                 break;
             }
@@ -3384,10 +3394,14 @@ RunResult Session::generate(const GenerateRequest & req,
         return res;
     }
     im.begin_generate(req, sink);
-    // Whichever way this call returns, a cancel's quiet window ends with it.
+    // Whichever way this call returns, a cancel's quiet window ends with it, and the caller's stop
+    // flag goes with the request it belongs to.
     struct CancelQuiet {
         Impl & im;
-        ~CancelQuiet() { im.end_cancel_quiet(); }
+        ~CancelQuiet() {
+            im.caller_stop = nullptr;
+            im.end_cancel_quiet();
+        }
     } cancel_quiet{im};
 
     if (!turn.render_prompt()) return res;

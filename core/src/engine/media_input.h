@@ -31,15 +31,15 @@ public:
     // a device of the backends loaded, when one is registered (the library's choice, from the
     // registry); without, on the host. The caller decides by the rule its model follows.
     // `image_max_tokens` caps what one image may take where the projector's count follows the
-    // image's size (0: the projector's own cap). `cancel`, when given, is read while an image is
-    // encoded: raised, the encoder stops where it is and decode_media() fails, so a Stop pressed
+    // image's size (0: the projector's own cap). `cancelled`, when given, is asked while an image
+    // is encoded: true, the encoder stops where it is and decode_media() fails, so a Stop pressed
     // during an image answers in a moment rather than when the encoder is done.
     static std::unique_ptr<MediaInput> open(const std::string & mmproj,
                                             const llama_model * model,
                                             int n_threads,
                                             bool use_devices,
                                             int image_max_tokens,
-                                            const std::atomic<bool> * cancel,
+                                            std::function<bool()> cancelled,
                                             std::string & err);
     ~MediaInput();
 
@@ -91,10 +91,11 @@ private:
     const llama_model * model_ = nullptr;
 
 public:
-    // What the encoder's eval callback reads: the session's cancel latch, and how many nodes it has
-    // been asked about, which paces its answers. Public for the callback alone.
+    // What the encoder's eval callback reads: the session's cancellation (its latch and the
+    // request's own flag), and how many nodes it has been asked about, which paces its answers.
+    // Public for the callback alone.
     struct EncoderWatch {
-        const std::atomic<bool> * cancel = nullptr;
+        std::function<bool()> cancelled;
         unsigned asked = 0;
     };
 

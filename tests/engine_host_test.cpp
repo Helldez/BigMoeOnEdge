@@ -70,12 +70,15 @@ struct Gate {
 // What the fake sessions of one test share with it: how each turn ends, and what happened.
 struct Script {
     // How generate() ends. Blocking turns signal `started` and run until cancel(); streaming ones
-    // do the same while sending a token every millisecond, counted in `tokens`.
-    enum class Turn { Ok, Block, Stream, Fail, ContextFull, InvalidOutput } turn = Turn::Ok;
+    // do the same while sending a token every millisecond, counted in `tokens`. A held turn is an
+    // image's encoding or a long prefill: it signals `started` and waits, before any token, for a
+    // cancel (the latch or the request's own stop flag, as the session reads both) or `release`.
+    enum class Turn { Ok, Block, Stream, Held, Fail, ContextFull, InvalidOutput } turn = Turn::Ok;
     DecideResult decide_result;
     int n_ctx = 4096; // the session's context: short of what a server's clients send
 
     Gate started;
+    Gate release; // lets a held turn answer
     std::atomic<int> opened{0};
     std::atomic<int> alive{0};
     std::atomic<int> turns{0};
@@ -104,6 +107,22 @@ public:
             r.generated_text = "hi";
             r.summary.n_generated = 1;
             r.summary.s_per_token = 0.1;
+            return r;
+        }
+        case Script::Turn::Held: {
+            s_.started.release();
+            const auto stopped = [&] { return cancelled_.load() || (req.stop && req.stop->load()); };
+            for (int i = 0; i < 5000 && !stopped() && !s_.release.wait(0ms); ++i)
+                std::this_thread::sleep_for(1ms);
+            r.ok = true;
+            r.cancelled = stopped();
+            if (r.cancelled) return r; // ended in the encoder or the prefill: nothing was generated
+            TokenMetrics m;
+            m.step = 1;
+            ++s_.tokens;
+            if (on_token) on_token(m);
+            r.generated_text = "hi";
+            r.summary.n_generated = 1;
             return r;
         }
         case Script::Turn::Block:
@@ -425,6 +444,127 @@ static void cancel_tests() {
         host.cancel();
         const ChatOutcome out = running.get();
         check(out.status == 200 && out.result.cancelled, "until its own cancel");
+    }
+}
+
+// The caller's own stop flag rides with the request: the session reads it where it reads cancel(),
+// so a stop during an image's encoding or the prefill ends the turn before its first token, and one
+// raised while the turn waited (its latch not yet reset, or a load holding the context) is not lost.
+static void stop_flag_tests() {
+    {
+        EventBus bus;
+        Script script;
+        auto host_owner = std::make_unique<EngineHost>(bus, opener(script));
+        EngineHost & host = *host_owner;
+        host.load(config(), config());
+        wait_state(host, "ready");
+        std::atomic<bool> stop{false};
+        const ChatOutcome out = host.chat(turn(), nullptr, nullptr, &stop);
+        check(out.status == 200 && script.last_request.stop == &stop, "the request carries the caller's stop flag");
+        check(host.chat(turn(), nullptr).status == 200 && script.last_request.stop == nullptr,
+              "and none when the caller has none");
+    }
+    {
+        EventBus bus;
+        Script script;
+        script.turn = Script::Turn::Held;
+        auto host_owner = std::make_unique<EngineHost>(bus, opener(script));
+        EngineHost & host = *host_owner;
+        host.load(config(), config());
+        wait_state(host, "ready");
+        std::atomic<bool> stop{false};
+        std::atomic<int> callbacks{0};
+        auto pending = std::async(std::launch::async, [&] {
+            return host.chat(
+                turn(),
+                [&](const TokenMetrics &) {
+                    ++callbacks;
+                    return true;
+                },
+                nullptr, &stop);
+        });
+        check(script.started.wait() && callbacks == 0, "a held turn has sent no token");
+        stop = true;
+        const bool ended = pending.wait_for(2s) == std::future_status::ready;
+        check(ended, "the stop flag ends it before its first token");
+        if (!ended) host.cancel();
+        const ChatOutcome out = pending.get();
+        check(out.status == 200 && out.result.cancelled && out.result.summary.n_generated == 0 && callbacks == 0,
+              "as a cancelled turn with nothing generated");
+        check(host.ready() && !host.generating() && script.alive == 1, "and the session stays loaded");
+        script.turn = Script::Turn::Ok;
+        const ChatOutcome next = host.chat(turn(), nullptr);
+        check(next.status == 200 && !next.result.cancelled && next.result.generated_text == "hi" && script.opened == 1,
+              "the next turn answers on the same session");
+    }
+    {
+        // Raised before the turn starts: the session's latch reset cannot drop it, since the flag is
+        // the caller's; the turn is not started at all.
+        EventBus bus;
+        Script script;
+        auto host_owner = std::make_unique<EngineHost>(bus, opener(script));
+        EngineHost & host = *host_owner;
+        host.load(config(), config());
+        wait_state(host, "ready");
+        std::atomic<bool> stop{true};
+        const ChatOutcome out = host.chat(turn(), nullptr, nullptr, &stop);
+        check(out.status == 499 && out.code == error_code::client_gone && script.turns == 0,
+              "a turn whose stop is already raised is not started");
+        check(host.ready() && host.chat(turn(), nullptr).result.generated_text == "hi",
+              "and the session answers the next one");
+    }
+    {
+        // A load admitted the turn and then held the context: the stop raised meanwhile is read once
+        // the turn gets its place, before the new session sees the request.
+        EventBus bus;
+        Script script;
+        Gate loading;
+        auto host_owner = std::make_unique<EngineHost>(bus, opener(script, &loading));
+        EngineHost & host = *host_owner;
+        host.load(config(), config());
+        check(wait_state(host, "loading"), "stop during a load: the opener is held");
+        std::atomic<bool> stop{false};
+        Gate called;
+        auto pending = std::async(std::launch::async, [&] {
+            called.release();
+            return host.chat(turn(), nullptr, nullptr, &stop);
+        });
+        called.wait();
+        std::this_thread::sleep_for(20ms); // the turn is in line behind the load
+        stop = true;
+        loading.release();
+        const ChatOutcome out = pending.get();
+        check(out.status == 499 && out.code == error_code::client_gone && script.turns == 0,
+              "stop during a load: the turn never reaches the new session");
+        check(host.ready() && host.chat(turn(), nullptr).result.generated_text == "hi",
+              "stop during a load: the loaded session answers the next turn");
+    }
+    {
+        // Another client's held turn is not this client's to stop: leaving the line is all a waiter
+        // does, and its flag reaches no session.
+        EventBus bus;
+        Script script;
+        script.turn = Script::Turn::Held;
+        auto host_owner = std::make_unique<EngineHost>(bus, opener(script));
+        EngineHost & host = *host_owner;
+        host.load(config(), config());
+        wait_state(host, "ready");
+        auto running = std::async(std::launch::async, [&] { return host.chat(turn(), nullptr); });
+        check(script.started.wait(), "another client's turn is held before its first token");
+        std::atomic<bool> stop{false};
+        const ChatOutcome left = host.chat(
+            turn(), nullptr,
+            [&] {
+                stop = true;
+                return false;
+            },
+            &stop);
+        check(left.status == 499 && running.wait_for(30ms) == std::future_status::timeout && script.tokens == 0,
+              "the waiter that stops leaves the line and the held turn goes on");
+        script.release.release();
+        const ChatOutcome out = running.get();
+        check(out.status == 200 && !out.result.cancelled && out.result.generated_text == "hi" && script.turns == 1,
+              "and answers when its own work is done");
     }
 }
 
@@ -762,6 +902,7 @@ int main() {
     loading_tests();
     request_tests();
     cancel_tests();
+    stop_flag_tests();
     measured_tests();
     failure_tests();
     log_tests();

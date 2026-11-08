@@ -134,10 +134,15 @@ public:
     // turn is gone: the host then cancels this turn, and only this one. A front-end never cancels on
     // a failed write itself, since it cannot tell whose turn is running when the write fails (a
     // keep-alive while queued, the last frames after the turn ended). `still_wanted` (nullable) is
-    // asked while the turn waits its place and gives it up by returning false.
+    // asked while the turn waits its place and gives it up by returning false. `stop` (nullable)
+    // is the caller's own stop flag, handed to the session with the request: raised, it ends the
+    // turn at the engine's next cancellation point, during an image's encoding or the prefill as
+    // much as between tokens, and a turn it finds raised once its place comes is not started. It
+    // cancels this turn alone, and must outlive the call.
     ChatOutcome chat(const ChatRequest & req,
                      const std::function<bool(const TokenMetrics &)> & on_token,
-                     const std::function<bool()> & still_wanted = nullptr);
+                     const std::function<bool()> & still_wanted = nullptr,
+                     const std::atomic<bool> * stop = nullptr);
 
     // Read one decision (bmoe/decide.h) on the calling thread, in the same line as the chat turns:
     // one prefill, no decode. A refused request (no choices, colliding choices, a prompt past
