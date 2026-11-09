@@ -38,6 +38,10 @@ depuis la flash quand le modèle en a besoin. Android, iOS, macOS, Windows et Li
 Qwen3.6-35B-A3B (21 GB) en temps réel sur chaque appareil. Le modèle est plus grand que la mémoire de chaque
 appareil.
 
+**La visite** (2:38) : les modèles, le planificateur, le chat, l'agent sur un dossier, les tâches et les apps connectées sur un Mac de 16 GB.
+
+https://github.com/user-attachments/assets/16371803-b96b-42a4-b147-cb1b7d515c73
+
 ## Ce qu'il fait
 
 - **Exécute des modèles qui ne tiennent pas en mémoire.** Un modèle MoE utilise quelques experts par token.

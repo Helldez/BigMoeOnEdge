@@ -38,6 +38,10 @@ flash cuando el modelo los necesita. Android, iOS, macOS, Windows y Linux, const
 Qwen3.6-35B-A3B (21 GB) en tiempo real en cada dispositivo. El modelo es más grande que la memoria de cada
 dispositivo.
 
+**El recorrido** (2:38): modelos, el planificador, el chat, el agente en una carpeta, las tareas y las apps conectadas en un Mac de 16 GB.
+
+https://github.com/user-attachments/assets/16371803-b96b-42a4-b147-cb1b7d515c73
+
 ## Qué hace
 
 - **Ejecuta modelos que no caben.** Un modelo MoE usa unos pocos expertos por token. El motor mantiene en

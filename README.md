@@ -35,6 +35,10 @@ the model needs them. Android, iOS, macOS, Windows and Linux, built on llama.cpp
 
 Qwen3.6-35B-A3B (21 GB) in real time on each device. The model is larger than each device's memory.
 
+**The tour** (2:38): models, the planner, chat, the agent on a folder, tasks and connected apps on a 16 GB Mac.
+
+https://github.com/user-attachments/assets/16371803-b96b-42a4-b147-cb1b7d515c73
+
 ## What it does
 
 - **Runs models that do not fit.** A MoE model uses a few experts per token. The engine keeps the
