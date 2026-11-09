@@ -938,6 +938,49 @@ int main() {
         check(ws <= wa, "width: a device that shares this pool narrows the graph at least as much as one that does not",
               std::to_string(ws) + " vs " + std::to_string(wa));
 
+        // A device with memory of its own, short of room (the fitter left layers on the host): its
+        // buffers are held to their share of its memory, as the host's are of the host's. The same
+        // buffers on a device the whole model fits take nothing there, and the graph stays wide.
+        {
+            HardwareProfile card = desktop();
+            ComputeDevice & gpu = card.devices[0];
+            gpu.memory_total = 12 * GiB;
+            gpu.memory_free = 12 * GiB;
+            gpu.shares_host_memory = Tri::No;
+            const uint64_t dev_per_token = 400 * KiB; // 16384 wide: 6.25 GiB of the card, as measured on one
+            Placement short_card = wide(16384, 4 * KiB);
+            short_card.fitted = true;
+            short_card.n_gpu_layers = (int32_t) model.n_layer - 1; // two of n_layer + 1 left on the host
+            short_card.device_compute_bytes = 16384ull * dev_per_token;
+            short_card.device_compute_per_token = dev_per_token;
+            short_card.device_bytes = 11 * GiB;
+            const Plan narrowed = plan_run(big_ctx, card, model, short_card, PlanRequest{});
+            const Decision * dn = find(narrowed, "ubatch");
+            const uint64_t wn = (uint64_t) narrowed.config.n_ubatch;
+            const uint64_t dcap = (uint64_t) ((double) (12 * GiB) * pol.compute_share_max);
+            check(wn > 0 && wn < 16384 && wn * dev_per_token <= dcap && dn && dn->source == Source::Policy &&
+                      dn->reason.find("of device memory") != std::string::npos,
+                  "width: a device short of room holds its buffers to their share of its memory",
+                  dn ? std::to_string(wn) + ": " + dn->reason : "no decision");
+            check(wn * 2 * dev_per_token > dcap || wn == pol.ubatch_min,
+                  "width: the widest whose device buffers fit, not a narrower one", std::to_string(wn));
+
+            // The whole model on the card: every layer placed, no experts left on the host.
+            Placement whole = short_card;
+            whole.n_gpu_layers = (int32_t) model.n_layer + 1;
+            whole.host_expert_layers.clear();
+            const Plan wide_kept = plan_run(big_ctx, card, model, whole, PlanRequest{});
+            check(wide_kept.config.n_ubatch == 0, "width: a device the model fits whole keeps the widest graph",
+                  std::to_string(wide_kept.config.n_ubatch));
+
+            // A slope the device side did not measure decides nothing there.
+            Placement blind_dev = short_card;
+            blind_dev.device_compute_per_token = 0;
+            const Plan unmeasured = plan_run(big_ctx, card, model, blind_dev, PlanRequest{});
+            check(unmeasured.config.n_ubatch == 0, "width: an unmeasured device slope leaves the graph wide",
+                  std::to_string(unmeasured.config.n_ubatch));
+        }
+
         // at_width is a line through the projected point, clamped at zero.
         const Placement base_pl = wide(4096, per_token);
         check(base_pl.at_width(2048).raw_host_compute_bytes == 2048ull * per_token &&
@@ -2180,6 +2223,12 @@ int main() {
             check(pn && pn->reason.find("on devices " + std::to_string(13 * 1024) + " MiB") != std::string::npos,
                   "device tier, partial placement with a projector: counted on the device once",
                   pn ? pn->reason : "none");
+            // And the plan says why no cache was armed, rather than saying nothing.
+            const Decision * dq = find(q, "device-cache-mb");
+            check(dq && dq->value == "0" && dq->source == Source::Derived &&
+                      dq->reason.find("dense parts are on the host") != std::string::npos,
+                  "device tier, partial placement: the plan says the dense parts are not all on the device",
+                  dq ? dq->reason : "no decision");
 
             // A device whose memory is the host's: the fitter's placement is set aside, and the
             // projector is a row of the host's ledger, as on a machine with no device at all.

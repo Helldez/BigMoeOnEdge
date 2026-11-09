@@ -761,8 +761,20 @@ the side that cannot overcommit.
 The rule is the widest graph whose buffers stay inside a share of what the process may hold
 (`PlannerPolicy::compute_share_max`, a tenth), found by halving from the context and never below
 `ubatch_min`. Inside the share nothing changes and the knob keeps its default. A device's buffers
-count where they come out of this pool and not where the device has memory of its own. A width set
-by hand is left alone and charged in full; a slope that was not measured decides nothing.
+count in this pool where its memory is the host's. A device with memory of its own pays for its width
+in that memory, and where the model does not fit it (the fitter left a layer, or a layer's experts,
+on the host), every byte there is one a layer's dense part or the device's expert cache would have
+used. There its buffers are held to the same share of the device's memory. A device the whole model
+fits keeps the widest graph, since its buffers take nothing there. Because the fitter placed the
+layers around buffers as wide as the graph it was given, a plan that narrows the graph on a device
+places again at the narrower width (`probe_and_plan`), and the rules run on that placement. A width
+set by hand is left alone and charged in full; a slope that was not measured decides nothing.
+
+Measured on a 12 GB card (RTX 3060 class, 120 GiB of host memory) with Qwen3.8-Flash-Next Q2_0 at a
+16384 context. The graph as wide as the context reserved 6644 MiB of the card for compute buffers.
+The fitter then left two layers on the host, and with them the dense parts the device tier needs, so
+no device cache was armed and the server decoded at 13 tok/s. At 2048 tokens the buffers were 727 MiB,
+every layer went on the card with a 6.1 GB cache of experts (86% hits), and the decode was 36.8 tok/s.
 
 The share is policy, and the plan prints it as such. What is measured is the trade it stands in
 for, on that laptop at a 16384 context, a 10850-token prompt and then a short one:

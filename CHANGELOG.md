@@ -14,6 +14,19 @@ Semantic Versioning.
   CI and the release smoke now start `bmoe-desktop.exe` on Windows, so a missing import fails
   there rather than on a user's machine.
 
+## [Unreleased]
+
+### Fixed
+- **A small card gets its expert cache at a long context.** The graph width (`--ubatch`) was checked
+  against host memory only. On a card with memory of its own, a graph as wide as a 16384 context
+  reserved 6.6 GB of a 12 GB card for compute buffers, so the capacity fitter left two layers on the
+  host, the device tier found a dense part off the card and armed no cache, and `bmoe-server` decoded
+  Qwen3.8-Flash-Next Q2_0 at 13 tok/s where the CLI, at a 2048 context, did 36.8. Where the model does
+  not fit the device, its compute buffers are now held to the same share of its memory as the host's
+  are of the host's, and the fitter places again at the narrower width. A device the whole model fits
+  keeps the widest graph. The plan also says why the device tier armed no cache when a dense part is
+  off the card; before, it said nothing.
+
 ## [0.40.2] - 2026-11-08
 
 ### Added

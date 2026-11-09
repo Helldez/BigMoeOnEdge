@@ -448,7 +448,13 @@ void choose_device_tier(Planning & s) {
     // The dense part of every layer must already be on the devices: it is read by every token, so it
     // has the first claim on the fast memory, and the fitter gives it that claim before any expert.
     // A layer whose dense part is left on the host would cross to reach a cache on the device.
-    if ((uint32_t) pl.n_gpu_layers < m.n_layer) return;
+    if ((uint32_t) pl.n_gpu_layers < m.n_layer) {
+        s.note("device-cache-mb", "0", Source::Derived,
+               "Not every layer's dense part fits on the device: no cache of experts there.",
+               "the capacity fitter put " + u64s((uint64_t) pl.n_gpu_layers) + " of " + u64s(m.n_layer + 1) +
+                   " layers on the devices, so some dense parts are on the host, and a cache would leave them there");
+        return;
+    }
     if (s.host_layers == 0) return;             // every expert on the devices: the model fits there
     if (pl.all_expert_patterns.empty()) return; // no adapter said how to name them
     const uint64_t on_devices = m.expert_bytes > s.host_expert_bytes ? m.expert_bytes - s.host_expert_bytes : 0;
@@ -825,14 +831,33 @@ void size_budget(Planning & s) {
 // A width the caller set is the caller's; a slope that was not measured decides nothing, and the
 // knob keeps its default.
 //
-// A device's buffers are counted only where they come out of this pool. A device with memory of its
-// own pays for its width there, which is the first stage's arithmetic and not this one.
+// A device's buffers come out of this pool where its memory is the host's. A device with memory of
+// its own pays for its width in that memory, and where the model does not fit the device, every byte
+// there is one the expert cache or a layer's dense part would have used: the same trade, on the
+// device. Measured on a 12 GB card at a 16384 context: a graph as wide as the context reserved 6.6 GB
+// of the card for compute buffers, the fitter left two layers' dense part on the host, no device cache
+// was armed, and the decode ran at 13 tok/s, where 2048 tokens of width reserved 0.7 GB and the same
+// card decoded at 37 with a 6 GB cache. So where a device is short of room, its buffers are held to
+// the same share of its memory as the host's are of the host's; a device the whole model fits keeps
+// the widest graph, since its buffers take nothing from anything there.
 void choose_graph_width(Planning & s) {
     Plan & p = s.p;
     const bool device_in_pool = devices_share_host_memory(s.hw);
     auto buffers = [&](uint32_t w) {
         const Placement q = s.placement.at_width(w);
         return q.raw_host_compute_bytes + (device_in_pool ? q.device_compute_bytes : 0);
+    };
+    // Short of room: the fitter left a layer, or a layer's experts, on the host beside a device of its own.
+    const uint64_t device_memory = device_in_pool ? 0 : s.hw.device_local_memory();
+    const bool device_short =
+        device_memory > 0 && s.placement.fitted && s.placement.n_gpu_layers > 0 &&
+        s.placement.device_compute_per_token > 0 &&
+        ((uint32_t) s.placement.n_gpu_layers <= s.model.n_layer || !s.placement.host_expert_layers.empty());
+    const uint64_t device_cap = (uint64_t) ((double) device_memory * s.pol.compute_share_max);
+    auto device_buffers = [&](uint32_t w) { return s.placement.at_width(w).device_compute_bytes; };
+    auto over = [&](uint32_t w) {
+        return buffers(w) > s.holdable * (double) s.pol.compute_share_max ||
+               (device_short && device_buffers(w) > device_cap);
     };
     const uint32_t full = s.placement.compute_width;
     if (s.req.is_pinned("ubatch")) {
@@ -850,12 +875,12 @@ void choose_graph_width(Planning & s) {
                "width is not this plan's to choose; keeping the default");
         return;
     }
-    const uint64_t cap = (uint64_t) ((double) s.holdable * s.pol.compute_share_max);
     uint32_t w = full;
-    while (w / 2 >= s.pol.ubatch_min && buffers(w) > cap)
+    while (w / 2 >= s.pol.ubatch_min && over(w))
         w /= 2;
-    const std::string share = u64s((uint64_t) (s.pol.compute_share_max * 100.0f + 0.5f)) + "% of the " +
-                              u64s(mib(s.holdable)) + " MiB this process may hold";
+    const std::string pct = u64s((uint64_t) (s.pol.compute_share_max * 100.0f + 0.5f)) + "%";
+    const std::string share = pct + " of the " + u64s(mib(s.holdable)) + " MiB this process may hold";
+    const bool device_bound = device_short && device_buffers(full) > device_cap;
     if (w == full) {
         s.note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Derived,
                "A prompt runs in one pass: that takes only " + size_brief(buffers(full)) + ".",
@@ -863,14 +888,20 @@ void choose_graph_width(Planning & s) {
                    " MiB of compute buffers, inside " + share + ": a prompt is computed in one pass");
         return;
     }
-    const uint64_t before = buffers(full);
+    const uint64_t before = device_bound ? device_buffers(full) : buffers(full);
+    const uint64_t after = device_bound ? device_buffers(w) : buffers(w);
+    const std::string where = device_bound ? pct + " of the " + u64s(mib(device_memory)) +
+                                                 " MiB of device memory, where the model does not fit whole"
+                                           : share;
     s.placement = s.placement.at_width(w);
     p.placement = s.placement;
     p.config.n_ubatch = (int) w;
     s.note("ubatch", u64s(w), Source::Policy,
-           u64s(w) + " tokens per pass; wider would take " + size_brief(before) + " from the cache.",
-           "a graph as wide as the context would reserve " + u64s(mib(before)) + " MiB of compute buffers, more than " +
-               share + "; at " + u64s(w) + " tokens it is " + u64s(mib(buffers(w))) +
+           u64s(w) + " tokens per pass; wider would take " + size_brief(before) +
+               (device_bound ? " of the device's memory." : " from the cache."),
+           "a graph as wide as the context would reserve " + u64s(mib(before)) + " MiB of compute buffers" +
+               (device_bound ? " on the devices" : "") + ", more than " + where + "; at " + u64s(w) + " tokens it is " +
+               u64s(mib(after)) +
                " MiB. A prompt takes more passes and the expert cache keeps the rest: a prompt is paid once and a "
                "token every time. " +
                flag_spelling("ubatch") + " sets it by hand");

@@ -100,6 +100,31 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     detail::log_memory_snapshot("auto-probe-end");
     starting(); // rules
     r.plan = plan_run(cfg, r.hw, r.model, placement, req);
+    // The fitter placed layers around compute buffers as wide as the graph it was given. Where the plan
+    // narrowed the graph and the devices hold part of the model, the room the narrower buffers leave is
+    // the fitter's to give (the dense part of every layer before any cache), so it places again at that
+    // width and the rules run on what it places. The width stays the first plan's decision: it was made
+    // against the wide placement, which is what it narrowed. One pass, since the width only narrows.
+    const uint32_t width = (uint32_t) r.plan.config.n_ubatch;
+    if (!req.is_pinned("ubatch") && placement.fitted && !placement.shared_memory_placement &&
+        placement.n_gpu_layers > 0 && width > 0 && width < placement.compute_width) {
+        RunConfig narrow = cfg;
+        narrow.n_ubatch = (int) width;
+        const Placement at_width = probe_placement(path, r.model, r.hw, (uint32_t) cfg.n_ctx, width, cfg.cache_type_k,
+                                                   cfg.cache_type_v, backends.keep, &cfg.spec);
+        detail::log_memory_snapshot("auto-probe-narrow");
+        if (at_width.fitted) {
+            const Decision * first = nullptr;
+            for (const Decision & d : r.plan.decisions)
+                if (d.knob == "ubatch") first = &d;
+            const Decision kept = first ? *first : Decision{};
+            r.plan = plan_run(narrow, r.hw, r.model, at_width, req);
+            // Narrowed again on the new placement: that decision stands, it is the narrower one.
+            if (r.plan.config.n_ubatch == (int) width)
+                for (Decision & d : r.plan.decisions)
+                    if (d.knob == "ubatch" && !kept.knob.empty()) d = kept;
+        }
+    }
     return r;
 }
 
