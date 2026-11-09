@@ -21,12 +21,14 @@ Semantic Versioning.
   against host memory only. On a card with memory of its own, a graph as wide as a 16384 context
   reserved 6.6 GB of a 12 GB card for compute buffers, so the capacity fitter left two layers on the
   host, the device tier found a dense part off the card and armed no cache, and `bmoe-server` decoded
-  Qwen3.8-Flash-Next Q2_0 at 13 tok/s where the CLI, at a 2048 context, did 36.8. Where the model does
-  not fit the device, its compute buffers are now held to the same share of its memory as the host's
-  are of the host's, each card against its own, and the fitter places again at the narrower width. On
-  that card and context the server now picks 2048 tokens and decodes at 32.9-36.1 tok/s with a 6.1 GB
-  device cache. A device the whole model fits keeps the widest graph. The plan also says why the device tier armed no cache when a dense part is
-  off the card; before, it said nothing.
+  Qwen3.8-Flash-Next Q2_0 at 13 tok/s where the CLI, at a 2048 context, did 36.8. Where the fitter
+  leaves whole layers on the host beside a card of its own, that card's compute buffers are now held
+  to the same share of its memory as the host's are of the host's, each card against its own, and the
+  fitter places again at the narrower width. On that card and context the server now picks 2048
+  tokens and decodes at 32.9-36.1 tok/s with a 6.1 GB device cache. Where every layer fits the card,
+  the graph keeps its width: on a 24 GB card a narrower one gave 7-12% more decode but cost a long
+  prompt's prefill 24-28%, a trade left unpriced. The plan also says why the device tier armed no
+  cache when a dense part is off the card; before, it said nothing.
 
 ## [0.40.2] - 2026-11-08
 

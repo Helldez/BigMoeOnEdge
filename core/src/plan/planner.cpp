@@ -847,12 +847,16 @@ void choose_graph_width(Planning & s) {
         const Placement q = s.placement.at_width(w);
         return q.raw_host_compute_bytes + (device_in_pool ? q.device_compute_bytes : 0);
     };
-    // Short of room: the fitter left a layer, or a layer's experts, on the host beside a device of its own.
+    // Short of room: the fitter left a whole layer, and with it that layer's dense part, on the host
+    // beside a device of its own. Where every layer is on the device, the wide graph costs the device
+    // tier cache, not a dense part: that trade (a larger cache for decode against a narrower graph for
+    // prefill) is left to the widest graph until it is priced. Measured on a 24 GB card where every
+    // layer fit: narrowing to 4096 tokens grew the cache from 12.4 to 17.6 GB and decode by 7-12%, and
+    // cost a 9756-token prompt's prefill 24-28% (1560-1668 to 1189-1201 tok/s).
     const uint64_t device_memory = device_in_pool ? 0 : s.hw.device_local_memory();
-    const bool device_short =
-        device_memory > 0 && s.placement.fitted && s.placement.n_gpu_layers > 0 &&
-        s.placement.device_compute_per_token > 0 &&
-        ((uint32_t) s.placement.n_gpu_layers <= s.model.n_layer || !s.placement.host_expert_layers.empty());
+    const bool device_short = device_memory > 0 && s.placement.fitted && s.placement.n_gpu_layers > 0 &&
+                              s.placement.device_compute_per_token > 0 &&
+                              (uint32_t) s.placement.n_gpu_layers <= s.model.n_layer;
     const uint64_t device_cap = (uint64_t) ((double) device_memory * s.pol.compute_share_max);
     auto device_buffers = [&](uint32_t w) { return s.placement.at_width(w).device_compute_bytes; };
     // Each card against its own memory: two cards of different sizes each reserve their own buffers,
@@ -905,7 +909,7 @@ void choose_graph_width(Planning & s) {
     const uint64_t before = device_bound ? device_buffers(full) : buffers(full);
     const uint64_t after = device_bound ? device_buffers(w) : buffers(w);
     const std::string where = device_bound ? pct + " of the " + u64s(mib(device_memory)) +
-                                                 " MiB of device memory, where the model does not fit whole"
+                                                 " MiB of device memory, where the fitter left layers on the host"
                                            : share;
     s.placement = s.placement.at_width(w);
     p.placement = s.placement;

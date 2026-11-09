@@ -965,6 +965,15 @@ int main() {
             check(wn * 2 * dev_per_token > dcap || wn == pol.ubatch_min,
                   "width: the widest whose device buffers fit, not a narrower one", std::to_string(wn));
 
+            // Every layer on the card, the experts on the host (a cache's job): the wide graph costs
+            // cache, not a dense part, and that trade is not this rule's. The graph stays wide.
+            Placement all_layers = short_card;
+            all_layers.n_gpu_layers = (int32_t) model.n_layer + 1;
+            const Plan layers_kept = plan_run(big_ctx, card, model, all_layers, PlanRequest{});
+            check(layers_kept.config.n_ubatch == 0,
+                  "width: every layer on the card keeps the widest graph, experts on the host or not",
+                  std::to_string(layers_kept.config.n_ubatch));
+
             // The whole model on the card: every layer placed, no experts left on the host.
             Placement whole = short_card;
             whole.n_gpu_layers = (int32_t) model.n_layer + 1;

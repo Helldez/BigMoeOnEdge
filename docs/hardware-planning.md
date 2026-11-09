@@ -762,14 +762,17 @@ The rule is the widest graph whose buffers stay inside a share of what the proce
 (`PlannerPolicy::compute_share_max`, a tenth), found by halving from the context and never below
 `ubatch_min`. Inside the share nothing changes and the knob keeps its default. A device's buffers
 count in this pool where its memory is the host's. A device with memory of its own pays for its width
-in that memory, and where the model does not fit it (the fitter left a layer, or a layer's experts,
-on the host), every byte there is one a layer's dense part or the device's expert cache would have
-used. There its buffers are held to the same share of the device's memory, each card against its
-own (two cards of different sizes each reserve their part, and the smaller runs short first). A device the whole model
-fits keeps the widest graph, since its buffers take nothing there. Because the fitter placed the
-layers around buffers as wide as the graph it was given, a plan that narrows the graph on a device
-places again at the narrower width (`probe_and_plan`), and the rules run on that placement. A width
-set by hand is left alone and charged in full; a slope that was not measured decides nothing.
+in that memory. Where the fitter left whole layers on the host beside it, a byte of buffer there is a
+byte of some layer's dense part: there its buffers are held to the same share of the device's memory,
+each card against its own (two cards of different sizes each reserve their part, and the smaller runs
+short first). Because the fitter placed the layers around buffers as wide as the graph it was given,
+a plan that narrows the graph on a device places again at the narrower width (`probe_and_plan`), and
+the rules run on that placement. Where every layer is on the device, the graph stays as wide as the
+host's share allows. There a narrower graph would trade prefill for a larger device cache, and that
+trade is not priced yet. On a 24 GB card (RTX 3090 class) where every layer fit, narrowing to 4096
+tokens grew the cache from 12.4 to 17.6 GB and decode by 7-12%, and cost a 9756-token prompt's prefill
+24-28% (1560-1668 to 1189-1201 tok/s). A width set by hand is left alone and charged in full; a slope
+that was not measured decides nothing.
 
 Measured on a 12 GB card (RTX 3060 class, 120 GiB of host memory) with Qwen3.8-Flash-Next Q2_0 at a
 16384 context. The graph as wide as the context reserved 6644 MiB of the card for compute buffers.
