@@ -482,6 +482,20 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("device-cache-cpu-share", "Device cache misses on the CPU", G::Cache, L::Experimental,
+                          "EXPERIMENTAL: With a device expert cache, the share of its misses the CPU computes from the "
+                          "host's copy instead of uploading them to the device, once the cache is full. 0 uploads "
+                          "every miss; below 1 the cache keeps learning which experts are hot.");
+        d.type = ParamType::Float;
+        d.value_hint = "F";
+        bounds(d, 0.0, MoeStreamConfig::device_cache_cpu_share_max);
+        special(d, "0", "off");
+        bind_float(d, [](RunConfig & c) -> float & { return c.moe.device_cache_cpu_share; });
+        d.details = "Experimental: with a graphics card's expert cache, lets the processor compute part of the "
+                    "experts the card does not hold, instead of sending them over. 0 is off.";
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("io-threads", "Read lanes", G::Streaming, L::Advanced,
                           "Parallel expert-read lanes, including the calling thread. 1 is the serial baseline.");
         d.value_hint = "N";

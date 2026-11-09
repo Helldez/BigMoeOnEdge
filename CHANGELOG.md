@@ -14,6 +14,29 @@ Semantic Versioning.
   CI and the release smoke now start `bmoe-desktop.exe` on Windows, so a missing import fails
   there rather than on a user's machine.
 
+## [Unreleased]
+
+### Added
+- **Part of the device cache's misses computed on the CPU** (`--device-cache-cpu-share`, experimental).
+  With a device expert cache over resident experts, each miss used to cross the link before the
+  device computed it, while the cores computed no expert at all. Now a share of the misses is
+  computed on the CPU from the host's copy, side by side with the device, and the rest are still
+  uploaded so the cache keeps learning which experts are hot. `--auto` prices the share from the
+  device's and the host's rates on the model's own expert block, the measured upload rate and the
+  cache's hit share (`choose_device_cache_cpu_share`, `docs/hardware-planning.md`). It is capped so a
+  tenth of the misses is always uploaded, taken only past the planner's 10% margin, and never over
+  streamed experts, which no gate covers yet (validation refuses that pair). Gate G25d: half the
+  misses on the host give the resident placement's bytes. On a 12 GB card (RTX 3060 class) with
+  Qwen3.8-Flash-Next IQ3_S and a 5.3 GB cache: 18.5 tok/s uploading every miss, 20.8 with seven in
+  ten on the CPU.
+
+### Changed
+- **llama.cpp bumped to upstream `b12214`** (2026-11-09) plus the expert-ready hook, on fork branch
+  `bmoe/expert-ready-hook-0911`. It brings the device expert cache's frequency-aware eviction
+  (ClassLRU: an expert's uses, decayed with a half-life, decide which slot is freed), which takes the
+  same 12 GB card from 17.9 to 18.5 tok/s with nothing else changed, and `moe_cache_cpu_share` above.
+  The placement probe passes the new out-parameter of `common_get_device_memory_data`.
+
 ## [0.40.2] - 2026-11-08
 
 ### Added

@@ -71,8 +71,8 @@
 //       answer it decodes: == resident over one long answer (a) and over four turns that each end
 //       inside a window (b), and the trial must have reached its verdicts.
 //   G25 the device tier: llama.cpp's device-side expert cache over resident experts (a), over
-//       streamed experts (b) and streamed under n-gram speculation (c), each == the resident
-//       placement.
+//       streamed experts (b) and streamed under n-gram speculation (c), and over resident experts
+//       with half the cache's misses computed on the host (d), each == the resident placement.
 //   G26 the real-layer probe fills every device's facts and agrees with the host on the layer's
 //       matmuls; it is timed, not gated, on the tiny models.
 //
@@ -1676,6 +1676,20 @@ int main(int argc, char ** argv) {
                 } else {
                     fails += check("G25a device cache over resident experts == resident experts", s_placed, s_cached);
                     fails += check("G25b device cache over streamed experts == resident experts", s_placed, s_cached_s);
+                    // d) part of the misses computed on the host from the resident copy instead of
+                    // uploaded: llama.cpp builds the layer's experts on both and adds the halves, each
+                    // weighted only for the experts it computed. The 4 MiB cache is full within the
+                    // first tokens, which is where the share starts to apply.
+                    RunConfig cached_cpu = cached;
+                    cached_cpu.moe.device_cache_cpu_share = 0.5f;
+                    std::string s_cached_cpu;
+                    if (!gen(cached_cpu, s_cached_cpu, err)) {
+                        std::printf("[FAIL] G25d a device cache run with a host share failed: %s\n", err.c_str());
+                        ++fails;
+                    } else {
+                        fails += check("G25d device cache, half the misses on the host == resident experts", s_placed,
+                                       s_cached_cpu);
+                    }
                     // c) with speculation: a verify batch is a few positions wide, served by the same
                     // slots, and greedy drafting accepts only what the target would have produced.
                     RunConfig cached_spec = cached_s;

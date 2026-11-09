@@ -119,6 +119,23 @@ int main() {
     }
     expect_ok("streaming, cache off", ok_moe());
     {
+        // The share of a device cache's misses computed on the host: a share, of a cache that exists.
+        RunConfig c = ok_base();
+        c.moe.device_cache_cpu_share = 0.5f;
+        expect_fail("device_cache_cpu_share without a device cache", c);
+        c.moe.device_cache_mb = 1024;
+        expect_ok("device_cache_cpu_share with a device cache", c);
+        RunConfig streamed = c;
+        streamed.moe.enabled = true;
+        expect_fail("device_cache_cpu_share over streamed experts (not gated)", streamed);
+        c.moe.device_cache_cpu_share = MoeStreamConfig::device_cache_cpu_share_max + 0.5f;
+        expect_fail("device_cache_cpu_share above 1", c);
+        c.moe.device_cache_cpu_share = -0.1f;
+        expect_fail("device_cache_cpu_share negative", c);
+        c.moe.device_cache_cpu_share = std::numeric_limits<float>::quiet_NaN();
+        expect_fail("device_cache_cpu_share NaN", c);
+    }
+    {
         RunConfig c = ok_moe();
         c.moe.io_threads = MoeStreamConfig::io_threads_max + 1;
         expect_fail("io_threads out of range", c);

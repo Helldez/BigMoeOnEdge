@@ -1025,6 +1025,28 @@ prefill buffers nowhere to go). Where the device is not faster, a fact is missin
 fitter's placement stands and the plan says which. On a shared pool, or with the caller's own
 placement, it says nothing and changes nothing.
 
+### Who computes the device cache's misses
+
+With the device tier armed, every expert is computed on the device and the cores compute none; a
+miss crosses the link before the device can compute it. `choose_device_cache_cpu_share` hands part
+of the misses to the host instead (`--device-cache-cpu-share`, [backends.md](backends.md)): llama.cpp
+computes the two halves side by side and adds them, so a token's experts take the longer of
+
+    device(s) = hits / device rate + (1 - s) * misses * (1 / upload rate + 1 / device rate)
+    host(s)   = s * misses / host rate
+
+where `hits` and `misses` are the bytes of a token's routed experts the cache serves and does not
+(the hit share from the model's own routing where a record was replayed, the fraction of the expert
+set held otherwise), the device's and the host's rates are measured on the model's own expert block,
+and the upload rate is the one from where the misses come (the file's mapping, or the backend's host
+buffer when `--expert-host-buffer` is set). The first falls as the share grows and the second rises,
+so the share is where they meet, capped at `1 - device_cache_upload_min` (a tenth of the misses is
+always uploaded, so the cache keeps admitting what turns hot: a miss computed on the host is never
+admitted), and taken only where it beats uploading every miss by `min_backend_win`. The hit share is
+the one the cache reaches uploading every miss, so the price is on the generous side, and the cap is
+what bounds that. It is not taken over streamed experts, which no gate covers, nor where a rate or the
+upload is unmeasured; the plan says which.
+
 The layers the fitter split (`price_layers_home`, [measured-planning.md](measured-planning.md#step-3-the-cost-of-a-device-measured-on-a-real-layer)):
 where the capacity fitter put the dense part of some layers on a device and left their experts on
 the host, each crosses twice a token. Those layers' dense matmuls on the device plus their crossings
@@ -1160,6 +1182,7 @@ Each row is a gap here paired with the public facility that closes it. None need
 | gap | facility | what it would allow |
 |---|---|---|
 | hot experts of host-resident layers kept and computed in device memory | `llama_context_params.moe_cache_size` (experimental upstream) | a device-memory tier under the RAM cache; see [measured-planning.md](measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache) for what it needs before the plan arms it |
+| part of a device cache's misses computed on the host rather than uploaded | `llama_context_params.moe_cache_cpu_share` (experimental upstream) | priced by `choose_device_cache_cpu_share` from the measured rates; resident experts only |
 | streamed experts computed on a device rather than on the CPU cores | **not** a buffer-type override — that route is closed, see below. The open one is `ggml_backend_dev_buffer_from_host_ptr` | on a backend that can wrap memory the caller already owns, the streamer's reservations could be handed over and the device could execute out of them. Who implements it is **not** what `caps.buffer_from_host_ptr` says — see "A capability that lies by omission" below |
 | prefill on the device over streamed experts (built as `--prefill-device`, see [npu-prefill.md](npu-prefill.md); the planner does not arm it yet) | `cparams.op_offload`, `offload_kqv`, the scheduler's batch threshold (`ggml_backend_dev_offload_op`) | per-op copy of host weights to the device above a batch size: the "batch amortises bytes over link bandwidth" rule |
 | ~~no thread rule~~ — **in**, from core classes rather than a core count | `n_threads_batch` distinct from `n_threads`, `llama_numa_init` | still open: different counts for decode and prefill, and NUMA on workstations |
