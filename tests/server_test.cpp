@@ -941,6 +941,27 @@ static void settings_tests() {
     third.apply(json{{"think", false}}, {});
     check(!third.api_config().think, "and so does a saved off");
 
+    // A saved model whose file is gone names nothing to load or to plan for: forgotten, and the
+    // forgetting persists. One that is there, or one the server was launched with, stays.
+    const auto present = [](const std::string &) { return true; };
+    const auto gone = [](const std::string &) { return false; };
+    third.apply(json{{"model", "/models/a.gguf"}}, {});
+    check(!third.forget_missing_model(present) && third.config().model_path == "/models/a.gguf",
+          "a saved model whose file is there stays selected");
+    check(third.forget_missing_model(gone) && third.config().model_path.empty(),
+          "a saved model whose file is gone is forgotten");
+    check(!third.forget_missing_model(gone), "and there is nothing left to forget");
+    SettingsStore fourth(defaults, path.u8string());
+    fourth.load();
+    check(fourth.config().model_path.empty(), "the forgetting persists across a restart");
+    fourth.set_launch_values({{"model", "/models/b.gguf"}});
+    check(!fourth.forget_missing_model(gone) && fourth.config().model_path == "/models/b.gguf",
+          "a model the server was launched with is the operator's word: never forgotten here");
+    fourth.set_launch_values({});
+    fourth.apply(json{{"threads", 3}}, {});
+    check(!fourth.forget_missing_model(gone) && fourth.config().n_threads == 3,
+          "with no saved model nothing else is touched");
+
     std::filesystem::remove(path, ec);
 }
 

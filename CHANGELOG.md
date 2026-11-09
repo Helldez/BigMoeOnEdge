@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **A saved model whose file is gone is forgotten** (#510). The model a load asked for stayed in
+  `settings.json` after its file was deleted (through the server or from outside it), and the Plan
+  page offered to measure the machine "for" a model that was not there. `bmoe-server` now drops it
+  at start and after a delete, so the UIs show their "choose a model" state; a model given with `-m`
+  at launch is left alone.
+
 ## [0.40.3] - 2026-11-09
 
 ### Fixed

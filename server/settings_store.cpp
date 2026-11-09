@@ -92,6 +92,16 @@ json SettingsStore::apply(const json & values, const std::vector<std::string> & 
     return rejected;
 }
 
+bool SettingsStore::forget_missing_model(const std::function<bool(const std::string &)> & exists) {
+    std::lock_guard<std::mutex> lk(m_);
+    if (launch_.count("model")) return false;
+    const auto it = user_.find("model");
+    if (it == user_.end() || it->second.empty() || exists(it->second)) return false;
+    user_.erase(it);
+    save_locked();
+    return true;
+}
+
 void SettingsStore::apply_plan(std::map<std::string, std::string> values, json decisions) {
     std::lock_guard<std::mutex> lk(m_);
     plan_ = std::move(values);

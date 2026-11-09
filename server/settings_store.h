@@ -17,6 +17,7 @@
 
 #include "bmoe/config.h"
 
+#include <functional>
 #include <map>
 #include <mutex>
 #include <string>
@@ -40,6 +41,14 @@ public:
 
     // Replace the plan layer and remember the decisions behind it.
     void apply_plan(std::map<std::string, std::string> values, json decisions);
+
+    // The model the user layer names is what a load opens and what a Plan page measures for while
+    // nothing is loaded. One whose file is gone - deleted through the server, or removed from
+    // outside it - names neither, and a page offering to measure the machine "for" it describes a
+    // model that is not there. Drops it from the user layer when `exists` says the file is gone, and
+    // says whether it did. A model the server was LAUNCHED with is the operator's word for this run
+    // and is never dropped: the load then says the file is missing.
+    bool forget_missing_model(const std::function<bool(const std::string &)> & exists);
 
     RunConfig config() const;
     // The configuration with the plan layer left out (defaults < user < launch): what a plan is
