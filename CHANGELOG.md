@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.40.3] - 2026-11-09
+
+### Fixed
+- **The desktop app starts again on Windows.** 0.40.2 loaded the notification-area icon with
+  `LoadIconMetric`, which binds comctl32's ordinal 380, present only in the comctl32 version a
+  process gets through a manifest; `bmoe-desktop.exe` carries none, so Windows refused to start it
+  ("ordinal 380 could not be located"). The icon now comes through user32 at the same small size.
+  CI and the release smoke now start `bmoe-desktop.exe` on Windows, so a missing import fails
+  there rather than on a user's machine.
+
 ## [0.40.2] - 2026-11-08
 
 ### Added

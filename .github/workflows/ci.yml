@@ -218,6 +218,17 @@ jobs:
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBMOE_BUILD_TESTS=OFF -DBMOE_BUILD_TOOLS=ON
           cmake --build build --config Release -j
+      # Every executable starts: an import the system's own DLLs lack (0.40.2's desktop app bound
+      # an ordinal only comctl32 version 6 has) stops the loader before main, which a compile cannot
+      # see.
+      - name: Smoke
+        shell: bash
+        run: |
+          WB=build/bin/Release; [ -d "$WB" ] || WB=build/bin
+          for exe in bmoe-cli bmoe-server bmoe-desktop; do
+            [ -f "$WB/$exe.exe" ] || { echo "$exe.exe was not built"; exit 1; }
+            "$WB/$exe.exe" --version
+          done
 
   host-macos:
     # The Apple path on PRs, gates included: release-host builds __APPLE__ code only when a
