@@ -31,7 +31,9 @@ Semantic Versioning.
   whole model fit the card. The fitter is asked at the narrower width and the graph is narrowed only
   where it places every expert there: Qwen3.6-35B on a 24 GB card at a 16384 context went from a
   device cache at 137-139 tok/s to fully resident at 155-156, with a 9714-token prefill at 5594 tok/s
-  instead of 4789. The plan now says "every layer" where the fitter places them all (it said "0 layers"). The plan also says why the device tier armed no
+  instead of 4789. The plan now says "every layer" where the fitter places them all (it said "0 layers").
+  Measurements: `docs/bench-data/2026-11-09-graph-width/` (12, 16 and 24 GB cards, #505 beside it on
+  the 16 GB one). The plan also says why the device tier armed no
   cache when a dense part is off the card; before, it said nothing.
 
 ## [0.40.2] - 2026-11-08
