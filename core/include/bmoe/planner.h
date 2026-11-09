@@ -123,13 +123,6 @@ struct PlannerPolicy {
     // noise. Measured 19 against 19 on a phone, which is not a finding.
     float min_backend_win = 0.10f;
 
-    // The share of a device expert cache's misses that is always uploaded, whatever the price says,
-    // so the cache keeps admitting the experts that turn hot. A miss computed on the host is never
-    // admitted, so a share of 1 freezes the cache on what the first tokens routed. Policy, not
-    // measurement, and set wide: on the one card measured (12 GB, Qwen3.8-Flash-Next IQ3_S) every
-    // miss on the host decoded at 17.5 tok/s against 20.8 with three in ten still uploaded.
-    float device_cache_upload_min = 0.10f;
-
     static PlannerPolicy defaults() { return PlannerPolicy(); }
 };
 

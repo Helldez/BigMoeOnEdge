@@ -145,13 +145,13 @@ the CPU half does not wait for the device's. A miss computed on the host is not 
 1 the cache keeps learning from the misses still uploaded. It needs the experts resident
 (`--moe-stream` off): over streamed experts the host half would read the streamer's slots, and no
 gate covers that yet. Gate G25d proves half the misses on the host give the resident placement's
-bytes. `--auto` prices it from the measured rates (see
-[hardware-planning.md](hardware-planning.md#who-computes-the-device-caches-misses)). Measured on a
+bytes. `--auto` does not set it ([why](hardware-planning.md#who-computes-the-device-caches-misses-not-planned-yet)). Measured on a
 12 GB card (RTX 3060 class) with Qwen3.8-Flash-Next IQ3_S, every expert resident, a 5.3 GB cache, 256
 greedy tokens: 18.5 tok/s uploading every miss, 19.9 with half of them on the host, 20.8 with seven
-in ten, and 17.5 with all of them on the host, where the cache stops learning; plain `--auto` priced
-the share at 0.76 and 0.78 on two loads and decoded at 21.2 and 21.1
-([bench-data/2026-11-09-rented-12gb-cuda-pack](bench-data/2026-11-09-rented-12gb-cuda-pack/README.md)).
+in ten, and 17.5 with all of them on the host, where the cache stops learning; a price of it picked
+0.76-0.78 there and decoded at 21.1-21.2. On a 32 GB card (RTX 5090 class) with Q2_0 the same price
+picked 0.89 and lost 40% (114 to 68 tok/s over 2048 tokens) with no miss reaching the host: a share
+above 0 gives every MoE layer a CPU half, a fixed cost the card pays either way.
 
 Measured on a 24 GB discrete card (PCIe at about 26 GB/s, 48 host cores, 85 GiB of host memory),
 Qwen3.8-Flash-Next 125B GSQ-RCO Q2_0, every layer on the card, greedy:

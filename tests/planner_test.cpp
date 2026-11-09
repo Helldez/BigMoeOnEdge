@@ -2283,64 +2283,6 @@ int main() {
                   "expert host buffer: a copy the host cannot hold is not made");
         }
 
-        // Who computes the cache's misses: part of them on the host, priced from the measured rates, so
-        // the device's half (hits, and the misses still uploaded) and the host's half take as long.
-        {
-            // Cores that consume the experts faster than the link uploads them: most misses go to the
-            // host, never all of them, and the plan says it measured it.
-            const Plan fast = plan_on(card, half, PlanRequest{});
-            const Decision * e = find(fast, "device-cache-cpu-share");
-            const float cap = 1.0f - PlannerPolicy::defaults().device_cache_upload_min;
-            check(fast.regime == Regime::Fits && e && e->source == Source::Measured &&
-                      fast.config.moe.device_cache_cpu_share > 0.5f && fast.config.moe.device_cache_cpu_share <= cap,
-                  "cpu share, host faster than the link: most misses on the host, under the cap",
-                  e ? e->value + ": " + e->reason : "no decision");
-            check(validate(fast.config).ok, "cpu share: a valid config", validate(fast.config).error);
-
-            // Slow cores against the same link: a smaller share, or none inside the margin.
-            const Plan slow = plan_on(slow_cores, half, PlanRequest{});
-            e = find(slow, "device-cache-cpu-share");
-            check(e && slow.config.moe.device_cache_cpu_share < fast.config.moe.device_cache_cpu_share,
-                  "cpu share, slow cores: less of the misses on the host",
-                  e ? e->value + ": " + e->reason : "no decision");
-
-            // An unmeasured upload prices nothing: every miss is uploaded, as before, and the plan
-            // says which fact was missing.
-            HardwareProfile no_link = card;
-            no_link.devices[0].upload_gibs = 0.0;
-            const Plan unpriced_link = plan_on(no_link, half, PlanRequest{});
-            e = find(unpriced_link, "device-cache-cpu-share");
-            check(unpriced_link.config.moe.device_cache_mb > 0 &&
-                      unpriced_link.config.moe.device_cache_cpu_share == 0.0f && e && e->source == Source::Unprobed,
-                  "cpu share, upload unmeasured: every miss uploaded", e ? e->reason : "no decision");
-
-            // A caller's share stands.
-            RunConfig pinned_cfg = base_cfg();
-            pinned_cfg.moe.device_cache_cpu_share = 0.25f;
-            PlanRequest pin;
-            pin.pinned.push_back("device-cache-cpu-share");
-            const Plan kept = plan_run(pinned_cfg, card, model, half, pin, PlannerPolicy::defaults());
-            check(kept.config.moe.device_cache_cpu_share == 0.25f && !find(kept, "device-cache-cpu-share"),
-                  "cpu share, pinned: the caller's share stands");
-
-            // No device cache, no share.
-            check(level.config.moe.device_cache_cpu_share == 0.0f && !find(level, "device-cache-cpu-share"),
-                  "cpu share, no device cache: nothing to share");
-
-            // Streamed experts: the combination is not gated, so the share stays 0 and the plan says so.
-            HardwareProfile small_ram = card;
-            small_ram.residency_budget = model.expert_bytes / 4;
-            const Plan streamed = plan_on(small_ram, half, PlanRequest{});
-            e = find(streamed, "device-cache-cpu-share");
-            if (streamed.config.moe.device_cache_mb > 0 && streamed.regime != Regime::Fits)
-                check(streamed.config.moe.device_cache_cpu_share == 0.0f && e && e->source == Source::Derived,
-                      "cpu share, streamed experts: left at 0", e ? e->reason : "no decision");
-            else
-                check(false, "cpu share, streamed experts: the fixture streams with a device cache",
-                      std::string(regime_name(streamed.regime)) + ", " +
-                          std::to_string(streamed.config.moe.device_cache_mb) + " MiB");
-        }
-
         // The cache is sized from the card's free memory, not from the fitter's whole layers: what the
         // fitter left free under one more layer joins the bytes it gave the experts.
         {

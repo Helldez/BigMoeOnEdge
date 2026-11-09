@@ -17,19 +17,17 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
-- **Part of the device cache's misses computed on the CPU** (`--device-cache-cpu-share`, experimental).
-  With a device expert cache over resident experts, each miss used to cross the link before the
-  device computed it, while the cores computed no expert at all. Now a share of the misses is
+- **Part of the device cache's misses computed on the CPU** (`--device-cache-cpu-share`, experimental,
+  opt-in). With a device expert cache over resident experts, each miss used to cross the link before
+  the device computed it, while the cores computed no expert at all. Now a share of the misses can be
   computed on the CPU from the host's copy, side by side with the device, and the rest are still
-  uploaded so the cache keeps learning which experts are hot. `--auto` prices the share from the
-  device's and the host's rates on the model's own expert block, the measured upload rate and the
-  cache's hit share (`choose_device_cache_cpu_share`, `docs/hardware-planning.md`). It is capped so a
-  tenth of the misses is always uploaded, taken only past the planner's 10% margin, and never over
-  streamed experts, which no gate covers yet (validation refuses that pair). Gate G25d: half the
-  misses on the host give the resident placement's bytes. On a 12 GB card (RTX 3060 class) with
-  Qwen3.8-Flash-Next IQ3_S and a 5.3 GB cache: 18.5 tok/s uploading every miss, 20.8 with seven in
-  ten on the CPU, and 21.1-21.2 with plain `--auto`, which priced the share at 0.76 and 0.78 on two
-  loads (16.0-17.5 on the 0.40.2 release).
+  uploaded so the cache keeps learning which experts are hot. Never over streamed experts, which no
+  gate covers yet (validation refuses that pair). Gate G25d: half the misses on the host give the
+  resident placement's bytes. `--auto` does not set it. A price of it won on a 12 GB card (RTX 3060
+  class, Qwen3.8-Flash-Next IQ3_S: 18.5 to 21.1-21.2 tok/s). It lost 40% on a 32 GB card (RTX 5090
+  class, Q2_0: 114 to 68 tok/s), where no miss reached the CPU: any share above 0 gives every MoE
+  layer a CPU half, 96 more graph splits a token on that model, which the price did not measure
+  (`docs/hardware-planning.md`).
 
 ### Changed
 - **llama.cpp bumped to upstream `b12214`** (2026-11-09) plus the expert-ready hook, on fork branch
