@@ -2392,7 +2392,8 @@ static void service_tests() {
     check(a.args == std::vector<std::string>{"--data-dir", D, "--log-file", L, "--autoload"} && a.key_file.empty(),
           "service args: nothing given gets the data folder, the log file and --autoload, and no key");
     a = service_arguments({"--host", "0.0.0.0"}, D, L);
-    check(a.key_file == D + "/api-key", "service args: a host beyond loopback with no key gets a key file");
+    check(a.key_file == (fs::u8path(D) / "api-key").u8string(),
+          "service args: a host beyond loopback with no key gets a key file");
     check(a.args.size() >= 2 && a.args[a.args.size() - 2] == "--api-key-file" && a.args.back() == a.key_file,
           "service args: ...named on the command line");
     check(service_arguments({"--host", "0.0.0.0", "--no-api-key"}, D, L).key_file.empty(),
