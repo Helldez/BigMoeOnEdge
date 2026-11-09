@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Changed
+- **The README shows opencode's settings first.** Under "Coding agents", `README.md` and its five
+  translations open with an `opencode.json` that adds the server as an OpenAI-compatible provider,
+  with the 32768-token context the paragraph above it names, then Claude Code and Codex CLI. Before,
+  opencode had one sentence after the other two's settings.
+- **The README drops the "Watch the tour" link.** It pointed at an MP4 release asset, which a browser
+  downloads instead of playing; the GIFs above it show each device in real time.
+
 ## [0.40.3] - 2026-11-09
 
 ### Fixed

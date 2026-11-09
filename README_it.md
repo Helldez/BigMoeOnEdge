@@ -125,6 +125,21 @@ print(reply.choices[0].message.content)
 basta per opencode, 65536 per Claude Code
 ([dimensionare il contesto](docs/server-api.md#sizing-the-context-for-a-client)).
 
+```jsonc
+// opencode, ~/.config/opencode/opencode.json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "bmoe": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": { "baseURL": "http://127.0.0.1:8765/v1", "apiKey": "local" },
+      "models": { "<model id from /v1/models>": { "limit": { "context": 32768, "output": 8192 } } }
+    }
+  },
+  "model": "bmoe/<model id from /v1/models>"
+}
+```
+
 ```bash
 # Claude Code
 export ANTHROPIC_BASE_URL=http://127.0.0.1:8765
@@ -147,8 +162,7 @@ wire_api = "responses"
 env_key = "BMOE_API_KEY"   # export BMOE_API_KEY=local
 ```
 
-Per opencode, aggiungi il server come provider compatibile OpenAI su `http://127.0.0.1:8765/v1`. In
-**Connect apps**, l'app scrive le impostazioni per Codex CLI e opencode e mostra quelle per
+In **Connect apps**, l'app scrive le impostazioni per opencode e Codex CLI e mostra quelle per
 Claude Code.
 
 **L'agente.** L'app desktop ha un suo agente: lavora in una cartella che scegli, legge e modifica file ed
