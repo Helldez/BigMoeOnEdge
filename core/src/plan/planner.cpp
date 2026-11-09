@@ -840,6 +840,36 @@ void size_budget(Planning & s) {
 // card decoded at 37 with a 6 GB cache. So where a device is short of room, its buffers are held to
 // the same share of its memory as the host's are of the host's; a device the whole model fits keeps
 // the widest graph, since its buffers take nothing from anything there.
+} // namespace
+
+uint32_t device_share_width(const Placement & placement, const HardwareProfile & hw, const PlannerPolicy & policy) {
+    const uint32_t full = placement.compute_width;
+    if (full == 0 || placement.device_compute_per_token == 0) return 0;
+    const uint64_t device_memory = hw.device_local_memory();
+    if (device_memory == 0) return 0;
+    // Each card against its own memory: two cards of different sizes each reserve their own buffers,
+    // and the smaller is the one that runs short. The sum against the sum where the fitter did not say
+    // which card takes what.
+    auto over = [&](uint32_t w) {
+        const Placement q = placement.at_width(w);
+        bool per_card = false;
+        for (const ComputeDevice & d : hw.devices) {
+            if (!d.has_own_memory() || d.memory_total == 0) continue;
+            const uint64_t part = q.device_compute_of(d.name);
+            if (part == 0) continue;
+            per_card = true;
+            if ((double) part > (double) d.memory_total * policy.compute_share_max) return true;
+        }
+        return !per_card && (double) q.device_compute_bytes > (double) device_memory * policy.compute_share_max;
+    };
+    uint32_t w = full;
+    while (w / 2 >= policy.ubatch_min && over(w))
+        w /= 2;
+    return w;
+}
+
+namespace {
+
 void choose_graph_width(Planning & s) {
     Plan & p = s.p;
     const bool device_in_pool = devices_share_host_memory(s.hw);
@@ -852,28 +882,16 @@ void choose_graph_width(Planning & s) {
     // tier cache, not a dense part: that trade (a larger cache for decode against a narrower graph for
     // prefill) is left to the widest graph until it is priced. Measured on a 24 GB card where every
     // layer fit: narrowing to 4096 tokens grew the cache from 12.4 to 17.6 GB and decode by 7-12%, and
-    // cost a 9756-token prompt's prefill 24-28% (1560-1668 to 1189-1201 tok/s).
+    // cost a 9756-token prompt's prefill 24-28% (1560-1668 to 1189-1201 tok/s). The one narrowing
+    // there that is no trade, the whole model fitting the device, is asked of the fitter by
+    // probe_and_plan, since only a placement can say it.
     const uint64_t device_memory = device_in_pool ? 0 : s.hw.device_local_memory();
     const bool device_short = device_memory > 0 && s.placement.fitted && s.placement.n_gpu_layers > 0 &&
                               s.placement.device_compute_per_token > 0 &&
                               (uint32_t) s.placement.n_gpu_layers <= s.model.n_layer;
-    const uint64_t device_cap = (uint64_t) ((double) device_memory * s.pol.compute_share_max);
+    const uint32_t device_width = device_short ? device_share_width(s.placement, s.hw, s.pol) : 0;
     auto device_buffers = [&](uint32_t w) { return s.placement.at_width(w).device_compute_bytes; };
-    // Each card against its own memory: two cards of different sizes each reserve their own buffers,
-    // and the smaller is the one that runs short. The sum against the sum where the fitter did not say
-    // which card takes what.
-    auto device_over = [&](uint32_t w) {
-        const Placement q = s.placement.at_width(w);
-        bool per_card = false;
-        for (const ComputeDevice & d : s.hw.devices) {
-            if (!d.has_own_memory() || d.memory_total == 0) continue;
-            const uint64_t part = q.device_compute_of(d.name);
-            if (part == 0) continue;
-            per_card = true;
-            if ((double) part > (double) d.memory_total * s.pol.compute_share_max) return true;
-        }
-        return !per_card && q.device_compute_bytes > device_cap;
-    };
+    auto device_over = [&](uint32_t w) { return device_width > 0 && w > device_width; };
     auto over = [&](uint32_t w) {
         return buffers(w) > s.holdable * (double) s.pol.compute_share_max || (device_short && device_over(w));
     };
@@ -1020,9 +1038,12 @@ void apply_placement(Planning & s) {
                      "the host");
         return;
     }
-    s.note("placement", u64s((uint64_t) std::max(0, placement.n_gpu_layers)) + " layers on devices", Source::Measured,
-           u64s((uint64_t) std::max(0, placement.n_gpu_layers)) + " layers on a device; " + u64s(s.host_layers) +
-               " of " + u64s(s.n_moe_layer) + " layers keep their experts on the CPU.",
+    // The fitter leaves the count at its default, every layer, where the model fits the devices whole.
+    const std::string layers =
+        placement.n_gpu_layers < 0 ? "every layer" : u64s((uint64_t) std::max(0, placement.n_gpu_layers)) + " layers";
+    s.note("placement", layers + " on devices", Source::Measured,
+           layers + " on a device; " + u64s(s.host_layers) + " of " + u64s(s.n_moe_layer) +
+               " layers keep their experts on the CPU.",
            placement.outcome + "; " + u64s(s.host_layers) + " of " + u64s(s.n_moe_layer) +
                " MoE layers keep their experts on the host, host-resident " + u64s(mib(placement.host_resident_bytes)) +
                " MiB, on devices " + u64s(mib(placement.device_bytes)) + " MiB, context " + u64s(placement.n_ctx) +

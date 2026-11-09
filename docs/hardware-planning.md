@@ -771,8 +771,14 @@ the rules run on that placement. Where every layer is on the device, the graph s
 host's share allows. There a narrower graph would trade prefill for a larger device cache, and that
 trade is not priced yet. On a 24 GB card (RTX 3090 class) where every layer fit, narrowing to 4096
 tokens grew the cache from 12.4 to 17.6 GB and decode by 7-12%, and cost a 9756-token prompt's prefill
-24-28% (1560-1668 to 1189-1201 tok/s). A width set by hand is left alone and charged in full; a slope
-that was not measured decides nothing.
+24-28% (1560-1668 to 1189-1201 tok/s). The exception is a narrower graph after which the whole model
+fits the device: that wins prefill and decode alike, since every expert is then read from device
+memory and a prompt gathers nothing into a cache. Only a placement can say it, so `probe_and_plan`
+asks the fitter at the width the device's share allows (`device_share_width`) and keeps the narrower
+graph only where every expert is placed on the devices. On the same card, Qwen3.6-35B Q4_K_M at a
+16384 context: 8192 tokens wide, the whole model fit, and decode went from 137-139 to 155-156 tok/s
+and a 9714-token prefill from 4789 to 5594 tok/s. A width set by hand is left alone and charged in
+full; a slope that was not measured decides nothing.
 
 Measured on a 12 GB card (RTX 3060 class, 120 GiB of host memory) with Qwen3.8-Flash-Next Q2_0 at a
 16384 context. The graph as wide as the context reserved 6644 MiB of the card for compute buffers.

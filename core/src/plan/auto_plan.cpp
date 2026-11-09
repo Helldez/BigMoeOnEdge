@@ -6,6 +6,7 @@
 #include "bmoe/backend_choice.h"
 
 #include "bmoe/planner.h"
+#include "bmoe/params.h"
 #include "bmoe/probe.h"
 #include "bmoe/routing.h"
 #include "bmoe/measured_knobs.h"
@@ -123,6 +124,43 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
             if (r.plan.config.n_ubatch == (int) width)
                 for (Decision & d : r.plan.decisions)
                     if (d.knob == "ubatch" && !kept.knob.empty()) d = kept;
+        }
+    }
+    // Every layer on a device of its own and the experts still on the host, behind a device cache: a
+    // narrower graph may leave room for the whole model on the device, which serves every expert from
+    // device memory and computes a prompt without gathering experts into a cache, so it wins prefill
+    // and decode alike. Only a placement can say whether it fits, so the fitter is asked at the width
+    // the device's share allows, and the narrower graph is kept only where it places everything there.
+    // Measured on a 24 GB card with Qwen3.6-35B Q4_K_M at a 16384 context: 8192 tokens wide, the whole
+    // model fit, and decode went from 137-139 to 155-156 tok/s and a 9714-token prefill from 4789 to
+    // 5594 tok/s. Where it does not fit whole, the wide graph stands (that trade is not priced).
+    else if (!req.is_pinned("ubatch") && placement.fitted && !placement.shared_memory_placement &&
+             placement.n_gpu_layers != 0 && !placement.host_expert_layers.empty() &&
+             (r.plan.config.n_ubatch == 0 || (uint32_t) r.plan.config.n_ubatch >= placement.compute_width)) {
+        const uint32_t candidate = device_share_width(placement, r.hw, PlannerPolicy::defaults());
+        if (candidate > 0 && candidate < placement.compute_width) {
+            const Placement at_width = probe_placement(path, r.model, r.hw, (uint32_t) cfg.n_ctx, candidate,
+                                                       cfg.cache_type_k, cfg.cache_type_v, backends.keep, &cfg.spec);
+            detail::log_memory_snapshot("auto-probe-whole");
+            if (at_width.fitted && at_width.host_expert_layers.empty() && at_width.n_gpu_layers != 0) {
+                RunConfig narrow = cfg;
+                narrow.n_ubatch = (int) candidate;
+                r.plan = plan_run(narrow, r.hw, r.model, at_width, req);
+                const std::string w = std::to_string(candidate);
+                for (Decision & d : r.plan.decisions)
+                    if (d.knob == "ubatch") {
+                        d.value = w;
+                        d.source = Source::Measured;
+                        d.brief = w + " tokens per pass: at this width the whole model fits on the device.";
+                        d.reason = "a graph as wide as the context left the experts on the host behind a device "
+                                   "cache; at " +
+                                   w +
+                                   " tokens the capacity fitter places every layer and every expert on the devices, "
+                                   "which serves every expert from device memory and computes a prompt without "
+                                   "gathering experts into a cache. " +
+                                   flag_spelling("ubatch") + " sets it by hand";
+                    }
+            }
         }
     }
     return r;

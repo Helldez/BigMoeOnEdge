@@ -27,7 +27,11 @@ Semantic Versioning.
   fitter places again at the narrower width. On that card and context the server now picks 2048
   tokens and decodes at 32.9-36.1 tok/s with a 6.1 GB device cache. Where every layer fits the card,
   the graph keeps its width: on a 24 GB card a narrower one gave 7-12% more decode but cost a long
-  prompt's prefill 24-28%, a trade left unpriced. The plan also says why the device tier armed no
+  prompt's prefill 24-28%, a trade left unpriced. The exception is a narrower graph that lets the
+  whole model fit the card. The fitter is asked at the narrower width and the graph is narrowed only
+  where it places every expert there: Qwen3.6-35B on a 24 GB card at a 16384 context went from a
+  device cache at 137-139 tok/s to fully resident at 155-156, with a 9714-token prefill at 5594 tok/s
+  instead of 4789. The plan now says "every layer" where the fitter places them all (it said "0 layers"). The plan also says why the device tier armed no
   cache when a dense part is off the card; before, it said nothing.
 
 ## [0.40.2] - 2026-11-08

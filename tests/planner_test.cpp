@@ -1009,6 +1009,33 @@ int main() {
                   std::to_string(wc) + ", small card " +
                       std::to_string(by_card.placement.device_compute_of("small") / MiB) + " MiB");
 
+            // The width probe_and_plan asks the fitter about: each card held to its share, the
+            // projected width where it already is, 0 where nothing was measured.
+            const uint32_t share_w = device_share_width(short_card, card, pol);
+            check(share_w > 0 && share_w < 16384 &&
+                      (double) short_card.at_width(share_w).device_compute_bytes <=
+                          (double) (12 * GiB) * pol.compute_share_max,
+                  "device share width: the widest whose buffers fit the card's share", std::to_string(share_w));
+            Placement roomy = short_card;
+            roomy.device_compute_per_token = 1 * KiB;
+            roomy.device_compute_bytes = 16384ull * KiB;
+            check(device_share_width(roomy, card, pol) == 16384,
+                  "device share width: buffers already inside the share keep the projected width");
+            Placement no_slope = short_card;
+            no_slope.device_compute_per_token = 0;
+            check(device_share_width(no_slope, card, pol) == 0, "device share width: an unmeasured slope says nothing");
+            check(device_share_width(split, two, pol) == (uint32_t) by_card.config.n_ubatch,
+                  "device share width: the same per-card answer the width rule acts on");
+
+            // The fitter leaves its count at "every layer" where the model fits the devices whole, and
+            // the plan says so rather than "0 layers".
+            Placement every = whole;
+            every.n_gpu_layers = -1;
+            const Plan all_on = plan_run(base_cfg(), card, model, every, PlanRequest{});
+            const Decision * pd = find(all_on, "placement");
+            check(pd && pd->value == "every layer on devices", "placement: the fitter's default reads as every layer",
+                  pd ? pd->value : "none");
+
             // A slope the device side did not measure decides nothing there.
             Placement blind_dev = short_card;
             blind_dev.device_compute_per_token = 0;
