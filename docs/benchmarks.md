@@ -535,6 +535,13 @@ tier pinned off the fitter put 6 GB of experts on the card and the rest resident
 Strata quotes 94 tok/s on this class with its experts and its drafting on the card: that gap is the
 work in front of the planner, not a ceiling of the card.
 
+On 2026-11-09 a rented 12 GB card (RTX 3060 class) with a 120.7 GiB control group ran the published
+v0.40.2 Linux archive on Qwen3.8-Flash-Next IQ3_S: `--auto` kept the model resident, cached 5.3 GB
+of the experts used most on the card (68% hits) and decoded at **16.0-17.5 tok/s**. Without the CUDA
+pack, or with it extracted next to the archive's folder rather than inside it, the same release
+ran on the CPU at 1.6-2.9 tok/s
+([bench-data/2026-11-09-rented-12gb-cuda-pack](bench-data/2026-11-09-rented-12gb-cuda-pack/README.md)).
+
 On a rented 16 GB card with 30 GiB of RAM (a 6-core desktop CPU, NVMe at 2.2 GB/s), the class of a
 home PC with a mid-range card, Qwen3.8-Flash-Next Q2_0 streams: `--auto` put the dense part and a
 10 GB cache of the experts used most on the card (#429) and the rest behind a RAM cache

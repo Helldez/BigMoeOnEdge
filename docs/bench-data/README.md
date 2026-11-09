@@ -28,3 +28,4 @@ maintained docs for current guidance; read these to check where a number came fr
 | `2026-08-29-mmap-serialisation/` | the model file's mapping serialising reads (desktop) | Source of `--release-mmap` in `settings.md`. |
 | `2026-09-29-prefill-routed/` | routed expert arena with the NPU prefill (phone) | Source of `npu-prefill.md`. |
 | `2026-11-07-agent-pagoda/` | 0.40.1 release archive, `bmoe-server` + opencode, one prompt, 16 GB Apple-silicon laptop | An end-to-end agent session (KV reuse across turns, the plan, the knob trial), not a decode benchmark. Source of the agent paragraph in `benchmarks.md`. |
+| `2026-11-09-rented-12gb-cuda-pack/` | 0.40.2 release archive, 12 GB card (RTX 3060 class), Qwen3.8-Flash-Next IQ3_S, with and without the CUDA pack | Why a user saw 3 tok/s: CUDA not loaded. The pack extracted next to the archive's folder is not loaded. Source of the 12 GB IQ3_S paragraph in `benchmarks.md`. |
