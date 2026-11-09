@@ -56,6 +56,7 @@ Android、iOS、macOS、Windows、Linux に対応し、llama.cpp の上に構築
 | **Apple silicon ノート PC** | 16 GB | Qwen3.8-Flash-Next 125B | 76 GB | フラッシュ | 7-9 |
 |  |  | Qwen3.6-35B-A3B | 21 GB | フラッシュ | 18-24 |
 | **Windows ノート PC** | 16 GB | Qwen3.6-35B-A3B | 21 GB | フラッシュ | 5 |
+| **デスクトップ GPU**（NVIDIA） | 12 GB + 128 GB RAM | Qwen3.8-Flash-Next 125B | 84 GB | RAM、GPU キャッシュ | 16-17 |
 | **デスクトップ GPU**（NVIDIA） | 16 GB + 32 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | フラッシュ、GPU キャッシュ | 19-21 |
 | **デスクトップ GPU**（NVIDIA） | 24 GB + 96 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM、GPU キャッシュ | 70 |
 |  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |

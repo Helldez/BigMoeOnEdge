@@ -11,7 +11,8 @@ Semantic Versioning.
   (`docs/bench-data/2026-11-09-rented-12gb-cuda-pack/`). Qwen3.8-Flash-Next IQ3_S on an RTX 3060
   class card with 128 GB of RAM: 16.0-17.5 tok/s with the pack extracted inside `bmoe-cli`'s folder.
   Without the pack, or with it extracted next to that folder, the run stays on the CPU at
-  1.6-2.9 tok/s, which is what a user reported. `docs/platforms.md` now says where the pack goes.
+  1.6-2.9 tok/s, which is what a user reported. `docs/platforms.md` now says where the pack goes,
+  and the README's speed table has a 12 GB card row in every language.
 
 ## [0.40.2] - 2026-11-08
 

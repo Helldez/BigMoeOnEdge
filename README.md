@@ -64,6 +64,7 @@ Qwen3.6-35B-A3B (21 GB) in real time on each device. The model is larger than ea
 | **Apple-silicon laptop** | 16 GB | Qwen3.8-Flash-Next 125B | 76 GB | flash | 7-9 |
 |  |  | Qwen3.6-35B-A3B | 21 GB | flash | 18-24 |
 | **Windows laptop** | 16 GB | Qwen3.6-35B-A3B | 21 GB | flash | 5 |
+| **Desktop GPU** (NVIDIA) | 12 GB + 128 GB RAM | Qwen3.8-Flash-Next 125B | 84 GB | RAM, GPU cache | 16-17 |
 | **Desktop GPU** (NVIDIA) | 16 GB + 32 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | flash, GPU cache | 19-21 |
 | **Desktop GPU** (NVIDIA) | 24 GB + 96 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM, GPU cache | 70 |
 |  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |

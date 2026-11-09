@@ -56,6 +56,7 @@ Qwen3.6-35B-A3B（21 GB）在各设备上实时运行。该模型大于每台设
 | **Apple silicon 笔记本** | 16 GB | Qwen3.8-Flash-Next 125B | 76 GB | 闪存 | 7-9 |
 |  |  | Qwen3.6-35B-A3B | 21 GB | 闪存 | 18-24 |
 | **Windows 笔记本** | 16 GB | Qwen3.6-35B-A3B | 21 GB | 闪存 | 5 |
+| **桌面 GPU**（NVIDIA） | 12 GB + 128 GB RAM | Qwen3.8-Flash-Next 125B | 84 GB | RAM，GPU 缓存 | 16-17 |
 | **桌面 GPU**（NVIDIA） | 16 GB + 32 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | 闪存，GPU 缓存 | 19-21 |
 | **桌面 GPU**（NVIDIA） | 24 GB + 96 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM，GPU 缓存 | 70 |
 |  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
