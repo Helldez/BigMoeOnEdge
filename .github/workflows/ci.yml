@@ -224,10 +224,10 @@ jobs:
       - name: Smoke
         shell: bash
         run: |
+          WB=build/bin/Release; [ -d "$WB" ] || WB=build/bin
           for exe in bmoe-cli bmoe-server bmoe-desktop; do
-            f=$(ls build/bin/Release/$exe.exe build/bin/$exe.exe 2>/dev/null | head -n 1)
-            [ -n "$f" ] || { echo "$exe.exe was not built"; exit 1; }
-            "$f" --version
+            [ -f "$WB/$exe.exe" ] || { echo "$exe.exe was not built"; exit 1; }
+            "$WB/$exe.exe" --version
           done
 
   host-macos:
