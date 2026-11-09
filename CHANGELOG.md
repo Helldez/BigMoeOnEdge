@@ -28,7 +28,8 @@ Semantic Versioning.
   streamed experts, which no gate covers yet (validation refuses that pair). Gate G25d: half the
   misses on the host give the resident placement's bytes. On a 12 GB card (RTX 3060 class) with
   Qwen3.8-Flash-Next IQ3_S and a 5.3 GB cache: 18.5 tok/s uploading every miss, 20.8 with seven in
-  ten on the CPU.
+  ten on the CPU, and 21.1-21.2 with plain `--auto`, which priced the share at 0.76 and 0.78 on two
+  loads (16.0-17.5 on the 0.40.2 release).
 
 ### Changed
 - **llama.cpp bumped to upstream `b12214`** (2026-11-09) plus the expert-ready hook, on fork branch

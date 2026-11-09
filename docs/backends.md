@@ -149,7 +149,8 @@ bytes. `--auto` prices it from the measured rates (see
 [hardware-planning.md](hardware-planning.md#who-computes-the-device-caches-misses)). Measured on a
 12 GB card (RTX 3060 class) with Qwen3.8-Flash-Next IQ3_S, every expert resident, a 5.3 GB cache, 256
 greedy tokens: 18.5 tok/s uploading every miss, 19.9 with half of them on the host, 20.8 with seven
-in ten, and 17.5 with all of them on the host, where the cache stops learning
+in ten, and 17.5 with all of them on the host, where the cache stops learning; plain `--auto` priced
+the share at 0.76 and 0.78 on two loads and decoded at 21.2 and 21.1
 ([bench-data/2026-11-09-rented-12gb-cuda-pack](bench-data/2026-11-09-rented-12gb-cuda-pack/README.md)).
 
 Measured on a 24 GB discrete card (PCIe at about 26 GB/s, 48 host cores, 85 GiB of host memory),
