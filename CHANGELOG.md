@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **The planner no longer refuses a prefill device for a cache that is already off** (#508). It
+  required the expert cache to stay at least one token cycle with the device armed, without asking
+  whether it was one without it, so a run whose cache was off (under a token cycle) refused every
+  device, and the plan blamed the cache. Each check is now measured against the run without the
+  device: a cache that streamed keeps streaming, the dense set and the cache keep their protection,
+  and what decode holds still fits what the process may hold (or, where a forced pin left the ledger
+  open, no more than it did). The reason names the check that failed.
+
 ## [0.40.3] - 2026-11-09
 
 ### Fixed
