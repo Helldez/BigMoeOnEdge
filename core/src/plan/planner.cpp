@@ -855,9 +855,23 @@ void choose_graph_width(Planning & s) {
         ((uint32_t) s.placement.n_gpu_layers <= s.model.n_layer || !s.placement.host_expert_layers.empty());
     const uint64_t device_cap = (uint64_t) ((double) device_memory * s.pol.compute_share_max);
     auto device_buffers = [&](uint32_t w) { return s.placement.at_width(w).device_compute_bytes; };
+    // Each card against its own memory: two cards of different sizes each reserve their own buffers,
+    // and the smaller is the one that runs short. The sum against the sum where the fitter did not say
+    // which card takes what.
+    auto device_over = [&](uint32_t w) {
+        const Placement q = s.placement.at_width(w);
+        bool per_card = false;
+        for (const ComputeDevice & d : s.hw.devices) {
+            if (!d.has_own_memory() || d.memory_total == 0) continue;
+            const uint64_t part = q.device_compute_of(d.name);
+            if (part == 0) continue;
+            per_card = true;
+            if ((double) part > (double) d.memory_total * s.pol.compute_share_max) return true;
+        }
+        return !per_card && q.device_compute_bytes > device_cap;
+    };
     auto over = [&](uint32_t w) {
-        return buffers(w) > s.holdable * (double) s.pol.compute_share_max ||
-               (device_short && device_buffers(w) > device_cap);
+        return buffers(w) > s.holdable * (double) s.pol.compute_share_max || (device_short && device_over(w));
     };
     const uint32_t full = s.placement.compute_width;
     if (s.req.is_pinned("ubatch")) {
@@ -880,7 +894,7 @@ void choose_graph_width(Planning & s) {
         w /= 2;
     const std::string pct = u64s((uint64_t) (s.pol.compute_share_max * 100.0f + 0.5f)) + "%";
     const std::string share = pct + " of the " + u64s(mib(s.holdable)) + " MiB this process may hold";
-    const bool device_bound = device_short && device_buffers(full) > device_cap;
+    const bool device_bound = device_short && device_over(full);
     if (w == full) {
         s.note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Derived,
                "A prompt runs in one pass: that takes only " + size_brief(buffers(full)) + ".",

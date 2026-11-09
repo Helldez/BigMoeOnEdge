@@ -973,6 +973,33 @@ int main() {
             check(wide_kept.config.n_ubatch == 0, "width: a device the model fits whole keeps the widest graph",
                   std::to_string(wide_kept.config.n_ubatch));
 
+            // Two cards of different sizes: inside the share of both together, past it on the smaller
+            // one, which reserves its own half of the buffers. Each card is held to its own memory.
+            HardwareProfile two = card;
+            two.devices[0].name = "big";
+            two.devices[0].memory_total = 24 * GiB;
+            ComputeDevice small = two.devices[0];
+            small.name = "small";
+            small.memory_total = 8 * GiB;
+            small.memory_free = 8 * GiB;
+            two.devices.push_back(small);
+            Placement split = short_card;
+            const uint64_t per_card = (uint64_t) (1.5 * (double) GiB); // 3 GiB together, 32 GiB of cards
+            split.device_compute_bytes = 2 * per_card;
+            split.device_compute_per_token = split.device_compute_bytes / 16384;
+            split.projected_devices = {"big", "small"};
+            split.projected_compute_bytes = {per_card, per_card};
+            check((double) split.device_compute_bytes <= (double) (32 * GiB) * pol.compute_share_max,
+                  "width, two cards: the fixture is inside the share of both cards together");
+            const Plan by_card = plan_run(big_ctx, two, model, split, PlanRequest{});
+            const uint64_t wc = (uint64_t) by_card.config.n_ubatch;
+            check(wc > 0 && wc < 16384 &&
+                      (double) by_card.placement.device_compute_of("small") <=
+                          (double) (8 * GiB) * pol.compute_share_max,
+                  "width, two cards: the smaller card's buffers are held to its own share",
+                  std::to_string(wc) + ", small card " +
+                      std::to_string(by_card.placement.device_compute_of("small") / MiB) + " MiB");
+
             // A slope the device side did not measure decides nothing there.
             Placement blind_dev = short_card;
             blind_dev.device_compute_per_token = 0;

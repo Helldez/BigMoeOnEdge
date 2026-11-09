@@ -764,7 +764,8 @@ The rule is the widest graph whose buffers stay inside a share of what the proce
 count in this pool where its memory is the host's. A device with memory of its own pays for its width
 in that memory, and where the model does not fit it (the fitter left a layer, or a layer's experts,
 on the host), every byte there is one a layer's dense part or the device's expert cache would have
-used. There its buffers are held to the same share of the device's memory. A device the whole model
+used. There its buffers are held to the same share of the device's memory, each card against its
+own (two cards of different sizes each reserve their part, and the smaller runs short first). A device the whole model
 fits keeps the widest graph, since its buffers take nothing there. Because the fitter placed the
 layers around buffers as wide as the graph it was given, a plan that narrows the graph on a device
 places again at the narrower width (`probe_and_plan`), and the rules run on that placement. A width
@@ -775,6 +776,9 @@ Measured on a 12 GB card (RTX 3060 class, 120 GiB of host memory) with Qwen3.8-F
 The fitter then left two layers on the host, and with them the dense parts the device tier needs, so
 no device cache was armed and the server decoded at 13 tok/s. At 2048 tokens the buffers were 727 MiB,
 every layer went on the card with a 6.1 GB cache of experts (86% hits), and the decode was 36.8 tok/s.
+With the rule, the same server at the same 16384 context picked 2048 tokens (634 MiB), placed all 49
+layers on the card with a 6.1 GB cache, and decoded at 32.9-36.1 tok/s over two rounds of three
+prompts. Prefill on those short prompts went from 50-63 to 82-97 tok/s.
 
 The share is policy, and the plan prints it as such. What is measured is the trade it stands in
 for, on that laptop at a 16384 context, a 10850-token prompt and then a short one:
