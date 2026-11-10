@@ -72,7 +72,7 @@ static void replay_matches_script(const char * tag,
 
     // The curve: from nothing to the whole set, non-decreasing, and at the run's budget where the
     // replay put it (interpolation between two points never leaves the two points' range).
-    const HitCurve c = hit_curve(t, k_hit_curve_points);
+    const HitCurve c = hit_curve(t, k_hit_curve_points, 0);
     bool mono = c.measured && c.points.size() == k_hit_curve_points + 1 && c.points.front().cache_bytes == 0;
     for (size_t i = 1; i < c.points.size(); ++i)
         mono = mono && c.points[i].hit >= c.points[i - 1].hit && c.points[i].cache_bytes > c.points[i - 1].cache_bytes;
@@ -86,6 +86,26 @@ static void replay_matches_script(const char * tag,
         last = h;
     }
     check(share_mono, std::string(tag) + ": hit_share is monotone in [0, 1] at any size");
+
+    // The decayed-frequency replay (the engine's default eviction): where LRU's first row hits
+    // nothing (a budget under one token's experts), it hits; at every budget it reads no more than
+    // the miss count allows; and with a half-life of 0 it is the LRU replay exactly.
+    const ReplayCounts lru0 = replay_cache(t, (uint64_t) (rows.front().budget_mib * MiB), 0);
+    const ReplayCounts lru1 = replay_lru(t, (uint64_t) (rows.front().budget_mib * MiB));
+    check(lru0.hits == lru1.hits && lru0.read_bytes == lru1.read_bytes,
+          std::string(tag) + ": replay_cache at half-life 0 is the LRU replay");
+    if (rows.front().hit_pct_decode == 0.0) {
+        const ReplayCounts f = replay_cache(t, (uint64_t) (rows.front().budget_mib * MiB), 8);
+        char got[64];
+        std::snprintf(got, sizeof(got), "%.2f%% decode hit", 100.0 * f.decode_hit());
+        check(f.decode_hit() > 0.05,
+              std::string(tag) + ": under one token cycle, decayed frequency hits where LRU does not", got);
+    }
+    const HitCurve fc = hit_curve(t, k_hit_curve_points, 8);
+    bool fmono = fc.measured && fc.points.size() == k_hit_curve_points + 1;
+    for (size_t i = 1; i < fc.points.size(); ++i)
+        fmono = fmono && fc.points[i].hit >= fc.points[i - 1].hit;
+    check(fmono, std::string(tag) + ": the decayed-frequency curve is non-decreasing");
 }
 
 int main() {
@@ -194,23 +214,23 @@ int main() {
             longer.batches.push_back({1, true, {3, 0}});
         }
         longer.decode_tokens = 43;
-        attach_routing(m, longer, 2);
+        attach_routing(m, longer, 2, 0);
         check(m.hit_curve.measured && m.hit_curve.rejected.empty(), "a matching trace gives the model its curve",
               m.hit_curve.rejected);
         check(m.hit_curve.hit_share(80) > 0.9, "the whole set serves nearly every decode lookup");
-        attach_routing(m, longer, 1);
+        attach_routing(m, longer, 1, 0);
         check(!m.hit_curve.measured && !m.hit_curve.rejected.empty(), "another top-k is another routing: refused",
               m.hit_curve.rejected);
-        attach_routing(m, t, 2);
+        attach_routing(m, t, 2, 0);
         check(!m.hit_curve.measured && !m.hit_curve.rejected.empty(), "a trace too short to be a curve is refused",
               m.hit_curve.rejected);
         ModelProfile other = m;
         other.expert_bytes = 160;
-        attach_routing(other, longer, 2);
+        attach_routing(other, longer, 2, 0);
         check(!other.hit_curve.measured, "another model's expert set is refused", other.hit_curve.rejected);
         other = m;
         other.moe_layers = {0, 1, 2};
-        attach_routing(other, longer, 2);
+        attach_routing(other, longer, 2, 0);
         check(!other.hit_curve.measured, "another model's blocks are refused", other.hit_curve.rejected);
         check(HitCurve{}.hit_share(1ull << 40) == 0.0, "an absent curve credits nothing by itself");
     }

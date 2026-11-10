@@ -6,7 +6,25 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+- **The device prefill reads what the expert cache holds** (`--no-prefill-from-cache` turns it off):
+  an expert the cache has is copied from RAM into the device's slot instead of read from flash again.
+  On the Mac's GPU, four 4k-token documents read 297 → 178 GiB from flash and prefilled in 31.9-33.2 s
+  against 50.4-73.7 s, the same text. New counter `prefill_dev_cache_mib` in `BMOE_DONE`,
+  `BMOE_DECIDE` and the CSV trailer ([npu-prefill.md](docs/npu-prefill.md)).
+
 ### Changed
+- **The expert cache evicts by decayed frequency** (`--cache-half-life`, 8 tokens by default; `0`
+  is the LRU it replaces). Below one token's worth of experts LRU evicts what the next token reads
+  first and hits nothing; the new default keeps what recent tokens shared. On a 16 GB Mac with
+  Qwen3.6-35B-A3B and a 440 MiB cache: 0 % → 27 % hit, 6.1 → 8.5 tok/s, the same text. Above that it
+  reads 1 to 14 % less in replays of five models' recorded routing, and 4 to 5 % less measured. The
+  planner prices the cache with the same policy, so `--auto` sizes the cache it will run
+  ([cache-sizing.md](docs/cache-sizing.md#the-eviction-policy)).
+- **A long prompt prefilled on the CPU no longer flushes the cache.** From 32 tokens wide, a graph's
+  misses enter at the end the cache drops first (`--no-cache-prefill-cold` restores the old
+  admission): four 4k-token documents on the Mac read 423 → 211 GiB, prefill 17 % faster, the same
+  text.
 - **The byte-identity gates run in the Windows CI job** (#234), which only compiled before: MSVC,
   the overlap gates with the expert-ready hook required, as on Linux. The two daylight-saving
   scheduler checks stay POSIX's, since the Windows C runtime reads no zone names from `TZ`.

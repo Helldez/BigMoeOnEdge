@@ -729,7 +729,7 @@ prompt past the context; `503` with no model loaded. The request waits its turn 
  "n_prefilled": 32, "restore_s": 0.02, "store_s": 0.01, "prefill_s": 0.9, "prefill_cpu_s": 3.1,
  "prefill_read_mib": 410.0, "prefill_io_s": 0.3, "prefill_stall_s": 0.1, "prefill_mgmt_s": 0.0,
  "prefill_dev_tokens": 0, "prefill_dev_read_mib": 0.0, "prefill_dev_stall_s": 0.0,
- "prefill_dev_routed": 0, "prefill_dev_demand": 0, "prefix_state_mib": 48.0}
+ "prefill_dev_cache_mib": 0.0, "prefill_dev_routed": 0, "prefill_dev_demand": 0, "prefix_state_mib": 48.0}
 ```
 
 `choice_logp[i]` is the log-probability of the first token of `choices[i]` over the whole

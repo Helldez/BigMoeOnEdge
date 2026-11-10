@@ -158,6 +158,9 @@ struct RunSummary {
     // own prefill_read_mib/prefill_stall_seconds above do not see. Zero without an arena.
     double prefill_device_read_mib = 0.0;
     double prefill_device_stall_seconds = 0.0;
+    // What the arena copied from the expert cache instead of reading it (PrefillDeviceConfig::
+    // from_cache): the experts a device prefill did NOT read from flash. Zero without an arena.
+    double prefill_device_cache_mib = 0.0;
 
     // MoE streaming totals (zero when streaming is off)
     double moe_read_mib = 0.0;
@@ -195,6 +198,7 @@ struct RunSummary {
     // claiming its reads are useful is doing it here.
     long long cache_evictions = 0;
     long long cache_rereads = 0;
+    long long cache_cold_admits = 0; // misses a prompt admitted cold (MoeStreamConfig::cache_prefill_cold)
 
     // Row-gathered dense tables served from flash (MoeStreamConfig::row_stream). The pair that says
     // whether the policy paid: row_table_mib is what those tables would have occupied resident,
