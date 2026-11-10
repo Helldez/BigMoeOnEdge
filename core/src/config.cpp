@@ -112,6 +112,12 @@ ValidationResult validate(const RunConfig & cfg) {
     // Lower bound only: 0 means "use the model default". The upper bound (<= the model's
     // real expert count) needs the loaded gguf, so it is deferred to run() where the model
     // is available — same rationale as the streaming checks that stay out of this pure path.
+    if (cfg.trial.width_side < -1 || cfg.trial.width_side > 1)
+        return fail("{trial-width} is the graph width's side a load measures: -1 (none), 0 or 1");
+    if (cfg.trial.width_side >= 0 && cfg.trial.width_narrow < 1)
+        return fail("{trial-width} compares a narrower graph: it needs {trial-width-narrow}");
+    if (cfg.trial.width_side >= 0 && cfg.trial.device_tier >= 0)
+        return fail("{trial-width} and {trial-device-cache} each time a load's decode: one at a time");
     if (cfg.trial.device_tier < -1 || cfg.trial.device_tier > 1)
         return fail("{trial-device-cache} is the device tier's side a load measures: -1 (none), 0 or 1");
     if (cfg.n_expert_used < 0) {

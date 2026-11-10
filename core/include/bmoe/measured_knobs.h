@@ -53,10 +53,31 @@ struct MeasuredKnobs {
     double device_cache_tps = 0.0;
     double no_device_cache_tps = 0.0;
 
-    bool empty() const { return threads <= 0 && overlap < 0 && device_cache_tps <= 0.0 && no_device_cache_tps <= 0.0; }
-    // How many measurements this record carries: a front-end keeps a record again when it grows.
+    // The graph width, decided across loads where a wide graph's compute buffers take device memory
+    // the experts would use (planner.cpp, choose_graph_width). A wide graph prefills a long prompt in
+    // one pass; a narrow one leaves the experts more of the card. Which wins is a property of this
+    // machine AND of how it is used: on two 24 GB cards with GLM-4.5-Air the narrow graph decoded 37%
+    // faster, and the wide one prefilled a 9.5k-token prompt several times faster. So each load times
+    // both halves, and the plan weighs them by the requests this machine actually serves.
+    // `width_narrow` is the narrow width compared (0: none); the rates are tokens per second, the
+    // prefill ones over prompts longer than `width_narrow` only (where the width makes a difference),
+    // 0 when that side or that kind of prompt was not seen.
+    int width_narrow = 0;
+    double wide_decode_tps = 0.0, narrow_decode_tps = 0.0;
+    double wide_prefill_tps = 0.0, narrow_prefill_tps = 0.0;
+    // What the requests of the last load that measured a side looked like: per request, the tokens
+    // decoded and the prompt tokens beyond the narrow width (prefilled after reuse), over `usage_requests`.
+    double usage_gen_tokens = 0.0, usage_long_prompt_tokens = 0.0;
+    int usage_requests = 0;
+
+    bool empty() const { return verdicts() == 0; }
+    // How many measurements this record carries: a front-end keeps a record again when it grows. The
+    // requests a width trial has seen count too, so the usage it weighs the two widths by is kept as it
+    // grows rather than as the first request left it.
     int verdicts() const {
-        return (threads > 0) + (overlap >= 0) + (device_cache_tps > 0.0) + (no_device_cache_tps > 0.0);
+        return (threads > 0) + (overlap >= 0) + (device_cache_tps > 0.0) + (no_device_cache_tps > 0.0) +
+               (wide_decode_tps > 0.0) + (narrow_decode_tps > 0.0) + (wide_prefill_tps > 0.0) +
+               (narrow_prefill_tps > 0.0) + usage_requests;
     }
 };
 
