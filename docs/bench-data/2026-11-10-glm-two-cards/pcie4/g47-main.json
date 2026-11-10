@@ -1,0 +1,24 @@
+[
+ {
+  "engine": "g47-main",
+  "prompt": "a",
+  "prompt_tokens": 45,
+  "gen_tokens": 512,
+  "ttft_s": 6.2,
+  "prefill_tps": 7.3,
+  "decode_tps": 3.14,
+  "server_timings": null,
+  "text": "1.  **Deconstruct the User's Request:**\n    *   **Core Topic:** Mixture-of-Experts (MoE) language models.\n    *   **Specific Mechanism:** How each token is routed to its experts.\n    *   **Specific Benefit/Implication:** Why this enables running a model larger than RAM by streaming experts from flas"
+ },
+ {
+  "engine": "g47-main",
+  "prompt": "b",
+  "prompt_tokens": 45,
+  "gen_tokens": 512,
+  "ttft_s": 0.97,
+  "prefill_tps": 46.6,
+  "decode_tps": 3.15,
+  "server_timings": null,
+  "text": "1.  **Deconstruct the User's Request:**\n    *   **Core Topic:** Mixture-of-Experts (MoE) language models.\n    *   **Specific Mechanism:** How each token is routed to its experts.\n    *   **Specific Benefit/Implication:** Why this enables running a model larger than RAM by streaming experts from flas"
+ }
+]

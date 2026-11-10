@@ -1,0 +1,24 @@
+[
+ {
+  "engine": "doc-1",
+  "prompt": "long",
+  "prompt_tokens": 9515,
+  "gen_tokens": 256,
+  "ttft_s": 9.26,
+  "prefill_tps": 1027.8,
+  "decode_tps": 11.87,
+  "server_timings": null,
+  "text": "Hmm, the user has shared a detailed technical document about hardware planning for a MoE (Mixture of Experts) engine and wants me to summarize it in five bullet points. This is quite a complex document about automatic hardware configuration for AI model inference.\n\nLooking at the content, this docum"
+ },
+ {
+  "engine": "doc-1",
+  "prompt": "a",
+  "prompt_tokens": 45,
+  "gen_tokens": 256,
+  "ttft_s": 2.26,
+  "prefill_tps": 19.9,
+  "decode_tps": 14.16,
+  "server_timings": null,
+  "text": "We are going to explain the routing mechanism in a mixture-of-experts (MoE) language model and how it enables running a model larger than RAM by streaming experts from flash storage.\n\n### 1. Mixture-of-Experts (MoE) Overview\nIn an MoE model, the model is composed of multiple \"expert\" networks (typic"
+ }
+]

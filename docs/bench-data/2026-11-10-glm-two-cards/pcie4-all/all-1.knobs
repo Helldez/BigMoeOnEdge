@@ -1,0 +1,2 @@
+bmoe-measured-knobs 1
+hardware=df5458c593799f13 engine=0.40.3 threads=32 threads_tried=32,23,47 threads_gain=0.9975 overlap=-1 overlap_incumbent=-1 overlap_gain=0.0000 rounds=2 device_cache_tps=16.098 no_device_cache_tps=0.000 width_narrow=0 wide_decode_tps=0.000 narrow_decode_tps=0.000 wide_prefill_tps=0.000 narrow_prefill_tps=0.000 usage_gen_tokens=0.000 usage_long_prompt_tokens=0.000 usage_requests=0
