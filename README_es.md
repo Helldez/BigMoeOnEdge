@@ -68,6 +68,9 @@ dispositivo.
 | **GPU de escritorio** (NVIDIA) | 16 GB + 32 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | flash, caché en GPU | 19-21 |
 | **GPU de escritorio** (NVIDIA) | 24 GB + 96 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM, caché en GPU | 70 |
 |  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
+| **GPU de escritorio** (NVIDIA) | 24 GB + 94 GB RAM | Qwen3.6-35B-A3B | 21 GB | GPU | 135 |
+|  | 12 GB de ellos libres | Qwen3.6-35B-A3B | 21 GB | RAM, caché en GPU | 75-81 |
+|  | 24 GB + 94 GB RAM | Gemma 4 26B-A4B | 17 GB | GPU | 107-115 |
 | **GPU de centro de datos** (AMD, ROCm) | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
 
 Un rango es la variación entre ejecuciones. Método y todas las ejecuciones:
@@ -213,7 +216,7 @@ Detalles: [docs/platforms.md](docs/platforms.md).
 
 Cuando un modelo cabe en una GPU de gaming más la RAM, Strata es de dos a cuatro veces más rápido. Cuando se
 lee desde la flash, todos los motores se quedan por debajo de diez tokens por segundo y es el disco quien
-marca el ritmo. Velocidades y fuentes: [docs/comparison.md](docs/comparison.md).
+marca el ritmo. En una tarjeta de 24 GB frente a Lucebox, con el mismo archivo y los mismos prompts, este motor decodificó Qwen3.6-35B-A3B más rápido (135 frente a 108 tok/s) y llegó al primer token de un prompt de 28k tokens en 5 s frente a 37; el drafter por modelo de Lucebox decodificó el código de Gemma 4 más del doble de rápido. Velocidades y fuentes: [docs/comparison.md](docs/comparison.md).
 
 ## Compilar desde el código fuente
 

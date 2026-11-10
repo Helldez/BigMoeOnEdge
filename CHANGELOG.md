@@ -14,6 +14,16 @@ Semantic Versioning.
   CI and the release smoke now start `bmoe-desktop.exe` on Windows, so a missing import fails
   there rather than on a user's machine.
 
+## [Unreleased]
+
+### Added
+- **The same card against Lucebox** (`docs/bench-data/2026-11-10-same-card-lucebox/`): one rented
+  24 GB card, the same GGUF, client and prompts for both engines. Qwen3.6-35B-A3B: 135 tok/s against
+  108, a 28.6k-token prompt's first token after 5.3 s against 37; with 12 GiB of the card free, 75-81
+  against 51-76 (with #531). Gemma 4 26B-A4B: 107-115 against 106-109 on prose; Lucebox's per-model
+  drafter decodes its code at 249-254. `docs/comparison.md` lists Lucebox and the run; the README's
+  performance table gains the card's rows in all six languages.
+
 ## [0.40.2] - 2026-11-08
 
 ### Added

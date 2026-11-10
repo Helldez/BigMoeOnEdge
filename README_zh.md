@@ -59,6 +59,9 @@ Qwen3.6-35B-A3B（21 GB）在各设备上实时运行。该模型大于每台设
 | **桌面 GPU**（NVIDIA） | 16 GB + 32 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | 闪存，GPU 缓存 | 19-21 |
 | **桌面 GPU**（NVIDIA） | 24 GB + 96 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM，GPU 缓存 | 70 |
 |  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
+| **桌面 GPU**（NVIDIA） | 24 GB + 94 GB RAM | Qwen3.6-35B-A3B | 21 GB | GPU | 135 |
+|  | 其中 12 GB 空闲 | Qwen3.6-35B-A3B | 21 GB | RAM，GPU 缓存 | 75-81 |
+|  | 24 GB + 94 GB RAM | Gemma 4 26B-A4B | 17 GB | GPU | 107-115 |
 | **数据中心 GPU**（AMD，ROCm） | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
 
 范围表示多次运行之间的差异。方法与每次运行：
@@ -197,7 +200,7 @@ RAM，因此只有两个层级。能装进显卡的模型会完整地在显卡�
 | 自动配置 | ✅ `--auto` | 按内存选择模型 | 专家缓存预算 | `coli tune` | ❌ |
 
 当模型能放进游戏 GPU 加 RAM 时，Strata 快二到四倍。当模型需要从闪存流式读取时，所有引擎都低于每秒十个 token，
-速度由硬盘决定。速度及出处：[docs/comparison.md](docs/comparison.md)。
+速度由硬盘决定。在同一张 24 GB 显卡上与 Lucebox 对比，使用相同的文件和提示：本引擎解码 Qwen3.6-35B-A3B 更快（135 对 108 tok/s），28k token 提示的首个 token 用时 5 秒（Lucebox 为 37 秒）；Lucebox 的专用草稿模型解码 Gemma 4 的代码快两倍以上。速度及出处：[docs/comparison.md](docs/comparison.md)。
 
 ## 从源码构建
 
