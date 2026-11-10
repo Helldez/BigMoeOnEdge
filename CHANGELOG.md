@@ -104,6 +104,14 @@ Semantic Versioning.
   Measurements: `docs/bench-data/2026-11-09-graph-width/` (12, 16 and 24 GB cards, #505 beside it on
   the 16 GB one). The plan also says why the device tier armed no
   cache when a dense part is off the card; before, it said nothing.
+- **A card the wide graph left with no layer gets its graph narrowed too.** The graph-width rule
+  held a card's compute buffers to its share of its memory only where the fitter had placed some
+  layers there, so it skipped the shortest case: a graph as wide as the context whose buffers took
+  the room of the first layer. On a 24 GB card with 12 GiB free, Qwen3.6-35B Q4_K_M at a 40960
+  context placed 0 of 41 layers and decoded on the host at 12.5 tok/s, a 28.6k-token prompt waiting
+  13 minutes for its first token. The rule and the second placement at the narrower width now cover
+  a card with no layer on it: 10240 tokens wide, all 41 layers and a 5.2 GiB expert cache, 75-81
+  tok/s and a first token after 8.4 s (`docs/bench-data/2026-11-10-zero-layer-width/`).
 
 ### Documentation
 - One planner run on Windows, in `docs/hardware-planning.md`, the device probed in a process of its
