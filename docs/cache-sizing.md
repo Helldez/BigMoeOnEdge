@@ -235,9 +235,15 @@ oldest-first reclaim leaves it. Each load retires dropped entries from the tail 
 still held, sampling one page of each with `mincore`, so the cache's resident figure is what RAM
 still holds. Correctness never rests on that sweep: a lookup always takes an entry back first. The
 policy is its own module, `moe/discardable_entries`, over a port that `platform_io` implements; its
-test runs it against a fake kernel. The budget never goes
-under one token's cycle, and never grows back within the run, like the brake
-([pressure.md](pressure.md)). The brake's sensor skips offered entries, because a dropped offer is
+test runs it against a fake kernel.
+
+The budget follows what the kernel lets the cache keep, both ways (`DropFollowingBudget`, in the same
+module). It goes down by each drop, never under one token's cycle. Once a whole window passes
+without a drop, it goes back up, only as fast as misses need room and never past the budget last
+set: the plan's, or an explicit resize such as the brake's. The window is the one the offer already
+uses, a pass of the stack. Unlike the brake, this one grows back ([pressure.md](pressure.md)),
+because growing into pressure here costs a drop and a re-read, never a write: a picture that was
+true a minute ago is not kept for the rest of a long session. The brake's sensor skips offered entries, because a dropped offer is
 this mechanism working, not the reclaim the brake watches for.
 
 Same machine, same binary, `--auto`, 512 tokens, the arms alternating with 30 s between runs:

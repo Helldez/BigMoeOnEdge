@@ -121,5 +121,24 @@ int main() {
         d.offer_cold(5, all_valid);
         check(!d.enabled() && !d.offered(1) && d.take_back(1), "without a mechanism every call is inert");
     }
+    {
+        DropFollowingBudget b;
+        b.reset(1000, 100, 10);
+        check(b.make_room(50, 0) == 1000, "never past the budget the owner set");
+        b.dropped(300, 20);
+        check(b.current() == 700, "a drop lowers the budget by what the kernel took");
+        b.dropped(5000, 21);
+        check(b.current() == 100, "never under the floor (one token's cycle)");
+        check(b.make_room(50, 25) == 100, "no growth while the kernel took something within the window");
+        check(b.make_room(50, 31) == 150, "after a quiet window it grows by what a load needs");
+        check(b.make_room(5000, 32) == 1000, "and stops at the ceiling");
+        b.dropped(400, 40);
+        b.reset(500, 100, 10);
+        check(b.current() == 500 && b.make_room(10, 41) == 500,
+              "an explicit resize (the brake's) is the new ceiling, and a fresh start");
+        b.set_floor(600);
+        b.dropped(10, 50);
+        check(b.current() == 500, "a drop at or under the floor leaves the budget where it is");
+    }
     return fails ? 1 : 0;
 }
