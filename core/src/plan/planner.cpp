@@ -912,6 +912,86 @@ uint32_t device_share_width(const Placement & placement, const HardwareProfile &
 
 namespace {
 
+// The graph width where the rule above leaves it wide and the devices are short of the room it takes:
+// every layer on a card of its own, the experts not all there, and the card's buffers past its share.
+// A narrower graph then gives the experts more of the card - more of them placed there, or a larger
+// cache of them - and prefills a long prompt in more passes. Which wins is this machine's and this
+// use's, so it is measured across loads (MeasuredKnobs::width_narrow): a load times the plan's own
+// width, the next the narrow one, each timing its decode, its prefill of the prompts the width changes,
+// and the requests it served; the plan after weighs the two by those requests. Measured on two 24 GB
+// cards with GLM-4.5-Air: 14.2 tok/s decoded at 16384 tokens wide against 19.4 at 512, where the wide
+// graph prefilled a 9.5k-token prompt at 610 tok/s and a 512-wide one, in llama.cpp, at 104. True when
+// it decided the width and said so.
+bool width_across_loads(Planning & s, uint32_t full) {
+    Plan & p = s.p;
+    const Placement & pl = s.placement;
+    if (s.req.is_pinned("ubatch") || devices_share_host_memory(s.hw) || !pl.fitted || pl.n_gpu_layers == 0 ||
+        pl.host_expert_layers.empty() || p.config.trial.device_tier >= 0)
+        return false;
+    const uint32_t narrow = device_share_width(pl, s.hw, s.pol);
+    if (narrow == 0 || narrow >= full) return false;
+    const MeasuredKnobs & mk = s.model.knobs;
+    const bool same = mk.width_narrow == (int) narrow;
+    const double wd = same ? mk.wide_decode_tps : 0.0, nd = same ? mk.narrow_decode_tps : 0.0;
+    const double wp = same ? mk.wide_prefill_tps : 0.0, np = same ? mk.narrow_prefill_tps : 0.0;
+    const double gen = mk.usage_gen_tokens, longp = mk.usage_long_prompt_tokens;
+    const std::string n = u64s(narrow);
+    const auto run_side = [&](int side, const std::string & why) {
+        p.config.trial.width_side = side;
+        p.config.trial.width_narrow = (int) narrow;
+        if (side == 0) {
+            s.placement = s.placement.at_width(narrow);
+            p.placement = s.placement;
+            p.config.n_ubatch = (int) narrow;
+        }
+        s.note("ubatch", side ? u64s((uint64_t) p.config.n_ubatch) : n, Source::Policy,
+               side ? "This load times the graph at its own width, against " + n + " tokens on another load."
+                    : "This load times the graph " + n + " tokens wide, against its own width timed before.",
+               why);
+    };
+    const std::string room = "the devices' compute buffers at the full width are past their share of the cards' "
+                             "memory, which a narrower graph gives the experts";
+    if (wd <= 0.0) {
+        run_side(1, room + "; nothing is measured yet, so this load times the full width and a later one " + n +
+                        " tokens");
+        return true;
+    }
+    if (nd <= 0.0) {
+        run_side(0, room + "; the full width was timed at " + u64s((uint64_t) std::lround(wd)) +
+                        " tok/s, and this load times " + n + " tokens");
+        return true;
+    }
+    // Prompts the width changes were served: both sides' prefill of them is needed to weigh it.
+    if (longp > 0.0 && (wp <= 0.0 || np <= 0.0)) {
+        run_side(wp <= 0.0 ? 1 : 0, room + "; this machine prefills prompts longer than " + n +
+                                        " tokens, and that side's prefill of them is not timed yet");
+        return true;
+    }
+    // Seconds a request of this machine's own takes on each side: its tokens decoded, and its prompt
+    // tokens past the narrow width (shorter ones run the same on both).
+    const double t_wide = gen / wd + (longp > 0.0 ? longp / wp : 0.0);
+    const double t_narrow = gen / nd + (longp > 0.0 ? longp / np : 0.0);
+    char nums[320];
+    std::snprintf(nums, sizeof(nums),
+                  "measured on earlier loads: decode %.2f tok/s at the full width against %.2f at %u, prefill of the "
+                  "prompts past %u at %.0f against %.0f; a request here decodes %.0f tokens and prefills %.0f past "
+                  "%u, so %.2f s against %.2f",
+                  wd, nd, narrow, narrow, wp, np, gen, longp, narrow, t_wide, t_narrow);
+    const std::string margin = u64s((uint64_t) (s.pol.min_backend_win * 100.0f + 0.5f)) + "%";
+    if (t_wide > t_narrow * (1.0 + (double) s.pol.min_backend_win)) {
+        s.placement = s.placement.at_width(narrow);
+        p.placement = s.placement;
+        p.config.n_ubatch = (int) narrow;
+        s.note("ubatch", n, Source::Measured, n + " tokens per pass: on this machine's own requests it is faster.",
+               std::string(nums) + ", past the " + margin + " margin");
+        return true;
+    }
+    s.note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Measured,
+           "A prompt runs in one pass: on this machine's own requests the full width is as fast or faster.",
+           std::string(nums) + "; the narrow graph is not faster by the " + margin + " margin");
+    return true;
+}
+
 void choose_graph_width(Planning & s) {
     Plan & p = s.p;
     const bool device_in_pool = devices_share_host_memory(s.hw);
@@ -959,6 +1039,7 @@ void choose_graph_width(Planning & s) {
     const std::string pct = u64s((uint64_t) (s.pol.compute_share_max * 100.0f + 0.5f)) + "%";
     const std::string share = pct + " of the " + u64s(mib(s.holdable)) + " MiB this process may hold";
     const bool device_bound = device_short && device_over(full);
+    if (w == full && width_across_loads(s, full)) return;
     if (w == full) {
         s.note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Derived,
                "A prompt runs in one pass: that takes only " + size_brief(buffers(full)) + ".",

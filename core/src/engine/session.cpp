@@ -314,7 +314,11 @@ struct Session::Impl {
     struct Trials {
         std::vector<int> threads; // arms: the incumbent, then the candidates; empty: not measured
         std::vector<int> overlap; // arms as 0/1, the incumbent first; empty: not measured
-        bool rate = false;        // the device tier's side is timed
+        bool rate = false;        // the device tier's or the graph width's side is timed
+        // A width trial's usage, over this load's turns: requests, tokens decoded, and the prompts longer
+        // than the narrow width (tokens prefilled after reuse, and their seconds).
+        int width_requests = 0;
+        double width_gen = 0.0, width_long_tokens = 0.0, width_long_seconds = 0.0;
         int stage = stage_done;
         std::unique_ptr<KnobTrial> cur;
         std::unique_ptr<RateProbe> rate_probe;
@@ -326,6 +330,7 @@ struct Session::Impl {
     void start_trial_stage(bool settle);
     void next_trial_stage(bool settled);
     void rate_step(double seconds, int tokens, uint64_t lookups, uint64_t hits);
+    void note_width_turn(int n_prompt, double prefill_seconds, int n_generated);
     void finish_trial_stage();
     bool apply_trial_arm(int arm);
     void set_decode_threads(int n);
@@ -2053,7 +2058,8 @@ void Session::Impl::arm_trials() {
         else
             trials.overlap = {cfg.moe.overlap ? 1 : 0, cfg.moe.overlap ? 0 : 1};
     }
-    trials.rate = t.device_tier >= 0;
+    trials.rate = t.device_tier >= 0 || t.width_side >= 0;
+    if (t.width_side >= 0) trials.result.width_narrow = t.width_narrow;
     trials.stage = stage_done;
     next_trial_stage(/*settled*/ false);
 }
@@ -2150,18 +2156,45 @@ void Session::Impl::rate_step(double seconds, int tokens, uint64_t lookups, uint
     RateProbe & r = *trials.rate_probe;
     const bool settling = r.settling();
     r.record(seconds, tokens, lookups, hits);
-    if (settling && !r.settling())
-        log_printf(LogLevel::Info, "knob trial: timing the decode %s a device expert cache",
-                   cfg.trial.device_tier == 1 ? "with" : "without");
+    const bool tier = cfg.trial.device_tier >= 0;
+    char what[96];
+    if (tier)
+        std::snprintf(what, sizeof(what), "%s a device expert cache", cfg.trial.device_tier == 1 ? "with" : "without");
+    else
+        std::snprintf(what, sizeof(what), "with the graph %s (%d tokens wide)",
+                      cfg.trial.width_side == 1 ? "at the plan's width" : "narrowed",
+                      cfg.trial.width_side == 1 ? (cfg.n_ubatch > 0 ? cfg.n_ubatch : cfg.n_ctx)
+                                                : cfg.trial.width_narrow);
+    if (settling && !r.settling()) log_printf(LogLevel::Info, "knob trial: timing the decode %s", what);
     if (!r.done()) return;
     const double tps = r.tokens_per_second();
-    if (cfg.trial.device_tier == 1)
-        trials.result.device_cache_tps = tps;
+    if (tier)
+        (cfg.trial.device_tier == 1 ? trials.result.device_cache_tps : trials.result.no_device_cache_tps) = tps;
     else
-        trials.result.no_device_cache_tps = tps;
-    log_printf(LogLevel::Info, "knob trial: %.2f tok/s %s a device expert cache, the median of %d windows", tps,
-               cfg.trial.device_tier == 1 ? "with" : "without", r.windows());
+        (cfg.trial.width_side == 1 ? trials.result.wide_decode_tps : trials.result.narrow_decode_tps) = tps;
+    log_printf(LogLevel::Info, "knob trial: %.2f tok/s %s, the median of %d windows", tps, what, r.windows());
     next_trial_stage(/*settled*/ true);
+}
+
+// A turn of a width trial: what it asked of the model, for the plan that weighs the two widths, and
+// the prefill of a prompt the width changes, timed on this load's side.
+void Session::Impl::note_width_turn(int n_prompt, double prefill_seconds, int n_generated) {
+    const KnobTrialConfig & t = cfg.trial;
+    if (t.width_side < 0) return;
+    ++trials.width_requests;
+    trials.width_gen += n_generated;
+    if (n_prompt > t.width_narrow && prefill_seconds > 0.0) {
+        trials.width_long_tokens += n_prompt;
+        trials.width_long_seconds += prefill_seconds;
+    }
+    MeasuredKnobs & r = trials.result;
+    r.width_narrow = t.width_narrow;
+    r.usage_requests = trials.width_requests;
+    r.usage_gen_tokens = trials.width_gen / trials.width_requests;
+    r.usage_long_prompt_tokens = trials.width_long_tokens / trials.width_requests;
+    if (trials.width_long_seconds > 0.0)
+        (t.width_side == 1 ? r.wide_prefill_tps : r.narrow_prefill_tps) =
+            trials.width_long_tokens / trials.width_long_seconds;
 }
 
 void Session::Impl::trial_step(double seconds, int tokens) {
@@ -3508,6 +3541,7 @@ RunResult Session::generate(const GenerateRequest & req,
     turn.trim_speculative_kv();
     ++im.turn; // this turn is written; label the next one apart
     turn.summarize(sink);
+    im.note_width_turn(res.summary.n_prompt, res.summary.prefill_seconds, res.summary.n_generated);
     turn.finish();
     return res;
 }

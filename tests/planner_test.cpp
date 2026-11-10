@@ -1036,6 +1036,69 @@ int main() {
             check(pd && pd->value == "every layer on devices", "placement: the fitter's default reads as every layer",
                   pd ? pd->value : "none");
 
+            // Every layer on the card, experts on the host, buffers past the card's share: the width is
+            // decided across loads (MeasuredKnobs::width_narrow), by the requests this machine serves.
+            {
+                HardwareProfile no_tier = card;
+                no_tier.devices[0].identity_ok = Tri::No; // no device cache: the width alone is weighed
+                Placement roomy_layers = all_layers;
+                for (uint32_t il = 0; il < 8; ++il)
+                    roomy_layers.host_expert_layers.push_back(il);
+                const uint32_t narrow = device_share_width(roomy_layers, no_tier, pol);
+                const auto plan_with = [&](const MeasuredKnobs & k) {
+                    ModelProfile mm = model;
+                    mm.knobs = k;
+                    return plan_run(big_ctx, no_tier, mm, roomy_layers, PlanRequest{}, pol);
+                };
+                const Plan first = plan_with(MeasuredKnobs{});
+                check(narrow > 0 && narrow < 16384 && first.config.trial.width_side == 1 &&
+                          first.config.trial.width_narrow == (int) narrow && first.config.n_ubatch == 0,
+                      "width across loads, nothing measured: the full width is timed",
+                      std::to_string(first.config.trial.width_side) + " " + std::to_string(narrow));
+                check(validate(first.config).ok, "width across loads: a valid config", validate(first.config).error);
+                MeasuredKnobs k;
+                k.width_narrow = (int) narrow;
+                k.wide_decode_tps = 14.2;
+                const Plan second = plan_with(k);
+                check(second.config.trial.width_side == 0 && second.config.n_ubatch == (int) narrow,
+                      "width across loads, the full width timed: this load times the narrow one",
+                      std::to_string(second.config.n_ubatch));
+                // Both decodes measured, a machine that never sends a prompt longer than the narrow width:
+                // the narrow graph costs it nothing and decodes faster.
+                k.narrow_decode_tps = 19.4;
+                k.usage_requests = 5;
+                k.usage_gen_tokens = 500;
+                const Plan chat = plan_with(k);
+                const Decision * dw = find(chat, "ubatch");
+                check(chat.config.n_ubatch == (int) narrow && chat.config.trial.width_side == -1 && dw &&
+                          dw->source == Source::Measured,
+                      "width across loads, short prompts only: the narrow graph", dw ? dw->reason : "none");
+                // Long prompts served, their prefill not timed on the narrow side: that side is timed again.
+                k.usage_long_prompt_tokens = 9500;
+                k.wide_prefill_tps = 610;
+                const Plan again = plan_with(k);
+                check(again.config.trial.width_side == 0, "width across loads, long prompts: the side without "
+                                                          "their prefill is timed");
+                // Both prefills timed: 500 tokens decoded and 9500 prefilled per request weigh for the wide graph.
+                k.narrow_prefill_tps = 104;
+                const Plan agent = plan_with(k);
+                dw = find(agent, "ubatch");
+                check(agent.config.n_ubatch == 0 && agent.config.trial.width_side == -1 && dw &&
+                          dw->source == Source::Measured,
+                      "width across loads, long prompts: the full width wins on this machine's requests",
+                      dw ? dw->reason : "none");
+                // A narrow width other than the one measured: the measurements do not answer it.
+                k.width_narrow = (int) narrow * 2;
+                const Plan stale = plan_with(k);
+                check(stale.config.trial.width_side == 1, "width across loads, another narrow width: measured afresh");
+                // A pinned width is the caller's.
+                PlanRequest pin_ub;
+                pin_ub.pinned.push_back("ubatch");
+                ModelProfile mm = model;
+                const Plan pinned_ub = plan_run(big_ctx, no_tier, mm, roomy_layers, pin_ub, pol);
+                check(pinned_ub.config.trial.width_side == -1, "width across loads, pinned: nothing timed");
+            }
+
             // A slope the device side did not measure decides nothing there.
             Placement blind_dev = short_card;
             blind_dev.device_compute_per_token = 0;

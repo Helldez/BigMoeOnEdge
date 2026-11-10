@@ -547,6 +547,27 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("trial-width", "Measure the graph width", G::Prefill, L::Experimental,
+                          "Time this load's side of the graph width, to be compared across loads: 1 the plan's own "
+                          "width, 0 the narrower --trial-width-narrow. Times the decode, and the prefill of prompts "
+                          "longer than the narrow width. -1 times neither. Changes no output; the plan sets it.");
+        d.value_hint = "N";
+        bounds(d, -1, 1, "side");
+        special(d, "-1", "off");
+        bind_int(d, [](RunConfig & c) -> int & { return c.trial.width_side; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("trial-width-narrow", "Narrow graph width compared", G::Prefill, L::Experimental,
+                          "The narrower graph width --trial-width compares with the plan's own, in tokens. Prompts "
+                          "longer than it are the ones whose prefill is timed. 0 is none.");
+        d.value_hint = "N";
+        bounds(d, 0, RunConfig::tokens_max, "tokens");
+        special(d, "0", "none");
+        bind_int(d, [](RunConfig & c) -> int & { return c.trial.width_narrow; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("release-mmap", "Unmap the file after load", G::Streaming, L::Advanced,
                           "Unmap the model file after load once nothing reads through it. On Windows a live "
                           "mapping serialises the streamer's concurrent reads. Needs dense weights anon or "

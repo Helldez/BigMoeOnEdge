@@ -302,6 +302,42 @@ int main() {
               "record: the device tier's rates read back as written");
         check(!parse_measured_knobs("bmoe-measured-knobs 1\nhardware=a engine=b device_cache_tps=-1\n", bad, err),
               "record: a negative rate is refused");
+        // The graph width: each side's rates and the usage they are weighed by, merged across loads; a
+        // different narrow width starts the comparison afresh.
+        MeasuredKnobs w1;
+        w1.hardware = a.hardware;
+        w1.engine = a.engine;
+        w1.width_narrow = 512;
+        w1.wide_decode_tps = 14.2;
+        w1.wide_prefill_tps = 610.0;
+        w1.usage_requests = 3;
+        w1.usage_gen_tokens = 480.0;
+        w1.usage_long_prompt_tokens = 9500.0;
+        keep_measured_knobs(back, w1);
+        MeasuredKnobs w2 = w1;
+        w2.wide_decode_tps = w2.wide_prefill_tps = 0.0;
+        w2.narrow_decode_tps = 19.4;
+        w2.narrow_prefill_tps = 104.0;
+        keep_measured_knobs(back, w2);
+        const MeasuredKnobs * kw = find_measured_knobs(back, a.hardware, "0.35.1");
+        check(kw && kw->width_narrow == 512 && std::fabs(kw->wide_decode_tps - 14.2) < 1e-9 &&
+                  std::fabs(kw->narrow_prefill_tps - 104.0) < 1e-9 && kw->usage_requests == 3 &&
+                  std::fabs(kw->device_cache_tps - 1.6) < 1e-9,
+              "record: the width's two sides are merged, with what else was measured");
+        std::vector<MeasuredKnobs> wback;
+        check(parse_measured_knobs(format_measured_knobs(back), wback, err) &&
+                  find_measured_knobs(wback, a.hardware, "0.35.1")->width_narrow == 512 &&
+                  std::fabs(find_measured_knobs(wback, a.hardware, "0.35.1")->usage_long_prompt_tokens - 9500.0) < 1e-3,
+              "record: the width's rates and usage read back as written");
+        MeasuredKnobs w3 = w1;
+        w3.width_narrow = 1024;
+        w3.wide_prefill_tps = 0.0;
+        w3.wide_decode_tps = 15.0;
+        keep_measured_knobs(back, w3);
+        kw = find_measured_knobs(back, a.hardware, "0.35.1");
+        check(kw && kw->width_narrow == 1024 && std::fabs(kw->wide_decode_tps - 15.0) < 1e-9 &&
+                  kw->narrow_decode_tps == 0.0 && kw->narrow_prefill_tps == 0.0,
+              "record: another narrow width drops what was measured against the old one");
         check(!parse_measured_knobs("bmoe-measured-knobs 1\nthreads=4\n", bad, err),
               "record: a line naming no machine is refused");
         check(!parse_measured_knobs("something else\n", bad, err), "record: another format is refused");

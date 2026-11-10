@@ -119,11 +119,18 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
             for (const Decision & d : r.plan.decisions)
                 if (d.knob == "ubatch") first = &d;
             const Decision kept = first ? *first : Decision{};
+            const KnobTrialConfig trial = r.plan.config.trial;
             r.plan = plan_run(narrow, r.hw, r.model, at_width, req);
-            // Narrowed again on the new placement: that decision stands, it is the narrower one.
-            if (r.plan.config.n_ubatch == (int) width)
+            // Narrowed again on the new placement: that decision stands, it is the narrower one. So does
+            // a width trial the first plan set: the second sees its narrow width as the full one.
+            if (r.plan.config.n_ubatch == (int) width) {
                 for (Decision & d : r.plan.decisions)
                     if (d.knob == "ubatch" && !kept.knob.empty()) d = kept;
+                if (trial.width_side >= 0 && r.plan.config.trial.device_tier < 0) {
+                    r.plan.config.trial.width_side = trial.width_side;
+                    r.plan.config.trial.width_narrow = trial.width_narrow;
+                }
+            }
         }
     }
     // Every layer on a device of its own and the experts still on the host, behind a device cache: a

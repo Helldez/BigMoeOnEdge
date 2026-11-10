@@ -69,7 +69,8 @@
 //       (a) and under --overlap (b). The router's ids are then read through a host copy.
 //   G24 the knob trial switches the decode thread count and overlap between timed windows of the
 //       answer it decodes: == resident over one long answer (a) and over four turns that each end
-//       inside a window (b), and the trial must have reached its verdicts.
+//       inside a window (b), and the trial must have reached its verdicts. The graph width's side
+//       timed for a decision across loads (c) == resident, with its rates and request in the record.
 //   G25 the device tier: llama.cpp's device-side expert cache over resident experts (a), over
 //       streamed experts (b) and streamed under n-gram speculation (c), each == the resident
 //       placement; and each side of the device tier timed for a decision across loads (e), with its
@@ -1824,6 +1825,39 @@ int main(int argc, char ** argv) {
                         mt.overlap < 0 ? "not measured"
                         : mt.overlap   ? "on"
                                        : "off");
+        }
+
+        // G24c: the graph width's side timed for a decision across loads (KnobTrialConfig::width_side).
+        // It switches nothing, so the answer is the resident one; the record must carry the decode, the
+        // prefill of the prompt (longer than the narrow width here) and the request it served.
+        RunConfig wref = resident;
+        wref.n_predict = 64;
+        std::string s_wref;
+        if (!gen(wref, s_wref, err)) {
+            std::fprintf(stderr, "G24c reference run failed: %s\n", err.c_str());
+            return 2;
+        }
+        RunConfig wt = wref;
+        wt.trial.width_side = 1;
+        wt.trial.width_narrow = 2;
+        wt.trial.window_tokens = 2;
+        const RunResult rw = run(wt);
+        if (!rw) {
+            std::fprintf(stderr, "G24c run failed: %s\n", rw.error.c_str());
+            return 2;
+        }
+        fails += check("G24c graph width timed == resident", s_wref, rw.generated_text);
+        const MeasuredKnobs & mw = rw.knobs;
+        if (!(mw.wide_decode_tps > 0.0) || !(mw.wide_prefill_tps > 0.0) || mw.usage_requests != 1 ||
+            mw.width_narrow != 2) {
+            std::printf("[FAIL] G24c the record lacks the width's side: decode %.1f, prefill %.1f, %d requests, "
+                        "narrow %d\n",
+                        mw.wide_decode_tps, mw.wide_prefill_tps, mw.usage_requests, mw.width_narrow);
+            ++fails;
+        } else {
+            std::printf("[PASS] G24c the record holds the width's side: decode %.1f tok/s, prefill %.1f tok/s, "
+                        "%.0f tokens a request\n",
+                        mw.wide_decode_tps, mw.wide_prefill_tps, mw.usage_gen_tokens);
         }
     }
 

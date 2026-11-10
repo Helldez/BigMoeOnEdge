@@ -777,7 +777,21 @@ memory and a prompt gathers nothing into a cache. Only a placement can say it, s
 asks the fitter at the width the device's share allows (`device_share_width`) and keeps the narrower
 graph only where every expert is placed on the devices. On the same card, Qwen3.6-35B Q4_K_M at a
 16384 context: 8192 tokens wide, the whole model fit, and decode went from 137-139 to 155-156 tok/s
-and a 9714-token prefill from 4789 to 5594 tok/s. A width set by hand is left alone and charged in
+and a 9714-token prefill from 4789 to 5594 tok/s.
+
+Where every layer is on a card, the experts do not all fit and the card's buffers are past its share,
+the width is a trade the plan cannot price: a narrower graph leaves the experts more of the card (more
+of them placed there, or a larger cache), and prefills a long prompt in more passes. It is measured
+across loads instead (`width_across_loads`, `MeasuredKnobs::width_narrow`). A load times the full
+width, the next the width the card's share allows. Each times its decode, its prefill of the prompts
+longer than the narrow width (the only ones the width changes), and the requests it served. The plan
+after weighs the two by those requests: the tokens a request decodes over each side's decode rate,
+plus its prompt tokens past the narrow width over each side's prefill rate. The narrow graph is taken
+where it is faster by `min_backend_win`. A machine that never sends a long prompt pays nothing for
+the narrow graph. One that does has both sides' prefill of them timed before anything is decided.
+Measured on two 24 GB cards with GLM-4.5-Air: 14.2 tok/s decoded at 16384 tokens wide against 19.4 at
+512, where the wide graph prefilled a 9.5k-token prompt at 610 tok/s and a 512-wide one, in
+llama.cpp, at 104. A width set by hand is left alone and charged in
 full; a slope that was not measured decides nothing.
 
 Measured on a 12 GB card (RTX 3060 class, 120 GiB of host memory) with Qwen3.8-Flash-Next Q2_0 at a

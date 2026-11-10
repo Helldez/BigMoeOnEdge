@@ -16,6 +16,16 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+- **The graph width decided across loads, by this machine's own requests.** Where every layer is on
+  a card, the experts do not all fit and the card's compute buffers are past its share, a narrower
+  graph gives the experts more of the card, and prefills a long prompt in more passes. On two 24 GB
+  cards with GLM-4.5-Air the narrow graph decoded 19.4 tok/s against 14.2, and the wide one prefilled
+  a 9.5k-token prompt several times faster. A load times the full width and the next the narrow one,
+  each its decode, its prefill of the prompts longer than the narrow width, and the requests it
+  served. The plan after keeps the side faster on those requests, past the planner's 10% margin.
+  Parameters `--trial-width` and `--trial-width-narrow` (set by the plan). Gate G24c.
+
 ### Fixed
 - **The device expert cache is kept only where it measured faster.** `--auto` armed a cache of the
   experts used most on any card that computes them faster than the host, which is necessary and not
