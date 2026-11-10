@@ -91,6 +91,18 @@ Semantic Versioning.
   device: a cache that streamed keeps streaming, the dense set and the cache keep their protection,
   and what decode holds still fits what the process may hold (or, where a forced pin left the ledger
   open, no more than it did). The reason names the check that failed.
+- **A prefill device that takes the expert cache away is priced, not refused.** On a 12 GB phone with
+  Qwen3.8-Flash-Next Q2_K (125B, streamed) the plan refused an NPU it measured at 3.0x the cores
+  because with it the 988 MiB cache fell under the 914 MiB token cycle ("a prefill is paid once"),
+  and the run then prefilled a 1054-token prompt on the cores in 122 s and decoded at 1.39 tok/s;
+  the same phone prefilled Qwen3.6-35B's 1525-token prompt in 120-132 s on the cores and 16 s on the
+  NPU. Whether the cache or the device is worth more is how the machine is used, so every load now
+  records its request mix in the measured-knobs record (`mix_requests`, `mix_gen_tokens`,
+  `mix_wide_prompt_tokens`, `host_prefill_tps`; older records still parse), and the plan prices a
+  request both ways: its long prompts at the host's measured prefill rate or at that rate times the
+  device's measured ratio, plus its answer at the decode each allocation predicts. The device is
+  armed where it is cheaper by the 10% margin, and the decision gives both costs; with nothing
+  recorded the cache is kept, as before, and the decision says the trade is unpriced. Gate G24e.
 - **The Plan page no longer reads "+8314% against the 0.0 expected"** (#509). A prediction under
   0.05 tok/s was printed with one decimal as 0.0. Rates now get two significant digits where one
   decimal would read 0.0, and once measured and predicted are 2x apart the comparison reads as a

@@ -1776,6 +1776,92 @@ int main() {
         check(uncached_on.allocation.ledger.held <= uncached_on.allocation.ledger.holdable_cap,
               "prefill: and the ledger still closes with it");
 
+        // A cache that streams without the device and falls under one token cycle with it: a trade
+        // between every long prompt and every decoded token, priced on this machine's own requests.
+        // The token cycle is set just under the cache the run has without the device, so the device's
+        // row is what takes it under.
+        {
+            // A platform with no lock store, as on the phone this was measured on: the cache is then
+            // the only thing the device's row takes.
+            const auto unlocked_hw = [](HardwareProfile h) {
+                h.lockable_bytes = 0;
+                h.lock_in_place_bytes = 0;
+                h.anon_overflow = Overflow::Kill;
+                return h;
+            };
+            const HardwareProfile bare = unlocked_hw(unified()), with_dev = unlocked_hw(machine(1500.0, Tri::Yes));
+            ModelProfile edge = mm;
+            const auto with_cycle = [&](uint64_t cycle) {
+                edge.token_cycle_bytes = cycle;
+                edge.group(WeightGroup::Experts).bytes_per_token = cycle;
+            };
+            with_cycle(plan_run(base_cfg(), bare, mm, PlanRequest{}).cache_budget_bytes - 32 * MiB);
+            with_cycle(plan_run(base_cfg(), bare, edge, PlanRequest{}).cache_budget_bytes - 32 * MiB);
+            const Plan cached = plan_run(base_cfg(), bare, edge, PlanRequest{});
+            const auto plan_mix = [&](const MeasuredKnobs & k) {
+                ModelProfile e = edge;
+                e.knobs = k;
+                return plan_run(base_cfg(), with_dev, e, PlanRequest{});
+            };
+            check(cached.cache_budget_bytes >= edge.token_cycle_bytes,
+                  "prefill trade: (the cache streams without the device)",
+                  std::to_string((unsigned long long) (cached.cache_budget_bytes >> 20)));
+
+            // (c) Nothing recorded of the requests: today's decision, the cache kept, and the plan says
+            // the trade is unpriced and what would price it.
+            const Plan unpriced = plan_mix(MeasuredKnobs{});
+            const Decision * ud = find(unpriced, "prefill-device");
+            check(!unpriced.config.prefill.enabled() && unpriced.cache_budget_bytes == cached.cache_budget_bytes &&
+                      ud && ud->source == Source::Derived &&
+                      ud->reason.find("refused on memory") != std::string::npos &&
+                      ud->reason.find("unpriced: no request of this machine is recorded") != std::string::npos,
+                  "prefill trade: with no request recorded the cache is kept, and the trade is said unpriced",
+                  ud ? ud->reason : "no decision");
+            MeasuredKnobs no_rate;
+            no_rate.mix_requests = 3;
+            no_rate.mix_wide_prompt_tokens = 1054;
+            no_rate.mix_gen_tokens = 40;
+            const Plan no_rate_p = plan_mix(no_rate);
+            check(!no_rate_p.config.prefill.enabled() && no_rate_p.to_flags() == unpriced.to_flags() &&
+                      reason(no_rate_p).find("host's prefill of a long prompt is not measured") != std::string::npos,
+                  "prefill trade: requests without the host's prefill rate are no price either", reason(no_rate_p));
+
+            // (a) Long prompts, short answers: the device is armed though the cache falls under its floor,
+            // and the decision gives both costs.
+            MeasuredKnobs chat;
+            chat.mix_requests = 3;
+            chat.mix_wide_prompt_tokens = 1054;
+            chat.mix_gen_tokens = 40;
+            chat.host_prefill_tps = 8.6;
+            const Plan traded = plan_mix(chat);
+            const Decision * td = find(traded, "prefill-device");
+            check(traded.config.prefill.device == "accel" && td && td->source == Source::Measured &&
+                      td->reason.find("with the device") != std::string::npos &&
+                      td->reason.find("without it") != std::string::npos &&
+                      td->reason.find("1054 prompt tokens and 40 decoded") != std::string::npos,
+                  "prefill trade: long prompts and short answers arm the device, with both costs",
+                  td ? td->reason : "no decision");
+            check(traded.cache_budget_bytes == 0 && traded.config.moe.enabled && traded.config.moe.cache_mb == 0,
+                  "prefill trade: the cache it falls under the floor of is off, and the experts still stream",
+                  std::to_string((unsigned long long) (traded.cache_budget_bytes >> 20)));
+            check(validate(traded.config).ok, "prefill trade: the armed plan is a valid config",
+                  validate(traded.config).error);
+
+            // (b) Long answers from short prompts: the cache wins, priced and said so; the flags are the
+            // unpriced plan's.
+            MeasuredKnobs gen = chat;
+            gen.mix_wide_prompt_tokens = 0;
+            gen.mix_gen_tokens = 2000;
+            const Plan kept = plan_mix(gen);
+            const Decision * kd = find(kept, "prefill-device");
+            check(!kept.config.prefill.enabled() && kd && kd->source == Source::Measured &&
+                      kd->reason.find("the cache is kept") != std::string::npos &&
+                      kd->reason.find("without it") != std::string::npos,
+                  "prefill trade: long answers from short prompts keep the cache, priced", kd ? kd->reason : "none");
+            check(kept.to_flags() == unpriced.to_flags(), "prefill trade: a kept cache and an unpriced trade are the "
+                                                          "same flags");
+        }
+
         // The same run where not even the dense set fits what may be held: the device's row would be
         // new memory on a full pool, so it is refused - and the plan says that, not that a cache
         // which was never there needs the room.

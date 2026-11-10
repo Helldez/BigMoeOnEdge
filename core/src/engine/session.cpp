@@ -319,6 +319,11 @@ struct Session::Impl {
         // than the narrow width (tokens prefilled after reuse, and their seconds).
         int width_requests = 0;
         double width_gen = 0.0, width_long_tokens = 0.0, width_long_seconds = 0.0;
+        // The request mix (MeasuredKnobs::mix_*), over every turn of this load whether a trial runs or
+        // not: requests, tokens decoded, tokens of the prompts a device would take, and of those the
+        // ones the host prefilled, with their seconds.
+        int mix_requests = 0;
+        double mix_gen = 0.0, mix_wide = 0.0, host_wide_tokens = 0.0, host_wide_seconds = 0.0;
         int stage = stage_done;
         std::unique_ptr<KnobTrial> cur;
         std::unique_ptr<RateProbe> rate_probe;
@@ -334,6 +339,7 @@ struct Session::Impl {
     void next_trial_stage(bool settled);
     void rate_step(double seconds, int tokens, uint64_t lookups, uint64_t hits);
     void note_width_turn(int n_prompt, double prefill_seconds, int n_generated);
+    void note_request_mix(const RunSummary & sum);
     void finish_trial_stage();
     bool apply_trial_arm(int arm);
     void set_decode_threads(int n);
@@ -2219,6 +2225,27 @@ void Session::Impl::note_width_turn(int n_prompt, double prefill_seconds, int n_
             trials.width_long_tokens / trials.width_long_seconds;
 }
 
+// A turn, as this machine's use: what a later plan prices a trade between the prompt and the answer
+// by (MeasuredKnobs::mix_*). Recorded on every load, since the trade is decided before one is made.
+void Session::Impl::note_request_mix(const RunSummary & sum) {
+    ++trials.mix_requests;
+    trials.mix_gen += sum.n_generated;
+    // A prompt narrower than the narrowest graph a device is handed runs on the host either way, so
+    // it is no part of the trade.
+    if (sum.n_prompt >= cfg.prefill.min_tokens) {
+        trials.mix_wide += sum.n_prompt;
+        if (sum.prefill_device_tokens == 0 && sum.prefill_seconds > 0.0) {
+            trials.host_wide_tokens += sum.n_prompt;
+            trials.host_wide_seconds += sum.prefill_seconds;
+        }
+    }
+    MeasuredKnobs & r = trials.result;
+    r.mix_requests = trials.mix_requests;
+    r.mix_gen_tokens = trials.mix_gen / trials.mix_requests;
+    r.mix_wide_prompt_tokens = trials.mix_wide / trials.mix_requests;
+    if (trials.host_wide_seconds > 0.0) r.host_prefill_tps = trials.host_wide_tokens / trials.host_wide_seconds;
+}
+
 void Session::Impl::trial_step(double seconds, int tokens) {
     if (trials.stage == stage_done) return;
     uint64_t lookups = 0, hits = 0;
@@ -3617,6 +3644,7 @@ RunResult Session::generate(const GenerateRequest & req,
     ++im.turn; // this turn is written; label the next one apart
     turn.summarize(sink);
     im.note_width_turn(res.summary.n_prompt, res.summary.prefill_seconds, res.summary.n_generated);
+    im.note_request_mix(res.summary);
     turn.finish();
     return res;
 }

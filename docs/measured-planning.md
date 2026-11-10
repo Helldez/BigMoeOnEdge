@@ -468,6 +468,20 @@ without a device of their own, an unchanged plan.
   plan `bmoe-server` holds keeps that plan on `GET /api/plan` until the next measurement or load.
 - **Status:** built, host-checked; the phone run that judges it is owed.
 
+**The request mix.** The same record also keeps how the machine is used, on every load and whatever
+the plan armed: per request, over the requests of the last load that served any, `mix_gen_tokens`
+decoded and `mix_wide_prompt_tokens` prefilled (after reuse) in prompts at least as wide as the
+narrowest graph a device is handed (`--prefill-min-tokens`), the part a prefill device would take;
+`mix_requests` counts them, and `host_prefill_tps` is the host's rate over those prompts where the
+host ran them. A later load that served requests replaces the mix whole (a front-end hands on a
+load's record each time it grows, so its figures are already that load's means), and keeps the host
+rate an earlier load measured where its own long prompts all ran on a device. They are later keys of
+the same line: a record written before reads as nothing recorded. The plan prices one trade by them,
+a prefill device whose room takes the expert cache away ([hardware-planning.md](hardware-planning.md),
+the prefill plan); with nothing recorded it decides as it did before. Checked: record round-trip and
+merge checks in the `knob_trial` test, planner checks for both outcomes and for the unpriced one,
+and gate G24e (a load's record carries its one request).
+
 ## What the planner looks like afterwards
 
 - **Memory:** the ledger, unchanged, still the only thing that decides what is held.

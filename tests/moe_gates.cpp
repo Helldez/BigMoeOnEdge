@@ -2043,7 +2043,8 @@ int main(int argc, char ** argv) {
         fails += check("G24d decode cost timed == resident", s_cref, rc.generated_text);
         const MeasuredKnobs & mc = rc.knobs;
         if (!(mc.decode_compute_s > 0.0) || mc.decode_threads != ct.n_threads || !(mc.decode_hit >= 0.0) ||
-            mc.decode_hit > 1.0 || !(mc.decode_cache_mib > 0.0) || mc.decode_gpu_layers != 0 || mc.verdicts() != 2) {
+            mc.decode_hit > 1.0 || !(mc.decode_cache_mib > 0.0) || mc.decode_gpu_layers != 0 ||
+            mc.verdicts() != 2 + mc.mix_requests + (mc.host_prefill_tps > 0.0)) {
             std::printf("[FAIL] G24d the record lacks the decode's cost: %.3f ms/token at %d threads, hits %.2f at "
                         "%.0f MiB\n",
                         1e3 * mc.decode_compute_s, mc.decode_threads, mc.decode_hit, mc.decode_cache_mib);
@@ -2052,6 +2053,25 @@ int main(int argc, char ** argv) {
             std::printf("[PASS] G24d the record holds the decode's cost: %.3f ms/token at %d threads, %.0f%% hits "
                         "at %.0f MiB\n",
                         1e3 * mc.decode_compute_s, mc.decode_threads, 100.0 * mc.decode_hit, mc.decode_cache_mib);
+        }
+
+        // G24e: the request mix (MeasuredKnobs::mix_*), recorded on the same load, which arms no trial:
+        // the one request, its tokens decoded, its prompt as the part a device would take (or none, under
+        // the narrowest graph a device is handed), and the host's prefill rate over it.
+        const RunSummary & sc = rc.summary;
+        const bool wide_prompt = sc.n_prompt >= ct.prefill.min_tokens;
+        if (mc.mix_requests != 1 || mc.mix_gen_tokens != (double) sc.n_generated ||
+            mc.mix_wide_prompt_tokens != (wide_prompt ? (double) sc.n_prompt : 0.0) ||
+            (mc.host_prefill_tps > 0.0) != wide_prompt) {
+            std::printf("[FAIL] G24e the record lacks the request mix: %d requests, %.0f decoded, %.0f prompt tokens, "
+                        "host prefill %.1f tok/s (the run: %d decoded, %d prompt tokens)\n",
+                        mc.mix_requests, mc.mix_gen_tokens, mc.mix_wide_prompt_tokens, mc.host_prefill_tps,
+                        sc.n_generated, sc.n_prompt);
+            ++fails;
+        } else {
+            std::printf("[PASS] G24e the record holds the request mix: %d request, %.0f decoded, %.0f prompt tokens, "
+                        "host prefill %.1f tok/s\n",
+                        mc.mix_requests, mc.mix_gen_tokens, mc.mix_wide_prompt_tokens, mc.host_prefill_tps);
         }
     }
 

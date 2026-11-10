@@ -38,7 +38,12 @@ prompt, a 2048-token context:
 
 `--auto` decides the prefill device on its own: it measures this model's matmul 128 tokens wide on
 the host and on every device, and arms the fastest one that gave the host's answer and whose two
-layer slots still fit the memory ledger. A device it armed is optional - if it cannot be set up the
+layer slots still fit the memory ledger. Where the only thing the device's row takes is the expert
+cache - under one token cycle with it, where without it the cache streamed - that is a trade the plan
+prices on this machine's own requests (prompt tokens and tokens decoded per request, and the host's
+prefill rate, recorded on every load): a chat of long prompts and short answers arms the device, a
+long answer from a short prompt keeps the cache, and with nothing recorded yet the cache is kept.
+A device it armed is optional - if it cannot be set up the
 prefill runs on the host - while one named with `--prefill-device` still fails the load when it
 cannot be used. See "The prefill plan" in [hardware-planning.md](hardware-planning.md).
 
