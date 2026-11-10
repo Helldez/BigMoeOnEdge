@@ -1,0 +1,13 @@
+[
+ {
+  "engine": "flash-pr-long-2",
+  "prompt": "long",
+  "prompt_tokens": 9756,
+  "gen_tokens": 256,
+  "ttft_s": 8.12,
+  "prefill_tps": 1201.5,
+  "decode_tps": 58.82,
+  "server_timings": null,
+  "text": "We need answer user's request: summarize document in five bullet points. Need produce final with five bullets. Need likely concise but enough. Need ensure five bullet points. Let's analyze document content.\n\nDocument about hardware planning --auto in bmoe-cli. Key points:\n- --auto opt-in plans hardw"
+ }
+]

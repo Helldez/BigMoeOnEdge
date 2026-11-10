@@ -154,6 +154,7 @@ json summary_json(const RunSummary & s, bool cancelled) {
                 {"cache_budget_mib", s.cache_budget_mib},
                 {"cache_evictions", s.cache_evictions},
                 {"cache_rereads", s.cache_rereads},
+                {"cache_discarded", s.cache_discarded},
                 {"token_demand_mib", s.token_demand_mib},
                 {"mtp_drafted", s.mtp_drafted},
                 {"mtp_accepted", s.mtp_accepted},

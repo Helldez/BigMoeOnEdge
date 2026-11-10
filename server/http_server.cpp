@@ -531,6 +531,15 @@ struct App {
 
     void publish_config() { bus.publish("config", config_object()); }
 
+    // A saved model whose file is gone is forgotten (SettingsStore::forget_missing_model). A path
+    // whose existence cannot be read is kept: only a file known to be gone is a reason to drop it.
+    bool forget_missing_model() {
+        return store.forget_missing_model([](const std::string & path) {
+            std::error_code ec;
+            return fs::exists(fs::u8path(path), ec) || ec;
+        });
+    }
+
     // A measurement, with each stage announced as it starts (`plan_progress` events) and its end, so
     // a UI says which probe is running rather than waiting blind. The caller holds measure_m.
     PlanOutcome measure_plan() {
@@ -1175,6 +1184,7 @@ void register_routes(httplib::Server & svr, App & app) {
         const ModelLibrary::DownloadRefusal r = app.lib.delete_model(req.matches[1].str(), loaded, freed);
         if (r.status) return send_error(res, r.status, r.error, r.status == 409 ? "in_use" : "");
         send_json(res, json{{"ok", true}, {"freed", freed}});
+        if (app.forget_missing_model()) app.publish_config();
     });
 
     // A direct link to a gguf becomes a catalog entry (url_entry.h), and its download is then the
@@ -1540,6 +1550,8 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     for (const std::string & w : app.lib.warnings())
         std::fprintf(stderr, "warning: %s\n", w.c_str());
     app.store.set_launch_values(o.launch);
+    if (app.forget_missing_model())
+        std::fprintf(stderr, "note: the saved model's file is gone; no model is selected until one is chosen\n");
     app.host.set_host_info(platform::host_info);
     auto thermal = std::make_shared<CpuThermal>(platform::thermal_zone_root());
     app.host.set_cpu_temperature([thermal] { return thermal->sample(); });

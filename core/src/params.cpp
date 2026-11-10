@@ -536,6 +536,38 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("trial-device-cache", "Measure the device tier", G::Cache, L::Experimental,
+                          "Time the decode of this load's side of the device tier, to be compared across loads: 1 "
+                          "with a device expert cache, 0 without one. -1 times neither. Changes no output; the plan "
+                          "sets it while the two sides have not both been measured on this machine.");
+        d.value_hint = "N";
+        bounds(d, -1, 1, "side");
+        special(d, "-1", "off");
+        bind_int(d, [](RunConfig & c) -> int & { return c.trial.device_tier; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("trial-width", "Measure the graph width", G::Prefill, L::Experimental,
+                          "Time this load's side of the graph width, to be compared across loads: 1 the plan's own "
+                          "width, 0 the narrower --trial-width-narrow. Times the decode, and the prefill of prompts "
+                          "longer than the narrow width. -1 times neither. Changes no output; the plan sets it.");
+        d.value_hint = "N";
+        bounds(d, -1, 1, "side");
+        special(d, "-1", "off");
+        bind_int(d, [](RunConfig & c) -> int & { return c.trial.width_side; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("trial-width-narrow", "Narrow graph width compared", G::Prefill, L::Experimental,
+                          "The narrower graph width --trial-width compares with the plan's own, in tokens. Prompts "
+                          "longer than it are the ones whose prefill is timed. 0 is none.");
+        d.value_hint = "N";
+        bounds(d, 0, RunConfig::tokens_max, "tokens");
+        special(d, "0", "none");
+        bind_int(d, [](RunConfig & c) -> int & { return c.trial.width_narrow; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("release-mmap", "Unmap the file after load", G::Streaming, L::Advanced,
                           "Unmap the model file after load once nothing reads through it. On Windows a live "
                           "mapping serialises the streamer's concurrent reads. Needs dense weights anon or "
@@ -944,6 +976,17 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("prefill-from-cache", "Prefill reads the cache", G::Prefill, L::Advanced,
+                          "With a prefill device and streaming: copy the experts the expert cache already "
+                          "holds from RAM instead of reading them from flash again. Output is identical "
+                          "either way.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--prefill-from-cache", "true"}, {"--no-prefill-from-cache", "false"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.prefill.from_cache; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("prefill-routed-full", "Read a busy layer whole", G::Prefill, L::Experimental,
                           "A layer routing more than this fraction of its experts gets the next layer read "
                           "whole. In (0, 1].");
@@ -1261,6 +1304,29 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("cache-discard", "Drop, never swap", G::Cache, L::Advanced,
+                          "Let the system drop cached experts under memory pressure instead of swapping them "
+                          "or anything else to the drive. A dropped expert is read again from the model file.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--no-cache-discard", "false"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.cache_discard; });
+        d.details = "Experts not used in the last token are handed to the system, which takes them back first "
+                    "when memory runs short: no swap writes, which wear flash, and no other app pushed out by a "
+                    "locked cache. Replaces pinning where the platform supports it.";
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("cache-discard-drop", "Drop at once", G::Diagnostics, L::Debug,
+                          "Drop an offered expert just before a lookup takes it back, as if pressure took it, "
+                          "so each such lookup pays the re-read. For the byte-identity gate.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--cache-discard-drop", "true"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.cache_discard_drop; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("cache-brake", "Brake under pressure", G::Cache, L::Advanced,
                           "Halve the expert cache when the system starts taking it back mid-run: a stalled "
                           "token, confirmed by cache pages no longer in RAM. It only shrinks, never under "
@@ -1269,6 +1335,26 @@ std::vector<ParamDesc> build() {
         d.flag.clear();
         d.switches = {{"--no-cache-brake", "false"}};
         bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.cache_brake; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("cache-half-life", "Cache eviction half-life", G::Cache, L::Advanced,
+                          "Which cached expert to drop: 0 drops the least recently used; above 0 the least "
+                          "used recently, each use counting half after this many tokens.");
+        d.value_hint = "TOKENS";
+        bounds(d, 0, MoeStreamConfig::cache_freq_half_life_max, "tokens");
+        special(d, "0", "least recently used");
+        bind_int(d, [](RunConfig & c) -> int & { return c.moe.cache_freq_half_life; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("cache-prefill-cold", "Prefill admits cold", G::Cache, L::Advanced,
+                          "Experts a long prompt reads on the CPU enter the cache as the first to drop, so the "
+                          "prompt does not flush what the cache already holds. Output is identical either way.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--cache-prefill-cold", "true"}, {"--no-cache-prefill-cold", "false"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.cache_prefill_cold; });
         t.push_back(d);
     }
     {

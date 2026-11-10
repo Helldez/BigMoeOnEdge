@@ -1,0 +1,35 @@
+[
+ {
+  "engine": "q36-main-2",
+  "prompt": "a",
+  "prompt_tokens": 50,
+  "gen_tokens": 1024,
+  "ttft_s": 0.18,
+  "prefill_tps": 280.7,
+  "decode_tps": 138.17,
+  "server_timings": null,
+  "text": "Here's a thinking process:\n\n1.  **Deconstruct the User Query:**\n   - **Topic:** Mixture-of-Experts (MoE) Language Models\n   - **Key Question 1:** How does an MoE model route each token to its experts?\n   - **Key Question 2:** Why does this routing mechanism make it possible to run a model larger tha"
+ },
+ {
+  "engine": "q36-main-2",
+  "prompt": "b",
+  "prompt_tokens": 50,
+  "gen_tokens": 1024,
+  "ttft_s": 0.19,
+  "prefill_tps": 266.2,
+  "decode_tps": 137.85,
+  "server_timings": null,
+  "text": "Here's a thinking process:\n\n1.  **Deconstruct the User Query:**\n   - **Topic:** Mixture-of-Experts (MoE) Language Models\n   - **Key Question 1:** How does an MoE model route each token to its experts?\n   - **Key Question 2:** Why does this routing mechanism make it possible to run a model larger tha"
+ },
+ {
+  "engine": "q36-main-2",
+  "prompt": "code",
+  "prompt_tokens": 30,
+  "gen_tokens": 1024,
+  "ttft_s": 0.19,
+  "prefill_tps": 155.2,
+  "decode_tps": 137.49,
+  "server_timings": null,
+  "text": "Here's a thinking process:\n\n1.  **Understand the User Request:**\n   - **Task:** Write a Python function that merges two sorted lists into one sorted list.\n   - **Requirement:** Explain its time complexity.\n   - **Input:** Two sorted lists (presumably of comparable elements, like integers or strings)"
+ }
+]

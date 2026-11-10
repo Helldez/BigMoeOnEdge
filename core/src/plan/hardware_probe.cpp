@@ -364,6 +364,7 @@ HardwareProfile probe_hardware(const char * model_path) {
     h.lockable_bytes_known = lockable.known;
     h.lock_in_place_bytes = in_place.bytes;
     h.lock_in_place_bytes_known = in_place.known;
+    h.discardable_memory = pio::vm_discard_supported();
     h.n_cores = usable_cores();
     probe_core_classes(h);
 

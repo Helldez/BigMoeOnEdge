@@ -1,6 +1,8 @@
 package io.bigmoeonedge.app.ui
 
 import androidx.compose.ui.draw.shadow
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.background
 
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -19,8 +21,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -482,12 +487,16 @@ private fun LinkImport(onAdded: suspend (CatalogEntry) -> Unit) {
         busy = false
     }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        val canAdd = url.isNotBlank() && !busy
+        val focus = LocalFocusManager.current
         OutlinedTextField(
             value = url, onValueChange = { url = it },
             label = { Text("https://…/model.gguf") },
             singleLine = true, modifier = Modifier.fillMaxWidth(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
+            keyboardActions = KeyboardActions(onGo = { if (canAdd) { focus.clearFocus(); add() } }),
         )
-        Button(shape = Corner, onClick = { add() }, enabled = url.isNotBlank() && !busy, modifier = Modifier.fillMaxWidth()) {
+        Button(shape = Corner, onClick = { add() }, enabled = canAdd, modifier = Modifier.fillMaxWidth()) {
             Text(if (busy) "Checking the link…" else "Download")
         }
         Hint("A link to one file, or to any shard of a split set (the other shards are fetched beside it). It is added to Your models and downloads like any other.")

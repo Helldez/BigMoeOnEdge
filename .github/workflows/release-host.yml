@@ -652,6 +652,8 @@ jobs:
           if [ "${{ runner.os }}" = "Windows" ]; then
             WB=build/bin/Release; [ -d "$WB" ] || WB=build/bin
             "$WB/bmoe-cli.exe" --version && "$WB/bmoe-server.exe" --version
+            # The app too, where it is built: the loader resolves every import before main runs.
+            [ ! -f "$WB/bmoe-desktop.exe" ] || "$WB/bmoe-desktop.exe" --version
           else
             build/bin/bmoe-cli --version && build/bin/bmoe-server --version
             [ ! -x build/bin/bmoe-desktop ] || build/bin/bmoe-desktop --version
@@ -714,6 +716,7 @@ jobs:
                 || { echo "no Start-menu entry"; exit 1; }
               "$APPDIR/bmoe-server.exe" --version
               [ -f "$APPDIR/bmoe-desktop.exe" ] || { echo "no bmoe-desktop.exe installed"; exit 1; }
+              "$APPDIR/bmoe-desktop.exe" --version
               "$APPDIR/bmoe-server.exe" --port 8765 > server.log 2>&1 &
               answers || { cat server.log; exit 1; }
               taskkill //F //IM bmoe-server.exe

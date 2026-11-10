@@ -484,7 +484,7 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
 void EngineHost::keep_knobs(const HostedSession & s) {
     if (!knobs_sink_) return;
     const MeasuredKnobs mk = s.measured_knobs();
-    const int verdicts = (mk.threads > 0) + (mk.overlap >= 0);
+    const int verdicts = mk.verdicts();
     if (verdicts <= knobs_kept_) return;
     knobs_kept_ = verdicts;
     knobs_sink_(model_path(), mk);
