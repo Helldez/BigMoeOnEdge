@@ -1143,7 +1143,7 @@ flowchart TD
     open_load_drop_unmappable["<b>open.load.drop-unmappable</b><br/>Leave out devices that cannot map host memory"]
     open_load_device_list["<b>open.load.device-list</b><br/>The devices the plan named"]
     open_load_top_k["<b>open.load.top-k</b><br/>Override the experts per token"]
-    open_load_mtp_head["<b>open.load.mtp-head</b><br/>A separate MTP head file"]
+    open_load_mtp_head["<b>open.load.mtp-head</b><br/>A draft file of its own (an MTP head or a drafter)"]
     open_read_layout["<b>open.read.layout</b><br/>Which tensors are the routed experts"]
     open_read_layout_rule["<b>open.read.layout.rule</b><br/>An expert tensor: a block's 3-D weight indexed by the expert count"]
     open_read_chat["<b>open.read.chat</b><br/>Chat template"]
@@ -1335,11 +1335,13 @@ flowchart TD
 - condition: `if (cfg.n_expert_used > 0) {`
 - yes → a llama.cpp kv override `<arch>.expert_used_count`, checked against the file's expert count.
 
-#### `open.load.mtp-head` — A separate MTP head file
+#### `open.load.mtp-head` — A draft file of its own (an MTP head or a drafter)
 - parent: —
 - code: `core/src/engine/session.cpp` · `Session::Impl::load_model`
-- condition: `if (cfg.spec.is_mtp() && !cfg.spec.mtp_head.empty()) {`
-- yes → the head loads as a second model, on the devices if `mtp_head_on_devices`.
+- condition: `if (cfg.spec.has_draft_file()) {`
+- yes → its kind is read from its header by llama.cpp's speculative driver; a file the driver has no
+  draft for, or a drafter whose vocabulary is not the model's, fails the open. Otherwise it loads as a
+  second model, on the devices if `draft_file_on_devices()`.
 
 #### `open.read.layout` — Which tensors are the routed experts
 - parent: —
@@ -1434,8 +1436,9 @@ flowchart TD
 #### `open.ctx.mtp` — The MTP draft context
 - parent: —
 - code: `core/src/engine/session.cpp` · `Session::Impl::create_contexts`
-- condition: `if (cfg.spec.is_mtp()) {`
-- An MTP context of at least `draft_max + 1` width. A separate head file has no eval callback, so it
+- condition: `if (cfg.spec.uses_driver()) {`
+- A draft context of at least `draft_max + 1` width (`detail::draft_context_params`): of the MTP type
+  for a head, with the per-sequence output cap the driver needs for a drafter. A separate head file has no eval callback, so it
   is not streamed. A head inside the model streams with it.
 
 #### `open.answer-check` — Compare the device's answers with the cores'
@@ -1474,7 +1477,7 @@ flowchart TD
 #### `open.spec` — Speculation and checkpoints
 - parent: —
 - code: `core/src/engine/session.cpp` · `Session::Impl::init_speculation`
-- condition: `if (cfg.spec.is_mtp() && !init_mtp_driver(o)) return false;`
+- condition: `if (cfg.spec.uses_driver() && !init_draft_driver(o)) return false;`
 - condition: `const bool recurrent_state = llama_model_is_recurrent(model.get()) || llama_model_is_hybrid(model.get());`
 - MTP → the upstream speculative driver. Any draft → a batch wide enough to verify it.
 - Checkpoints are configured from `ctx_checkpoints`:
@@ -1885,7 +1888,7 @@ flowchart TD
 #### `req.media-spec-off` — An image in the conversation turns speculation off
 - parent: —
 - code: `core/src/engine/session.cpp` · `Turn::prefill`
-- condition: `if (im.media_in_conversation && (spec_on || mtp_on)) {`
+- condition: `if (im.media_in_conversation && (spec_on || driver_on)) {`
 - Speculation stays off until the next new chat.
 
 #### `req.prefill.chunk` — The prefill's pieces
@@ -1974,8 +1977,8 @@ flowchart TD
 - parent: —
 - code: `core/src/engine/session.cpp` · `Turn::draft`
 - condition: `if (!spec_on || room <= 0) return true;`
-- condition: `if (mtp_on) {`
-- MTP → the upstream draft, capped at the room.
+- condition: `if (driver_on) {`
+- A head or a drafter → the upstream driver's draft, capped at the room.
 - n-gram → `req.draft.ngram`.
 
 #### `req.draft.ngram` — An n-gram draft from the context
