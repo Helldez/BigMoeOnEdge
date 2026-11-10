@@ -64,8 +64,8 @@ android {
         applicationId 'io.bigmoeonedge.example'
         minSdk 29
         targetSdk 34
-        versionCode 67
-        versionName '0.40.2'
+        versionCode 68
+        versionName '0.40.3'
         buildConfigField 'String', 'GIT_SHA', "\"${gitSha}\""
         ndk {
             // The engine ships as prebuilt arm64 binaries staged by build-android.ps1.
@@ -90,10 +90,14 @@ android {
             applicationIdSuffix '.dev'
             versionNameSuffix '-dev'
             buildConfigField 'boolean', 'SHARED_STORAGE', 'true'
+            // Updated by hand from the GitHub release, so Settings checks for one; a store updates
+            // the play flavor itself.
+            buildConfigField 'boolean', 'RELEASE_UPDATES', 'true'
         }
         play {
             dimension 'distribution'
             buildConfigField 'boolean', 'SHARED_STORAGE', 'false'
+            buildConfigField 'boolean', 'RELEASE_UPDATES', 'false'
         }
     }
 

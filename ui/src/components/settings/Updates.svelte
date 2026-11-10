@@ -59,7 +59,7 @@
         <span class="label">{t('updates.new', { version: info.latest })}</span>
         {#if info.notes}<a class="small" href={info.notes} target="_blank" rel="noopener noreferrer">{t('updates.notes')}</a>{/if}
       </div>
-      {#if isDesktop()}
+      {#if isDesktop() && info.installer}
         {#if ready}
           <button type="button" class="primary" onclick={() => desktop.applyUpdate(ready)}>{t('updates.install')}</button>
         {:else}

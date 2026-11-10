@@ -27,3 +27,4 @@ maintained docs for current guidance; read these to check where a number came fr
 | `2026-08-26-cache-aware-substitution/` | desktop streaming, Qwen3.6-35B, `--expert-substitute` at 0 / 0.15 / 0.30 / 0.60 | Source of the tables in `cache-aware-substitution.md`. Perplexity is token-by-token (`--ppl-step`); the one-batch cells are kept as the record of why that mode exists, and must not be read as the policy's cost. |
 | `2026-08-29-mmap-serialisation/` | the model file's mapping serialising reads (desktop) | Source of `--release-mmap` in `settings.md`. |
 | `2026-09-29-prefill-routed/` | routed expert arena with the NPU prefill (phone) | Source of `npu-prefill.md`. |
+| `2026-11-07-agent-pagoda/` | 0.40.1 release archive, `bmoe-server` + opencode, one prompt, 16 GB Apple-silicon laptop | An end-to-end agent session (KV reuse across turns, the plan, the knob trial), not a decode benchmark. Source of the agent paragraph in `benchmarks.md`. |

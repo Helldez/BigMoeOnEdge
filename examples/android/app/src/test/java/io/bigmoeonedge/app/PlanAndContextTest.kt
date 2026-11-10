@@ -7,6 +7,8 @@ import io.bigmoeonedge.app.engine.appliedChanges
 import io.bigmoeonedge.app.engine.contextWarning
 import io.bigmoeonedge.app.engine.diagnosticText
 import io.bigmoeonedge.app.engine.planFigures
+import io.bigmoeonedge.app.engine.rateText
+import io.bigmoeonedge.app.engine.SpeedDelta
 import io.bigmoeonedge.app.engine.planModelName
 import io.bigmoeonedge.app.engine.ConfigState
 import io.bigmoeonedge.app.engine.text
@@ -46,6 +48,7 @@ class PlanAndContextTest {
         assertEquals(2.0, f.predictedTokS!!, 1e-9)
         assertEquals(2.5, f.measuredTokS!!, 1e-9)
         assertEquals(25.0, f.deltaPct!!, 1e-9)
+        assertEquals(SpeedDelta("+25%", "against the 2.0 expected"), f.delta)
         assertEquals(40.0, f.creditedHitPct!!, 1e-9)
         assertEquals(45.0, f.measuredHitPct!!, 1e-9)
         assertEquals(600L, f.heldBytes)
@@ -54,6 +57,7 @@ class PlanAndContextTest {
         val bare = planFigures(PlanResult.of(JSONObject("""{"available":true,"measured":{"s_per_token":0.4,"cache_hit_pct":-1}}""")))
         assertNull(bare.predictedTokS)
         assertNull(bare.deltaPct)
+        assertNull(bare.delta)
         assertNull(bare.measuredHitPct)
         assertNull(bare.capBytes)
     }
@@ -119,5 +123,20 @@ class PlanAndContextTest {
         assertEquals("ctx", contextWarning(m, emptyList())!!.label)
         assertNull(contextWarning(ModelInfo.of(JSONObject("""{"name":"m","n_ctx":4096}""")), table))
         assertNull(contextWarning(null, table))
+    }
+
+    @Test
+    fun farApartReadsAsARatioAndNeverRoundsTheExpectedRateToZero() {
+        // Measured on a phone: 1.7 tok/s against a prediction of ~0.02, which "+8314% against the
+        // 0.0 expected" said badly.
+        fun figures(predicted: Double, measured: Double) = planFigures(
+            PlanResult.of(JSONObject("""{"available":true,"predicted":{"s_per_token":$predicted},"measured":{"s_per_token":$measured,"cache_hit_pct":-1}}""")),
+        )
+        assertEquals(SpeedDelta("84x", "the 0.020 expected"), figures(49.5, 0.588).delta)
+        assertEquals(SpeedDelta("0.31x", "the 4.0 expected"), figures(0.25, 0.8).delta)
+        assertEquals("1.7", rateText(1.7))
+        assertEquals("0.020", rateText(0.0202))
+        assertEquals("0.0049", rateText(0.0049))
+        assertEquals("-", rateText(0.0))
     }
 }

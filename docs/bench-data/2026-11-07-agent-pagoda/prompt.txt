@@ -1,0 +1,3 @@
+Follow the rules as laid out in AGENTS.md in this directory. You have zero need or quarter to stray from this working directory.
+
+Last try: Design and create a very creative, elaborate, and detailed 3D voxel art scene of a pagoda in a beautiful garden with trees, including some cherry blossoms. Make the scene impressive and varied and use colorful voxels. Make sure I can paste it all into a single HTML file and open it in Firefox.

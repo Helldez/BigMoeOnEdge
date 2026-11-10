@@ -31,6 +31,7 @@
 #include "platform.h"
 #include "routing_store.h"
 #include "settings_store.h"
+#include "stream_keepalive.h"
 #include "update_service.h"
 #include "url_entry.h"
 
@@ -468,6 +469,41 @@ struct App {
     // Each model's recorded routing, kept for the next plan of that file (routing_store.h).
     RoutingStore routing;
 
+    // The models folder when none is chosen: <data dir>/models.
+    std::string default_models_dir;
+
+    // The folders the library lists: what the launch names (--models-dir, --scan-dir) over what a
+    // person chose (store.model_folders), over the default. Applied at start and on every change; a
+    // chosen folder that is gone (a drive unplugged) falls back to the default with a warning, and
+    // stays chosen, so it comes back when the drive does.
+    ModelLibrary::FolderRefusal apply_model_folders(const SettingsStore::ModelFolders & chosen) {
+        const std::string dir = !opt.models_dir.empty()      ? opt.models_dir
+                                : !chosen.models_dir.empty() ? chosen.models_dir
+                                                             : default_models_dir;
+        std::vector<std::string> scans = opt.scan_dirs;
+        scans.insert(scans.end(), chosen.scan_dirs.begin(), chosen.scan_dirs.end());
+        return lib.set_folders(dir, scans);
+    }
+
+    // /api/models, with which folders a person may change: those the launch named are fixed.
+    json models_object() {
+        json o = lib.list();
+        const SettingsStore::ModelFolders chosen = store.model_folders();
+        json launch_scans = json::array();
+        for (const std::string & d : opt.scan_dirs)
+            launch_scans.push_back(fs::u8path(d).generic_u8string());
+        json chosen_scans = json::array();
+        for (const std::string & d : chosen.scan_dirs)
+            chosen_scans.push_back(fs::u8path(d).generic_u8string());
+        o["folders"] = {
+            {"default_models_dir", fs::u8path(default_models_dir).generic_u8string()},
+            {"chosen_models_dir", chosen.models_dir.empty() ? "" : fs::u8path(chosen.models_dir).generic_u8string()},
+            {"models_dir_at_launch", !opt.models_dir.empty()},
+            {"launch_scan_dirs", launch_scans},
+            {"chosen_scan_dirs", chosen_scans}};
+        return o;
+    }
+
     // The agent (docs/agent.md): what it keeps, its runs and scheduler, and what its routes reach.
     // Declared after the host, so it is destroyed, and its runs stopped and joined, before the host.
     std::unique_ptr<agent::AgentStore> agent_store;
@@ -494,6 +530,15 @@ struct App {
     }
 
     void publish_config() { bus.publish("config", config_object()); }
+
+    // A saved model whose file is gone is forgotten (SettingsStore::forget_missing_model). A path
+    // whose existence cannot be read is kept: only a file known to be gone is a reason to drop it.
+    bool forget_missing_model() {
+        return store.forget_missing_model([](const std::string & path) {
+            std::error_code ec;
+            return fs::exists(fs::u8path(path), ec) || ec;
+        });
+    }
 
     // A measurement, with each stage announced as it starts (`plan_progress` events) and its end, so
     // a UI says which probe is running rather than waiting blind. The caller holds measure_m.
@@ -718,7 +763,8 @@ json hf_model_json(const HfModel & m) {
 // One turn of an agent protocol (Anthropic Messages, OpenAI Responses): the chat endpoint's turn,
 // answered whole through `answer` or streamed through `Stream` (AnthropicStream, ResponsesStream),
 // whose frames are append-only (agent_protocol.h). `keepalive` is what the protocol writes while
-// the turn waits its place in line.
+// the turn waits its place in line, and whenever the turn itself has been silent for a ping
+// interval (stream_keepalive.h).
 template <class Stream, class Answer>
 void agent_turn(App & app,
                 const httplib::Request & req,
@@ -736,36 +782,30 @@ void agent_turn(App & app,
     }
     res.set_header("Cache-Control", "no-cache");
     res.set_header("X-Accel-Buffering", "no");
-    res.set_chunked_content_provider("text/event-stream",
-                                     [&app, turn, meta, keepalive](size_t, httplib::DataSink & sink) {
-                                         // As on the chat endpoint, a failed write marks the client gone, and stopping
-                                         // the work is the host's, through on_token's answer.
-                                         bool alive = true;
-                                         auto write = [&](const std::string & frames) {
-                                             if (alive && !frames.empty() && !sink.write(frames.data(), frames.size()))
-                                                 alive = false;
-                                         };
-                                         Stream s(meta);
-                                         write(s.start());
-                                         ChatOutcome out = app.host.chat(
-                                             turn,
-                                             [&](const TokenMetrics & m) {
-                                                 if (alive) write(s.on_token(m.text, m.reasoning));
-                                                 return alive;
-                                             },
-                                             [&] {
-                                                 write(keepalive);
-                                                 return alive;
-                                             });
-                                         if (out.status != 200) {
-                                             write(s.error(out.status, out.error, out.code));
-                                         } else {
-                                             ensure_tool_call_ids(out.result.tool_calls, meta.id);
-                                             write(s.finish(out.result, finish_reason(out.result, out.n_predict)));
-                                         }
-                                         sink.done();
-                                         return true;
-                                     });
+    res.set_chunked_content_provider(
+        "text/event-stream", [&app, turn, meta, keepalive](size_t, httplib::DataSink & sink) {
+            // As on the chat endpoint, a failed write marks the client gone, and stopping
+            // the work is the host's, through on_token's answer.
+            StreamKeepalive out_stream([&sink](const std::string & f) { return sink.write(f.data(), f.size()); },
+                                       keepalive, kEventPingInterval);
+            Stream s(meta);
+            out_stream.write(s.start());
+            ChatOutcome out = app.host.chat(
+                turn,
+                [&](const TokenMetrics & m) {
+                    return out_stream.alive() && out_stream.write(s.on_token(m.text, m.reasoning));
+                },
+                [&] { return out_stream.write(keepalive); });
+            if (out.status != 200) {
+                out_stream.write(s.error(out.status, out.error, out.code));
+            } else {
+                ensure_tool_call_ids(out.result.tool_calls, meta.id);
+                out_stream.write(s.finish(out.result, finish_reason(out.result, out.n_predict)));
+            }
+            out_stream.stop();
+            sink.done();
+            return true;
+        });
 }
 
 void register_routes(httplib::Server & svr, App & app) {
@@ -884,10 +924,11 @@ void register_routes(httplib::Server & svr, App & app) {
         res.set_chunked_content_provider("text/event-stream", [&app, cr, meta, dump](size_t, httplib::DataSink & sink) {
             // A failed write marks the client gone. Stopping the work is the host's, through
             // on_token's answer: this handler cannot tell whose turn is running when a write fails.
-            bool alive = true;
-            auto write = [&](const std::string & frame) {
-                if (alive && !sink.write(frame.data(), frame.size())) alive = false;
-            };
+            // A silent stretch of the turn (a long prefill, a tool call sent only once parsed) is
+            // bounded by a ping, as on the agent endpoints (stream_keepalive.h).
+            StreamKeepalive out_stream([&sink](const std::string & f) { return sink.write(f.data(), f.size()); },
+                                       ": ping\n\n", kEventPingInterval);
+            auto write = [&](const std::string & frame) { out_stream.write(frame); };
             auto chunk = [&](const json & delta, const json & finish, const json & extra) {
                 json c = chunk_json(meta, delta, finish);
                 if (!extra.is_null()) c["bmoe"] = extra;
@@ -907,7 +948,7 @@ void register_routes(httplib::Server & svr, App & app) {
             ChatOutcome out = app.host.chat(
                 cr.turn,
                 [&](const TokenMetrics & m) {
-                    if (!alive) return false;
+                    if (!out_stream.alive()) return false;
                     json delta = json::object();
                     json extra = nullptr;
                     const std::string text = stream_text(m.text), reasoning = stream_text(m.reasoning);
@@ -927,13 +968,13 @@ void register_routes(httplib::Server & svr, App & app) {
                     sent_text = text;
                     sent_reasoning = reasoning;
                     chunk(delta, nullptr, extra);
-                    return alive;
+                    return out_stream.alive();
                 },
                 // Waiting for a turn: an SSE comment keeps the connection open through proxies
                 // that time out a silent one, and a failed write is how a client that left is seen.
                 [&] {
                     write(": waiting for a turn\n\n");
-                    return alive;
+                    return out_stream.alive();
                 });
             if (out.status != 200) {
                 write("data: " + dump(json{{"error", {{"message", out.error}, {"code", out.code}}}}) + "\n\n");
@@ -943,7 +984,7 @@ void register_routes(httplib::Server & svr, App & app) {
                 // with exactly the answer the turn produced.
                 const std::string ft = stream_text(out.result.generated_text),
                                   fr = stream_text(out.result.reasoning_text);
-                if (alive && (ft != sent_text || fr != sent_reasoning)) {
+                if (out_stream.alive() && (ft != sent_text || fr != sent_reasoning)) {
                     json delta = json::object();
                     json extra = nullptr;
                     if (starts_with(ft, sent_text) && starts_with(fr, sent_reasoning)) {
@@ -968,6 +1009,7 @@ void register_routes(httplib::Server & svr, App & app) {
                 if (cr.include_usage) write("data: " + dump(usage_chunk_json(meta, out.result.summary)) + "\n\n");
             }
             write("data: [DONE]\n\n");
+            out_stream.stop();
             sink.done();
             return true;
         });
@@ -1017,8 +1059,7 @@ void register_routes(httplib::Server & svr, App & app) {
         meta.id = "resp_" + std::to_string(++app.chat_seq);
         meta.created = (long long) std::time(nullptr);
         meta.model = app.host.model_name();
-        agent_turn<ResponsesStream>(app, req, res, rr.turn, rr.stream, meta, response_json,
-                                    std::string(": waiting for a turn\n\n"));
+        agent_turn<ResponsesStream>(app, req, res, rr.turn, rr.stream, meta, response_json, std::string(": ping\n\n"));
     });
 
     // A decision: which of a list of choices the model would answer next, from one prefill and no
@@ -1076,7 +1117,36 @@ void register_routes(httplib::Server & svr, App & app) {
             [&app, q](bool) { app.bus.unsubscribe(q); });
     });
 
-    svr.Get("/api/models", [&](const httplib::Request &, httplib::Response & res) { send_json(res, app.lib.list()); });
+    svr.Get("/api/models",
+            [&](const httplib::Request &, httplib::Response & res) { send_json(res, app.models_object()); });
+
+    // Where models are kept: the folder downloads land in and the other folders listed. A path the
+    // server writes to, so a local-only route (access.cpp), and a folder the launch named stays.
+    svr.Put("/api/models/folders", [&](const httplib::Request & req, httplib::Response & res) {
+        json body;
+        if (!parse_body(req, res, body)) return;
+        SettingsStore::ModelFolders chosen = app.store.model_folders();
+        if (body.contains("models_dir")) {
+            if (!body["models_dir"].is_string()) return send_error(res, 400, "models_dir must be a string");
+            const std::string d = body["models_dir"].get<std::string>();
+            if (!app.opt.models_dir.empty() && !d.empty())
+                return send_error(res, 409, "the models folder was set at launch (--models-dir)");
+            chosen.models_dir = d;
+        }
+        if (body.contains("scan_dirs")) {
+            if (!body["scan_dirs"].is_array()) return send_error(res, 400, "scan_dirs must be an array");
+            chosen.scan_dirs.clear();
+            for (const json & d : body["scan_dirs"]) {
+                if (!d.is_string()) return send_error(res, 400, "scan_dirs must hold strings");
+                chosen.scan_dirs.push_back(d.get<std::string>());
+            }
+        }
+        const ModelLibrary::FolderRefusal r = app.apply_model_folders(chosen);
+        if (r.status) return send_error(res, r.status, r.error);
+        app.store.set_model_folders(chosen);
+        app.bus.publish("models_folders", json::object());
+        send_json(res, app.models_object());
+    });
 
     svr.Post("/api/models/download", [&](const httplib::Request & req, httplib::Response & res) {
         json body;
@@ -1114,6 +1184,7 @@ void register_routes(httplib::Server & svr, App & app) {
         const ModelLibrary::DownloadRefusal r = app.lib.delete_model(req.matches[1].str(), loaded, freed);
         if (r.status) return send_error(res, r.status, r.error, r.status == 409 ? "in_use" : "");
         send_json(res, json{{"ok", true}, {"freed", freed}});
+        if (app.forget_missing_model()) app.publish_config();
     });
 
     // A direct link to a gguf becomes a catalog entry (url_entry.h), and its download is then the
@@ -1449,6 +1520,7 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     };
     const std::string models_dir =
         absolute(o.models_dir.empty() ? (fs::u8path(data_dir) / "models").u8string() : o.models_dir);
+    if (!o.models_dir.empty()) o.models_dir = models_dir; // the launch's folder, absolute like the rest
     for (std::string & d : o.scan_dirs)
         d = absolute(d);
     const std::string ui_dir = o.ui_dir.empty()
@@ -1461,11 +1533,25 @@ int run(int argc, char ** argv, const Embedding & embedding) {
 
     const std::string routing_dir = (fs::u8path(data_dir) / "routing").u8string();
     App app(o, settings, models_dir, catalog, added, scratch, routing_dir, embedding.fetch);
+    app.default_models_dir = absolute((fs::u8path(data_dir) / "models").u8string());
     for (const std::string & w : app.store.load())
         std::fprintf(stderr, "warning: %s\n", w.c_str());
+    {
+        const SettingsStore::ModelFolders chosen = app.store.model_folders();
+        if (!chosen.models_dir.empty() || !chosen.scan_dirs.empty()) {
+            const ModelLibrary::FolderRefusal r = app.apply_model_folders(chosen);
+            if (r.status) {
+                std::fprintf(stderr, "warning: the chosen model folders are not usable (%s); using the default\n",
+                             r.error.c_str());
+                app.apply_model_folders({});
+            }
+        }
+    }
     for (const std::string & w : app.lib.warnings())
         std::fprintf(stderr, "warning: %s\n", w.c_str());
     app.store.set_launch_values(o.launch);
+    if (app.forget_missing_model())
+        std::fprintf(stderr, "note: the saved model's file is gone; no model is selected until one is chosen\n");
     app.host.set_host_info(platform::host_info);
     auto thermal = std::make_shared<CpuThermal>(platform::thermal_zone_root());
     app.host.set_cpu_temperature([thermal] { return thermal->sample(); });
@@ -1523,7 +1609,7 @@ int run(int argc, char ** argv, const Embedding & embedding) {
         deps.bus = &app.bus;
         deps.store = app.agent_store.get();
         deps.local_chat = [&app](const ChatRequest & req, const std::function<bool(const TokenMetrics &)> & on_token,
-                                 const std::function<bool()> & still_wanted) {
+                                 const std::atomic<bool> & stop) {
             // The agent's turns need a model as the API's do, --autoload included.
             if (const std::string why = app.model_for_request(); !why.empty()) {
                 ChatOutcome out;
@@ -1532,7 +1618,7 @@ int run(int argc, char ** argv, const Embedding & embedding) {
                 out.code = error_code::no_model;
                 return out;
             }
-            return app.host.chat(req, on_token, still_wanted);
+            return app.host.chat(req, on_token, [&stop] { return !stop.load(); }, &stop);
         };
         deps.config = [&app] { return app.store.config(); };
         deps.net = app.net.get();

@@ -1,0 +1,431 @@
+{
+ "available": true,
+ "model": "models/Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf",
+ "machine": "10 cores, 10100 MiB available of 16384 MiB, 102 GiB/s on this model's matmul",
+ "regime": "experts-stream",
+ "streaming_declined": false,
+ "decline_reason": "",
+ "decisions": [
+  {
+   "knob": "ubatch",
+   "label": "Batch width",
+   "group": "set",
+   "value": "1024",
+   "value_text": "1024 tokens",
+   "source": "policy",
+   "brief": "1024 tokens per pass; wider would take 48.7 GiB from the cache.",
+   "reason": "a graph as wide as the context would reserve 49831 MiB of compute buffers, more than 10% of the 10269 MiB this process may hold; at 1024 tokens it is 920 MiB. A prompt takes more passes and the expert cache keeps the rest: a prompt is paid once and a token every time. --ubatch sets it by hand"
+  },
+  {
+   "knob": "placement",
+   "label": "Layer placement",
+   "group": "notes",
+   "value": "none",
+   "value_text": "none",
+   "source": "derived",
+   "brief": "Every layer stays on the CPU: the device shares its memory.",
+   "reason": "the capacity fitter ran and its answer was set aside: the device it placed layers on reads this host's own memory, so 'what fits where' has one pool and no answer. Everything is on the host, which is what it already was"
+  },
+  {
+   "knob": "regime",
+   "label": "Streaming mode",
+   "group": "notes",
+   "value": "experts-stream",
+   "value_text": "experts stream",
+   "source": "derived",
+   "brief": "Experts stream from storage: the model needs 22.3 GiB, 9.0 GiB is usable.",
+   "reason": "on the host 22800 MiB (dense 4200) against 9242 MiB usable, which is the 10269 MiB this process may hold (estimated from what this machine's compressor is achieving) less a 1026 MiB margin (reclaimed into compressed RAM)"
+  },
+  {
+   "knob": "extra-offload",
+   "label": "Further offload",
+   "group": "notes",
+   "value": "none",
+   "value_text": "none",
+   "source": "measured",
+   "brief": "Nothing to move to the device: it shares this memory and reads no faster.",
+   "reason": "every device here reads the host's own memory, so moving a weight onto one frees nothing: the capacity tier is inert. What is left is bandwidth, and here the device has no more of it (70 against 101 GiB/s), so there is nothing to win"
+  },
+  {
+   "knob": "experts",
+   "label": "Where experts live",
+   "group": "notes",
+   "value": "host",
+   "value_text": "host",
+   "source": "derived",
+   "brief": "Experts compute on the CPU, from memory the streamer controls.",
+   "reason": "a streamed expert must live in a host buffer whose pointer we may rebind onto the file's native layout"
+  },
+  {
+   "knob": "prefill-device",
+   "label": "Prefill device",
+   "group": "set",
+   "value": "MTL0",
+   "value_text": "MTL0",
+   "source": "measured",
+   "brief": "Prompts run on MTL0, 2.1x faster than the CPU, same results.",
+   "reason": "computes this model's matmul 128 tokens wide at 2.1x the host's rate with the same result; its 424 MiB, plus 996 MiB of expert slots that take turns with the cache, fit with two expert slots, so a layer is read while the one before it computes, and the expert cache gives up 424 MiB for it. Decode stays on the host, and so does the prefill if the device cannot be set up at load. A device's arithmetic is not the host's to the last bit, so the text can differ from a host prefill's: pass an empty --prefill-device to keep the prefill on the host"
+  },
+  {
+   "knob": "dense-weights",
+   "label": "Dense weights",
+   "group": "set",
+   "value": "pinned",
+   "value_text": "pinned in memory",
+   "source": "derived",
+   "brief": "Dense weights (1.5 GiB) are pinned, so memory pressure cannot take them.",
+   "reason": "anonymous memory here is reclaimed into compressed RAM, and the 1513 MiB dense set fits whole in the 9756 MiB this process may hold reclaim-exempt (up to 12451 MiB per buffer)"
+  },
+  {
+   "knob": "dense-mapped",
+   "label": "Tables left mapped",
+   "group": "set",
+   "value": "1 table(s)",
+   "value_text": "1 table(s)",
+   "source": "derived",
+   "brief": "The embedding tables (272 MiB) stay mapped: the graph gathers rows from them.",
+   "reason": "the allocation priced the embedding group as mmap (left mapped: the graph gathers rows from it, so a token reads a few KiB of it however large the table is, and residency would buy bytes nothing reads), and the pinned policy would otherwise copy its 272 MiB into memory the ledger did not charge"
+  },
+  {
+   "knob": "memory-ledger",
+   "label": "Memory use",
+   "group": "notes",
+   "value": "10013 MiB",
+   "value_text": "9.8 GiB",
+   "source": "derived",
+   "brief": "This run holds 9.8 GiB of the 9.8 GiB it may use.",
+   "reason": "held 10013 of 10013 MiB holdable, of which locked 7598 MiB of 9756 MiB lockable: context and compute 1305, projector 585, context checkpoints 523, device 424 locked, dense 1513 locked, expert cache 5661 locked, device slots 996 locked"
+  },
+  {
+   "knob": "storage-rate",
+   "label": "Storage speed",
+   "group": "notes",
+   "value": "6.6 GiB/s",
+   "value_text": "6.6 GiB/s",
+   "source": "derived",
+   "brief": "Experts load at 6.6 GiB/s, in 664 KiB reads, 4 at a time.",
+   "reason": "this model's expert slice is 664 KiB and at that request size this storage gives 6726 MiB/s over 4 lanes: the expert lane is priced there, not at the storage's peak"
+  },
+  {
+   "knob": "cache-floor",
+   "label": "Cache floor",
+   "group": "notes",
+   "value": "581 MiB",
+   "value_text": "581 MiB",
+   "source": "derived",
+   "brief": "The smallest cache that helps is 581 MiB, under the engine's usual 1.5 GiB minimum.",
+   "reason": "the engine's fixed cache guard (1500 MiB) is above this model's token cycle (581 MiB), so a budget between the two returns hits and needs force-cache to be accepted; the floor enforced here is the model's"
+  },
+  {
+   "knob": "cache-remainder",
+   "label": "Cache remainder",
+   "group": "notes",
+   "value": "771 MiB",
+   "value_text": "771 MiB",
+   "source": "derived",
+   "brief": "The cache also takes the 771 MiB nothing else wanted: idle RAM serves nothing.",
+   "reason": "this model's routing record prices the cache at 4890 MiB, where its curve stops rising; a record is a few hundred tokens, and a longer answer routes to experts it never saw, so the memory the ranking left unspent is the cache's too"
+  },
+  {
+   "knob": "shared-memory",
+   "label": "Shared memory",
+   "group": "notes",
+   "value": "-",
+   "value_text": "",
+   "source": "derived",
+   "brief": "Every device shares the CPU's memory: moving weights there frees nothing.",
+   "reason": "every device here reads the host's own memory, so moving a weight onto one frees nothing: the capacity tier is inert and only bandwidth was left to compare"
+  },
+  {
+   "knob": "moe-stream",
+   "label": "Expert streaming",
+   "group": "set",
+   "value": "on",
+   "value_text": "on",
+   "source": "derived",
+   "brief": "Experts stream from storage; everything else stays in memory.",
+   "reason": "the experts do not fit but the dense set does"
+  },
+  {
+   "knob": "cache-mb",
+   "label": "Expert cache",
+   "group": "set",
+   "value": "5661",
+   "value_text": "5.5 GiB",
+   "source": "derived",
+   "brief": "5.5 GiB: what the cache earns most with, after the dense weights.",
+   "reason": "what the cache is worth out of 9242 MiB usable, ranked against the resident groups by seconds saved per byte of RAM, with what none of them wanted added: 7174 MiB committed in total, of which 5661 MiB is cache, over a floor of 581 MiB"
+  },
+  {
+   "knob": "checkpoint-budget",
+   "label": "Checkpoint budget",
+   "group": "notes",
+   "value": "523 MiB",
+   "value_text": "523 MiB",
+   "source": "measured",
+   "brief": "Context checkpoints may take 523 MiB; that is kept out of the cache.",
+   "reason": "8 checkpoints (\"Context checkpoints\") of 65 MiB each, the part of the context that does not grow with its length (measured at two lengths), charged before the cache is sized: a chat run fills them as it goes, and memory the cache had already taken would have to come out of something else"
+  },
+  {
+   "knob": "io-threads",
+   "label": "Read lanes",
+   "group": "set",
+   "value": "4",
+   "value_text": "4 lanes",
+   "source": "measured",
+   "brief": "4 parallel reads: the fastest rate this storage gave.",
+   "reason": "the highest measured rate for this model's 664 KiB expert slice on this storage"
+  },
+  {
+   "knob": "o-direct",
+   "label": "Direct I/O",
+   "group": "set",
+   "value": "on",
+   "value_text": "on",
+   "source": "measured",
+   "brief": "Reads bypass the page cache: checked correct on this storage.",
+   "reason": "uncached reads return correct bytes on this path"
+  },
+  {
+   "knob": "release-mmap",
+   "label": "Unmap the file after load",
+   "group": "set",
+   "value": "off",
+   "value_text": "off",
+   "source": "derived",
+   "brief": "The model's file mapping stays: this run still reads from it.",
+   "reason": "this run keeps a live pointer into the mapping (a tied head, a draft block, a dense policy that stays mapped, or a table left mapped), so the mapping cannot be released whatever the storage does"
+  },
+  {
+   "knob": "lossy",
+   "label": "Output quality",
+   "group": "notes",
+   "value": "off",
+   "value_text": "off",
+   "source": "policy",
+   "brief": "Nothing that changes the output is turned on.",
+   "reason": "no quality budget was given, and a policy that changes the output must never arm itself"
+  },
+  {
+   "knob": "shared-pool",
+   "label": "Shared memory pool",
+   "group": "notes",
+   "value": "360 MiB",
+   "value_text": "360 MiB",
+   "source": "derived",
+   "brief": "The 360 MiB meant for the device is counted against this same memory.",
+   "reason": "every device here reads this host's own memory, so what the fitter placed on one is in the same pool as what it left here and is charged to it: 360 MiB added to the 3091 MiB host set before anything was sized, because the fitter counts the two as separate"
+  },
+  {
+   "knob": "placement-declined",
+   "label": "Placement declined",
+   "group": "notes",
+   "value": "360 MiB",
+   "value_text": "360 MiB",
+   "source": "derived",
+   "brief": "Not applied: placing 360 MiB on the device would count this memory twice.",
+   "reason": "the capacity fitter would have placed 360 MiB on a device whose memory is this host's own, counting it as separate from the 3091 MiB it left here - the same pool, twice. Acting on that overcommits the pool; charging it instead reads as a model twice its real size and declines a run that works. So the placement is quoted and not applied: using such a device is a bandwidth decision, not a capacity one"
+  },
+  {
+   "knob": "overlap",
+   "label": "Overlap I/O",
+   "group": "kept",
+   "value": "on",
+   "value_text": "on",
+   "source": "unprobed",
+   "brief": "On until the first answer measures it against off.",
+   "reason": "hiding compute behind the reads changes no output and has measured faster, but one machine is not a rule: the first real request alternates decode windows with it on and off once the cache has settled, and switches it only if the other setting decodes 10% faster; the next load starts from the verdict"
+  },
+  {
+   "knob": "threads",
+   "label": "Compute threads",
+   "group": "set",
+   "value": "10",
+   "value_text": "10 threads",
+   "source": "measured",
+   "brief": "10 threads: the fastest count measured on this model's format.",
+   "reason": "swept over the thread counts this machine has, on a matmul in this model's own quantized format, which is the material that matters: a sweep in F32 can pick a count the quantized kernels are much slower at"
+  },
+  {
+   "knob": "trial-threads",
+   "label": "Thread counts to measure",
+   "group": "set",
+   "value": "4",
+   "value_text": "4",
+   "source": "policy",
+   "brief": "The first answer measures 4 threads against 10.",
+   "reason": "the thread count changes no output and which one decodes fastest is this machine's answer, not a rule's: once the cache has settled the first real request alternates decode windows between 10 and 4 (where a slower class of core starts, every core, or half of them where all are alike), and switches only to a count 10% faster in the median of its rounds; the next load starts from the verdict"
+  }
+ ],
+ "values": {
+  "threads": 10,
+  "trial-threads": "4",
+  "trial-overlap": true,
+  "cache-mb": 5661,
+  "dense-weights": "pinned",
+  "ubatch": 1024,
+  "dense-mapped": "token_embd.weight",
+  "prefill-device": "MTL0",
+  "prefill-best-effort": true,
+  "prefill-slots-on-demand": true,
+  "cache-pin-fit": true
+ },
+ "args": [
+  "--mmproj",
+  "models/mmproj-Qwen3.6-35B-A3B-Q8_0.gguf",
+  "--n-predict",
+  "0",
+  "--ctx-size",
+  "65536",
+  "--threads",
+  "10",
+  "--trial-threads",
+  "4",
+  "--chatml",
+  "--moe-stream",
+  "--overlap",
+  "--trial-overlap",
+  "--cache-mb",
+  "5661",
+  "--dense-weights",
+  "pinned",
+  "--ubatch",
+  "1024",
+  "--dense-mapped",
+  "token_embd.weight",
+  "--prefill-device",
+  "MTL0",
+  "--prefill-best-effort",
+  "--prefill-slots-on-demand",
+  "--decide",
+  "--cache-pin-fit"
+ ],
+ "not_applicable": [],
+ "explain": "plan: regime experts-stream\nplan:   token cycle 581 MiB\nplan:   ubatch         1024       [policy] a graph as wide as the context would reserve 49831 MiB of compute buffers, more than 10% of the 10269 MiB this process may hold; at 1024 tokens it is 920 MiB. A prompt takes more passes and the expert cache keeps the rest: a prompt is paid once and a token every time. --ubatch sets it by hand\nplan:   placement      none       [derived] the capacity fitter ran and its answer was set aside: the device it placed layers on reads this host's own memory, so 'what fits where' has one pool and no answer. Everything is on the host, which is what it already was\nplan:   regime         experts-stream [derived] on the host 22800 MiB (dense 4200) against 9242 MiB usable, which is the 10269 MiB this process may hold (estimated from what this machine's compressor is achieving) less a 1026 MiB margin (reclaimed into compressed RAM)\nplan:   extra-offload  none       [measured] every device here reads the host's own memory, so moving a weight onto one frees nothing: the capacity tier is inert. What is left is bandwidth, and here the device has no more of it (70 against 101 GiB/s), so there is nothing to win\nplan:   experts        host       [derived] a streamed expert must live in a host buffer whose pointer we may rebind onto the file's native layout\nplan:   prefill-device MTL0       [measured] computes this model's matmul 128 tokens wide at 2.1x the host's rate with the same result; its 424 MiB, plus 996 MiB of expert slots that take turns with the cache, fit with two expert slots, so a layer is read while the one before it computes, and the expert cache gives up 424 MiB for it. Decode stays on the host, and so does the prefill if the device cannot be set up at load. A device's arithmetic is not the host's to the last bit, so the text can differ from a host prefill's: pass an empty --prefill-device to keep the prefill on the host\nplan:   dense-weights  pinned     [derived] anonymous memory here is reclaimed into compressed RAM, and the 1513 MiB dense set fits whole in the 9756 MiB this process may hold reclaim-exempt (up to 12451 MiB per buffer)\nplan:   dense-mapped   1 table(s) [derived] the allocation priced the embedding group as mmap (left mapped: the graph gathers rows from it, so a token reads a few KiB of it however large the table is, and residency would buy bytes nothing reads), and the pinned policy would otherwise copy its 272 MiB into memory the ledger did not charge\nplan:   memory-ledger  10013 MiB  [derived] held 10013 of 10013 MiB holdable, of which locked 7598 MiB of 9756 MiB lockable: context and compute 1305, projector 585, context checkpoints 523, device 424 locked, dense 1513 locked, expert cache 5661 locked, device slots 996 locked\nplan:   storage-rate   6.6 GiB/s  [derived] this model's expert slice is 664 KiB and at that request size this storage gives 6726 MiB/s over 4 lanes: the expert lane is priced there, not at the storage's peak\nplan:   cache-floor    581 MiB    [derived] the engine's fixed cache guard (1500 MiB) is above this model's token cycle (581 MiB), so a budget between the two returns hits and needs force-cache to be accepted; the floor enforced here is the model's\nplan:   cache-remainder 771 MiB    [derived] this model's routing record prices the cache at 4890 MiB, where its curve stops rising; a record is a few hundred tokens, and a longer answer routes to experts it never saw, so the memory the ranking left unspent is the cache's too\nplan:   shared-memory  -          [derived] every device here reads the host's own memory, so moving a weight onto one frees nothing: the capacity tier is inert and only bandwidth was left to compare\nplan:   moe-stream     on         [derived] the experts do not fit but the dense set does\nplan:   cache-mb       5661       [derived] what the cache is worth out of 9242 MiB usable, ranked against the resident groups by seconds saved per byte of RAM, with what none of them wanted added: 7174 MiB committed in total, of which 5661 MiB is cache, over a floor of 581 MiB\nplan:   checkpoint-budget 523 MiB    [measured] 8 checkpoints (--ctx-checkpoints) of 65 MiB each, the part of the context that does not grow with its length (measured at two lengths), charged before the cache is sized: a chat run fills them as it goes, and memory the cache had already taken would have to come out of something else\nplan:   io-threads     4          [measured] the highest measured rate for this model's 664 KiB expert slice on this storage\nplan:   o-direct       on         [measured] uncached reads return correct bytes on this path\nplan:   release-mmap   off        [derived] this run keeps a live pointer into the mapping (a tied head, a draft block, a dense policy that stays mapped, or a table left mapped), so the mapping cannot be released whatever the storage does\nplan:   lossy          off        [policy] no quality budget was given, and a policy that changes the output must never arm itself\nplan:   shared-pool    360 MiB    [derived] every device here reads this host's own memory, so what the fitter placed on one is in the same pool as what it left here and is charged to it: 360 MiB added to the 3091 MiB host set before anything was sized, because the fitter counts the two as separate\nplan:   placement-declined 360 MiB    [derived] the capacity fitter would have placed 360 MiB on a device whose memory is this host's own, counting it as separate from the 3091 MiB it left here - the same pool, twice. Acting on that overcommits the pool; charging it instead reads as a model twice its real size and declines a run that works. So the placement is quoted and not applied: using such a device is a bandwidth decision, not a capacity one\nplan:   overlap        on         [unprobed] hiding compute behind the reads changes no output and has measured faster, but one machine is not a rule: the first real request alternates decode windows with it on and off once the cache has settled, and switches it only if the other setting decodes 10% faster; the next load starts from the verdict\nplan:   threads        10         [measured] swept over the thread counts this machine has, on a matmul in this model's own quantized format, which is the material that matters: a sweep in F32 can pick a count the quantized kernels are much slower at\nplan:   trial-threads  4          [policy] the thread count changes no output and which one decodes fastest is this machine's answer, not a rule's: once the cache has settled the first real request alternates decode windows between 10 and 4 (where a slower class of core starts, every core, or half of them where all are alike), and switches only to a count 10% faster in the median of its rounds; the next load starts from the verdict\nplan:   cost 85.2 ms/token predicted, 9614.7 ms/token with nothing resident\nplan:     embedding  mmap                0 MiB held,    0.01 ms/token  left mapped: the graph gathers rows from it, so a token reads a few KiB of it however large the table is, and residency would buy bytes nothing reads\nplan:     attention  pinned            711 MiB held,    8.10 ms/token  pinned: read whole, every token\nplan:     dense-ffn  pinned            193 MiB held,    2.20 ms/token  pinned: read whole, every token\nplan:     experts    expert-stream    5661 MiB held,   68.01 ms/token  streamed with a 5661 MiB cache, 30% of the expert set; credited hit rate 30%, which is conservative on purpose and is the coefficient a run's own counters correct\nplan:     output     pinned            397 MiB held,    4.53 ms/token  pinned: read whole, every token\nplan:     other      pinned            210 MiB held,    2.39 ms/token  pinned: read whole, every token\nplan:   memory held 10013 of 10013 MiB holdable, locked 7598 of 9756 MiB lockable\nplan:     context and compute    1305 MiB  ordinary\nplan:     projector               585 MiB  ordinary\nplan:     context checkpoints     523 MiB  ordinary\nplan:     device                  424 MiB  locked\nplan:     dense                  1513 MiB  locked\nplan:     expert cache           5661 MiB  locked\nplan:     device slots            996 MiB  locked, in turn with the cache (not in the total)\n",
+ "summary": {
+  "sentence": "Experts stream from flash, with a 5.5 GiB cache.",
+  "lanes": [
+   {
+    "phase": "prompt",
+    "label": "Prompt",
+    "on": [
+     "MTL0"
+    ]
+   },
+   {
+    "phase": "tokens",
+    "label": "Tokens",
+    "on": [
+     "CPU"
+    ]
+   }
+  ]
+ },
+ "predicted": {
+  "s_per_token": 0.08523006730095412,
+  "s_per_token_worst": 9.614668192653564,
+  "cache_hit_pct": 30.435483870967744
+ },
+ "memory": {
+  "pools": [
+   {
+    "name": "host",
+    "label": "This process",
+    "cap_bytes": 10500418228,
+    "lockable_cap_bytes": 10230410992,
+    "lockable_cap_known": true,
+    "cache_lock_unverified": false,
+    "held_bytes": 10500230336,
+    "locked_bytes": 7967861760,
+    "rows": [
+     {
+      "name": "context and compute",
+      "label": "Context and compute",
+      "bytes": 1368982592,
+      "locked": false,
+      "in_turn": false
+     },
+     {
+      "name": "projector",
+      "label": "Projector",
+      "bytes": 614194304,
+      "locked": false,
+      "in_turn": false
+     },
+     {
+      "name": "context checkpoints",
+      "label": "Context checkpoints",
+      "bytes": 549191680,
+      "locked": false,
+      "in_turn": false
+     },
+     {
+      "name": "device",
+      "label": "Device",
+      "bytes": 445317632,
+      "locked": true,
+      "in_turn": false
+     },
+     {
+      "name": "dense",
+      "label": "Dense",
+      "bytes": 1586555392,
+      "locked": true,
+      "in_turn": false
+     },
+     {
+      "name": "expert cache",
+      "label": "Expert cache",
+      "bytes": 5935988736,
+      "locked": true,
+      "in_turn": false
+     },
+     {
+      "name": "device slots",
+      "label": "Device slots",
+      "bytes": 1044381696,
+      "locked": true,
+      "in_turn": true
+     }
+    ]
+   }
+  ]
+ },
+ "devices": [
+  {
+   "name": "MTL0",
+   "description": "Apple M5",
+   "cpu": false,
+   "own_memory": false,
+   "memory_total": 12713115648,
+   "prompt_ratio": 2.0654904246509114,
+   "token_ratio": 0.6971295922392374,
+   "rate_text": "2.1x the host on a prompt",
+   "uses": [
+    "prompt"
+   ],
+   "status": "used",
+   "badge": "Prompt",
+   "why": "Faster than the host on a prompt, with the same results."
+  },
+  {
+   "name": "CPU",
+   "description": "Apple M5",
+   "cpu": true,
+   "own_memory": false,
+   "memory_total": 17179869184,
+   "prompt_ratio": 1.0,
+   "token_ratio": 1.0,
+   "rate_text": "The reference",
+   "uses": [
+    "tokens"
+   ],
+   "status": "used",
+   "badge": "Tokens",
+   "why": "The host: every rate is measured against it."
+  }
+ ],
+ "devices_none": "",
+ "devices_none_text": "",
+ "from_last_load": true
+}

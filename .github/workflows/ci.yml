@@ -202,22 +202,37 @@ jobs:
         run: cd ui && npm run build
 
   host-windows:
-    # Windows minutes bill at 2x. It only compile-checks the Win32 I/O paths, so run it where it
-    # matters — PRs (before merge) and release tags — not on every main push (already tested on PR).
-    # Compile-only on purpose: the gates have never run on Windows (MSVC, the RPC loopback gate's
-    # Winsock path, the tiny-model generator under the runner's Python), and switching them on
-    # unverified would turn every PR red rather than test anything. Enable them once they have been
-    # run on a Windows machine.
+    # Windows minutes bill at 2x, so run it where it matters, PRs (before merge) and release tags,
+    # not on every main push (already tested on PR). The Win32 I/O paths are proven here the way
+    # the other jobs prove theirs: the byte-identity gates under MSVC, overlap included.
     if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
-      - name: Configure & build (compile-check the Win32 I/O paths)
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install deps (the gates' tiny-model generator)
+        run: python -m pip install -r scripts/requirements-ci.txt
+      - name: Configure & build (the Win32 I/O paths, and the gates)
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBMOE_BUILD_TESTS=OFF -DBMOE_BUILD_TOOLS=ON
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBMOE_BUILD_TESTS=ON -DBMOE_BUILD_TOOLS=ON -DBMOE_GATES_REQUIRE_HOOK=ON
           cmake --build build --config Release -j
+      # Every executable starts: an import the system's own DLLs lack (0.40.2's desktop app bound
+      # an ordinal only comctl32 version 6 has) stops the loader before main, which a compile cannot
+      # see.
+      - name: Smoke
+        shell: bash
+        run: |
+          WB=build/bin/Release; [ -d "$WB" ] || WB=build/bin
+          for exe in bmoe-cli bmoe-server bmoe-desktop; do
+            [ -f "$WB/$exe.exe" ] || { echo "$exe.exe was not built"; exit 1; }
+            "$WB/$exe.exe" --version
+          done
+      - name: Byte-identity gates
+        run: cd build && ctest -C Release --output-on-failure
 
   host-macos:
     # The Apple path on PRs, gates included: release-host builds __APPLE__ code only when a

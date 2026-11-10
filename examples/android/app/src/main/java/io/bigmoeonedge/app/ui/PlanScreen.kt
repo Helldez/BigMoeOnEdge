@@ -31,6 +31,7 @@ import io.bigmoeonedge.app.engine.appliedChanges
 import io.bigmoeonedge.app.engine.diagnosticText
 import io.bigmoeonedge.app.engine.loadTargetChosen
 import io.bigmoeonedge.app.engine.planFigures
+import io.bigmoeonedge.app.engine.rateText
 import io.bigmoeonedge.app.engine.PlanDecision
 import io.bigmoeonedge.app.engine.PlanDevice
 import io.bigmoeonedge.app.engine.PlanPool
@@ -114,6 +115,17 @@ fun PlanScreen(modifier: Modifier = Modifier, onOpenSetting: (key: String) -> Un
             // A failed plan can be retried where it says so: measuring is the person's tap, never automatic.
             if (shownError.isNotEmpty()) RetryLine(shownError, canMeasure) { measure() }
             if (busy || engine.planProgress != null) PlanProgressCard(engine.planProgress)
+            // While a model loads, the plan the server holds is the previous session's: the new one
+            // lands when the session opens. Said so, rather than shown as the loaded model's.
+            val loading = engine.loading
+            if (loading) {
+                Text(
+                    "Loading the model; the plan of this load shows once the session opens." +
+                        if (plan?.available == true) " Below: the previous plan." else "",
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
 
             val p = plan
             if (p?.available == true && cfg != null) {
@@ -144,6 +156,7 @@ fun PlanScreen(modifier: Modifier = Modifier, onOpenSetting: (key: String) -> Un
                     applied = applied,
                     canMeasure = canMeasure,
                     measuring = busy,
+                    loading = loading,
                     onMeasure = { measure() },
                     reloadNeeded = engine.ready && cfg?.reloadRequired == true,
                     onOpenSetting = onOpenSetting,
@@ -195,6 +208,7 @@ private fun PlanBody(
     applied: List<AppliedChange>?,
     canMeasure: Boolean,
     measuring: Boolean,
+    loading: Boolean,
     onMeasure: () -> Unit,
     reloadNeeded: Boolean,
     onOpenSetting: (String) -> Unit,
@@ -204,6 +218,7 @@ private fun PlanBody(
     val f = planFigures(p)
     Tile {
         when {
+            loading -> StatusBadge("From before this load", MaterialTheme.colorScheme.onSurfaceVariant)
             p.fromLastLoad -> StatusBadge("The loaded model runs this plan", okColor())
             p.cached -> StatusBadge("The last plan measured", MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -288,20 +303,20 @@ private fun SpeedWell(f: PlanFigures, fromLastLoad: Boolean, modifier: Modifier)
         Text("Tokens", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         when {
             f.measuredTokS != null -> {
-                Figure(fmt(f.measuredTokS), "tok/s measured")
-                if (f.deltaPct != null && f.predictedTokS != null) {
+                Figure(rateText(f.measuredTokS), "tok/s measured")
+                if (f.deltaPct != null && f.delta != null && f.predictedTokS != null) {
                     if (fromLastLoad) {
                         Text(
-                            String.format(Locale.US, "%+.0f%% against the %s expected", f.deltaPct, fmt(f.predictedTokS)),
+                            "${f.delta.badge} ${f.delta.against}",
                             fontSize = 12.sp, color = if (f.deltaPct >= 0) okColor() else warnColor(),
                         )
                     } else {
-                        Text("${fmt(f.predictedTokS)} tok/s expected under this plan", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("${rateText(f.predictedTokS)} tok/s expected under this plan", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
             f.predictedTokS != null -> {
-                Figure(fmt(f.predictedTokS), "tok/s expected")
+                Figure(rateText(f.predictedTokS), "tok/s expected")
                 Text(if (fromLastLoad) "Measured after the first answer" else "Measured after a load", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             else -> Text("No prediction", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -564,8 +579,6 @@ private fun deviceColour(d: PlanDevice): Color = when (d.status) {
     "refused", "unusable" -> MaterialTheme.colorScheme.error
     else -> MaterialTheme.colorScheme.onSurfaceVariant
 }
-
-private fun fmt(v: Double) = String.format(Locale.US, "%.1f", v)
 
 /** Binary units, as the web UI shows them, so a figure reads the same on both. */
 private fun bytesLabel(bytes: Long): String {

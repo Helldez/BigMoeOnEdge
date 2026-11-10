@@ -462,7 +462,7 @@ async function handle(req: Req, res: Res, next: () => void) {
     BACKENDS.packs[0].installed = true;
     return send(res, 200, { restart: true });
   }
-  if (p === '/api/update') return send(res, 200, { current: '0.39.0', latest: '0.40.0', available: true, notes: 'https://example.com/notes' });
+  if (p === '/api/update') return send(res, 200, { current: '0.39.0', latest: '0.40.0', available: true, notes: 'https://example.com/notes', installer: { url: 'https://example.com/setup', sha256: '0'.repeat(64), size: 1, file: 'setup' } });
   if (p === '/api/update/download') return send(res, 200, { path: '/tmp/installer' });
   return send(res, 404, { error: `the mock has no ${m} ${p}`, code: 'not_found' });
 }

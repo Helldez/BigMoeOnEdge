@@ -488,6 +488,11 @@ struct Session::Impl {
     bool info_sent = false;
 
     std::atomic<bool> cancel_requested{false};
+    const std::atomic<bool> * caller_stop = nullptr; // borrowed only by the current generate()
+    bool cancelled() const {
+        return cancel_requested.load(std::memory_order_relaxed) ||
+               (caller_stop && caller_stop->load(std::memory_order_relaxed));
+    }
     // Set while a cancel's abort is in flight, so llama.cpp's report of the aborted decode is not
     // shown as an error (engine/llama_log.h). The abort callback sets it; end_cancel_quiet() clears.
     std::atomic<bool> cancel_quieted{false};
@@ -814,7 +819,7 @@ DecideResult Session::decide(const DecideRequest & req) {
     }
     // The abort callback turns a cancel into a failed decode; that is a request honoured, not a
     // context gone bad, and run_decide has already emptied the sequence.
-    if (!r.ok && r.fatal && im.cancel_requested.load(std::memory_order_relaxed)) {
+    if (!r.ok && r.fatal && im.cancelled()) {
         r.fatal = false;
         r.cancelled = true;
         r.error = "cancelled";
@@ -1316,14 +1321,14 @@ void Session::Impl::build_sampler(const SessionConfig & c) {
 }
 
 // One abort callback for the session's whole life, checking two independent predicates:
-// an explicit cancel() request (any mode) and a fatal streaming I/O error (overlap only).
+// an explicit cancel() or the current caller's stop, and a fatal streaming I/O error (overlap only).
 // Installing it unconditionally is what lets cancel() interrupt a serial decode too.
 void Session::Impl::install_abort_callback() {
     llama_set_abort_callback(
         ctx.get(),
         [](void * ud) -> bool {
             auto * p = static_cast<Impl *>(ud);
-            if (p->cancel_requested.load(std::memory_order_relaxed)) {
+            if (p->cancelled()) {
                 // The decode this aborts is about to be logged by llama.cpp as a failure; it is a
                 // request honoured. Opened once per cancelled call (the callback is asked many
                 // times), closed by end_cancel_quiet() when that call returns. A fatal streaming
@@ -2744,7 +2749,7 @@ struct Session::Impl::Turn {
             }
             i += chunk;
             if (rc != 0) {
-                if (im.cancel_requested.load(std::memory_order_relaxed)) {
+                if (im.cancelled()) {
                     rollback_turn();
                     res.ok = true;
                     res.cancelled = true;
@@ -3170,7 +3175,7 @@ struct Session::Impl::Turn {
             Step s;
             if (!draft(s)) return false;
             if (verify_decode(s) != 0) {
-                if (im.cancel_requested.load(std::memory_order_relaxed)) {
+                if (im.cancelled()) {
                     res.cancelled = true;
                     break;
                 }
@@ -3190,7 +3195,7 @@ struct Session::Impl::Turn {
                 trial_guarded([&] { im.trial_step(step_s, (int) confirmed.size()); });
             }
 
-            if (structured() && im.cancel_requested.load(std::memory_order_relaxed)) {
+            if (structured() && im.cancelled()) {
                 res.cancelled = true;
                 break;
             }
@@ -3420,6 +3425,19 @@ RunResult Session::generate(const GenerateRequest & req,
         res.error = "response schemas cannot be combined with tool_choice required in the current template parser";
         return res;
     }
+    // Callbacks can run on backend workers, but all finish before this serialized call returns.
+    // Clear both borrowed pointers on every exit, before the caller may destroy its flag.
+    struct CallerStop {
+        Impl & im;
+        CallerStop(Impl & owner, const std::atomic<bool> * stop) : im(owner) {
+            im.caller_stop = stop;
+            if (im.media) im.media->set_stop(stop);
+        }
+        ~CallerStop() {
+            im.caller_stop = nullptr;
+            if (im.media) im.media->set_stop(nullptr);
+        }
+    } caller_stop{im, req.stop};
     im.begin_generate(req, sink);
     // Whichever way this call returns, a cancel's quiet window ends with it.
     struct CancelQuiet {

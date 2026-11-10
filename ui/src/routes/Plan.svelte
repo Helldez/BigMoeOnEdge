@@ -11,7 +11,7 @@
   import PlanProgress from '../components/plan/PlanProgress.svelte';
   import { api } from '../lib/api';
   import { commandLine, formatBytes, formatNum } from '../lib/format';
-  import { appliedChanges, diagnosticText, planDecisions, speedCheck, type AppliedChange } from '../lib/plan';
+  import { appliedChanges, diagnosticText, planDecisions, rateText, speedCheck, type AppliedChange } from '../lib/plan';
   import { href, settingHref } from '../lib/route';
   import { server } from '../stores/server.svelte';
 
@@ -60,6 +60,9 @@
   });
 
   const plan = $derived(server.plan);
+  // While a model loads, the plan the server holds is the previous session's: this load's comes
+  // when the session opens.
+  const loading = $derived(server.info?.state === 'loading' || server.info?.state === 'planning');
   // The model the page is about: the one the shown plan measured, else the one a load would open.
   const modelPath = $derived(
     (plan?.available ? plan.model : '') || String(server.config?.values?.model ?? '') || server.info?.model?.path || '',
@@ -148,8 +151,13 @@
       <p class="banner warn" role="status">{avail.warning}</p>
     {/if}
 
+    {#if loading}
+      <p class="muted" role="status">Loading the model; the plan of this load shows once the session opens. Below: the previous plan.</p>
+    {/if}
     <section class="card summary">
-      {#if avail.from_last_load}
+      {#if loading}
+        <span class="badge">From before this load</span>
+      {:else if avail.from_last_load}
         <span class="badge ok">The loaded model runs this plan</span>
       {:else if avail.cached}
         <span class="badge">The last plan measured</span>
@@ -171,16 +179,16 @@
         <div class="tile">
           <span class="muted k">Tokens</span>
           {#if check.measuredTokS !== null}
-            <span><span class="figure big">{formatNum(check.measuredTokS)}</span> <span class="figure muted">tok/s measured</span></span>
-            {#if check.predictedTokS !== null && check.deltaPct !== null}
+            <span><span class="figure big">{rateText(check.measuredTokS)}</span> <span class="figure muted">tok/s measured</span></span>
+            {#if check.predictedTokS !== null && check.deltaPct !== null && check.delta}
               {#if avail.from_last_load}
-                <span class="muted k"><span class="badge {check.deltaPct >= 0 ? 'ok' : 'warn'}">{check.deltaPct >= 0 ? '+' : ''}{check.deltaPct.toFixed(0)}%</span> against the {formatNum(check.predictedTokS)} expected</span>
+                <span class="muted k"><span class="badge {check.deltaPct >= 0 ? 'ok' : 'warn'}">{check.delta.badge}</span> {check.delta.against}</span>
               {:else}
-                <span class="muted k">{formatNum(check.predictedTokS)} tok/s expected under this plan</span>
+                <span class="muted k">{rateText(check.predictedTokS)} tok/s expected under this plan</span>
               {/if}
             {/if}
           {:else if check.predictedTokS !== null}
-            <span><span class="figure big">{formatNum(check.predictedTokS)}</span> <span class="figure muted">tok/s expected</span></span>
+            <span><span class="figure big">{rateText(check.predictedTokS)}</span> <span class="figure muted">tok/s expected</span></span>
             <span class="muted k">{avail.from_last_load ? 'Measured after the first answer' : 'Measured after a load'}</span>
           {:else}
             <span class="muted">No prediction</span>

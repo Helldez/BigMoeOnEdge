@@ -15,6 +15,8 @@
 //   * downloads: which curl failures are retried and after how long, what a resume still needs on
 //     disk, and that deleting a partial download stays inside the models folder;
 //   * events: how many streams may be open, and that a stream that ends gives its place back;
+//   * a streamed turn: a stretch with nothing to send is broken by a keep-alive after the ping
+//     interval, whatever the machine's speed, and never between two frames of the turn;
 //   * a model from a link: which links are taken, the entry they become, the size a HEAD gives,
 //     and that a server with no curl leaves the size unknown rather than refuse the link;
 //   * deleting a model: named as the listing names it, a split set whole, nothing outside the
@@ -41,6 +43,7 @@
 #include "log_file.h"
 #include "service_spec.h"
 #include "settings_store.h"
+#include "stream_keepalive.h"
 #include "sha256.h"
 #include "turn_queue.h"
 #include "url_entry.h"
@@ -937,6 +940,27 @@ static void settings_tests() {
     third.set_launch_values({});
     third.apply(json{{"think", false}}, {});
     check(!third.api_config().think, "and so does a saved off");
+
+    // A saved model whose file is gone names nothing to load or to plan for: forgotten, and the
+    // forgetting persists. One that is there, or one the server was launched with, stays.
+    const auto present = [](const std::string &) { return true; };
+    const auto gone = [](const std::string &) { return false; };
+    third.apply(json{{"model", "/models/a.gguf"}}, {});
+    check(!third.forget_missing_model(present) && third.config().model_path == "/models/a.gguf",
+          "a saved model whose file is there stays selected");
+    check(third.forget_missing_model(gone) && third.config().model_path.empty(),
+          "a saved model whose file is gone is forgotten");
+    check(!third.forget_missing_model(gone), "and there is nothing left to forget");
+    SettingsStore fourth(defaults, path.u8string());
+    fourth.load();
+    check(fourth.config().model_path.empty(), "the forgetting persists across a restart");
+    fourth.set_launch_values({{"model", "/models/b.gguf"}});
+    check(!fourth.forget_missing_model(gone) && fourth.config().model_path == "/models/b.gguf",
+          "a model the server was launched with is the operator's word: never forgotten here");
+    fourth.set_launch_values({});
+    fourth.apply(json{{"threads", 3}}, {});
+    check(!fourth.forget_missing_model(gone) && fourth.config().n_threads == 3,
+          "with no saved model nothing else is touched");
 
     std::filesystem::remove(path, ec);
 }
@@ -2222,6 +2246,50 @@ static void model_delete_tests() {
 
 // The CPU temperature is the mean of the sensors, and a threshold published as a zone is not one
 // (#311, #465): a fake thermal directory with a trip zone and moving sensors.
+static void model_folders_tests() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path root = fs::temp_directory_path() / "bmoe_server_test_folders";
+    fs::remove_all(root, ec);
+    fs::create_directories(root / "other", ec);
+    const std::string models = (root / "models").u8string();
+    const std::string other = (root / "other").u8string();
+
+    std::string dir;
+    std::vector<std::string> scans;
+    check(!model_folders_refusal("models", {}, dir, scans).empty(), "a relative models folder is refused");
+    check(!model_folders_refusal("", {}, dir, scans).empty(), "an empty models folder is refused");
+    check(!model_folders_refusal(models, {"other"}, dir, scans).empty(), "a relative scan folder is refused");
+    check(!model_folders_refusal(models, {(root / "missing").u8string()}, dir, scans).empty(),
+          "a scan folder that does not exist is refused");
+    check(model_folders_refusal(models, {other, other, models, ""}, dir, scans).empty(), "absolute folders are taken");
+    check(fs::is_directory(fs::u8path(models)), "the models folder is created when missing");
+    check(scans == std::vector<std::string>{other}, "repeats, empties and the models folder leave the scan list");
+    check(!fs::exists(fs::u8path(models) / ".bmoe-write-test"), "the write test leaves nothing behind");
+
+    // Chosen folders are a server setting: kept across a restart, beside the parameter values.
+    const fs::path path = root / "settings.json";
+    RunConfig defaults;
+    {
+        SettingsStore s(defaults, path.u8string());
+        s.load();
+        check(s.model_folders().models_dir.empty() && s.model_folders().scan_dirs.empty(),
+              "no folders chosen on a clean start");
+        s.set_model_folders({models, {other}});
+    }
+    SettingsStore again(defaults, path.u8string());
+    check(again.load().empty(), "saved folders reload without warnings");
+    check(again.model_folders().models_dir == models &&
+              again.model_folders().scan_dirs == std::vector<std::string>{other},
+          "the chosen folders persist");
+
+    // A folder the server writes to is the person's to choose, never a network client's.
+    check(local_only_route("PUT", "/api/models/folders") != nullptr, "choosing the folders is local-only");
+    check(local_only_route("GET", "/api/models") == nullptr, "listing the models is not");
+
+    fs::remove_all(root, ec);
+}
+
 static void thermal_tests() {
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -2345,7 +2413,8 @@ static void service_tests() {
     check(a.args == std::vector<std::string>{"--data-dir", D, "--log-file", L, "--autoload"} && a.key_file.empty(),
           "service args: nothing given gets the data folder, the log file and --autoload, and no key");
     a = service_arguments({"--host", "0.0.0.0"}, D, L);
-    check(a.key_file == D + "/api-key", "service args: a host beyond loopback with no key gets a key file");
+    check(a.key_file == (fs::u8path(D) / "api-key").u8string(),
+          "service args: a host beyond loopback with no key gets a key file");
     check(a.args.size() >= 2 && a.args[a.args.size() - 2] == "--api-key-file" && a.args.back() == a.key_file,
           "service args: ...named on the command line");
     check(service_arguments({"--host", "0.0.0.0", "--no-api-key"}, D, L).key_file.empty(),
@@ -2387,6 +2456,74 @@ static void service_tests() {
     fs::remove_all(root, ec);
 }
 
+// A streamed turn's writer (stream_keepalive.h). Timing-based: the margins are wide (a keep-alive
+// interval of 30 ms checked over 400 ms; writes every 10 ms against an interval of 1 s) so a
+// loaded CI machine does not flip them.
+static void keepalive_tests() {
+    using namespace std::chrono_literals;
+    struct Sink {
+        std::mutex m;
+        std::vector<std::string> frames;
+        bool fail = false;
+        void set_fail(bool v) {
+            std::lock_guard<std::mutex> g(m);
+            fail = v;
+        }
+        bool write(const std::string & f) {
+            std::lock_guard<std::mutex> g(m);
+            if (fail) return false;
+            frames.push_back(f);
+            return true;
+        }
+        int count(const std::string & f) {
+            std::lock_guard<std::mutex> g(m);
+            int n = 0;
+            for (const auto & x : frames)
+                n += x == f;
+            return n;
+        }
+        size_t size() {
+            std::lock_guard<std::mutex> g(m);
+            return frames.size();
+        }
+    };
+    {
+        Sink sink;
+        StreamKeepalive w([&](const std::string & f) { return sink.write(f); }, "PING", 30ms);
+        check(w.write("a"), "keepalive: a write reports the client alive");
+        std::this_thread::sleep_for(400ms);
+        w.stop();
+        const int pings = sink.count("PING");
+        check(pings >= 2, "keepalive: a silent turn is pinged once per interval (" + std::to_string(pings) + ")");
+        const size_t after_stop = sink.size();
+        std::this_thread::sleep_for(100ms);
+        check(sink.size() == after_stop, "keepalive: nothing is written once stopped");
+        w.stop(); // idempotent
+    }
+    {
+        Sink sink;
+        StreamKeepalive w([&](const std::string & f) { return sink.write(f); }, "PING", 1000ms);
+        for (int i = 0; i < 30; ++i) {
+            w.write("t");
+            std::this_thread::sleep_for(10ms);
+        }
+        w.write(""); // an empty frame is no write
+        w.stop();
+        check(sink.count("PING") == 0, "keepalive: a turn that keeps writing is never pinged");
+        check(sink.size() == 30, "keepalive: an empty frame writes nothing");
+    }
+    {
+        Sink sink;
+        StreamKeepalive w([&](const std::string & f) { return sink.write(f); }, "PING", 20ms);
+        sink.set_fail(true);
+        check(!w.write("x"), "keepalive: a failed write marks the client gone");
+        check(!w.alive(), "keepalive: and it stays gone");
+        sink.set_fail(false);
+        std::this_thread::sleep_for(100ms);
+        check(!w.write("y") && sink.size() == 0, "keepalive: nothing is written after a failed write, ping included");
+    }
+}
+
 int main() {
     thermal_tests();
     service_tests();
@@ -2406,8 +2543,10 @@ int main() {
     plan_view_tests();
     download_tests();
     event_bus_tests();
+    keepalive_tests();
     url_entry_tests();
     model_delete_tests();
+    model_folders_tests();
     if (failures) {
         std::printf("\n%d check(s) FAILED\n", failures);
         return 1;

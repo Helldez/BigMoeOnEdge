@@ -135,8 +135,14 @@ bool attach(webview::webview & w, const Hooks & hooks) {
     g_nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
     g_nid.uCallbackMessage = kTrayMessage;
     g_nid.uVersion = NOTIFYICON_VERSION_4;
-    // The executable's own icon when it carries one, the system's application icon otherwise.
-    g_nid.hIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1));
+    // The executable's own icon (bmoe-desktop.rc.in), at the small size this screen's DPI asks for,
+    // the system's application icon when it carries none. Through user32, not LoadIconMetric: the
+    // import library binds that one to comctl32's ordinal 380, which only comctl32 version 6 has,
+    // and a process gets version 6 only through a manifest; without one the loader refuses to start
+    // the app at all ("ordinal 380 could not be located").
+    g_nid.hIcon =
+        static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1), IMAGE_ICON,
+                                      GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
     // Without UNICODE, IDI_APPLICATION is typed narrow; it is an integer id either way.
     if (!g_nid.hIcon) g_nid.hIcon = LoadIconW(nullptr, reinterpret_cast<LPCWSTR>(IDI_APPLICATION));
     wcsncpy_s(g_nid.szTip, kTitle, _TRUNCATE);

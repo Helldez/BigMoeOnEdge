@@ -4,7 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [0.40.2] - 2026-11-08
+## [Unreleased]
+
+### Added
+- **The device prefill reads what the expert cache holds** (`--no-prefill-from-cache` turns it off):
+  an expert the cache has is copied from RAM into the device's slot instead of read from flash again.
+  On the Mac's GPU, four 4k-token documents read 297 → 178 GiB from flash and prefilled in 31.9-33.2 s
+  against 50.4-73.7 s, the same text. New counter `prefill_dev_cache_mib` in `BMOE_DONE`,
+  `BMOE_DECIDE` and the CSV trailer ([npu-prefill.md](docs/npu-prefill.md)).
 
 ### Changed
 - **The expert cache evicts by decayed frequency** (`--cache-half-life`, 8 tokens by default; `0`
@@ -18,13 +25,105 @@ Semantic Versioning.
   misses enter at the end the cache drops first (`--no-cache-prefill-cold` restores the old
   admission): four 4k-token documents on the Mac read 423 → 211 GiB, prefill 17 % faster, the same
   text.
+- **The byte-identity gates run in the Windows CI job** (#234), which only compiled before: MSVC,
+  the overlap gates with the expert-ready hook required, as on Linux. The two daylight-saving
+  scheduler checks stay POSIX's, since the Windows C runtime reads no zone names from `TZ`.
+
+### Fixed
+- **The planner no longer refuses a prefill device for a cache that is already off** (#508). It
+  required the expert cache to stay at least one token cycle with the device armed, without asking
+  whether it was one without it, so a run whose cache was off (under a token cycle) refused every
+  device, and the plan blamed the cache. Each check is now measured against the run without the
+  device: a cache that streamed keeps streaming, the dense set and the cache keep their protection,
+  and what decode holds still fits what the process may hold (or, where a forced pin left the ledger
+  open, no more than it did). The reason names the check that failed.
+- **The Plan page no longer reads "+8314% against the 0.0 expected"** (#509). A prediction under
+  0.05 tok/s was printed with one decimal as 0.0. Rates now get two significant digits where one
+  decimal would read 0.0, and once measured and predicted are 2x apart the comparison reads as a
+  ratio ("84x the 0.020 expected"), on Android and in the web UI alike.
+- **A saved model whose file is gone is forgotten** (#510). The model a load asked for stayed in
+  `settings.json` after its file was deleted (through the server or from outside it), and the Plan
+  page offered to measure the machine "for" a model that was not there. `bmoe-server` now drops it
+  at start and after a delete, so the UIs show their "choose a model" state; a model given with `-m`
+  at launch is left alone.
+- **Android: the keyboard's action key searches, and the bottom bars step aside while typing**
+  (#511). The Hugging Face search and token fields search with the keyboard's Search key and the
+  direct-link field downloads with Go, on the same terms as their buttons. While the keyboard is
+  showing, the status line and the navigation bar are hidden app-wide instead of riding on top of
+  it and covering the screen's own buttons; they come back when it closes.
+- **A settings file that does not parse is set aside on Windows too.** The agent store renamed a
+  broken `tasks.json` (or any of its files) to `.bad` while the stream reading it was still open,
+  which Windows refuses, so the broken file stayed and was read again on every start.
+- **A client's settings file is shown in the platform's own separators** (`server/connect.cpp`):
+  on Windows the path read `...\home\.c/config.toml`.
+
+### Documentation
+- One planner run on Windows, in `docs/hardware-planning.md`, the device probed in a process of its
+  own on an integrated GPU among it, and the roadmap, platform and
+  backend pages say what Windows still owes.
+
+## [0.40.3] - 2026-11-09
+
+### Fixed
+- **The desktop app starts again on Windows.** 0.40.2 loaded the notification-area icon with
+  `LoadIconMetric`, which binds comctl32's ordinal 380, present only in the comctl32 version a
+  process gets through a manifest; `bmoe-desktop.exe` carries none, so Windows refused to start it
+  ("ordinal 380 could not be located"). The icon now comes through user32 at the same small size.
+  CI and the release smoke now start `bmoe-desktop.exe` on Windows, so a missing import fails
+  there rather than on a user's machine.
+
+## [0.40.2] - 2026-11-08
 
 ### Added
-- **The device prefill reads what the expert cache holds** (`--no-prefill-from-cache` turns it off):
-  an expert the cache has is copied from RAM into the device's slot instead of read from flash again.
-  On the Mac's GPU, four 4k-token documents read 297 → 178 GiB from flash and prefilled in 31.9-33.2 s
-  against 50.4-73.7 s, the same text. New counter `prefill_dev_cache_mib` in `BMOE_DONE`,
-  `BMOE_DECIDE` and the CSV trailer ([npu-prefill.md](docs/npu-prefill.md)).
+- **Choose where models are kept** (#497). Models → "Where models live" changes the folder downloads
+  land in and adds or removes other folders whose models are listed and loaded in place; in the
+  desktop app with the system's folder dialog, in a browser by typing the path. A server setting
+  (`PUT /api/models/folders`, kept in `settings.json`), so it is the same on every system and every
+  UI that speaks the API, and it applies without a restart. Only a client on this machine may change
+  it, since the server writes there; it is refused while a download runs, and a folder the server
+  was started with (`--models-dir`, `--scan-dir`, as the phone apps start it) stays as it is.
+  Models already downloaded stay where they are. `GET /api/models` says which folders are chosen and
+  which the launch fixed (`folders`).
+- **Check for updates on the phones** (#452): the Android and iOS apps have the button the
+  desktop app has, in Settings, and nothing checks in the background either. The server reads the
+  signed release feed when it is pressed; a newer release opens its page, where Android installs
+  the APK over this one (models and settings stay) and iOS is built again from source. The Play
+  flavor of the Android app shows none: a store updates it.
+- **`docs/model-architecture-trends.md`**: where MoE model architecture went in 2025-2026 and what it
+  means for streaming. Covers smaller and more numerous experts, attention with a fixed or sparse
+  state, lookup tables addressed by token ids (Engram, the `qwen4exp` n-gram table), and routers that
+  run before attention. Sets what other work reports against this engine's own measurements, says
+  where they agree and where they do not, and lists what to build next, starting with
+  token-addressed tables as their own storage tier and exact route-ahead on pre-gated models.
+- **A coding agent end to end on a 16 GB laptop** (`docs/bench-data/2026-11-07-agent-pagoda/`,
+  `docs/benchmarks.md`). The released 0.40.1 archive, `bmoe-server -c 65536` and opencode given the
+  pagoda prompt from #462, Qwen3.6-35B-A3B (22 GB) streamed from the SSD: the page was written in
+  23 min 46 s with no human input, one 11k-token prefill and then turns of 21-23 new tokens, the
+  10 400-token write at 8.6 tok/s with an 86 % cache hit. The report has the plan, each answer, the
+  agent's output and screenshots. A second run the same evening took 35 min 15 s, the model having
+  first written the page to a folder its rules forbid; Claude Code on the same server gave up on
+  the long write, since the stream stays silent while a tool call is generated (see the report).
+- **The roadmap grows Serve on the network to reach your own devices from anywhere**
+  (`docs/roadmap.md`): one feature, not a second server mode. Clients of their own, each with its
+  key, a chat-only role and removal from the host, under one access policy for the LAN and every
+  other way in; a peer-to-peer tunnel as one more way in, for a device outside the LAN; and
+  Telegram, then Signal, as clients of the same kind. Each says what the research found and what is
+  owed.
+
+### Changed
+- **`GET /api/update` says a newer release is out on every build**, not only on one the feed
+  carries an installer for: `available` is now whether the feed's release is newer, and
+  `installer` (null where there is none) whether the app can download it itself.
+  `POST /api/update/download` refuses a build with no installer (`409` `no_installer`), and the
+  web UI offers Download only where there is one. The phone builds name their target
+  (`android-arm64`, `ios-arm64`).
+- **The README draws how the planner decides.** Under "The planner", `README.md` and its five
+  translations show one diagram: the machine and the model go into the plan, the plan places each
+  weight on VRAM, RAM or flash, picks the device that reads the prompt and the one that generates,
+  and sizes the caches and threads; the first answer is measured and what is faster is kept for the
+  next load. One PNG per language in `docs/assets/diagrams/`, drawn by `scripts/plan-diagram.py`
+  (macOS renders them with Quick Look; elsewhere it writes the SVGs). Image input moves to the end of
+  the "What it does" list, and the five translations gain it: they had not listed it.
 
 ### Fixed
 - **Garbled answers and a stall with `devices=all` on a phone.** With every backend registered and
@@ -55,13 +154,28 @@ Semantic Versioning.
   assistant reply is rendered. The app and C++ engine keep their Release optimization, and
   vendored sources are unchanged. A model-free rendering app reproduces the optimized failure;
   turning off linker dead stripping does not avoid it. Keep the guard active for the 6.4.x
-  compiler family until an upstream fix is known.
+  compiler family until an upstream fix is known. By @gjjkbssg (#494).
 - **Conversation Stop before the first token.** A local conversation's stop now reaches the
   session that owns its turn independently of the token callback, so an image's encoder and
   prompt prefill can observe cancellation before any answer is generated. A stopped round still
   waiting for the engine withdraws only its own place; it does not cancel another client's
   running turn. The engine reads the run's own atomic flag alongside its resettable cancel latch,
   without a polling thread; it borrows that flag only until the generation returns.
+  By @gjjkbssg (#495).
+- **A streamed turn is never silent for long** (`server/stream_keepalive.h`). While a turn ran, a
+  stream wrote only what the model produced, and a tool call is sent once parsed, so an agent's
+  long write (thousands of tokens) or a long prefill left the stream silent for minutes. Claude
+  Code drops a stream silent for 300 s and asks again, and the same prompt brought the same
+  silence: an agent writing a large file never finished. Now any 15 s of a turn with nothing to
+  send gets the protocol's keep-alive (`event: ping` on `/v1/messages`, a `: ping` comment on
+  `/v1/responses` and `/v1/chat/completions`), bounded by time rather than tokens, so it holds
+  whatever the machine's speed, the model or the call's length.
+- **The desktop app's icon on Windows** (#497). `bmoe-desktop.exe` carried no icon, so the taskbar,
+  the shortcuts, the window and the notification area showed Windows' generic one. The executable
+  and the installer now carry the app's icon, made from the same picture as the macOS and Linux
+  apps by `packaging/windows/make-icon.py`; the notification area takes the small size this
+  screen's scale asks for.
+
 
 ## [0.40.1] - 2026-11-07
 
