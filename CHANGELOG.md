@@ -14,6 +14,10 @@ Semantic Versioning.
   device: a cache that streamed keeps streaming, the dense set and the cache keep their protection,
   and what decode holds still fits what the process may hold (or, where a forced pin left the ledger
   open, no more than it did). The reason names the check that failed.
+- **The Plan page no longer reads "+8314% against the 0.0 expected"** (#509). A prediction under
+  0.05 tok/s was printed with one decimal as 0.0. Rates now get two significant digits where one
+  decimal would read 0.0, and once measured and predicted are 2x apart the comparison reads as a
+  ratio ("84x the 0.020 expected"), on Android and in the web UI alike.
 
 ## [0.40.3] - 2026-11-09
 
