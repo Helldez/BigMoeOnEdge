@@ -10,7 +10,7 @@ target_link_libraries(bmoe_moe_gates PRIVATE bmoe_core)
 if(WIN32)
     target_link_libraries(bmoe_moe_gates PRIVATE ws2_32)
 endif()
-target_include_directories(bmoe_moe_gates PRIVATE ${CMAKE_SOURCE_DIR}/core/src/moe)
+target_include_directories(bmoe_moe_gates PRIVATE ${CMAKE_SOURCE_DIR}/core/src/moe ${CMAKE_SOURCE_DIR}/core/src/io)
 
 # A real Session::open with the full device confirmation and a page-aware fake mlock allowance.
 # The test adapter object supplies the production platform_io symbols, so the static archive's
@@ -169,6 +169,13 @@ add_executable(bmoe_stall_union_test stall_union_test.cpp)
 target_link_libraries(bmoe_stall_union_test PRIVATE bmoe_core)
 target_include_directories(bmoe_stall_union_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/moe)
 add_test(NAME stall_union COMMAND bmoe_stall_union_test)
+
+# The discardable-cache policy against a fake kernel: which entries are offered and when, what a
+# lookup finds after a drop, when a drop is measurable. No platform, no model, no timing.
+add_executable(bmoe_discardable_entries_test discardable_entries_test.cpp)
+target_link_libraries(bmoe_discardable_entries_test PRIVATE bmoe_core)
+target_include_directories(bmoe_discardable_entries_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/moe)
+add_test(NAME discardable_entries COMMAND bmoe_discardable_entries_test)
 
 # How llama.cpp's tensor and graph-node names are read, and the fitter's expert-override patterns.
 # Pure string rules over the conventions every reader shares, so they run without a model.

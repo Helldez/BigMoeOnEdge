@@ -36,6 +36,10 @@ Android、iOS、macOS、Windows、Linux に対応し、llama.cpp の上に構築
 
 各デバイスでリアルタイムに動作する Qwen3.6-35B-A3B（21 GB）です。モデルはいずれのデバイスのメモリよりも大きいサイズです。
 
+**ツアー**（2:38）：16 GB の Mac で、モデル、プランナー、チャット、フォルダー上のエージェント、タスク、連携アプリを紹介します。
+
+https://github.com/user-attachments/assets/16371803-b96b-42a4-b147-cb1b7d515c73
+
 ## できること
 
 - **メモリに収まらないモデルを実行します。** MoE モデルは、トークンごとに少数のエキスパートしか使いません。エンジンは、すべてのトークンで必要な重みと、よく使われるエキスパートをメモリに保持し、残りはフラッシュから読み込みます。出力はモデル全体をメモリに置いた場合と同じで、テストでそれを確認しています。
@@ -56,6 +60,7 @@ Android、iOS、macOS、Windows、Linux に対応し、llama.cpp の上に構築
 | **Apple silicon ノート PC** | 16 GB | Qwen3.8-Flash-Next 125B | 76 GB | フラッシュ | 7-9 |
 |  |  | Qwen3.6-35B-A3B | 21 GB | フラッシュ | 18-24 |
 | **Windows ノート PC** | 16 GB | Qwen3.6-35B-A3B | 21 GB | フラッシュ | 5 |
+| **デスクトップ GPU**（NVIDIA） | 12 GB + 128 GB RAM | Qwen3.8-Flash-Next 125B | 84 GB | RAM、GPU キャッシュ | 16-17 |
 | **デスクトップ GPU**（NVIDIA） | 16 GB + 32 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | フラッシュ、GPU キャッシュ | 19-21 |
 | **デスクトップ GPU**（NVIDIA） | 24 GB + 96 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM、GPU キャッシュ | 70 |
 |  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
@@ -115,6 +120,21 @@ print(reply.choices[0].message.content)
 Claude Code には 65536 で足ります
 （[コンテキストのサイズ設定](docs/server-api.md#sizing-the-context-for-a-client)）。
 
+```jsonc
+// opencode, ~/.config/opencode/opencode.json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "bmoe": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": { "baseURL": "http://127.0.0.1:8765/v1", "apiKey": "local" },
+      "models": { "<model id from /v1/models>": { "limit": { "context": 32768, "output": 8192 } } }
+    }
+  },
+  "model": "bmoe/<model id from /v1/models>"
+}
+```
+
 ```bash
 # Claude Code
 export ANTHROPIC_BASE_URL=http://127.0.0.1:8765
@@ -137,8 +157,7 @@ wire_api = "responses"
 env_key = "BMOE_API_KEY"   # export BMOE_API_KEY=local
 ```
 
-opencode では、このサーバーを `http://127.0.0.1:8765/v1` の OpenAI 互換プロバイダーとして追加します。
-**Connect apps** では、アプリが Codex CLI と opencode 向けの設定を書き込み、Claude Code 向けの設定を表示します。
+**Connect apps** では、アプリが opencode と Codex CLI 向けの設定を書き込み、Claude Code 向けの設定を表示します。
 
 **エージェント。** デスクトップアプリには独自のエージェントがあります。選んだフォルダーの中で作業し、ファイルを読んで編集し、
 コマンドを実行します。許可しない限り、何かを変更する前に確認を求めます。会話は OpenCode、Claude Code、Codex、Pi で

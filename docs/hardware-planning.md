@@ -398,6 +398,7 @@ number it turns on as its value ("6.3 GB/s", "581 MiB") or `-`.
 | whether a reclaim-exempt allocation exists | whether the dense set can be pinned |
 | how much may be held reclaim-exempt in total, net of what already is | whether the dense set fits there whole, and what is left for the cache |
 | how much may be locked where it already sits | whether the cache is sized to what can be locked or to what can be held |
+| whether memory can be offered for the kernel to drop (`discardable_memory`) | whether the cache is offered instead of locked, and so not sized to the lock at all |
 | whether a device's buffers are held reclaim-exempt | whether arming it is charged to that total too |
 | one real layer of the model, its expert block and its dense matrices, at one token, on the host and on every device, with the result compared | the device tier's and the cost model's compute prices; a device that disagrees is refused |
 | the same layer 128 tokens wide, with the result compared | `--prefill-device`: which device, if any, runs the prefill |
@@ -605,9 +606,12 @@ A device is armed when four things hold, each a fact and none a name:
 3. **It wins by the margin** every other device decision uses (`min_backend_win`).
 4. **It fits the ledger.** Under streaming a prefill device carries a layer's experts and a layer's
    other weights through slots - the layer being computed and the one being loaded behind it -
-   plus its compute buffer. That is charged as a row; the run must still stream, with a cache of at
-   least one token cycle, and the dense set and the cache must keep the protection they had. Those
-   are paid on every decoded token, and a prefill is paid once. A device with memory of its own
+   plus its compute buffer. That is charged as a row, and the run must not lose what decode had
+   without it: a cache of at least one token cycle where it had one, the protection of the dense
+   set and of the cache, and a ledger that closes (or, where a forced pin left it open, holds no
+   more than it did). Those are paid on every decoded token, and a prefill is paid once. Each is
+   measured against the run without the device: a cache already under a token cycle, and so off,
+   is not something the device takes away, and is no reason to refuse it. A device with memory of its own
    costs this pool nothing and is checked against its own free memory instead.
 
 **One expert slot or two.** The experts are the large part of that row and the part with a choice
@@ -761,8 +765,52 @@ the side that cannot overcommit.
 The rule is the widest graph whose buffers stay inside a share of what the process may hold
 (`PlannerPolicy::compute_share_max`, a tenth), found by halving from the context and never below
 `ubatch_min`. Inside the share nothing changes and the knob keeps its default. A device's buffers
-count where they come out of this pool and not where the device has memory of its own. A width set
-by hand is left alone and charged in full; a slope that was not measured decides nothing.
+count in this pool where its memory is the host's. A device with memory of its own pays for its width
+in that memory. Where the fitter left whole layers on the host beside it, a byte of buffer there is a
+byte of some layer's dense part: there its buffers are held to the same share of the device's memory,
+each card against its own (two cards of different sizes each reserve their part, and the smaller runs
+short first). A card the fitter placed no layer on at all is the shortest case, not an exception: the
+wide buffers took the room the first layer needed. On a 24 GB card with 12 GiB left free,
+Qwen3.6-35B Q4_K_M at a 40960 context reserved 11.8 GiB of device buffers at the full width, the
+fitter placed 0 of 41 layers and the decode ran on the host at 12.5 tok/s; narrowed to 10240 tokens,
+it placed all 41 with a 5.2 GiB expert cache and decoded at 75-81 tok/s, and a 28.6k-token prompt's
+first token came after 8.4 s rather than 13 minutes. Because the fitter placed the layers around buffers as wide as the graph it was given,
+a plan that narrows the graph on a device places again at the narrower width (`probe_and_plan`), and
+the rules run on that placement. Where every layer is on the device, the graph stays as wide as the
+host's share allows. There a narrower graph would trade prefill for a larger device cache, and that
+trade is not priced yet. On a 24 GB card (RTX 3090 class) where every layer fit, narrowing to 4096
+tokens grew the cache from 12.4 to 17.6 GB and decode by 7-12%, and cost a 9756-token prompt's prefill
+24-28% (1560-1668 to 1189-1201 tok/s). The exception is a narrower graph after which the whole model
+fits the device: that wins prefill and decode alike, since every expert is then read from device
+memory and a prompt gathers nothing into a cache. Only a placement can say it, so `probe_and_plan`
+asks the fitter at the width the device's share allows (`device_share_width`) and keeps the narrower
+graph only where every expert is placed on the devices. On the same card, Qwen3.6-35B Q4_K_M at a
+16384 context: 8192 tokens wide, the whole model fit, and decode went from 137-139 to 155-156 tok/s
+and a 9714-token prefill from 4789 to 5594 tok/s.
+
+Where every layer is on a card, the experts do not all fit and the card's buffers are past its share,
+the width is a trade the plan cannot price: a narrower graph leaves the experts more of the card (more
+of them placed there, or a larger cache), and prefills a long prompt in more passes. It is measured
+across loads instead (`width_across_loads`, `MeasuredKnobs::width_narrow`). A load times the full
+width, the next the width the card's share allows. Each times its decode, its prefill of the prompts
+longer than the narrow width (the only ones the width changes), and the requests it served. The plan
+after weighs the two by those requests: the tokens a request decodes over each side's decode rate,
+plus its prompt tokens past the narrow width over each side's prefill rate. The narrow graph is taken
+where it is faster by `min_backend_win`. A machine that never sends a long prompt pays nothing for
+the narrow graph. One that does has both sides' prefill of them timed before anything is decided.
+Measured on two 24 GB cards with GLM-4.5-Air: 14.2 tok/s decoded at 16384 tokens wide against 19.4 at
+512, where the wide graph prefilled a 9.5k-token prompt at 610 tok/s and a 512-wide one, in
+llama.cpp, at 104. A width set by hand is left alone and charged in
+full; a slope that was not measured decides nothing.
+
+Measured on a 12 GB card (RTX 3060 class, 120 GiB of host memory) with Qwen3.8-Flash-Next Q2_0 at a
+16384 context. The graph as wide as the context reserved 6644 MiB of the card for compute buffers.
+The fitter then left two layers on the host, and with them the dense parts the device tier needs, so
+no device cache was armed and the server decoded at 13 tok/s. At 2048 tokens the buffers were 727 MiB,
+every layer went on the card with a 6.1 GB cache of experts (86% hits), and the decode was 36.8 tok/s.
+With the rule, the same server at the same 16384 context picked 2048 tokens (634 MiB), placed all 49
+layers on the card with a 6.1 GB cache, and decoded at 32.9-36.1 tok/s over two rounds of three
+prompts. Prefill on those short prompts went from 50-63 to 82-97 tok/s.
 
 The share is policy, and the plan prints it as such. What is measured is the trade it stands in
 for, on that laptop at a 16384 context, a 10850-token prompt and then a short one:
@@ -822,7 +870,8 @@ arguments each front-end hands `probe_and_plan` to start itself again (`AutoPlan
 and `bmoe-server` each give them (`--probe-device` is the child's mode in both, and the child's whole
 side is one call, `probe_device_child`; `--no-isolated-probes` turns it off). Where a platform has no way to start one the runner is empty and the probes run
 here, as they always did: that is the case on iOS. Windows has its own implementation of the child,
-built and not yet run on a machine with a GPU. The time limit is two minutes, and it has not been
+run on a laptop's integrated GPU through Vulkan: the plan read `device Vulkan0: ... probed in a
+process of its own` and the run went on (see [A planner run on Windows](#a-planner-run-on-windows)). The time limit is two minutes, and it has not been
 seen to fire.
 
 What this does not do: it measures a matmul, not a prefill. The loaders that fill the device's
@@ -998,6 +1047,28 @@ machine and model planned twice minutes apart produced 4.3 GB and 8.2 GB of avai
 therefore two different cache budgets. The plan quotes the number it used, which is what makes the
 difference visible rather than mysterious.
 
+### A planner run on Windows
+
+`--auto` on a 16 GB Windows laptop (14.8 GiB visible, NVMe, an integrated GPU), Qwen3.6-35B-A3B
+Q4_K_M (20.7 GiB, larger than the machine's memory), 12 prompt tokens and 128 generated. Runs 1
+and 2 are a CPU-only build, back to back; run 3 is the 0.40.3 release archive, which carries the
+Vulkan module:
+
+| Run | Available at plan time | Cache planned | Threads | Decode | Hits in decode | Predicted / measured |
+|---|---|---|---|---|---|---|
+| 1 | 6.9 GB | 4437 MiB | 16 | 3.39 tok/s | 78.9% | 0.351 / 0.295 s/token |
+| 2 | 9.3 GB | 6776 MiB | 8 | 4.78 tok/s | 88.4% | 0.287 / 0.209 s/token |
+| 3 | 9.1 GB | 7066 MiB | 4 | 5.01 tok/s | 88.9% | 0.199 / 0.199 s/token |
+
+All three plans completed and all three runs streamed the experts with unbuffered reads and the dense
+weights in anonymous memory, The first two came in faster than predicted: the plan credited the cache with the linear share (24%
+and 36%) where this routing gave 79% and 88%. The budget is the one-shot reading above at work, the
+same machine minutes apart. In run 3 the integrated GPU was probed in a process of its own
+(`device Vulkan0: one token 20 GiB/s ... probed in a process of its own`, against 27 GiB/s for the
+host) and kept out: it reads the host's own memory, so it frees nothing, and it computes a
+128-token matmul at 0.4x the host's rate. What no run here covers is the process's own memory
+figures, which Windows does not report yet (`rss_mib=-1` in the phase lines).
+
 Compute devices are enumerated through `ggml_backend_dev_*` and measured, and two rules read them:
 the choice of the prefill device, and the device tier of the expert cache. A device whose memory is
 host memory frees nothing when a tensor moves off it, which is why the capacity tier is nearly inert
@@ -1024,6 +1095,11 @@ token cycle (measured why on a 24 GB card with DeepSeek V4.1, where a 15.3 GB ca
 prefill buffers nowhere to go). Where the device is not faster, a fact is missing, or not every dense part fits, the
 fitter's placement stands and the plan says which. On a shared pool, or with the caller's own
 placement, it says nothing and changes nothing.
+
+Whether the cache then stays is measured, across loads, because a device faster at the experts is
+not enough: every miss crosses the link first. A load with nothing measured arms the cache and times
+its decode, the next runs the fitter's placement and times that, and the plan after keeps the faster,
+the cache holding within `min_backend_win` ([measured-planning.md](measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache)).
 
 The layers the fitter split (`price_layers_home`, [measured-planning.md](measured-planning.md#step-3-the-cost-of-a-device-measured-on-a-real-layer)):
 where the capacity fitter put the dense part of some layers on a device and left their experts on

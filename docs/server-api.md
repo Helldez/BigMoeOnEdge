@@ -313,7 +313,10 @@ See [Sizing the context for a client](#sizing-the-context-for-a-client).
 ### `POST /api/session/load`
 
 Opens a session with the current config (unloading any loaded one first). Body: optional
-`{"model": "<path>"}`, which sets the `model` parameter first. Returns `202` once the load is under
+`{"model": "<path>"}`, which sets the `model` parameter first; it is saved, and stays the model a
+load opens (and the Plan page plans for while nothing is loaded) until its file is gone: the server
+forgets a saved model whose file no longer exists, at start and after a delete, while one given
+with `-m` at launch stays. Returns `202` once the load is under
 way; progress arrives as `state` events. `400` if the config does not validate (body carries the
 error). With `auto_plan` on, the previous session is unloaded, the machine is measured and the plan
 applied before the load starts, which adds the planner's probes (about 15 s) to the request. When
@@ -726,7 +729,7 @@ prompt past the context; `503` with no model loaded. The request waits its turn 
  "n_prefilled": 32, "restore_s": 0.02, "store_s": 0.01, "prefill_s": 0.9, "prefill_cpu_s": 3.1,
  "prefill_read_mib": 410.0, "prefill_io_s": 0.3, "prefill_stall_s": 0.1, "prefill_mgmt_s": 0.0,
  "prefill_dev_tokens": 0, "prefill_dev_read_mib": 0.0, "prefill_dev_stall_s": 0.0,
- "prefill_dev_routed": 0, "prefill_dev_demand": 0, "prefix_state_mib": 48.0}
+ "prefill_dev_cache_mib": 0.0, "prefill_dev_routed": 0, "prefill_dev_demand": 0, "prefix_state_mib": 48.0}
 ```
 
 `choice_logp[i]` is the log-probability of the first token of `choices[i]` over the whole
@@ -821,7 +824,7 @@ limit.
 |---|---|
 | `state` | the `GET /api/info` object, on every state change |
 | `token` | per generated token: `step`, `steps`, `wall_ms`, `io_ms`, `compute_ms`, `mgmt_ms`, `stall_ms`, `flash_wait_ms`, `read_mib`, `cache_hit_pct` (-1 without a cache), `cache_budget_mib`, `rss_mib`, `mem_available_mib`, `majflt`, `cpu_ms`, `dense_resident_frac` (-1 unmeasured), `mtp_batch`, `cpu_temp_c` (the mean of the CPU's thermal sensors in °C, sampled every 1.5 s; absent where the platform publishes none a process may read: macOS, iOS, Windows) |
-| `done` | per generation, the CLI's `BMOE_DONE` keys (`docs/telemetry.md`): `cancelled`, `tokens`, `tok_s`, `load_s`, `prefill_s`, `prefill_tps`, `prefill_read_mib`, `prefill_dev_tokens`, `n_prompt`, `n_past`, `cache_hit_pct`, `read_mib`, `io_s_tok`, `compute_s_tok`, `stall_s_tok`, `flash_wait_s_tok`, `mgmt_s_tok`, `majflt_tok`, `cpu_s_tok`, `loop_overhead_s_tok`, `cache_resident_mib`, `cache_budget_mib`, `cache_evictions`, `cache_rereads`, `token_demand_mib`, `mtp_drafted`, `mtp_accepted`, `mtp_decodes`, `drafted_steps`, `mtp_draft_s_tok`, `ttft_s` |
+| `done` | per generation, the CLI's `BMOE_DONE` keys (`docs/telemetry.md`): `cancelled`, `tokens`, `tok_s`, `load_s`, `prefill_s`, `prefill_tps`, `prefill_read_mib`, `prefill_dev_tokens`, `n_prompt`, `n_past`, `cache_hit_pct`, `read_mib`, `io_s_tok`, `compute_s_tok`, `stall_s_tok`, `flash_wait_s_tok`, `mgmt_s_tok`, `majflt_tok`, `cpu_s_tok`, `loop_overhead_s_tok`, `cache_resident_mib`, `cache_budget_mib`, `cache_evictions`, `cache_rereads`, `cache_discarded`, `token_demand_mib`, `mtp_drafted`, `mtp_accepted`, `mtp_decodes`, `drafted_steps`, `mtp_draft_s_tok`, `ttft_s` |
 | `decide` | per decision: the `POST /api/decide` answer |
 | `download` | a download's progress: `id`, `file`, `received`, `total`, `state` (`running`, `done`, `error`, `cancelled`), `error` (with `running`: why the last attempt failed while the server waits to resume) |
 | `backend` | a backend pack's install: `id` (the pack), `kind` (`backend`), `file`, `received`, `total`, `state` (`running`, `done`, `error`, `cancelled`), `error` (with `running`: the step, such as `unpacking`); with `done`, `restart_required` and `in_place` (false when the pack replaces one in use and takes its place at the next start) |
@@ -965,7 +968,9 @@ Windows) puts the others back, deletes nothing and answers `500` naming it. `400
 that is not one (a separator, `..`, a drive), `404` when the models directory has no such model (a
 scan directory's models are loaded in place and never deleted here), `409` with `code: "in_use"`
 while it is loaded or loading (unload it first) or while a running download writes one of its
-files, `403` with `code: "local_only"` from a client whose connection is not loopback.
+files, `403` with `code: "local_only"` from a client whose connection is not loopback. When the
+deleted model was the saved `model` setting, that setting is forgotten too and a `config` event says
+so: there is nothing left to load or plan for under that name.
 
 ### `POST /api/models/url`
 

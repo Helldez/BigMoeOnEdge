@@ -1,0 +1,18 @@
+Explain in detail how a modern CPU executes instructions out of order, covering the reorder buffer, register renaming and branch prediction.
+
+<think>
+The user wants a detailed explanation of out-of-order execution in modern CPUs, covering three specific topics: the reorder buffer, register renaming, and branch prediction. This is a technical computer architecture question. I need to explain these concepts clearly, showing how they interrelate in the pipeline of a modern superscalar, out-of-order CPU. Let me structure this well, going from the high-level concept down to the specific mechanisms, and showing how they work together. I'll aim for depth and clarity, using concrete examples where helpful.
+</think>
+
+# Out-of-Order Execution in Modern CPUs
+
+## The Core Problem
+
+A naive in-order CPU fetches, decodes, and executes instructions strictly in program order. If instruction 5 is a long-latency load from main memory (hundreds of cycles), instructions 6, 7, 8… all stall behind it even if they are completely independent. Out-of-order (OoO) execution solves this by letting the CPU **execute instructions as soon as their operands are ready**, while still **retiring them in program order** so the architectural state is always consistent.
+
+The three mechanisms you asked about—register renaming, the reorder buffer, and branch prediction—are the pillars that make this possible.
+
+generation: 256 tokens, 0.057 s/token (17.480 tok/s)
+compute: 24.8% CPU occupancy (0.0568 cpu-s/token over 4 threads), 0.04 major faults/token
+prefill: 25 tokens, 1.264 s (19.8 tok/s) | model load 6.569 s | TTFT 7.833 s
+mode: mmap. Expert streaming is OFF on a MoE model (qwen4exp, 512 experts), so this run is a baseline, not this engine: add --moe-stream --overlap to stream the routed experts from flash.

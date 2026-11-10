@@ -248,11 +248,20 @@ unchanged plan.
   every pass ends with a read of its result (a backend that queues work is timed on doing it, not on
   accepting it), and everything is freed on every path. It runs in the isolated child with the other
   device probes; the facts line is `v=2` and carries `expert=` and `dense=`.
-- **Correctness first.** Every backend computes the same bytes on the same inputs; a device whose
-  result at one token disagrees with the host's (llama.cpp's own NMSE bound) is refused for good
-  (`identity_ok = No`), and at 128 tokens it is not armed for the prefill. A node a device has no
-  kernel for is left out of its graph and priced at the host's rate for that half, where the
-  scheduler would run it.
+- **Correctness first.** Every backend computes the same bytes on the same inputs, and a device too
+  far from the right result at one token is refused for good (`identity_ok = No`); at 128 tokens it
+  is not armed for the prefill. The right result is computed: the compared nodes (the first decode
+  group, and the first four tokens at width) in double precision from the dequantized weights. A
+  device passes within twice llama.cpp's per-op NMSE bound of it (`k_max_nmse_device`, 1e-3).
+  Upstream's 5e-4 compares a backend with the CPU on random data, and upstream relaxes it where a
+  backend quantizes the activations its own way. RTX 3090 cards on GLM-4.5-Air's Q5_0/Q5_1 experts
+  measured 5.3e-4 from the exact result (the host 1.1e-5, every other layout 6e-6 or less), where a
+  wrong kernel is off by 1e-1 to 1. Judging a device by the host instead refused those cards for
+  rounding differently from the host. The host is the reference only where the exact result cannot be
+  computed (a type with no conversion to float), or where the host is not within `k_max_nmse` of it.
+  The plan's log line `real layer: <device> on the <half>: <e> from the exact result, the host <e>`
+  gives both distances. A node a device has no kernel for is left out of its graph and priced at the
+  host's rate for that half, where the scheduler would run it.
 - **The facts.** `expert_gibs` and `dense_gibs` per device and the host's `host_expert_gibs` and
   `host_dense_gibs`; `wide_matmul_gibs` is now the whole layer at 128 tokens. A rule comparing a host
   with a device reads both figures from the same experiment (`RatePair`): the real layer's where both
@@ -379,6 +388,20 @@ without a device of their own, an unchanged plan.
   price that can be wrong by half on the one comparison it exists for is a coefficient, not a fact.
   A layer split by capacity waits for the host on every token wherever the device is the faster
   processor; that part needs no price.
+- **Kept by measurement across loads.** The rule is necessary and not sufficient: every miss of the
+  cache crosses the link before the device computes it. On two 24 GB cards over PCIe 3 with GLM-4.7
+  (355B, 32B active), the cache held a tenth of the experts, misses went up at 4.5 GB/s, and decode was
+  1.6 tok/s where the fitter's placement did 3.9. A price would have to know the hit rate the cache
+  reaches and what the host really decodes at, and the one comparison on record is wrong by half on
+  exactly those. A device cache is fixed when a context is created, so the two sides cannot
+  alternate inside one answer as the knob trial's do. They alternate across loads instead
+  (`MeasuredKnobs::device_cache_tps`, `no_device_cache_tps`). A load with nothing measured arms the
+  cache and times its decode (`KnobTrialConfig::device_tier`, a `RateProbe` after the knobs' trials:
+  the median of `2 * rounds + 1` windows, after the longest settle the trial makes, since a device
+  cache fills out of the session's counters). The next load runs the fitter's placement and times it.
+  The plan after keeps the faster, and the cache holds where the two are within `min_backend_win`.
+  The front-end merges each load's side into the record it keeps for the model and machine. Gate G25e
+  times both sides on the loopback device, byte-identical, with a rate in the record.
 - **Not done.** The double reads stay, measured rather than removed: on a model that fits the host,
   the experts are resident and nothing is read. Pipeline parallelism on several devices is not
   weighed. A warm start of the device cache from the record's hottest experts is not built: the first

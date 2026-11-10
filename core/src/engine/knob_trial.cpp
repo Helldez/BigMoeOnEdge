@@ -149,4 +149,62 @@ void KnobTrial::decide() {
     }
 }
 
+RateProbe::RateProbe(bool settle, bool hits_visible, KnobTrialPolicy pol) : pol_(pol), hits_visible_(hits_visible) {
+    pol_.window_tokens = std::max(1, pol_.window_tokens);
+    pol_.warm_tokens = std::max(0, pol_.warm_tokens);
+    pol_.rounds = std::max(1, pol_.rounds);
+    pol_.settle_windows_max = std::max(1, pol_.settle_windows_max);
+    if (!settle) phase_ = Phase::Measure;
+    warm_left_ = pol_.warm_tokens;
+}
+
+double RateProbe::tokens_per_second() const {
+    if (phase_ != Phase::Done || spt_.empty()) return 0.0;
+    std::vector<double> v = spt_;
+    std::nth_element(v.begin(), v.begin() + (long) (v.size() / 2), v.end());
+    const double spt = v[v.size() / 2];
+    return spt > 0.0 ? 1.0 / spt : 0.0;
+}
+
+void RateProbe::interrupt() {
+    tokens_ = 0;
+    seconds_ = 0.0;
+    lookups_ = hits_ = 0;
+    warm_left_ = pol_.warm_tokens;
+}
+
+void RateProbe::record(double seconds, int tokens, uint64_t lookups, uint64_t hits) {
+    if (phase_ == Phase::Done || tokens <= 0 || !(seconds > 0.0)) return;
+    if (warm_left_ > 0) {
+        warm_left_ -= tokens;
+        return;
+    }
+    tokens_ += tokens;
+    seconds_ += seconds;
+    lookups_ += lookups;
+    hits_ += hits;
+    if (tokens_ >= pol_.window_tokens) close_window();
+}
+
+void RateProbe::close_window() {
+    const double spt = seconds_ / (double) tokens_;
+    const double hit = lookups_ ? (double) hits_ / (double) lookups_ : -1.0;
+    tokens_ = 0;
+    seconds_ = 0.0;
+    lookups_ = hits_ = 0;
+    if (phase_ == Phase::Settle) {
+        ++settle_windows_;
+        // As the trial settles where the cache is in view; where it is not, the longest wait.
+        const bool settled =
+            hits_visible_ ? hit < 0.0 || (last_hit_ >= 0.0 && std::fabs(hit - last_hit_) <= pol_.settle_hit_delta) ||
+                                settle_windows_ >= pol_.settle_windows_max
+                          : settle_windows_ >= pol_.settle_windows_max;
+        last_hit_ = hit;
+        if (settled) phase_ = Phase::Measure;
+        return;
+    }
+    spt_.push_back(spt);
+    if ((int) spt_.size() >= windows_wanted()) phase_ = Phase::Done;
+}
+
 } // namespace bmoe

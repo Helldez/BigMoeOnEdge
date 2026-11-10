@@ -198,6 +198,7 @@ int main(int argc, char ** argv) {
         cfg.moe.force_cache = true;
         cfg.moe.cache_pin = true;
         cfg.moe.cache_pin_fit = true;
+        cfg.moe.cache_discard = false; // this test is about the lock; an offered cache is never locked
         cfg.prefill.device = device;
         cfg.prefill.verify = true;
         cfg.prefill.best_effort = false;

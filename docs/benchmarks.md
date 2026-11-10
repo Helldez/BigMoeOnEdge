@@ -535,6 +535,24 @@ tier pinned off the fitter put 6 GB of experts on the card and the rest resident
 Strata quotes 94 tok/s on this class with its experts and its drafting on the card: that gap is the
 work in front of the planner, not a ceiling of the card.
 
+On 2026-11-09 the server's own plan (16384 context) was measured on three rented cards
+([bench-data/2026-11-09-graph-width](bench-data/2026-11-09-graph-width/README.md)). On a 12 GB card
+(RTX 3060 class) a graph as wide as the context took 6.6 GB of the card and left no room for the
+device cache: Qwen3.8-Flash-Next Q2_0 decoded at **13 tok/s**, and at **33-36** once the width was
+priced against the card. On a 24 GB card (RTX 3090 class) the fix leaves Flash-Next as it was (61-73
+tok/s, 1560-1734 tok/s of prefill on a 9.7k prompt), and fits Qwen3.6-35B on the card whole: **156
+tok/s** instead of 129-139, prefill 5604 instead of 4789. On a 16 GB card with 23 GB of RAM, where
+Flash-Next streams from flash behind a 4.1 GB device cache and a 20.8 GB RAM cache, it decodes at
+18-29 tok/s with every build. #505's cache policy adds 18% to a long prompt's prefill (374 to
+441-444), alone and with #523.
+
+On 2026-11-09 a rented 12 GB card (RTX 3060 class) with a 120.7 GiB control group ran the published
+v0.40.2 Linux archive on Qwen3.8-Flash-Next IQ3_S: `--auto` kept the model resident, cached 5.3 GB
+of the experts used most on the card (68% hits) and decoded at **16.0-17.5 tok/s**. Without the CUDA
+pack, or with it extracted next to the archive's folder rather than inside it, the same release
+ran on the CPU at 1.6-2.9 tok/s
+([bench-data/2026-11-09-rented-12gb-cuda-pack](bench-data/2026-11-09-rented-12gb-cuda-pack/README.md)).
+
 On a rented 16 GB card with 30 GiB of RAM (a 6-core desktop CPU, NVMe at 2.2 GB/s), the class of a
 home PC with a mid-range card, Qwen3.8-Flash-Next Q2_0 streams: `--auto` put the dense part and a
 10 GB cache of the experts used most on the card (#429) and the rest behind a RAM cache

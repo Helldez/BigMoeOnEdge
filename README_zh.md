@@ -36,6 +36,10 @@
 
 Qwen3.6-35B-A3B（21 GB）在各设备上实时运行。该模型大于每台设备的内存。
 
+**功能导览**（2:38）：在 16 GB 的 Mac 上演示模型、规划器、聊天、在文件夹中工作的智能体、任务和已连接的应用。
+
+https://github.com/user-attachments/assets/16371803-b96b-42a4-b147-cb1b7d515c73
+
 ## 功能
 
 - **运行装不下的模型。** MoE 模型每个 token 只使用少数几个专家。引擎将每个 token 都需要的权重和最常用的专家保留在内存中，其余从闪存读取。输出与将整个模型放在内存中时相同；测试会对此进行验证。
@@ -56,6 +60,7 @@ Qwen3.6-35B-A3B（21 GB）在各设备上实时运行。该模型大于每台设
 | **Apple silicon 笔记本** | 16 GB | Qwen3.8-Flash-Next 125B | 76 GB | 闪存 | 7-9 |
 |  |  | Qwen3.6-35B-A3B | 21 GB | 闪存 | 18-24 |
 | **Windows 笔记本** | 16 GB | Qwen3.6-35B-A3B | 21 GB | 闪存 | 5 |
+| **桌面 GPU**（NVIDIA） | 12 GB + 128 GB RAM | Qwen3.8-Flash-Next 125B | 84 GB | RAM，GPU 缓存 | 16-17 |
 | **桌面 GPU**（NVIDIA） | 16 GB + 32 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | 闪存，GPU 缓存 | 19-21 |
 | **桌面 GPU**（NVIDIA） | 24 GB + 96 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM，GPU 缓存 | 70 |
 |  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
@@ -114,6 +119,21 @@ print(reply.choices[0].message.content)
 **编程智能体**需要较大的上下文：约为其首个请求的几倍。opencode 用 32768 足够，Claude Code 用 65536
 （[为客户端设定上下文大小](docs/server-api.md#sizing-the-context-for-a-client)）。
 
+```jsonc
+// opencode, ~/.config/opencode/opencode.json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "bmoe": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": { "baseURL": "http://127.0.0.1:8765/v1", "apiKey": "local" },
+      "models": { "<model id from /v1/models>": { "limit": { "context": 32768, "output": 8192 } } }
+    }
+  },
+  "model": "bmoe/<model id from /v1/models>"
+}
+```
+
 ```bash
 # Claude Code
 export ANTHROPIC_BASE_URL=http://127.0.0.1:8765
@@ -136,8 +156,7 @@ wire_api = "responses"
 env_key = "BMOE_API_KEY"   # export BMOE_API_KEY=local
 ```
 
-对于 opencode，将该服务器添加为 OpenAI 兼容的提供方，地址为 `http://127.0.0.1:8765/v1`。在
-**Connect apps** 中，应用会写入 Codex CLI 和 opencode 的设置，并显示 Claude Code 所需的设置。
+在 **Connect apps** 中，应用会写入 opencode 和 Codex CLI 的设置，并显示 Claude Code 所需的设置。
 
 **智能体。** 桌面应用有自己的智能体：它在你选择的文件夹中工作，读取和编辑文件、运行命令；除非你允许，否则在做任何更改前都会先询问。
 对话也可以交给 OpenCode、Claude Code、Codex 或 Pi 运行。参见 [docs/agent.md](docs/agent.md)。
