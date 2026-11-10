@@ -307,18 +307,25 @@ struct Session::Impl {
 
     // The knob trial (SessionConfig::trial): the lossless knobs measured on the first decodes once
     // the cache has settled, one knob after the other, each winner kept for the rest of the session
-    // and returned (Session::measured_knobs). Stage 0 is the thread count, 1 overlap, 2 done.
+    // and returned (Session::measured_knobs). The stages run in this order; after the knobs,
+    // the decode rate of the device tier's side this load runs (KnobTrialConfig::device_tier), timed
+    // with every knob at its winner so no switch is in its windows.
+    static constexpr int stage_threads = 0, stage_overlap = 1, stage_rate = 2, stage_done = 3;
     struct Trials {
         std::vector<int> threads; // arms: the incumbent, then the candidates; empty: not measured
         std::vector<int> overlap; // arms as 0/1, the incumbent first; empty: not measured
-        int stage = 2;
+        bool rate = false;        // the device tier's side is timed
+        int stage = stage_done;
         std::unique_ptr<KnobTrial> cur;
+        std::unique_ptr<RateProbe> rate_probe;
         MeasuredKnobs result;
         uint64_t lookups_seen = 0, hits_seen = 0; // the cache's counters at the last step
     } trials;
     int threads_now = 0; // the decode thread count the contexts run with
     void arm_trials();
     void start_trial_stage(bool settle);
+    void next_trial_stage(bool settled);
+    void rate_step(double seconds, int tokens, uint64_t lookups, uint64_t hits);
     void finish_trial_stage();
     bool apply_trial_arm(int arm);
     void set_decode_threads(int n);
@@ -2048,14 +2055,43 @@ void Session::Impl::arm_trials() {
         else
             trials.overlap = {cfg.moe.overlap ? 1 : 0, cfg.moe.overlap ? 0 : 1};
     }
-    trials.stage = !trials.threads.empty() ? 0 : !trials.overlap.empty() ? 1 : 2;
-    if (trials.stage < 2) start_trial_stage(/*settle*/ true);
+    trials.rate = t.device_tier >= 0;
+    trials.stage = stage_done;
+    next_trial_stage(/*settled*/ false);
+}
+
+// The next stage after the current one, started: a knob trial, the rate probe, or done. `settled`:
+// a stage before it already waited for the cache.
+void Session::Impl::next_trial_stage(bool settled) {
+    const int from = trials.stage == stage_done ? -1 : trials.stage;
+    trials.cur.reset();
+    trials.rate_probe.reset();
+    if (from < stage_threads && !trials.threads.empty())
+        trials.stage = stage_threads;
+    else if (from < stage_overlap && !trials.overlap.empty())
+        trials.stage = stage_overlap;
+    else if (from < stage_rate && trials.rate)
+        trials.stage = stage_rate;
+    else {
+        trials.stage = stage_done;
+        return;
+    }
+    if (trials.stage == stage_rate) {
+        KnobTrialPolicy pol;
+        pol.window_tokens = cfg.trial.window_tokens;
+        // A device expert cache fills inside llama.cpp, out of this session's counters: where it is
+        // armed, the probe waits as long as the trial ever waits for a cache.
+        const bool device_cache = cfg.moe.device_cache_mb > 0;
+        trials.rate_probe = std::make_unique<RateProbe>(!settled || device_cache, /*hits_visible*/ !device_cache, pol);
+        return;
+    }
+    start_trial_stage(/*settle*/ !settled);
 }
 
 void Session::Impl::start_trial_stage(bool settle) {
     KnobTrialPolicy pol;
     pol.window_tokens = cfg.trial.window_tokens;
-    const size_t arms = trials.stage == 0 ? trials.threads.size() : trials.overlap.size();
+    const size_t arms = trials.stage == stage_threads ? trials.threads.size() : trials.overlap.size();
     trials.cur = std::make_unique<KnobTrial>((int) arms - 1, settle, pol);
 }
 
@@ -2070,21 +2106,20 @@ void Session::Impl::set_decode_threads(int n) {
 
 // False when the switch could not be made; the stage is then abandoned on its incumbent.
 bool Session::Impl::apply_trial_arm(int arm) {
-    if (trials.stage == 0) {
+    if (trials.stage == stage_threads) {
         set_decode_threads(trials.threads[(size_t) arm]);
         return true;
     }
-    if (trials.stage == 1) {
+    if (trials.stage == stage_overlap) {
         const bool on = trials.overlap[(size_t) arm] != 0;
         if (source.overlap() == on || source.set_overlap(on)) return true;
         log_printf(LogLevel::Warn, "knob trial: overlap could not be switched %s; it is not measured",
                    on ? "on" : "off");
-        trials.stage = 2;
-        trials.cur.reset();
         source.set_overlap(cfg.moe.overlap);
+        next_trial_stage(/*settled*/ true);
         return false;
     }
-    return true;
+    return true; // the rate probe switches nothing
 }
 
 void Session::Impl::snapshot_trial_counters() {
@@ -2095,19 +2130,44 @@ void Session::Impl::snapshot_trial_counters() {
 }
 
 void Session::Impl::resume_trial() {
-    if (trials.stage >= 2) return;
+    if (trials.stage == stage_done) return;
     snapshot_trial_counters(); // the prompt's lookups are not the first window's
+    if (trials.stage == stage_rate) return;
     apply_trial_arm(trials.cur->arm());
 }
 
 void Session::Impl::pause_trial() {
-    if (trials.stage >= 2) return;
+    if (trials.stage == stage_done) return;
+    if (trials.stage == stage_rate) {
+        trials.rate_probe->interrupt();
+        return;
+    }
     trials.cur->interrupt();
     apply_trial_arm(0);
 }
 
+// The device tier's side, timed; its rate goes in the result, which the front-end keeps, and the
+// plan of a later load reads it against the other side's.
+void Session::Impl::rate_step(double seconds, int tokens, uint64_t lookups, uint64_t hits) {
+    RateProbe & r = *trials.rate_probe;
+    const bool settling = r.settling();
+    r.record(seconds, tokens, lookups, hits);
+    if (settling && !r.settling())
+        log_printf(LogLevel::Info, "knob trial: timing the decode %s a device expert cache",
+                   cfg.trial.device_tier == 1 ? "with" : "without");
+    if (!r.done()) return;
+    const double tps = r.tokens_per_second();
+    if (cfg.trial.device_tier == 1)
+        trials.result.device_cache_tps = tps;
+    else
+        trials.result.no_device_cache_tps = tps;
+    log_printf(LogLevel::Info, "knob trial: %.2f tok/s %s a device expert cache, the median of %d windows", tps,
+               cfg.trial.device_tier == 1 ? "with" : "without", r.windows());
+    next_trial_stage(/*settled*/ true);
+}
+
 void Session::Impl::trial_step(double seconds, int tokens) {
-    if (trials.stage >= 2) return;
+    if (trials.stage == stage_done) return;
     uint64_t lookups = 0, hits = 0;
     if (cfg.moe.enabled) {
         const uint64_t l0 = trials.lookups_seen, h0 = trials.hits_seen;
@@ -2115,16 +2175,20 @@ void Session::Impl::trial_step(double seconds, int tokens) {
         lookups = trials.lookups_seen - l0;
         hits = trials.hits_seen - h0;
     }
+    if (trials.stage == stage_rate) {
+        rate_step(seconds, tokens, lookups, hits);
+        return;
+    }
     KnobTrial & k = *trials.cur;
     const bool settling = k.settling();
     k.record(seconds, tokens, lookups, hits);
     if (settling && !k.settling())
         log_printf(LogLevel::Info, "knob trial: the cache has settled; measuring %s",
-                   trials.stage == 0 ? "the decode thread count" : "overlap");
+                   trials.stage == stage_threads ? "the decode thread count" : "overlap");
     if (const int dead = k.last_abandoned()) {
         const std::vector<double> & w = k.window_seconds_per_token();
         const size_t n = w.size();
-        if (trials.stage == 0)
+        if (trials.stage == stage_threads)
             log_printf(LogLevel::Info,
                        "knob trial: %d decode threads settled as no win after %d rounds: %.0f ms/token against %.0f",
                        trials.threads[(size_t) dead], k.rounds(dead), 1e3 * w[n - 2], 1e3 * w[n - 1]);
@@ -2145,7 +2209,7 @@ void Session::Impl::trial_step(double seconds, int tokens) {
 void Session::Impl::finish_trial_stage() {
     KnobTrial & k = *trials.cur;
     const int w = k.winner();
-    const int arms = trials.stage == 0 ? (int) trials.threads.size() : (int) trials.overlap.size();
+    const int arms = trials.stage == stage_threads ? (int) trials.threads.size() : (int) trials.overlap.size();
     int best = 1;
     for (int c = 2; c < arms; ++c)
         if (k.gain(c) > k.gain(best)) best = c;
@@ -2161,7 +2225,7 @@ void Session::Impl::finish_trial_stage() {
                       "inside the %.0f%% margin",
                       100.0 * (gain - 1.0), k.rounds(best), 100.0 * KnobTrialPolicy{}.min_win);
     trials.result.rounds = k.rounds(w ? w : best);
-    if (trials.stage == 0) {
+    if (trials.stage == stage_threads) {
         trials.result.threads = trials.threads[(size_t) w];
         trials.result.threads_tried = trials.threads;
         trials.result.threads_gain = gain;
@@ -2174,11 +2238,7 @@ void Session::Impl::finish_trial_stage() {
         log_printf(LogLevel::Info, "knob trial: overlap %s (against %s): %s", trials.result.overlap ? "on" : "off",
                    trials.overlap[0] ? "on" : "off", verdict);
     }
-    trials.stage = trials.stage == 0 && !trials.overlap.empty() ? 1 : 2;
-    if (trials.stage < 2)
-        start_trial_stage(/*settle*/ false);
-    else
-        trials.cur.reset();
+    next_trial_stage(/*settled*/ true);
 }
 
 // The two configurations that are legal and still worth a word at load, said once.
@@ -3132,7 +3192,7 @@ struct Session::Impl::Turn {
         // threads on four fast cores ran one at ten times the reference, the sample found a page
         // out, and the cache was halved for the rest of the session (a phone: 18.8 tok/s to 10.7).
         // Neither the stall test nor the reference reads such a token.
-        if (im.trials.stage < 2 && im.trials.cur && im.trials.cur->arm() != 0) return;
+        if (im.trials.stage < im.stage_rate && im.trials.cur && im.trials.cur->arm() != 0) return;
         const double ref = im.brake.reference();
         if (!im.brake.stalled(last_compute_s)) return;
         const double lost = im.source.cache_lost_frac(k_brake_sample);
@@ -3188,7 +3248,7 @@ struct Session::Impl::Turn {
             if (!accept(s)) return false;
             emit(s, on_token, sink);
             brake_cache();
-            if (im.trials.stage < 2) {
+            if (im.trials.stage != im.stage_done) {
                 // The decode as the knob changes it: the target's and the draft's passes, not the
                 // emission around them, which a person's own client paces.
                 const double step_s = secs(s.s0, s.s1) + s.draft_s;

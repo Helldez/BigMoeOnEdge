@@ -388,6 +388,20 @@ without a device of their own, an unchanged plan.
   price that can be wrong by half on the one comparison it exists for is a coefficient, not a fact.
   A layer split by capacity waits for the host on every token wherever the device is the faster
   processor; that part needs no price.
+- **Kept by measurement across loads.** The rule is necessary and not sufficient: every miss of the
+  cache crosses the link before the device computes it. On two 24 GB cards over PCIe 3 with GLM-4.7
+  (355B, 32B active), the cache held a tenth of the experts, misses went up at 4.5 GB/s, and decode was
+  1.6 tok/s where the fitter's placement did 3.9. A price would have to know the hit rate the cache
+  reaches and what the host really decodes at, and the one comparison on record is wrong by half on
+  exactly those. A device cache is fixed when a context is created, so the two sides cannot
+  alternate inside one answer as the knob trial's do. They alternate across loads instead
+  (`MeasuredKnobs::device_cache_tps`, `no_device_cache_tps`). A load with nothing measured arms the
+  cache and times its decode (`KnobTrialConfig::device_tier`, a `RateProbe` after the knobs' trials:
+  the median of `2 * rounds + 1` windows, after the longest settle the trial makes, since a device
+  cache fills out of the session's counters). The next load runs the fitter's placement and times it.
+  The plan after keeps the faster, and the cache holds where the two are within `min_backend_win`.
+  The front-end merges each load's side into the record it keeps for the model and machine. Gate G25e
+  times both sides on the loopback device, byte-identical, with a rate in the record.
 - **Not done.** The double reads stay, measured rather than removed: on a model that fits the host,
   the experts are resident and nothing is read. Pipeline parallelism on several devices is not
   weighed. A warm start of the device cache from the record's hottest experts is not built: the first
