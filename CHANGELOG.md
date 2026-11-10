@@ -73,6 +73,17 @@ Semantic Versioning.
   under the device GIFs, in `README.md` and its five translations (which had no link to it).
 
 ### Fixed
+- **The knob trial drops a candidate that collapses after one window, not two.** On a 12 GB phone
+  with Ling-3.0-tiny Q8_0 and `--auto`, the first answer tried 2 and 8 decode threads against 4.
+  Eight threads ran about 2 s a token against 0.1 s (12 s of CPU a token), and the trial still ran
+  it for two full windows, about 36 s of near-frozen decode the user saw as stutter, because only
+  the count of losing rounds could end a candidate. A candidate now also stops after a single window
+  whose fastest token is slower than the incumbent's slowest token in the trial by more than the
+  incumbent's own range (slowest over fastest) and the 10% margin. No constant is fitted: the bound
+  is the noise the trial measured on the incumbent, and a stall elsewhere in the machine, which
+  slows some tokens of a window rather than every one, is still left to the median. A 5-30% loss
+  overlaps the incumbent's tokens and is settled by the median as before; the abandoned round stays
+  on record as the loss it measured. The log line says which rule ended it.
 - **The planner no longer refuses a prefill device for a cache that is already off** (#508). It
   required the expert cache to stay at least one token cycle with the device armed, without asking
   whether it was one without it, so a run whose cache was off (under a token cycle) refused every

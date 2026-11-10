@@ -34,17 +34,22 @@ int KnobTrial::arm() const {
 void KnobTrial::interrupt() {
     tokens_ = 0;
     seconds_ = 0.0;
+    step_lo_ = step_hi_ = 0.0;
     lookups_ = hits_ = 0;
     warm_left_ = pol_.warm_tokens;
 }
 
 void KnobTrial::record(double seconds, int tokens, uint64_t lookups, uint64_t hits) {
     last_abandoned_ = 0;
+    last_apart_ = false;
     if (phase_ == Phase::Done || tokens <= 0 || !(seconds > 0.0)) return;
     if (warm_left_ > 0) {
         warm_left_ -= tokens; // a step is timed whole or not at all
         return;
     }
+    const double step = seconds / (double) tokens;
+    step_lo_ = tokens_ == 0 ? step : std::min(step_lo_, step);
+    step_hi_ = tokens_ == 0 ? step : std::max(step_hi_, step);
     tokens_ += tokens;
     seconds_ += seconds;
     lookups_ += lookups;
@@ -55,9 +60,11 @@ void KnobTrial::record(double seconds, int tokens, uint64_t lookups, uint64_t hi
 void KnobTrial::close_window() {
     const double spt = seconds_ / (double) tokens_;
     const double hit = lookups_ ? (double) hits_ / (double) lookups_ : -1.0;
+    const double lo = step_lo_, hi = step_hi_;
     const int prev_arm = arm();
     tokens_ = 0;
     seconds_ = 0.0;
+    step_lo_ = step_hi_ = 0.0;
     lookups_ = hits_ = 0;
 
     if (phase_ == Phase::Settle) {
@@ -71,10 +78,27 @@ void KnobTrial::close_window() {
     }
 
     spt_.push_back(spt);
+    lo_.push_back(lo);
+    // The incumbent's range is taken over every step it ran in this trial, settling left out: the
+    // windows of a cache still filling say nothing about the noise of a settled one.
+    if (prev_arm == 0) {
+        const bool first = !(inc_hi_ > 0.0);
+        inc_lo_ = first ? lo : std::min(inc_lo_, lo);
+        inc_hi_ = first ? hi : std::max(inc_hi_, hi);
+    }
     // An incumbent window closing completes the ratio of the candidate window before it. A candidate
-    // whose losing rounds already outnumber what the median can overturn is settled: the rounds left
-    // leave the schedule, and what was measured stays in the record.
+    // whose window ran apart from the incumbent, or whose losing rounds already outnumber what the
+    // median can overturn, is settled: the rounds left leave the schedule, and what was measured
+    // stays in the record.
     if (schedule_[spt_.size() - 1] == 0) {
+        if (spt_.size() >= 3) {
+            const size_t k = spt_.size() - 2;
+            const int c = schedule_[k];
+            if (c > 0 && !dead_[(size_t) c] && apart(k)) {
+                abandon(c);
+                last_apart_ = true;
+            }
+        }
         const double losing = 1.0 / (1.0 + pol_.min_win); // a ratio at or past this is not a win
         const int overturnable = (pol_.rounds - 1) / 2;   // losing rounds a median of `rounds` can still absorb
         for (int c = 1; c <= n_cand_; ++c) {
@@ -95,6 +119,7 @@ void KnobTrial::close_window() {
 void KnobTrial::abandon(int cand) {
     dead_[(size_t) cand] = 1;
     last_abandoned_ = cand;
+    last_apart_ = false; // the caller says so when it was
     // The windows still to run, without this arm's, and without an incumbent window that would then
     // follow another.
     const size_t k = spt_.size() - 1;
@@ -107,6 +132,14 @@ void KnobTrial::abandon(int cand) {
     }
     schedule_.resize(k + 1);
     schedule_.insert(schedule_.end(), rest.begin(), rest.end());
+}
+
+// Candidate window k against every incumbent step so far, the window just closed after it included,
+// so a drift that slows the incumbent as well raises the bar with it.
+bool KnobTrial::apart(size_t k) const {
+    if (!(inc_lo_ > 0.0) || !(inc_hi_ > 0.0)) return false;
+    const double spread = std::max(inc_hi_ / inc_lo_, 1.0 + pol_.min_win);
+    return lo_[k] > inc_hi_ * spread;
 }
 
 std::vector<double> KnobTrial::ratios(int cand) const {

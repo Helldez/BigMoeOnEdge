@@ -51,6 +51,7 @@ struct Outcome {
     int settled_at = -1;   // the step the measuring started
     std::vector<int> arms; // the arm each step ran under
     std::vector<double> gains;
+    int apart = 0; // arms given up on one window apart from the incumbent
 };
 
 Outcome run(KnobTrial & k, const Sim & sim, int n_cand) {
@@ -66,6 +67,7 @@ Outcome run(KnobTrial & k, const Sim & sim, int n_cand) {
             k.record(s, 1, 0, 0);
         else
             k.record(s, 1, 100, (uint64_t) std::lround(100.0 * h));
+        o.apart += k.last_abandoned() && k.last_abandoned_apart();
         o.steps = t + 1;
     }
     o.done = k.done();
@@ -158,10 +160,12 @@ int main() {
     {
         KnobTrial k(1, false, pol);
         Sim sim;
-        // The candidate is 25% faster, but one of its windows met a stall elsewhere in the machine.
+        // The candidate is 25% faster, but one of its windows met a stall elsewhere in the machine,
+        // which slowed three of its four tokens. A slowdown of every token of a window past the
+        // incumbent's whole range is judged as the arm's own (the `apart` checks below).
         sim.spt = [](int arm, int t) {
             const double base = arm == 1 ? 0.040 : 0.050;
-            return (t >= 6 && t < 10) ? base * 8.0 : base;
+            return (t >= 7 && t < 11) ? base * 8.0 : base;
         };
         const Outcome o = run(k, sim, 1);
         check(o.done && o.winner == 1, "outlier: one stalled window does not overturn three rounds' median");
@@ -416,24 +420,73 @@ int main() {
     // ── settled: a candidate that can no longer win stops being measured ──
     // Three rounds of eight tokens at ten times the pace tripled a phone's first answer; with three
     // rounds, two losing ones settle the median, and the third would only repeat them. The brake
-    // must not read those windows either (the session's concern).
+    // must not read those windows either (the session's concern). An ordinary loss, 20% under 15%
+    // noise per token, whose windows overlap the incumbent's: the median settles it, not one window.
     {
         KnobTrial k(1, false, pol);
         Sim sim;
-        sim.spt = [](int arm, int) { return arm == 1 ? 0.500 : 0.050; };
+        sim.spt = [](int arm, int) { return arm == 1 ? 0.060 : 0.050; };
+        sim.noise = 0.15;
         const Outcome o = run(k, sim, 1);
         int cand_steps = 0;
         for (int a : o.arms)
             cand_steps += a == 1;
-        check(o.done && o.winner == 0, "settled: ten times slower holds the incumbent");
-        check(k.abandoned(1) && k.rounds(1) == 2,
-              "settled: the candidate stopped with two rounds on record (" + std::to_string(k.rounds(1)) + ")");
+        check(o.done && o.winner == 0, "settled: 20% slower holds the incumbent");
+        check(k.abandoned(1) && k.rounds(1) == 2 && o.apart == 0,
+              "settled: the candidate stopped on the median, with two rounds on record (" +
+                  std::to_string(k.rounds(1)) + ")");
         check(cand_steps == 2 * (pol.window_tokens + pol.warm_tokens),
               "settled: the candidate ran two windows and their warm-ups only (" + std::to_string(cand_steps) +
                   " steps)");
         // Incumbent, candidate, incumbent, candidate, incumbent: five windows, each after a warm-up.
         check(o.steps <= 5 * (pol.window_tokens + pol.warm_tokens),
               "settled: the trial ended after the bracketing window (" + std::to_string(o.steps) + " steps)");
+    }
+    // ── apart: a window slower in every token than the incumbent's whole range ends the candidate ──
+    // On a phone, eight decode threads against four ran each token about twenty times slower, and the
+    // median's second losing window was another 18 s of stutter. One window decides that: its fastest
+    // token is past the incumbent's slowest by more than the incumbent's spread and the margin.
+    {
+        KnobTrial k(1, false, pol);
+        Sim sim;
+        sim.spt = [](int arm, int) { return arm == 1 ? 1.000 : 0.050; };
+        sim.noise = 0.10;
+        const Outcome o = run(k, sim, 1);
+        int cand_steps = 0;
+        for (int a : o.arms)
+            cand_steps += a == 1;
+        check(o.done && o.winner == 0 && k.abandoned(1) && k.rounds(1) == 1 && o.apart == 1,
+              "apart: twenty times slower stops after one round (" + std::to_string(k.rounds(1)) + ")");
+        check(cand_steps == pol.window_tokens + pol.warm_tokens,
+              "apart: the candidate ran one window and its warm-up only (" + std::to_string(cand_steps) + " steps)");
+        check(o.steps <= 3 * (pol.window_tokens + pol.warm_tokens),
+              "apart: the trial ended after the bracketing window (" + std::to_string(o.steps) + " steps)");
+        check(k.gain(1) > 0.0 && k.gain(1) < 0.1, "apart: the round it ran stays on record as the loss it measured");
+    }
+    // ── apart beside another candidate: the slow one leaves the schedule, the other is measured through ──
+    // The phone's trial: {2, 8} against 4, eight the collapse. Its later windows are skipped, the
+    // other candidate keeps its rounds.
+    {
+        KnobTrial k(2, false, pol);
+        Sim sim;
+        sim.spt = [](int arm, int) { return arm == 2 ? 1.000 : arm == 1 ? 0.040 : 0.050; };
+        sim.noise = 0.05;
+        const Outcome o = run(k, sim, 2);
+        int slow_steps = 0;
+        for (int a : o.arms)
+            slow_steps += a == 2;
+        check(o.done && o.winner == 1 && k.abandoned(2) && !k.abandoned(1) && k.rounds(2) == 1 &&
+                  k.rounds(1) == pol.rounds,
+              "apart: the collapsing candidate stops after one round, the 25% faster one keeps its rounds and wins");
+        check(slow_steps == pol.window_tokens + pol.warm_tokens,
+              "apart: the schedule skips the collapsing candidate's later windows (" + std::to_string(slow_steps) +
+                  " steps)");
+        bool bracketed = true;
+        const std::vector<int> & s = k.schedule();
+        for (size_t j = 0; j < s.size(); ++j)
+            if (s[j] != 0 && (j == 0 || j + 1 >= s.size() || s[j - 1] != 0 || s[j + 1] != 0)) bracketed = false;
+        check(bracketed && s.front() == 0 && s.back() == 0,
+              "apart: the schedule left keeps every candidate window between two incumbent windows");
     }
     // ── settled beside a real win: the slow candidate stops, the fast one is measured through and wins ──
     {
@@ -445,14 +498,46 @@ int main() {
         check(o.done && o.winner == 2 && k.abandoned(1) && !k.abandoned(2) && k.rounds(2) == pol.rounds,
               "settled: the slow candidate stops, the 25% faster one keeps its rounds and wins");
     }
-    // ── one losing round settles nothing: a 25% faster candidate whose first window stalled at 1.8x ──
+    // ── a few percent slower in one window settles nothing: inside the margin, not apart ──
     {
         KnobTrial k(1, false, pol);
         Sim sim;
-        sim.spt = [](int arm, int t) { return arm == 1 ? (t < 12 ? 0.090 : 0.040) : 0.050; };
+        sim.spt = [](int arm, int) { return arm == 1 ? 0.0525 : 0.050; };
+        const Outcome o = run(k, sim, 1);
+        check(o.done && o.winner == 0 && o.apart == 0 && k.rounds(1) == 2,
+              "apart: 5% slower in every token is not ended by one window; the median settles it after two");
+    }
+    // ── one losing round settles nothing: a 25% faster candidate whose first window stalled ──
+    // A stall slows some tokens of a window: the window's average is past the incumbent's by far, its
+    // fastest token is not, and the median decides as before.
+    {
+        KnobTrial k(1, false, pol);
+        Sim sim;
+        sim.spt = [](int arm, int t) {
+            if (arm != 1) return 0.050;
+            return (t >= 6 && t < 9) ? 0.400 : 0.040;
+        };
         const Outcome o = run(k, sim, 1);
         check(o.done && o.winner == 1 && !k.abandoned(1) && k.rounds(1) == pol.rounds,
               "settled: one stalled round is measured through, and the candidate still wins");
+    }
+    // ── the incumbent's own spread raises the bar: a loss inside it is not ended by one window ──
+    // Its tokens alternate 50 and 100 ms (a range of two); a candidate at 150 ms a token, twice the
+    // incumbent's mean, is still inside what that range allows, and the median decides it. The same
+    // candidate against a steady incumbent at the same mean is apart, and ends after one window.
+    {
+        KnobTrial k(1, false, pol);
+        Sim sim;
+        sim.spt = [](int arm, int t) { return arm == 1 ? 0.150 : (t % 2 ? 0.100 : 0.050); };
+        const Outcome o = run(k, sim, 1);
+        check(o.done && o.winner == 0 && o.apart == 0 && k.rounds(1) == 2,
+              "spread: a loss within the incumbent's own range is settled by the median, not one window");
+        KnobTrial steady(1, false, pol);
+        Sim flat;
+        flat.spt = [](int arm, int) { return arm == 1 ? 0.150 : 0.075; };
+        const Outcome f = run(steady, flat, 1);
+        check(f.done && f.winner == 0 && f.apart == 1 && steady.rounds(1) == 1,
+              "spread: the same loss against a steady incumbent is apart after one window");
     }
     // ── a tie inside the margin is settled too: measured for two rounds, not three ──
     {
