@@ -173,8 +173,11 @@ compresses or swaps anything. A lookup that finds an offered entry takes it back
 from the model file, a read and not a write. A drop also lowers the budget by that entry, so a cache
 larger than the machine will let it keep settles where it is not refilled only to be dropped again.
 A dropped entry that nothing asks for again is found at the LRU tail, where the kernel's
-oldest-first reclaim leaves it: one entry per load, one page sampled with `mincore`. It is then
-retired the same way, so the cache's resident figure is what RAM still holds. The budget never goes
+oldest-first reclaim leaves it. Each load retires dropped entries from the tail up to the first one
+still held, sampling one page of each with `mincore`, so the cache's resident figure is what RAM
+still holds. Correctness never rests on that sweep: a lookup always takes an entry back first. The
+policy is its own module, `moe/discardable_entries`, over a port that `platform_io` implements; its
+test runs it against a fake kernel. The budget never goes
 under one token's cycle, and never grows back within the run, like the brake
 ([pressure.md](pressure.md)). The brake's sensor skips offered entries, because a dropped offer is
 this mechanism working, not the reclaim the brake watches for.

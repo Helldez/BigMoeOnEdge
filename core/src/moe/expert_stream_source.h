@@ -22,10 +22,10 @@
 #include "../io/platform_io.h"
 #include "../io/file_reader.h"
 #include "dense_weights.h" // DenseWeights + DenseTensorRef
+#include "discardable_entries.h"
 
 #include <atomic>
 #include <condition_variable>
-#include <deque>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -347,25 +347,16 @@ private:
     std::vector<uint32_t> cstamp_;
     std::vector<uint8_t> cspec_; // 1 if this resident entry was filled speculatively, until first hit
 
-    // Discardable cache (MoeStreamConfig::cache_discard): an entry no layer has used for one pass of
-    // the stack is offered to the kernel (pio::vm_offer), which may then DROP its pages under
-    // pressure instead of swapping it, or swapping everything else around a pinned cache. A hit on
-    // an offered entry takes it back first (pio::vm_reclaim); if the kernel took it, the hit becomes
-    // a miss and the entry is read again. live_q_ is every use in order, (id, generation), so the
-    // sweep is amortized O(1) per use: an entry is offered when its LAST use leaves the window.
-    bool discard_ = false;
-    bool discard_drop_ = false; // debug: drop what is offered, so every cold hit pays the re-read
-    uint32_t offer_after_ = 0;  // generations an entry stays ordinary after its last use
-    std::vector<uint8_t> coffered_;
-    std::vector<uint32_t> clive_gen_;
-    std::deque<std::pair<int32_t, uint32_t>> live_q_;
-    long long discarded_ = 0;
-    long long discarded_on_hit_ = 0; // offered entries the kernel had dropped when a lookup wanted them
-    void note_live(int32_t id);
-    void offer_cold();
-    void reap_dropped_tail();
+    // Discardable cache (MoeStreamConfig::cache_discard): the policy lives in DiscardableEntries;
+    // this source owns the entries, their LRU and the budget, and says which spans an entry owns.
+    DiscardableEntries disc_;
+    bool discard_wanted_ = false;
+    bool discard_drop_ = false;  // debug: drop an offer just before a lookup takes it back
+    uint32_t discard_after_ = 0; // generations route-ahead stages ahead of compute
+    long long swept_ = 0;        // dropped offers retired from the LRU tail
+    void settle_offers();
+    void retire_dropped_tail();
     void shrink_for_drop(size_t bytes);
-    bool reclaim_entry(int32_t id);
     bool entry_body(int32_t id, int p, uintptr_t & b0, uintptr_t & b1) const;
     int32_t chead_ = -1, ctail_ = -1;
     uint32_t cgen_ = 0;

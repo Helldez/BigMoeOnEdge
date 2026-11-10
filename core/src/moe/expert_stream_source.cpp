@@ -55,10 +55,12 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     // A pinned page cannot be dropped, and pinning is what made the kernel swap everyone else, so a
     // cache that can be offered is never pinned. One pass of the stack, plus the layers route-ahead
     // stages before their compute, is the newest an entry can be and still be in a kernel's hands.
-    discard_ = cfg.cache_discard && pio::vm_discard_supported();
-    discard_drop_ = discard_ && cfg.cache_discard_drop;
-    offer_after_ = (uint32_t) n_layer_ + (uint32_t) std::max(0, cfg.route_ahead) + 1;
-    if (discard_) pin_ = false;
+    // Offered entries are dropped, never written; a locked page cannot be dropped, and locking is
+    // what made the kernel swap everyone else, so a cache that can be offered is never pinned.
+    discard_wanted_ = cfg.cache_discard;
+    discard_drop_ = cfg.cache_discard_drop;
+    discard_after_ = (uint32_t) std::max(0, cfg.route_ahead);
+    if (discard_wanted_ && platform_span_ops().supported()) pin_ = false;
     overlap_ = cfg.overlap;
     two_wave_ = cfg.io_two_wave;
     prefetch_sync_ = cfg.prefetch_sync && !cfg.overlap; // serial only: overlap lane 0 is a worker
@@ -216,9 +218,16 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         const size_t n_entry = (size_t) n_layer_ * n_expert_;
         cvalid_.assign(n_entry, 0);
         cstamp_.assign(n_entry, 0);
-        coffered_.assign(n_entry, 0);
-        clive_gen_.assign(n_entry, 0);
-        live_q_.clear();
+        // One pass of the stack, plus the layers route-ahead stages before their compute, is the
+        // newest an entry can be and still be in a kernel's or an I/O lane's hands.
+        disc_.init(n_entry, (uint32_t) n_layer_ + discard_after_ + 1, discard_drop_,
+                   discard_wanted_ ? &platform_span_ops() : nullptr,
+                   [this](int32_t id, const std::function<void(Span)> & fn) {
+                       for (int p = 0; p < ExpertLayout::max_slots; ++p) {
+                           uintptr_t b0 = 0, b1 = 0;
+                           if (entry_body(id, p, b0, b1)) fn(Span{(void *) b0, (size_t) (b1 - b0)});
+                       }
+                   });
         cprev_.assign(n_entry, -1);
         cnext_.assign(n_entry, -1);
         cspec_.assign(n_entry, 0);
@@ -712,7 +721,7 @@ void ExpertStreamSource::quiesce_spec(int adopt_il) {
         cspec_[id] = 1;  // speculative until a real lookup hits it (then counted useful)
         cstamp_[id] = 0; // not used this generation → evictable if the budget is tight
         cresident_ += entry_bytes(id / n_expert_);
-        note_live(id);
+        disc_.used(id, cgen_);
         lru_push_back(id); // cold end: a mispredicted expert is reclaimed before any demanded one
         spec_experts_.fetch_add(1);
     }
@@ -789,7 +798,7 @@ double ExpertStreamSource::cache_lost_frac(int n) {
         // An offered entry the kernel dropped is the discardable cache doing its job - a later miss
         // reads it again, nothing was written - not the reclaim this sensor watches for, which is
         // the system taking pages the cache still counts on (and paying a write for them).
-        if (i % stride != 0 || !cvalid_[id] || coffered_[id]) continue;
+        if (i % stride != 0 || !cvalid_[id] || disc_.offered(id)) continue;
         const int il = id / n_expert_, e = id % n_expert_;
         for (int p = 0; p < ExpertLayout::max_slots; ++p) {
             const uint64_t slice = layers_[il].proj[p].nb2;
@@ -865,7 +874,7 @@ size_t ExpertStreamSource::entry_bytes(int il) const {
 // one page per expert and projection, outside the ledger `cresident_` keeps. Shared by eviction
 // and by discarding an incomplete spec entry; eval thread only, like every LRU mutation.
 void ExpertStreamSource::release_entry_pages(int32_t id) {
-    coffered_[id] = 0; // the spans are remapped below; whatever was offered there is gone
+    disc_.forget(id); // the spans are remapped below; whatever was offered there is gone
     const int il = id / n_expert_, e = id % n_expert_;
     // A neighbour's pages must stay while it is resident or while a speculative read of it is in
     // flight; the workers that finish those reads write the counters under io_mtx_, and only this
@@ -971,7 +980,7 @@ void ExpertStreamSource::spec_integrate_done() {
         cspec_[id] = 1;  // speculative until a real lookup hits it (then counted useful)
         cstamp_[id] = 0; // not used this generation → evictable if the budget is tight
         cresident_ += entry_bytes(id / n_expert_);
-        note_live(id);
+        disc_.used(id, cgen_);
         // Cold end for a GUESS (a mispredicted expert should be the first thing reclaimed) — but
         // under route-ahead there are no guesses: every integrated entry is a read some layer
         // COMMITTED to, at most N layers from being routed. Entering it cold handed it to the
@@ -1060,7 +1069,7 @@ bool ExpertStreamSource::commit_slice(int il, int e, int p) {
     slice_pages(dst, slice, page_, a0, a1);
     if (!pio::vm_commit((void *) a0, (size_t) (a1 - a0))) return false;
     uintptr_t b0 = 0, b1 = 0;
-    if (discard_ && entry_body(il * n_expert_ + e, p, b0, b1) && !pio::vm_commit_discardable((void *) b0, b1 - b0))
+    if (disc_.enabled() && entry_body(il * n_expert_ + e, p, b0, b1) && !disc_.prepare(Span{(void *) b0, b1 - b0}))
         return false;
     pin_pages((void *) a0, (size_t) (a1 - a0));
     return true;
@@ -1079,87 +1088,40 @@ bool ExpertStreamSource::entry_body(int32_t id, int p, uintptr_t & b0, uintptr_t
     return b1 > b0;
 }
 
-void ExpertStreamSource::note_live(int32_t id) {
-    if (!discard_) return;
-    clive_gen_[id] = cgen_;
-    live_q_.emplace_back(id, cgen_);
-}
-
-// Offer every entry whose last use has left the window. Each use queued one (id, gen); a pair whose
-// gen is no longer the entry's last use is stale (the entry was used again, and a later pair stands
-// for it) and is dropped. Entries with reads still in flight are never valid, so never offered.
-void ExpertStreamSource::offer_cold() {
-    if (!discard_ || cache_max_ == 0) return;
-    while (!live_q_.empty() && live_q_.front().second + offer_after_ <= cgen_) {
-        const auto [id, g] = live_q_.front();
-        live_q_.pop_front();
-        if (!cvalid_[id] || coffered_[id] || clive_gen_[id] != g) continue;
-        bool any = false;
-        for (int p = 0; p < ExpertLayout::max_slots; ++p) {
-            uintptr_t b0 = 0, b1 = 0;
-            if (!entry_body(id, p, b0, b1)) continue;
-            if (discard_drop_) { // as if the kernel took it at once
-                pio::vm_evict((void *) b0, b1 - b0);
-                any = true;
-            } else {
-                any = pio::vm_offer((void *) b0, b1 - b0) || any;
-            }
-        }
-        coffered_[id] = any ? 1 : 0;
+// Retire every dropped offer at the LRU tail, up to the first one still held. A dropped offer that
+// nothing looks up again would otherwise stay in the accounting - resident bytes holding no RAM, and
+// budget kept from entries that would - until the LRU reached it. Kernels reclaim offers oldest
+// first, so a drop shows at the tail; the walk stops at the first held entry, so its cost is the
+// drops it finds plus one sample. Correctness never rests on it: a lookup takes an entry back first.
+void ExpertStreamSource::retire_dropped_tail() {
+    while (cache_max_ != 0 && ctail_ != -1 && disc_.dropped(ctail_)) {
+        const int32_t id = ctail_;
+        const size_t bytes = entry_bytes(id / n_expert_);
+        ++swept_;
+        shrink_for_drop(bytes);
+        ever_evicted_[id] = 1; // a later read of it is the cache paying twice
+        release_entry_pages(id);
+        cvalid_[id] = 0;
+        cspec_[id] = 0;
+        cresident_ -= bytes;
+        lru_unlink(id);
     }
-}
-
-// Retire the coldest entry if the kernel already dropped it. A dropped offer that nothing looks up
-// again would otherwise stay in the accounting - "resident" bytes that hold no RAM, and budget they
-// keep from entries that would - until the LRU reached it. The kernel reclaims offers oldest first
-// on every platform that offers, so the LRU tail is where a drop shows first. One entry per load, one
-// page of it sampled (mincore): a burst of drops is caught up within a few tokens, and the hit-side
-// check in touch_entry stays the one that guarantees correctness, which is also what the gates drive.
-void ExpertStreamSource::reap_dropped_tail() {
-    if (!discard_ || cache_max_ == 0 || ctail_ == -1 || !coffered_[ctail_]) return;
-    const int32_t id = ctail_;
-    size_t sampled = 0, resident = 0;
-    for (int p = 0; p < ExpertLayout::max_slots && sampled == 0; ++p) {
-        uintptr_t b0 = 0, b1 = 0;
-        if (entry_body(id, p, b0, b1)) pio::vm_resident_sample((void *) b0, page_, &sampled, &resident);
-    }
-    if (sampled == 0 || resident != 0) return; // unmeasurable here, or still held
-    const size_t bytes = entry_bytes(id / n_expert_);
-    ++discarded_;
-    shrink_for_drop(bytes);
-    ever_evicted_[id] = 1; // a later read of it is the cache paying twice
-    release_entry_pages(id);
-    cvalid_[id] = 0;
-    cspec_[id] = 0;
-    cresident_ -= bytes;
-    lru_unlink(id);
 }
 
 // The budget gives up what the kernel took. A cache larger than the machine will let it keep is
-// refilled only to be dropped again - measured on a 16 GB machine, 7131 drops in 512 tokens and
-// half the decode rate - where one the size of what survives settles: no churn, and still nothing
-// written. Never under one token's cycle, and never back up within the run, for the reason the
-// brake does not grow back (docs/pressure.md).
+// refilled only to be dropped again, where one the size of what survives settles: no churn, and
+// still nothing written. Never under one token's cycle, and never back up within the run, for the
+// reason the brake does not grow back (docs/pressure.md).
 void ExpertStreamSource::shrink_for_drop(size_t bytes) {
     const size_t floor = std::max<size_t>(pin_floor_, 1);
     if (cache_max_ > floor) cache_max_ = std::max(floor, cache_max_ > bytes ? cache_max_ - bytes : 0);
 }
 
-// Take an offered entry back before anything reads it. False when the kernel dropped any of it:
-// every projection's span is then committed, ordinary memory again, and the caller reads it whole.
-bool ExpertStreamSource::reclaim_entry(int32_t id) {
-    coffered_[id] = 0;
-    bool intact = true;
-    for (int p = 0; p < ExpertLayout::max_slots; ++p) {
-        uintptr_t b0 = 0, b1 = 0;
-        if (entry_body(id, p, b0, b1)) intact = pio::vm_reclaim((void *) b0, b1 - b0) && intact;
-    }
-    if (!intact)
-        for (int p = 0; p < ExpertLayout::max_slots; ++p) {
-            uintptr_t b0 = 0, b1 = 0;
-            if (entry_body(id, p, b0, b1)) pio::vm_commit((void *) b0, b1 - b0); // Windows: decommitted by a drop
-        }
-    return intact;
+// One load's discard bookkeeping: offer what left the window, retire what the kernel took.
+void ExpertStreamSource::settle_offers() {
+    if (!disc_.enabled() || cache_max_ == 0) return;
+    disc_.offer_cold(cgen_, [this](int32_t id) { return cvalid_[id] != 0; });
+    retire_dropped_tail();
 }
 
 // Whether a platform grants this is only learnt by asking, and there are two different refusals.
@@ -1244,18 +1206,16 @@ bool ExpertStreamSource::touch_entry(int il, int e, bool & hit, bool promote, in
     const int32_t id = il * n_expert_ + e;
     clookups_++;
     cstamp_[id] = cgen_;
-    if (cvalid_[id] && coffered_[id] && !reclaim_entry(id)) {
+    if (cvalid_[id] && !disc_.take_back(id)) {
         // The kernel dropped it under pressure: still an entry of the cache, resident in the
         // accounting, but its bytes are gone - a miss the caller reads whole again.
-        ++discarded_;
-        ++discarded_on_hit_;
         shrink_for_drop(entry_bytes(il));
         cspec_[id] = 0;
         if (promote) {
             lru_unlink(id);
             lru_push_front(id);
         }
-        note_live(id);
+        disc_.used(id, cgen_);
         hit = false;
         return true;
     }
@@ -1269,7 +1229,7 @@ bool ExpertStreamSource::touch_entry(int il, int e, bool & hit, bool promote, in
             lru_unlink(id);
             lru_push_front(id);
         }
-        note_live(id);
+        disc_.used(id, cgen_);
         hit = true;
         return true;
     }
@@ -1288,7 +1248,7 @@ bool ExpertStreamSource::touch_entry(int il, int e, bool & hit, bool promote, in
     cspec_[id] = 0; // a real read, not speculative
     cresident_ += entry_bytes(il);
     lru_push_front(id);
-    note_live(id);
+    disc_.used(id, cgen_);
     hit = false;
     return true;
 }
@@ -1305,8 +1265,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
     // mgmt_ns_ so the metrics can split it out of the compute residual instead of hiding it there.
     const auto tm0 = clock_t_::now();
 
-    offer_cold();
-    reap_dropped_tail();
+    settle_offers();
 
     // Integrate / discard any speculative prefetch before this layer's real staging touches the
     // cache. After this returns no spec read is in flight and completed ones are resident hits. The
@@ -1449,8 +1408,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
     cur_il_.store(il, std::memory_order_relaxed);
     cgen_++;
     jobs_.clear();
-    offer_cold();
-    reap_dropped_tail();
+    settle_offers();
 
     auto mark_ready = [&](int p, int e) {
         ready_[(size_t) p * (size_t) n_expert_ + (size_t) e].gen.store(gen, std::memory_order_release);
@@ -1742,8 +1700,8 @@ IExpertSource::Stats ExpertStreamSource::stats() const {
     s.cache_budget_bytes = (uint64_t) cache_max_;
     s.cache_resizes = cache_resizes_;
     s.cache_pin_refused_bytes = (uint64_t) pin_refused_at_;
-    s.discarded = discarded_;
-    s.discarded_on_hit = discarded_on_hit_;
+    s.discarded = disc_.lost_on_lookup() + swept_;
+    s.discarded_on_hit = disc_.lost_on_lookup();
     s.dense_pin_refused_bytes = dense_.pin_refused_bytes();
     s.o_direct = effective_direct_;
     s.evictions = evictions_;

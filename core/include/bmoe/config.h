@@ -127,8 +127,8 @@ struct MoeStreamConfig {
     // from flash, which reads only. Supersedes cache_pin where the platform supports it: a locked
     // page cannot be dropped, and locking is what pushed everything else out.
     bool cache_discard = true;
-    // Debug: drop every entry the moment it is offered, as if pressure took it at once, so each
-    // cold hit pays the re-read. What the byte-identity gate runs to prove the re-read path.
+    // Debug: drop an offered entry just before a lookup takes it back, as if pressure had taken it,
+    // so every such lookup pays the re-read on zeroed memory. What the byte-identity gate runs.
     bool cache_discard_drop = false;
 
     // Halve the expert cache when the system takes it back mid-run: a token whose compute stalls

@@ -1275,8 +1275,8 @@ std::vector<ParamDesc> build() {
     }
     {
         ParamDesc d = row("cache-discard-drop", "Drop at once", G::Diagnostics, L::Debug,
-                          "Drop every offered expert immediately, as if pressure took it, so each cold hit "
-                          "pays the re-read. For the byte-identity gate.");
+                          "Drop an offered expert just before a lookup takes it back, as if pressure took it, "
+                          "so each such lookup pays the re-read. For the byte-identity gate.");
         d.type = ParamType::Bool;
         d.flag.clear();
         d.switches = {{"--cache-discard-drop", "true"}};

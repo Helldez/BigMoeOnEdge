@@ -170,6 +170,13 @@ target_link_libraries(bmoe_stall_union_test PRIVATE bmoe_core)
 target_include_directories(bmoe_stall_union_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/moe)
 add_test(NAME stall_union COMMAND bmoe_stall_union_test)
 
+# The discardable-cache policy against a fake kernel: which entries are offered and when, what a
+# lookup finds after a drop, when a drop is measurable. No platform, no model, no timing.
+add_executable(bmoe_discardable_entries_test discardable_entries_test.cpp)
+target_link_libraries(bmoe_discardable_entries_test PRIVATE bmoe_core)
+target_include_directories(bmoe_discardable_entries_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/moe)
+add_test(NAME discardable_entries COMMAND bmoe_discardable_entries_test)
+
 # How llama.cpp's tensor and graph-node names are read, and the fitter's expert-override patterns.
 # Pure string rules over the conventions every reader shares, so they run without a model.
 add_executable(bmoe_tensor_names_test tensor_names_test.cpp)

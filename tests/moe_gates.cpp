@@ -576,9 +576,9 @@ int main(int argc, char ** argv) {
 
     // G21 — the discardable cache. An entry nothing used for one pass of the stack is offered to the
     // kernel, which may drop it; a lookup then has to notice and read it again. Pressure cannot be
-    // summoned in a test, so cache_discard_drop drops every entry the moment it is offered: each
-    // cold hit is then a re-read, and a lost entry served as a hit would be zeros in a weight,
-    // which no output survives. The cache holds every expert, so nothing is evicted and every
+    // summoned in a test, so cache_discard_drop drops an offered entry just before a lookup takes
+    // it back: each such hit is a re-read, and a lost entry served as a hit would be zeros in a
+    // weight, which no output survives. The cache holds every expert, so nothing is evicted and every
     // drop is a would-be hit. G21a also proves the drops happened - a gate whose path never ran
     // would pass the same way. G18b is the same cache offered and never dropped (reclaim intact).
     {
@@ -600,16 +600,14 @@ int main(int argc, char ** argv) {
         fails += check("G21a discardable cache, every offered entry dropped == streaming(cache off)", s_s0,
                        rd.generated_text);
         fails += check("G21b discardable cache, offered and kept == streaming(cache off)", s_s0, ro.generated_text);
-        // Both ways a drop is noticed must have run: a lookup finding it (the re-read, the path that
-        // guards correctness) and the tail sweep retiring one nothing asked for again.
-        const long long on_hit = rd.summary.cache_discarded_on_hit;
-        const long long swept = rd.summary.cache_discarded - on_hit;
-        if (on_hit == 0 || swept == 0) {
-            std::printf("[FAIL] G21a a drop path never ran (found on a lookup %lld, swept from the tail %lld)\n",
-                        on_hit, swept);
+        // The re-read path must have run: a gate whose drops were never looked up would pass the
+        // same way. (The tail sweep is the policy's, proven without a model in discardable_entries.)
+        if (rd.summary.cache_discarded_on_hit == 0) {
+            std::printf("[FAIL] G21a no lookup found an entry dropped: the re-read path never ran\n");
             ++fails;
         } else {
-            std::printf("[PASS] G21a drops found on a lookup %lld, swept from the tail %lld\n", on_hit, swept);
+            std::printf("[PASS] G21a %lld lookups found their entry dropped and read it again\n",
+                        rd.summary.cache_discarded_on_hit);
         }
     }
 

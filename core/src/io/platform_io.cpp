@@ -427,12 +427,18 @@ bool vm_reclaim(void * p, size_t sz) {
     // word. Once written the page can no longer be dropped, so a page that reads non-zero away from
     // the written word is the one that was offered. The order is what makes it race-free - checking
     // first would let the kernel drop the page between the check and the use.
+    // A page whose every other word is zero reads as dropped although it may not be: that costs a
+    // read, never a wrong answer, and the scan stops at the first non-zero word on any real weight.
     const size_t page = vm_page(), words = page / sizeof(uint64_t);
     bool intact = true;
     for (char * pg = (char *) p; pg < (char *) p + sz; pg += page) {
         volatile uint64_t * w = (volatile uint64_t *) pg;
         w[0] = w[0];
-        if (intact && w[words - 1] == 0 && w[words / 2] == 0 && w[1] == 0) intact = false;
+        if (!intact) continue; // the caller refills the whole span; the writes above still cancel frees
+        size_t i = 1;
+        while (i < words && w[i] == 0)
+            ++i;
+        intact = i < words;
     }
     return intact;
 }
