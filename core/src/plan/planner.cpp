@@ -299,6 +299,11 @@ struct Planning {
     // The model as the allocator sees it: only the host's share of the experts (host_model).
     ModelProfile host_model;
 
+    // What an earlier load measured of this decode, as the ledger's coefficients
+    // (calibrate_decode_cost; AllocationInputs::compute_scale, hit_scale). 1: nothing measured applies.
+    double compute_scale = 1.0;
+    double hit_scale = 1.0;
+
     // Every decision says itself twice: a brief, one plain sentence a person reads on a screen, and
     // the reason, the full account --explain prints. The brief is required so that no rule can add a
     // decision that only an engineer can read.
@@ -1540,6 +1545,122 @@ ModelProfile host_model(const Planning & s) {
     return m;
 }
 
+// The decode thread count this plan will run with: what choose_threads, at the end of the plan, will
+// settle on (the caller's, a count measured on this model, the sweep's, or the default).
+int planned_decode_threads(const Planning & s) {
+    const RunConfig & c = s.p.config;
+    if (s.req.is_pinned("threads")) return c.n_threads;
+    if (s.model.knobs.threads > 0) return s.model.knobs.threads;
+    if (s.hw.best_threads > 0) return (int) s.hw.best_threads;
+    return c.n_threads;
+}
+
+// ── the decode's own cost, measured on an earlier load (MeasuredKnobs::decode_*) ─────────────
+// The ledger prices decode compute from a probed matmul rate and the cache's hits from a replay of
+// the routing, and a one-token decode pays what neither sees: per-op and thread-synchronisation
+// costs, and a cache that serves less than the replay of a few hundred tokens did. Measured on a
+// 12 GB phone, Ling-3.0-tiny Q8_0: 0.037 s/token predicted at a 95% credited hit rate, 0.107
+// measured at 77-85%, and compute alone ~64 ms. A load of this model on this machine timed what its
+// decode cost, so the plan prices with that: the compute terms all scale by the ratio between the
+// measured compute and what this cost model priced the same configuration at, so the groups keep
+// their relative prices and the ranking still weighs them against each other, and the cache's credit
+// scales by the ratio between the hits measured at that load's budget and the credit there - lowered
+// toward the measurement, never raised past what the replay justified (a linear credit, which is
+// conservative on purpose, moves both ways). A figure answers only for the configuration it was
+// measured under: the same decode thread count and the same placement on the devices.
+void calibrate_decode_cost(Planning & s) {
+    const MeasuredKnobs & mk = s.model.knobs;
+    if (!(mk.decode_compute_s > 0.0) && !(mk.decode_hit >= 0.0)) return;
+    const RunConfig & c = s.p.config;
+    const int threads = planned_decode_threads(s);
+    if (mk.decode_gpu_layers != c.n_gpu_layers || (mk.decode_device_cache_mb > 0) != (c.moe.device_cache_mb > 0)) {
+        s.note("decode-cost", "probed", Source::Derived,
+               "Decode is priced from the probes: the decode measured here ran with another device placement.",
+               "an earlier load measured this decode with " + u64s((uint64_t) mk.decode_gpu_layers) +
+                   " layers on devices and " + (mk.decode_device_cache_mb > 0 ? std::string("a") : std::string("no")) +
+                   " device expert cache, and this plan places " + u64s((uint64_t) std::max(0, c.n_gpu_layers)) +
+                   " layers with " + (c.moe.device_cache_mb > 0 ? "a" : "no") +
+                   " device cache: a figure measured under another placement does not answer for this one");
+        return;
+    }
+    char nums[320] = "";
+    std::string brief, value;
+    // Compute.
+    const double predicted = host_compute_seconds(s.hw, s.host_model);
+    bool compute_other_threads = false;
+    if (mk.decode_compute_s > 0.0 && predicted > 0.0) {
+        if (mk.decode_threads == threads) {
+            s.compute_scale = mk.decode_compute_s / predicted;
+            char b[160];
+            std::snprintf(b, sizeof(b), "compute %.0f ms/token against %.0f predicted", 1e3 * mk.decode_compute_s,
+                          1e3 * predicted);
+            brief = b;
+            std::snprintf(b, sizeof(b), "compute x%.2f", s.compute_scale);
+            value = b;
+            std::snprintf(nums, sizeof(nums),
+                          "its decode computed for %.1f ms a token at %d threads, flash waits excluded, where the "
+                          "matmul rates price the same placement at %.1f ms, so every group's compute is priced "
+                          "%.2fx",
+                          1e3 * mk.decode_compute_s, threads, 1e3 * predicted, s.compute_scale);
+        } else
+            compute_other_threads = true;
+    }
+    // Hits, at the budget the load ran with, on the same expert set this plan caches.
+    std::string hits;
+    const uint64_t budget = (uint64_t) (mk.decode_cache_mib * 1024.0 * 1024.0);
+    if (mk.decode_hit >= 0.0 && budget > 0 && s.host_expert_bytes > 0 && s.model.is_moe) {
+        const HitCurve & curve = s.model.hit_curve;
+        const bool from_curve = curve.measured && s.model.expert_bytes > 0;
+        const double credited =
+            from_curve
+                ? curve.hit_share(
+                      (uint64_t) ((double) budget * (double) s.model.expert_bytes / (double) s.host_expert_bytes))
+                : std::min(1.0, (double) s.pol.cache_hit_optimism * (double) budget / (double) s.host_expert_bytes);
+        if (credited > 0.0) {
+            double scale = mk.decode_hit / credited;
+            if (from_curve) scale = std::min(1.0, scale);
+            if (scale != 1.0) {
+                s.hit_scale = scale;
+                char b[200];
+                std::snprintf(b, sizeof(b), "hits %.0f%% against %.0f%%", 100.0 * mk.decode_hit, 100.0 * credited);
+                brief += (brief.empty() ? "" : ", ") + std::string(b);
+                std::snprintf(b, sizeof(b), "hits x%.2f", scale);
+                value += (value.empty() ? "" : ", ") + std::string(b);
+            }
+            char b[320];
+            std::snprintf(b, sizeof(b),
+                          "its expert cache served %.0f%% of the decode lookups at %.0f MiB, where %s credits "
+                          "%.0f%% there, %s",
+                          100.0 * mk.decode_hit, mk.decode_cache_mib,
+                          from_curve ? "the replay of this model's routing" : "the linear credit", 100.0 * credited,
+                          scale == 1.0 ? "so the credit stands: a measurement above the replay is not a reason to "
+                                         "credit past it"
+                          : from_curve ? "so the curve is credited at that ratio at every size"
+                                       : "so the linear credit is scaled to it at every size");
+            hits = b;
+        }
+    }
+    if (value.empty()) {
+        if (compute_other_threads)
+            s.note("decode-cost", "probed", Source::Derived,
+                   "Decode is priced from the probes: the decode measured here ran at " +
+                       u64s((uint64_t) mk.decode_threads) + " threads, this plan runs " + u64s((uint64_t) threads) +
+                       ".",
+                   "an earlier load measured this decode's compute at " + u64s((uint64_t) mk.decode_threads) +
+                       " threads; this plan decodes at " + u64s((uint64_t) threads) +
+                       ", and a figure measured at another count does not answer for it" +
+                       (hits.empty() ? std::string() : "; " + hits));
+        return;
+    }
+    std::string reason = "measured on an earlier load of this model here: ";
+    reason += nums[0] ? std::string(nums) : std::string();
+    if (!hits.empty()) reason += (nums[0] ? "; " : "") + hits;
+    if (compute_other_threads)
+        reason += "; its compute ran at " + u64s((uint64_t) mk.decode_threads) + " threads, not this plan's " +
+                  u64s((uint64_t) threads) + ", so the compute stays priced from the probes";
+    s.note("decode-cost", value, Source::Measured, "Decode priced from a load here: " + brief + ".", reason);
+}
+
 AllocationInputs ledger_inputs(const Planning & s, uint64_t dense_pending) {
     const RunConfig & c = s.p.config;
     AllocationInputs ai;
@@ -1562,6 +1683,8 @@ AllocationInputs ledger_inputs(const Planning & s, uint64_t dense_pending) {
     ai.holdable_bytes = s.holdable;
     ai.margin_frac = margin_frac(s.hw, s.pol);
     ai.margin_min_bytes = s.pol.margin_min_bytes;
+    ai.compute_scale = s.compute_scale;
+    ai.hit_scale = s.hit_scale;
 
     // The second ceiling, with its own margin. A store that publishes no total is bounded by what
     // the process may hold, which is the only bound there is on it.
@@ -2058,7 +2181,9 @@ void note_hit_curve(Planning & s, const Allocation & alloc) {
                    u64s(curve.decode_tokens) + " decoded and " + u64s(curve.prefill_tokens) +
                    " prompt tokens) at every cache size up to the whole expert set; at " +
                    u64s(mib(alloc.cache_bytes)) + " MiB it serves " + value +
-                   " of the decode lookups, where the linear credit would have said " + linear_pct);
+                   " of the decode lookups, where the linear credit would have said " + linear_pct +
+                   (s.hit_scale != 1.0 ? std::string("; scaled to the hits a load measured here (decode-cost)")
+                                       : std::string()));
     } else if (!curve.rejected.empty()) {
         s.note("cache-hits", "linear", Source::Policy,
                "Cache hits are credited linearly: the stored routing is not this run's.",
@@ -2802,6 +2927,7 @@ Plan plan_from(const RunConfig & base,
     const bool pin_candidate = choose_dense_policy(s);
     p.dense_pending_bytes = dense_pending_bytes(s);
     s.host_model = host_model(s);
+    calibrate_decode_cost(s);
     // Which lane the tables take is the ranking's answer, and the ranking does not spend the
     // reservation (it only labels a pinned lane), so one pricing settles what to take out of it
     // before the one the plan keeps.

@@ -344,6 +344,46 @@ int main() {
         check(parse_measured_knobs("bmoe-measured-knobs 1\nhardware=a engine=b threads=4 later_key=1\n", bad, err) &&
                   bad.size() == 1 && bad[0].threads == 4,
               "record: a key a later engine added is read past");
+
+        // The decode's own cost: read back as written, merged whole, counted so a front-end keeps it,
+        // and absent from a record an earlier engine wrote.
+        MeasuredKnobs dc;
+        dc.hardware = a.hardware;
+        dc.engine = a.engine;
+        dc.decode_compute_s = 0.064125;
+        dc.decode_threads = 4;
+        dc.decode_hit = 0.8125;
+        dc.decode_cache_mib = 1536.0;
+        dc.decode_gpu_layers = 0;
+        dc.decode_device_cache_mb = 0;
+        check(dc.verdicts() == 2, "record: a measured decode cost counts, so a front-end keeps the grown record");
+        std::vector<MeasuredKnobs> dback;
+        check(parse_measured_knobs(format_measured_knobs({dc}), dback, err) && dback.size() == 1 &&
+                  std::fabs(dback[0].decode_compute_s - 0.064125) < 1e-9 && dback[0].decode_threads == 4 &&
+                  std::fabs(dback[0].decode_hit - 0.8125) < 1e-9 &&
+                  std::fabs(dback[0].decode_cache_mib - 1536.0) < 1e-9,
+              "record: the decode's cost reads back as written");
+        keep_measured_knobs(back, dc);
+        const MeasuredKnobs * kd = find_measured_knobs(back, a.hardware, "0.35.1");
+        check(kd && kd->decode_threads == 4 && std::fabs(kd->decode_hit - 0.8125) < 1e-9 && kd->width_narrow == 1024,
+              "record: the decode's cost is merged beside what else was measured");
+        MeasuredKnobs dc2 = dc;
+        dc2.decode_compute_s = 0.05;
+        dc2.decode_threads = 6;
+        dc2.decode_hit = -1.0;
+        dc2.decode_cache_mib = 0.0;
+        keep_measured_knobs(back, dc2);
+        kd = find_measured_knobs(back, a.hardware, "0.35.1");
+        check(kd && kd->decode_threads == 6 && kd->decode_hit == -1.0 && std::fabs(kd->decode_compute_s - 0.05) < 1e-12,
+              "record: a later load's decode cost replaces the whole measurement, never half of it");
+        std::vector<MeasuredKnobs> old;
+        check(parse_measured_knobs("bmoe-measured-knobs 1\nhardware=a engine=b threads=4 overlap=1 rounds=3\n", old,
+                                   err) &&
+                  old.size() == 1 && old[0].decode_compute_s == 0.0 && old[0].decode_hit == -1.0 &&
+                  old[0].decode_threads == 0 && old[0].verdicts() == 2,
+              "record: one written before the decode's cost was recorded reads as not measured");
+        check(!parse_measured_knobs("bmoe-measured-knobs 1\nhardware=a engine=b decode_hit=1.5\n", bad, err),
+              "record: a hit rate past 1 is refused");
     }
     {
         HardwareProfile hw;
@@ -438,6 +478,8 @@ int main() {
         check(r.done() && r.windows() == r.windows_wanted() && r.windows_wanted() == 2 * rp.rounds + 1 &&
                   std::fabs(r.tokens_per_second() - 10.0) < 1e-6,
               "rate probe: the median of 2 * rounds + 1 windows, a stalled window does not move it");
+        check(std::fabs(r.hit_rate() - 0.9) < 1e-12, "rate probe: the hit rate of the timed windows");
+        check(RateProbe(false, true, rp).hit_rate() == -1.0, "rate probe: no lookups, no hit rate");
         // A device cache out of view: the longest settle the trial makes, whatever the counters say.
         RateProbe blind(true, /*hits_visible*/ false, rp);
         int steps = 0;

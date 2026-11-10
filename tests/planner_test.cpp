@@ -2068,6 +2068,95 @@ int main() {
                   "with a steep curve the same cache is priced cheaper than the linear credit says");
         }
 
+        // ── the decode's own cost, measured on an earlier load (MeasuredKnobs::decode_*) ──────────
+        {
+            const HardwareProfile hw = measured_machine();
+            const Plan base = plan_run(base_cfg(), hw, model, PlanRequest{});
+            const double compute = host_compute_seconds(hw, model);
+            auto account = [](const Plan & p) {
+                std::string out = p.to_flags() + "\n";
+                for (const Decision & d : p.decisions)
+                    out += d.knob + "=" + d.value + ":" + d.reason + "|" + d.brief + "\n";
+                char nums[96];
+                std::snprintf(nums, sizeof(nums), "%.17g %.17g %llu", p.allocation.seconds_per_token,
+                              p.allocation.cache_hit_credited, (unsigned long long) p.allocation.cache_bytes);
+                return out + nums;
+            };
+            ModelProfile rec = model;
+            rec.knobs.hardware = "0123456789abcdef";
+            rec.knobs.engine = "test";
+            check(compute > 0.0 && base.config.moe.enabled && !find(base, "decode-cost"),
+                  "decode cost: the fixture streams and prices its compute, and says nothing of a measurement");
+            check(account(plan_run(base_cfg(), hw, rec, PlanRequest{})) == account(base),
+                  "decode cost: a record that measured no decode leaves the plan byte for byte as it is");
+
+            // A decode that computed three times what the matmul rates price: every group's compute
+            // moves together, so the token's compute part triples and nothing the ranking weighs moves.
+            ModelProfile slow = rec;
+            slow.knobs.decode_compute_s = 3.0 * compute;
+            slow.knobs.decode_threads = base.config.n_threads;
+            const Plan q = plan_run(base_cfg(), hw, slow, PlanRequest{});
+            const Decision * d = find(q, "decode-cost");
+            check(d && d->source == Source::Measured && d->value == "compute x3.00" &&
+                      d->brief.rfind("Decode priced from a load here: compute", 0) == 0 && d->brief.size() <= 120,
+                  "decode cost: the measured compute is the plan's, and it says so",
+                  d ? d->value + " / " + d->brief : "");
+            const double grew = q.allocation.seconds_per_token - base.allocation.seconds_per_token;
+            check(std::fabs(grew - 2.0 * compute) < 1e-9 * q.allocation.seconds_per_token,
+                  "decode cost: the predicted token's compute part is the measured one, three times the model's",
+                  std::to_string(grew) + " added against " + std::to_string(2.0 * compute));
+            check(q.allocation.cache_bytes == base.allocation.cache_bytes && q.to_flags() == base.to_flags(),
+                  "decode cost: a compute that scales every group alike changes no knob", q.to_flags());
+
+            // Measured at another thread count, or under another placement: not this plan's figure.
+            ModelProfile other = slow;
+            other.knobs.decode_threads = base.config.n_threads + 1;
+            const Plan o = plan_run(base_cfg(), hw, other, PlanRequest{});
+            const Decision * od = find(o, "decode-cost");
+            check(o.allocation.seconds_per_token == base.allocation.seconds_per_token && od &&
+                      od->source == Source::Derived && od->value == "probed",
+                  "decode cost: a figure measured at another thread count is not used, and the plan says why");
+            ModelProfile placed = slow;
+            placed.knobs.decode_gpu_layers = 12;
+            const Plan pl = plan_run(base_cfg(), hw, placed, PlanRequest{});
+            check(pl.allocation.seconds_per_token == base.allocation.seconds_per_token && find(pl, "decode-cost") &&
+                      find(pl, "decode-cost")->source == Source::Derived,
+                  "decode cost: a figure measured with layers on a device does not answer for a host plan");
+
+            // Hits: the linear credit is scaled to what was measured at the load's budget.
+            ModelProfile hits = rec;
+            hits.knobs.decode_hit = 0.5 * base.allocation.cache_hit_credited;
+            hits.knobs.decode_cache_mib = (double) base.allocation.cache_bytes / (double) MiB;
+            const Plan h = plan_run(base_cfg(), hw, hits, PlanRequest{});
+            const double expect_h =
+                0.5 * std::min(1.0, (double) PlannerPolicy::defaults().cache_hit_optimism *
+                                        (double) h.allocation.cache_bytes / (double) model.expert_bytes);
+            check(h.allocation.cache_bytes > 0 && std::fabs(h.allocation.cache_hit_credited - expect_h) < 1e-9 &&
+                      h.allocation.seconds_per_token > base.allocation.seconds_per_token && find(h, "decode-cost") &&
+                      find(h, "decode-cost")->source == Source::Measured,
+                  "decode cost: the linear credit moves to the hits measured at that budget",
+                  std::to_string(h.allocation.cache_hit_credited) + " vs " + std::to_string(expect_h));
+
+            // With the model's own curve: lowered toward the measurement, never raised past the replay.
+            ModelProfile curved = steep;
+            curved.knobs = rec.knobs;
+            const Plan c0 = plan_run(base_cfg(), hw, curved, PlanRequest{});
+            const double replay = steep.hit_curve.hit_share(c0.allocation.cache_bytes);
+            curved.knobs.decode_cache_mib = (double) c0.allocation.cache_bytes / (double) MiB;
+            curved.knobs.decode_hit = 0.8 * replay;
+            const Plan c1 = plan_run(base_cfg(), hw, curved, PlanRequest{});
+            check(c1.allocation.cache_bytes > 0 &&
+                      std::fabs(c1.allocation.cache_hit_credited -
+                                0.8 * steep.hit_curve.hit_share(c1.allocation.cache_bytes)) < 1e-9 &&
+                      c1.allocation.seconds_per_token > c0.allocation.seconds_per_token,
+                  "decode cost: the curve is credited at the ratio measured at the load's budget, at every size");
+            curved.knobs.decode_hit = std::min(1.0, replay + 0.1);
+            const Plan c2 = plan_run(base_cfg(), hw, curved, PlanRequest{});
+            check(c2.allocation.cache_hit_credited == c0.allocation.cache_hit_credited &&
+                      c2.allocation.seconds_per_token == c0.allocation.seconds_per_token,
+                  "decode cost: hits above the replay credit nothing past it");
+        }
+
         // The ranking walks the curve: where the cache competes with a read-whole group for the same
         // bytes, a curve that serves most reads from a small cache keeps the cache at its knee and
         // gives the rest to the group, and one that rises late takes more for the cache.

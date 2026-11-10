@@ -73,6 +73,19 @@ Semantic Versioning.
   under the device GIFs, in `README.md` and its five translations (which had no link to it).
 
 ### Fixed
+- **The plan learns what decode costs on this machine.** Its decode price came from a probed matmul
+  rate and a replay of the routing, and never from a run: on a 12 GB phone with Ling-3.0-tiny Q8_0
+  the plan said 0.037 s/token at a 95% credited hit rate, the run measured 0.107 at 77-85%, with
+  compute alone at ~64 ms a token, and the plan after the run still said 0.037 (a 16 GB Mac predicted
+  0.073 against 0.054, a Windows PC 0.18 against 0.21). A one-token decode also pays per-op and
+  thread-synchronisation costs the probe does not see. Every load now times its decode once the cache
+  has settled (the knob trial's windows, after any trial): the compute per token with flash waits
+  excluded, at its thread count, and the cache's hits at its budget, kept in the record the front-end
+  keeps per model and machine. The next plan of the same configuration (same decode thread count,
+  same device placement) scales every group's compute by the measured-to-predicted ratio, so the
+  groups keep their relative prices, and scales the cache's credited hits to the ones measured at that
+  budget, never past what the routing replay credits; a `decode-cost` decision says so. Without a
+  record the plan is the one it was. Gate G24d.
 - **The planner no longer refuses a prefill device for a cache that is already off** (#508). It
   required the expert cache to stay at least one token cycle with the device armed, without asking
   whether it was one without it, so a run whose cache was off (under a token cycle) refused every

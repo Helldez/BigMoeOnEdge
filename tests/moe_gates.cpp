@@ -2021,6 +2021,38 @@ int main(int argc, char ** argv) {
                         "%.0f tokens a request\n",
                         mw.wide_decode_tps, mw.wide_prefill_tps, mw.usage_gen_tokens);
         }
+
+        // G24d: the decode's own cost (MeasuredKnobs::decode_*), timed on a load that arms no trial at
+        // all. It switches nothing, so the answer is the resident one; the record must carry the
+        // compute, the thread count, and the cache's hits at the budget they were measured at.
+        RunConfig cref = resident;
+        cref.n_predict = 64;
+        std::string s_cref;
+        if (!gen(cref, s_cref, err)) {
+            std::fprintf(stderr, "G24d reference run failed: %s\n", err.c_str());
+            return 2;
+        }
+        RunConfig ct = streamc;
+        ct.n_predict = cref.n_predict;
+        ct.trial.window_tokens = 2;
+        const RunResult rc = run(ct);
+        if (!rc) {
+            std::fprintf(stderr, "G24d run failed: %s\n", rc.error.c_str());
+            return 2;
+        }
+        fails += check("G24d decode cost timed == resident", s_cref, rc.generated_text);
+        const MeasuredKnobs & mc = rc.knobs;
+        if (!(mc.decode_compute_s > 0.0) || mc.decode_threads != ct.n_threads || !(mc.decode_hit >= 0.0) ||
+            mc.decode_hit > 1.0 || !(mc.decode_cache_mib > 0.0) || mc.decode_gpu_layers != 0 || mc.verdicts() != 2) {
+            std::printf("[FAIL] G24d the record lacks the decode's cost: %.3f ms/token at %d threads, hits %.2f at "
+                        "%.0f MiB\n",
+                        1e3 * mc.decode_compute_s, mc.decode_threads, mc.decode_hit, mc.decode_cache_mib);
+            ++fails;
+        } else {
+            std::printf("[PASS] G24d the record holds the decode's cost: %.3f ms/token at %d threads, %.0f%% hits "
+                        "at %.0f MiB\n",
+                        1e3 * mc.decode_compute_s, mc.decode_threads, 100.0 * mc.decode_hit, mc.decode_cache_mib);
+        }
     }
 
     // G22 — context checkpoints (context_checkpoints.h). Turn 1 answers u1; turn 2 resends a

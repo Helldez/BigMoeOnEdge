@@ -80,7 +80,17 @@ std::string format_measured_knobs(const std::vector<MeasuredKnobs> & records) {
             std::snprintf(num, sizeof(num), "%.3f", kv.second);
             out += std::string(" ") + kv.first + "=" + num;
         }
-        out += " usage_requests=" + std::to_string(r.usage_requests) + "\n";
+        out += " usage_requests=" + std::to_string(r.usage_requests);
+        // The decode's own cost: later keys of the same format, which an older engine reads past.
+        std::snprintf(num, sizeof(num), "%.6f", r.decode_compute_s);
+        out += std::string(" decode_compute_s=") + num;
+        out += " decode_threads=" + std::to_string(r.decode_threads);
+        std::snprintf(num, sizeof(num), "%.4f", r.decode_hit);
+        out += std::string(" decode_hit=") + num;
+        std::snprintf(num, sizeof(num), "%.1f", r.decode_cache_mib);
+        out += std::string(" decode_cache_mib=") + num;
+        out += " decode_gpu_layers=" + std::to_string(r.decode_gpu_layers);
+        out += " decode_device_cache_mb=" + std::to_string(r.decode_device_cache_mb) + "\n";
     }
     return out;
 }
@@ -156,6 +166,18 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
                 ok = as_double(r.usage_long_prompt_tokens);
             else if (k == "usage_requests")
                 ok = as_int(r.usage_requests);
+            else if (k == "decode_compute_s")
+                ok = as_double(r.decode_compute_s);
+            else if (k == "decode_threads")
+                ok = as_int(r.decode_threads);
+            else if (k == "decode_hit")
+                ok = as_double(r.decode_hit);
+            else if (k == "decode_cache_mib")
+                ok = as_double(r.decode_cache_mib);
+            else if (k == "decode_gpu_layers")
+                ok = as_int(r.decode_gpu_layers);
+            else if (k == "decode_device_cache_mb")
+                ok = as_int(r.decode_device_cache_mb);
             // An unknown key is a later engine's addition: read past it, the record still holds.
             if (!ok) {
                 error = "line " + std::to_string(n) + ": bad value for " + k;
@@ -170,7 +192,9 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
             !(r.device_cache_tps >= 0.0) || !(r.no_device_cache_tps >= 0.0) || r.width_narrow < 0 ||
             !(r.wide_decode_tps >= 0.0) || !(r.narrow_decode_tps >= 0.0) || !(r.wide_prefill_tps >= 0.0) ||
             !(r.narrow_prefill_tps >= 0.0) || !(r.usage_gen_tokens >= 0.0) || !(r.usage_long_prompt_tokens >= 0.0) ||
-            r.usage_requests < 0) {
+            r.usage_requests < 0 || !(r.decode_compute_s >= 0.0) || r.decode_threads < 0 ||
+            !(r.decode_hit >= -1.0 && r.decode_hit <= 1.0) || !(r.decode_cache_mib >= 0.0) || r.decode_gpu_layers < 0 ||
+            r.decode_device_cache_mb < 0) {
             error = "line " + std::to_string(n) + ": a value out of range";
             return false;
         }
@@ -209,6 +233,16 @@ void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKno
                 r.usage_requests = rec.usage_requests;
                 r.usage_gen_tokens = rec.usage_gen_tokens;
                 r.usage_long_prompt_tokens = rec.usage_long_prompt_tokens;
+            }
+            // The decode's cost is one measurement of one configuration: the latest replaces it whole,
+            // so a figure is never paired with the thread count or the cache of another load.
+            if (rec.decode_compute_s > 0.0 || rec.decode_hit >= 0.0) {
+                r.decode_compute_s = rec.decode_compute_s;
+                r.decode_threads = rec.decode_threads;
+                r.decode_hit = rec.decode_hit;
+                r.decode_cache_mib = rec.decode_cache_mib;
+                r.decode_gpu_layers = rec.decode_gpu_layers;
+                r.decode_device_cache_mb = rec.decode_device_cache_mb;
             }
             return;
         }
