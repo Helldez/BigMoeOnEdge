@@ -116,6 +116,12 @@ Semantic Versioning.
   which Windows refuses, so the broken file stayed and was read again on every start.
 - **A client's settings file is shown in the platform's own separators** (`server/connect.cpp`):
   on Windows the path read `...\home\.c/config.toml`.
+- **The phone no longer floods its log while the NPU runs** (#512). The app's server turned on the
+  Hexagon backend's polling for the DSP, and on Android that backend's zero-timeout poll goes to the
+  blocking queue read, which logs an error for every empty poll: 1.1 to 3.4 million log rows per
+  load on a 12 GB phone, the OEM's flow control dropping them, and a core spent polling. Polling is
+  now left off. It no longer bought anything: Qwen3.6-35B-A3B Q4_K_M prefilled 1525 tokens on the NPU
+  in 16.7 s polled and 15.9 s waiting on the interrupt (on the CPU: 120-132 s).
 - **A device is judged against the exact result, not against the host.** The real-layer probe
   refused a device whose expert matmul differed from the host's by more than llama.cpp's NMSE bound,
   but two backends round differently, each quantizing the activations its own way. On a two-card

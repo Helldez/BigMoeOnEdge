@@ -230,11 +230,14 @@ void prepare_compute_backends(const std::string & data_dir) {
     fs::create_directories(cache, ec);
     if (!ec) set_env_default("GGML_OPENCL_KERNEL_CACHE_DIR", cache.u8string());
 #if defined(__ANDROID__)
-    // Polling halves the cost of each crossing to the DSP, and the prefill arena stops the graph at
-    // every layer, twice (measured on device). The backend polls only while a DSP op is in flight,
-    // so neither costs anything until the planner arms the NPU, and neither is read where the
-    // Hexagon backend is not built in. setenv with overwrite 0 leaves a value someone set alone.
-    set_env_default("GGML_HEXAGON_OPPOLL", "1");
+    // The host buffer lets the prefill arena hand the DSP its slots without a copy. Not read where the
+    // Hexagon backend is not built in; setenv with overwrite 0 leaves a value someone set alone.
+    //
+    // Polling for the DSP (GGML_HEXAGON_OPPOLL) is left to its default, off. On this platform the
+    // backend's zero-timeout poll goes to the blocking queue read, which logs an error for every empty
+    // poll (#512): measured on a 12 GB phone, 1.1 to 3.4 million log rows per load with polling,
+    // a dozen to a thousand without, and a 1525-token prefill on the NPU in 16.7 s polled against
+    // 15.9 s waiting on the interrupt. It no longer buys the crossing time it did when it was set.
     set_env_default("GGML_HEXAGON_HOSTBUF", "1");
 #endif
 }
