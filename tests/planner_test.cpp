@@ -1727,6 +1727,34 @@ int main() {
         check(nofit.cache_budget_bytes == nodev.cache_budget_bytes && ledger_row(nofit, "device") == nullptr,
               "prefill: and a refusal leaves the ledger as it was");
 
+        // A cache that is off without the device - under one token cycle, so it would return no hits -
+        // is not something the device takes away. Refusing the device for it costs the prompt its
+        // faster prefill and saves decode nothing: measured against the run without the device, not
+        // against a cache the run never had.
+        ModelProfile wide = mm;
+        wide.token_cycle_bytes = 64 * GiB; // more than any cache here: the run streams uncached
+        wide.group(WeightGroup::Experts).bytes_per_token = wide.token_cycle_bytes;
+        const Plan uncached = plan_run(base_cfg(), unified(), wide, PlanRequest{});
+        const Plan uncached_on = plan_run(base_cfg(), machine(1500.0, Tri::Yes), wide, PlanRequest{});
+        check(uncached.cache_budget_bytes == 0, "prefill: (a run whose cache is off without any device)",
+              std::to_string((unsigned long long) (uncached.cache_budget_bytes >> 20)) + " MiB");
+        check(uncached_on.config.prefill.device == "accel",
+              "prefill: a cache already off is not a reason to refuse the device", reason(uncached_on));
+        check(uncached_on.allocation.ledger.held <= uncached_on.allocation.ledger.holdable_cap,
+              "prefill: and the ledger still closes with it");
+
+        // The same run where not even the dense set fits what may be held: the device's row would be
+        // new memory on a full pool, so it is refused - and the plan says that, not that a cache
+        // which was never there needs the room.
+        HardwareProfile tight = machine(1500.0, Tri::Yes);
+        tight.residency_budget = 2 * GiB; // under the 3 GiB dense set
+        const Plan full = plan_run(base_cfg(), tight, wide, PlanRequest{});
+        const Decision * full_d = find(full, "prefill-device");
+        check(!full.config.prefill.enabled() && full_d && full_d->brief.find("the cache needs") == std::string::npos &&
+                  full_d->brief.find("may hold") != std::string::npos,
+              "prefill: on a full pool the device is refused for the memory, not for a cache",
+              full_d ? full_d->brief : "no decision");
+
         // A machine where nothing can be locked: a phone whose platform publishes no wire limit. The
         // device is still a row of what is held, and it is not refused for a lock store the run
         // could never use.

@@ -309,6 +309,10 @@ ValidationResult validate(const RunConfig & cfg) {
         if (m.prefetch_layers < 0 || m.prefetch_layers > MoeStreamConfig::prefetch_layers_max) {
             return fail("{prefetch} must be between 0 and " + std::to_string(MoeStreamConfig::prefetch_layers_max));
         }
+        if (m.cache_freq_half_life < 0 || m.cache_freq_half_life > MoeStreamConfig::cache_freq_half_life_max) {
+            return fail("{cache-half-life} must be between 0 and " +
+                        std::to_string(MoeStreamConfig::cache_freq_half_life_max));
+        }
         if (m.routing_record_tokens < 0 || m.routing_record_tokens > MoeStreamConfig::routing_record_tokens_max) {
             return fail("{routing-record} must be between 0 and " +
                         std::to_string(MoeStreamConfig::routing_record_tokens_max));

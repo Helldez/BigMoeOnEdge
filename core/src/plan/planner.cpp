@@ -422,8 +422,14 @@ const ComputeDevice * device_tier_device(const Planning & s, std::string & why) 
     for (const ComputeDevice & d : s.hw.devices) {
         if (d.is_cpu || d.usable == Tri::No) continue;
         if (!d.has_own_memory()) continue; // a shared pool has no second tier to fill
-        if (d.runs_expert_op != Tri::Yes || d.identity_ok == Tri::No) {
-            why = d.name + " does not execute this model's expert matmul on its own layout";
+        if (d.runs_expert_op != Tri::Yes) {
+            why = d.name + (d.runs_expert_op == Tri::No
+                                ? " does not execute this model's expert matmul on its own layout"
+                                : " was not asked whether it executes this model's expert matmul");
+            return nullptr;
+        }
+        if (d.identity_ok == Tri::No) {
+            why = d.name + " computes this model's expert matmul too far from the exact result";
             return nullptr;
         }
         if (expert_rates(s.hw, d).device <= 0.0) {
@@ -1679,11 +1685,13 @@ std::string prefill_conflict(const RunConfig & c) {
 }
 
 // A device that pays for itself, and whether it FITS - which is the ledger's to say, with the device
-// as a row: the run must still stream - a cache of at least one token cycle - and the dense set must
-// not lose a protection it had, since both of those are paid on every decoded token and a prefill
-// is paid once. Two slots first, then one: the wider scheme where it fits, the narrower where only
-// it does. A caller who set the count has chosen, and only that count is tried. Returns the
-// allocation the run gets, armed or not.
+// as a row: the run must not lose what decode had without it - a cache of at least one token cycle,
+// and the protection of the dense set and of the cache - since those are paid on every decoded token
+// and a prefill is paid once. Each is measured against the allocation WITHOUT the device: a cache
+// that was already under a token cycle (and so off) is not something the device takes away, and
+// refusing a faster prefill for it costs the prompt and saves decode nothing. Two slots first, then one: the wider
+// scheme where it fits, the narrower where only it does. A caller who set the count has chosen, and only that count is
+// tried. Returns the allocation the run gets, armed or not.
 Allocation fit_prefill_device(Planning & s,
                               const ComputeDevice & best,
                               const std::string & ratio,
@@ -1700,21 +1708,29 @@ Allocation fit_prefill_device(Planning & s,
     AllocationInputs with = ai;
     Allocation armed;
     int slots = 0;
-    bool streams = false, keeps_dense = false, own_short = false;
+    const uint64_t cycle = s.host_model.token_cycle_bytes;
+    const auto cache_streams = [cycle](const Allocation & a) { return a.cache_bytes > 0 && a.cache_bytes >= cycle; };
+    const bool streamed = cache_streams(alloc);
+    bool keeps_cache = false, keeps_dense = false, fits_held = false, own_short = false;
     for (int n = slots_by_caller ? p.config.prefill.slots : PrefillDeviceConfig::slots_max;
          n >= PrefillDeviceConfig::slots_min; --n) {
         with = ai;
         charge_prefill(s, &best, with, n, turns);
         own_short = own_pool(&best) && best.memory_free > 0 && best.memory_free < prefill_need(s.model, n);
         armed = allocate(s.hw, s.host_model, with, s.pol);
-        streams = armed.cache_bytes >= s.host_model.token_cycle_bytes && armed.cache_bytes > 0;
+        keeps_cache = !streamed || cache_streams(armed);
         // "Protection" is the dense set's pin and the cache's lock alike: a device that leaves the
         // cache as ordinary memory where it was locked has taken from decode the very thing the
         // ledger exists to keep.
         keeps_dense = armed.dense_pinned == alloc.dense_pinned &&
                       (armed.cache_locked_bytes > 0) == (alloc.cache_locked_bytes > 0) &&
                       armed.cache_lock_unverified == alloc.cache_lock_unverified;
-        if (!own_short && streams && keeps_dense && armed.turn_fits) {
+        // What decode holds with the device must still fit what the process may hold - or, where the
+        // ledger did not close without it (a pin the caller forced), hold no more than it did. Where a
+        // cache streamed, the ledger shrinks it to make room and this holds by construction; where
+        // none did, nothing yields, and the device's row is new memory on a pool that may be full.
+        fits_held = armed.ledger.held <= armed.ledger.holdable_cap || armed.ledger.held <= alloc.ledger.held;
+        if (!own_short && keeps_cache && keeps_dense && fits_held && armed.turn_fits) {
             slots = n;
             break;
         }
@@ -1734,15 +1750,24 @@ Allocation fit_prefill_device(Planning & s,
     if (slots == 0) {
         s.note("prefill-device", "off", Source::Derived,
                "Prompts run on the CPU: " + best.name + " (" + ratio + " faster) would take " +
-                   size_brief(with.device_bytes + with.device_turn_bytes) + " the cache needs.",
+                   size_brief(with.device_bytes + with.device_turn_bytes) +
+                   (!keeps_cache   ? " the cache needs."
+                    : !keeps_dense ? " the dense weights' protection needs."
+                                   : ", more than this run may hold."),
                best.name + " computes a wide prefill at " + ratio +
                    " the host's rate and is refused on memory: with a single expert slot it would still hold " +
                    u64s(mib(with.device_bytes + with.device_turn_bytes)) +
-                   " MiB of this pool (a layer of this model and its compute buffer), which leaves " +
-                   (streams ? "the dense set or the cache without the protection it has"
-                            : "the expert cache " + u64s(mib(armed.cache_bytes)) + " MiB against a token cycle of " +
-                                  u64s(mib(s.host_model.token_cycle_bytes))) +
-                   ". That is paid on every decoded token, and a prefill is paid once" + unweighed);
+                   " MiB of this pool (a layer of this model and its compute buffer), " +
+                   (!keeps_cache ? "which leaves the expert cache " + u64s(mib(armed.cache_bytes)) +
+                                       " MiB against a token cycle of " + u64s(mib(cycle)) + ", where it had " +
+                                       u64s(mib(alloc.cache_bytes)) +
+                                       " MiB without the device. That is paid on every decoded token, and a "
+                                       "prefill is paid once"
+                    : !keeps_dense ? "which leaves the dense set or the cache without the protection it has. That "
+                                     "is paid on every decoded token, and a prefill is paid once"
+                    : !fits_held   ? "which does not fit what the process may hold while it decodes"
+                                   : "which does not fit what the process may hold while a prompt runs") +
+                   unweighed);
         return alloc;
     }
     ai = with;

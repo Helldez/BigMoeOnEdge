@@ -63,7 +63,8 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     // The model's own routing, from an earlier run the front-end kept: what its cache will hit.
     if (opt.routing)
         attach_routing(r.model, *opt.routing,
-                       cfg.n_expert_used > 0 ? (uint32_t) cfg.n_expert_used : r.model.n_expert_used);
+                       cfg.n_expert_used > 0 ? (uint32_t) cfg.n_expert_used : r.model.n_expert_used,
+                       cfg.moe.cache_freq_half_life);
     // What an earlier load measured about the lossless knobs, when it was this machine and engine.
     if (opt.knobs)
         if (const MeasuredKnobs * k = find_measured_knobs(*opt.knobs, hardware_fingerprint(r.hw), version()))

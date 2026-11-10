@@ -605,9 +605,12 @@ A device is armed when four things hold, each a fact and none a name:
 3. **It wins by the margin** every other device decision uses (`min_backend_win`).
 4. **It fits the ledger.** Under streaming a prefill device carries a layer's experts and a layer's
    other weights through slots - the layer being computed and the one being loaded behind it -
-   plus its compute buffer. That is charged as a row; the run must still stream, with a cache of at
-   least one token cycle, and the dense set and the cache must keep the protection they had. Those
-   are paid on every decoded token, and a prefill is paid once. A device with memory of its own
+   plus its compute buffer. That is charged as a row, and the run must not lose what decode had
+   without it: a cache of at least one token cycle where it had one, the protection of the dense
+   set and of the cache, and a ledger that closes (or, where a forced pin left it open, holds no
+   more than it did). Those are paid on every decoded token, and a prefill is paid once. Each is
+   measured against the run without the device: a cache already under a token cycle, and so off,
+   is not something the device takes away, and is no reason to refuse it. A device with memory of its own
    costs this pool nothing and is checked against its own free memory instead.
 
 **One expert slot or two.** The experts are the large part of that row and the part with a choice
@@ -861,7 +864,8 @@ arguments each front-end hands `probe_and_plan` to start itself again (`AutoPlan
 and `bmoe-server` each give them (`--probe-device` is the child's mode in both, and the child's whole
 side is one call, `probe_device_child`; `--no-isolated-probes` turns it off). Where a platform has no way to start one the runner is empty and the probes run
 here, as they always did: that is the case on iOS. Windows has its own implementation of the child,
-built and not yet run on a machine with a GPU. The time limit is two minutes, and it has not been
+run on a laptop's integrated GPU through Vulkan: the plan read `device Vulkan0: ... probed in a
+process of its own` and the run went on (see [A planner run on Windows](#a-planner-run-on-windows)). The time limit is two minutes, and it has not been
 seen to fire.
 
 What this does not do: it measures a matmul, not a prefill. The loaders that fill the device's
@@ -1036,6 +1040,28 @@ One caveat on the budget itself: it is a one-shot reading of a quantity that mov
 machine and model planned twice minutes apart produced 4.3 GB and 8.2 GB of available memory, and
 therefore two different cache budgets. The plan quotes the number it used, which is what makes the
 difference visible rather than mysterious.
+
+### A planner run on Windows
+
+`--auto` on a 16 GB Windows laptop (14.8 GiB visible, NVMe, an integrated GPU), Qwen3.6-35B-A3B
+Q4_K_M (20.7 GiB, larger than the machine's memory), 12 prompt tokens and 128 generated. Runs 1
+and 2 are a CPU-only build, back to back; run 3 is the 0.40.3 release archive, which carries the
+Vulkan module:
+
+| Run | Available at plan time | Cache planned | Threads | Decode | Hits in decode | Predicted / measured |
+|---|---|---|---|---|---|---|
+| 1 | 6.9 GB | 4437 MiB | 16 | 3.39 tok/s | 78.9% | 0.351 / 0.295 s/token |
+| 2 | 9.3 GB | 6776 MiB | 8 | 4.78 tok/s | 88.4% | 0.287 / 0.209 s/token |
+| 3 | 9.1 GB | 7066 MiB | 4 | 5.01 tok/s | 88.9% | 0.199 / 0.199 s/token |
+
+All three plans completed and all three runs streamed the experts with unbuffered reads and the dense
+weights in anonymous memory, The first two came in faster than predicted: the plan credited the cache with the linear share (24%
+and 36%) where this routing gave 79% and 88%. The budget is the one-shot reading above at work, the
+same machine minutes apart. In run 3 the integrated GPU was probed in a process of its own
+(`device Vulkan0: one token 20 GiB/s ... probed in a process of its own`, against 27 GiB/s for the
+host) and kept out: it reads the host's own memory, so it frees nothing, and it computes a
+128-token matmul at 0.4x the host's rate. What no run here covers is the process's own memory
+figures, which Windows does not report yet (`rss_mib=-1` in the phase lines).
 
 Compute devices are enumerated through `ggml_backend_dev_*` and measured, and two rules read them:
 the choice of the prefill device, and the device tier of the expert cache. A device whose memory is

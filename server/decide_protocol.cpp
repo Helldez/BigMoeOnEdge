@@ -61,6 +61,7 @@ json decide_json(const DecideResult & r) {
                 {"prefill_dev_tokens", p.device_tokens},
                 {"prefill_dev_read_mib", p.device_read_mib},
                 {"prefill_dev_stall_s", p.device_stall_seconds},
+                {"prefill_dev_cache_mib", p.device_cache_mib},
                 {"prefill_dev_routed", p.device_routed},
                 {"prefill_dev_demand", p.device_demand},
                 {"prefix_state_mib", r.prefix_state_bytes / (1024.0 * 1024.0)}};
