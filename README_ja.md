@@ -64,6 +64,9 @@ https://github.com/user-attachments/assets/16371803-b96b-42a4-b147-cb1b7d515c73
 | **デスクトップ GPU**（NVIDIA） | 16 GB + 32 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | フラッシュ、GPU キャッシュ | 19-21 |
 | **デスクトップ GPU**（NVIDIA） | 24 GB + 96 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM、GPU キャッシュ | 70 |
 |  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
+| **デスクトップ GPU**（NVIDIA） | 24 GB + 94 GB RAM | Qwen3.6-35B-A3B | 21 GB | GPU | 135 |
+|  | うち 12 GB が空き | Qwen3.6-35B-A3B | 21 GB | RAM、GPU キャッシュ | 75-81 |
+|  | 24 GB + 94 GB RAM | Gemma 4 26B-A4B | 17 GB | GPU | 107-115 |
 | **データセンター GPU**（AMD、ROCm） | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
 
 範囲は複数回の実行でのばらつきです。計測方法とすべての実行結果：
@@ -220,7 +223,7 @@ Apple silicon の Mac では GPU が CPU と同じ RAM を使うため、階層�
 | 自動設定 | ✅ `--auto` | メモリに応じてモデルを選択 | エキスパートキャッシュの予算 | `coli tune` | ❌ |
 
 モデルがゲーミング GPU と RAM の合計に収まる場合、Strata は 2〜4 倍速くなります。フラッシュからストリーミングする場合は、
-どのエンジンも毎秒 10 トークン未満で、速度を決めるのはドライブです。速度と出典：
+どのエンジンも毎秒 10 トークン未満で、速度を決めるのはドライブです。同じ 24 GB カードで Lucebox と同じファイル・同じプロンプトで比べると、このエンジンは Qwen3.6-35B-A3B をより速くデコードし（135 対 108 tok/s）、28k トークンのプロンプトの最初のトークンまで 5 秒（Lucebox は 37 秒）でした。Lucebox のモデル専用ドラフターは Gemma 4 のコードを 2 倍以上速くデコードしました。速度と出典：
 [docs/comparison.md](docs/comparison.md)。
 
 ## ソースからのビルド
