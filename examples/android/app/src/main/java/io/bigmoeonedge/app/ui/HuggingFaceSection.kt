@@ -1,6 +1,8 @@
 package io.bigmoeonedge.app.ui
 
 import androidx.compose.foundation.border
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.material3.*
@@ -8,7 +10,9 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -117,15 +121,21 @@ fun HuggingFaceSection(onAdded: suspend (id: String) -> Unit) {
             "A model's name to search for, or a repository. The server lists the repository's gguf files, reads the header of the one you pick before any download, and says whether it fits here.",
             fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        // The keyboard's own key finds, as the button does and on the same terms; the keyboard then
+        // goes, so the results it would cover are in view.
+        val canList = repo.isNotBlank() && busy.isEmpty()
+        val focus = LocalFocusManager.current
+        val find = KeyboardActions(onSearch = { if (canList) { focus.clearFocus(); list() } })
         OutlinedTextField(
             value = repo, onValueChange = { repo = it },
             label = { Text("Search, or owner/name, or a huggingface.co link") },
             singleLine = true, modifier = Modifier.fillMaxWidth(),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = find,
         )
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(
                 shape = Corner, onClick = { list() },
-                enabled = repo.isNotBlank() && busy.isEmpty(), modifier = Modifier.weight(1f),
+                enabled = canList, modifier = Modifier.weight(1f),
             ) { Text(if (busy == "list") "Looking…" else "Find") }
             OutlinedButton(shape = Corner, onClick = { askToken = !askToken }, modifier = Modifier.weight(1f)) {
                 Text(if (askToken) "Hide token" else "Token")
@@ -137,6 +147,7 @@ fun HuggingFaceSection(onAdded: suspend (id: String) -> Unit) {
                 label = { Text("Access token, for a gated or private repository") },
                 supportingText = { Text("Used for these requests and kept nowhere.", fontSize = 11.sp) },
                 singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = find,
             )
         }
         if (error.isNotEmpty()) Text(error, fontSize = 12.sp, color = MaterialTheme.colorScheme.error)

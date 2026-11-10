@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <thread>
@@ -69,6 +70,11 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     // it. Off for every guessing predictor: adopting a wrong guess would make the load wait on
     // reads it does not need.
     spec_adopt_ = cfg.route_ahead > 0;
+    freq_half_life_ = std::max(0, cfg.cache_freq_half_life);
+    prefill_cold_ = cfg.cache_prefill_cold;
+    cold_min_tokens_ = cfg.test_prefill_cold_min_tokens > 0 ? cfg.test_prefill_cold_min_tokens
+                                                            : MoeStreamConfig::prefill_cold_min_tokens;
+    freq_growth_ = freq_half_life_ > 0 ? std::exp2(1.0 / freq_half_life_) : 1.0;
     cache_max_ = (size_t) std::max(0, cfg.cache_mb) * 1024ull * 1024ull;
     io_threads_ = std::max(1, std::min(MoeStreamConfig::io_threads_max, cfg.io_threads));
     page_ = pio::vm_page(); // the real OS page size, for the dense-residency probe in any cache mode
@@ -233,6 +239,20 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         cspec_.assign(n_entry, 0);
         spec_remaining_.assign(n_entry, 0);
         ever_evicted_.assign(n_entry, 0);
+        cold_gen_.assign(n_entry, 0);
+        if (freq_half_life_ > 0) {
+            cfreq_.assign(n_entry, 0.0);
+            freq_weight_ = 1.0;
+            freq_last_il_ = -1;
+            min_entry_bytes_ = 0;
+            for (int il = 0; il < n_layer_; ++il) {
+                if (!layers_[il].bound) continue;
+                const size_t b = entry_bytes(il);
+                if (b && (min_entry_bytes_ == 0 || b < min_entry_bytes_)) min_entry_bytes_ = b;
+            }
+            log_printf(LogLevel::Info, "expert cache evicts by decayed frequency (half-life %d tokens)",
+                       freq_half_life_);
+        }
         chead_ = ctail_ = -1;
         cresident_ = 0;
         cgen_ = 0;
@@ -781,8 +801,7 @@ void ExpertStreamSource::set_cache_budget(size_t bytes) {
     ++cache_resizes_;
     // No cstamp guard: with no decode in flight, nothing is staged for the current generation, so
     // every resident entry (coldest first) is a valid eviction target.
-    while (cresident_ > cache_max_ && ctail_ != -1)
-        evict_tail();
+    evict_to_budget(/*spare_current=*/false);
 }
 
 double ExpertStreamSource::cache_lost_frac(int n) {
@@ -906,8 +925,89 @@ void ExpertStreamSource::release_entry_pages(int32_t id) {
         if (a1 > a0) pio::vm_evict((void *) a0, (size_t) (a1 - a0));
     }
 }
+const void * ExpertStreamSource::resident_slice(int il, int e, int p, uint64_t & bytes) const {
+    bytes = 0;
+    if (cache_max_ == 0 || il < 0 || il >= n_layer_ || e < 0 || e >= n_expert_ || p < 0 ||
+        p >= ExpertLayout::max_slots || !layers_[il].bound)
+        return nullptr;
+    const int32_t id = il * n_expert_ + e;
+    if ((size_t) id >= cvalid_.size() || !cvalid_[id] || !lbuf_[p][il]) return nullptr;
+    // An entry offered to the kernel (cache_discard) may already be gone, and only the eval thread
+    // may take one back: for a reader on another thread it is not resident, and a flash read serves.
+    if (disc_.offered(id)) return nullptr;
+    bytes = layers_[il].proj[p].nb2;
+    if (bytes == 0) return nullptr;
+    return (const char *) lbuf_[p][il] + (uint64_t) e * bytes;
+}
+
 void ExpertStreamSource::evict_tail() {
-    const int32_t id = ctail_;
+    evict_entry(ctail_);
+}
+
+void ExpertStreamSource::freq_touch(int32_t id) {
+    if (freq_half_life_ > 0) cfreq_[id] += freq_weight_;
+}
+
+void ExpertStreamSource::freq_pass_check(int il) {
+    if (freq_half_life_ <= 0) return;
+    if (il <= freq_last_il_) {
+        freq_weight_ *= freq_growth_;
+        // Rescale long before a double could overflow: every score and the weight by one factor,
+        // which leaves the order (all eviction reads) unchanged.
+        if (freq_weight_ > 1e200) {
+            const double s = 1.0 / freq_weight_;
+            for (double & f : cfreq_)
+                f *= s;
+            freq_weight_ = 1.0;
+        }
+    }
+    freq_last_il_ = il;
+}
+
+void ExpertStreamSource::evict_to_budget(bool spare_current) {
+    if (cresident_ <= cache_max_) return;
+    if (freq_half_life_ <= 0) {
+        // LRU: the staged entries sit at the hot end, so the first spared tail ends the sweep.
+        if (!(spare_current && cold_batch_)) {
+            while (cresident_ > cache_max_ && ctail_ != -1 && !(spare_current && cstamp_[ctail_] == cgen_))
+                evict_tail();
+            return;
+        }
+        // A cold batch put its own misses at the tail: step over them (its matmul needs them) to
+        // the older entries behind, and stop at the batch's hot block like the plain sweep does.
+        for (int32_t id = ctail_; id != -1 && cresident_ > cache_max_;) {
+            const int32_t prev = cprev_[id];
+            if (cstamp_[id] != cgen_)
+                evict_entry(id);
+            else if (cold_gen_[id] != cgen_)
+                break;
+            id = prev;
+        }
+        return;
+    }
+    // Decayed frequency: the lowest scores go first. A tie (entries not used since a rescale took
+    // their scores to zero, a prefetched entry not yet hit) falls back to LRU order through the
+    // rank. Only as many as the overshoot can need are ordered.
+    std::vector<EvictCand> & cand = evict_cand_;
+    cand.clear();
+    int32_t rank = 0;
+    for (int32_t id = ctail_; id != -1; id = cprev_[id], ++rank)
+        if (!(spare_current && cstamp_[id] == cgen_)) cand.push_back({cfreq_[id], rank, id});
+    if (cand.empty()) return;
+    const auto colder = [](const EvictCand & a, const EvictCand & b) {
+        return a.score < b.score || (a.score == b.score && a.rank < b.rank);
+    };
+    const size_t over = cresident_ - cache_max_;
+    const size_t need = std::min(cand.size(), over / std::max<size_t>(1, min_entry_bytes_) + 1);
+    std::partial_sort(cand.begin(), cand.begin() + (ptrdiff_t) need, cand.end(), colder);
+    for (size_t i = 0; i < cand.size() && cresident_ > cache_max_; ++i) {
+        if (i == need) // the estimate fell short (entries of unequal size): order the rest too
+            std::sort(cand.begin() + (ptrdiff_t) i, cand.end(), colder);
+        evict_entry(cand[i].id);
+    }
+}
+
+void ExpertStreamSource::evict_entry(int32_t id) {
     ++evictions_;
     ever_evicted_[id] = 1; // the next read of this entry is the cache paying twice
     release_entry_pages(id);
@@ -931,6 +1031,7 @@ void ExpertStreamSource::retain(int il, const int32_t * ids, int n_ids) {
         if (!cvalid_[id]) continue; // absent: keeping it is prefetch's job, not retention's
         lru_unlink(id);
         lru_push_front(id);
+        freq_touch(id);
     }
 }
 
@@ -989,10 +1090,12 @@ void ExpertStreamSource::spec_integrate_done() {
         // perfect prefetch paying its bytes twice (measured: +34% read/token, drop off). A
         // committed read enters HOT; its own routing arrives to promote it within N layers
         // anyway.
-        if (spec_adopt_)
+        if (spec_adopt_) {
             lru_push_front(id);
-        else
+            freq_touch(id); // committed: as hot as the use it was read for
+        } else {
             lru_push_back(id);
+        }
         spec_experts_.fetch_add(1);
     }
 }
@@ -1202,20 +1305,38 @@ void ExpertStreamSource::pin_pages(void * p, size_t sz) {
                cresident_ >> 20);
 }
 
+// Where a miss enters the LRU: a cold batch (a prompt) admits at the cold end, so one long prompt
+// cannot flush what decode keeps reusing; everything else at the hot end. Either way it was just
+// used, so it is not offered to the kernel before it has sat out the offer window.
+void ExpertStreamSource::admit_entry(int32_t id) {
+    if (cold_batch_) {
+        lru_push_back(id);
+        cold_gen_[id] = cgen_;
+        ++cold_admits_;
+    } else {
+        lru_push_front(id);
+    }
+    disc_.used(id, cgen_);
+}
+
 bool ExpertStreamSource::touch_entry(int il, int e, bool & hit, bool promote, int commit_only_proj) {
     const int32_t id = il * n_expert_ + e;
     clookups_++;
     cstamp_[id] = cgen_;
-    if (cvalid_[id] && !disc_.take_back(id)) {
-        // The kernel dropped it under pressure: still an entry of the cache, resident in the
-        // accounting, but its bytes are gone - a miss the caller reads whole again.
+    // An offer the kernel dropped under pressure is still an entry of the cache, resident in the
+    // accounting, but its bytes are gone: a miss the caller reads whole again, so it is scored and
+    // placed like one (a cold batch admits it at the cold end, as any other miss of that batch).
+    const bool lost = cvalid_[id] && !disc_.take_back(id);
+    if ((cvalid_[id] && !lost) || !cold_batch_) freq_touch(id);
+    if (lost) {
         shrink_for_drop(entry_bytes(il));
         cspec_[id] = 0;
         if (promote) {
             lru_unlink(id);
-            lru_push_front(id);
+            admit_entry(id);
+        } else {
+            disc_.used(id, cgen_);
         }
-        disc_.used(id, cgen_);
         hit = false;
         return true;
     }
@@ -1247,8 +1368,7 @@ bool ExpertStreamSource::touch_entry(int il, int e, bool & hit, bool promote, in
     cvalid_[id] = 1;
     cspec_[id] = 0; // a real read, not speculative
     cresident_ += entry_bytes(il);
-    lru_push_front(id);
-    disc_.used(id, cgen_);
+    admit_entry(id);
     hit = false;
     return true;
 }
@@ -1256,9 +1376,12 @@ bool ExpertStreamSource::touch_entry(int il, int e, bool & hit, bool promote, in
 // ── load: stage routed experts, read the batch, evict cold entries to budget ────────
 bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
     if (!active_ || il < 0 || il >= n_layer_ || !layers_[il].bound || !ids || n_ids <= 0) return false;
+    freq_pass_check(il);
     if (overlap_) return load_layer_async(il, ids, n_ids);
     LayerExperts & L = layers_[il];
     cgen_++;
+    // A wide graph is a prefill; a decode or a speculative verify window is far narrower.
+    cold_batch_ = prefill_cold_ && cache_max_ && top_k_ > 0 && n_ids >= top_k_ * cold_min_tokens_;
     jobs_.clear();
 
     // Cache-management work (vm commit + LRU bookkeeping, then eviction below) is timed into
@@ -1312,8 +1435,10 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
             // normal case there. Promoting the same entry twice is idempotent, so it stays correct.
             if (cache_max_) {
                 const int32_t id = il * n_expert_ + e;
-                lru_unlink(id);
-                lru_push_front(id);
+                if (cold_gen_[id] != cgen_) {
+                    lru_unlink(id);
+                    lru_push_front(id);
+                }
             }
             continue;
         }
@@ -1362,8 +1487,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
 
     if (cache_max_) {
         const auto te0 = clock_t_::now();
-        while (cresident_ > cache_max_ && ctail_ != -1 && cstamp_[ctail_] != cgen_)
-            evict_tail();
+        evict_to_budget(/*spare_current=*/true);
         mgmt_ns_.fetch_add(
             (long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - te0).count());
     }
@@ -1407,6 +1531,8 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
     const uint32_t gen = async_gen_.fetch_add(1, std::memory_order_relaxed) + 1;
     cur_il_.store(il, std::memory_order_relaxed);
     cgen_++;
+    // A wide graph is a prefill; a decode or a speculative verify window is far narrower.
+    cold_batch_ = prefill_cold_ && cache_max_ && top_k_ > 0 && n_ids >= top_k_ * cold_min_tokens_;
     jobs_.clear();
     settle_offers();
 
@@ -1555,6 +1681,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
                 if (e < 0 || e >= n_expert_) continue;
                 const int32_t id = il * n_expert_ + e;
                 if (!cvalid_[id]) continue;
+                if (cold_gen_[id] == cgen_) continue; // entered cold by this prefill batch
                 lru_unlink(id);
                 lru_push_front(id);
             }
@@ -1581,8 +1708,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
     //    guaranteed no stale in-flight jobs, and current-gen entries (cstamp_ == cgen_) — the
     //    ones just staged — are never chosen, so eviction only releases pages nobody is reading.
     if (cache_max_) {
-        while (cresident_ > cache_max_ && ctail_ != -1 && cstamp_[ctail_] != cgen_)
-            evict_tail();
+        evict_to_budget(/*spare_current=*/true);
     }
     mgmt_ns_.fetch_add((long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - tm0).count());
     return true;
@@ -1706,6 +1832,7 @@ IExpertSource::Stats ExpertStreamSource::stats() const {
     s.o_direct = effective_direct_;
     s.evictions = evictions_;
     s.rereads = rereads_;
+    s.cold_admits = cold_admits_;
     s.drain_wait_seconds = drain_wait_ns_ / 1e9;
     s.adopt_wait_seconds = adopt_wait_ns_ / 1e9;
     s.dense_resident_frac = dense_.resident_frac();

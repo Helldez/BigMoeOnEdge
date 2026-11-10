@@ -695,6 +695,24 @@ void DeviceExpertArena::worker(int lane) {
             std::this_thread::sleep_for(std::chrono::microseconds(test_delay_us_));
         const Layer & L = order_[(size_t) task.k];
         const Proj & pr = L.proj[task.p];
+        const Twin & cw = twins_[task.k % n_slots_][task.p][(size_t) L.variant[task.p]];
+        // Held by the expert cache: copy it from RAM. The slice is the file's bytes, laid out as the
+        // file lays them out, so the device receives exactly what a flash read would have given it.
+        if (cache_) {
+            uint64_t cb = 0;
+            const void * src = cache_->resident_slice(L.il, task.e, task.p, cb);
+            if (src && cb == pr.nb2) {
+                ggml_backend_tensor_set(cw.views[(size_t) task.e], src, 0, (size_t) pr.nb2);
+                cache_bytes_ += pr.nb2;
+                {
+                    std::lock_guard<std::mutex> lk(mu_);
+                    --remaining_[(size_t) task.k];
+                    --in_flight_;
+                }
+                cv_done_.notify_all();
+                continue;
+            }
+        }
         void * stage = staging_[(size_t) lane];
         const long long got =
             readers_[(size_t) pr.file_idx]->read(lane, stage, pr.file_off + (uint64_t) task.e * pr.nb2, pr.nb2);

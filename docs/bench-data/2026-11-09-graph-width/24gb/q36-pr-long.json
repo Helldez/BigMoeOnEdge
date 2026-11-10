@@ -1,0 +1,13 @@
+[
+ {
+  "engine": "q36-pr-long",
+  "prompt": "long",
+  "prompt_tokens": 9714,
+  "gen_tokens": 256,
+  "ttft_s": 1.74,
+  "prefill_tps": 5594.4,
+  "decode_tps": 144.65,
+  "server_timings": null,
+  "text": "Here's a thinking process:\n\n1.  **Analyze User Input:**\n   - **Input Text:** A detailed technical document about a hardware planning system (`--auto`) for an AI inference engine (likely related to llama.cpp/MoE models). It covers:\n     - How `--auto` works (measures, plans, runs, explains)\n     - Pl"
+ }
+]

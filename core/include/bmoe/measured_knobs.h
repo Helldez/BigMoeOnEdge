@@ -43,7 +43,42 @@ struct MeasuredKnobs {
 
     int rounds = 0; // timed windows per candidate behind each verdict
 
-    bool empty() const { return threads <= 0 && overlap < 0; }
+    // The device tier, decided across loads rather than inside one: a device expert cache is fixed
+    // when a context is created, so the two placements cannot alternate within an answer. A load that
+    // arms the cache measures its decode rate; the next load runs the experts where the capacity
+    // fitter put them and measures that; the plan after keeps the faster (planner.cpp,
+    // choose_device_tier). Tokens per second, 0 when that side was not measured. A rule could not
+    // tell the two apart: a cache holding a tenth of a 355B model's experts on a PCIe 3 link decoded
+    // at 1.6 tok/s where the fitter's placement did 3.9, and a cache on a 12 GB card won 17.5 to 9.9.
+    double device_cache_tps = 0.0;
+    double no_device_cache_tps = 0.0;
+
+    // The graph width, decided across loads where a wide graph's compute buffers take device memory
+    // the experts would use (planner.cpp, choose_graph_width). A wide graph prefills a long prompt in
+    // one pass; a narrow one leaves the experts more of the card. Which wins is a property of this
+    // machine AND of how it is used: on two 24 GB cards with GLM-4.5-Air the narrow graph decoded 37%
+    // faster, and the wide one prefilled a 9.5k-token prompt several times faster. So each load times
+    // both halves, and the plan weighs them by the requests this machine actually serves.
+    // `width_narrow` is the narrow width compared (0: none); the rates are tokens per second, the
+    // prefill ones over prompts longer than `width_narrow` only (where the width makes a difference),
+    // 0 when that side or that kind of prompt was not seen.
+    int width_narrow = 0;
+    double wide_decode_tps = 0.0, narrow_decode_tps = 0.0;
+    double wide_prefill_tps = 0.0, narrow_prefill_tps = 0.0;
+    // What the requests of the last load that measured a side looked like: per request, the tokens
+    // decoded and the prompt tokens beyond the narrow width (prefilled after reuse), over `usage_requests`.
+    double usage_gen_tokens = 0.0, usage_long_prompt_tokens = 0.0;
+    int usage_requests = 0;
+
+    bool empty() const { return verdicts() == 0; }
+    // How many measurements this record carries: a front-end keeps a record again when it grows. The
+    // requests a width trial has seen count too, so the usage it weighs the two widths by is kept as it
+    // grows rather than as the first request left it.
+    int verdicts() const {
+        return (threads > 0) + (overlap >= 0) + (device_cache_tps > 0.0) + (no_device_cache_tps > 0.0) +
+               (wide_decode_tps > 0.0) + (narrow_decode_tps > 0.0) + (wide_prefill_tps > 0.0) +
+               (narrow_prefill_tps > 0.0) + usage_requests;
+    }
 };
 
 // The hardware facts a stored measurement is valid for, as 16 hex digits: the core count and
@@ -57,7 +92,9 @@ std::string hardware_fingerprint(const HardwareProfile & hw);
 std::string format_measured_knobs(const std::vector<MeasuredKnobs> & records);
 bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> & out, std::string & error);
 
-// Put `rec` in `records`, replacing the one of the same machine and engine.
+// Put `rec` in `records`, merged into the one of the same machine and engine: each measurement `rec`
+// carries replaces that one, and what it does not carry is kept. A load measures what its plan left
+// unmeasured, so the record of the load before holds the rest.
 void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKnobs & rec);
 
 // The record of this machine and engine, or null.

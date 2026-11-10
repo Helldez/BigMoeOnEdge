@@ -231,6 +231,11 @@ bool vm_discard_supported();
 bool vm_commit_discardable(void * p, size_t sz);
 bool vm_offer(void * p, size_t sz);
 bool vm_reclaim(void * p, size_t sz);
+// Whether an offered span is still held, asked without taking it back: 1 held, 0 dropped, -1 when
+// the platform cannot tell. Residency is the answer where an offered page stays mapped until the
+// kernel takes it (mincore). Windows unmaps an offered range at once (out of the working set and
+// PAGE_NOACCESS until reclaimed), so residency there reads "dropped" for every offer: -1.
+int vm_offered_held(const void * p, size_t sz);
 
 // Drop the resident pages of a FILE-BACKED mapping (the model's mmap) so a later touch refaults them
 // from the file. Distinct from vm_evict, which decommits ANONYMOUS reserved-cache pages: this is for

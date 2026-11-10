@@ -11,13 +11,7 @@ public:
     bool prepare(Span s) override { return pio::vm_commit_discardable(s.p, s.size); }
     bool offer(Span s) override { return pio::vm_offer(s.p, s.size); }
     bool reclaim(Span s) override { return pio::vm_reclaim(s.p, s.size); }
-    int held(Span s) override {
-        // One page tells for the span: the kernel drops an offered span whole on every platform
-        // that reports it, and a page is what mincore answers about.
-        size_t sampled = 0, resident = 0;
-        if (!pio::vm_resident_sample(s.p, pio::vm_page(), &sampled, &resident) || sampled == 0) return -1;
-        return resident != 0 ? 1 : 0;
-    }
+    int held(Span s) override { return pio::vm_offered_held(s.p, s.size); }
     void drop(Span s) override { pio::vm_evict(s.p, s.size); }
 };
 } // namespace

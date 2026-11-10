@@ -7,6 +7,8 @@
 //
 //   G1  resident (no streaming)        == streaming, cache off
 //   G2  streaming, cache off           == streaming, small LRU cache (forces evictions)
+//   G2l same, the cache evicting by plain LRU (G4l: under overlap); the default is decayed frequency
+//   G2p same, a prompt's misses admitted cold, under LRU and decayed frequency (G4p: under overlap)
 //   G3  streaming, selective           == streaming, --load-all (every expert each token)
 //   G6  resident                       == streaming + --dense-odirect (dense weights rebound to
 //                                          O_DIRECT anon buffers — the rebind must be byte-identical)
@@ -69,10 +71,12 @@
 //       (a) and under --overlap (b). The router's ids are then read through a host copy.
 //   G24 the knob trial switches the decode thread count and overlap between timed windows of the
 //       answer it decodes: == resident over one long answer (a) and over four turns that each end
-//       inside a window (b), and the trial must have reached its verdicts.
+//       inside a window (b), and the trial must have reached its verdicts. The graph width's side
+//       timed for a decision across loads (c) == resident, with its rates and request in the record.
 //   G25 the device tier: llama.cpp's device-side expert cache over resident experts (a), over
 //       streamed experts (b) and streamed under n-gram speculation (c), each == the resident
-//       placement.
+//       placement; and each side of the device tier timed for a decision across loads (e), with its
+//       rate in the record.
 //   G26 the real-layer probe fills every device's facts and agrees with the host on the layer's
 //       matmuls; it is timed, not gated, on the tiny models.
 //
@@ -96,6 +100,7 @@
 #include "bmoe/probe.h"
 #include "bmoe/session.h"
 #include "gguf_offsets.h"
+#include "platform_io.h"
 
 #include "ggml-backend.h"
 
@@ -483,17 +488,60 @@ int main(int argc, char ** argv) {
     fails += check("G1 resident == streaming(cache off)", s_res, s_s0);
     fails += check("G2 streaming(cache off) == streaming(LRU cache)", s_s0, s_sc);
 
-    // G2r — the routing record the planner prices the cache from is the engine's own: replayed
-    // through the planner's LRU (bmoe/routing.h) at the run's budget, it must give the hit rate the
-    // engine's cache measured, prompt included and decode alone. Bounded by the record's own limit.
+    // G2l — plain LRU picks other victims from the same tiny budget than the default decayed
+    // frequency; the bytes a token consumes, and so its output, must not move.
     {
-        RunResult r = run(streamc);
+        RunConfig lru = streamc;
+        lru.moe.cache_freq_half_life = 0;
+        std::string s_lru;
+        if (!gen(lru, s_lru, err)) {
+            std::fprintf(stderr, "streaming(LRU cache) run failed: %s\n", err.c_str());
+            return 2;
+        }
+        fails += check("G2l streaming(cache off) == streaming(LRU cache)", s_s0, s_lru);
+    }
+
+    // G2p — a prompt's misses admitted cold, under LRU and under decayed frequency. The width that
+    // makes a graph a prompt is lowered so the gate reaches the cold path whatever its template, and
+    // the run must show it went there: a cold path never taken would pass vacuously.
+    for (int hl : {0, MoeStreamConfig::cache_freq_half_life_default}) {
+        RunConfig cold = streamc;
+        cold.moe.cache_prefill_cold = true;
+        cold.moe.test_prefill_cold_min_tokens = 2;
+        cold.moe.cache_freq_half_life = hl;
+        RunResult r = run(cold);
+        if (!r) {
+            std::fprintf(stderr, "streaming(prefill-cold cache) run failed: %s\n", r.error.c_str());
+            return 2;
+        }
+        const std::string label = hl ? "G2p streaming(cache off) == streaming(prompt admitted cold, decayed frequency)"
+                                     : "G2p streaming(cache off) == streaming(prompt admitted cold, LRU)";
+        fails += check(label.c_str(), s_s0, r.generated_text);
+        if (r.summary.cache_cold_admits <= 0) {
+            std::printf("[FAIL] %s: no miss was admitted cold\n", label.c_str());
+            ++fails;
+        } else {
+            std::printf("[PASS] %s: %lld misses admitted cold\n", label.c_str(), r.summary.cache_cold_admits);
+        }
+    }
+
+    // G2r — the routing record the planner prices the cache from is the engine's own: replayed
+    // through the planner's replay (bmoe/routing.h) at the run's budget and eviction policy, it must give the hit rate
+    // the engine's cache measured, prompt included and decode alone. Bounded by the record's own limit.
+    {
+        // The run's own eviction policy. The prompt is admitted hot here: the replay keeps it as one
+        // batch, where the engine's last narrow piece re-promotes what a cold admission put at the
+        // drop end (bmoe/routing.h), so the identity is held with the cold admission off.
+        RunConfig recc = streamc;
+        recc.moe.cache_prefill_cold = false;
+        RunResult r = run(recc);
         const RoutingTrace & rec = r.routing;
-        const ReplayCounts rp = replay_lru(rec, (uint64_t) streamc.moe.cache_mb << 20);
+        const int hl = recc.moe.cache_freq_half_life;
+        const ReplayCounts rp = replay_cache(rec, (uint64_t) recc.moe.cache_mb << 20, hl);
         RoutingTrace back;
         std::string perr;
         const bool round = parse_routing_trace(format_routing_trace(rec), back, perr) &&
-                           replay_lru(back, (uint64_t) streamc.moe.cache_mb << 20).hits == rp.hits;
+                           replay_cache(back, (uint64_t) recc.moe.cache_mb << 20, hl).hits == rp.hits;
         const double cum = 100.0 * rp.hit(), dec = 100.0 * rp.decode_hit();
         if (!r || rec.empty() || rec.decode_tokens == 0 || rec.decode_tokens > (uint32_t) r.summary.n_generated ||
             rec.prefill_tokens == 0 || std::fabs(cum - r.summary.cache_hit_pct) > 0.05 ||
@@ -581,7 +629,11 @@ int main(int argc, char ** argv) {
     // weight, which no output survives. The cache holds every expert, so nothing is evicted and every
     // drop is a would-be hit. G21a also proves the drops happened - a gate whose path never ran
     // would pass the same way. G18b is the same cache offered and never dropped (reclaim intact).
-    {
+    // A platform without the mechanism (pio::vm_discard_supported) keeps an ordinary cache: nothing
+    // is offered, so there is no re-read path to prove.
+    if (!pio::vm_discard_supported()) {
+        std::printf("[SKIP] G21a-d (this platform offers no memory for the kernel to drop)\n");
+    } else {
         RunConfig dropall = base(model);
         dropall.moe.enabled = true;
         dropall.moe.cache_mb = 64;
@@ -608,6 +660,24 @@ int main(int argc, char ** argv) {
         } else {
             std::printf("[PASS] G21a %lld lookups found their entry dropped and read it again\n",
                         rd.summary.cache_discarded_on_hit);
+        }
+        // G21d - #505's cold admission and the discard together: a dropped entry looked up by a wide
+        // graph is that graph's miss, admitted at the cold end like the others, so a prompt still
+        // cannot flush what decode reuses, and the re-read is still byte-identical.
+        RunConfig coldrop = dropall;
+        coldrop.moe.cache_prefill_cold = true;
+        coldrop.moe.test_prefill_cold_min_tokens = 2;
+        const RunResult rc = run(coldrop);
+        if (!rc) {
+            std::fprintf(stderr, "G21d run failed: %s\n", rc.error.c_str());
+            return 2;
+        }
+        fails += check("G21d discardable cache dropped, prompt admitted cold == streaming(cache off)", s_s0,
+                       rc.generated_text);
+        if (rc.summary.cache_discarded_on_hit == 0 || rc.summary.cache_cold_admits == 0) {
+            std::printf("[FAIL] G21d the cold re-read path never ran (%lld dropped hits, %lld cold admits)\n",
+                        rc.summary.cache_discarded_on_hit, rc.summary.cache_cold_admits);
+            ++fails;
         }
     }
 
@@ -668,23 +738,46 @@ int main(int argc, char ** argv) {
         fails += check("G4b overlap(LRU cache) == streaming(cache off)", s_s0, s_ovc);
         fails += check("G4c overlap(io_threads=1) == streaming(cache off)", s_s0, s_ov1);
         fails += check("G4d overlap(two-wave publish) == streaming(cache off)", s_s0, s_ov2w);
+        {
+            RunConfig ovl = ovc;
+            ovl.moe.cache_freq_half_life = 0;
+            std::string s_ovl;
+            if (!gen(ovl, s_ovl, err)) {
+                std::fprintf(stderr, "overlap(LRU cache) run failed: %s\n", err.c_str());
+                return 2;
+            }
+            fails += check("G4l overlap(LRU cache) == streaming(cache off)", s_s0, s_ovl);
+        }
+        {
+            RunConfig ovp = ovc;
+            ovp.moe.cache_prefill_cold = true;
+            ovp.moe.test_prefill_cold_min_tokens = 2;
+            std::string s_ovp;
+            if (!gen(ovp, s_ovp, err)) {
+                std::fprintf(stderr, "overlap(prompt admitted cold) run failed: %s\n", err.c_str());
+                return 2;
+            }
+            fails += check("G4p overlap(prompt admitted cold) == streaming(cache off)", s_s0, s_ovp);
+        }
 
         // G21c — the discard re-read on the async path: a dropped hit has to become a miss whose
         // reads are published and waited on per expert, with two-wave splitting its commits.
-        RunConfig ovdrop = ov2w;
-        ovdrop.moe.cache_mb = 64;
-        ovdrop.moe.cache_discard = true;
-        ovdrop.moe.cache_discard_drop = true;
-        const RunResult rod = run(ovdrop);
-        if (!rod) {
-            std::fprintf(stderr, "G21c run failed: %s\n", rod.error.c_str());
-            return 2;
-        }
-        fails += check("G21c overlap + two-wave, every offered entry dropped == streaming(cache off)", s_s0,
-                       rod.generated_text);
-        if (rod.summary.cache_discarded_on_hit == 0) {
-            std::printf("[FAIL] G21c no entry was dropped and read again on the async path\n");
-            ++fails;
+        if (pio::vm_discard_supported()) {
+            RunConfig ovdrop = ov2w;
+            ovdrop.moe.cache_mb = 64;
+            ovdrop.moe.cache_discard = true;
+            ovdrop.moe.cache_discard_drop = true;
+            const RunResult rod = run(ovdrop);
+            if (!rod) {
+                std::fprintf(stderr, "G21c run failed: %s\n", rod.error.c_str());
+                return 2;
+            }
+            fails += check("G21c overlap + two-wave, every offered entry dropped == streaming(cache off)", s_s0,
+                           rod.generated_text);
+            if (rod.summary.cache_discarded_on_hit == 0) {
+                std::printf("[FAIL] G21c no entry was dropped and read again on the async path\n");
+                ++fails;
+            }
         }
     }
 
@@ -1332,7 +1425,10 @@ int main(int argc, char ** argv) {
                     continue;
                 }
                 fails += check(v.name, s_pref, rr.generated_text);
-                const double mib = rr.summary.prefill_device_read_mib;
+                // What the arena filled its slots with, from flash or copied from the expert cache
+                // (PrefillDeviceConfig::from_cache): the same bytes whichever way they came.
+                const double cached = rr.summary.prefill_device_cache_mib;
+                const double mib = rr.summary.prefill_device_read_mib + cached;
                 if (arena_mib_ref < 0.0) arena_mib_ref = mib;
                 const bool mib_ok = v.routed ? (mib > 0.0 && mib < arena_mib_ref) : mib == arena_mib_ref;
                 if (mib <= 0.0 || !mib_ok || rr.summary.prefill_device_nodes <= 0) {
@@ -1340,8 +1436,21 @@ int main(int argc, char ** argv) {
                                 v.name, mib, arena_mib_ref, rr.summary.prefill_device_nodes);
                     ++fails;
                 } else {
-                    std::printf("[PASS] %s: the arena read %.3f MiB, the device computed %lld nodes\n", v.name, mib,
-                                rr.summary.prefill_device_nodes);
+                    std::printf("[PASS] %s: the arena filled %.3f MiB (%.3f from the cache), the device computed "
+                                "%lld nodes\n",
+                                v.name, mib, cached, rr.summary.prefill_device_nodes);
+                }
+                // With a cache held through the prefill, some of what the arena needs is resident (the
+                // load's confirmation pass filled it), so the cache path must have run: a copy that
+                // never happened would leave the identity above proving nothing about it. Slots on
+                // demand take their memory from the cache first, so there it may hold nothing.
+                if (v.cache_mb > 0 && !v.on_demand) {
+                    if (cached <= 0.0) {
+                        std::printf("[FAIL] %s: the arena copied nothing from the expert cache\n", v.name);
+                        ++fails;
+                    } else {
+                        std::printf("[PASS] %s: the arena copied %.3f MiB from the expert cache\n", v.name, cached);
+                    }
                 }
                 PplResult pv = vs->perplexity(pr);
                 if (!pv.ok) {
@@ -1743,6 +1852,40 @@ int main(int argc, char ** argv) {
                         fails += check("G25c device cache, streamed, n-gram speculation == resident experts", s_placed,
                                        s_cached_spec);
                     }
+                    // e) each side of the device tier timed for a decision across loads
+                    // (KnobTrialConfig::device_tier): the rate probe switches nothing, so each answer is
+                    // its placement's, and the record must carry the rate, or a plan has nothing to
+                    // compare. Long enough for the longest settle the probe makes and its windows.
+                    RunConfig ref_t = placed;
+                    ref_t.n_predict = 64;
+                    std::string s_ref_t;
+                    if (!gen(ref_t, s_ref_t, err)) {
+                        std::printf("[FAIL] G25e the reference run failed: %s\n", err.c_str());
+                        ++fails;
+                    } else {
+                        for (int side : {1, 0}) {
+                            RunConfig timed = side ? cached : placed;
+                            timed.n_predict = ref_t.n_predict;
+                            timed.trial.device_tier = side;
+                            timed.trial.window_tokens = 2;
+                            const RunResult rt = run(timed);
+                            const double tps = side ? rt.knobs.device_cache_tps : rt.knobs.no_device_cache_tps;
+                            const std::string what =
+                                std::string("G25e ") + (side ? "with" : "without") + " a device cache, timed";
+                            if (!rt) {
+                                std::printf("[FAIL] %s: the run failed: %s\n", what.c_str(), rt.error.c_str());
+                                ++fails;
+                                continue;
+                            }
+                            fails += check((what + " == resident experts").c_str(), s_ref_t, rt.generated_text);
+                            if (!(tps > 0.0)) {
+                                std::printf("[FAIL] %s: no rate in the record\n", what.c_str());
+                                ++fails;
+                            } else {
+                                std::printf("[PASS] %s: %.1f tok/s in the record\n", what.c_str(), tps);
+                            }
+                        }
+                    }
                 }
             }
             if (!have_hook) {
@@ -1844,6 +1987,39 @@ int main(int argc, char ** argv) {
                         mt.overlap < 0 ? "not measured"
                         : mt.overlap   ? "on"
                                        : "off");
+        }
+
+        // G24c: the graph width's side timed for a decision across loads (KnobTrialConfig::width_side).
+        // It switches nothing, so the answer is the resident one; the record must carry the decode, the
+        // prefill of the prompt (longer than the narrow width here) and the request it served.
+        RunConfig wref = resident;
+        wref.n_predict = 64;
+        std::string s_wref;
+        if (!gen(wref, s_wref, err)) {
+            std::fprintf(stderr, "G24c reference run failed: %s\n", err.c_str());
+            return 2;
+        }
+        RunConfig wt = wref;
+        wt.trial.width_side = 1;
+        wt.trial.width_narrow = 2;
+        wt.trial.window_tokens = 2;
+        const RunResult rw = run(wt);
+        if (!rw) {
+            std::fprintf(stderr, "G24c run failed: %s\n", rw.error.c_str());
+            return 2;
+        }
+        fails += check("G24c graph width timed == resident", s_wref, rw.generated_text);
+        const MeasuredKnobs & mw = rw.knobs;
+        if (!(mw.wide_decode_tps > 0.0) || !(mw.wide_prefill_tps > 0.0) || mw.usage_requests != 1 ||
+            mw.width_narrow != 2) {
+            std::printf("[FAIL] G24c the record lacks the width's side: decode %.1f, prefill %.1f, %d requests, "
+                        "narrow %d\n",
+                        mw.wide_decode_tps, mw.wide_prefill_tps, mw.usage_requests, mw.width_narrow);
+            ++fails;
+        } else {
+            std::printf("[PASS] G24c the record holds the width's side: decode %.1f tok/s, prefill %.1f tok/s, "
+                        "%.0f tokens a request\n",
+                        mw.wide_decode_tps, mw.wide_prefill_tps, mw.usage_gen_tokens);
         }
     }
 
