@@ -7,6 +7,14 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **The graph width decided across loads, by this machine's own requests.** Where every layer is on
+  a card, the experts do not all fit and the card's compute buffers are past its share, a narrower
+  graph gives the experts more of the card, and prefills a long prompt in more passes. On two 24 GB
+  cards with GLM-4.5-Air the narrow graph decoded 19.4 tok/s against 14.2, and the wide one prefilled
+  a 9.5k-token prompt several times faster. A load times the full width and the next the narrow one,
+  each its decode, its prefill of the prompts longer than the narrow width, and the requests it
+  served. The plan after keeps the side faster on those requests, past the planner's 10% margin.
+  Parameters `--trial-width` and `--trial-width-narrow` (set by the plan). Gate G24c.
 - **The device prefill reads what the expert cache holds** (`--no-prefill-from-cache` turns it off):
   an expert the cache has is copied from RAM into the device's slot instead of read from flash again.
   On the Mac's GPU, four 4k-token documents read 297 → 178 GiB from flash and prefilled in 31.9-33.2 s
@@ -78,6 +86,24 @@ Semantic Versioning.
   margin. Each load's side is merged into the record the front-end keeps for the model and machine,
   which now merges measurements rather than replacing them. New parameter `--trial-device-cache`
   (set by the plan). Gate G25e: both sides timed, byte-identical, with a rate in the record.
+- **A small card gets its expert cache at a long context.** The graph width (`--ubatch`) was checked
+  against host memory only. On a card with memory of its own, a graph as wide as a 16384 context
+  reserved 6.6 GB of a 12 GB card for compute buffers, so the capacity fitter left two layers on the
+  host, the device tier found a dense part off the card and armed no cache, and `bmoe-server` decoded
+  Qwen3.8-Flash-Next Q2_0 at 13 tok/s where the CLI, at a 2048 context, did 36.8. Where the fitter
+  leaves whole layers on the host beside a card of its own, that card's compute buffers are now held
+  to the same share of its memory as the host's are of the host's, each card against its own, and the
+  fitter places again at the narrower width. On that card and context the server now picks 2048
+  tokens and decodes at 32.9-36.1 tok/s with a 6.1 GB device cache. Where every layer fits the card,
+  the graph keeps its width: on a 24 GB card a narrower one gave 7-12% more decode but cost a long
+  prompt's prefill 24-28%, a trade left unpriced. The exception is a narrower graph that lets the
+  whole model fit the card. The fitter is asked at the narrower width and the graph is narrowed only
+  where it places every expert there: Qwen3.6-35B on a 24 GB card at a 16384 context went from a
+  device cache at 137-139 tok/s to fully resident at 155-156, with a 9714-token prefill at 5594 tok/s
+  instead of 4789. The plan now says "every layer" where the fitter places them all (it said "0 layers").
+  Measurements: `docs/bench-data/2026-11-09-graph-width/` (12, 16 and 24 GB cards, #505 beside it on
+  the 16 GB one). The plan also says why the device tier armed no
+  cache when a dense part is off the card; before, it said nothing.
 
 ### Documentation
 - One planner run on Windows, in `docs/hardware-planning.md`, the device probed in a process of its

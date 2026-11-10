@@ -455,7 +455,13 @@ void choose_device_tier(Planning & s) {
     // The dense part of every layer must already be on the devices: it is read by every token, so it
     // has the first claim on the fast memory, and the fitter gives it that claim before any expert.
     // A layer whose dense part is left on the host would cross to reach a cache on the device.
-    if ((uint32_t) pl.n_gpu_layers < m.n_layer) return;
+    if ((uint32_t) pl.n_gpu_layers < m.n_layer) {
+        s.note("device-cache-mb", "0", Source::Derived,
+               "Not every layer's dense part fits on the device: no cache of experts there.",
+               "the capacity fitter put " + u64s((uint64_t) pl.n_gpu_layers) + " of " + u64s(m.n_layer + 1) +
+                   " layers on the devices, so some dense parts are on the host, and a cache would leave them there");
+        return;
+    }
     if (s.host_layers == 0) return;             // every expert on the devices: the model fits there
     if (pl.all_expert_patterns.empty()) return; // no adapter said how to name them
     const uint64_t on_devices = m.expert_bytes > s.host_expert_bytes ? m.expert_bytes - s.host_expert_bytes : 0;
@@ -873,14 +879,149 @@ void size_budget(Planning & s) {
 // A width the caller set is the caller's; a slope that was not measured decides nothing, and the
 // knob keeps its default.
 //
-// A device's buffers are counted only where they come out of this pool. A device with memory of its
-// own pays for its width there, which is the first stage's arithmetic and not this one.
+// A device's buffers come out of this pool where its memory is the host's. A device with memory of
+// its own pays for its width in that memory, and where the model does not fit the device, every byte
+// there is one the expert cache or a layer's dense part would have used: the same trade, on the
+// device. Measured on a 12 GB card at a 16384 context: a graph as wide as the context reserved 6.6 GB
+// of the card for compute buffers, the fitter left two layers' dense part on the host, no device cache
+// was armed, and the decode ran at 13 tok/s, where 2048 tokens of width reserved 0.7 GB and the same
+// card decoded at 37 with a 6 GB cache. So where a device is short of room, its buffers are held to
+// the same share of its memory as the host's are of the host's; a device the whole model fits keeps
+// the widest graph, since its buffers take nothing from anything there.
+} // namespace
+
+uint32_t device_share_width(const Placement & placement, const HardwareProfile & hw, const PlannerPolicy & policy) {
+    const uint32_t full = placement.compute_width;
+    if (full == 0 || placement.device_compute_per_token == 0) return 0;
+    const uint64_t device_memory = hw.device_local_memory();
+    if (device_memory == 0) return 0;
+    // Each card against its own memory: two cards of different sizes each reserve their own buffers,
+    // and the smaller is the one that runs short. The sum against the sum where the fitter did not say
+    // which card takes what.
+    auto over = [&](uint32_t w) {
+        const Placement q = placement.at_width(w);
+        bool per_card = false;
+        for (const ComputeDevice & d : hw.devices) {
+            if (!d.has_own_memory() || d.memory_total == 0) continue;
+            const uint64_t part = q.device_compute_of(d.name);
+            if (part == 0) continue;
+            per_card = true;
+            if ((double) part > (double) d.memory_total * policy.compute_share_max) return true;
+        }
+        return !per_card && (double) q.device_compute_bytes > (double) device_memory * policy.compute_share_max;
+    };
+    uint32_t w = full;
+    while (w / 2 >= policy.ubatch_min && over(w))
+        w /= 2;
+    return w;
+}
+
+namespace {
+
+// The graph width where the rule above leaves it wide and the devices are short of the room it takes:
+// every layer on a card of its own, the experts not all there, and the card's buffers past its share.
+// A narrower graph then gives the experts more of the card - more of them placed there, or a larger
+// cache of them - and prefills a long prompt in more passes. Which wins is this machine's and this
+// use's, so it is measured across loads (MeasuredKnobs::width_narrow): a load times the plan's own
+// width, the next the narrow one, each timing its decode, its prefill of the prompts the width changes,
+// and the requests it served; the plan after weighs the two by those requests. Measured on two 24 GB
+// cards with GLM-4.5-Air: 14.2 tok/s decoded at 16384 tokens wide against 19.4 at 512, where the wide
+// graph prefilled a 9.5k-token prompt at 610 tok/s and a 512-wide one, in llama.cpp, at 104. True when
+// it decided the width and said so.
+bool width_across_loads(Planning & s, uint32_t full) {
+    Plan & p = s.p;
+    const Placement & pl = s.placement;
+    if (s.req.is_pinned("ubatch") || devices_share_host_memory(s.hw) || !pl.fitted || pl.n_gpu_layers == 0 ||
+        pl.host_expert_layers.empty() || p.config.trial.device_tier >= 0)
+        return false;
+    const uint32_t narrow = device_share_width(pl, s.hw, s.pol);
+    if (narrow == 0 || narrow >= full) return false;
+    const MeasuredKnobs & mk = s.model.knobs;
+    const bool same = mk.width_narrow == (int) narrow;
+    const double wd = same ? mk.wide_decode_tps : 0.0, nd = same ? mk.narrow_decode_tps : 0.0;
+    const double wp = same ? mk.wide_prefill_tps : 0.0, np = same ? mk.narrow_prefill_tps : 0.0;
+    const double gen = mk.usage_gen_tokens, longp = mk.usage_long_prompt_tokens;
+    const std::string n = u64s(narrow);
+    const auto run_side = [&](int side, const std::string & why) {
+        p.config.trial.width_side = side;
+        p.config.trial.width_narrow = (int) narrow;
+        if (side == 0) {
+            s.placement = s.placement.at_width(narrow);
+            p.placement = s.placement;
+            p.config.n_ubatch = (int) narrow;
+        }
+        s.note("ubatch", side ? u64s((uint64_t) p.config.n_ubatch) : n, Source::Policy,
+               side ? "This load times the graph at its own width, against " + n + " tokens on another load."
+                    : "This load times the graph " + n + " tokens wide, against its own width timed before.",
+               why);
+    };
+    const std::string room = "the devices' compute buffers at the full width are past their share of the cards' "
+                             "memory, which a narrower graph gives the experts";
+    if (wd <= 0.0) {
+        run_side(1, room + "; nothing is measured yet, so this load times the full width and a later one " + n +
+                        " tokens");
+        return true;
+    }
+    if (nd <= 0.0) {
+        run_side(0, room + "; the full width was timed at " + u64s((uint64_t) std::lround(wd)) +
+                        " tok/s, and this load times " + n + " tokens");
+        return true;
+    }
+    // Prompts the width changes were served: both sides' prefill of them is needed to weigh it.
+    if (longp > 0.0 && (wp <= 0.0 || np <= 0.0)) {
+        run_side(wp <= 0.0 ? 1 : 0, room + "; this machine prefills prompts longer than " + n +
+                                        " tokens, and that side's prefill of them is not timed yet");
+        return true;
+    }
+    // Seconds a request of this machine's own takes on each side: its tokens decoded, and its prompt
+    // tokens past the narrow width (shorter ones run the same on both).
+    const double t_wide = gen / wd + (longp > 0.0 ? longp / wp : 0.0);
+    const double t_narrow = gen / nd + (longp > 0.0 ? longp / np : 0.0);
+    char nums[320];
+    std::snprintf(nums, sizeof(nums),
+                  "measured on earlier loads: decode %.2f tok/s at the full width against %.2f at %u, prefill of the "
+                  "prompts past %u at %.0f against %.0f; a request here decodes %.0f tokens and prefills %.0f past "
+                  "%u, so %.2f s against %.2f",
+                  wd, nd, narrow, narrow, wp, np, gen, longp, narrow, t_wide, t_narrow);
+    const std::string margin = u64s((uint64_t) (s.pol.min_backend_win * 100.0f + 0.5f)) + "%";
+    if (t_wide > t_narrow * (1.0 + (double) s.pol.min_backend_win)) {
+        s.placement = s.placement.at_width(narrow);
+        p.placement = s.placement;
+        p.config.n_ubatch = (int) narrow;
+        s.note("ubatch", n, Source::Measured, n + " tokens per pass: on this machine's own requests it is faster.",
+               std::string(nums) + ", past the " + margin + " margin");
+        return true;
+    }
+    s.note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Measured,
+           "A prompt runs in one pass: on this machine's own requests the full width is as fast or faster.",
+           std::string(nums) + "; the narrow graph is not faster by the " + margin + " margin");
+    return true;
+}
+
 void choose_graph_width(Planning & s) {
     Plan & p = s.p;
     const bool device_in_pool = devices_share_host_memory(s.hw);
     auto buffers = [&](uint32_t w) {
         const Placement q = s.placement.at_width(w);
         return q.raw_host_compute_bytes + (device_in_pool ? q.device_compute_bytes : 0);
+    };
+    // Short of room: the fitter left a whole layer, and with it that layer's dense part, on the host
+    // beside a device of its own. Where every layer is on the device, the wide graph costs the device
+    // tier cache, not a dense part: that trade (a larger cache for decode against a narrower graph for
+    // prefill) is left to the widest graph until it is priced. Measured on a 24 GB card where every
+    // layer fit: narrowing to 4096 tokens grew the cache from 12.4 to 17.6 GB and decode by 7-12%, and
+    // cost a 9756-token prompt's prefill 24-28% (1560-1668 to 1189-1201 tok/s). The one narrowing
+    // there that is no trade, the whole model fitting the device, is asked of the fitter by
+    // probe_and_plan, since only a placement can say it.
+    const uint64_t device_memory = device_in_pool ? 0 : s.hw.device_local_memory();
+    const bool device_short = device_memory > 0 && s.placement.fitted && s.placement.n_gpu_layers > 0 &&
+                              s.placement.device_compute_per_token > 0 &&
+                              (uint32_t) s.placement.n_gpu_layers <= s.model.n_layer;
+    const uint32_t device_width = device_short ? device_share_width(s.placement, s.hw, s.pol) : 0;
+    auto device_buffers = [&](uint32_t w) { return s.placement.at_width(w).device_compute_bytes; };
+    auto device_over = [&](uint32_t w) { return device_width > 0 && w > device_width; };
+    auto over = [&](uint32_t w) {
+        return buffers(w) > s.holdable * (double) s.pol.compute_share_max || (device_short && device_over(w));
     };
     const uint32_t full = s.placement.compute_width;
     if (s.req.is_pinned("ubatch")) {
@@ -898,12 +1039,13 @@ void choose_graph_width(Planning & s) {
                "width is not this plan's to choose; keeping the default");
         return;
     }
-    const uint64_t cap = (uint64_t) ((double) s.holdable * s.pol.compute_share_max);
     uint32_t w = full;
-    while (w / 2 >= s.pol.ubatch_min && buffers(w) > cap)
+    while (w / 2 >= s.pol.ubatch_min && over(w))
         w /= 2;
-    const std::string share = u64s((uint64_t) (s.pol.compute_share_max * 100.0f + 0.5f)) + "% of the " +
-                              u64s(mib(s.holdable)) + " MiB this process may hold";
+    const std::string pct = u64s((uint64_t) (s.pol.compute_share_max * 100.0f + 0.5f)) + "%";
+    const std::string share = pct + " of the " + u64s(mib(s.holdable)) + " MiB this process may hold";
+    const bool device_bound = device_short && device_over(full);
+    if (w == full && width_across_loads(s, full)) return;
     if (w == full) {
         s.note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Derived,
                "A prompt runs in one pass: that takes only " + size_brief(buffers(full)) + ".",
@@ -911,14 +1053,20 @@ void choose_graph_width(Planning & s) {
                    " MiB of compute buffers, inside " + share + ": a prompt is computed in one pass");
         return;
     }
-    const uint64_t before = buffers(full);
+    const uint64_t before = device_bound ? device_buffers(full) : buffers(full);
+    const uint64_t after = device_bound ? device_buffers(w) : buffers(w);
+    const std::string where = device_bound ? pct + " of the " + u64s(mib(device_memory)) +
+                                                 " MiB of device memory, where the fitter left layers on the host"
+                                           : share;
     s.placement = s.placement.at_width(w);
     p.placement = s.placement;
     p.config.n_ubatch = (int) w;
     s.note("ubatch", u64s(w), Source::Policy,
-           u64s(w) + " tokens per pass; wider would take " + size_brief(before) + " from the cache.",
-           "a graph as wide as the context would reserve " + u64s(mib(before)) + " MiB of compute buffers, more than " +
-               share + "; at " + u64s(w) + " tokens it is " + u64s(mib(buffers(w))) +
+           u64s(w) + " tokens per pass; wider would take " + size_brief(before) +
+               (device_bound ? " of the device's memory." : " from the cache."),
+           "a graph as wide as the context would reserve " + u64s(mib(before)) + " MiB of compute buffers" +
+               (device_bound ? " on the devices" : "") + ", more than " + where + "; at " + u64s(w) + " tokens it is " +
+               u64s(mib(after)) +
                " MiB. A prompt takes more passes and the expert cache keeps the rest: a prompt is paid once and a "
                "token every time. " +
                flag_spelling("ubatch") + " sets it by hand");
@@ -1019,9 +1167,12 @@ void apply_placement(Planning & s) {
                      "the host");
         return;
     }
-    s.note("placement", u64s((uint64_t) std::max(0, placement.n_gpu_layers)) + " layers on devices", Source::Measured,
-           u64s((uint64_t) std::max(0, placement.n_gpu_layers)) + " layers on a device; " + u64s(s.host_layers) +
-               " of " + u64s(s.n_moe_layer) + " layers keep their experts on the CPU.",
+    // The fitter leaves the count at its default, every layer, where the model fits the devices whole.
+    const std::string layers =
+        placement.n_gpu_layers < 0 ? "every layer" : u64s((uint64_t) std::max(0, placement.n_gpu_layers)) + " layers";
+    s.note("placement", layers + " on devices", Source::Measured,
+           layers + " on a device; " + u64s(s.host_layers) + " of " + u64s(s.n_moe_layer) +
+               " layers keep their experts on the CPU.",
            placement.outcome + "; " + u64s(s.host_layers) + " of " + u64s(s.n_moe_layer) +
                " MoE layers keep their experts on the host, host-resident " + u64s(mib(placement.host_resident_bytes)) +
                " MiB, on devices " + u64s(mib(placement.device_bytes)) + " MiB, context " + u64s(placement.n_ctx) +

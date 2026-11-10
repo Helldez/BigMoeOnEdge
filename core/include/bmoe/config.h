@@ -671,8 +671,14 @@ struct KnobTrialConfig {
     // switches: the load runs the side the plan gave it, and its decode rate is measured once the
     // knobs above have their verdicts, so their switches are not in its windows.
     int device_tier = -1;
+    // The graph width's side this load measures, decided across loads (MeasuredKnobs::width_narrow):
+    // 1 the plan's own width, 0 the narrower `width_narrow`; -1 neither. The load times its decode as
+    // above, and its prefill over the prompts longer than `width_narrow`, the only ones the width
+    // changes, with the requests it served, which the plan weighs the two sides by.
+    int width_side = -1;
+    int width_narrow = 0;
 
-    bool enabled() const { return !threads.empty() || overlap || device_tier >= 0; }
+    bool enabled() const { return !threads.empty() || overlap || device_tier >= 0 || width_side >= 0; }
 
     static constexpr int threads_max_candidates = 2;
     static constexpr int window_tokens_max = 256;
