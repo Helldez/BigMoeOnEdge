@@ -1317,6 +1317,21 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("cache-discard-cost", "Drop, never swap: cost cap", G::Cache, L::Advanced,
+                          "The most of the time handing cached experts to the system and back may take, in "
+                          "percent. Past it, experts are handed over only once memory runs short.");
+        d.value_hint = "PCT";
+        bounds(d, 0, MoeStreamConfig::cache_discard_cost_max_pct, "%");
+        special(d, "0", "only when memory runs short");
+        special(d, std::to_string(MoeStreamConfig::cache_discard_cost_max_pct), "always, whatever it costs");
+        bind_int(d, [](RunConfig & c) -> int & { return c.moe.cache_discard_cost_pct; });
+        d.details = "Handing an expert over and taking it back unused costs time that differs a lot between "
+                    "machines (tens of microseconds on a phone, milliseconds on a Windows PC). The engine "
+                    "measures it as it runs; past this share it keeps experts as ordinary memory until "
+                    "available memory falls under the cache's RAM-to-leave, then hands over the coldest.";
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("cache-discard-drop", "Drop at once", G::Diagnostics, L::Debug,
                           "Drop an offered expert just before a lookup takes it back, as if pressure took it, "
                           "so each such lookup pays the re-read. For the byte-identity gate.");

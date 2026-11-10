@@ -238,13 +238,42 @@ and no other thread reads an offered entry (a device prefill copying from the ca
 file instead). The policy is its own module, `moe/discardable_entries`, over a port that `platform_io` implements; its
 test runs it against a fake kernel.
 
-Windows has the API (`OfferVirtualMemory` / `ReclaimVirtualMemory`) but not yet the mechanism: an
-offered range leaves the working set and turns `PAGE_NOACCESS` the moment it is offered, kept or not,
-and the offer and the reclaim each cost microseconds per page: about 1 ms per 1.7 MiB entry, twice
-that with the decode threads busy, paid on every reuse of an offered entry. On a 15 GB Windows 11 PC with
-Qwen3.6-35B-A3B Q4_K_M, decode was 2.2-2.9 tok/s offered against 3.7-4.8 with an ordinary cache, the
-same bytes and hits, the whole gap in cache management. `pio::vm_discard_supported` answers false
-there, so the cache is ordinary memory as before, the planner prices it so, and G21 is skipped.
+### What offering ahead costs, and when it stops
+
+Offering ahead of pressure is insurance, and the premium is an offer and a reclaim on every reuse
+of an entry the system did not take. The premium belongs to the machine, not to the policy. A probe
+that offers and takes back 64 entries with nothing taken, per 1.7 MiB entry:
+
+| | plain hit | offer + reclaim | with the other cores busy |
+|---|---:|---:|---:|
+| test phone (Android 16, 4 KiB pages, `MADV_FREE`) | 5.7 µs | 39.5 µs | 39.0 µs |
+| Windows 11 PC (16 threads, `OfferVirtualMemory`) | 2.8 µs | 1031 µs | 2178 µs |
+
+On Windows an offered range leaves the working set and turns `PAGE_NOACCESS` the moment it is
+offered, kept or not, and both calls work page by page: about 2.4 µs per 4 KiB page, 5 µs with the
+decode threads busy. Reading the range after the reclaim takes no fault (the reclaim maps it back
+itself), batching eight entries per call saves about 30%, and `PrefetchVirtualMemory` changes
+nothing. On a 15 GB PC with Qwen3.6-35B-A3B Q4_K_M that was 40% of decode: 2.2-2.9 tok/s offered
+against 3.7-4.8 ordinary, the same bytes and hits.
+
+So the policy prices it as it runs (`DiscardableEntries::set_cost_rule`). It times its own offers and
+reclaims against the wall time of the decode they run in, on the real entries with the real threads
+busy: a probe at start-up would underestimate it by half on the PC. Only a decode-wide load (one
+token, or a speculative verify window) is priced. A prompt of any length cycles entries far faster
+than decode does: on the phone, a first version that priced the prompt read 21-23%, against about
+6-7% in decode (cache management 52-56 against 30-35 ms/token, offered against ordinary). A window
+is 8 decode tokens with at least 64 kept round trips. Once one costs more than
+`--cache-discard-cost` (15% by default, between those two machines), offering turns pressure-only
+for the rest of the run; a single token that costs more than twice the cap decides at once. The
+verdict is asymmetric on purpose: pressure-only by mistake costs what offering ahead would have
+saved, offering ahead by mistake costs its whole share on every token, and a 24-token answer on the
+PC spent half of itself learning that over eight tokens. Nothing is offered until available memory falls under `--cache-floor-mb`,
+sampled once per pass of the stack, and then the coldest entries are offered, as many bytes as the
+system is short. The time of a prompt, and the pause before it, are outside every window; a pause
+that no prompt ends stays in and only makes that window price cheap, so it can delay the verdict but
+never invent one. The gates' `--cache-discard-drop` is never
+priced away, so G21 runs the re-read path everywhere the mechanism exists. The summary line
+`moe-cache: handing experts to the system and back took N% of the time` reports the last window.
 
 The budget follows what the kernel lets the cache keep, both ways (`DropFollowingBudget`, in the same
 module). It goes down by each drop, never under one token's cycle. Once a whole window passes
@@ -290,7 +319,8 @@ going cold on Linux, and the place to make it cheaper.
 | Flag | Meaning |
 |---|---|
 | `--cache-mb auto` | size the cache to the device instead of a fixed MiB (mutually exclusive with a numeric `--cache-mb`). **The CLI's default whenever `--moe-stream` is on**: pass a number, or `0` for no cache, to override it. The library's own default is still no cache, so an embedder passing 0 keeps meaning it |
-| `--cache-floor-mb N` | RAM to leave free for the rest of the system when auto-sizing (default 1536) |
+| `--cache-floor-mb N` | RAM to leave free for the rest of the system when auto-sizing (default 1536); once offering is pressure-only, available memory under it is the shortfall the cache offers its coldest entries for |
+| `--cache-discard-cost PCT` | the most of the time handing experts to the system and back may take before offering turns pressure-only (default 15; 0 = pressure-only from the start, 100 = never priced). See [What offering ahead costs](#what-offering-ahead-costs-and-when-it-stops) |
 | `--cache-ceil-mb N` | upper bound on the auto-sized budget (0 = no cap). Use it — uncapped `auto` over-asks |
 | `--dense-weights mmap\|warm\|anon` | the dense (non-expert) weight policy. `warm` is the load-time page-cache sweep described above; `mmap` skips it; `anon` (default) reads the dense set via O_DIRECT into anonymous buffers instead, which is the right answer well past RAM — see [benchmarks-gpt-oss.md](benchmarks-gpt-oss.md). `--no-warm-dense` and `--dense-odirect` are deprecated aliases for `mmap` and `anon` |
 

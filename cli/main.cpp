@@ -1443,6 +1443,12 @@ int main(int argc, char ** argv) {
             // Pressure answered by dropping cached experts rather than swapping anything.
             if (s.cache_discarded > 0)
                 std::printf("moe-cache: %lld experts dropped by the system under memory pressure\n", s.cache_discarded);
+            // What offering ahead of pressure costs on this machine, as the cache measured it.
+            if (s.cache_discard_cost_share >= 0)
+                std::printf("moe-cache: handing experts to the system and back took %.2f%% of the time%s\n",
+                            s.cache_discard_cost_share * 100.0,
+                            s.cache_discard_pressure_only ? "; over the cap, so only under memory pressure"
+                                                          : "; under the cap, so ahead of pressure");
         }
         // The row policy's own line: what it took out of RAM, what it holds instead, and what
         // that cost in reads. Printed only when a table qualified, so a run that discovered

@@ -105,6 +105,10 @@ public:
         // written to swap.
         long long discarded = 0;
         long long discarded_on_hit = 0; // of those, the ones a lookup found dropped (the re-read path)
+        // The share of wall time the last priced window of round trips spent handing entries over
+        // and back (-1 before one), and whether that turned offering pressure-only.
+        double discard_cost_share = -1.0;
+        bool discard_pressure_only = false;
         // Eval-thread waits that are NOT part of the windows above, split out because each lives
         // inside a different residual and hid there. `drain_wait` is the top of the async load:
         // waiting for the previous layer's batch to finish before its jobs_/flags are reused —

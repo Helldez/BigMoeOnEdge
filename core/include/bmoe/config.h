@@ -130,6 +130,15 @@ struct MoeStreamConfig {
     // Debug: drop an offered entry just before a lookup takes it back, as if pressure had taken it,
     // so every such lookup pays the re-read on zeroed memory. What the byte-identity gate runs.
     bool cache_discard_drop = false;
+    // The most of the time offering AHEAD of pressure may cost, in percent: an offer and a reclaim
+    // per reuse when the system takes nothing. Measured as the run goes (per 1.7 MiB entry ~34 us on
+    // an Android phone, 1-2 ms on a Windows PC, where it was 40% of decode); past this share the
+    // cache offers only once available memory falls under cache_floor_mb, and only the coldest
+    // entries, as many bytes as it is short. 0 = pressure-only from the start; 100 = never priced.
+    // The default sits between what was measured where offering ahead pays (~6-7% of decode on the
+    // test phone) and where it does not (~40% on the Windows PC).
+    static constexpr int cache_discard_cost_default_pct = 15;
+    int cache_discard_cost_pct = cache_discard_cost_default_pct;
 
     // Halve the expert cache when the system takes it back mid-run: a token whose compute stalls
     // against this machine's own reference, confirmed by a sample of the cache's pages that are no
@@ -398,7 +407,8 @@ struct MoeStreamConfig {
     static constexpr int cache_min_mb = 1500; // smallest non-pathological cache (see above)
     static constexpr int io_threads_max = 8;
     static constexpr int prefetch_layers_max = 8;
-    static constexpr int cache_freq_half_life_max = 4096; // tokens; far beyond it is plain frequency
+    static constexpr int cache_freq_half_life_max = 4096;  // tokens; far beyond it is plain frequency
+    static constexpr int cache_discard_cost_max_pct = 100; // percent of the time; 100 never prices
 
     // TEST ONLY: the width from which a graph's misses are admitted cold, in tokens (0 keeps
     // prefill_cold_min_tokens). Lets a gate reach the cold path whatever its prompt's length.

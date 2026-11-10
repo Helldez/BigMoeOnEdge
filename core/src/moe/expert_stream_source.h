@@ -402,6 +402,10 @@ private:
     uint32_t discard_after_ = 0; // generations route-ahead stages ahead of compute
     long long swept_ = 0;        // dropped offers retired from the LRU tail
     uint32_t offer_window_ = 0;  // generations an entry stays ordinary after its last use
+    int discard_cost_pct_ = 0;   // the share of the time offering ahead may cost (MoeStreamConfig)
+    size_t discard_leave_ = 0;   // pressure-only: available RAM under this is a shortfall
+    uint32_t shortfall_gen_ = 0; // when the shortfall was last sampled
+    bool priced_load_ = false;   // this load is decode-wide: the discard cost is judged on it
     DropFollowingBudget follow_; // the live budget while the kernel may drop from the cache
     void settle_offers();
     void retire_dropped_tail();
