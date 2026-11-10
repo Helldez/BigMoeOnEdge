@@ -1,6 +1,6 @@
 # Measured planning: pricing the plan on the model itself
 
-> **Partly built.** This page describes where `--auto` goes next and in what order. Steps 1 to 4 are
+> **Partly built.** This page describes where `--auto` goes next and in what order. Steps 1 to 5 are
 > built and await their on-device judgement (their status is below each). Each step names what it
 > removes, what it must not break, and how it is judged. The planner as it stands is
 > [hardware-planning.md](hardware-planning.md).
@@ -24,8 +24,9 @@ model's own tensors rather than on stand-ins.
 | `--overlap` | measured on the first answer against the other setting, and kept (Step 2); without a place to keep it, never armed (#294) | with a verdict, yes |
 
 At the end of a run the plan prints its prediction against the measurement
-(`predicted 0.048 s/token, measured 0.055`) and the credited hit rate against the measured one. Then
-the comparison is thrown away: the next load plans from zero.
+(`predicted 0.048 s/token, measured 0.055`) and the credited hit rate against the measured one. The
+load also keeps what its decode cost, and the next plan of the same configuration prices decode with
+it (Step 5).
 
 The gaps are where the model was replaced by something simpler. A synthetic GEMV has the right quant
 format and none of the rest of the graph: no attention, no crossings between host and device, and
@@ -414,6 +415,51 @@ without a device of their own, an unchanged plan.
   prefill there: 650 tok/s on a 1516-token prompt against 1134 for the whole layers, which the plan
   does not price yet. The rule above, which arms the cache from the first load, is not yet run on a
   card.
+
+## Step 5: the decode's own cost, the coefficient a run's counters correct
+
+- **What it removes:** a decode price that never learns. The ledger prices a token's compute from a
+  probed matmul rate (`seconds_at_gibs(bytes_per_token, host rate)` per group) and the cache's hits
+  from the routing replay or the linear credit, and a one-token decode pays what neither sees:
+  per-op and thread-synchronisation costs, and a cache that serves less than the replay of a few
+  hundred tokens did. Measured on a 12 GB phone with Ling-3.0-tiny Q8_0, `--auto` through
+  `bmoe-server`: predicted 0.037 s/token at a 95% credited hit rate, measured 0.107 at 77-85%, the
+  per-token CSV's `compute_ms` alone ~64 ms; after the run the prediction was still 0.037. A 16 GB
+  Mac predicted 0.073 against 0.054 measured, a Windows PC 0.18 against 0.21: the error has no sign a
+  rule could fix.
+- **What is recorded.** Every load times its decode with a `RateProbe`, the trial's own windows
+  (`--trial-window` tokens, `2 * rounds + 1` of them, their median), once the cache has settled and
+  after any knob trial, so no switch is in its windows; it switches nothing, so it runs on loads that
+  arm no trial too. It keeps, in `MeasuredKnobs`: `decode_compute_s`, the median window's compute
+  per token (the wall less the flash waits and the cache's management, the CSV's `compute_ms`);
+  `decode_threads`, the count it ran at; `decode_hit`, the cache's hits over the same windows, at
+  `decode_cache_mib`, the host cache's budget then; and the placement, `decode_gpu_layers` and
+  `decode_device_cache_mb`. They are keys of the same `bmoe-measured-knobs 1` line, which an older
+  engine reads past and which, missing, read as not measured. A later load's figure replaces the
+  whole measurement, never half of it, and it counts in `verdicts()`, so the front-end keeps it.
+- **How the plan uses it** (`planner.cpp`, `calibrate_decode_cost`). Only for the configuration it
+  was measured under: the plan's decode thread count (the one `choose_threads` will settle on) and the
+  same placement on the devices; otherwise a `decode-cost` decision says the decode is priced from
+  the probes and why. Compute: the ratio between the measured compute and what the cost model prices
+  the same placement at (`host_compute_seconds`) scales every group's compute term alike
+  (`AllocationInputs::compute_scale`), so the predicted token moves to the measurement, the groups
+  keep their prices relative to each other, and the ranking, whose savings are reads, decides what it
+  decided. Hits: the ratio between the hits measured at that budget and the credit there scales the
+  credit at every size (`AllocationInputs::hit_scale`): the curve, lowered toward the measurement and
+  never raised past what the replay justified; the linear credit, which is conservative on purpose,
+  either way. A cache whose hits are worth less may then be sized differently, which is the ranking's
+  legitimate answer to a changed price. A `decode-cost` decision, `[measured]`, states both figures
+  against the predicted ones. With no record, or one that measured no decode, the plan is byte for
+  byte the one before this existed.
+- **Checked:** planner checks (a compute three times the model's adds twice the model's compute to
+  the token and is reported as measured; another thread count or placement is not used; hits scale
+  the linear credit and the curve, never above the replay; an empty record leaves the plan as it is);
+  record round-trip checks in the `knob_trial` test; gate G24d, a streamed decode with no trial whose
+  answer is the resident one and whose record carries the decode's cost.
+- **Not done.** The read rate is not calibrated: the expert lane's price stays the storage probe's,
+  so where the flash waits are what the plan got wrong this does not correct it. A load that runs the
+  plan `bmoe-server` holds keeps that plan on `GET /api/plan` until the next measurement or load.
+- **Status:** built, host-checked; the phone run that judges it is owed.
 
 ## What the planner looks like afterwards
 

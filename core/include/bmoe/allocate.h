@@ -154,6 +154,15 @@ struct AllocationInputs {
     uint64_t layers_home_bytes = 0;
     double layers_home_saved = 0.0;
     uint32_t layers_home_count = 0; // the layers it brings home, for the rationale
+
+    // ── what an earlier load measured of this decode (MeasuredKnobs::decode_*) ─────────────────
+    // `compute_scale` multiplies every group's host compute term: the ratio between the compute a load
+    // of the same configuration measured and what this cost model priced it at, so the groups move
+    // together and stay priced relative to each other. `hit_scale` multiplies the cache's credited
+    // hit rate at every size (the curve, or the linear credit), the ratio between the hits measured
+    // at that load's budget and what was credited there. 1 is the plan with nothing measured.
+    double compute_scale = 1.0;
+    double hit_scale = 1.0;
 };
 
 // One line of the memory ledger: something the run holds for its whole length, and whether it is
@@ -272,5 +281,10 @@ Allocation allocate(const HardwareProfile & hw,
                     const ModelProfile & model,
                     const AllocationInputs & in,
                     const PlannerPolicy & pol);
+
+// The compute this cost model prices one decoded token at on the host, every group of `model` at the
+// host's measured rates and no compute_scale: what a measured decode of the same configuration is
+// compared with to calibrate it. 0 where a rate is unmeasured.
+double host_compute_seconds(const HardwareProfile & hw, const ModelProfile & model);
 
 } // namespace bmoe

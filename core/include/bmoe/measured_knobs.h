@@ -70,6 +70,27 @@ struct MeasuredKnobs {
     double usage_gen_tokens = 0.0, usage_long_prompt_tokens = 0.0;
     int usage_requests = 0;
 
+    // What the decode itself cost here, the coefficient a run's own counters correct
+    // (docs/measured-planning.md, "The decode's own cost"). The plan prices decode compute from a
+    // probed matmul rate and the cache from a replay of the routing, and neither sees all a token
+    // pays: a one-token decode on a phone also pays per-op and thread-synchronisation costs the
+    // probe does not. Measured on a 12 GB phone, Ling-3.0-tiny Q8_0: predicted 0.037 s/token at a 95%
+    // credited hit rate, measured 0.107 at 77-85%, compute alone ~64 ms. So every load times its
+    // decode once the cache has settled (the trial's windows, after any knob trial so no switch is in
+    // them), and the next plan calibrates its prices by it (planner.cpp, calibrate_decode_cost).
+    //
+    // `decode_compute_s`: the median window's compute seconds per token, flash waits and cache
+    // management excluded (the CSV's compute_ms); 0 when not measured. `decode_threads` is the decode
+    // thread count it ran at, `decode_hit` the expert cache's hit rate over the same windows (-1: not
+    // seen) at a host cache of `decode_cache_mib`, and `decode_gpu_layers` / `decode_device_cache_mb`
+    // the placement it ran under: a figure only answers for a plan of the same configuration.
+    double decode_compute_s = 0.0;
+    int decode_threads = 0;
+    double decode_hit = -1.0;
+    double decode_cache_mib = 0.0;
+    int decode_gpu_layers = 0;
+    int decode_device_cache_mb = 0;
+
     bool empty() const { return verdicts() == 0; }
     // How many measurements this record carries: a front-end keeps a record again when it grows. The
     // requests a width trial has seen count too, so the usage it weighs the two widths by is kept as it
@@ -77,7 +98,7 @@ struct MeasuredKnobs {
     int verdicts() const {
         return (threads > 0) + (overlap >= 0) + (device_cache_tps > 0.0) + (no_device_cache_tps > 0.0) +
                (wide_decode_tps > 0.0) + (narrow_decode_tps > 0.0) + (wide_prefill_tps > 0.0) +
-               (narrow_prefill_tps > 0.0) + usage_requests;
+               (narrow_prefill_tps > 0.0) + usage_requests + (decode_compute_s > 0.0) + (decode_hit >= 0.0);
     }
 };
 

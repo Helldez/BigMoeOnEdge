@@ -322,6 +322,9 @@ struct Session::Impl {
         int stage = stage_done;
         std::unique_ptr<KnobTrial> cur;
         std::unique_ptr<RateProbe> rate_probe;
+        // The decode's own cost (MeasuredKnobs::decode_compute_s), timed on every load once the trial
+        // is done: its windows run with every knob at its winner, and it switches nothing.
+        std::unique_ptr<RateProbe> cost_probe;
         MeasuredKnobs result;
         uint64_t lookups_seen = 0, hits_seen = 0; // the cache's counters at the last step
     } trials;
@@ -335,6 +338,7 @@ struct Session::Impl {
     bool apply_trial_arm(int arm);
     void set_decode_threads(int n);
     void trial_step(double seconds, int tokens);
+    void cost_step(double compute_seconds, int tokens);
     void pause_trial();
     void resume_trial();
     void snapshot_trial_counters();
@@ -2046,6 +2050,17 @@ void Session::Impl::describe_run(Opening & o) {
 void Session::Impl::arm_trials() {
     const KnobTrialConfig & t = cfg.trial;
     threads_now = cfg.n_threads;
+    {
+        // The decode's cost, timed as the rate probe times a side: the trial's windows, once the cache
+        // has settled. Where a trial runs first it has already waited for the cache; a device expert
+        // cache fills out of this session's counters, so the probe then waits as long as the trial
+        // ever does.
+        KnobTrialPolicy pol;
+        pol.window_tokens = t.window_tokens;
+        const bool device_cache = cfg.moe.device_cache_mb > 0;
+        trials.cost_probe =
+            std::make_unique<RateProbe>(!t.enabled() || device_cache, /*hits_visible*/ !device_cache, pol);
+    }
     if (!t.enabled()) return;
     if (!t.threads.empty()) {
         trials.threads.push_back(cfg.n_threads);
@@ -2136,14 +2151,19 @@ void Session::Impl::snapshot_trial_counters() {
 }
 
 void Session::Impl::resume_trial() {
-    if (trials.stage == stage_done) return;
+    const bool costing = trials.cost_probe && !trials.cost_probe->done();
+    if (trials.stage == stage_done && !costing) return;
     snapshot_trial_counters(); // the prompt's lookups are not the first window's
+    if (trials.stage == stage_done) return;
     if (trials.stage == stage_rate) return;
     apply_trial_arm(trials.cur->arm());
 }
 
 void Session::Impl::pause_trial() {
-    if (trials.stage == stage_done) return;
+    if (trials.stage == stage_done) {
+        if (trials.cost_probe) trials.cost_probe->interrupt();
+        return;
+    }
     if (trials.stage == stage_rate) {
         trials.rate_probe->interrupt();
         return;
@@ -2235,6 +2255,40 @@ void Session::Impl::trial_step(double seconds, int tokens) {
         return;
     }
     apply_trial_arm(k.arm());
+}
+
+// A decode step once the trial is done, timed for the decode's own cost: its compute (the CSV's
+// compute_ms: the wall less the flash waits and the cache's management) and the cache's hits. The
+// result carries it with the configuration it ran under, for the next plan (MeasuredKnobs).
+void Session::Impl::cost_step(double compute_seconds, int tokens) {
+    RateProbe * r = trials.cost_probe.get();
+    if (!r || r->done()) return;
+    uint64_t lookups = 0, hits = 0;
+    if (cfg.moe.enabled) {
+        const uint64_t l0 = trials.lookups_seen, h0 = trials.hits_seen;
+        snapshot_trial_counters();
+        lookups = trials.lookups_seen - l0;
+        hits = trials.hits_seen - h0;
+    }
+    r->record(compute_seconds, tokens, lookups, hits);
+    if (!r->done()) return;
+    const double tps = r->tokens_per_second();
+    if (!(tps > 0.0)) return;
+    MeasuredKnobs & k = trials.result;
+    k.decode_compute_s = 1.0 / tps;
+    k.decode_threads = threads_now;
+    k.decode_hit = cfg.moe.enabled ? r->hit_rate() : -1.0;
+    k.decode_cache_mib = cfg.moe.enabled ? (double) source.cache_budget() / (1024.0 * 1024.0) : 0.0;
+    k.decode_gpu_layers = cfg.n_gpu_layers;
+    k.decode_device_cache_mb = cfg.moe.device_cache_mb;
+    if (k.decode_hit >= 0.0)
+        log_printf(LogLevel::Info,
+                   "decode cost: %.1f ms/token of compute at %d thread(s), %.0f%% cache hits at %.0f MiB, the median "
+                   "of %d windows",
+                   1e3 * k.decode_compute_s, k.decode_threads, 100.0 * k.decode_hit, k.decode_cache_mib, r->windows());
+    else
+        log_printf(LogLevel::Info, "decode cost: %.1f ms/token of compute at %d thread(s), the median of %d windows",
+                   1e3 * k.decode_compute_s, k.decode_threads, r->windows());
 }
 
 // A stage's verdict: the winner is applied and stays, the result records it, and the next knob
@@ -3286,6 +3340,8 @@ struct Session::Impl::Turn {
                 // emission around them, which a person's own client paces.
                 const double step_s = secs(s.s0, s.s1) + s.draft_s;
                 trial_guarded([&] { im.trial_step(step_s, (int) confirmed.size()); });
+            } else {
+                im.cost_step(last_compute_s, (int) confirmed.size());
             }
 
             if (structured() && im.cancelled()) {

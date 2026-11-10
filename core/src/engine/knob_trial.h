@@ -126,6 +126,8 @@ public:
     bool done() const { return phase_ == Phase::Done; }
     // The median window's tokens per second once done(), 0 before.
     double tokens_per_second() const;
+    // The cache's hit rate over the timed windows, -1 where they made no lookup.
+    double hit_rate() const { return timed_lookups_ ? (double) timed_hits_ / (double) timed_lookups_ : -1.0; }
     int windows() const { return (int) spt_.size(); }
     int windows_wanted() const { return 2 * pol_.rounds + 1; }
 
@@ -143,6 +145,7 @@ private:
     uint64_t lookups_ = 0, hits_ = 0;
     double last_hit_ = -1.0;
     int settle_windows_ = 0;
+    uint64_t timed_lookups_ = 0, timed_hits_ = 0;
 };
 
 } // namespace bmoe

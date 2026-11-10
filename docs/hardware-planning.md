@@ -144,6 +144,18 @@ Three rules keep the cost model from becoming an oracle, and they are load-beari
 3. **The plan that streams nothing stays reachable**, because residency beats streaming whenever
    residency is available.
 
+A token's compute is priced per group from the host's probed rate on the model's own format and
+layer (`bytes_per_token / rate`), and the cache's hits from the model's routing replay or the linear
+credit. Neither is the whole of what a one-token decode pays: per-op and thread-synchronisation
+costs do not show in a matmul probe, and a cache can serve less than a few hundred replayed tokens
+did. On a 12 GB phone a plan said 0.037 s/token and the run measured 0.107, compute alone ~64 ms.
+So every load records what its decode cost (`MeasuredKnobs::decode_*`: compute per token at its
+thread count, hits at its cache budget, under its placement), and the next plan of the same
+configuration scales every group's compute by the measured-to-predicted ratio and the credited hits
+to the measured ones, never above the replay, and says so in a `decode-cost` decision
+([measured-planning.md](measured-planning.md#step-5-the-decodes-own-cost-the-coefficient-a-runs-counters-correct)).
+A figure measured at another thread count or placement is not used.
+
 ### The term a bandwidth ratio cannot see
 
 The device decision is where a cost model earns its keep or discredits itself. Bandwidth alone would

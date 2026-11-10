@@ -1196,7 +1196,11 @@ Until the model's lossless knobs are measured on this machine, a plan's `values`
 `trial-threads` and `trial-overlap`: the first answer after the load decodes in alternating windows
 to measure them (`docs/hardware-planning.md`), and the server keeps the verdict beside the model's
 routing record under `routing/`. The next plan of that model reads it, its `threads` and `overlap`
-decisions say `measured on this model`, and those two values are gone.
+decisions say `measured on this model`, and those two values are gone. Every load also keeps what
+its decode cost there (compute per token, the thread count, the cache's hits at its budget); the
+next plan of the same configuration prices `predicted` with it and says so in a `decode-cost` note
+(`docs/measured-planning.md`, Step 5). The plan a loaded model runs is answered as it was made, so
+the new figure shows on the next measurement or load.
 With a model loaded that an auto load planned, `GET /api/plan` answers at once with that plan and
 `"from_last_load": true`, without measuring, as long as nothing was measured after that load; once
 the model has answered it also carries `measured`: what its last complete turn measured for decode

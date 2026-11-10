@@ -230,6 +230,13 @@ void measure_rates(Pricing & c) {
     // Measured on the model's own layer where it was, each half at its own rate.
     c.host_gibs = hw.host_expert_rate();
     c.host_dense_gibs = hw.host_dense_rate();
+    // What a load of this configuration measured the decode's compute at, against what these rates
+    // priced it at: the rates the compute runs at here, per-op and synchronisation costs included,
+    // which a matmul probe does not see. Both halves together, so their ratio stays as measured.
+    if (c.in.compute_scale > 0.0 && c.in.compute_scale != 1.0) {
+        c.host_gibs /= c.in.compute_scale;
+        c.host_dense_gibs /= c.in.compute_scale;
+    }
 
     // The refault price. What a mapped group costs once pressure has dropped its pages, paid one
     // page at a time. Measured separately because it is not a fraction of the sequential rate.
@@ -379,14 +386,15 @@ std::vector<Candidate> price_lanes(Pricing & c) {
             if (model.hit_curve.measured && c.in.cacheable_bytes > 0 && model.expert_bytes > 0) {
                 push_curve_pieces(candidates, model.hit_curve,
                                   (double) c.in.cacheable_bytes / (double) model.expert_bytes, d.bytes, floor,
-                                  seconds_at_mibs(cycle, c.stream_mibs));
+                                  seconds_at_mibs(cycle, c.stream_mibs) * c.in.hit_scale);
                 continue;
             }
 
             // A cache holding the whole expert set saves every read. The credited hit rate is
             // linear in its size, so the saving per byte of RAM is constant above the floor and this
             // candidate can be ranked directly against the read-whole groups.
-            const double saved_full = seconds_at_mibs(cycle, c.stream_mibs) * std::min(1.0f, c.pol.cache_hit_optimism);
+            const double saved_full = seconds_at_mibs(cycle, c.stream_mibs) *
+                                      std::min(1.0, (double) c.pol.cache_hit_optimism * c.in.hit_scale);
             if (saved_full > 0.0)
                 candidates.push_back({g, Lane::ExpertStream, d.bytes, saved_full, saved_full / (double) d.bytes, true,
                                       floor, "expert cache"});
@@ -695,10 +703,13 @@ void bound_cache(Pricing & c) {
     const double held = (double) sized / (double) in.cacheable_bytes;
     const HitCurve & curve = model.hit_curve;
     const bool from_curve = curve.measured && model.expert_bytes > 0;
+    // Scaled by what a load measured at its own budget (AllocationInputs::hit_scale): the curve as a
+    // whole, so the sizes stay priced relative to each other.
     const double hit =
-        from_curve
-            ? curve.hit_share((uint64_t) ((double) sized * (double) model.expert_bytes / (double) in.cacheable_bytes))
-            : std::min(1.0, (double) c.pol.cache_hit_optimism * held);
+        std::min(1.0, from_curve ? curve.hit_share((uint64_t) ((double) sized * (double) model.expert_bytes /
+                                                               (double) in.cacheable_bytes)) *
+                                       in.hit_scale
+                                 : (double) c.pol.cache_hit_optimism * in.hit_scale * held);
     a.cache_hit_credited = hit;
     p.seconds_per_token =
         seconds_at_mibs((uint64_t) ((1.0 - hit) * (double) model.token_cycle_bytes), c.stream_mibs) +
@@ -885,6 +896,20 @@ void add_totals(Pricing & c) {
 }
 
 } // namespace
+
+double host_compute_seconds(const HardwareProfile & hw, const ModelProfile & model) {
+    double sum = 0.0;
+    for (int i = 0; i < (int) WeightGroup::count; ++i) {
+        const WeightGroup g = (WeightGroup) i;
+        const GroupDemand & d = model.group(g);
+        if (d.bytes == 0) continue;
+        const double t = seconds_at_gibs(d.bytes_per_token,
+                                         g == WeightGroup::Experts ? hw.host_expert_rate() : hw.host_dense_rate());
+        if (!std::isfinite(t)) return 0.0;
+        sum += t;
+    }
+    return sum;
+}
 
 Allocation allocate(const HardwareProfile & hw,
                     const ModelProfile & model,

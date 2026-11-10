@@ -127,6 +127,19 @@ Semantic Versioning.
   margin. Each load's side is merged into the record the front-end keeps for the model and machine,
   which now merges measurements rather than replacing them. New parameter `--trial-device-cache`
   (set by the plan). Gate G25e: both sides timed, byte-identical, with a rate in the record.
+- **The plan learns what decode costs on this machine.** Its decode price came from a probed matmul
+  rate and a replay of the routing, and never from a run: on a 12 GB phone with Ling-3.0-tiny Q8_0
+  the plan said 0.037 s/token at a 95% credited hit rate, the run measured 0.107 at 77-85%, with
+  compute alone at ~64 ms a token, and the plan after the run still said 0.037 (a 16 GB Mac predicted
+  0.073 against 0.054, a Windows PC 0.18 against 0.21). A one-token decode also pays per-op and
+  thread-synchronisation costs the probe does not see. Every load now times its decode once the cache
+  has settled (the knob trial's windows, after any trial): the compute per token with flash waits
+  excluded, at its thread count, and the cache's hits at its budget, kept in the record the front-end
+  keeps per model and machine. The next plan of the same configuration (same decode thread count,
+  same device placement) scales every group's compute by the measured-to-predicted ratio, so the
+  groups keep their relative prices, and scales the cache's credited hits to the ones measured at that
+  budget, never past what the routing replay credits; a `decode-cost` decision says so. Without a
+  record the plan is the one it was. Gate G24d.
 - **A small card gets its expert cache at a long context.** The graph width (`--ubatch`) was checked
   against host memory only. On a card with memory of its own, a graph as wide as a 16384 context
   reserved 6.6 GB of a 12 GB card for compute buffers, so the capacity fitter left two layers on the

@@ -189,6 +189,7 @@ void RateProbe::record(double seconds, int tokens, uint64_t lookups, uint64_t hi
 void RateProbe::close_window() {
     const double spt = seconds_ / (double) tokens_;
     const double hit = lookups_ ? (double) hits_ / (double) lookups_ : -1.0;
+    const uint64_t lookups = lookups_, hits = hits_;
     tokens_ = 0;
     seconds_ = 0.0;
     lookups_ = hits_ = 0;
@@ -204,6 +205,8 @@ void RateProbe::close_window() {
         return;
     }
     spt_.push_back(spt);
+    timed_lookups_ += lookups;
+    timed_hits_ += hits;
     if ((int) spt_.size() >= windows_wanted()) phase_ = Phase::Done;
 }
 
