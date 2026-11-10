@@ -56,6 +56,17 @@ Semantic Versioning.
   which Windows refuses, so the broken file stayed and was read again on every start.
 - **A client's settings file is shown in the platform's own separators** (`server/connect.cpp`):
   on Windows the path read `...\home\.c/config.toml`.
+- **A device is judged against the exact result, not against the host.** The real-layer probe
+  refused a device whose expert matmul differed from the host's by more than llama.cpp's NMSE bound,
+  but two backends round differently, each quantizing the activations its own way. On a two-card
+  box both cards were refused on GLM-4.5-Air's Q5_0/Q5_1 experts, so no device expert cache was
+  armed, and the plan said they "do not execute" the expert matmul. The compared nodes are now also
+  computed in double precision from the dequantized weights. A device passes if it is within twice
+  upstream's per-op bound (1e-3) of that: upstream's 5e-4 compares a backend with the CPU, and it
+  relaxes the bound where a backend quantizes the activations its own way. Those cards measured
+  5.3e-4 from the exact result on GLM-4.5-Air's Q5_0/Q5_1 experts, while a wrong kernel is off by
+  1e-1 or more. The host stays the reference where no exact result can be computed, or where it
+  is not within the bound itself. The plan's log gives both distances.
 
 ### Documentation
 - One planner run on Windows, in `docs/hardware-planning.md`, the device probed in a process of its

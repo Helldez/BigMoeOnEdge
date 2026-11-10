@@ -421,8 +421,14 @@ const ComputeDevice * device_tier_device(const Planning & s, std::string & why) 
     for (const ComputeDevice & d : s.hw.devices) {
         if (d.is_cpu || d.usable == Tri::No) continue;
         if (!d.has_own_memory()) continue; // a shared pool has no second tier to fill
-        if (d.runs_expert_op != Tri::Yes || d.identity_ok == Tri::No) {
-            why = d.name + " does not execute this model's expert matmul on its own layout";
+        if (d.runs_expert_op != Tri::Yes) {
+            why = d.name + (d.runs_expert_op == Tri::No
+                                ? " does not execute this model's expert matmul on its own layout"
+                                : " was not asked whether it executes this model's expert matmul");
+            return nullptr;
+        }
+        if (d.identity_ok == Tri::No) {
+            why = d.name + " computes this model's expert matmul too far from the exact result";
             return nullptr;
         }
         if (expert_rates(s.hw, d).device <= 0.0) {

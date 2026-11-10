@@ -26,6 +26,13 @@ constexpr int k_reps_max = 512;
 // sum(a^2), against the 5e-4 tests/test-backend-ops.cpp allows a MUL_MAT. See bandwidth_probe.cpp
 // for the measurements behind taking upstream's bound rather than a stricter private one.
 constexpr double k_max_nmse = 5e-4;
+// A device judged against the exact result rather than against the host (probe_real_layer): twice
+// upstream's per-op bound. Upstream's 5e-4 is a backend against the CPU on random data, and it relaxes
+// it where a backend quantizes the activations its own way (2e-2 for MXFP4 activations); a wrong kernel
+// is off by 1e-1 to 1. Measured on RTX 3090 cards: GLM-4.5-Air's Q5_0/Q5_1 experts at 5.3e-4 from the
+// exact result, the host at 1.1e-5, every other layout measured at 6e-6 or less. The host must still be
+// within k_max_nmse of the exact result to be the reference.
+constexpr double k_max_nmse_device = 1e-3;
 bool agrees(const std::vector<float> & a, const std::vector<float> & b);
 
 // One real layer of the model, built from the file's own tensors and bytes, run on the host (at
