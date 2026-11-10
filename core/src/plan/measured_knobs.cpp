@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <sstream>
+#include <utility>
 
 namespace bmoe {
 
@@ -65,7 +66,21 @@ std::string format_measured_knobs(const std::vector<MeasuredKnobs> & records) {
         out += " overlap_incumbent=" + std::to_string(r.overlap_incumbent);
         std::snprintf(num, sizeof(num), "%.4f", r.overlap_gain);
         out += std::string(" overlap_gain=") + num;
-        out += " rounds=" + std::to_string(r.rounds) + "\n";
+        out += " rounds=" + std::to_string(r.rounds);
+        std::snprintf(num, sizeof(num), "%.3f", r.device_cache_tps);
+        out += std::string(" device_cache_tps=") + num;
+        std::snprintf(num, sizeof(num), "%.3f", r.no_device_cache_tps);
+        out += std::string(" no_device_cache_tps=") + num;
+        out += " width_narrow=" + std::to_string(r.width_narrow);
+        const std::pair<const char *, double> rates[] = {
+            {"wide_decode_tps", r.wide_decode_tps},   {"narrow_decode_tps", r.narrow_decode_tps},
+            {"wide_prefill_tps", r.wide_prefill_tps}, {"narrow_prefill_tps", r.narrow_prefill_tps},
+            {"usage_gen_tokens", r.usage_gen_tokens}, {"usage_long_prompt_tokens", r.usage_long_prompt_tokens}};
+        for (const auto & kv : rates) {
+            std::snprintf(num, sizeof(num), "%.3f", kv.second);
+            out += std::string(" ") + kv.first + "=" + num;
+        }
+        out += " usage_requests=" + std::to_string(r.usage_requests) + "\n";
     }
     return out;
 }
@@ -121,6 +136,26 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
                 ok = as_double(r.overlap_gain);
             else if (k == "rounds")
                 ok = as_int(r.rounds);
+            else if (k == "device_cache_tps")
+                ok = as_double(r.device_cache_tps);
+            else if (k == "no_device_cache_tps")
+                ok = as_double(r.no_device_cache_tps);
+            else if (k == "width_narrow")
+                ok = as_int(r.width_narrow);
+            else if (k == "wide_decode_tps")
+                ok = as_double(r.wide_decode_tps);
+            else if (k == "narrow_decode_tps")
+                ok = as_double(r.narrow_decode_tps);
+            else if (k == "wide_prefill_tps")
+                ok = as_double(r.wide_prefill_tps);
+            else if (k == "narrow_prefill_tps")
+                ok = as_double(r.narrow_prefill_tps);
+            else if (k == "usage_gen_tokens")
+                ok = as_double(r.usage_gen_tokens);
+            else if (k == "usage_long_prompt_tokens")
+                ok = as_double(r.usage_long_prompt_tokens);
+            else if (k == "usage_requests")
+                ok = as_int(r.usage_requests);
             // An unknown key is a later engine's addition: read past it, the record still holds.
             if (!ok) {
                 error = "line " + std::to_string(n) + ": bad value for " + k;
@@ -131,7 +166,11 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
             error = "line " + std::to_string(n) + ": a record names its machine and engine";
             return false;
         }
-        if (r.overlap < -1 || r.overlap > 1 || r.overlap_incumbent < -1 || r.overlap_incumbent > 1 || r.threads < 0) {
+        if (r.overlap < -1 || r.overlap > 1 || r.overlap_incumbent < -1 || r.overlap_incumbent > 1 || r.threads < 0 ||
+            !(r.device_cache_tps >= 0.0) || !(r.no_device_cache_tps >= 0.0) || r.width_narrow < 0 ||
+            !(r.wide_decode_tps >= 0.0) || !(r.narrow_decode_tps >= 0.0) || !(r.wide_prefill_tps >= 0.0) ||
+            !(r.narrow_prefill_tps >= 0.0) || !(r.usage_gen_tokens >= 0.0) || !(r.usage_long_prompt_tokens >= 0.0) ||
+            r.usage_requests < 0) {
             error = "line " + std::to_string(n) + ": a value out of range";
             return false;
         }
@@ -143,7 +182,34 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
 void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKnobs & rec) {
     for (MeasuredKnobs & r : records)
         if (r.hardware == rec.hardware && r.engine == rec.engine) {
-            r = rec;
+            if (rec.threads > 0) {
+                r.threads = rec.threads;
+                r.threads_tried = rec.threads_tried;
+                r.threads_gain = rec.threads_gain;
+            }
+            if (rec.overlap >= 0) {
+                r.overlap = rec.overlap;
+                r.overlap_incumbent = rec.overlap_incumbent;
+                r.overlap_gain = rec.overlap_gain;
+            }
+            if (rec.threads > 0 || rec.overlap >= 0) r.rounds = rec.rounds;
+            if (rec.device_cache_tps > 0.0) r.device_cache_tps = rec.device_cache_tps;
+            if (rec.no_device_cache_tps > 0.0) r.no_device_cache_tps = rec.no_device_cache_tps;
+            // A different narrow width is a different comparison: what was measured against the old
+            // one no longer answers it.
+            if (rec.width_narrow > 0 && rec.width_narrow != r.width_narrow) {
+                r.width_narrow = rec.width_narrow;
+                r.wide_decode_tps = r.narrow_decode_tps = r.wide_prefill_tps = r.narrow_prefill_tps = 0.0;
+            }
+            if (rec.wide_decode_tps > 0.0) r.wide_decode_tps = rec.wide_decode_tps;
+            if (rec.narrow_decode_tps > 0.0) r.narrow_decode_tps = rec.narrow_decode_tps;
+            if (rec.wide_prefill_tps > 0.0) r.wide_prefill_tps = rec.wide_prefill_tps;
+            if (rec.narrow_prefill_tps > 0.0) r.narrow_prefill_tps = rec.narrow_prefill_tps;
+            if (rec.usage_requests > 0) {
+                r.usage_requests = rec.usage_requests;
+                r.usage_gen_tokens = rec.usage_gen_tokens;
+                r.usage_long_prompt_tokens = rec.usage_long_prompt_tokens;
+            }
             return;
         }
     records.push_back(rec);

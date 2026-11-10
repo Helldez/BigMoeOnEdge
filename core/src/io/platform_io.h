@@ -206,6 +206,37 @@ bool vm_pin(void * p, size_t sz);
 void vm_evict(void * p, size_t sz);
 void vm_release(void * p, size_t sz);
 
+// Discardable spans: memory the kernel may take back by DROPPING it, never by writing it anywhere.
+// Anonymous memory that is merely unpinned is swapped or compressed under pressure, and swap is a
+// write to the drive; memory that is pinned makes the kernel swap everything else instead. A cache
+// whose contents can be read again from the model file needs neither: offered pages are the first
+// the kernel reclaims, before it compresses or swaps anything, and a reclaimed page costs one read.
+//
+// Every platform has the mechanism; each spells it differently, which is all these three hide:
+//  - Darwin: a purgeable VM object per span (VM_PURGABLE_VOLATILE / NONVOLATILE). A state change is
+//    per object, not per page, and taking the span back reports whether the kernel emptied it.
+//  - Linux and Android: MADV_FREE. Nothing reports a loss, but a dropped page reads back as zero and
+//    a write cancels a pending drop, so vm_reclaim writes every page first and then checks it.
+//  - Windows: OfferVirtualMemory / ReclaimVirtualMemory, which reports a loss itself.
+//
+// vm_commit_discardable commits a page-aligned span so that it can later be offered (on Darwin the
+// span must be one object, so it replaces whatever was mapped there; elsewhere it is vm_commit).
+// vm_offer hands a committed span over; false where the platform cannot, and the span stays
+// ordinary memory. vm_reclaim takes an offered span back before anything reads it: true when every
+// page is still what was offered, false when any was dropped, and then the WHOLE span is ordinary,
+// committed, zero-or-stale memory the caller must fill again. A page whose words are all zero may be
+// reported dropped although it was not; that costs a read, never a wrong answer.
+// All three take page-aligned spans that no other owner shares a page with.
+bool vm_discard_supported();
+bool vm_commit_discardable(void * p, size_t sz);
+bool vm_offer(void * p, size_t sz);
+bool vm_reclaim(void * p, size_t sz);
+// Whether an offered span is still held, asked without taking it back: 1 held, 0 dropped, -1 when
+// the platform cannot tell. Residency is the answer where an offered page stays mapped until the
+// kernel takes it (mincore). Windows unmaps an offered range at once (out of the working set and
+// PAGE_NOACCESS until reclaimed), so residency there reads "dropped" for every offer: -1.
+int vm_offered_held(const void * p, size_t sz);
+
 // Drop the resident pages of a FILE-BACKED mapping (the model's mmap) so a later touch refaults them
 // from the file. Distinct from vm_evict, which decommits ANONYMOUS reserved-cache pages: this is for
 // the clean, read-only weight mapping — MADV_DONTNEED discards the resident copy without writing

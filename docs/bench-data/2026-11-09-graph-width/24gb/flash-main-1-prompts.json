@@ -1,0 +1,35 @@
+[
+ {
+  "engine": "flash-main-1",
+  "prompt": "a",
+  "prompt_tokens": 92,
+  "gen_tokens": 1024,
+  "ttft_s": 0.66,
+  "prefill_tps": 138.7,
+  "decode_tps": 71.62,
+  "server_timings": null,
+  "text": "We need answer user: \"Explain in detail how a mixture-of-experts language model routes each token to its experts, and why that makes it possible to run a model larger than RAM by streaming the experts from flash storage.\"\n\nNeed produce detailed explanation. Need think through MoE routing, token-leve"
+ },
+ {
+  "engine": "flash-main-1",
+  "prompt": "b",
+  "prompt_tokens": 92,
+  "gen_tokens": 1024,
+  "ttft_s": 0.59,
+  "prefill_tps": 155.9,
+  "decode_tps": 71.54,
+  "server_timings": null,
+  "text": "We need answer user: \"Explain in detail how a mixture-of-experts language model routes each token to its experts, and why that makes it possible to run a model larger than RAM by streaming the experts from flash storage.\"\n\nNeed produce detailed explanation. Need think through MoE routing, token-leve"
+ },
+ {
+  "engine": "flash-main-1",
+  "prompt": "code",
+  "prompt_tokens": 72,
+  "gen_tokens": 425,
+  "ttft_s": 0.54,
+  "prefill_tps": 132.1,
+  "decode_tps": 62.75,
+  "server_timings": null,
+  "text": "We need answer user: \"Write a Python function that merges two sorted lists into one sorted list, then explain its time complexity.\" Need provide code and explanation. Need final answer. Could include function merge_sorted(a,b). Use two pointers. Time O(n+m), space O(n+m) for output, O(1) extra besid"
+ }
+]

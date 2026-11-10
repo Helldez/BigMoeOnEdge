@@ -342,6 +342,11 @@ struct HardwareProfile {
     uint64_t lock_in_place_bytes = 0;
     bool lock_in_place_bytes_known = true;
 
+    // Whether the process can hand memory to the kernel to DROP under pressure, rather than swap
+    // (pio::vm_offer). Where it can, the expert cache is offered instead of locked, so neither it
+    // nor anything it would have pushed out is written to the drive.
+    bool discardable_memory = false;
+
     // ── compute ─────────────────────────────────────────────────────────────────────
     uint32_t n_cores = 0; // 0 when unknown
 

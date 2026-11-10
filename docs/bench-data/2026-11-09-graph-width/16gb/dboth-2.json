@@ -1,0 +1,35 @@
+[
+ {
+  "engine": "dboth-2",
+  "prompt": "a",
+  "prompt_tokens": 92,
+  "gen_tokens": 1024,
+  "ttft_s": 3.12,
+  "prefill_tps": 29.5,
+  "decode_tps": 24.58,
+  "server_timings": null,
+  "text": "We need answer user: \"Explain in detail how a mixture-of-experts language model routes each token to its experts, and why that makes it possible to run a model larger than RAM by streaming the experts from flash storage.\"\n\nNeed produce detailed explanation. Need think through MoE routing, token-leve"
+ },
+ {
+  "engine": "dboth-2",
+  "prompt": "b",
+  "prompt_tokens": 92,
+  "gen_tokens": 1024,
+  "ttft_s": 1.42,
+  "prefill_tps": 64.9,
+  "decode_tps": 29.13,
+  "server_timings": null,
+  "text": "We need answer user: \"Explain in detail how a mixture-of-experts language model routes each token to its experts, and why that makes it possible to run a model larger than RAM by streaming the experts from flash storage.\"\n\nNeed produce detailed explanation. Need think through MoE routing, token-leve"
+ },
+ {
+  "engine": "dboth-2",
+  "prompt": "code",
+  "prompt_tokens": 72,
+  "gen_tokens": 466,
+  "ttft_s": 1.27,
+  "prefill_tps": 56.8,
+  "decode_tps": 18.06,
+  "server_timings": null,
+  "text": "We need answer user: \"Write a Python function that merges two sorted lists into one sorted list, then explain its time complexity.\" Need provide code and explanation. Need final answer. Could include function merge_sorted(a,b). Use two pointers. Time O(n+m), space O(n+m) for output, O(1) extra besid"
+ }
+]

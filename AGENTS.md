@@ -20,7 +20,9 @@ we do not fork llama.cpp. See `docs/architecture.md` and `docs/seam.md`.
   file's shapes), `expert_stream_source`, `router_hook`, `gate_gemv` (route-ahead's gate GEMV, float
   and int8, and the timing that picks one);
   `dense_weights` (the non-expert weight policy: mmap / warm / anon, plus the residency sensor);
-  `tensor_names` (the one place llama.cpp's tensor and node names are parsed: no ad-hoc sscanf or regex).
+  `tensor_names` (the one place llama.cpp's tensor and node names are parsed: no ad-hoc sscanf or regex);
+  `discardable_entries` (which cached experts are offered to the kernel to drop instead of swap: pure
+  policy over a port, `platform_io` implements it).
 - `core/src/engine/` — `session.cpp`, the composition root: one `Session` loads the model, binds
   the streamer and runs every generation; `runtime.cpp` is the one-shot wrapper over it. Beside it:
   the prefill device and path, the chat template and parsers, and `decide/` (`docs/decide.md`).
