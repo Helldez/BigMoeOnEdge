@@ -28,3 +28,4 @@ maintained docs for current guidance; read these to check where a number came fr
 | `2026-08-29-mmap-serialisation/` | the model file's mapping serialising reads (desktop) | Source of `--release-mmap` in `settings.md`. |
 | `2026-09-29-prefill-routed/` | routed expert arena with the NPU prefill (phone) | Source of `npu-prefill.md`. |
 | `2026-11-07-agent-pagoda/` | 0.40.1 release archive, `bmoe-server` + opencode, one prompt, 16 GB Apple-silicon laptop | An end-to-end agent session (KV reuse across turns, the plan, the knob trial), not a decode benchmark. Source of the agent paragraph in `benchmarks.md`. |
+| `2026-11-10-glm-two-cards/` | #524, #525, #526 on two rented 24 GB cards, GLM-4.5-Air and GLM-4.7 | The device tier and the graph width decided across loads, and a device judged against the exact result: GLM-4.7 3.15 to 6.2 tok/s, GLM-4.5-Air 14.2 to 20.7. Raw plans, records and client timings. |

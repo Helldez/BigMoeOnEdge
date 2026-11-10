@@ -1,0 +1,12 @@
+== GLM-4.5-Air-UD-Q4_K_XL-00001-of-00002.gguf
+bmoe: real layer: CUDA0 on the experts: 5.27e-04 from the exact result, the host 1.05e-05 (bound 5e-04)
+bmoe: real layer: CUDA0 on the dense: 6.34e-06 from the exact result, the host 1.01e-05 (bound 5e-04)
+bmoe: real layer: CUDA0 on the experts, wide: 5.22e-04 from the exact result, the host 1.20e-05 (bound 5e-04)
+bmoe: real layer: CUDA0 on the dense, wide: 4.37e-05 from the exact result, the host 1.06e-05 (bound 5e-04)
+BMOE_DEVICE_FACTS v=3 shared=N hostbuf=Y hostptr=U async=Y rebind=1 runs=Y repack=N bw=664.36 ident=N hpok=U split=1.13674658e-05 splits=0 wide=2661.97 wideok=N locked=U up=10.609 uphb=19.7529 expert=639.548 dense=572.155
+== GLM-4.7-UD-Q2_K_XL-00001-of-00003.gguf
+bmoe: real layer: CUDA0 on the experts: 5.92e-06 from the exact result, the host 9.70e-06 (bound 5e-04)
+bmoe: real layer: CUDA0 on the dense: 6.10e-06 from the exact result, the host 1.03e-05 (bound 5e-04)
+bmoe: real layer: CUDA0 on the experts, wide: 5.84e-06 from the exact result, the host 9.70e-06 (bound 5e-04)
+bmoe: real layer: CUDA0 on the dense, wide: 3.30e-05 from the exact result, the host 1.03e-05 (bound 5e-04)
+BMOE_DEVICE_FACTS v=3 shared=N hostbuf=Y hostptr=U async=Y rebind=1 runs=Y repack=N bw=591.579 ident=Y hpok=U split=1.15084639e-05 splits=0 wide=2288.61 wideok=Y locked=U up=10.1432 uphb=20.1041 expert=602.032 dense=585.865
