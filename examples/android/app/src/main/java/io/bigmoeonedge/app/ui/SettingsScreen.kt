@@ -310,9 +310,15 @@ private fun ShareSection(open: Boolean, onOpen: (Boolean) -> Unit, ctx: ContextW
             }
         }
         Text("API key", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        // Masked: the screen may be seen or recorded, and the key is what lets a device in. On its
+        // own full-width line, wrapping if it must: a key cut short is copied by hand short and
+        // answered 401. Shown in blocks of four to read it off; the text is not selectable, and Copy
+        // copies the raw key.
+        Text(
+            (if (showKey) key else "•".repeat(key.length)).chunked(4).joinToString(" "),
+            fontFamily = CodeFont, fontSize = 15.sp, modifier = Modifier.fillMaxWidth(),
+        )
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            // Masked: the screen may be seen or recorded, and the key is what lets a device in.
-            Text(if (showKey) key else "•".repeat(key.length), fontFamily = CodeFont, fontSize = 13.sp, maxLines = 1, modifier = Modifier.weight(1f))
             TextButton(shape = Corner, onClick = { showKey = !showKey }) { Text(if (showKey) "Hide" else "Show") }
             TextButton(shape = Corner, onClick = { clipboard.setText(AnnotatedString(key)) }) { Text("Copy") }
             TextButton(shape = Corner, onClick = { key = AppPrefs.regenerateApiKey(context); Engine.restart(context) }) { Text("New key") }

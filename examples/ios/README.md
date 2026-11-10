@@ -61,7 +61,7 @@ line stays in the "Serve on the network" card. Plan opens on "For <model file>" 
 Models), the plan's own model or else the one a load would open, then its verdict and three figures
 with Apply and Measure again; Settings opens with **Serve on the network**, a card whose header says the
 state even while it is closed (Off, or On and the first address, or On but not on a network); inside
-are the switch, each address with Copy, the API key masked with Show, Copy and New key (which
+are the switch, each address with Copy, the API key masked in blocks of four on its own line, with Show, Copy and New key (which
 restarts the engine on the new key), the base URL a client takes, and that prompts and answers
 cross the network unencrypted. Then **Appearance**: the theme (System, Light or Dark, applied at
 once; the web UI's choice). Then **Set by you · N**, every value the person

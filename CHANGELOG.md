@@ -94,6 +94,12 @@ Semantic Versioning.
   direct-link field downloads with Go, on the same terms as their buttons. While the keyboard is
   showing, the status line and the navigation bar are hidden app-wide instead of riding on top of
   it and covering the screen's own buttons; they come back when it closes.
+- **Android: the network API key is shown whole** (#536). In Serve on the network, the key shared
+  one line with Show, Copy and New key, and a portrait phone cut it after about 11 of its 24
+  characters with no ellipsis: a key copied by hand from it was answered 401. The key now has its
+  own full-width line, wrapping if it must, with the buttons below; Settings on the web UI and iOS
+  get the same layout. On all three it reads in blocks of four, spaced by layout rather than by a
+  character, so Copy (and a selection, where the text is selectable) still copies the raw key.
 - **A settings file that does not parse is set aside on Windows too.** The agent store renamed a
   broken `tasks.json` (or any of its files) to `.bad` while the stream reading it was still open,
   which Windows refuses, so the broken file stayed and was read again on every start.
