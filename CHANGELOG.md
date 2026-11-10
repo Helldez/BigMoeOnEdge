@@ -14,6 +14,14 @@ Semantic Versioning.
   CI and the release smoke now start `bmoe-desktop.exe` on Windows, so a missing import fails
   there rather than on a user's machine.
 
+## [Unreleased]
+
+### Changed
+- **The machines rented on 2026-11-09/10 in `docs/community-benchmarks.md`**: a 12 GB card (with and
+  without the CUDA pack, and the server before and after #523), a 16 GB card with 23 GB of RAM
+  streaming, a 24 GB card, a 32 GB card, and two two-card workstations with GLM-4.7 and GLM-4.5-Air.
+  Each row names the build it measured.
+
 ## [0.40.2] - 2026-11-08
 
 ### Added
