@@ -944,6 +944,17 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("prefill-from-cache", "Prefill reads the cache", G::Prefill, L::Advanced,
+                          "With a prefill device and streaming: copy the experts the expert cache already "
+                          "holds from RAM instead of reading them from flash again. Output is identical "
+                          "either way.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--prefill-from-cache", "true"}, {"--no-prefill-from-cache", "false"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.prefill.from_cache; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("prefill-routed-full", "Read a busy layer whole", G::Prefill, L::Experimental,
                           "A layer routing more than this fraction of its experts gets the next layer read "
                           "whole. In (0, 1].");
@@ -1269,6 +1280,26 @@ std::vector<ParamDesc> build() {
         d.flag.clear();
         d.switches = {{"--no-cache-brake", "false"}};
         bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.cache_brake; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("cache-half-life", "Cache eviction half-life", G::Cache, L::Advanced,
+                          "Which cached expert to drop: 0 drops the least recently used; above 0 the least "
+                          "used recently, each use counting half after this many tokens.");
+        d.value_hint = "TOKENS";
+        bounds(d, 0, MoeStreamConfig::cache_freq_half_life_max, "tokens");
+        special(d, "0", "least recently used");
+        bind_int(d, [](RunConfig & c) -> int & { return c.moe.cache_freq_half_life; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("cache-prefill-cold", "Prefill admits cold", G::Cache, L::Advanced,
+                          "Experts a long prompt reads on the CPU enter the cache as the first to drop, so the "
+                          "prompt does not flush what the cache already holds. Output is identical either way.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--cache-prefill-cold", "true"}, {"--no-cache-prefill-cold", "false"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.cache_prefill_cold; });
         t.push_back(d);
     }
     {
