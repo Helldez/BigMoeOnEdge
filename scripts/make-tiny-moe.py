@@ -7,7 +7,7 @@ top-k distribution (argsort of random logits) and that llama.cpp loads the model
 MoE. The model is deliberately multi-layer with a few experts so the LRU cache path
 sees real evictions on a small budget.
 
-Three architectures are emitted, selected with --arch:
+Three model architectures are emitted, selected with --arch, and a draft model for the first:
 
   qwen3moe  split expert layout — three tensors per layer
             (ffn_gate_exps / ffn_up_exps / ffn_down_exps).
@@ -18,12 +18,16 @@ Three architectures are emitted, selected with --arch:
             (ffn_up_exps / ffn_down_exps, ReLU^2) in a hybrid Mamba2 / attention / MoE
             stack with latent projections, a resident shared expert and a trailing MTP
             block that is never loaded, so the gates cover the up+down streaming path.
+  dflash    not a model to run on its own: a block-diffusion draft model for the qwen3moe
+            fixture, so the drafter gate drives a second model through draft, verify and
+            rollback.
 
 Requires: pip install gguf numpy
 
     python scripts/make-tiny-moe.py --arch qwen3moe --out tiny-moe.gguf
     python scripts/make-tiny-moe.py --arch gemma4   --out tiny-moe-gemma4.gguf
     python scripts/make-tiny-moe.py --arch nemotron_h_moe --out tiny-moe-nemotron_h_moe.gguf
+    python scripts/make-tiny-moe.py --arch dflash   --out tiny-moe-drafter.gguf
 """
 import argparse
 import numpy as np
@@ -379,9 +383,68 @@ def build_nemotron_h_moe(out):
           f"{N_EXPERT} experts (top-{N_EXPERT_USED}), vocab {n_vocab}")
 
 
+# --- dflash: a draft model for the qwen3moe fixture ---------------------------------
+# A block-diffusion drafter as llama.cpp's converter writes one (conversion/qwen.py, DFlashModel):
+# its own small stack of attention + FFN blocks, a projection (`fc`) from the target hidden states it
+# reads, named by `target_layers`, and no token embeddings or output head of its own - a full-vocab
+# drafter shares the target's. Same width and tokenizer as the qwen3moe fixture, since a drafter is
+# made for one model. The weights are random, so its drafts are noise: the fixture exercises the
+# draft/verify/rollback machinery over a second model, not acceptance.
+DRAFT_LAYERS        = 2
+DRAFT_BLOCK_SIZE    = 4
+DRAFT_TARGET_LAYERS = [1, 3]   # the target layers whose input the drafter reads
+DRAFT_MASK_TOKEN    = 0        # <unk> stands in for the mask token of a real conversion
+
+
+def build_dflash(out):
+    tokens, scores, toktypes = build_vocab()
+    arch = "dflash"
+
+    w = gguf.GGUFWriter(out, arch)
+    w.add_name("tiny-moe")
+    w.add_context_length(N_CTX)
+    w.add_embedding_length(N_EMBD)
+    w.add_block_count(DRAFT_LAYERS)
+    w.add_feed_forward_length(N_FF)
+    w.add_head_count(N_HEAD)
+    w.add_head_count_kv(N_HEAD_KV)
+    w.add_key_length(N_EMBD_HEAD)
+    w.add_value_length(N_EMBD_HEAD)
+    w.add_rope_freq_base(ROPE_BASE)
+    w.add_layer_norm_rms_eps(RMS_EPS)
+    w.add_file_type(gguf.LlamaFileType.ALL_F32)
+    # Written by key, not by the writer's helpers: the gguf package on a CI image may predate them.
+    w.add_array(f"{arch}.target_layers", DRAFT_TARGET_LAYERS)
+    w.add_uint32(f"{arch}.block_size", DRAFT_BLOCK_SIZE)
+    add_tokenizer(w, tokens, scores, toktypes)
+    w.add_uint32("tokenizer.ggml.mask_token_id", DRAFT_MASK_TOKEN)
+
+    w.add_tensor("fc.weight",              rnd(N_EMBD, len(DRAFT_TARGET_LAYERS) * N_EMBD, seed=11))
+    w.add_tensor("enc.output_norm.weight", rnd(N_EMBD, seed=12))
+    w.add_tensor("output_norm.weight",     rnd(N_EMBD, seed=13))
+
+    s = 5000
+    for i in range(DRAFT_LAYERS):
+        p = f"blk.{i}."
+        w.add_tensor(p + "attn_norm.weight", rnd(N_EMBD, seed=s + 0))
+        add_attn_tensors(w, p, s)
+        w.add_tensor(p + "ffn_norm.weight", rnd(N_EMBD, seed=s + 7))
+        w.add_tensor(p + "ffn_gate.weight", rnd(N_FF, N_EMBD, seed=s + 8))
+        w.add_tensor(p + "ffn_down.weight", rnd(N_EMBD, N_FF, seed=s + 9))
+        w.add_tensor(p + "ffn_up.weight",   rnd(N_FF, N_EMBD, seed=s + 10))
+        s += 100
+
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file()
+    w.close()
+    print(f"wrote {out}: dflash drafter for the qwen3moe fixture, {DRAFT_LAYERS} layers, "
+          f"block {DRAFT_BLOCK_SIZE}, reads target layers {DRAFT_TARGET_LAYERS}")
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--arch", choices=["qwen3moe", "gemma4", "nemotron_h_moe"], default="qwen3moe")
+    ap.add_argument("--arch", choices=["qwen3moe", "gemma4", "nemotron_h_moe", "dflash"], default="qwen3moe")
     ap.add_argument("--out", default="tiny-moe.gguf")
     ap.add_argument("--split-max-tensors", type=int, default=0,
                     help="emit a sharded gguf (N tensors per shard, metadata-only first shard)")
@@ -393,6 +456,8 @@ def main():
         build_gemma4(args.out)
     elif args.arch == "nemotron_h_moe":
         build_nemotron_h_moe(args.out)
+    elif args.arch == "dflash":
+        build_dflash(args.out)
     else:
         build_qwen3moe(args.out, args.split_max_tensors)
 

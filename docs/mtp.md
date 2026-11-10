@@ -198,6 +198,9 @@ without thermal gating, so the *mechanism* counters are the trustworthy part, no
 
 ## Stopping early when the head is unsure (`--mtp-p-min`)
 
+The same floor applies to a draft model ([drafter.md](drafter.md)): it is the draft's own
+confidence, whoever drafts with weights.
+
 The draft loop already knows how confident the head is in each token it proposes. `--mtp-p-min F`
 stops drafting as soon as that confidence falls below `F`; at the default `0` it never stops and
 always drafts the full width.

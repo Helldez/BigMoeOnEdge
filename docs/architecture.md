@@ -136,6 +136,9 @@ core/
                 context_checkpoints — the cut-resistant part of the context state, copied at prompt
                   ends and restored when a chat turn diverges inside it (session.md)
                 ngram_draft — the prompt-lookup draft source (see ngram_draft.h)
+                draft_driver — a draft made by weights (the model's head, or a draft model in a
+                  file of its own): what the file is, from its header, and the model, context and
+                  llama.cpp speculative driver that follow from it (drafter.md)
                 thinking_control — how "thinking off" is honoured, probed per model
                 logits, prefill_support — log-softmax, batch filling and prefill attribution,
                   shared by generate / perplexity / decide

@@ -209,6 +209,21 @@ Plan plan_run(const RunConfig & base,
 
 namespace {
 
+// The draft file a run names, as the one placement decision it carries: the field the plan sets, the
+// parameter it reports it under and what to call the file in a sentence. on_devices is null where the
+// run drafts from no file of its own.
+struct DraftFileKnob {
+    bool * on_devices = nullptr;
+    const char * param = "";
+    const char * what = "";
+};
+
+DraftFileKnob draft_file_knob(SpecConfig & spec) {
+    if (!spec.has_draft_file()) return {};
+    if (spec.is_drafter()) return {&spec.drafter_on_devices, "drafter-on-devices", "draft model"};
+    return {&spec.mtp_head_on_devices, "mtp-head-on-devices", "MTP head"};
+}
+
 // The shortest context the rationale will suggest: llama.cpp's own physical batch. A context
 // narrower than one graph is not a run anyone would shorten theirs to, whatever cache it bought.
 constexpr uint64_t k_min_suggested_ctx = 512;
@@ -524,30 +539,33 @@ void choose_device_tier(Planning & s) {
     pl.device_bytes += projector; // the part the fitter had not reserved is the device's all the same
     s.host_layers = s.n_moe_layer;
     s.host_expert_bytes = m.expert_bytes;
-    // The MTP head of a file of its own follows the experts to the processor that computes them
-    // fastest: its block is one more expert block, and drafting on a slower processor was measured
-    // losing (35 ms of a 65 ms token on 8 slow cores, against no head at all). It takes its bytes
-    // from the cache, never from the fitter's layers, so the target keeps the placement it was
-    // fitted, and never below the cache's floor; where it does not fit, it drafts on the host and the
-    // plan says so.
+    // A draft file (the MTP head's, or a drafter) follows the experts to the processor that computes
+    // them fastest: a draft runs once per step beside the target, and drafting on a slower processor
+    // was measured losing (a head: 35 ms of a 65 ms token on 8 slow cores, against no head at all).
+    // It takes its bytes from the cache, never from the fitter's layers, so the target keeps the
+    // placement it was fitted, and never below the cache's floor; where it does not fit, it drafts on
+    // the host and the plan says so.
     uint64_t cache_bytes = budget;
     RunConfig & c = s.p.config;
-    if (c.spec.is_mtp() && !c.spec.mtp_head.empty() && !s.req.is_pinned("mtp-head-on-devices")) {
-        const uint64_t head = m.mtp_head_bytes;
-        c.spec.mtp_head_on_devices = head > 0 && head + std::max<uint64_t>(m.token_cycle_bytes, 1) <= cache_bytes;
-        if (c.spec.mtp_head_on_devices) {
-            cache_bytes -= head;
-            pl.device_bytes += head;
-            s.note("mtp-head-on-devices", "true", Source::Measured,
-                   "The MTP head (" + size_brief(head) + ") is loaded on " + dev->name + ", beside the expert cache.",
-                   "the head's block is an expert block, and " + dev->name +
-                       " computes this model's experts faster than the host by the margin; its " + mib_s(head) +
+    const DraftFileKnob knob = draft_file_knob(c.spec);
+    if (knob.on_devices && !s.req.is_pinned(knob.param)) {
+        const uint64_t bytes = m.draft_file_bytes;
+        *knob.on_devices = bytes > 0 && bytes + std::max<uint64_t>(m.token_cycle_bytes, 1) <= cache_bytes;
+        const std::string what = knob.what;
+        if (*knob.on_devices) {
+            cache_bytes -= bytes;
+            pl.device_bytes += bytes;
+            s.note(knob.param, "true", Source::Measured,
+                   "The " + what + " (" + size_brief(bytes) + ") is loaded on " + dev->name +
+                       ", beside the expert cache.",
+                   "a draft is computed every step, and " + dev->name +
+                       " computes this model's experts faster than the host by the margin; its " + mib_s(bytes) +
                        " MiB come out of the cache's " + mib_s(budget) + " MiB");
         } else {
-            s.note("mtp-head-on-devices", "false", Source::Derived, "The MTP head drafts on the host.",
-                   head == 0 ? "the head file's size is unknown"
-                             : "the head's " + mib_s(head) + " MiB do not fit in the cache's " + mib_s(budget) +
-                                   " MiB on " + dev->name + " above one token cycle");
+            s.note(knob.param, "false", Source::Derived, "The " + what + " drafts on the host.",
+                   bytes == 0 ? "the file's size is unknown"
+                              : "its " + mib_s(bytes) + " MiB do not fit in the cache's " + mib_s(budget) + " MiB on " +
+                                    dev->name + " above one token cycle");
         }
     }
     s.p.config.moe.device_cache_mb = (int) mib(cache_bytes);

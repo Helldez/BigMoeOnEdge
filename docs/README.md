@@ -38,6 +38,7 @@ for the idea the project is built on.
 | [cache-aware-substitution.md](cache-aware-substitution.md) | `--expert-substitute L`: re-ranking a routing toward the experts already in the cache, the paper it comes from, and why a wide scoring batch cannot price it. |
 | [mtp.md](mtp.md) | `--mtp`: drafting with the model's own MTP head and verifying a whole group per decode — lossless by construction, and why a wider decode can lose in the streamed regime. |
 | [ngram.md](ngram.md) | `--ngram`: drafting from text that repeats, with no head and no draft decode — and why a source that abstains costs exactly an unspeculated step. |
+| [drafter.md](drafter.md) | `--drafter`: drafting with a draft model trained for this one (a block-diffusion drafter proposes a whole block per pass), its kind read from the file's header by llama.cpp's own driver, so the engine names none. |
 | [expert-prediction.md](expert-prediction.md) | `--predict-log`: how much of a routing can be known a layer early, measured against the predictor `--prefetch` already bets on — and why a good score still would not mean a faster decode. |
 | [route-ahead.md](route-ahead.md) | `--route-ahead N`: committing the routing to the N-layers-early prediction, so a prefetch of it can never miss — and what that costs in quality (experimental, lossy). |
 | [npu-windows.md](npu-windows.md) | The Hexagon NPU on a Snapdragon laptop: the `-npu` Windows ARM64 archive, the one-time setup it needs (test-signing, trusting the release's certificate), what that changes and how to undo it. |

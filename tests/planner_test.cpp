@@ -2116,7 +2116,7 @@ int main() {
         // bytes and never the fitter's layers; a head that does not fit drafts on the host.
         {
             ModelProfile headed = model;
-            headed.mtp_head_bytes = 2 * GiB;
+            headed.draft_file_bytes = 2 * GiB;
             RunConfig cfg = base_cfg();
             cfg.spec.source = DraftSource::mtp;
             cfg.spec.mtp_head = "head.gguf";
@@ -2126,7 +2126,7 @@ int main() {
                       h.config.moe.device_cache_mb == (int) (7 * 1024),
                   "device tier, head file: the head goes on the device and the cache shrinks by its size",
                   std::to_string(h.config.moe.device_cache_mb) + " MiB");
-            headed.mtp_head_bytes = 10 * GiB;
+            headed.draft_file_bytes = 10 * GiB;
             const Plan hh = plan_run(cfg, card, headed, half, PlanRequest{}, PlannerPolicy::defaults());
             hd = find(hh, "mtp-head-on-devices");
             check(hd && hd->value == "false" && !hh.config.spec.mtp_head_on_devices &&
@@ -2137,6 +2137,27 @@ int main() {
             const Plan hp = plan_run(cfg, card, headed, half, pinned, PlannerPolicy::defaults());
             check(!find(hp, "mtp-head-on-devices") && hp.config.moe.device_cache_mb == (int) (9 * 1024),
                   "device tier, head placement pinned: the caller's, and the cache is whole");
+        }
+        // A drafter's file is placed by the same rule, under its own parameter: what the file holds
+        // is not the plan's to know, only its size and where the experts are computed.
+        {
+            ModelProfile drafted = model;
+            drafted.draft_file_bytes = 2 * GiB;
+            RunConfig cfg = base_cfg();
+            cfg.spec.source = DraftSource::drafter;
+            cfg.spec.drafter_file = "drafter.gguf";
+            const Plan h = plan_run(cfg, card, drafted, half, PlanRequest{}, PlannerPolicy::defaults());
+            const Decision * hd = find(h, "drafter-on-devices");
+            check(hd && hd->value == "true" && h.config.spec.drafter_on_devices && !h.config.spec.mtp_head_on_devices &&
+                      !find(h, "mtp-head-on-devices") && h.config.moe.device_cache_mb == (int) (7 * 1024),
+                  "device tier, drafter file: it goes on the device and the cache shrinks by its size",
+                  std::to_string(h.config.moe.device_cache_mb) + " MiB");
+            drafted.draft_file_bytes = 10 * GiB;
+            const Plan hh = plan_run(cfg, card, drafted, half, PlanRequest{}, PlannerPolicy::defaults());
+            hd = find(hh, "drafter-on-devices");
+            check(hd && hd->value == "false" && !hh.config.spec.drafter_on_devices &&
+                      hh.config.moe.device_cache_mb == (int) (9 * 1024),
+                  "device tier, drafter too big for the cache: it drafts on the host and the cache is whole");
         }
 
         // The projector goes on the device with every layer: its bytes come off the card's spare

@@ -130,9 +130,10 @@ struct ModelProfile {
     uint64_t expert_bytes = 0;         // every routed-expert tensor
     uint64_t dense_bytes = 0;          // everything else: embeddings, attention, norms, head
     uint64_t largest_dense_tensor = 0; // the one a residency policy may not be able to hold
-    // The MTP head file's size, where the run names one (SpecConfig::mtp_head): what placing the
-    // head on a device costs that device. 0 where there is no file or it cannot be read.
-    uint64_t mtp_head_bytes = 0;
+    // The draft file's size, where the run names one (SpecConfig::draft_file: the MTP head's file or
+    // a drafter): what placing it on a device costs that device. 0 where there is no file or it
+    // cannot be read.
+    uint64_t draft_file_bytes = 0;
     // The multimodal projector's size, where the run names one (RunConfig::mmproj): what llama.cpp's
     // library holds beside the model to read images, whole, on a device the run uses or on the host.
     // Dense, so never streamed. 0 where there is no file or it cannot be read.

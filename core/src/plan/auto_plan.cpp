@@ -47,11 +47,11 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
         probe_devices_isolated(r.hw, self_process_runner(opt.isolated_probe_args, opt.isolated_probe_seconds));
     starting(); // model
     r.model = probe_model(path);
-    // The head of a file of its own is a file like the model: its size is what placing it costs.
-    if (!cfg.spec.mtp_head.empty()) {
+    // A draft file (the head's, or a drafter) is a file like the model: its size is what placing it costs.
+    if (cfg.spec.has_draft_file()) {
         std::error_code ec;
-        const auto head_size = std::filesystem::file_size(cfg.spec.mtp_head, ec);
-        if (!ec) r.model.mtp_head_bytes = (uint64_t) head_size;
+        const auto draft_size = std::filesystem::file_size(cfg.spec.draft_file(), ec);
+        if (!ec) r.model.draft_file_bytes = (uint64_t) draft_size;
     }
     // The projector the same: held whole for the run, so its size is what it costs where it goes.
     if (!cfg.mmproj.empty()) {

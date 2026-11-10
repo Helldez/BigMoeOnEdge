@@ -62,6 +62,7 @@ if(BMOE_HAVE_LLAMA)
         src/moe/device_arena.cpp
         src/engine/session.cpp
         src/engine/context_checkpoints.cpp
+        src/engine/draft_driver.cpp
         src/engine/prompt_stream.cpp
         src/engine/media_input.cpp
         src/engine/image_probe.cpp

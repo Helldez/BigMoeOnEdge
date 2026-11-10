@@ -193,7 +193,10 @@ saved beside it with `common_speculative_get_state`, as the server does. See [se
 
 ### Speculative decoding
 
-Only the MTP source crosses into `common`. The verify half of the loop — the wide batch, the argmax
+Only the two sources that draft with weights cross into `common`: the model's head (`--mtp`) and a
+draft model in a file of its own (`--drafter`, [drafter.md](drafter.md)), and they cross in one
+place, `core/src/engine/draft_driver`. That module asks `common_speculative_types_from_gguf` what a
+draft file is and builds the driver for it, so no other file of the engine names a kind of drafter. The verify half of the loop — the wide batch, the argmax
 acceptance, the KV rollback — is written against public `llama.h` alone, and so is the n-gram draft
 source, which is why `--ngram` needs nothing from `common` at all. `core/include/bmoe/ngram_draft.h`
 does not even include `llama.h`: it is written over `int32_t` token ids, which is what `llama_token`
