@@ -1812,17 +1812,81 @@ std::string prefill_conflict(const RunConfig & c) {
     return "";
 }
 
+// Whether an allocation's expert stream has a price to set against the mapping: what lets a cache
+// under the floor be turned off rather than the stream declined (size_cache).
+bool stream_priced(const Allocation & a) {
+    const GroupPlacement & experts = a.at(WeightGroup::Experts);
+    return experts.lane == Lane::ExpertStream && experts.seconds_per_token > 0.0 &&
+           experts.seconds_per_token < experts.seconds_worst_case;
+}
+
+// A device whose room takes the expert cache away - under one token cycle with it, where without it
+// the cache streamed - is a trade, not a refusal: every long prompt runs faster, every decoded token
+// slower, and which is worth more is how this machine is used. A chat with long prompts and short
+// answers wants the device, a long answer from a short prompt the cache. Measured on a 12 GB phone with
+// a 125B model streamed: a 1054-token prompt prefilled on the cores in 122 s and decoded at 1.39
+// tok/s, the plan having kept a 988 MiB cache over an NPU it measured at 3.0x the cores, where another
+// model's prompts ran 8x faster on that NPU.
+//
+// So a request of this machine's own (MeasuredKnobs::mix_*) is priced both ways: its long prompts at
+// the host's measured prefill rate, or at that rate times the device's measured wide ratio, and its
+// answer at the decode each allocation predicts. The device is armed where the request is cheaper with
+// it by the margin every device decision uses. Unpriced - nothing recorded of the requests, or of the
+// host's prefill, or a decode either allocation cannot price - the cache is kept, as it always was.
+struct PrefillTrade {
+    bool priced = false;
+    bool device_wins = false;
+    std::string account; // the figures, or what pricing them is owed
+};
+
+PrefillTrade
+price_prefill_trade(const Planning & s, double wide_ratio, const Allocation & without, const Allocation & with) {
+    PrefillTrade t;
+    const MeasuredKnobs & mk = s.model.knobs;
+    if (mk.mix_requests <= 0 || mk.host_prefill_tps <= 0.0) {
+        t.account = "unpriced: " +
+                    std::string(mk.mix_requests <= 0 ? "no request of this machine is recorded yet"
+                                                     : "the host's prefill of a long prompt is not measured here yet") +
+                    ", and a load records it; the next plan weighs the prompts' prefill against the answers' decode, "
+                    "and arms the device where long prompts and short answers make it the cheaper";
+        return t;
+    }
+    if (!stream_priced(with) || !(with.seconds_per_token > 0.0) || !(without.seconds_per_token > 0.0) ||
+        !(wide_ratio > 0.0)) {
+        t.account = "unpriced: the decode with the device or without it has no price here";
+        return t;
+    }
+    const double host_tps = mk.host_prefill_tps, dev_tps = host_tps * wide_ratio;
+    const double prompt = mk.mix_wide_prompt_tokens, gen = mk.mix_gen_tokens;
+    const double cost_with = prompt / dev_tps + gen * with.seconds_per_token;
+    const double cost_without = prompt / host_tps + gen * without.seconds_per_token;
+    t.priced = true;
+    t.device_wins = cost_with * (1.0 + (double) s.pol.min_backend_win) < cost_without;
+    char b[480];
+    std::snprintf(b, sizeof(b),
+                  "priced on this machine's requests (%d recorded): %.0f prompt tokens and %.0f decoded per request; "
+                  "with the device %.1f s (prefill at %.1f tok/s, %.1fx the host's measured %.1f, decode %.3f s/token "
+                  "with no cache), without it %.1f s (decode %.3f s/token with the cache)",
+                  mk.mix_requests, prompt, gen, cost_with, dev_tps, wide_ratio, host_tps, with.seconds_per_token,
+                  cost_without, without.seconds_per_token);
+    t.account = b;
+    return t;
+}
+
 // A device that pays for itself, and whether it FITS - which is the ledger's to say, with the device
 // as a row: the run must not lose what decode had without it - a cache of at least one token cycle,
 // and the protection of the dense set and of the cache - since those are paid on every decoded token
 // and a prefill is paid once. Each is measured against the allocation WITHOUT the device: a cache
 // that was already under a token cycle (and so off) is not something the device takes away, and
-// refusing a faster prefill for it costs the prompt and saves decode nothing. Two slots first, then one: the wider
+// refusing a faster prefill for it costs the prompt and saves decode nothing. A device that fails on the cache
+// alone is the exception: it is a trade, priced on this machine's requests where they are recorded
+// (price_prefill_trade), and refused as above where they are not. Two slots first, then one: the wider
 // scheme where it fits, the narrower where only it does. A caller who set the count has chosen, and only that count is
 // tried. Returns the allocation the run gets, armed or not.
 Allocation fit_prefill_device(Planning & s,
                               const ComputeDevice & best,
                               const std::string & ratio,
+                              double wide_ratio,
                               const std::string & width,
                               AllocationInputs & ai,
                               const Allocation & alloc,
@@ -1840,6 +1904,10 @@ Allocation fit_prefill_device(Planning & s,
     const auto cache_streams = [cycle](const Allocation & a) { return a.cache_bytes > 0 && a.cache_bytes >= cycle; };
     const bool streamed = cache_streams(alloc);
     bool keeps_cache = false, keeps_dense = false, fits_held = false, own_short = false;
+    // The widest scheme that fails on the cache alone: the trade price_prefill_trade weighs.
+    AllocationInputs traded_in;
+    Allocation traded;
+    int traded_slots = 0;
     for (int n = slots_by_caller ? p.config.prefill.slots : PrefillDeviceConfig::slots_max;
          n >= PrefillDeviceConfig::slots_min; --n) {
         with = ai;
@@ -1850,8 +1918,8 @@ Allocation fit_prefill_device(Planning & s,
         // "Protection" is the dense set's pin and the cache's lock alike: a device that leaves the
         // cache as ordinary memory where it was locked has taken from decode the very thing the
         // ledger exists to keep.
-        keeps_dense = armed.dense_pinned == alloc.dense_pinned &&
-                      (armed.cache_locked_bytes > 0) == (alloc.cache_locked_bytes > 0) &&
+        const bool keeps_pin = armed.dense_pinned == alloc.dense_pinned;
+        keeps_dense = keeps_pin && (armed.cache_locked_bytes > 0) == (alloc.cache_locked_bytes > 0) &&
                       armed.cache_lock_unverified == alloc.cache_lock_unverified;
         // What decode holds with the device must still fit what the process may hold - or, where the
         // ledger did not close without it (a pin the caller forced), hold no more than it did. Where a
@@ -1861,6 +1929,12 @@ Allocation fit_prefill_device(Planning & s,
         if (!own_short && keeps_cache && keeps_dense && fits_held && armed.turn_fits) {
             slots = n;
             break;
+        }
+        // The cache's lock goes with the cache: a trade that gives up the one gives up the other.
+        if (!own_short && !keeps_cache && keeps_pin && fits_held && armed.turn_fits && traded_slots == 0) {
+            traded_in = with;
+            traded = armed;
+            traded_slots = n;
         }
         if (slots_by_caller) break;
     }
@@ -1873,6 +1947,33 @@ Allocation fit_prefill_device(Planning & s,
                best.name + " computes a wide prefill at " + ratio + " the host's rate and has " +
                    u64s(mib(best.memory_free)) + " MiB free of the " + u64s(mib(least)) +
                    " MiB even one layer of this model takes there: refused on memory" + unweighed);
+        return alloc;
+    }
+    // The cache is the only thing the device takes: a trade, settled by the price where there is one.
+    PrefillTrade trade;
+    if (slots == 0 && traded_slots > 0) {
+        trade = price_prefill_trade(s, wide_ratio, alloc, traded);
+        // Priced, what is reported - armed or refused - is the scheme that was weighed; unpriced, the
+        // refusal reads as it always did.
+        if (trade.priced) {
+            with = traded_in;
+            armed = traded;
+            keeps_cache = false;
+        }
+        if (trade.device_wins) slots = traded_slots;
+    }
+    if (slots == 0 && trade.priced) {
+        s.note("prefill-device", "off", Source::Measured,
+               "Prompts run on the CPU: on this machine's requests the expert cache is worth more than " + best.name +
+                   " (" + ratio + " faster).",
+               best.name + " computes a wide prefill at " + ratio + " the host's rate, and with " +
+                   (traded_slots == 1 ? "a single expert slot" : "two expert slots") + " it would hold " +
+                   u64s(mib(with.device_bytes + with.device_turn_bytes)) +
+                   " MiB of this pool, which leaves the expert cache " + u64s(mib(armed.cache_bytes)) +
+                   " MiB against a token cycle of " + u64s(mib(cycle)) + " MiB, where it had " +
+                   u64s(mib(alloc.cache_bytes)) + " MiB without the device; " + trade.account +
+                   ", so the cache is kept: the device is not cheaper by the " +
+                   u64s((uint64_t) (s.pol.min_backend_win * 100.0f + 0.5f)) + "% margin" + unweighed);
         return alloc;
     }
     if (slots == 0) {
@@ -1890,7 +1991,8 @@ Allocation fit_prefill_device(Planning & s,
                                        " MiB against a token cycle of " + u64s(mib(cycle)) + ", where it had " +
                                        u64s(mib(alloc.cache_bytes)) +
                                        " MiB without the device. That is paid on every decoded token, and a "
-                                       "prefill is paid once"
+                                       "prefill is paid once" +
+                                       (trade.account.empty() ? std::string() : "; " + trade.account)
                     : !keeps_dense ? "which leaves the dense set or the cache without the protection it has. That "
                                      "is paid on every decoded token, and a prefill is paid once"
                     : !fits_held   ? "which does not fit what the process may hold while it decodes"
@@ -1903,8 +2005,10 @@ Allocation fit_prefill_device(Planning & s,
     p.config.prefill.best_effort = true;
     p.config.prefill.slots = slots;
     p.config.prefill.slots_on_demand = turns;
+    const bool cache_traded = trade.device_wins;
     s.note("prefill-device", best.name, Source::Measured,
-           "Prompts run on " + best.name + ", " + ratio + " faster than the CPU, same results.",
+           "Prompts run on " + best.name + ", " + ratio + " faster than the CPU, same results" +
+               (cache_traded ? ": on this machine's requests that is worth more than the expert cache." : "."),
            "computes this model's matmul " + width + " at " + ratio + " the host's rate with the same result; its " +
                u64s(mib(with.device_bytes)) + " MiB" +
                (with.device_turn_bytes ? ", plus " + u64s(mib(with.device_turn_bytes)) +
@@ -1916,7 +2020,12 @@ Allocation fit_prefill_device(Planning & s,
                     : "one expert slot - two did not fit - so the device waits for each layer's read") +
                ", and the expert cache gives up " +
                u64s(mib(alloc.cache_bytes > armed.cache_bytes ? alloc.cache_bytes - armed.cache_bytes : 0)) +
-               " MiB for it. Decode stays on the host, and so does the prefill if the device cannot be set up at "
+               " MiB for it" +
+               (cache_traded ? ", which leaves it under the token cycle of " + u64s(mib(cycle)) +
+                                   " MiB, so it is off: " + trade.account + ", cheaper with the device by the " +
+                                   u64s((uint64_t) (s.pol.min_backend_win * 100.0f + 0.5f)) + "% margin"
+                             : std::string()) +
+               ". Decode stays on the host, and so does the prefill if the device cannot be set up at "
                "load. A device's arithmetic is not the host's to the last bit, so the text can differ from a host "
                "prefill's: pass an empty " +
                flag_spelling("prefill-device") + " to keep the prefill on the host" + unweighed);
@@ -2007,7 +2116,8 @@ Allocation plan_prefill(Planning & s, AllocationInputs & ai) {
                      v.best->name + " computes a wide prefill at " + ratio(*v.best) +
                          " the host's rate and is not armed, because " + conflict);
     } else {
-        return fit_prefill_device(s, *v.best, ratio(*v.best), width, ai, alloc, v.unweighed);
+        return fit_prefill_device(s, *v.best, ratio(*v.best), v.best->wide_matmul_gibs / host_wide, width, ai, alloc,
+                                  v.unweighed);
     }
     return alloc;
 }
@@ -2250,8 +2360,6 @@ bool size_cache(Planning & s, const Allocation & alloc) {
     // rule of this file: where the read rate was never measured there is no such price, and the plan
     // declines as before.
     const GroupPlacement & experts = alloc.at(WeightGroup::Experts);
-    const bool stream_priced = experts.lane == Lane::ExpertStream && experts.seconds_per_token > 0.0 &&
-                               experts.seconds_per_token < experts.seconds_worst_case;
     bool cache_off = false;
     std::string cache_off_why;
 
@@ -2268,7 +2376,7 @@ bool size_cache(Planning & s, const Allocation & alloc) {
                           " MiB: under that floor the cache evicts what the same token still needs, "
                           "so it costs its memory and returns no hits at all";
         why += context_suggestion(s.placement, cycle, alloc.cache_available_bytes);
-        if (!stream_priced) {
+        if (!stream_priced(alloc)) {
             s.decline(why + ". This storage's read rate was not measured, so a stream with no cache has no price "
                             "to set against the mapping and is not chosen on faith");
             price_unstreamed(p.allocation);

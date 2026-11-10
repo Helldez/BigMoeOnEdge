@@ -90,7 +90,17 @@ std::string format_measured_knobs(const std::vector<MeasuredKnobs> & records) {
         std::snprintf(num, sizeof(num), "%.1f", r.decode_cache_mib);
         out += std::string(" decode_cache_mib=") + num;
         out += " decode_gpu_layers=" + std::to_string(r.decode_gpu_layers);
-        out += " decode_device_cache_mb=" + std::to_string(r.decode_device_cache_mb) + "\n";
+        out += " decode_device_cache_mb=" + std::to_string(r.decode_device_cache_mb);
+        // The request mix: later keys again, read past by an older engine and missing as not recorded.
+        out += " mix_requests=" + std::to_string(r.mix_requests);
+        const std::pair<const char *, double> mix[] = {{"mix_gen_tokens", r.mix_gen_tokens},
+                                                       {"mix_wide_prompt_tokens", r.mix_wide_prompt_tokens},
+                                                       {"host_prefill_tps", r.host_prefill_tps}};
+        for (const auto & kv : mix) {
+            std::snprintf(num, sizeof(num), "%.3f", kv.second);
+            out += std::string(" ") + kv.first + "=" + num;
+        }
+        out += "\n";
     }
     return out;
 }
@@ -178,6 +188,14 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
                 ok = as_int(r.decode_gpu_layers);
             else if (k == "decode_device_cache_mb")
                 ok = as_int(r.decode_device_cache_mb);
+            else if (k == "mix_requests")
+                ok = as_int(r.mix_requests);
+            else if (k == "mix_gen_tokens")
+                ok = as_double(r.mix_gen_tokens);
+            else if (k == "mix_wide_prompt_tokens")
+                ok = as_double(r.mix_wide_prompt_tokens);
+            else if (k == "host_prefill_tps")
+                ok = as_double(r.host_prefill_tps);
             // An unknown key is a later engine's addition: read past it, the record still holds.
             if (!ok) {
                 error = "line " + std::to_string(n) + ": bad value for " + k;
@@ -194,7 +212,8 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
             !(r.narrow_prefill_tps >= 0.0) || !(r.usage_gen_tokens >= 0.0) || !(r.usage_long_prompt_tokens >= 0.0) ||
             r.usage_requests < 0 || !(r.decode_compute_s >= 0.0) || r.decode_threads < 0 ||
             !(r.decode_hit >= -1.0 && r.decode_hit <= 1.0) || !(r.decode_cache_mib >= 0.0) || r.decode_gpu_layers < 0 ||
-            r.decode_device_cache_mb < 0) {
+            r.decode_device_cache_mb < 0 || r.mix_requests < 0 || !(r.mix_gen_tokens >= 0.0) ||
+            !(r.mix_wide_prompt_tokens >= 0.0) || !(r.host_prefill_tps >= 0.0)) {
             error = "line " + std::to_string(n) + ": a value out of range";
             return false;
         }
@@ -244,6 +263,16 @@ void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKno
                 r.decode_gpu_layers = rec.decode_gpu_layers;
                 r.decode_device_cache_mb = rec.decode_device_cache_mb;
             }
+            // The mix is the latest load's that served a request, whole: a front-end hands on a load's
+            // record each time it grows, so the figures are already that load's running means, and
+            // adding them to the stored ones would count the same requests again. The host's prefill
+            // rate is kept from an earlier load where this one ran every long prompt on a device.
+            if (rec.mix_requests > 0) {
+                r.mix_requests = rec.mix_requests;
+                r.mix_gen_tokens = rec.mix_gen_tokens;
+                r.mix_wide_prompt_tokens = rec.mix_wide_prompt_tokens;
+            }
+            if (rec.host_prefill_tps > 0.0) r.host_prefill_tps = rec.host_prefill_tps;
             return;
         }
     records.push_back(rec);

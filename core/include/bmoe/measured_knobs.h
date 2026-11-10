@@ -91,14 +91,30 @@ struct MeasuredKnobs {
     int decode_gpu_layers = 0;
     int decode_device_cache_mb = 0;
 
+    // How this machine is used, recorded on every load that answered a request: what a trade between
+    // the prompt and the answer is priced by (planner.cpp, fit_prefill_device). A prefill device whose
+    // room takes the expert cache away speeds every long prompt and slows every decoded token, and
+    // which wins is the requests', not the hardware's: on a 12 GB phone a 1054-token prompt prefilled
+    // in 122 s on the cores, where the same phone's NPU prefilled another model 8x faster, and a long
+    // answer from a short prompt is the opposite case. Per request, over `mix_requests` of the last
+    // load that served any: `mix_gen_tokens` decoded, and `mix_wide_prompt_tokens` prefilled (after
+    // reuse) in prompts at least as wide as the narrowest graph a device is handed
+    // (PrefillDeviceConfig::min_tokens): the part a device would take, since shorter prompts run on
+    // the host either way. `host_prefill_tps` is the host's rate over those prompts where the host ran
+    // them, 0 when it ran none.
+    int mix_requests = 0;
+    double mix_gen_tokens = 0.0, mix_wide_prompt_tokens = 0.0;
+    double host_prefill_tps = 0.0;
+
     bool empty() const { return verdicts() == 0; }
     // How many measurements this record carries: a front-end keeps a record again when it grows. The
     // requests a width trial has seen count too, so the usage it weighs the two widths by is kept as it
-    // grows rather than as the first request left it.
+    // grows rather than as the first request left it; so do the requests of the mix.
     int verdicts() const {
         return (threads > 0) + (overlap >= 0) + (device_cache_tps > 0.0) + (no_device_cache_tps > 0.0) +
                (wide_decode_tps > 0.0) + (narrow_decode_tps > 0.0) + (wide_prefill_tps > 0.0) +
-               (narrow_prefill_tps > 0.0) + usage_requests + (decode_compute_s > 0.0) + (decode_hit >= 0.0);
+               (narrow_prefill_tps > 0.0) + usage_requests + (decode_compute_s > 0.0) + (decode_hit >= 0.0) +
+               mix_requests + (host_prefill_tps > 0.0);
     }
 };
 

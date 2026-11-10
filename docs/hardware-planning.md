@@ -629,6 +629,22 @@ A device is armed when four things hold, each a fact and none a name:
    is not something the device takes away, and is no reason to refuse it. A device with memory of its own
    costs this pool nothing and is checked against its own free memory instead.
 
+   **Where the cache is all it takes, that is a price, not a refusal.** A device whose row leaves the
+   cache under one token cycle (its lock goes with it), and fails no other check, speeds every long
+   prompt and slows every decoded token; which is worth more is how the machine is used, not what
+   it is. Measured on a 12 GB phone with a 125B model streamed at Q2_K: the plan kept a 988 MiB cache
+   over an NPU it measured at 3.0x the cores, and a 1054-token prompt then prefilled on the cores in
+   122 s, decoding at 1.39 tok/s; the same phone prefilled another model's 1525-token prompt in
+   120-132 s on the cores and 16 s on the NPU. So a request of this machine's own
+   (`MeasuredKnobs::mix_*`, recorded on every load, [measured-planning.md](measured-planning.md)) is
+   priced both ways: its prompt tokens a device would take at the host's measured prefill rate, or
+   at that rate times the device's wide ratio, plus its tokens decoded at the decode each allocation
+   predicts (with the device's row, and so no cache, or without it). The device is armed where the
+   request is cheaper with it by `min_backend_win`, and the decision, `[measured]`, gives both
+   costs. With no requests recorded, or no host prefill measured, the cache is kept, as before, and
+   the decision says the trade is unpriced and what would price it. The same rule serves a device on
+   the host's memory and one with its own: the pool is whichever the device takes its memory from.
+
 **One expert slot or two.** The experts are the large part of that row and the part with a choice
 in it. Two slots read a layer while the one before it computes; one slot reads each layer at its
 own routing node, with the device waiting, and holds a layer less. The result is the same - the

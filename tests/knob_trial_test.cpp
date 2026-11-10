@@ -388,6 +388,41 @@ int main() {
               "record: one written before the decode's cost was recorded reads as not measured");
         check(!parse_measured_knobs("bmoe-measured-knobs 1\nhardware=a engine=b decode_hit=1.5\n", bad, err),
               "record: a hit rate past 1 is refused");
+
+        // The request mix: recorded on every load, read back as written, counted so a front-end keeps
+        // it as it grows, replaced whole by a later load that served requests, and absent from a record
+        // an earlier engine wrote. The host's prefill rate survives a load whose long prompts all ran
+        // on a device.
+        MeasuredKnobs mx;
+        mx.hardware = a.hardware;
+        mx.engine = a.engine;
+        mx.mix_requests = 4;
+        mx.mix_gen_tokens = 120.5;
+        mx.mix_wide_prompt_tokens = 1054.0;
+        mx.host_prefill_tps = 8.64;
+        check(mx.verdicts() == 5, "record: each request of the mix counts, so a front-end keeps the grown record");
+        std::vector<MeasuredKnobs> mback;
+        check(parse_measured_knobs(format_measured_knobs({mx}), mback, err) && mback.size() == 1 &&
+                  mback[0].mix_requests == 4 && std::fabs(mback[0].mix_gen_tokens - 120.5) < 1e-9 &&
+                  std::fabs(mback[0].mix_wide_prompt_tokens - 1054.0) < 1e-9 &&
+                  std::fabs(mback[0].host_prefill_tps - 8.64) < 1e-9,
+              "record: the request mix reads back as written");
+        keep_measured_knobs(back, mx);
+        MeasuredKnobs mx2 = mx;
+        mx2.mix_requests = 1;
+        mx2.mix_gen_tokens = 2000.0;
+        mx2.mix_wide_prompt_tokens = 0.0;
+        mx2.host_prefill_tps = 0.0; // every long prompt of this load ran on the device, or there was none
+        keep_measured_knobs(back, mx2);
+        const MeasuredKnobs * km = find_measured_knobs(back, a.hardware, "0.35.1");
+        check(km && km->mix_requests == 1 && km->mix_gen_tokens == 2000.0 && km->mix_wide_prompt_tokens == 0.0 &&
+                  std::fabs(km->host_prefill_tps - 8.64) < 1e-9 && km->decode_threads == 6,
+              "record: a later load's mix replaces the mix whole, and keeps the host's prefill rate it did not "
+              "measure");
+        check(old[0].mix_requests == 0 && old[0].host_prefill_tps == 0.0,
+              "record: one written before the mix was recorded reads as not recorded");
+        check(!parse_measured_knobs("bmoe-measured-knobs 1\nhardware=a engine=b mix_requests=-1\n", bad, err),
+              "record: a negative request count is refused");
     }
     {
         HardwareProfile hw;
