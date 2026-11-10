@@ -660,8 +660,8 @@ bool probe_real_layer(HardwareProfile & hw, const ModelProfile & model) {
         const double e_host = nmse_exact(host, exact), e_dev = nmse_exact(dev, exact);
         if (e_host < 0.0 || e_host >= k_max_nmse || e_dev < 0.0) return agreement(dev, host);
         log_printf(LogLevel::Info, "real layer: %s on the %s: %.2e from the exact result, the host %.2e (bound %.0e)",
-                   name, half, e_dev, e_host, k_max_nmse);
-        return e_dev < k_max_nmse ? Tri::Yes : Tri::No;
+                   name, half, e_dev, e_host, k_max_nmse_device);
+        return e_dev < k_max_nmse_device ? Tri::Yes : Tri::No;
     };
     const uint64_t needed = L.held_bytes();
     for (ComputeDevice & d : hw.devices) {

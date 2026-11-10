@@ -428,7 +428,7 @@ const ComputeDevice * device_tier_device(const Planning & s, std::string & why) 
             return nullptr;
         }
         if (d.identity_ok == Tri::No) {
-            why = d.name + " computes this model's expert matmul outside llama.cpp's bound on the exact result";
+            why = d.name + " computes this model's expert matmul too far from the exact result";
             return nullptr;
         }
         if (expert_rates(s.hw, d).device <= 0.0) {
