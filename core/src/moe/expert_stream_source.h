@@ -153,7 +153,10 @@ public:
     // The floor a pin refusal may not shrink the cache under: one token's worst-case cycle, which
     // only the caller knows because the routing width is its to resolve. Unset, a part-way refusal
     // ends pinning and leaves the budget alone.
-    void set_pin_floor(size_t bytes) { pin_floor_ = bytes; }
+    void set_pin_floor(size_t bytes) {
+        pin_floor_ = bytes;
+        follow_.set_floor(bytes);
+    }
 
     // ── I/O trace (diagnostics; see bmoe/decode_trace.h) ────────────────────────────
     // When on, every read_slice records one row. Rows are appended under a dedicated leaf mutex
@@ -304,7 +307,7 @@ private:
     void * slot_[ExpertLayout::max_slots] = {nullptr, nullptr, nullptr};
 
     // LRU mode (cache on): per-(layer, projection) reserved buffers
-    size_t cache_max_ = 0; // live budget in bytes; only an explicit set_cache_budget() moves it
+    size_t cache_max_ = 0; // live budget in bytes: set_cache_budget(), and with a discardable cache follow_
     size_t page_ = pio::vm_page();
 
     // Every expert of every bound layer resident: the ceiling any budget is clamped to, and (under
@@ -354,9 +357,12 @@ private:
     bool discard_drop_ = false;  // debug: drop an offer just before a lookup takes it back
     uint32_t discard_after_ = 0; // generations route-ahead stages ahead of compute
     long long swept_ = 0;        // dropped offers retired from the LRU tail
+    uint32_t offer_window_ = 0;  // generations an entry stays ordinary after its last use
+    DropFollowingBudget follow_; // the live budget while the kernel may drop from the cache
     void settle_offers();
     void retire_dropped_tail();
     void shrink_for_drop(size_t bytes);
+    void regrow_for_load();
     bool entry_body(int32_t id, int p, uintptr_t & b0, uintptr_t & b1) const;
     int32_t chead_ = -1, ctail_ = -1;
     uint32_t cgen_ = 0;

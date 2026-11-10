@@ -17,7 +17,9 @@ Semantic Versioning.
     the cache is offered instead of pinned. An expert no layer used in the last pass is handed over.
     A lookup takes it back first, and reads it again from the model file if the kernel dropped it.
     Each drop also lowers the budget, so a cache larger than the machine will let it keep settles
-    instead of churning.
+    instead of churning. Once a pass of the model goes by without a drop, the budget grows back,
+    only as fast as misses need room and never past the planned budget. A passing pressure spike
+    therefore does not leave a long session slow.
   - **Measured:** same machine, alternating arms. Swap writes went to 0 in every run, and decode was
     18.9 / 17.9 / 14.9 tok/s against 16.2 / 14.5 / 16.8 pinned.
   - **What changes for users:** on by default; `--no-cache-discard` restores the pinned cache.

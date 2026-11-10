@@ -220,8 +220,14 @@ under 9 GB of real pressure on a 16 GB Mac: every volatile purgeable object empt
 swapped. On Linux, `MADV_FREE`'d pages are reclaimed like clean file pages, without being
 compressed into zram or written back from it. Measured on the test phone (Android 16, 4 KiB pages)
 under 3 GB of pressure: the kernel freed 99.4% of 1 GB offered (`pglazyfreed` +1019 MiB). Every page
-came back either intact or zero, none of them wrong. The budget follows what the kernel takes, downward
-only, for the reason the brake does not grow back.
+came back either intact or zero, none of them wrong.
+
+The budget follows what the kernel lets the cache keep, down and back up. What keeps the brake from
+growing back does not hold here. Growing ordinary memory into pressure costs compression or swap
+before the next sample can see it, which is what made the governor oscillate. Growing an offered
+cache into pressure costs the kernel a drop and the cache a re-read, both cheap, and nothing is
+written. It grows only after a full pass with no drop, only as fast as misses need room, and never
+past the budget last set. A braked budget therefore stays braked.
 
 ## Portability of what remains
 
