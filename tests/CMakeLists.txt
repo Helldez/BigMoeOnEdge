@@ -10,7 +10,7 @@ target_link_libraries(bmoe_moe_gates PRIVATE bmoe_core)
 if(WIN32)
     target_link_libraries(bmoe_moe_gates PRIVATE ws2_32)
 endif()
-target_include_directories(bmoe_moe_gates PRIVATE ${CMAKE_SOURCE_DIR}/core/src/moe)
+target_include_directories(bmoe_moe_gates PRIVATE ${CMAKE_SOURCE_DIR}/core/src/moe ${CMAKE_SOURCE_DIR}/core/src/io)
 
 # A real Session::open with the full device confirmation and a page-aware fake mlock allowance.
 # The test adapter object supplies the production platform_io symbols, so the static archive's

@@ -46,6 +46,7 @@ import io.bigmoeonedge.app.ui.MetricsScreen
 import io.bigmoeonedge.app.ui.ModelsScreen
 import io.bigmoeonedge.app.ui.PlanScreen
 import io.bigmoeonedge.app.ui.SettingsScreen
+import io.bigmoeonedge.app.ui.rememberImeVisible
 
 /**
  * The app: four screens in the bar over the one engine (chat, models, plan, settings), plus metrics,
@@ -103,10 +104,14 @@ private fun Root() {
         firstListingSeen = true
         if (m.local.isEmpty() && screen == Screen.CHAT) screen = Screen.MODELS
     }
+    // While the keyboard is up the window is resized above it, and the bars would ride on top of it,
+    // taking the room the field being typed into needs (and covering a screen's own button). Nobody
+    // switches screens mid-sentence: the bars step aside and come back when the keyboard goes.
+    val typing = rememberImeVisible()
     Scaffold(
         bottomBar = {
             // The status line sits on every screen, above the bar a thumb reaches: one place, one look.
-            Column {
+            if (!typing) Column {
                 EngineStatusLine(onOpenModels = { screen = Screen.MODELS }, onOpenSetting = openSetting)
                 NavigationBar {
                     Screen.values().forEach { s ->

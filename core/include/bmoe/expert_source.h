@@ -99,6 +99,7 @@ public:
         // still raise the byte count, and therefore the number to look at when it does.
         long long evictions = 0;
         long long rereads = 0;
+        long long cold_admits = 0; // misses a wide graph admitted at the cold end (cache_prefill_cold)
         // Offered entries (MoeStreamConfig::cache_discard) the system dropped under pressure, noticed
         // when a lookup wanted one or when it reached the LRU tail: memory given back with nothing
         // written to swap.

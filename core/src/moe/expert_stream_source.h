@@ -132,6 +132,18 @@ public:
     // and exercised by the shrink gate. This is the only thing that moves the budget after init.
     void set_cache_budget(size_t bytes);
     size_t cache_budget() const { return cache_max_; }
+    // The run's effective top-k: a batch of ids is that many per token, which is how load_layer tells
+    // a wide graph (cache_prefill_cold) from a decode or a verify window. Before the first decode.
+    void set_top_k(int k) { top_k_ = std::max(0, k); }
+
+    // Where projection p of expert e of layer il sits in the cache, or null when it is not resident
+    // (or there is no cache). `bytes` is the slice's size. For readers on other threads while a
+    // device graph runs: the eval thread is inside that graph, which reads its experts from the
+    // arena and never stages or evicts here, and every entry valid at that point was fully read by
+    // the graph before it. Nothing may call it while a host graph could be evicting. An entry
+    // offered to the kernel is not resident here: its bytes may be gone, and taking it back is the
+    // eval thread's.
+    const void * resident_slice(int il, int e, int p, uint64_t & bytes) const;
 
     // The share of the cache's resident pages the system has taken back, from one page of each of up
     // to `n` entries spread over the LRU. What the cache wrote and the kernel then compressed, swapped
@@ -245,8 +257,40 @@ private:
     void lru_unlink(int32_t id);
     void lru_push_front(int32_t id);
     void lru_push_back(int32_t id);
+    void admit_entry(int32_t id); // a miss enters the LRU (cold end in a cold batch) and the offer window
     size_t entry_bytes(int il) const;
     void evict_tail();
+    void evict_entry(int32_t id);
+    // Evict to budget under the configured policy. `spare_current` keeps every entry the layer in
+    // flight staged (cstamp_ == cgen_): its reads may still be landing, and its matmul needs it.
+    void evict_to_budget(bool spare_current);
+
+    // Decayed-frequency eviction (MoeStreamConfig::cache_freq_half_life > 0). A use at pass t adds
+    // growth^t to the entry's score instead of decaying every score each pass: the order is the
+    // same as a decayed count, and a pass costs one multiply instead of a sweep. A pass is one
+    // graph's walk over the layers (one token in decode, one ubatch in prefill), detected as a
+    // non-increasing layer index. Scores are rescaled before the weight could overflow.
+    void freq_touch(int32_t id);
+    void freq_pass_check(int il);
+    int freq_half_life_ = 0;
+    // cache_prefill_cold: this batch is a wide graph whose misses enter cold; cold_gen_ marks the
+    // entries entered cold in the current generation so no promotion of the same batch warms them.
+    bool prefill_cold_ = false;
+    bool cold_batch_ = false;
+    int cold_min_tokens_ = MoeStreamConfig::prefill_cold_min_tokens;
+    int top_k_ = 0; // routed experts per token (set_top_k); 0 leaves the cold rule off
+    std::vector<uint64_t> cold_gen_;
+    int freq_last_il_ = -1;
+    double freq_growth_ = 1.0;
+    double freq_weight_ = 1.0;
+    size_t min_entry_bytes_ = 0;
+    std::vector<double> cfreq_;
+    struct EvictCand {
+        double score;
+        int32_t rank; // position cold to hot: the LRU order that breaks a tie
+        int32_t id;
+    };
+    std::vector<EvictCand> evict_cand_;
 
     // I/O trace buffer. Its own leaf mutex, never held across a read: the lanes append
     // concurrently, and the eval thread swaps the buffer out between decodes.
@@ -280,7 +324,7 @@ private:
     // the cache paying twice, and it is the only way a "100% useful" prefetch can still raise
     // the byte count. Reported per run; cheap enough (one byte per entry, one branch per read).
     std::vector<uint8_t> ever_evicted_;
-    long long rereads_ = 0, evictions_ = 0;
+    long long rereads_ = 0, evictions_ = 0, cold_admits_ = 0;
     // Eval-thread wait counters (see IExpertSource::Stats): the async load's previous-batch drain
     // (lives in the compute residual) and the route-ahead adoption wait (lives inside mgmt).
     // Eval-thread only, like the LRU itself — two clock reads per wait, nothing on the lanes.

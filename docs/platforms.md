@@ -86,10 +86,10 @@ platform: the device is measured, and the streamer's own memory is not yet hande
 - **Linux.** A throughput run on real hardware, which the community protocol can supply
   ([community-benchmarks.md](community-benchmarks.md)). A discrete GPU, for the planner's capacity
   fitter, prefill-device and graph-width rules.
-- **Windows.** A run of the device probes in a process of their own, now built, on a machine with
-  a GPU; the cache lock, the residency sample, the byte-identity gates in its CI job, one
-  documented planner run, and the installer signed (#385). Tracked in
-  [#234](https://github.com/Helldez/BigMoeOnEdge/issues/234).
+- **Windows.** The byte-identity gates run in its CI job, the device probes run in a process of
+  their own on an integrated GPU, and one planner run is documented
+  ([hardware-planning.md](hardware-planning.md#a-planner-run-on-windows)). Owed: the container
+  limit a job object sets, the process's own memory figures, and the installer signed (#385).
 - **iOS.** The app on the shared framework builds and runs in the simulator, and the release
   carries the harness for it. A contributor has run the harness on a device signed by a free
   Personal Team (#235), and the plan it read there is corrected in #304; owed are a device run of

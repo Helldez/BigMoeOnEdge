@@ -1,14 +1,17 @@
 # Expert cache sizing
 
 The expert cache budget (`--cache-mb`) is the dominant throughput lever, but the right value is
-device- and model-specific: too small and the hit rate collapses **to exactly zero — see the
-cliff below, it does not degrade gracefully**; too large and the pinned cache
+device- and model-specific: too small and the hit rate collapses (under LRU **to exactly zero — see
+the cliff below**; the default eviction keeps about a quarter of it there); too large and the pinned cache
 plus the mmap-resident model push `MemAvailable` to zero and the Android low-memory-killer takes
 the process (this is exactly why Gemma cannot use a 4000 MiB cache on an 11 GB phone — see
 [benchmarks.md](benchmarks.md)). `--cache-mb auto` removes the guess: the engine sizes the cache to
 the device once at load and holds that budget for the whole run.
 
-## The cliff: below one token cycle the hit rate is 0 %, not "low"
+## The cliff: below one token cycle LRU hits 0 %, not "low"
+
+This section describes LRU (`--cache-half-life 0`). The default eviction since 0.40.2 is decayed
+frequency, which does not fall off this cliff; see [The eviction policy](#the-eviction-policy) below.
 
 Global LRU drops the least *recently* used entry. The model visits its layers in a fixed cycle
 0..N-1, so the least recently used entry is also the **soonest to be needed again**. While the
@@ -33,13 +36,12 @@ Two traps worth knowing:
   roughly `n_layer` apart. Both are already printed in the `# summary` line; nothing sizes from them.
 
 So when a budget is being chosen by hand, check it against `token_demand_MiB` from a previous run
-of the same model *and top-k*, not against `cache_min_mb`. Below the cycle, `--cache-mb 0` is
-strictly better than a cache: same reads, none of the RAM, none of the management cost.
+of the same model *and top-k*, not against `cache_min_mb`. Under LRU, below the cycle `--cache-mb 0`
+is strictly better than a cache: same reads, none of the RAM, none of the management cost.
 
-Fixing this by changing the eviction policy was tried and rejected — a per-layer partition is
-immune to the cliff by construction but costs ~30 % throughput
-([bench-data/2026-07-20-cache-replay/layer-lfu-verdict.md](bench-data/2026-07-20-cache-replay/layer-lfu-verdict.md)).
-The cheap fix was a guard, and it is in: the worst-case cycle is priced at init from the model's
+A per-layer partition is immune to the cliff by construction but costs ~30 % throughput
+([bench-data/2026-07-20-cache-replay/layer-lfu-verdict.md](bench-data/2026-07-20-cache-replay/layer-lfu-verdict.md));
+the global decayed-frequency eviction below is what removed it. The guard came first, and it is in: the worst-case cycle is priced at init from the model's
 shape alone — every bound layer's expert-entry bytes times `min(top_k, n_expert)`, at the top-k the
 run actually applies. The engine records it in every metrics preamble as `cache_cycle_mb` next to
 the budget it is being compared against, and prints one line to stderr at load when the budget is
@@ -49,6 +51,62 @@ under it:
 bmoe: WARNING expert cache 1500 MiB is below this model's worst-case token cycle of 1815 MiB
 at top-k 4 — no entry can survive to the next token, so expect a hit rate near zero.
 ```
+
+(That is the LRU wording; under the default eviction the line says to expect a low hit rate.)
+
+## The eviction policy
+
+The cache evicts the entry with the least **decayed frequency**: each use counts half as much after
+`--cache-half-life` tokens (8 by default), and a tie goes to the least recently used. `0` is plain
+LRU. Below the cycle LRU evicts what the next token reads first; a short half-life instead keeps the
+experts the last few tokens shared, which routing repeats far above chance. Replayed on recorded
+routing of Qwen3.6-35B-A3B and OLMoE (36 prompts, 192 decoded tokens each; the replay reproduces the
+engine's hit rate to 0.03 points and its bytes per token exactly), against LRU:
+
+| budget (× token cycle) | Qwen3.6 bytes read | OLMoE bytes read |
+|---|---|---|
+| 0.5 - 0.9 | −25 to −36 % (LRU: 0 % hit) | −25 to −36 % (LRU: 0 % hit) |
+| 1.0 | +2 % | +4 % |
+| 1.25 - 5 | −1 to −5 % | −5 to −11 % |
+
+The three phone traces archived in [bench-data/2026-07-15-route-trace](bench-data/2026-07-15-route-trace/)
+(Qwen3-30B-A3B and Gemma 4 26B-A4B at top-6, gpt-oss-120b at top-2; 64 to 128 decoded tokens) agree: −17 to −32 % at 0.75
+cycles, −3 to −14 % from 1.5 to 5 cycles, and at exactly one cycle −5 % on two of them and +1.4 % on
+the Qwen.
+
+Half-lives of 4 to 16 behave alike; 32 and 64 lose to LRU above the cycle on Qwen. Policies that
+were replayed and lost: random eviction (−7 to −15 % below the cycle, +12 to +50 % above),
+Least-Stale (layer-order) eviction (good only between 0.75 and 1.25 cycles, up to +200 % above 2),
+and every admission filter on decode (admit on second touch, TinyLFU, set dueling, insertion at
+the cold end): +2 to +15 % above the cycle.
+
+Measured in the engine on a 16 GB Mac, Qwen3.6-35B-A3B Q4_K_M, 192 greedy tokens, same text in
+every pair:
+
+| cache | LRU | half-life 8 |
+|---|---|---|
+| 440 MiB (0.76 cycle) | 581 MiB/token, 0 % hit, 6.1 tok/s | 407 MiB/token, 27 % hit, 8.5 tok/s |
+| 1170 MiB | 306 MiB/token, 43 % hit | 294 MiB/token, 46 % hit |
+| 2900 MiB | 177 MiB/token, 64 % hit | 168 MiB/token, 66 % hit |
+
+The planner prices the cache with the same policy: its replay of a model's routing record
+(`bmoe/routing.h`) evicts by the run's half-life with the engine's arithmetic, and gate G2r holds
+the two to the same hit rate. It admits the prompt hot (below): the record keeps the prompt as one
+batch, and the engine's last, narrow piece of a prefill promotes most of what the cold admission
+put at the drop end again, so decode starts from nearly the same cache.
+
+### A prompt's misses enter cold
+
+A prefill graph on the CPU is hundreds of tokens wide and touches nearly every expert of every
+layer, so admitting its misses at the hot end is a cyclic scan of its own: each ubatch evicts what
+the next one needs, and the prompt's hit rate stays at 1 - 5 %. From 32 tokens wide a graph's misses
+enter at the cold end instead (`--no-cache-prefill-cold` restores the old admission): resident for
+their own layer, the first to go after it, and what the cache held before the prompt stays to
+serve the next ubatch. Four 3.6 - 4.3k-token documents with short follow-ups, prefilled on the CPU at
+ubatch 512 with an 8000 MiB cache on the same Mac: 423 → 211 GiB read during the prefills, prefill
+time −17 % (the Mac's CPU prefill is compute bound; a slower disk gains more), decode unchanged,
+same text. A prefill on a device (`--prefill-device`) does not go through the cache at all; its
+arena reads from it instead ([npu-prefill.md](npu-prefill.md)).
 
 It states the fact and stops there; the advice above — that `--cache-mb 0` is strictly better below
 the cliff — stays here rather than in the engine's output. Note this is the *worst case* (a disjoint
@@ -167,17 +225,26 @@ minutes. Swap is a write to flash, and writes are what wear it.
 So where the platform can take memory back by dropping it, the cache is offered rather than locked
 (`--cache-discard`, on by default, off with `--no-cache-discard`). An entry no layer used in the last
 pass of the stack is handed to the kernel (`pio::vm_offer`: a volatile purgeable object on Darwin,
-`MADV_FREE` on Linux and Android, `OfferVirtualMemory` on Windows), which reclaims it before it
-compresses or swaps anything. A lookup that finds an offered entry takes it back first
+`MADV_FREE` on Linux and Android), which reclaims it before it compresses or swaps anything. A lookup that finds an offered entry takes it back first
 (`pio::vm_reclaim`). If the kernel dropped it, the hit becomes a miss and the entry is read again
 from the model file, a read and not a write. A drop also lowers the budget by that entry, so a cache
 larger than the machine will let it keep settles where it is not refilled only to be dropped again.
 A dropped entry that nothing asks for again is found at the LRU tail, where the kernel's
 oldest-first reclaim leaves it. Each load retires dropped entries from the tail up to the first one
-still held, sampling one page of each with `mincore`, so the cache's resident figure is what RAM
-still holds. Correctness never rests on that sweep: a lookup always takes an entry back first. The
-policy is its own module, `moe/discardable_entries`, over a port that `platform_io` implements; its
+still held, sampling one page of each with `mincore` (`pio::vm_offered_held`), so the cache's resident
+figure is what RAM still holds. Where the platform cannot tell a kept offer from a dropped one without
+taking it back, the sweep stops at once. Correctness never rests on that sweep: a lookup always takes an entry back first,
+and no other thread reads an offered entry (a device prefill copying from the cache reads it from the
+file instead). The policy is its own module, `moe/discardable_entries`, over a port that `platform_io` implements; its
 test runs it against a fake kernel.
+
+Windows has the API (`OfferVirtualMemory` / `ReclaimVirtualMemory`) but not yet the mechanism: an
+offered range leaves the working set and turns `PAGE_NOACCESS` the moment it is offered, kept or not,
+and the offer and the reclaim each cost microseconds per page: about 1 ms per 1.7 MiB entry, twice
+that with the decode threads busy, paid on every reuse of an offered entry. On a 15 GB Windows 11 PC with
+Qwen3.6-35B-A3B Q4_K_M, decode was 2.2-2.9 tok/s offered against 3.7-4.8 with an ordinary cache, the
+same bytes and hits, the whole gap in cache management. `pio::vm_discard_supported` answers false
+there, so the cache is ordinary memory as before, the planner prices it so, and G21 is skipped.
 
 The budget follows what the kernel lets the cache keep, both ways (`DropFollowingBudget`, in the same
 module). It goes down by each drop, never under one token's cycle. Once a whole window passes

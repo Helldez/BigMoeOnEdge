@@ -1,0 +1,13 @@
+[
+ {
+  "engine": "dmain-1-long",
+  "prompt": "long",
+  "prompt_tokens": 9756,
+  "gen_tokens": 256,
+  "ttft_s": 26.06,
+  "prefill_tps": 374.4,
+  "decode_tps": 17.2,
+  "server_timings": null,
+  "text": "We need answer user's request: summarize document in five bullet points. Need produce final with five bullets. Need likely concise but enough. Need ensure five bullet points. Let's parse document. It's about hardware planning --auto in bmoe-cli. Key themes: opt-in auto planner, two stages: llama.cpp"
+ }
+]

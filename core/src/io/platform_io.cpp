@@ -162,7 +162,14 @@ const OfferApi & offer_api() {
 }
 } // namespace
 bool vm_discard_supported() {
-    return offer_api().offer && offer_api().reclaim;
+    // The API exists, but it does not pay here: OfferVirtualMemory takes the range out of the working
+    // set and makes it PAGE_NOACCESS at once, kept or not, and the offer and the reclaim each cost
+    // microseconds per page (about 1 ms per 1.7 MiB entry, twice that with the decode threads busy),
+    // paid on every reuse of an offered entry. Measured on a 15 GB Windows 11 PC with
+    // Qwen3.6-35B-A3B Q4_K_M: decode 2.2-2.9 tok/s offered against 3.7-4.8 with an ordinary cache, the
+    // same bytes and hits, the whole gap in cache management. Until an offer that keeps its pages
+    // mapped is found, the cache here is ordinary memory, as it was before the discardable cache.
+    return false;
 }
 bool vm_commit_discardable(void * p, size_t sz) {
     return vm_commit(p, sz);
@@ -175,6 +182,12 @@ bool vm_reclaim(void * p, size_t sz) {
     if (!sz || !vm_discard_supported()) return true;
     // ERROR_BUSY: some pages were discarded. The range is committed again either way.
     return offer_api().reclaim(p, sz) == ERROR_SUCCESS;
+}
+int vm_offered_held(const void * /*p*/, size_t /*sz*/) {
+    // An offered range leaves the working set and turns PAGE_NOACCESS the moment it is offered, kept
+    // or not, so QueryWorkingSetEx reads every offer as gone. Only ReclaimVirtualMemory tells, and
+    // that takes the range back.
+    return -1;
 }
 void vm_drop_file_pages(void * /*p*/, size_t /*sz*/) {
     // File-backed views cannot be decommitted (MEM_DECOMMIT is only valid for VirtualAlloc'd pages),
@@ -502,6 +515,13 @@ bool vm_resident_sample(const void * p, size_t sz, size_t * sampled, size_t * re
         a += want * page;
     }
     return true;
+}
+int vm_offered_held(const void * p, size_t sz) {
+    // An offered page stays mapped until the kernel takes it, so residency is the answer. One page
+    // tells for the span: the kernel drops an offered span whole on every platform that reports it.
+    size_t sampled = 0, resident = 0;
+    if (!vm_resident_sample(p, std::min(sz, vm_page()), &sampled, &resident) || sampled == 0) return -1;
+    return resident != 0 ? 1 : 0;
 }
 
 #if defined(__APPLE__)
