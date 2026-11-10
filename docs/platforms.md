@@ -67,8 +67,12 @@ CUDA and HIP are the exceptions to "in the archive": with the NVIDIA runtime and
 module is about twenty times the rest, and HIP needs ROCm installed system-wide, so x86_64 releases
 carry each as a pack of its own (`bmoe-pack-cuda-<tag>-<target>`, `bmoe-pack-hip-<tag>-<target>`),
 which the desktop app installs into its data folder where it applies and the engine loads from
-there ([desktop-app.md](desktop-app.md)); extracted beside `bmoe-cli`, its files load as the
-others do.
+there ([desktop-app.md](desktop-app.md)). For `bmoe-cli`, extract the pack inside the archive's
+folder, next to `bmoe-cli`, where its files load like the others. The pack has no folder of its own,
+so extracting both archives in the same place leaves the CUDA files one level above `bmoe-cli`.
+The engine does not load them from there and does not say so, and a 12 GB card then decodes on the
+CPU at a sixth of its speed
+([bench-data/2026-11-09-rented-12gb-cuda-pack](bench-data/2026-11-09-rented-12gb-cuda-pack/README.md)).
 
 Computing the streamed experts on a GPU, rather than on the CPU cores, is half built on every
 platform: the device is measured, and the streamer's own memory is not yet handed to it
