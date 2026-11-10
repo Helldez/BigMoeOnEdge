@@ -1,0 +1,5 @@
+bmoe: real layer: CUDA0 on the experts: 5.27e-04 from the exact result, the host 1.05e-05 (bound 1e-03)
+bmoe: real layer: CUDA0 on the dense: 6.34e-06 from the exact result, the host 1.01e-05 (bound 1e-03)
+bmoe: real layer: CUDA0 on the experts, wide: 5.22e-04 from the exact result, the host 1.20e-05 (bound 1e-03)
+bmoe: real layer: CUDA0 on the dense, wide: 4.37e-05 from the exact result, the host 1.06e-05 (bound 1e-03)
+BMOE_DEVICE_FACTS v=3 shared=N hostbuf=Y hostptr=U async=Y rebind=1 runs=Y repack=N bw=664.462 ident=Y hpok=U split=1.09938449e-05 splits=0 wide=2744.98 wideok=Y locked=U up=11.092 uphb=21.1965 expert=637.396 dense=573.041

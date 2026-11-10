@@ -1,0 +1,44 @@
+[
+ {
+  "engine": "air-llama",
+  "prompt": "a",
+  "prompt_tokens": 45,
+  "gen_tokens": 512,
+  "ttft_s": 1.5,
+  "prefill_tps": 29.9,
+  "decode_tps": 24.03,
+  "server_timings": {
+   "cache_n": 0,
+   "prompt_n": 45,
+   "prompt_ms": 1402.914,
+   "prompt_per_token_ms": 31.175866666666668,
+   "prompt_per_second": 32.07609304633071,
+   "predicted_n": 512,
+   "predicted_ms": 21358.446,
+   "predicted_per_token_ms": 41.797350293542074,
+   "predicted_per_second": 23.924961581942807
+  },
+  "text": "We are going to explain the routing mechanism in a mixture-of-experts (MoE) language model and how it enables running a model larger than RAM by streaming experts from flash storage.\n\n### 1. Mixture-of-Experts (MoE) Overview\nIn an MoE model, the model is composed of multiple \"expert\" networks (typic"
+ },
+ {
+  "engine": "air-llama",
+  "prompt": "b",
+  "prompt_tokens": 45,
+  "gen_tokens": 512,
+  "ttft_s": 0.22,
+  "prefill_tps": 201.9,
+  "decode_tps": 23.77,
+  "server_timings": {
+   "cache_n": 44,
+   "prompt_n": 1,
+   "prompt_ms": 44.85,
+   "prompt_per_token_ms": 44.85,
+   "prompt_per_second": 22.29654403567447,
+   "predicted_n": 512,
+   "predicted_ms": 21579.453,
+   "predicted_per_token_ms": 42.2298493150685,
+   "predicted_per_second": 23.679932943620024
+  },
+  "text": "We are going to explain the routing mechanism in a mixture-of-experts (MoE) language model and how it enables running a model larger than RAM by streaming experts from flash storage.\n\n### 1. Mixture-of-Experts (MoE) Overview\nIn an MoE model, the model is composed of multiple \"expert\" networks (typic"
+ }
+]

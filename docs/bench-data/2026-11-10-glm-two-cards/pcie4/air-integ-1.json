@@ -1,0 +1,24 @@
+[
+ {
+  "engine": "air-integ-1",
+  "prompt": "a",
+  "prompt_tokens": 45,
+  "gen_tokens": 512,
+  "ttft_s": 2.39,
+  "prefill_tps": 18.8,
+  "decode_tps": 13.97,
+  "server_timings": null,
+  "text": "We are going to explain the routing mechanism in a mixture-of-experts (MoE) language model and how it enables running a model larger than RAM by streaming experts from flash storage.\n\n### 1. Mixture-of-Experts (MoE) Overview\nIn an MoE model, the model is composed of multiple \"expert\" networks (typic"
+ },
+ {
+  "engine": "air-integ-1",
+  "prompt": "b",
+  "prompt_tokens": 45,
+  "gen_tokens": 512,
+  "ttft_s": 0.35,
+  "prefill_tps": 130.4,
+  "decode_tps": 14.18,
+  "server_timings": null,
+  "text": "We are going to explain the routing mechanism in a mixture-of-experts (MoE) language model and how it enables running a model larger than RAM by streaming experts from flash storage.\n\n### 1. Mixture-of-Experts (MoE) Overview\nIn an MoE model, the model is composed of multiple \"expert\" networks (typic"
+ }
+]

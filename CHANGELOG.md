@@ -145,6 +145,12 @@ Semantic Versioning.
   Without the pack, or with it extracted next to that folder, the run stays on the CPU at
   1.6-2.9 tok/s, which is what a user reported. `docs/platforms.md` now says where the pack goes,
   and the README's speed table has a 12 GB card row in every language.
+### Changed
+- **The machines rented on 2026-11-09/10 in `docs/community-benchmarks.md`**: a 12 GB card (with and
+  without the CUDA pack, and the server before and after #523), a 16 GB card with 23 GB of RAM
+  streaming, a 24 GB card, a 32 GB card, and two two-card workstations with GLM-4.7 and GLM-4.5-Air.
+  Each row names the build it measured. The GLM runs' plans, records and timings are in
+  `docs/bench-data/2026-11-10-glm-two-cards/`.
 
 ## [0.40.2] - 2026-11-08
 
