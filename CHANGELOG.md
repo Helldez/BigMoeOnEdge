@@ -23,6 +23,11 @@ Semantic Versioning.
   page offered to measure the machine "for" a model that was not there. `bmoe-server` now drops it
   at start and after a delete, so the UIs show their "choose a model" state; a model given with `-m`
   at launch is left alone.
+- **Android: the keyboard's action key searches, and the bottom bars step aside while typing**
+  (#511). The Hugging Face search and token fields search with the keyboard's Search key and the
+  direct-link field downloads with Go, on the same terms as their buttons. While the keyboard is
+  showing, the status line and the navigation bar are hidden app-wide instead of riding on top of
+  it and covering the screen's own buttons; they come back when it closes.
 
 ## [0.40.3] - 2026-11-09
 
