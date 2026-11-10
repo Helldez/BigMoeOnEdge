@@ -22,6 +22,7 @@
 #include "../io/platform_io.h"
 #include "../io/file_reader.h"
 #include "dense_weights.h" // DenseWeights + DenseTensorRef
+#include "discardable_entries.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -139,7 +140,9 @@ public:
     // (or there is no cache). `bytes` is the slice's size. For readers on other threads while a
     // device graph runs: the eval thread is inside that graph, which reads its experts from the
     // arena and never stages or evicts here, and every entry valid at that point was fully read by
-    // the graph before it. Nothing may call it while a host graph could be evicting.
+    // the graph before it. Nothing may call it while a host graph could be evicting. An entry
+    // offered to the kernel is not resident here: its bytes may be gone, and taking it back is the
+    // eval thread's.
     const void * resident_slice(int il, int e, int p, uint64_t & bytes) const;
 
     // The share of the cache's resident pages the system has taken back, from one page of each of up
@@ -244,12 +247,14 @@ private:
 
     // Commit the pages of one (layer, expert, projection) cache slice so a read can land in it.
     bool commit_proj_pages(int il, int e, int p);
+    bool commit_slice(int il, int e, int p);
     void pin_pages(void * p, size_t sz);
 
     // LRU helpers (active only when cache_max_ > 0)
     void lru_unlink(int32_t id);
     void lru_push_front(int32_t id);
     void lru_push_back(int32_t id);
+    void admit_entry(int32_t id); // a miss enters the LRU (cold end in a cold batch) and the offer window
     size_t entry_bytes(int il) const;
     void evict_tail();
     void evict_entry(int32_t id);
@@ -385,6 +390,18 @@ private:
     std::vector<int32_t> cprev_, cnext_;
     std::vector<uint32_t> cstamp_;
     std::vector<uint8_t> cspec_; // 1 if this resident entry was filled speculatively, until first hit
+
+    // Discardable cache (MoeStreamConfig::cache_discard): the policy lives in DiscardableEntries;
+    // this source owns the entries, their LRU and the budget, and says which spans an entry owns.
+    DiscardableEntries disc_;
+    bool discard_wanted_ = false;
+    bool discard_drop_ = false;  // debug: drop an offer just before a lookup takes it back
+    uint32_t discard_after_ = 0; // generations route-ahead stages ahead of compute
+    long long swept_ = 0;        // dropped offers retired from the LRU tail
+    void settle_offers();
+    void retire_dropped_tail();
+    void shrink_for_drop(size_t bytes);
+    bool entry_body(int32_t id, int p, uintptr_t & b0, uintptr_t & b1) const;
     int32_t chead_ = -1, ctail_ = -1;
     uint32_t cgen_ = 0;
     size_t cresident_ = 0;

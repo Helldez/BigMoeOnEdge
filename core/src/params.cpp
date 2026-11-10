@@ -1304,6 +1304,29 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("cache-discard", "Drop, never swap", G::Cache, L::Advanced,
+                          "Let the system drop cached experts under memory pressure instead of swapping them "
+                          "or anything else to the drive. A dropped expert is read again from the model file.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--no-cache-discard", "false"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.cache_discard; });
+        d.details = "Experts not used in the last token are handed to the system, which takes them back first "
+                    "when memory runs short: no swap writes, which wear flash, and no other app pushed out by a "
+                    "locked cache. Replaces pinning where the platform supports it.";
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("cache-discard-drop", "Drop at once", G::Diagnostics, L::Debug,
+                          "Drop an offered expert just before a lookup takes it back, as if pressure took it, "
+                          "so each such lookup pays the re-read. For the byte-identity gate.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--cache-discard-drop", "true"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.cache_discard_drop; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("cache-brake", "Brake under pressure", G::Cache, L::Advanced,
                           "Halve the expert cache when the system starts taking it back mid-run: a stalled "
                           "token, confirmed by cache pages no longer in RAM. It only shrinks, never under "

@@ -1557,7 +1557,8 @@ AllocationInputs ledger_inputs(const Planning & s, uint64_t dense_pending) {
     ai.fixed_bytes = s.host_fixed;
     ai.projector_bytes = s.projector_host;
     ai.checkpoint_bytes = s.checkpoint_bytes;
-    ai.cache_lock = c.moe.cache_pin;
+    // A discardable cache is never locked (the engine drops the pin where it can offer instead).
+    ai.cache_lock = c.moe.cache_pin && !(c.moe.cache_discard && s.hw.discardable_memory);
     ai.holdable_bytes = s.holdable;
     ai.margin_frac = margin_frac(s.hw, s.pol);
     ai.margin_min_bytes = s.pol.margin_min_bytes;
@@ -1981,6 +1982,8 @@ void settle_mapped_tables(Planning & s, const Allocation & alloc) {
 // when the caller set it.
 void settle_cache_lock(Planning & s, const Allocation & alloc) {
     RunConfig & c = s.p.config;
+    // A cache the machine can offer is not locked at all (ledger_inputs); there is no lock to settle.
+    if (c.moe.cache_discard && s.hw.discardable_memory) return;
     const bool cache_by_caller = s.req.is_pinned("cache-mb");
     const bool attempt = alloc.cache_locked_bytes > 0 || alloc.cache_lock_unverified;
     if (!s.req.is_pinned("cache-pin-fit") && !cache_by_caller) c.moe.cache_pin_fit = attempt;

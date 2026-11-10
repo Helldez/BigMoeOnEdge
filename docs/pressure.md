@@ -210,6 +210,19 @@ Byte-identity gates: `G6` proves the rebind changes not a single output byte aga
 reference, and `G7` proves the same with O_DIRECT off (the read may bypass the page cache or not; the
 rebound bytes are identical either way).
 
+## Drop, never swap
+
+A process can hand the kernel memory it may DROP instead of writing anywhere, and now the
+expert cache does (`--cache-discard`, [cache-sizing.md](cache-sizing.md)). The kernel then answers
+pressure the cheapest way there is: the cache shrinks, a dropped expert is read again from flash,
+and nothing is swapped, neither the cache nor what a pinned cache would have pushed out. Measured
+under 9 GB of real pressure on a 16 GB Mac: every volatile purgeable object emptied and 0 bytes
+swapped. On Linux, `MADV_FREE`'d pages are reclaimed like clean file pages, without being
+compressed into zram or written back from it. Measured on the test phone (Android 16, 4 KiB pages)
+under 3 GB of pressure: the kernel freed 99.4% of 1 GB offered (`pglazyfreed` +1019 MiB). Every page
+came back either intact or zero, none of them wrong. The budget follows what the kernel takes, downward
+only, for the reason the brake does not grow back.
+
 ## Portability of what remains
 
 The one runtime signal left is diagnostic: the dense-residency telemetry (`dense_resident_frac`),

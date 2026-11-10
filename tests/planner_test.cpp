@@ -1536,6 +1536,16 @@ int main() {
         no_fit_request.pinned = {"cache-pin-fit"};
         check(!plan_run(no_fit, unknown, model, no_fit_request).config.moe.cache_pin_fit,
               "ledger: an explicit no-fit is not replaced by the unknown-ceiling policy");
+        // A machine that can take memory back by dropping it gets an offered cache, never a locked one:
+        // nothing is charged to the lock, and a zero lock does not shape the cache.
+        HardwareProfile offers = zero_bound;
+        offers.discardable_memory = true;
+        const Plan offered_plan = plan_run(base_cfg(), offers, model, PlanRequest{});
+        const Plan no_pin_known = plan_run(no_pin, zero_bound, model, no_pin_request);
+        check(offered_plan.allocation.cache_locked_bytes == 0 && !offered_plan.allocation.cache_lock_unverified &&
+                  !offered_plan.config.moe.cache_pin_fit &&
+                  offered_plan.config.moe.cache_mb == no_pin_known.config.moe.cache_mb,
+              "ledger: a discardable cache is sized as ordinary memory and never locked");
         RunConfig own_unknown = base_cfg();
         own_unknown.moe.cache_mb = 1500;
         const Plan caller_unknown = plan_run(own_unknown, unknown, model, orq);
