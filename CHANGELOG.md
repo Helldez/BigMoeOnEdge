@@ -44,7 +44,9 @@ Semantic Versioning.
   - **Tests:** byte-identity gates G21a–d drop every offered entry at once (`--cache-discard-drop`,
     debug), on the serial and the overlapped two-wave paths and under a prompt admitted cold (a
     dropped entry a prompt reads again enters at the cold end, like that prompt's other misses), and
-    check that the re-read path ran.
+    check that the re-read path ran. They run on Windows too, where they found that an offered range
+    reads as not resident at once and is unreadable until reclaimed: the tail sweep there no longer
+    retires live entries, and a device prefill no longer copies an offered entry from the cache.
     ([cache-sizing.md](docs/cache-sizing.md))
 - **The expert cache evicts by decayed frequency** (`--cache-half-life`, 8 tokens by default; `0`
   is the LRU it replaces). Below one token's worth of experts LRU evicts what the next token reads

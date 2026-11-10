@@ -232,9 +232,13 @@ from the model file, a read and not a write. A drop also lowers the budget by th
 larger than the machine will let it keep settles where it is not refilled only to be dropped again.
 A dropped entry that nothing asks for again is found at the LRU tail, where the kernel's
 oldest-first reclaim leaves it. Each load retires dropped entries from the tail up to the first one
-still held, sampling one page of each with `mincore`, so the cache's resident figure is what RAM
-still holds. Correctness never rests on that sweep: a lookup always takes an entry back first. The
-policy is its own module, `moe/discardable_entries`, over a port that `platform_io` implements; its
+still held, sampling one page of each with `mincore` (`pio::vm_offered_held`), so the cache's resident
+figure is what RAM still holds. Where the platform cannot tell a kept offer from a dropped one without
+taking it back, the sweep stops at once: Windows unmaps an offered range the moment it is offered
+(out of the working set and `PAGE_NOACCESS` until reclaimed), so residency there would read every
+offer as dropped. Correctness never rests on that sweep: a lookup always takes an entry back first,
+and no other thread reads an offered entry (a device prefill copying from the cache reads it from the
+file instead). The policy is its own module, `moe/discardable_entries`, over a port that `platform_io` implements; its
 test runs it against a fake kernel.
 
 The budget follows what the kernel lets the cache keep, both ways (`DropFollowingBudget`, in the same
