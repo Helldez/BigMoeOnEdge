@@ -11,7 +11,7 @@
   import PlanProgress from '../components/plan/PlanProgress.svelte';
   import { api } from '../lib/api';
   import { commandLine, formatBytes, formatNum } from '../lib/format';
-  import { appliedChanges, diagnosticText, planDecisions, speedCheck, type AppliedChange } from '../lib/plan';
+  import { appliedChanges, diagnosticText, planDecisions, rateText, speedCheck, type AppliedChange } from '../lib/plan';
   import { href, settingHref } from '../lib/route';
   import { server } from '../stores/server.svelte';
 
@@ -179,16 +179,16 @@
         <div class="tile">
           <span class="muted k">Tokens</span>
           {#if check.measuredTokS !== null}
-            <span><span class="figure big">{formatNum(check.measuredTokS)}</span> <span class="figure muted">tok/s measured</span></span>
-            {#if check.predictedTokS !== null && check.deltaPct !== null}
+            <span><span class="figure big">{rateText(check.measuredTokS)}</span> <span class="figure muted">tok/s measured</span></span>
+            {#if check.predictedTokS !== null && check.deltaPct !== null && check.delta}
               {#if avail.from_last_load}
-                <span class="muted k"><span class="badge {check.deltaPct >= 0 ? 'ok' : 'warn'}">{check.deltaPct >= 0 ? '+' : ''}{check.deltaPct.toFixed(0)}%</span> against the {formatNum(check.predictedTokS)} expected</span>
+                <span class="muted k"><span class="badge {check.deltaPct >= 0 ? 'ok' : 'warn'}">{check.delta.badge}</span> {check.delta.against}</span>
               {:else}
-                <span class="muted k">{formatNum(check.predictedTokS)} tok/s expected under this plan</span>
+                <span class="muted k">{rateText(check.predictedTokS)} tok/s expected under this plan</span>
               {/if}
             {/if}
           {:else if check.predictedTokS !== null}
-            <span><span class="figure big">{formatNum(check.predictedTokS)}</span> <span class="figure muted">tok/s expected</span></span>
+            <span><span class="figure big">{rateText(check.predictedTokS)}</span> <span class="figure muted">tok/s expected</span></span>
             <span class="muted k">{avail.from_last_load ? 'Measured after the first answer' : 'Measured after a load'}</span>
           {:else}
             <span class="muted">No prediction</span>

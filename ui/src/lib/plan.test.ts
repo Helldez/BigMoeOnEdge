@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { appliedChanges, deviceTone, diagnosticText, groupDecisions, memorySegments, rateScale, speedCheck } from './plan';
+import { appliedChanges, deviceTone, diagnosticText, groupDecisions, memorySegments, rateScale, rateText, speedCheck } from './plan';
 import type { ParamSpec, PlanDecision, PlanDevice, PlanMemoryPool } from './types';
 
 describe('appliedChanges', () => {
@@ -120,6 +120,16 @@ describe('rateScale', () => {
   });
 });
 
+describe('rateText', () => {
+  it('keeps one decimal, and two significant digits where one would read 0.0', () => {
+    expect(rateText(1.7)).toBe('1.7');
+    expect(rateText(0.1)).toBe('0.1');
+    expect(rateText(0.0202)).toBe('0.020');
+    expect(rateText(0.0049)).toBe('0.0049');
+    expect(rateText(0)).toBe('-');
+  });
+});
+
 describe('speedCheck', () => {
   it('reads as bmoe-cli prints it', () => {
     const c = speedCheck({ s_per_token: 0.302, cache_hit_pct: 38 }, { s_per_token: 0.24, cache_hit_pct: 63, tokens: 50 });
@@ -128,10 +138,24 @@ describe('speedCheck', () => {
     expect(c.predictedHitPct).toBe(38);
     expect(c.measuredHitPct).toBe(63);
   });
+  it('says the comparison as a percentage while the two are close', () => {
+    const c = speedCheck({ s_per_token: 0.302 }, { s_per_token: 0.24, cache_hit_pct: -1, tokens: 50 });
+    expect(c.delta).toEqual({ badge: '+26%', against: 'against the 3.3 expected' });
+  });
+  it('says it as a ratio once they are far apart, and never rounds the expected rate to 0.0', () => {
+    // Measured on a phone: 1.7 tok/s against a prediction of ~0.02, which "+8314% against the 0.0
+    // expected" said badly.
+    const fast = speedCheck({ s_per_token: 49.5 }, { s_per_token: 0.588, cache_hit_pct: -1, tokens: 70 });
+    expect(fast.delta).toEqual({ badge: '84x', against: 'the 0.020 expected' });
+    const slow = speedCheck({ s_per_token: 0.25 }, { s_per_token: 0.8, cache_hit_pct: -1, tokens: 70 });
+    expect(slow.delta).toEqual({ badge: '0.31x', against: 'the 4.0 expected' });
+    expect(slow.deltaPct).toBeLessThan(0);
+  });
   it('has no measured figures before a turn, and no hit rate without a cache', () => {
     const c = speedCheck({ s_per_token: 0.5 }, undefined);
     expect(c.measuredTokS).toBeNull();
     expect(c.deltaPct).toBeNull();
+    expect(c.delta).toBeNull();
     expect(speedCheck(undefined, { s_per_token: 1, cache_hit_pct: -1, tokens: 1 }).measuredHitPct).toBeNull();
   });
 });
