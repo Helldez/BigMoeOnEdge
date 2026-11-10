@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [0.41.0] - 2026-11-10
+## [0.41.0] - 2026-11-11
 
 ### Added
 - **The graph width decided across loads, by this machine's own requests.** Where every layer is on
