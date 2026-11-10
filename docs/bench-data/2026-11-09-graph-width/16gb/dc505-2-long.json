@@ -1,0 +1,13 @@
+[
+ {
+  "engine": "dc505-2-long",
+  "prompt": "long",
+  "prompt_tokens": 9756,
+  "gen_tokens": 256,
+  "ttft_s": 21.96,
+  "prefill_tps": 444.3,
+  "decode_tps": 18.18,
+  "server_timings": null,
+  "text": "We need answer user's request: summarize document in five bullet points. Need produce final with five bullets. Need likely concise but enough. Need ensure five bullet points. Let's analyze document content.\n\nDocument about hardware planning --auto in bmoe-cli. Key points:\n- --auto opt-in plans hardw"
+ }
+]
