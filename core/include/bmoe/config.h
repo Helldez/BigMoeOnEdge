@@ -631,8 +631,13 @@ struct KnobTrialConfig {
     // Tokens per timed window. Small values are for tests: a window of a token or two times the
     // noise of one token.
     int window_tokens = 8;
+    // The device tier's side this load measures, decided across loads (MeasuredKnobs::device_cache_tps):
+    // 1 times the decode with a device expert cache armed, 0 without one, -1 times neither. Nothing
+    // switches: the load runs the side the plan gave it, and its decode rate is measured once the
+    // knobs above have their verdicts, so their switches are not in its windows.
+    int device_tier = -1;
 
-    bool enabled() const { return !threads.empty() || overlap; }
+    bool enabled() const { return !threads.empty() || overlap || device_tier >= 0; }
 
     static constexpr int threads_max_candidates = 2;
     static constexpr int window_tokens_max = 256;

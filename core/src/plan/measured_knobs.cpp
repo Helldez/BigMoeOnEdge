@@ -65,7 +65,11 @@ std::string format_measured_knobs(const std::vector<MeasuredKnobs> & records) {
         out += " overlap_incumbent=" + std::to_string(r.overlap_incumbent);
         std::snprintf(num, sizeof(num), "%.4f", r.overlap_gain);
         out += std::string(" overlap_gain=") + num;
-        out += " rounds=" + std::to_string(r.rounds) + "\n";
+        out += " rounds=" + std::to_string(r.rounds);
+        std::snprintf(num, sizeof(num), "%.3f", r.device_cache_tps);
+        out += std::string(" device_cache_tps=") + num;
+        std::snprintf(num, sizeof(num), "%.3f", r.no_device_cache_tps);
+        out += std::string(" no_device_cache_tps=") + num + "\n";
     }
     return out;
 }
@@ -121,6 +125,10 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
                 ok = as_double(r.overlap_gain);
             else if (k == "rounds")
                 ok = as_int(r.rounds);
+            else if (k == "device_cache_tps")
+                ok = as_double(r.device_cache_tps);
+            else if (k == "no_device_cache_tps")
+                ok = as_double(r.no_device_cache_tps);
             // An unknown key is a later engine's addition: read past it, the record still holds.
             if (!ok) {
                 error = "line " + std::to_string(n) + ": bad value for " + k;
@@ -131,7 +139,8 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
             error = "line " + std::to_string(n) + ": a record names its machine and engine";
             return false;
         }
-        if (r.overlap < -1 || r.overlap > 1 || r.overlap_incumbent < -1 || r.overlap_incumbent > 1 || r.threads < 0) {
+        if (r.overlap < -1 || r.overlap > 1 || r.overlap_incumbent < -1 || r.overlap_incumbent > 1 || r.threads < 0 ||
+            !(r.device_cache_tps >= 0.0) || !(r.no_device_cache_tps >= 0.0)) {
             error = "line " + std::to_string(n) + ": a value out of range";
             return false;
         }
@@ -143,7 +152,19 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
 void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKnobs & rec) {
     for (MeasuredKnobs & r : records)
         if (r.hardware == rec.hardware && r.engine == rec.engine) {
-            r = rec;
+            if (rec.threads > 0) {
+                r.threads = rec.threads;
+                r.threads_tried = rec.threads_tried;
+                r.threads_gain = rec.threads_gain;
+            }
+            if (rec.overlap >= 0) {
+                r.overlap = rec.overlap;
+                r.overlap_incumbent = rec.overlap_incumbent;
+                r.overlap_gain = rec.overlap_gain;
+            }
+            if (rec.threads > 0 || rec.overlap >= 0) r.rounds = rec.rounds;
+            if (rec.device_cache_tps > 0.0) r.device_cache_tps = rec.device_cache_tps;
+            if (rec.no_device_cache_tps > 0.0) r.no_device_cache_tps = rec.no_device_cache_tps;
             return;
         }
     records.push_back(rec);

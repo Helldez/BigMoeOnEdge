@@ -343,7 +343,7 @@ struct RoutingStore {
         return false;
     }
 
-    // This machine's verdict, replacing the one it had: the next --auto plan of the file starts from it.
+    // This machine's measurements, merged into what it kept: the next --auto plan of the file starts from them.
     void keep_knobs(MeasuredKnobs rec) const {
         if (knobs_path.empty() || hardware.empty() || rec.empty()) return;
         rec.hardware = hardware;
@@ -561,7 +561,7 @@ static int run_session_loop(const RunConfig & cfg,
             }
             // Likewise the knob trial's verdicts, each written as it comes in.
             const MeasuredKnobs mk = session->measured_knobs();
-            const int verdicts = (mk.threads > 0) + (mk.overlap >= 0);
+            const int verdicts = mk.verdicts();
             if (verdicts > knobs_kept) {
                 routing.keep_knobs(mk);
                 knobs_kept = verdicts;

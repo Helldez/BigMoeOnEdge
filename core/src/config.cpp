@@ -112,6 +112,8 @@ ValidationResult validate(const RunConfig & cfg) {
     // Lower bound only: 0 means "use the model default". The upper bound (<= the model's
     // real expert count) needs the loaded gguf, so it is deferred to run() where the model
     // is available — same rationale as the streaming checks that stay out of this pure path.
+    if (cfg.trial.device_tier < -1 || cfg.trial.device_tier > 1)
+        return fail("{trial-device-cache} is the device tier's side a load measures: -1 (none), 0 or 1");
     if (cfg.n_expert_used < 0) {
         return fail("{n-expert-used} cannot be negative (0 keeps the model's own)");
     }

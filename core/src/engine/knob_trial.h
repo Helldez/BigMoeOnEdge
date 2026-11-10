@@ -105,4 +105,44 @@ private:
     int last_abandoned_ = 0;
 };
 
+// The decode rate of the configuration a load runs, timed on the user's own answer as the trial
+// times its incumbent: once the cache has settled, as many windows as one knob's trial times
+// (2 * rounds + 1), and their median, so a window that met a stall elsewhere does not decide it. It
+// is what a placement decided across loads is judged by (MeasuredKnobs::device_cache_tps and
+// no_device_cache_tps): a load runs one side, the next the other, and the plan after keeps the
+// faster. Pure policy, fed one decode step at a time like KnobTrial.
+class RateProbe {
+public:
+    // `settle`: wait for the cache to settle first. `hits_visible`: false where the cache that warms
+    // up is one whose lookups the session does not count (a device's expert cache, filled inside
+    // llama.cpp). The wait is then the longest the trial makes, settle_windows_max windows, rather
+    // than none: a window of a cold device cache is a window of uploads, whatever it is meant to time.
+    RateProbe(bool settle, bool hits_visible, KnobTrialPolicy pol = {});
+
+    void record(double seconds, int tokens, uint64_t lookups, uint64_t hits);
+    void interrupt();
+
+    bool settling() const { return phase_ == Phase::Settle; }
+    bool done() const { return phase_ == Phase::Done; }
+    // The median window's tokens per second once done(), 0 before.
+    double tokens_per_second() const;
+    int windows() const { return (int) spt_.size(); }
+    int windows_wanted() const { return 2 * pol_.rounds + 1; }
+
+private:
+    enum class Phase { Settle, Measure, Done };
+    void close_window();
+
+    KnobTrialPolicy pol_;
+    bool hits_visible_ = true;
+    Phase phase_ = Phase::Settle;
+    std::vector<double> spt_;
+    int warm_left_ = 0;
+    int tokens_ = 0;
+    double seconds_ = 0.0;
+    uint64_t lookups_ = 0, hits_ = 0;
+    double last_hit_ = -1.0;
+    int settle_windows_ = 0;
+};
+
 } // namespace bmoe

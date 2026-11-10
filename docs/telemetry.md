@@ -595,11 +595,21 @@ machine and engine:
 ```
 bmoe-measured-knobs 1
 hardware=<16 hex> engine=<version> threads=<n> threads_tried=<incumbent,candidates> threads_gain=<f>
-  overlap=<-1|0|1> overlap_incumbent=<-1|0|1> overlap_gain=<f> rounds=<n>      (one line)
+  overlap=<-1|0|1> overlap_incumbent=<-1|0|1> overlap_gain=<f> rounds=<n>
+  device_cache_tps=<f> no_device_cache_tps=<f>                                 (one line)
 ```
 
-`threads=0` and `overlap=-1` mean not measured. A key the reader does not know is skipped, so a later
-engine may add one.
+`threads=0` and `overlap=-1` mean not measured, and so does a rate of 0. The two rates are the device
+tier's sides, each timed on a different load (`--trial-device-cache`), with these lines:
+
+```
+bmoe: knob trial: timing the decode <with|without> a device expert cache
+bmoe: knob trial: <f> tok/s <with|without> a device expert cache, the median of <n> windows
+```
+
+Keeping a record merges it into the one already kept for that machine and engine: each measurement it
+carries replaces that one, and the rest stay, so a load that measured one side does not lose the other.
+A key the reader does not know is skipped, so a later engine may add one.
 
 ## Session mode
 

@@ -1025,6 +1025,11 @@ prefill buffers nowhere to go). Where the device is not faster, a fact is missin
 fitter's placement stands and the plan says which. On a shared pool, or with the caller's own
 placement, it says nothing and changes nothing.
 
+Whether the cache then stays is measured, across loads, because a device faster at the experts is
+not enough: every miss crosses the link first. A load with nothing measured arms the cache and times
+its decode, the next runs the fitter's placement and times that, and the plan after keeps the faster,
+the cache holding within `min_backend_win` ([measured-planning.md](measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache)).
+
 The layers the fitter split (`price_layers_home`, [measured-planning.md](measured-planning.md#step-3-the-cost-of-a-device-measured-on-a-real-layer)):
 where the capacity fitter put the dense part of some layers on a device and left their experts on
 the host, each crosses twice a token. Those layers' dense matmuls on the device plus their crossings
