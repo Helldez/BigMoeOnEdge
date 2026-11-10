@@ -34,10 +34,11 @@ measured. Paste all of it. Done.
 - **No toolchain?** Every release attaches a prebuilt `bmoe-cli` (Linux x86_64 / aarch64, macOS
   arm64, Windows x86_64). Point the script at it: `BMOE_CLI=/path/to/bmoe-cli scripts/bench-report.sh model.gguf`.
 - **A GPU in the box?** `--auto` uses it only if the binary carries its backend. The release
-  archives carry Vulkan on Linux and Windows and Metal on macOS. For CUDA, build it in:
-  `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON && cmake --build build -j`; the
-  CUDA module lands beside `bmoe-cli` and loads like the shipped ones. The plan in the report says
-  which devices it used.
+  archives carry Vulkan on Linux and Windows and Metal on macOS. For an NVIDIA card on x86_64, also
+  download `bmoe-pack-cuda-<tag>-<target>` from the same release and extract it **inside** the
+  archive's folder, next to `bmoe-cli`. Extracted next to that folder, it is not loaded and the run
+  stays on the CPU. A build of your own with `-DGGML_CUDA=ON` puts the module there by itself. The
+  plan in the report says which devices it used.
 - **Binary will not start?** The archives carry one CPU module per instruction-set tier and pick the
   best one this machine runs, so no particular CPU is assumed. The Linux aarch64 archive needs
   glibc 2.38 or newer (Ubuntu 24.04); the x86_64 one runs from Ubuntu 22.04. Drop `BMOE_CLI=` and

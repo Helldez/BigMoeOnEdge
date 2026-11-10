@@ -546,6 +546,13 @@ Flash-Next streams from flash behind a 4.1 GB device cache and a 20.8 GB RAM cac
 18-29 tok/s with every build. #505's cache policy adds 18% to a long prompt's prefill (374 to
 441-444), alone and with #523.
 
+On 2026-11-09 a rented 12 GB card (RTX 3060 class) with a 120.7 GiB control group ran the published
+v0.40.2 Linux archive on Qwen3.8-Flash-Next IQ3_S: `--auto` kept the model resident, cached 5.3 GB
+of the experts used most on the card (68% hits) and decoded at **16.0-17.5 tok/s**. Without the CUDA
+pack, or with it extracted next to the archive's folder rather than inside it, the same release
+ran on the CPU at 1.6-2.9 tok/s
+([bench-data/2026-11-09-rented-12gb-cuda-pack](bench-data/2026-11-09-rented-12gb-cuda-pack/README.md)).
+
 On a rented 16 GB card with 30 GiB of RAM (a 6-core desktop CPU, NVMe at 2.2 GB/s), the class of a
 home PC with a mid-range card, Qwen3.8-Flash-Next Q2_0 streams: `--auto` put the dense part and a
 10 GB cache of the experts used most on the card (#429) and the rest behind a RAM cache

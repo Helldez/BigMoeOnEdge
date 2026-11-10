@@ -1,0 +1,38 @@
+Explain in detail how a modern CPU executes instructions out of order, covering the reorder buffer, register renaming and branch prediction.
+
+<think>
+The user wants a detailed explanation of out-of-order execution in modern CPUs. This is a deep computer architecture topic. I need to cover:
+
+1. The overall pipeline and why out-of-order execution exists
+2. The reorder buffer (ROB)
+3. Register renaming
+4. Branch prediction
+5. How these all work together
+
+Let me structure this clearly, going from the high-level motivation down to the specific mechanisms, and then show how they interconnect. I should be thorough but also make it accessible. Let me think about the best way to organize this.
+
+I'll structure it as:
+- Motivation: why in-order is insufficient
+- The overall out-of-order pipeline stages
+- Fetch and decode
+- Branch prediction (since it's at the front)
+- Register renaming (resolving dependencies)
+- The scheduler/reservation stations
+- Execution
+- The Reorder Buffer (commit stage)
+- How they all work together with a concrete example
+- Summary of the interplay
+
+Let me make this detailed, technically accurate, and well-organized.
+</think>
+
+# Out-of-Order Execution in Modern CPUs
+
+## Why In-Order Execution Isn't Enough
+
+In a classic in-order pipeline (fetch →
+
+generation: 256 tokens, 0.347 s/token (2.885 tok/s)
+compute: 98.7% CPU occupancy (0.6844 cpu-s/token over 2 threads), 0.00 major faults/token
+prefill: 25 tokens, 4.861 s (5.1 tok/s) | model load 74.798 s | TTFT 79.659 s
+mode: mmap. Expert streaming is OFF on a MoE model (qwen4exp, 512 experts), so this run is a baseline, not this engine: add --moe-stream --overlap to stream the routed experts from flash.
