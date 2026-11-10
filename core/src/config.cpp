@@ -313,6 +313,10 @@ ValidationResult validate(const RunConfig & cfg) {
             return fail("{cache-half-life} must be between 0 and " +
                         std::to_string(MoeStreamConfig::cache_freq_half_life_max));
         }
+        if (m.cache_discard_cost_pct < 0 || m.cache_discard_cost_pct > MoeStreamConfig::cache_discard_cost_max_pct) {
+            return fail("{cache-discard-cost} must be between 0 and " +
+                        std::to_string(MoeStreamConfig::cache_discard_cost_max_pct));
+        }
         if (m.routing_record_tokens < 0 || m.routing_record_tokens > MoeStreamConfig::routing_record_tokens_max) {
             return fail("{routing-record} must be between 0 and " +
                         std::to_string(MoeStreamConfig::routing_record_tokens_max));

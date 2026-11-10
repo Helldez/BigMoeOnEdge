@@ -61,6 +61,8 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     discard_wanted_ = cfg.cache_discard;
     discard_drop_ = cfg.cache_discard_drop;
     discard_after_ = (uint32_t) std::max(0, cfg.route_ahead);
+    discard_cost_pct_ = cfg.cache_discard_cost_pct;
+    discard_leave_ = (size_t) std::max(0, cfg.cache_floor_mb) * 1024ull * 1024ull;
     if (discard_wanted_ && platform_span_ops().supported()) pin_ = false;
     overlap_ = cfg.overlap;
     two_wave_ = cfg.io_two_wave;
@@ -235,6 +237,11 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
                            if (entry_body(id, p, b0, b1)) fn(Span{(void *) b0, (size_t) (b1 - b0)});
                        }
                    });
+        disc_.set_cost_rule(discard_cost_pct_ >= MoeStreamConfig::cache_discard_cost_max_pct
+                                ? -1.0
+                                : (double) discard_cost_pct_ / 100.0,
+                            (uint32_t) n_layer_);
+        shortfall_gen_ = 0;
         cprev_.assign(n_entry, -1);
         cnext_.assign(n_entry, -1);
         cspec_.assign(n_entry, 0);
@@ -1229,7 +1236,19 @@ void ExpertStreamSource::regrow_for_load() {
 // One load's discard bookkeeping: offer what left the window, retire what the kernel took.
 void ExpertStreamSource::settle_offers() {
     if (!disc_.enabled() || cache_max_ == 0) return;
-    disc_.offer_cold(cgen_, [this](int32_t id) { return cvalid_[id] != 0; });
+    // Pressure-only offering needs to know how short the system is: once per pass of the stack, as
+    // a token's worth of loads changes it no faster and the sample is a system call. What the cache
+    // was told to leave free is the line; 0 where the platform does not measure (nothing offered).
+    if (disc_.pressure_only() && cgen_ - shortfall_gen_ >= (uint32_t) n_layer_) {
+        shortfall_gen_ = cgen_;
+        const uint64_t avail = pio::mem_available_bytes();
+        disc_.set_shortfall(avail > 0 && avail < discard_leave_ ? (size_t) (discard_leave_ - avail) : 0);
+    }
+    if (disc_.offer_cold(cgen_, [this](int32_t id) { return cvalid_[id] != 0; }, priced_load_))
+        log_printf(LogLevel::Info,
+                   "discardable cache: handing experts over and back took %.0f%% of the time (cap %d%%); "
+                   "from here they are handed over only when available memory falls under %zu MiB",
+                   disc_.cost_share() * 100.0, discard_cost_pct_, discard_leave_ >> 20);
     retire_dropped_tail();
 }
 
@@ -1388,6 +1407,9 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
     cgen_++;
     // A wide graph is a prefill; a decode or a speculative verify window is far narrower.
     cold_batch_ = prefill_cold_ && cache_max_ && top_k_ > 0 && n_ids >= top_k_ * cold_min_tokens_;
+    // What the discardable cache prices its mechanism on: a decode-wide load, one token or a verify
+    // window. A prompt of any length cycles entries faster than decode ever does.
+    priced_load_ = top_k_ > 0 && n_ids <= top_k_ * (1 + SpecConfig::draft_max_limit);
     jobs_.clear();
 
     // Cache-management work (vm commit + LRU bookkeeping, then eviction below) is timed into
@@ -1540,6 +1562,9 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
     cgen_++;
     // A wide graph is a prefill; a decode or a speculative verify window is far narrower.
     cold_batch_ = prefill_cold_ && cache_max_ && top_k_ > 0 && n_ids >= top_k_ * cold_min_tokens_;
+    // What the discardable cache prices its mechanism on: a decode-wide load, one token or a verify
+    // window. A prompt of any length cycles entries faster than decode ever does.
+    priced_load_ = top_k_ > 0 && n_ids <= top_k_ * (1 + SpecConfig::draft_max_limit);
     jobs_.clear();
     settle_offers();
 
@@ -1836,6 +1861,8 @@ IExpertSource::Stats ExpertStreamSource::stats() const {
     s.cache_pin_refused_bytes = (uint64_t) pin_refused_at_;
     s.discarded = disc_.lost_on_lookup() + swept_;
     s.discarded_on_hit = disc_.lost_on_lookup();
+    s.discard_cost_share = disc_.cost_share();
+    s.discard_pressure_only = disc_.pressure_only();
     s.dense_pin_refused_bytes = dense_.pin_refused_bytes();
     s.o_direct = effective_direct_;
     s.evictions = evictions_;

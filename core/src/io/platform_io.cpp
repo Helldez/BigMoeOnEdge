@@ -162,14 +162,13 @@ const OfferApi & offer_api() {
 }
 } // namespace
 bool vm_discard_supported() {
-    // The API exists, but it does not pay here: OfferVirtualMemory takes the range out of the working
-    // set and makes it PAGE_NOACCESS at once, kept or not, and the offer and the reclaim each cost
-    // microseconds per page (about 1 ms per 1.7 MiB entry, twice that with the decode threads busy),
-    // paid on every reuse of an offered entry. Measured on a 15 GB Windows 11 PC with
-    // Qwen3.6-35B-A3B Q4_K_M: decode 2.2-2.9 tok/s offered against 3.7-4.8 with an ordinary cache, the
-    // same bytes and hits, the whole gap in cache management. Until an offer that keeps its pages
-    // mapped is found, the cache here is ordinary memory, as it was before the discardable cache.
-    return false;
+    // The mechanism is dear here: OfferVirtualMemory takes the range out of the working set and makes
+    // it PAGE_NOACCESS at once, kept or not, and the offer and the reclaim each cost microseconds per
+    // page (about 1 ms per 1.7 MiB entry, twice that with the decode threads busy). Paid on every
+    // reuse, that was 40% of decode on a Windows 11 PC. It is still offered: what it costs is the
+    // cache policy's to price (DiscardableEntries::set_cost_rule), which measures it and hands
+    // entries over only under pressure once it costs more than its share.
+    return offer_api().offer && offer_api().reclaim;
 }
 bool vm_commit_discardable(void * p, size_t sz) {
     return vm_commit(p, sz);

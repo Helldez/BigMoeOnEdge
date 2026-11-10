@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Changed
+- **The discardable expert cache prices itself, and is on again on Windows** (`--cache-discard-cost`,
+  default 15%).
+  - **The problem:** offering an expert ahead of pressure is insurance, and its premium is an offer
+    and a reclaim on every reuse when the system takes nothing. That premium depends on the machine,
+    not on the policy: measured per 1.7 MiB entry, about 34 µs on the test phone and 1-2 ms on a
+    Windows 11 PC, where `OfferVirtualMemory` unmaps the range at once and both calls work page by
+    page. In decode that is about 6-7% on the phone and 40% on the PC, so 0.41.0 turned the cache
+    off there.
+  - **The fix:** the cache times its own offers and reclaims against the wall time of the decode
+    they run in, over windows of 8 tokens and at least 64 round trips. A prompt is never priced: its
+    wide loads cycle entries far faster than any token, and pricing them read 21-23% on the phone.
+    Once a window costs more than the cap, offering turns pressure-only
+    for the rest of the run: nothing is offered until available memory falls under the cache's
+    RAM-to-leave (`--cache-floor-mb`), and then only the coldest entries, as many bytes as it is
+    short. No platform is named anywhere in the rule; Windows offers again and the price decides.
+    `--cache-discard-cost 0` is pressure-only from the start, `100` never prices.
+  - **What changes for users:** the summary says what handing experts over and back cost, and
+    whether that kept the cache offering ahead of pressure.
+
 ## [0.41.0] - 2026-11-10
 
 ### Added

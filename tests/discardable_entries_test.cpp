@@ -1,5 +1,6 @@
 // The discardable-entries policy against a fake kernel: which entries are offered and when, what a
-// lookup finds after a drop, and when a drop is measurable. No platform, no model, no timing.
+// lookup finds after a drop, when a drop is measurable, and when offering ahead is priced away.
+// No platform, no model; time is a fake clock the fake kernel advances.
 #include "discardable_entries.h"
 
 #include <cstdio>
@@ -120,6 +121,141 @@ int main() {
         d.used(1, 0);
         d.offer_cold(5, all_valid);
         check(!d.enabled() && !d.offered(1) && d.take_back(1), "without a mechanism every call is inert");
+    }
+    {
+        // The price of offering ahead: a fake clock the fake kernel advances, as a slow or a cheap
+        // offer/reclaim would, with `step` ns of other work between rounds.
+        struct Timed : FakeKernel {
+            int64_t t = 0, cost = 0;
+            bool offer(Span s) override {
+                t += cost;
+                return FakeKernel::offer(s);
+            }
+            bool reclaim(Span s) override {
+                t += cost;
+                return FakeKernel::reclaim(s);
+            }
+        };
+        // One round per generation: entry id%16 used, the entry used offer_after (1) before offered
+        // and taken back, so every round is a kept round trip.
+        const auto rounds = [&](DiscardableEntries & d, Timed & k, int64_t step, int n, uint32_t & gen,
+                                bool priced = true) {
+            bool moved = false;
+            for (int i = 0; i < n; ++i, ++gen) {
+                const int32_t id = (int32_t) (gen % 16);
+                d.used(id, gen);
+                moved = d.offer_cold(gen, all_valid, priced) || moved;
+                const int32_t back = (int32_t) ((gen + 15) % 16);
+                if (d.offered(back)) d.take_back(back);
+                k.t += step;
+            }
+            return moved;
+        };
+        const long long w = DiscardableEntries::price_window_round_trips;
+        {
+            Timed k;
+            k.cost = 1; // cheap: 4 ns of mechanism per round against 1000 of other work
+            DiscardableEntries d;
+            d.init(16, 1, false, &k, two_spans());
+            d.set_cost_rule(0.05, 1, [&] { return k.t; });
+            uint32_t gen = 0;
+            rounds(d, k, 1000, (int) (4 * w), gen);
+            check(!d.pressure_only() && d.cost_share() >= 0 && d.cost_share() < 0.05,
+                  "a cheap mechanism is measured and keeps offering ahead");
+        }
+        {
+            Timed k;
+            k.cost = 200; // dear: 800 ns per round against 1000
+            DiscardableEntries d;
+            d.init(16, 1, false, &k, two_spans());
+            d.set_cost_rule(0.05, 1, [&] { return k.t; });
+            uint32_t gen = 0;
+            check(!rounds(d, k, 1000, (int) w - 2, gen) && !d.pressure_only(),
+                  "nothing is decided before a window of round trips");
+            check(rounds(d, k, 1000, 4, gen) && d.pressure_only() && d.cost_share() > 0.05,
+                  "a dear mechanism turns offering pressure-only, said once");
+            const int offers = k.offers;
+            check(!rounds(d, k, 1000, 32, gen) && k.offers == offers && d.offered_bytes() == 0,
+                  "pressure-only offers nothing while the system is not short");
+            d.set_shortfall(3); // each entry offers two 1-byte spans: two entries cover it
+            rounds(d, k, 1000, 1, gen);
+            check(d.offered_bytes() >= 3 && d.offered_bytes() <= 4, "a shortfall is covered, and no more");
+            // The last round used entry (gen+15)%16; the oldest live use is entry gen%16.
+            check(d.offered((int32_t) (gen % 16)) && !d.offered((int32_t) ((gen + 15) % 16)),
+                  "the coldest entries go first, the newest stays ordinary");
+            d.set_shortfall(0);
+        }
+        {
+            // A prompt cycles entries far faster than decode: dear there, cheap in decode. Only the
+            // decode is judged (measured on the phone: 21-23% when the prompt was priced, ~6% not).
+            Timed k;
+            k.cost = 200;
+            DiscardableEntries d;
+            d.init(16, 1, false, &k, two_spans());
+            d.set_cost_rule(0.05, 1, [&] { return k.t; });
+            uint32_t gen = 0;
+            rounds(d, k, 10, (int) (4 * w), gen, false);
+            check(!d.pressure_only() && d.cost_share() < 0, "an unpriced load (a prompt) is never judged");
+            k.cost = 1;
+            rounds(d, k, 1000, (int) (4 * w), gen);
+            check(!d.pressure_only() && d.cost_share() >= 0 && d.cost_share() < 0.05,
+                  "and the decode after it is judged on its own cost");
+        }
+        {
+            Timed k;
+            DiscardableEntries d;
+            d.init(16, 1, false, &k, two_spans());
+            d.set_cost_rule(0.05, 4 * (uint32_t) w, [&] { return k.t; });
+            k.cost = 200;
+            uint32_t gen = 0;
+            rounds(d, k, 1000, (int) (2 * w), gen);
+            check(!d.pressure_only(), "nothing is judged before one token's loads, whatever the round trips");
+            rounds(d, k, 1000, (int) (3 * w), gen);
+            check(d.pressure_only(), "a plain overrun is judged after one token");
+        }
+        {
+            // Near the cap (8% against 5%): judged only once the window spans its tokens.
+            Timed k;
+            k.cost = 22; // 88 ns per round against 1000 of other work
+            DiscardableEntries d;
+            d.init(16, 1, false, &k, two_spans());
+            const uint32_t per_token = 16;
+            d.set_cost_rule(0.05, per_token, [&] { return k.t; });
+            uint32_t gen = 0;
+            rounds(d, k, 1000, 80, gen);
+            check(!d.pressure_only() && d.cost_share() < 0, "a share near the cap waits for the whole window");
+            rounds(d, k, 1000, (int) (per_token * DiscardableEntries::price_window_tokens), gen);
+            check(d.pressure_only() && d.cost_share() > 0.05 && d.cost_share() < 0.1, "and is judged on it");
+        }
+        {
+            Timed k;
+            k.cost = 1000000; // ruinous, but the gates' drop-before-reclaim must still reach every offer
+            DiscardableEntries d;
+            d.init(16, 1, true, &k, two_spans());
+            d.set_cost_rule(0.05, 1, [&] { return k.t; });
+            uint32_t gen = 0;
+            rounds(d, k, 1000, (int) (2 * w), gen);
+            check(!d.pressure_only(), "drop-before-reclaim is never priced away");
+        }
+        {
+            Timed k;
+            DiscardableEntries d;
+            d.init(16, 1, false, &k, two_spans());
+            d.set_cost_rule(0.0, 1, [&] { return k.t; });
+            uint32_t gen = 0;
+            rounds(d, k, 1000, 8, gen);
+            check(d.pressure_only() && k.offers == 0, "a zero share is pressure-only from the start");
+        }
+        {
+            Timed k;
+            k.cost = 1000000;
+            DiscardableEntries d;
+            d.init(16, 1, false, &k, two_spans());
+            d.set_cost_rule(-1.0, 1, [&] { return k.t; });
+            uint32_t gen = 0;
+            rounds(d, k, 1000, (int) (2 * w), gen);
+            check(!d.pressure_only() && d.cost_share() < 0, "an unpriced rule always offers ahead");
+        }
     }
     {
         DropFollowingBudget b;
