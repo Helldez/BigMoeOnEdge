@@ -656,6 +656,24 @@ int main(int argc, char ** argv) {
             std::printf("[PASS] G21a %lld lookups found their entry dropped and read it again\n",
                         rd.summary.cache_discarded_on_hit);
         }
+        // G21d - #505's cold admission and the discard together: a dropped entry looked up by a wide
+        // graph is that graph's miss, admitted at the cold end like the others, so a prompt still
+        // cannot flush what decode reuses, and the re-read is still byte-identical.
+        RunConfig coldrop = dropall;
+        coldrop.moe.cache_prefill_cold = true;
+        coldrop.moe.test_prefill_cold_min_tokens = 2;
+        const RunResult rc = run(coldrop);
+        if (!rc) {
+            std::fprintf(stderr, "G21d run failed: %s\n", rc.error.c_str());
+            return 2;
+        }
+        fails += check("G21d discardable cache dropped, prompt admitted cold == streaming(cache off)", s_s0,
+                       rc.generated_text);
+        if (rc.summary.cache_discarded_on_hit == 0 || rc.summary.cache_cold_admits == 0) {
+            std::printf("[FAIL] G21d the cold re-read path never ran (%lld dropped hits, %lld cold admits)\n",
+                        rc.summary.cache_discarded_on_hit, rc.summary.cache_cold_admits);
+            ++fails;
+        }
     }
 
     if (!have_hook) {

@@ -198,7 +198,7 @@ struct RunSummary {
     // claiming its reads are useful is doing it here.
     long long cache_evictions = 0;
     long long cache_rereads = 0;
-    long long cache_cold_admits = 0; // misses a prompt admitted cold (MoeStreamConfig::cache_prefill_cold)
+    long long cache_cold_admits = 0;      // misses a prompt admitted cold (MoeStreamConfig::cache_prefill_cold)
     long long cache_discarded = 0;        // cached experts the system dropped under memory pressure
     long long cache_discarded_on_hit = 0; // of those, the ones a lookup found dropped and read again
 

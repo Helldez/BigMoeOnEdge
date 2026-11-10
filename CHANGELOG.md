@@ -4,7 +4,69 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.41.0] - 2026-11-10
+
+### Added
+- **The graph width decided across loads, by this machine's own requests.** Where every layer is on
+  a card, the experts do not all fit and the card's compute buffers are past its share, a narrower
+  graph gives the experts more of the card, and prefills a long prompt in more passes. On two 24 GB
+  cards with GLM-4.5-Air the narrow graph decoded 19.4 tok/s against 14.2, and the wide one prefilled
+  a 9.5k-token prompt several times faster. A load times the full width and the next the narrow one,
+  each its decode, its prefill of the prompts longer than the narrow width, and the requests it
+  served. The plan after keeps the side faster on those requests, past the planner's 10% margin.
+  Parameters `--trial-width` and `--trial-width-narrow` (set by the plan). Gate G24c.
+- **The device prefill reads what the expert cache holds** (`--no-prefill-from-cache` turns it off):
+  an expert the cache has is copied from RAM into the device's slot instead of read from flash again.
+  On the Mac's GPU, four 4k-token documents read 297 → 178 GiB from flash and prefilled in 31.9-33.2 s
+  against 50.4-73.7 s, the same text. New counter `prefill_dev_cache_mib` in `BMOE_DONE`,
+  `BMOE_DECIDE` and the CSV trailer ([npu-prefill.md](docs/npu-prefill.md)).
+
+### Changed
+- **The expert cache no longer makes the machine write swap.**
+  - **The problem:** a pinned cache cannot be swapped, so under memory pressure the kernel swaps
+    every other process instead. On a 16 GB Mac, `--auto` pinned about 9 GB and the SSD took
+    0.6–1.8 GB of swap writes per 512-token answer, against 0.13 GB in 10 idle minutes. Flash wears
+    with writes.
+  - **The fix:** where the platform lets a process offer memory for the kernel to drop rather than
+    swap (Darwin purgeable objects, Linux and Android `MADV_FREE`, Windows `OfferVirtualMemory`),
+    the cache is offered instead of pinned. An expert no layer used in the last pass is handed over.
+    A lookup takes it back first, and reads it again from the model file if the kernel dropped it.
+    Each drop also lowers the budget, so a cache larger than the machine will let it keep settles
+    instead of churning. Once a pass of the model goes by without a drop, the budget grows back,
+    only as fast as misses need room and never past the planned budget. A passing pressure spike
+    therefore does not leave a long session slow.
+  - **Measured:** same machine, alternating arms. Swap writes went to 0 in every run, and decode was
+    18.9 / 17.9 / 14.9 tok/s against 16.2 / 14.5 / 16.8 pinned.
+  - **What changes for users:** on by default; `--no-cache-discard` restores the pinned cache.
+    `--auto` no longer sizes an offered cache to the lockable total. The run summary and the
+    server's `done` event report `cache_discarded`: how many experts the system dropped. A dropped
+    expert also leaves the cache's accounting, so `resident` is what RAM still holds.
+  - **Tests:** byte-identity gates G21a–d drop every offered entry at once (`--cache-discard-drop`,
+    debug), on the serial and the overlapped two-wave paths and under a prompt admitted cold (a
+    dropped entry a prompt reads again enters at the cold end, like that prompt's other misses), and
+    check that the re-read path ran.
+    ([cache-sizing.md](docs/cache-sizing.md))
+- **The expert cache evicts by decayed frequency** (`--cache-half-life`, 8 tokens by default; `0`
+  is the LRU it replaces). Below one token's worth of experts LRU evicts what the next token reads
+  first and hits nothing; the new default keeps what recent tokens shared. On a 16 GB Mac with
+  Qwen3.6-35B-A3B and a 440 MiB cache: 0 % → 27 % hit, 6.1 → 8.5 tok/s, the same text. Above that it
+  reads 1 to 14 % less in replays of five models' recorded routing, and 4 to 5 % less measured. The
+  planner prices the cache with the same policy, so `--auto` sizes the cache it will run
+  ([cache-sizing.md](docs/cache-sizing.md#the-eviction-policy)).
+- **A long prompt prefilled on the CPU no longer flushes the cache.** From 32 tokens wide, a graph's
+  misses enter at the end the cache drops first (`--no-cache-prefill-cold` restores the old
+  admission): four 4k-token documents on the Mac read 423 → 211 GiB, prefill 17 % faster, the same
+  text.
+- **The byte-identity gates run in the Windows CI job** (#234), which only compiled before: MSVC,
+  the overlap gates with the expert-ready hook required, as on Linux. The two daylight-saving
+  scheduler checks stay POSIX's, since the Windows C runtime reads no zone names from `TZ`.
+- **The README shows opencode's settings first.** Under "Coding agents", `README.md` and its five
+  translations open with an `opencode.json` that adds the server as an OpenAI-compatible provider,
+  with the 32768-token context the paragraph above it names, then Claude Code and Codex CLI. Before,
+  opencode had one sentence after the other two's settings.
+- **The tour plays in the README.** The "Watch the tour" link pointed at an MP4 release asset, which a
+  browser downloads instead of playing; the video is now a GitHub attachment that plays in the page,
+  under the device GIFs, in `README.md` and its five translations (which had no link to it).
 
 ### Fixed
 - **The planner no longer refuses a prefill device for a cache that is already off** (#508). It
@@ -33,71 +95,6 @@ Semantic Versioning.
   which Windows refuses, so the broken file stayed and was read again on every start.
 - **A client's settings file is shown in the platform's own separators** (`server/connect.cpp`):
   on Windows the path read `...\home\.c/config.toml`.
-
-### Changed
-- **The byte-identity gates run in the Windows CI job** (#234), which only compiled before: MSVC,
-  the overlap gates with the expert-ready hook required, as on Linux. The two daylight-saving
-  scheduler checks stay POSIX's, since the Windows C runtime reads no zone names from `TZ`.
-
-### Documentation
-- One planner run on Windows, in `docs/hardware-planning.md`, the device probed in a process of its
-  own on an integrated GPU among it, and the roadmap, platform and
-  backend pages say what Windows still owes.
-### Changed
-- **The expert cache no longer makes the machine write swap.**
-  - **The problem:** a pinned cache cannot be swapped, so under memory pressure the kernel swaps
-    every other process instead. On a 16 GB Mac, `--auto` pinned about 9 GB and the SSD took
-    0.6–1.8 GB of swap writes per 512-token answer, against 0.13 GB in 10 idle minutes. Flash wears
-    with writes.
-  - **The fix:** where the platform lets a process offer memory for the kernel to drop rather than
-    swap (Darwin purgeable objects, Linux and Android `MADV_FREE`, Windows `OfferVirtualMemory`),
-    the cache is offered instead of pinned. An expert no layer used in the last pass is handed over.
-    A lookup takes it back first, and reads it again from the model file if the kernel dropped it.
-    Each drop also lowers the budget, so a cache larger than the machine will let it keep settles
-    instead of churning. Once a pass of the model goes by without a drop, the budget grows back,
-    only as fast as misses need room and never past the planned budget. A passing pressure spike
-    therefore does not leave a long session slow.
-  - **Measured:** same machine, alternating arms. Swap writes went to 0 in every run, and decode was
-    18.9 / 17.9 / 14.9 tok/s against 16.2 / 14.5 / 16.8 pinned.
-  - **What changes for users:** on by default; `--no-cache-discard` restores the pinned cache.
-    `--auto` no longer sizes an offered cache to the lockable total. The run summary and the
-    server's `done` event report `cache_discarded`: how many experts the system dropped. A dropped
-    expert also leaves the cache's accounting, so `resident` is what RAM still holds.
-  - **Tests:** byte-identity gates G21a–c drop every offered entry at once (`--cache-discard-drop`,
-    debug), on the serial and the overlapped two-wave paths, and check that the re-read path ran.
-    ([cache-sizing.md](docs/cache-sizing.md))
-### Changed
-- **The README shows opencode's settings first.** Under "Coding agents", `README.md` and its five
-  translations open with an `opencode.json` that adds the server as an OpenAI-compatible provider,
-  with the 32768-token context the paragraph above it names, then Claude Code and Codex CLI. Before,
-  opencode had one sentence after the other two's settings.
-- **The tour plays in the README.** The "Watch the tour" link pointed at an MP4 release asset, which a
-  browser downloads instead of playing; the video is now a GitHub attachment that plays in the page,
-  under the device GIFs, in `README.md` and its five translations (which had no link to it).
-
-## [0.40.3] - 2026-11-09
-
-### Fixed
-- **The desktop app starts again on Windows.** 0.40.2 loaded the notification-area icon with
-  `LoadIconMetric`, which binds comctl32's ordinal 380, present only in the comctl32 version a
-  process gets through a manifest; `bmoe-desktop.exe` carries none, so Windows refused to start it
-  ("ordinal 380 could not be located"). The icon now comes through user32 at the same small size.
-  CI and the release smoke now start `bmoe-desktop.exe` on Windows, so a missing import fails
-  there rather than on a user's machine.
-
-## [Unreleased]
-
-### Added
-- **The graph width decided across loads, by this machine's own requests.** Where every layer is on
-  a card, the experts do not all fit and the card's compute buffers are past its share, a narrower
-  graph gives the experts more of the card, and prefills a long prompt in more passes. On two 24 GB
-  cards with GLM-4.5-Air the narrow graph decoded 19.4 tok/s against 14.2, and the wide one prefilled
-  a 9.5k-token prompt several times faster. A load times the full width and the next the narrow one,
-  each its decode, its prefill of the prompts longer than the narrow width, and the requests it
-  served. The plan after keeps the side faster on those requests, past the planner's 10% margin.
-  Parameters `--trial-width` and `--trial-width-narrow` (set by the plan). Gate G24c.
-
-### Fixed
 - **A device is judged against the exact result, not against the host.** The real-layer probe
   refused a device whose expert matmul differed from the host's by more than llama.cpp's NMSE bound,
   but two backends round differently, each quantizing the activations its own way. On a two-card
@@ -138,19 +135,32 @@ Semantic Versioning.
   Measurements: `docs/bench-data/2026-11-09-graph-width/` (12, 16 and 24 GB cards, #505 beside it on
   the 16 GB one). The plan also says why the device tier armed no
   cache when a dense part is off the card; before, it said nothing.
-### Changed
+
+### Documentation
+- One planner run on Windows, in `docs/hardware-planning.md`, the device probed in a process of its
+  own on an integrated GPU among it, and the roadmap, platform and
+  backend pages say what Windows still owes.
 - **A 12 GB card run of the 0.40.2 release, with and without the CUDA pack**
   (`docs/bench-data/2026-11-09-rented-12gb-cuda-pack/`). Qwen3.8-Flash-Next IQ3_S on an RTX 3060
   class card with 128 GB of RAM: 16.0-17.5 tok/s with the pack extracted inside `bmoe-cli`'s folder.
   Without the pack, or with it extracted next to that folder, the run stays on the CPU at
   1.6-2.9 tok/s, which is what a user reported. `docs/platforms.md` now says where the pack goes,
   and the README's speed table has a 12 GB card row in every language.
-### Changed
 - **The machines rented on 2026-11-09/10 in `docs/community-benchmarks.md`**: a 12 GB card (with and
   without the CUDA pack, and the server before and after #523), a 16 GB card with 23 GB of RAM
   streaming, a 24 GB card, a 32 GB card, and two two-card workstations with GLM-4.7 and GLM-4.5-Air.
   Each row names the build it measured. The GLM runs' plans, records and timings are in
   `docs/bench-data/2026-11-10-glm-two-cards/`.
+
+## [0.40.3] - 2026-11-09
+
+### Fixed
+- **The desktop app starts again on Windows.** 0.40.2 loaded the notification-area icon with
+  `LoadIconMetric`, which binds comctl32's ordinal 380, present only in the comctl32 version a
+  process gets through a manifest; `bmoe-desktop.exe` carries none, so Windows refused to start it
+  ("ordinal 380 could not be located"). The icon now comes through user32 at the same small size.
+  CI and the release smoke now start `bmoe-desktop.exe` on Windows, so a missing import fails
+  there rather than on a user's machine.
 
 ## [0.40.2] - 2026-11-08
 
@@ -204,25 +214,6 @@ Semantic Versioning.
   next load. One PNG per language in `docs/assets/diagrams/`, drawn by `scripts/plan-diagram.py`
   (macOS renders them with Quick Look; elsewhere it writes the SVGs). Image input moves to the end of
   the "What it does" list, and the five translations gain it: they had not listed it.
-### Changed
-- **The expert cache evicts by decayed frequency** (`--cache-half-life`, 8 tokens by default; `0`
-  is the LRU it replaces). Below one token's worth of experts LRU evicts what the next token reads
-  first and hits nothing; the new default keeps what recent tokens shared. On a 16 GB Mac with
-  Qwen3.6-35B-A3B and a 440 MiB cache: 0 % → 27 % hit, 6.1 → 8.5 tok/s, the same text. Above that it
-  reads 1 to 14 % less in replays of five models' recorded routing, and 4 to 5 % less measured. The
-  planner prices the cache with the same policy, so `--auto` sizes the cache it will run
-  ([cache-sizing.md](docs/cache-sizing.md#the-eviction-policy)).
-- **A long prompt prefilled on the CPU no longer flushes the cache.** From 32 tokens wide, a graph's
-  misses enter at the end the cache drops first (`--no-cache-prefill-cold` restores the old
-  admission): four 4k-token documents on the Mac read 423 → 211 GiB, prefill 17 % faster, the same
-  text.
-
-### Added
-- **The device prefill reads what the expert cache holds** (`--no-prefill-from-cache` turns it off):
-  an expert the cache has is copied from RAM into the device's slot instead of read from flash again.
-  On the Mac's GPU, four 4k-token documents read 297 → 178 GiB from flash and prefilled in 31.9-33.2 s
-  against 50.4-73.7 s, the same text. New counter `prefill_dev_cache_mib` in `BMOE_DONE`,
-  `BMOE_DECIDE` and the CSV trailer ([npu-prefill.md](docs/npu-prefill.md)).
 
 ### Fixed
 - **Garbled answers and a stall with `devices=all` on a phone.** With every backend registered and
