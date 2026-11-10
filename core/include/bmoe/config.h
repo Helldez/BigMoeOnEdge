@@ -118,6 +118,19 @@ struct MoeStreamConfig {
     // when it sized the cache to the lockable total; a hand-set budget is never shrunk unasked.
     bool cache_pin_fit = false;
 
+    // Let the system DROP cached experts under memory pressure instead of writing anything to the
+    // drive. Anonymous memory that pressure reaches is swapped (a write to flash), and a pinned
+    // cache makes the kernel swap every other process instead: measured on a 16 GB machine, ~9 GB
+    // pinned cost 3.3 GB of swap writes in 7 minutes of decode, against 0.13 GB idle. An entry no
+    // layer used in the last pass is offered to the kernel (purgeable / MADV_FREE / Offer), which
+    // reclaims it before it compresses or swaps anything; a hit on a dropped entry reads it again,
+    // from flash, which reads only. Supersedes cache_pin where the platform supports it: a locked
+    // page cannot be dropped, and locking is what pushed everything else out.
+    bool cache_discard = true;
+    // Debug: drop every entry the moment it is offered, as if pressure took it at once, so each
+    // cold hit pays the re-read. What the byte-identity gate runs to prove the re-read path.
+    bool cache_discard_drop = false;
+
     // Halve the expert cache when the system takes it back mid-run: a token whose compute stalls
     // against this machine's own reference, confirmed by a sample of the cache's pages that are no
     // longer in RAM. Shrinks only, never under one token's cycle, and never grows back within the run

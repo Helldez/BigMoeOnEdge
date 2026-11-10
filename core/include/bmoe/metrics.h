@@ -195,6 +195,7 @@ struct RunSummary {
     // claiming its reads are useful is doing it here.
     long long cache_evictions = 0;
     long long cache_rereads = 0;
+    long long cache_discarded = 0; // cached experts the system dropped under pressure and the run read again
 
     // Row-gathered dense tables served from flash (MoeStreamConfig::row_stream). The pair that says
     // whether the policy paid: row_table_mib is what those tables would have occupied resident,

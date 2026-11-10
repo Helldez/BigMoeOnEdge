@@ -52,6 +52,13 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     load_all_ = cfg.load_all;
     pin_ = cfg.cache_pin;
     pin_fit_ = cfg.cache_pin_fit;
+    // A pinned page cannot be dropped, and pinning is what made the kernel swap everyone else, so a
+    // cache that can be offered is never pinned. One pass of the stack, plus the layers route-ahead
+    // stages before their compute, is the newest an entry can be and still be in a kernel's hands.
+    discard_ = cfg.cache_discard && pio::vm_discard_supported();
+    discard_drop_ = discard_ && cfg.cache_discard_drop;
+    offer_after_ = (uint32_t) n_layer_ + (uint32_t) std::max(0, cfg.route_ahead) + 1;
+    if (discard_) pin_ = false;
     overlap_ = cfg.overlap;
     two_wave_ = cfg.io_two_wave;
     prefetch_sync_ = cfg.prefetch_sync && !cfg.overlap; // serial only: overlap lane 0 is a worker
@@ -209,6 +216,9 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         const size_t n_entry = (size_t) n_layer_ * n_expert_;
         cvalid_.assign(n_entry, 0);
         cstamp_.assign(n_entry, 0);
+        coffered_.assign(n_entry, 0);
+        clive_gen_.assign(n_entry, 0);
+        live_q_.clear();
         cprev_.assign(n_entry, -1);
         cnext_.assign(n_entry, -1);
         cspec_.assign(n_entry, 0);
@@ -520,13 +530,10 @@ void ExpertStreamSource::prefetch(int il, const int32_t * ids, int n_ids) {
             const uint64_t slice = L.proj[p].nb2;
             if (slice == 0) continue;
             char * dst = (char *) lbuf_[p][il] + (uint64_t) e * slice;
-            uintptr_t a0 = 0, a1 = 0;
-            slice_pages(dst, slice, page_, a0, a1);
-            if (!pio::vm_commit((void *) a0, (size_t) (a1 - a0))) { // low on memory — stop quietly
+            if (!commit_slice(il, e, p)) { // low on memory — stop quietly
                 ok = false;
                 break;
             }
-            pin_pages((void *) a0, (size_t) (a1 - a0));
             staged.push_back({dst, L.proj[p].file_off + (uint64_t) e * slice, slice, id, (int16_t) L.proj[p].file_idx,
                               e, (int16_t) il, (int8_t) p, 1});
             ++njobs;
@@ -705,6 +712,7 @@ void ExpertStreamSource::quiesce_spec(int adopt_il) {
         cspec_[id] = 1;  // speculative until a real lookup hits it (then counted useful)
         cstamp_[id] = 0; // not used this generation → evictable if the budget is tight
         cresident_ += entry_bytes(id / n_expert_);
+        note_live(id);
         lru_push_back(id); // cold end: a mispredicted expert is reclaimed before any demanded one
         spec_experts_.fetch_add(1);
     }
@@ -778,7 +786,10 @@ double ExpertStreamSource::cache_lost_frac(int n) {
     const size_t stride = std::max<size_t>(1, entries / (size_t) n);
     size_t sampled = 0, resident = 0, i = 0;
     for (int32_t id = chead_; id != -1; id = cnext_[id], ++i) {
-        if (i % stride != 0 || !cvalid_[id]) continue;
+        // An offered entry the kernel dropped is the discardable cache doing its job - a later miss
+        // reads it again, nothing was written - not the reclaim this sensor watches for, which is
+        // the system taking pages the cache still counts on (and paying a write for them).
+        if (i % stride != 0 || !cvalid_[id] || coffered_[id]) continue;
         const int il = id / n_expert_, e = id % n_expert_;
         for (int p = 0; p < ExpertLayout::max_slots; ++p) {
             const uint64_t slice = layers_[il].proj[p].nb2;
@@ -854,6 +865,7 @@ size_t ExpertStreamSource::entry_bytes(int il) const {
 // one page per expert and projection, outside the ledger `cresident_` keeps. Shared by eviction
 // and by discarding an incomplete spec entry; eval thread only, like every LRU mutation.
 void ExpertStreamSource::release_entry_pages(int32_t id) {
+    coffered_[id] = 0; // the spans are remapped below; whatever was offered there is gone
     const int il = id / n_expert_, e = id % n_expert_;
     // A neighbour's pages must stay while it is resident or while a speculative read of it is in
     // flight; the workers that finish those reads write the counters under io_mtx_, and only this
@@ -959,6 +971,7 @@ void ExpertStreamSource::spec_integrate_done() {
         cspec_[id] = 1;  // speculative until a real lookup hits it (then counted useful)
         cstamp_[id] = 0; // not used this generation → evictable if the budget is tight
         cresident_ += entry_bytes(id / n_expert_);
+        note_live(id);
         // Cold end for a GUESS (a mispredicted expert should be the first thing reclaimed) — but
         // under route-ahead there are no guesses: every integrated entry is a read some layer
         // COMMITTED to, at most N layers from being routed. Entering it cold handed it to the
@@ -1028,18 +1041,89 @@ uint64_t ExpertStreamSource::expert_bytes(int il) const {
 // The cache accounting both load paths share. See the header for why this is the part that is shared
 // and the job emission is not. Eval-thread only, like every other LRU mutation.
 bool ExpertStreamSource::commit_proj_pages(int il, int e, int p) {
-    const LayerExperts & L = layers_[il];
-    const uint64_t slice = L.proj[p].nb2;
+    if (!commit_slice(il, e, p)) {
+        log_printf(LogLevel::Error, "commit failed");
+        return false;
+    }
+    return true;
+}
+
+// Commit one projection slice of an entry so reads can fill it: its pages and the slack after it,
+// then, with a discardable cache, the span only this entry owns made into something vm_offer can
+// hand over later. The span shared with a neighbour stays ordinary memory: dropping it would take
+// the neighbour's bytes too.
+bool ExpertStreamSource::commit_slice(int il, int e, int p) {
+    const uint64_t slice = layers_[il].proj[p].nb2;
     if (slice == 0) return true; // absent slot in a fused layout
     char * dst = (char *) lbuf_[p][il] + (uint64_t) e * slice;
     uintptr_t a0 = 0, a1 = 0;
     slice_pages(dst, slice, page_, a0, a1);
-    if (!pio::vm_commit((void *) a0, (size_t) (a1 - a0))) {
-        log_printf(LogLevel::Error, "commit failed");
+    if (!pio::vm_commit((void *) a0, (size_t) (a1 - a0))) return false;
+    uintptr_t b0 = 0, b1 = 0;
+    if (discard_ && entry_body(il * n_expert_ + e, p, b0, b1) && !pio::vm_commit_discardable((void *) b0, b1 - b0))
         return false;
-    }
     pin_pages((void *) a0, (size_t) (a1 - a0));
     return true;
+}
+
+// The pages of one projection slice that hold this entry's bytes and nobody else's: past the
+// slack the left neighbour may read into, and short of the page the right neighbour starts in
+// (release_entry_pages draws the same lines). Empty for a slice that does not fill a page of its own.
+bool ExpertStreamSource::entry_body(int32_t id, int p, uintptr_t & b0, uintptr_t & b1) const {
+    const int il = id / n_expert_, e = id % n_expert_;
+    const uint64_t slice = layers_[il].proj[p].nb2;
+    if (slice == 0) return false;
+    const uintptr_t s = (uintptr_t) lbuf_[p][il] + (uint64_t) e * slice;
+    b0 = (s + pio::tensor_tail_slack() + page_ - 1) & ~(uintptr_t) (page_ - 1);
+    b1 = (s + slice) & ~(uintptr_t) (page_ - 1);
+    return b1 > b0;
+}
+
+void ExpertStreamSource::note_live(int32_t id) {
+    if (!discard_) return;
+    clive_gen_[id] = cgen_;
+    live_q_.emplace_back(id, cgen_);
+}
+
+// Offer every entry whose last use has left the window. Each use queued one (id, gen); a pair whose
+// gen is no longer the entry's last use is stale (the entry was used again, and a later pair stands
+// for it) and is dropped. Entries with reads still in flight are never valid, so never offered.
+void ExpertStreamSource::offer_cold() {
+    if (!discard_ || cache_max_ == 0) return;
+    while (!live_q_.empty() && live_q_.front().second + offer_after_ <= cgen_) {
+        const auto [id, g] = live_q_.front();
+        live_q_.pop_front();
+        if (!cvalid_[id] || coffered_[id] || clive_gen_[id] != g) continue;
+        bool any = false;
+        for (int p = 0; p < ExpertLayout::max_slots; ++p) {
+            uintptr_t b0 = 0, b1 = 0;
+            if (!entry_body(id, p, b0, b1)) continue;
+            if (discard_drop_) { // as if the kernel took it at once
+                pio::vm_evict((void *) b0, b1 - b0);
+                any = true;
+            } else {
+                any = pio::vm_offer((void *) b0, b1 - b0) || any;
+            }
+        }
+        coffered_[id] = any ? 1 : 0;
+    }
+}
+
+// Take an offered entry back before anything reads it. False when the kernel dropped any of it:
+// every projection's span is then committed, ordinary memory again, and the caller reads it whole.
+bool ExpertStreamSource::reclaim_entry(int32_t id) {
+    coffered_[id] = 0;
+    bool intact = true;
+    for (int p = 0; p < ExpertLayout::max_slots; ++p) {
+        uintptr_t b0 = 0, b1 = 0;
+        if (entry_body(id, p, b0, b1)) intact = pio::vm_reclaim((void *) b0, b1 - b0) && intact;
+    }
+    if (!intact)
+        for (int p = 0; p < ExpertLayout::max_slots; ++p) {
+            uintptr_t b0 = 0, b1 = 0;
+            if (entry_body(id, p, b0, b1)) pio::vm_commit((void *) b0, b1 - b0); // Windows: decommitted by a drop
+        }
+    return intact;
 }
 
 // Whether a platform grants this is only learnt by asking, and there are two different refusals.
@@ -1124,6 +1208,28 @@ bool ExpertStreamSource::touch_entry(int il, int e, bool & hit, bool promote, in
     const int32_t id = il * n_expert_ + e;
     clookups_++;
     cstamp_[id] = cgen_;
+    if (cvalid_[id] && coffered_[id] && !reclaim_entry(id)) {
+        // The kernel dropped it under pressure: still an entry of the cache, resident in the
+        // accounting, but its bytes are gone - a miss the caller reads whole again.
+        ++discarded_;
+        // And the budget gives up what the kernel took. A cache larger than the machine will let
+        // it keep is refilled only to be dropped again - measured on a 16 GB machine, 7131 drops in
+        // 512 tokens and half the decode rate - where one the size of what survives settles: no
+        // churn, and still nothing written. Never under one token's cycle, and never back up within
+        // the run, for the reason the brake does not grow back (docs/pressure.md).
+        const size_t floor = std::max<size_t>(pin_floor_, 1);
+        if (cache_max_ > floor) {
+            cache_max_ = std::max(floor, cache_max_ > entry_bytes(il) ? cache_max_ - entry_bytes(il) : 0);
+        }
+        cspec_[id] = 0;
+        if (promote) {
+            lru_unlink(id);
+            lru_push_front(id);
+        }
+        note_live(id);
+        hit = false;
+        return true;
+    }
     if (cvalid_[id]) {
         chits_++;
         if (cspec_[id]) { // this hit was served by a speculative prefetch — count it useful once
@@ -1134,6 +1240,7 @@ bool ExpertStreamSource::touch_entry(int il, int e, bool & hit, bool promote, in
             lru_unlink(id);
             lru_push_front(id);
         }
+        note_live(id);
         hit = true;
         return true;
     }
@@ -1152,6 +1259,7 @@ bool ExpertStreamSource::touch_entry(int il, int e, bool & hit, bool promote, in
     cspec_[id] = 0; // a real read, not speculative
     cresident_ += entry_bytes(il);
     lru_push_front(id);
+    note_live(id);
     hit = false;
     return true;
 }
@@ -1167,6 +1275,8 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
     // Cache-management work (vm commit + LRU bookkeeping, then eviction below) is timed into
     // mgmt_ns_ so the metrics can split it out of the compute residual instead of hiding it there.
     const auto tm0 = clock_t_::now();
+
+    offer_cold();
 
     // Integrate / discard any speculative prefetch before this layer's real staging touches the
     // cache. After this returns no spec read is in flight and completed ones are resident hits. The
@@ -1309,6 +1419,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
     cur_il_.store(il, std::memory_order_relaxed);
     cgen_++;
     jobs_.clear();
+    offer_cold();
 
     auto mark_ready = [&](int p, int e) {
         ready_[(size_t) p * (size_t) n_expert_ + (size_t) e].gen.store(gen, std::memory_order_release);
@@ -1600,6 +1711,7 @@ IExpertSource::Stats ExpertStreamSource::stats() const {
     s.cache_budget_bytes = (uint64_t) cache_max_;
     s.cache_resizes = cache_resizes_;
     s.cache_pin_refused_bytes = (uint64_t) pin_refused_at_;
+    s.discarded = discarded_;
     s.dense_pin_refused_bytes = dense_.pin_refused_bytes();
     s.o_direct = effective_direct_;
     s.evictions = evictions_;

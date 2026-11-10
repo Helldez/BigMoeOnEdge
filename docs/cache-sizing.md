@@ -157,6 +157,40 @@ attempts, the cache is ordinary memory as before, and the run prints which it go
 desktop's answer to the problem [android-memory.md](android-memory.md) describes; the dense weights
 have theirs in `--dense-weights pinned`.
 
+## Offered, not pinned: a cache the kernel drops instead of swapping
+
+A lock keeps the cache out of the compressor, and it pushes everything else there instead. On the
+same 16 GB machine, `--auto` pins about 9 GB (cache and dense set), and the rest of the system pays
+for it in swap: 3.3 GB written to the SSD in 7 minutes of decode, against 0.13 GB in 10 idle
+minutes. Swap is a write to flash, and writes are what wear it.
+
+So where the platform can take memory back by dropping it, the cache is offered rather than locked
+(`--cache-discard`, on by default, off with `--no-cache-discard`). An entry no layer used in the last
+pass of the stack is handed to the kernel (`pio::vm_offer`: a volatile purgeable object on Darwin,
+`MADV_FREE` on Linux and Android, `OfferVirtualMemory` on Windows), which reclaims it before it
+compresses or swaps anything. A lookup that finds an offered entry takes it back first
+(`pio::vm_reclaim`). If the kernel dropped it, the hit becomes a miss and the entry is read again
+from the model file, a read and not a write. A drop also lowers the budget by that entry, so a cache
+larger than the machine will let it keep settles where it is not refilled only to be dropped again.
+It never goes under one token's cycle, and never grows back within the run, like the brake
+([pressure.md](pressure.md)). The brake's sensor skips offered entries, because a dropped offer is
+this mechanism working, not the reclaim the brake watches for.
+
+Same machine, same binary, `--auto`, 512 tokens, the arms alternating with 30 s between runs:
+
+| | decode, three runs | swapped out per run | written to the SSD per run |
+|---|---|---:|---:|
+| pinned (`--no-cache-discard`) | 16.2, 14.5, 16.8 tok/s | 988–1225 MiB | 1002–1237 MiB |
+| offered | 18.9, 17.9, 14.9 tok/s | 0 | 8–60 MiB |
+
+The offered cache ended each run at about 6.5 GB of its 7.2–8.1 GB budget, after 353–876 drops.
+The writes left are the process's own, mostly the Metal shader cache. The machine was busier than
+on the day of the table above, so compare the arms with each other, not with that table.
+`pio::vm_reclaim` costs about 0.3 µs per projection on Darwin. On Linux it writes one word of every
+page of the entry and reads another, because nothing else reports a loss there. That is about 33 µs
+per 1.77 MB expert on the test phone, and `MADV_FREE` itself about 100 µs. Both are paid only when an
+expert goes cold and when it comes back, not on every hit; a phone engine run is still owed.
+
 ## Flags
 
 | Flag | Meaning |

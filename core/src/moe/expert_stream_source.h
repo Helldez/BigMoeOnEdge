@@ -25,6 +25,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <deque>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -234,6 +235,7 @@ private:
 
     // Commit the pages of one (layer, expert, projection) cache slice so a read can land in it.
     bool commit_proj_pages(int il, int e, int p);
+    bool commit_slice(int il, int e, int p);
     void pin_pages(void * p, size_t sz);
 
     // LRU helpers (active only when cache_max_ > 0)
@@ -344,6 +346,24 @@ private:
     std::vector<int32_t> cprev_, cnext_;
     std::vector<uint32_t> cstamp_;
     std::vector<uint8_t> cspec_; // 1 if this resident entry was filled speculatively, until first hit
+
+    // Discardable cache (MoeStreamConfig::cache_discard): an entry no layer has used for one pass of
+    // the stack is offered to the kernel (pio::vm_offer), which may then DROP its pages under
+    // pressure instead of swapping it, or swapping everything else around a pinned cache. A hit on
+    // an offered entry takes it back first (pio::vm_reclaim); if the kernel took it, the hit becomes
+    // a miss and the entry is read again. live_q_ is every use in order, (id, generation), so the
+    // sweep is amortized O(1) per use: an entry is offered when its LAST use leaves the window.
+    bool discard_ = false;
+    bool discard_drop_ = false; // debug: drop what is offered, so every cold hit pays the re-read
+    uint32_t offer_after_ = 0;  // generations an entry stays ordinary after its last use
+    std::vector<uint8_t> coffered_;
+    std::vector<uint32_t> clive_gen_;
+    std::deque<std::pair<int32_t, uint32_t>> live_q_;
+    long long discarded_ = 0; // offered entries the kernel had dropped when a lookup wanted them
+    void note_live(int32_t id);
+    void offer_cold();
+    bool reclaim_entry(int32_t id);
+    bool entry_body(int32_t id, int p, uintptr_t & b0, uintptr_t & b1) const;
     int32_t chead_ = -1, ctail_ = -1;
     uint32_t cgen_ = 0;
     size_t cresident_ = 0;
