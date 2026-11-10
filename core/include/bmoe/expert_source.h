@@ -99,9 +99,11 @@ public:
         // still raise the byte count, and therefore the number to look at when it does.
         long long evictions = 0;
         long long rereads = 0;
-        // Offered entries (MoeStreamConfig::cache_discard) the system had dropped under pressure when
-        // a lookup wanted them, each read again instead of anything having been written to swap.
+        // Offered entries (MoeStreamConfig::cache_discard) the system dropped under pressure, noticed
+        // when a lookup wanted one or when it reached the LRU tail: memory given back with nothing
+        // written to swap.
         long long discarded = 0;
+        long long discarded_on_hit = 0; // of those, the ones a lookup found dropped (the re-read path)
         // Eval-thread waits that are NOT part of the windows above, split out because each lives
         // inside a different residual and hid there. `drain_wait` is the top of the async load:
         // waiting for the previous layer's batch to finish before its jobs_/flags are reused —

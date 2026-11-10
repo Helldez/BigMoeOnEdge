@@ -22,8 +22,8 @@ Semantic Versioning.
     18.9 / 17.9 / 14.9 tok/s against 16.2 / 14.5 / 16.8 pinned.
   - **What changes for users:** on by default; `--no-cache-discard` restores the pinned cache.
     `--auto` no longer sizes an offered cache to the lockable total. The run summary and the
-    server's `done` event report `cache_discarded`: how many experts the system dropped and the run
-    read again.
+    server's `done` event report `cache_discarded`: how many experts the system dropped. A dropped
+    expert also leaves the cache's accounting, so `resident` is what RAM still holds.
   - **Tests:** byte-identity gates G21a–c drop every offered entry at once (`--cache-discard-drop`,
     debug), on the serial and the overlapped two-wave paths, and check that the re-read path ran.
     ([cache-sizing.md](docs/cache-sizing.md))

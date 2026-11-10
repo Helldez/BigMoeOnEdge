@@ -1109,6 +1109,42 @@ void ExpertStreamSource::offer_cold() {
     }
 }
 
+// Retire the coldest entry if the kernel already dropped it. A dropped offer that nothing looks up
+// again would otherwise stay in the accounting - "resident" bytes that hold no RAM, and budget they
+// keep from entries that would - until the LRU reached it. The kernel reclaims offers oldest first
+// on every platform that offers, so the LRU tail is where a drop shows first. One entry per load, one
+// page of it sampled (mincore): a burst of drops is caught up within a few tokens, and the hit-side
+// check in touch_entry stays the one that guarantees correctness, which is also what the gates drive.
+void ExpertStreamSource::reap_dropped_tail() {
+    if (!discard_ || cache_max_ == 0 || ctail_ == -1 || !coffered_[ctail_]) return;
+    const int32_t id = ctail_;
+    size_t sampled = 0, resident = 0;
+    for (int p = 0; p < ExpertLayout::max_slots && sampled == 0; ++p) {
+        uintptr_t b0 = 0, b1 = 0;
+        if (entry_body(id, p, b0, b1)) pio::vm_resident_sample((void *) b0, page_, &sampled, &resident);
+    }
+    if (sampled == 0 || resident != 0) return; // unmeasurable here, or still held
+    const size_t bytes = entry_bytes(id / n_expert_);
+    ++discarded_;
+    shrink_for_drop(bytes);
+    ever_evicted_[id] = 1; // a later read of it is the cache paying twice
+    release_entry_pages(id);
+    cvalid_[id] = 0;
+    cspec_[id] = 0;
+    cresident_ -= bytes;
+    lru_unlink(id);
+}
+
+// The budget gives up what the kernel took. A cache larger than the machine will let it keep is
+// refilled only to be dropped again - measured on a 16 GB machine, 7131 drops in 512 tokens and
+// half the decode rate - where one the size of what survives settles: no churn, and still nothing
+// written. Never under one token's cycle, and never back up within the run, for the reason the
+// brake does not grow back (docs/pressure.md).
+void ExpertStreamSource::shrink_for_drop(size_t bytes) {
+    const size_t floor = std::max<size_t>(pin_floor_, 1);
+    if (cache_max_ > floor) cache_max_ = std::max(floor, cache_max_ > bytes ? cache_max_ - bytes : 0);
+}
+
 // Take an offered entry back before anything reads it. False when the kernel dropped any of it:
 // every projection's span is then committed, ordinary memory again, and the caller reads it whole.
 bool ExpertStreamSource::reclaim_entry(int32_t id) {
@@ -1212,15 +1248,8 @@ bool ExpertStreamSource::touch_entry(int il, int e, bool & hit, bool promote, in
         // The kernel dropped it under pressure: still an entry of the cache, resident in the
         // accounting, but its bytes are gone - a miss the caller reads whole again.
         ++discarded_;
-        // And the budget gives up what the kernel took. A cache larger than the machine will let
-        // it keep is refilled only to be dropped again - measured on a 16 GB machine, 7131 drops in
-        // 512 tokens and half the decode rate - where one the size of what survives settles: no
-        // churn, and still nothing written. Never under one token's cycle, and never back up within
-        // the run, for the reason the brake does not grow back (docs/pressure.md).
-        const size_t floor = std::max<size_t>(pin_floor_, 1);
-        if (cache_max_ > floor) {
-            cache_max_ = std::max(floor, cache_max_ > entry_bytes(il) ? cache_max_ - entry_bytes(il) : 0);
-        }
+        ++discarded_on_hit_;
+        shrink_for_drop(entry_bytes(il));
         cspec_[id] = 0;
         if (promote) {
             lru_unlink(id);
@@ -1277,6 +1306,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
     const auto tm0 = clock_t_::now();
 
     offer_cold();
+    reap_dropped_tail();
 
     // Integrate / discard any speculative prefetch before this layer's real staging touches the
     // cache. After this returns no spec read is in flight and completed ones are resident hits. The
@@ -1420,6 +1450,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
     cgen_++;
     jobs_.clear();
     offer_cold();
+    reap_dropped_tail();
 
     auto mark_ready = [&](int p, int e) {
         ready_[(size_t) p * (size_t) n_expert_ + (size_t) e].gen.store(gen, std::memory_order_release);
@@ -1712,6 +1743,7 @@ IExpertSource::Stats ExpertStreamSource::stats() const {
     s.cache_resizes = cache_resizes_;
     s.cache_pin_refused_bytes = (uint64_t) pin_refused_at_;
     s.discarded = discarded_;
+    s.discarded_on_hit = discarded_on_hit_;
     s.dense_pin_refused_bytes = dense_.pin_refused_bytes();
     s.o_direct = effective_direct_;
     s.evictions = evictions_;

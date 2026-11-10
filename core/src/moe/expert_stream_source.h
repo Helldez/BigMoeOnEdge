@@ -359,9 +359,12 @@ private:
     std::vector<uint8_t> coffered_;
     std::vector<uint32_t> clive_gen_;
     std::deque<std::pair<int32_t, uint32_t>> live_q_;
-    long long discarded_ = 0; // offered entries the kernel had dropped when a lookup wanted them
+    long long discarded_ = 0;
+    long long discarded_on_hit_ = 0; // offered entries the kernel had dropped when a lookup wanted them
     void note_live(int32_t id);
     void offer_cold();
+    void reap_dropped_tail();
+    void shrink_for_drop(size_t bytes);
     bool reclaim_entry(int32_t id);
     bool entry_body(int32_t id, int p, uintptr_t & b0, uintptr_t & b1) const;
     int32_t chead_ = -1, ctail_ = -1;

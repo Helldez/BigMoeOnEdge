@@ -3272,6 +3272,7 @@ struct Session::Impl::Turn {
             s.cache_evictions = st.evictions;
             s.cache_rereads = st.rereads;
             s.cache_discarded = st.discarded;
+            s.cache_discarded_on_hit = st.discarded_on_hit;
             const RowSourceStats rs = im.source.row_stats();
             s.row_table_mib = rs.table_bytes / (1024.0 * 1024.0);
             s.row_resident_mib = rs.resident_bytes / (1024.0 * 1024.0);

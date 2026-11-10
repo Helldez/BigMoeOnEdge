@@ -172,7 +172,10 @@ compresses or swaps anything. A lookup that finds an offered entry takes it back
 (`pio::vm_reclaim`). If the kernel dropped it, the hit becomes a miss and the entry is read again
 from the model file, a read and not a write. A drop also lowers the budget by that entry, so a cache
 larger than the machine will let it keep settles where it is not refilled only to be dropped again.
-It never goes under one token's cycle, and never grows back within the run, like the brake
+A dropped entry that nothing asks for again is found at the LRU tail, where the kernel's
+oldest-first reclaim leaves it: one entry per load, one page sampled with `mincore`. It is then
+retired the same way, so the cache's resident figure is what RAM still holds. The budget never goes
+under one token's cycle, and never grows back within the run, like the brake
 ([pressure.md](pressure.md)). The brake's sensor skips offered entries, because a dropped offer is
 this mechanism working, not the reclaim the brake watches for.
 

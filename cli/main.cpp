@@ -1441,9 +1441,7 @@ int main(int argc, char ** argv) {
                             s.n_generated ? (double) s.cache_rereads / s.n_generated : 0.0);
             // Pressure answered by dropping cached experts rather than swapping anything.
             if (s.cache_discarded > 0)
-                std::printf("moe-cache: %lld experts dropped by the system under memory pressure and read "
-                            "again\n",
-                            s.cache_discarded);
+                std::printf("moe-cache: %lld experts dropped by the system under memory pressure\n", s.cache_discarded);
         }
         // The row policy's own line: what it took out of RAM, what it holds instead, and what
         // that cost in reads. Printed only when a table qualified, so a run that discovered

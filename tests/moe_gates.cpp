@@ -600,11 +600,16 @@ int main(int argc, char ** argv) {
         fails += check("G21a discardable cache, every offered entry dropped == streaming(cache off)", s_s0,
                        rd.generated_text);
         fails += check("G21b discardable cache, offered and kept == streaming(cache off)", s_s0, ro.generated_text);
-        if (rd.summary.cache_discarded == 0) {
-            std::printf("[FAIL] G21a no entry was dropped and read again: the re-read path never ran\n");
+        // Both ways a drop is noticed must have run: a lookup finding it (the re-read, the path that
+        // guards correctness) and the tail sweep retiring one nothing asked for again.
+        const long long on_hit = rd.summary.cache_discarded_on_hit;
+        const long long swept = rd.summary.cache_discarded - on_hit;
+        if (on_hit == 0 || swept == 0) {
+            std::printf("[FAIL] G21a a drop path never ran (found on a lookup %lld, swept from the tail %lld)\n",
+                        on_hit, swept);
             ++fails;
         } else {
-            std::printf("[PASS] G21a %lld dropped entries read again\n", rd.summary.cache_discarded);
+            std::printf("[PASS] G21a drops found on a lookup %lld, swept from the tail %lld\n", on_hit, swept);
         }
     }
 
@@ -679,7 +684,7 @@ int main(int argc, char ** argv) {
         }
         fails += check("G21c overlap + two-wave, every offered entry dropped == streaming(cache off)", s_s0,
                        rod.generated_text);
-        if (rod.summary.cache_discarded == 0) {
+        if (rod.summary.cache_discarded_on_hit == 0) {
             std::printf("[FAIL] G21c no entry was dropped and read again on the async path\n");
             ++fails;
         }
