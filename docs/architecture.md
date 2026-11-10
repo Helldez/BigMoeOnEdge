@@ -104,10 +104,13 @@ core/
                     adapters in their order and then the rules; the options are what differs
   src/
     io/         platform_io — O_DIRECT reads and their per-file alignment, reserve/commit/evict VM,
-                  the spin-wait pause: the OS and ISA branches the streaming path needs
+                  offer/reclaim of discardable spans, the spin-wait pause: the OS and ISA branches
+                  the streaming path needs
                 file_reader — pooled positioned reader, per-consumer O_DIRECT
                 mapping_release - releases the model file's mapping after load (--release-mmap)
-    moe/        gguf_offsets (tensor → (shard, offset), split ggufs included), expert_layout,
+    moe/        discardable_entries — which cached experts are offered to the kernel to drop, and what a
+                  lookup finds after a drop; pure policy over a SpanOps port (platform_io underneath)
+                gguf_offsets (tensor → (shard, offset), split ggufs included), expert_layout,
                 expert_stream_source (one reader per shard), router_hook
                 gate_gemv - the router-gate GEMV over float gates and over an int8 mirror, and the
                   timing of both that --gate-mirror auto reads

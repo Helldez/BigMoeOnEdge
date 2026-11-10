@@ -55,6 +55,7 @@
 #include <TargetConditionals.h>
 #include <mach-o/dyld.h> // this executable's own path; see run_self
 #include <mach/mach.h>
+#include <mach/vm_purgable.h> // discardable cache spans; see vm_offer
 #include <sys/sysctl.h>
 #if TARGET_OS_IPHONE
 #include <os/proc.h> // this process's own share of memory; see mem_available_bytes
@@ -140,6 +141,40 @@ void vm_evict(void * p, size_t sz) {
 }
 void vm_release(void * p, size_t /*sz*/) {
     if (p) VirtualFree(p, 0, MEM_RELEASE);
+}
+namespace {
+// OfferVirtualMemory arrived in Windows 8.1; resolved at run time so the build never depends on it.
+using OfferFn = DWORD(WINAPI *)(PVOID, SIZE_T, DWORD);
+using ReclaimFn = DWORD(WINAPI *)(PVOID, SIZE_T);
+struct OfferApi {
+    OfferFn offer = nullptr;
+    ReclaimFn reclaim = nullptr;
+    OfferApi() {
+        if (HMODULE k = GetModuleHandleW(L"kernel32.dll")) {
+            offer = (OfferFn) (void *) GetProcAddress(k, "OfferVirtualMemory");
+            reclaim = (ReclaimFn) (void *) GetProcAddress(k, "ReclaimVirtualMemory");
+        }
+    }
+};
+const OfferApi & offer_api() {
+    static const OfferApi api;
+    return api;
+}
+} // namespace
+bool vm_discard_supported() {
+    return offer_api().offer && offer_api().reclaim;
+}
+bool vm_commit_discardable(void * p, size_t sz) {
+    return vm_commit(p, sz);
+}
+bool vm_offer(void * p, size_t sz) {
+    constexpr DWORD offer_priority_low = 2; // VmOfferPriorityLow: taken before ordinary standby pages
+    return sz && vm_discard_supported() && offer_api().offer(p, sz, offer_priority_low) == ERROR_SUCCESS;
+}
+bool vm_reclaim(void * p, size_t sz) {
+    if (!sz || !vm_discard_supported()) return true;
+    // ERROR_BUSY: some pages were discarded. The range is committed again either way.
+    return offer_api().reclaim(p, sz) == ERROR_SUCCESS;
 }
 void vm_drop_file_pages(void * /*p*/, size_t /*sz*/) {
     // File-backed views cannot be decommitted (MEM_DECOMMIT is only valid for VirtualAlloc'd pages),
@@ -348,6 +383,79 @@ void vm_evict(void * p, size_t sz) {
 void vm_release(void * p, size_t sz) {
     if (p) munmap(p, sz);
 }
+#if defined(__APPLE__)
+bool vm_discard_supported() {
+    return true;
+}
+bool vm_commit_discardable(void * p, size_t sz) {
+    // A purgeable object at exactly this span, replacing the zero-fill mapping vm_evict left there.
+    // Measured on a 16 GB machine under 9 GB of pressure: every volatile object emptied, nothing
+    // swapped; a state change costs ~0.5 us where madvise(MADV_FREE_REUSE) costs ~25 us per 1.7 MB.
+    vm_address_t a = (vm_address_t) p;
+    return vm_allocate(mach_task_self(), &a, sz, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE | VM_FLAGS_PURGABLE) ==
+               KERN_SUCCESS &&
+           a == (vm_address_t) p;
+}
+bool vm_offer(void * p, size_t sz) {
+    if (!sz) return false;
+    int state = VM_PURGABLE_VOLATILE;
+    return vm_purgable_control(mach_task_self(), (vm_address_t) p, VM_PURGABLE_SET_STATE, &state) == KERN_SUCCESS;
+}
+bool vm_reclaim(void * p, size_t sz) {
+    if (!sz) return true;
+    int state = VM_PURGABLE_NONVOLATILE;
+    if (vm_purgable_control(mach_task_self(), (vm_address_t) p, VM_PURGABLE_SET_STATE, &state) != KERN_SUCCESS)
+        return false; // not an object we offered: the caller re-reads, which is always safe
+    // The previous state comes back in `state`; an emptied object is zero-fill from here on.
+    return (state & VM_PURGABLE_STATE_MASK) != VM_PURGABLE_EMPTY;
+}
+#elif defined(__linux__) && defined(MADV_FREE) // Linux and Android: "a write cancels the free" is Linux semantics
+bool vm_discard_supported() {
+    return true;
+}
+bool vm_commit_discardable(void * p, size_t sz) {
+    return vm_commit(p, sz);
+}
+bool vm_offer(void * p, size_t sz) {
+    // Refused (EINVAL) on kernels before 4.5 and on locked ranges: the span stays ordinary memory.
+    return sz && madvise(p, sz, MADV_FREE) == 0;
+}
+bool vm_reclaim(void * p, size_t sz) {
+    if (!sz) return true;
+    // A write to a page cancels its pending free; a page already freed comes back as a fresh zero
+    // page whatever is written to it. So: write one word back to itself, THEN look at a different
+    // word. Once written the page can no longer be dropped, so a page that reads non-zero away from
+    // the written word is the one that was offered. The order is what makes it race-free - checking
+    // first would let the kernel drop the page between the check and the use.
+    // A page whose every other word is zero reads as dropped although it may not be: that costs a
+    // read, never a wrong answer, and the scan stops at the first non-zero word on any real weight.
+    const size_t page = vm_page(), words = page / sizeof(uint64_t);
+    bool intact = true;
+    for (char * pg = (char *) p; pg < (char *) p + sz; pg += page) {
+        volatile uint64_t * w = (volatile uint64_t *) pg;
+        w[0] = w[0];
+        if (!intact) continue; // the caller refills the whole span; the writes above still cancel frees
+        size_t i = 1;
+        while (i < words && w[i] == 0)
+            ++i;
+        intact = i < words;
+    }
+    return intact;
+}
+#else
+bool vm_discard_supported() {
+    return false;
+}
+bool vm_commit_discardable(void * p, size_t sz) {
+    return vm_commit(p, sz);
+}
+bool vm_offer(void *, size_t) {
+    return false;
+}
+bool vm_reclaim(void *, size_t) {
+    return true;
+}
+#endif
 void vm_drop_file_pages(void * p, size_t sz) {
     // MADV_DONTNEED on the model's clean, read-only MAP_PRIVATE mapping drops the resident pages; the
     // next access refaults them from the file. The tensor was rebound onto its anon copy, so nothing

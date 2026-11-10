@@ -621,6 +621,43 @@ int main(int argc, char ** argv) {
     fails += check("G15a row-stream(row-gathered tables from flash) == resident", s_res, s_rows);
     fails += check("G15b row-stream(one-slab window, evicting) == resident", s_res, s_rows_tight);
 
+    // G21 — the discardable cache. An entry nothing used for one pass of the stack is offered to the
+    // kernel, which may drop it; a lookup then has to notice and read it again. Pressure cannot be
+    // summoned in a test, so cache_discard_drop drops an offered entry just before a lookup takes
+    // it back: each such hit is a re-read, and a lost entry served as a hit would be zeros in a
+    // weight, which no output survives. The cache holds every expert, so nothing is evicted and every
+    // drop is a would-be hit. G21a also proves the drops happened - a gate whose path never ran
+    // would pass the same way. G18b is the same cache offered and never dropped (reclaim intact).
+    {
+        RunConfig dropall = base(model);
+        dropall.moe.enabled = true;
+        dropall.moe.cache_mb = 64;
+        dropall.moe.force_cache = true;
+        dropall.moe.io_threads = 4;
+        dropall.moe.cache_discard = true;
+        dropall.moe.cache_discard_drop = true;
+        RunConfig offered = dropall;
+        offered.moe.cache_discard_drop = false;
+        const RunResult rd = run(dropall);
+        const RunResult ro = run(offered);
+        if (!rd || !ro) {
+            std::fprintf(stderr, "G21 run failed: %s\n", (!rd ? rd.error : ro.error).c_str());
+            return 2;
+        }
+        fails += check("G21a discardable cache, every offered entry dropped == streaming(cache off)", s_s0,
+                       rd.generated_text);
+        fails += check("G21b discardable cache, offered and kept == streaming(cache off)", s_s0, ro.generated_text);
+        // The re-read path must have run: a gate whose drops were never looked up would pass the
+        // same way. (The tail sweep is the policy's, proven without a model in discardable_entries.)
+        if (rd.summary.cache_discarded_on_hit == 0) {
+            std::printf("[FAIL] G21a no lookup found an entry dropped: the re-read path never ran\n");
+            ++fails;
+        } else {
+            std::printf("[PASS] G21a %lld lookups found their entry dropped and read it again\n",
+                        rd.summary.cache_discarded_on_hit);
+        }
+    }
+
     if (!have_hook) {
         std::printf("[SKIP] G4 (the CPU backend here has no expert-ready hook)\n");
     } else {
@@ -698,6 +735,24 @@ int main(int argc, char ** argv) {
                 return 2;
             }
             fails += check("G4p overlap(prompt admitted cold) == streaming(cache off)", s_s0, s_ovp);
+        }
+
+        // G21c — the discard re-read on the async path: a dropped hit has to become a miss whose
+        // reads are published and waited on per expert, with two-wave splitting its commits.
+        RunConfig ovdrop = ov2w;
+        ovdrop.moe.cache_mb = 64;
+        ovdrop.moe.cache_discard = true;
+        ovdrop.moe.cache_discard_drop = true;
+        const RunResult rod = run(ovdrop);
+        if (!rod) {
+            std::fprintf(stderr, "G21c run failed: %s\n", rod.error.c_str());
+            return 2;
+        }
+        fails += check("G21c overlap + two-wave, every offered entry dropped == streaming(cache off)", s_s0,
+                       rod.generated_text);
+        if (rod.summary.cache_discarded_on_hit == 0) {
+            std::printf("[FAIL] G21c no entry was dropped and read again on the async path\n");
+            ++fails;
         }
     }
 

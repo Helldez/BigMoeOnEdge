@@ -43,6 +43,27 @@ Semantic Versioning.
 - One planner run on Windows, in `docs/hardware-planning.md`, the device probed in a process of its
   own on an integrated GPU among it, and the roadmap, platform and
   backend pages say what Windows still owes.
+### Changed
+- **The expert cache no longer makes the machine write swap.**
+  - **The problem:** a pinned cache cannot be swapped, so under memory pressure the kernel swaps
+    every other process instead. On a 16 GB Mac, `--auto` pinned about 9 GB and the SSD took
+    0.6–1.8 GB of swap writes per 512-token answer, against 0.13 GB in 10 idle minutes. Flash wears
+    with writes.
+  - **The fix:** where the platform lets a process offer memory for the kernel to drop rather than
+    swap (Darwin purgeable objects, Linux and Android `MADV_FREE`, Windows `OfferVirtualMemory`),
+    the cache is offered instead of pinned. An expert no layer used in the last pass is handed over.
+    A lookup takes it back first, and reads it again from the model file if the kernel dropped it.
+    Each drop also lowers the budget, so a cache larger than the machine will let it keep settles
+    instead of churning.
+  - **Measured:** same machine, alternating arms. Swap writes went to 0 in every run, and decode was
+    18.9 / 17.9 / 14.9 tok/s against 16.2 / 14.5 / 16.8 pinned.
+  - **What changes for users:** on by default; `--no-cache-discard` restores the pinned cache.
+    `--auto` no longer sizes an offered cache to the lockable total. The run summary and the
+    server's `done` event report `cache_discarded`: how many experts the system dropped. A dropped
+    expert also leaves the cache's accounting, so `resident` is what RAM still holds.
+  - **Tests:** byte-identity gates G21a–c drop every offered entry at once (`--cache-discard-drop`,
+    debug), on the serial and the overlapped two-wave paths, and check that the re-read path ran.
+    ([cache-sizing.md](docs/cache-sizing.md))
 
 ## [0.40.3] - 2026-11-09
 

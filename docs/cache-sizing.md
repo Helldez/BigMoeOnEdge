@@ -215,6 +215,61 @@ attempts, the cache is ordinary memory as before, and the run prints which it go
 desktop's answer to the problem [android-memory.md](android-memory.md) describes; the dense weights
 have theirs in `--dense-weights pinned`.
 
+## Offered, not pinned: a cache the kernel drops instead of swapping
+
+A lock keeps the cache out of the compressor, and it pushes everything else there instead. On the
+same 16 GB machine, `--auto` pins about 9 GB (cache and dense set), and the rest of the system pays
+for it in swap: 3.3 GB written to the SSD in 7 minutes of decode, against 0.13 GB in 10 idle
+minutes. Swap is a write to flash, and writes are what wear it.
+
+So where the platform can take memory back by dropping it, the cache is offered rather than locked
+(`--cache-discard`, on by default, off with `--no-cache-discard`). An entry no layer used in the last
+pass of the stack is handed to the kernel (`pio::vm_offer`: a volatile purgeable object on Darwin,
+`MADV_FREE` on Linux and Android, `OfferVirtualMemory` on Windows), which reclaims it before it
+compresses or swaps anything. A lookup that finds an offered entry takes it back first
+(`pio::vm_reclaim`). If the kernel dropped it, the hit becomes a miss and the entry is read again
+from the model file, a read and not a write. A drop also lowers the budget by that entry, so a cache
+larger than the machine will let it keep settles where it is not refilled only to be dropped again.
+A dropped entry that nothing asks for again is found at the LRU tail, where the kernel's
+oldest-first reclaim leaves it. Each load retires dropped entries from the tail up to the first one
+still held, sampling one page of each with `mincore`, so the cache's resident figure is what RAM
+still holds. Correctness never rests on that sweep: a lookup always takes an entry back first. The
+policy is its own module, `moe/discardable_entries`, over a port that `platform_io` implements; its
+test runs it against a fake kernel. The budget never goes
+under one token's cycle, and never grows back within the run, like the brake
+([pressure.md](pressure.md)). The brake's sensor skips offered entries, because a dropped offer is
+this mechanism working, not the reclaim the brake watches for.
+
+Same machine, same binary, `--auto`, 512 tokens, the arms alternating with 30 s between runs:
+
+| | decode, three runs | swapped out per run | written to the SSD per run |
+|---|---|---:|---:|
+| pinned (`--no-cache-discard`) | 16.2, 14.5, 16.8 tok/s | 988–1225 MiB | 1002–1237 MiB |
+| offered | 18.9, 17.9, 14.9 tok/s | 0 | 8–60 MiB |
+
+The offered cache ended each run at about 6.5 GB of its 7.2–8.1 GB budget, after 353–876 drops.
+The writes left are the process's own, mostly the Metal shader cache. The machine was busier than
+on the day of the table above, so compare the arms with each other, not with that table.
+`pio::vm_reclaim` costs about 0.3 µs per projection on Darwin. On Linux it writes one word of every
+page of the entry and reads another, because nothing else reports a loss there. That is about 33 µs
+per 1.77 MB expert on the test phone, and `MADV_FREE` itself about 100 µs. Both are paid only when
+an expert goes cold and when it comes back, not on every hit.
+
+On the test phone (Android 16, 12 GB, Qwen3.6-35B-A3B Q4_K_M, `--auto`, 128 tokens, arms
+alternating) the result is neutral on speed and moves the pressure from zram to drops:
+
+| | decode, three runs | cache management | dropped by the kernel | stored to zram |
+|---|---|---:|---:|---:|
+| ordinary (`--no-cache-discard`) | 1.62, 2.88, 2.80 tok/s | 30–33 ms/token | ~10 MiB | 2.6–4.6 GiB |
+| offered | 1.41, 2.81, 2.92 tok/s | 52–65 ms/token | 0.6–3.0 GiB | 1.8–4.9 GiB |
+
+Android grants no lock, so there the cache was ordinary memory before and nothing pinned pushed other
+apps out. The pressure went to zram, which is RAM, not flash, unless a vendor's NAND writeback is on.
+Offered, the kernel dropped up to 3 GiB of cache instead of compressing it. The brake, which halved
+the ordinary cache in every run, never fired, because a dropped offer is not a loss to it. Each
+offer is one `madvise` per projection, which costs about 25 ms per token: the price of an expert
+going cold on Linux, and the place to make it cheaper.
+
 ## Flags
 
 | Flag | Meaning |

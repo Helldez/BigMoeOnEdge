@@ -55,6 +55,7 @@ if(BMOE_HAVE_LLAMA)
         src/plan/placement_probe.cpp
         src/plan/model_probe.cpp
         src/plan/auto_plan.cpp
+        src/moe/discardable_entries.cpp
         src/moe/expert_stream_source.cpp
         src/moe/gate_gemv.cpp
         src/moe/router_hook.cpp
