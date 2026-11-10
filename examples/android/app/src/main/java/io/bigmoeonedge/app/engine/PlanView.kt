@@ -1,16 +1,46 @@
 package io.bigmoeonedge.app.engine
 
+import java.math.BigDecimal
+import java.math.MathContext
+import java.util.Locale
+
 /**
  * The Plan screen's figures, worked out from what `GET /api/plan` and the parameter table say:
  * decode expected against measured, the cache hit rate credited against measured, the memory held
  * against what the process may hold, and what Apply changed. Nothing here names a
  * device or a knob. Same rules as the web UI (ui/src/lib/plan.ts).
  */
+/**
+ * Past this factor either way, measured against predicted reads as a ratio ("84x the 0.020 expected")
+ * instead of a percentage: +8314% and -97% say less than how many times apart the two are.
+ */
+const val RATIO_FROM = 2.0
+
+/** A decode rate as a person reads it: one decimal, or two significant digits where one decimal would read 0.0. */
+fun rateText(tokS: Double): String = when {
+    !tokS.isFinite() || tokS <= 0 -> "-"
+    tokS >= 0.1 -> String.format(Locale.US, "%.1f", tokS)
+    else -> significant(tokS)
+}
+
+/** A factor between two rates: whole above 10, one decimal above 1, two significant digits below. */
+private fun factorText(f: Double): String = when {
+    f >= 10 -> String.format(Locale.US, "%.0f", f)
+    f >= 1 -> String.format(Locale.US, "%.1f", f)
+    else -> significant(f)
+}
+
+private fun significant(v: Double): String = BigDecimal.valueOf(v).round(MathContext(2)).toPlainString()
+
+/** Measured against predicted as read: the badge (a percentage, or a ratio once RATIO_FROM apart) and what it is set against. */
+data class SpeedDelta(val badge: String, val against: String)
+
 data class PlanFigures(
     val predictedTokS: Double?,
     val measuredTokS: Double?,
     /** Measured against predicted, as bmoe-cli prints it: positive when the run beat the plan. */
     val deltaPct: Double?,
+    val delta: SpeedDelta?,
     /** The hit rate the cost model credited the cache with, and the one the last turn measured. */
     val creditedHitPct: Double?,
     val measuredHitPct: Double?,
@@ -23,10 +53,18 @@ fun planFigures(p: PlanResult): PlanFigures {
     val ps = p.predictedSPerToken.takeIf { it > 0 }
     val ms = p.measured?.sPerToken?.takeIf { it > 0 }
     val host = p.pools.firstOrNull { it.name == "host" } ?: p.pools.firstOrNull()
+    val factor = if (ps != null && ms != null) ps / ms else null // measured rate over predicted rate
+    val deltaPct = factor?.let { 100 * (it - 1) }
+    val delta = if (factor == null || ps == null) null else {
+        val expected = rateText(1 / ps)
+        if (factor >= RATIO_FROM || factor <= 1 / RATIO_FROM) SpeedDelta("${factorText(factor)}x", "the $expected expected")
+        else SpeedDelta(String.format(Locale.US, "%+.0f%%", deltaPct), "against the $expected expected")
+    }
     return PlanFigures(
         predictedTokS = ps?.let { 1 / it },
         measuredTokS = ms?.let { 1 / it },
-        deltaPct = if (ps != null && ms != null) 100 * (ps / ms - 1) else null,
+        deltaPct = deltaPct,
+        delta = delta,
         creditedHitPct = p.predictedHitPct.takeIf { it >= 0 },
         measuredHitPct = p.measured?.cacheHitPct?.takeIf { it >= 0 },
         heldBytes = host?.takeIf { it.capBytes > 0 }?.heldBytes,
