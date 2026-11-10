@@ -605,9 +605,12 @@ A device is armed when four things hold, each a fact and none a name:
 3. **It wins by the margin** every other device decision uses (`min_backend_win`).
 4. **It fits the ledger.** Under streaming a prefill device carries a layer's experts and a layer's
    other weights through slots - the layer being computed and the one being loaded behind it -
-   plus its compute buffer. That is charged as a row; the run must still stream, with a cache of at
-   least one token cycle, and the dense set and the cache must keep the protection they had. Those
-   are paid on every decoded token, and a prefill is paid once. A device with memory of its own
+   plus its compute buffer. That is charged as a row, and the run must not lose what decode had
+   without it: a cache of at least one token cycle where it had one, the protection of the dense
+   set and of the cache, and a ledger that closes (or, where a forced pin left it open, holds no
+   more than it did). Those are paid on every decoded token, and a prefill is paid once. Each is
+   measured against the run without the device: a cache already under a token cycle, and so off,
+   is not something the device takes away, and is no reason to refuse it. A device with memory of its own
    costs this pool nothing and is checked against its own free memory instead.
 
 **One expert slot or two.** The experts are the large part of that row and the part with a choice

@@ -6,17 +6,38 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Changed
+- **The byte-identity gates run in the Windows CI job** (#234), which only compiled before: MSVC,
+  the overlap gates with the expert-ready hook required, as on Linux. The two daylight-saving
+  scheduler checks stay POSIX's, since the Windows C runtime reads no zone names from `TZ`.
+
 ### Fixed
+- **The planner no longer refuses a prefill device for a cache that is already off** (#508). It
+  required the expert cache to stay at least one token cycle with the device armed, without asking
+  whether it was one without it, so a run whose cache was off (under a token cycle) refused every
+  device, and the plan blamed the cache. Each check is now measured against the run without the
+  device: a cache that streamed keeps streaming, the dense set and the cache keep their protection,
+  and what decode holds still fits what the process may hold (or, where a forced pin left the ledger
+  open, no more than it did). The reason names the check that failed.
+- **The Plan page no longer reads "+8314% against the 0.0 expected"** (#509). A prediction under
+  0.05 tok/s was printed with one decimal as 0.0. Rates now get two significant digits where one
+  decimal would read 0.0, and once measured and predicted are 2x apart the comparison reads as a
+  ratio ("84x the 0.020 expected"), on Android and in the web UI alike.
+- **A saved model whose file is gone is forgotten** (#510). The model a load asked for stayed in
+  `settings.json` after its file was deleted (through the server or from outside it), and the Plan
+  page offered to measure the machine "for" a model that was not there. `bmoe-server` now drops it
+  at start and after a delete, so the UIs show their "choose a model" state; a model given with `-m`
+  at launch is left alone.
+- **Android: the keyboard's action key searches, and the bottom bars step aside while typing**
+  (#511). The Hugging Face search and token fields search with the keyboard's Search key and the
+  direct-link field downloads with Go, on the same terms as their buttons. While the keyboard is
+  showing, the status line and the navigation bar are hidden app-wide instead of riding on top of
+  it and covering the screen's own buttons; they come back when it closes.
 - **A settings file that does not parse is set aside on Windows too.** The agent store renamed a
   broken `tasks.json` (or any of its files) to `.bad` while the stream reading it was still open,
   which Windows refuses, so the broken file stayed and was read again on every start.
 - **A client's settings file is shown in the platform's own separators** (`server/connect.cpp`):
   on Windows the path read `...\home\.c/config.toml`.
-
-### Changed
-- **The byte-identity gates run in the Windows CI job** (#234), which only compiled before: MSVC,
-  the overlap gates with the expert-ready hook required, as on Linux. The two daylight-saving
-  scheduler checks stay POSIX's, since the Windows C runtime reads no zone names from `TZ`.
 
 ### Documentation
 - One planner run on Windows, in `docs/hardware-planning.md`, the device probed in a process of its
