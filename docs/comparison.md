@@ -6,7 +6,7 @@ are faster there; this one builds on llama.cpp's public API and plans itself for
 finds. This page puts both sides next to each other: what each engine runs on, and the speeds each
 reports.
 
-Last checked on 2026-10-29 against each project's own pages and the sources linked below. Corrections
+Last checked on 2026-11-10 against each project's own pages and the sources linked below. Corrections
 are welcome as a pull request or an issue.
 
 ## What each engine runs on
@@ -18,6 +18,7 @@ are welcome as a pull request or an issue.
 | [Strata](https://github.com/Niko1221/Strata) | Windows, Linux, macOS (desktop app and terminal) | NVIDIA RTX 20-50 and DGX Spark, AMD Radeon RX 7000/9000 and Strix Halo, Intel Arc (Linux), Apple silicon | Qwen3.8-Flash-Next, Qwen3.6-35B-A3B, DeepSeek V4.1 Flash | read from SSD for DeepSeek V4.1 Flash | model choice by memory; `--plan` |
 | [ds4](https://github.com/antirez/ds4) | macOS, Linux | Metal, CUDA, ROCm (Strix Halo / RDNA), CPU (debugging) | DeepSeek V4 and V4.1 Flash, V4 PRO, GLM 5.2/5.3, Qwen3.8-Flash-Next, from its own GGUFs | streamed from SSD (`--ssd-streaming`) | automatic expert-cache budget |
 | [colibri](https://github.com/JustVugg/colibri) | Linux, macOS, Windows | CPU, Vulkan, CUDA, Metal | its own container, one engine per family (GLM, DeepSeek, Kimi, MiMo, Qwen, ...) | streamed from disk | `coli plan` shows the placement, `coli tune` measures and saves settings |
+| [Lucebox](https://github.com/Luce-Org/lucebox) | Linux (Docker images for CUDA and ROCm) | CUDA (RTX 20-50, DGX Spark, Jetson Thor), HIP (Radeon AI PRO R9700, RX 7900, Strix Halo) | listed models with tuned profiles (Qwen 3.5/3.6/3.8, Laguna XS, Gemma 4, DeepSeek V4 and V4.1 Flash, Ling 3.0 Flash) | DeepSeek V4.1 Flash across two AMD devices and an SSD (refused on CUDA builds); hot experts on the GPU and the rest on the CPU (`--spark`) for Qwen3.6 and Laguna | per-model profiles; `--spark` learns the expert placement from traffic across restarts |
 | [KTransformers](https://github.com/kvcache-ai/ktransformers) | Linux, Windows | CPU (AVX2, AVX-512, AMX), NVIDIA, AMD ROCm, Intel Arc, Ascend | listed families (DeepSeek, Kimi, GLM, Qwen3, MiniMax, Mixtral, ...) | held in RAM (hot experts on the GPU, the rest on the CPU), not streamed | not documented |
 
 ## Speeds each reports
@@ -46,6 +47,8 @@ show orders of magnitude rather than a ranking. BigMoeOnEdge's are the README's,
 |---|---|---|---:|---:|---|
 | KTransformers + SGLang | 2x RTX 5070 Ti 16 GB, 512 GB RAM (every expert in RAM) | V4.1 Flash, MXFP4 experts | 35-46 | 1,750-1,870 (35k-131k tokens) | [setup repository](https://github.com/05yuki/deepseek-v4.1-flash-1017-ktransformers) |
 | KTransformers + SGLang | 1x RTX 5070 Ti 16 GB, 512 GB RAM | V4.1 Flash, MXFP4 experts | 28-32 | 1,050-1,280 | same |
+| Lucebox | Radeon AI PRO R9700 + Strix Halo, an SSD (three expert tiers) | V4.1 Flash, ROCmFP2 | 25-26 (code), 17-18 after a 4k prompt | 118-121 (4k) | [Lucebox README](https://github.com/Luce-Org/lucebox) |
+| Lucebox | Strix Halo 128 GB, its DSpark drafter | V4 Flash, ROCmFPX mix | 42 (8k), 39 (code, math), 25 (prose) | 320 (8k) | same |
 | ds4 | Apple M5 Max 128 GB | V4 Flash, Q2 | 26 | | [overview](https://insiderllm.com/guides/ssd-streaming-moe-engines/) |
 | ds4 | DGX Spark 128 GB | V4 Flash, Q2 | 14-18 | ~825 | [ds4 performance notes](https://github.com/antirez/ds4/blob/main/docs/PERFORMANCE.md) |
 | Strata | RTX 5090 32 GB | V4.1 Flash, 2-bit | ~17 | | [review, 2026-10-27](https://akitaonrails.com/en/2026/10/27/llm-benchmark-best-open-source-llms-for-home-hardware/) |
@@ -60,6 +63,24 @@ show orders of magnitude rather than a ranking. BigMoeOnEdge's are the README's,
 | pulsar | two 16 GB GPUs | GLM-5.2 / Hy3 295B | ~2 / ~7 | [project listing](https://trendshift.io/repositories/82195) |
 | llama.cpp PR with expert streaming | | GLM-5.2 | 1.8-2.2 | [PR #25294](https://github.com/ggml-org/llama.cpp/pull/25294) |
 | colibri | six RTX 5090 (every expert in VRAM) / a 25 GB laptop | GLM-5.2 | 6-9 / 0.05-0.1 | [colibri](https://github.com/JustVugg/colibri) |
+
+## Same machine, same file
+
+Measured here, both engines on one rented 24 GB card (RTX 3090 class, 94 GB of RAM), the same GGUF,
+client and prompts, two loads each, decode in tokens per second
+([bench-data](bench-data/2026-11-10-same-card-lucebox/README.md)). BigMoeOnEdge is the 0.41.0
+release candidate with `--auto`; Lucebox runs its own RTX 3090 recipe for each model, with PFlash
+(lossy prompt compression) off.
+
+| Model, card | BigMoeOnEdge | Lucebox |
+|---|---|---|
+| Qwen3.6-35B-A3B Q4_K_M, whole card | **135**; 28.6k-token prompt: first token in **5.3 s**, then **109** | 108; 37 s, then 88 |
+| same, 12 GiB of the card free | **75-81**; **8.4 s**, then 67 (with #531) | 51-76; 78 s, then **72** |
+| Gemma 4 26B-A4B Q4_K_M, whole card | **107-115** prose, 113 code; 29.5k prompt **10 s**, then 65 | 106-109 prose, **249-254** code (its DFlash drafter); 29.5k prompt refused (KVFlash pool) |
+
+Lucebox's drafters are trained per model and verified by the target, so on a model it ships one for
+the decode of predictable text (code) is more than twice this engine's; this engine has a drafter
+only where the model carries its own MTP head.
 
 ## Reading the tables
 

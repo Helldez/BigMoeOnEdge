@@ -527,6 +527,16 @@ greedy tokens ([bench-data/2026-10-26-rented-gpu](bench-data/2026-10-26-rented-g
 | Qwen3.8-Flash-Next 125B Q2_0 (66 GB, 32 GB of experts) | experts in RAM, the 18 GB used most cached on the card | **70** |
 | DeepSeek V4 Flash 0731 UD-IQ2_M (85 GB of experts) | streamed from the drive: 66 GB cache in RAM, 13 GB on the card, 94% hits | **9.3** |
 
+On a rented 24 GB card of the generation before (RTX 3090 class, 20 cores, 94 GB of RAM), on
+2026-11-10, the 0.41.0 release candidate with `--auto` and `--ctx-size 40960`
+([bench-data/2026-11-10-same-card-lucebox](bench-data/2026-11-10-same-card-lucebox/README.md)):
+Qwen3.6-35B-A3B decoded at **135** tok/s with the whole model on the card, and a 28.6k-token prompt
+reached its first token in 5.3 s (5,435 tok/s), then decoded at 109. With 12 GiB of the card left
+free, the size of a 12 GB card, it decoded at **75-81**, every layer on the card and a 5.2 GiB cache
+of the experts used most, once #531 narrows the graph there (before it: 0 layers on the card, 12.5
+tok/s). Gemma 4 26B-A4B decoded at **107-115**. The same runs put Lucebox on the same card and files:
+see [comparison.md](comparison.md#same-machine-same-file).
+
 And on a rented 12 GB card (RTX 3060 class, 7.7 usable cores, a 42.6 GiB control group), the class
 most people own, Qwen3.8-Flash-Next Q2_0: `--auto` armed a 6 GB device cache and the run was killed
 by the control group at 43 GB (the tier's host-side memory is not in the ledger, #424); with the
