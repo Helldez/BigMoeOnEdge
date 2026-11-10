@@ -18,6 +18,11 @@ Semantic Versioning.
   0.05 tok/s was printed with one decimal as 0.0. Rates now get two significant digits where one
   decimal would read 0.0, and once measured and predicted are 2x apart the comparison reads as a
   ratio ("84x the 0.020 expected"), on Android and in the web UI alike.
+- **A saved model whose file is gone is forgotten** (#510). The model a load asked for stayed in
+  `settings.json` after its file was deleted (through the server or from outside it), and the Plan
+  page offered to measure the machine "for" a model that was not there. `bmoe-server` now drops it
+  at start and after a delete, so the UIs show their "choose a model" state; a model given with `-m`
+  at launch is left alone.
 
 ## [0.40.3] - 2026-11-09
 
