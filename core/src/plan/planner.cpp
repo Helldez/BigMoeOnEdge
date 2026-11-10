@@ -1680,6 +1680,7 @@ AllocationInputs ledger_inputs(const Planning & s, uint64_t dense_pending) {
     ai.checkpoint_bytes = s.checkpoint_bytes;
     // A discardable cache is never locked (the engine drops the pin where it can offer instead).
     ai.cache_lock = c.moe.cache_pin && !(c.moe.cache_discard && s.hw.discardable_memory);
+    ai.cache_offered = c.moe.cache_discard && s.hw.discardable_memory;
     ai.holdable_bytes = s.holdable;
     ai.margin_frac = margin_frac(s.hw, s.pol);
     ai.margin_min_bytes = s.pol.margin_min_bytes;

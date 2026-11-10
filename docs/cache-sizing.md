@@ -238,6 +238,14 @@ and no other thread reads an offered entry (a device prefill copying from the ca
 file instead). The policy is its own module, `moe/discardable_entries`, over a port that `platform_io` implements; its
 test runs it against a fake kernel.
 
+`--auto` sizes an offered cache outside the plan's margin, as it does a locked one. The margin is
+room left for a reclaim that writes, compressing or swapping what it takes; the kernel takes an
+offered page back by dropping it, which writes nothing, and on every platform with the mechanism it
+reclaims those pages before it compresses or swaps anything. So the margin is sized on what stays
+ordinary memory, and that includes one token cycle of the cache: the experts the last pass used are
+not offered. Before, an offered cache paid the full margin as if a reclaim of it would write: 452 MiB
+of a 12 GB test phone with 4.5 GB available, and 0.9 GB of a 16 GB Mac.
+
 Windows has the API (`OfferVirtualMemory` / `ReclaimVirtualMemory`) but not yet the mechanism: an
 offered range leaves the working set and turns `PAGE_NOACCESS` the moment it is offered, kept or not,
 and the offer and the reclaim each cost microseconds per page: about 1 ms per 1.7 MiB entry, twice

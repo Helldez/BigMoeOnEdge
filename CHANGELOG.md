@@ -166,6 +166,14 @@ Semantic Versioning.
   13 minutes for its first token. The rule and the second placement at the narrower width now cover
   a card with no layer on it: 10240 tokens wide, all 41 layers and a 5.2 GiB expert cache, 75-81
   tok/s and a first token after 8.4 s (`docs/bench-data/2026-11-10-zero-layer-width/`).
+- **An offered expert cache is no longer smaller than it needs to be.** With the cache offered to the
+  kernel instead of locked (`--cache-discard`), `--auto` took the full memory margin out of it: the
+  margin is room for a reclaim that compresses or swaps, and the kernel takes an offered page back by
+  dropping it, which writes nothing. The margin is now sized on what stays ordinary memory, one token
+  cycle of the cache included (the experts the last pass used are not offered), as it already was for
+  a locked cache. On a 16 GB Mac with Qwen3.6-35B-A3B Q4_K_M the plan's cache goes from 5449 to 6169
+  MiB (the locked cache of 0.40.3 was 6076); on a 12 GB phone with 4.5 GB available the margin was
+  452 MiB of Ling-3.0-tiny's cache. ([cache-sizing.md](docs/cache-sizing.md))
 
 ### Documentation
 - One planner run on Windows, in `docs/hardware-planning.md`, the device probed in a process of its
