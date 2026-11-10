@@ -590,17 +590,23 @@ void bound_cache(Pricing & c) {
         (in.lock_in_place_bytes > c.locked ? in.lock_in_place_bytes - c.locked : 0) & ~((1ull << 20) - 1);
     const bool cache_may_lock = in.cache_lock && cache_lock_room >= model.token_cycle_bytes;
     const bool cache_protected = cache_may_lock && in.lock_in_place_bytes_known;
+    // An offered cache is taken back by dropping it, never by a write (AllocationInputs::cache_offered),
+    // so it leaves the margin as a locked one does - all but the token cycle the last pass used.
+    const bool cache_offered = !cache_protected && in.cache_offered && in.cacheable_bytes > model.token_cycle_bytes;
     uint64_t holdable_cap = in.budget_bytes;
-    if (cache_protected && in.holdable_bytes > 0) {
-        // With the cache locked, most of what this run holds cannot be taken back, and a margin sized
-        // on all of it would be room left for a reclaim that cannot happen. It is sized on what stays
-        // ordinary instead, and never lowers the ceiling the caller was given. "Ordinary" is never
-        // less than the rows that really are: an unpinned dense set is memory the machine can take
-        // back however much lock is left unused beside it.
-        const uint64_t locked_all = c.locked + std::min(cache_lock_room, in.cacheable_bytes);
-        const uint64_t ordinary_rows = in.fixed_bytes + in.projector_bytes + in.checkpoint_bytes +
-                                       (in.device_locked ? 0 : in.device_bytes) +
-                                       (a.dense_pinned ? 0 : in.reserved_bytes);
+    if ((cache_protected || cache_offered) && in.holdable_bytes > 0) {
+        // With the cache locked or offered, most of what this run holds is not memory a reclaim has
+        // to write to take back, and a margin sized on all of it would be room left for a reclaim
+        // that does not happen. It is sized on what stays ordinary instead, and never lowers the
+        // ceiling the caller was given. "Ordinary" is never less than the rows that really are: an
+        // unpinned dense set is memory the machine can take back however much lock is left unused
+        // beside it, and an offered cache keeps the experts of its last pass as ordinary memory.
+        const uint64_t exempt_cache = cache_protected ? std::min(cache_lock_room, in.cacheable_bytes)
+                                                      : in.cacheable_bytes - model.token_cycle_bytes;
+        const uint64_t locked_all = c.locked + exempt_cache;
+        const uint64_t ordinary_rows =
+            in.fixed_bytes + in.projector_bytes + in.checkpoint_bytes + (in.device_locked ? 0 : in.device_bytes) +
+            (a.dense_pinned ? 0 : in.reserved_bytes) + (cache_offered ? model.token_cycle_bytes : 0);
         const uint64_t ordinary =
             std::max(in.holdable_bytes > locked_all ? in.holdable_bytes - locked_all : 0, ordinary_rows);
         const uint64_t m = std::max((uint64_t) ((double) ordinary * in.margin_frac), in.margin_min_bytes);
@@ -646,7 +652,7 @@ void bound_cache(Pricing & c) {
 
     if (priced > 0) {
         // What the ranking priced was priced under the caller's ceiling; where the ceiling was raised
-        // for a locked cache, the cache is what the difference is for. And what the ranking left
+        // for a locked or offered cache, the cache is what the difference is for. And what the ranking left
         // unspent goes to the cache too: the curve it priced on is a short record's, flat past the
         // experts those few tokens touched, so it calls a byte past them worth nothing, while a longer
         // answer routes to experts the record never saw and a byte left idle saves nothing at all.

@@ -398,7 +398,7 @@ number it turns on as its value ("6.3 GB/s", "581 MiB") or `-`.
 | whether a reclaim-exempt allocation exists | whether the dense set can be pinned |
 | how much may be held reclaim-exempt in total, net of what already is | whether the dense set fits there whole, and what is left for the cache |
 | how much may be locked where it already sits | whether the cache is sized to what can be locked or to what can be held |
-| whether memory can be offered for the kernel to drop (`discardable_memory`) | whether the cache is offered instead of locked, and so not sized to the lock at all |
+| whether memory can be offered for the kernel to drop (`discardable_memory`) | whether the cache is offered instead of locked: not sized to the lock at all, and outside the margin, which is room for a reclaim that writes (all but its last pass, which stays ordinary) |
 | whether a device's buffers are held reclaim-exempt | whether arming it is charged to that total too |
 | one real layer of the model, its expert block and its dense matrices, at one token, on the host and on every device, with the result compared | the device tier's and the cost model's compute prices; a device that disagrees is refused |
 | the same layer 128 tokens wide, with the result compared | `--prefill-device`: which device, if any, runs the prefill |

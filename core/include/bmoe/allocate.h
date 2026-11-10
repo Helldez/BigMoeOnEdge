@@ -121,6 +121,14 @@ struct AllocationInputs {
     // cycle of it, the cache is sized to what can be locked rather than to what can be held.
     bool cache_lock = false;
 
+    // The expert cache is offered to the kernel instead (MoeStreamConfig::cache_discard, on a
+    // platform with the mechanism): an entry no layer used in the last pass is the kernel's to drop
+    // under pressure. The margin is room for a reclaim that writes, compressing or swapping, and the
+    // kernel takes an offered page back by dropping it, which writes nothing. So, like a locked
+    // cache, an offered one stands outside the margin, all but one token cycle of it: the experts
+    // the last pass used are not offered, and are ordinary memory.
+    bool cache_offered = false;
+
     // The engine's own fixed cache guard, REPORTED and never enforced here. It is a generic
     // constant that predates the per-model floor and is the weaker of the two: a budget above this
     // model's own token cycle returns hits however small it looks next to a number chosen once for
