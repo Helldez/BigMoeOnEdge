@@ -27,6 +27,14 @@ Semantic Versioning.
   Parameters `--trial-width` and `--trial-width-narrow` (set by the plan). Gate G24c.
 
 ### Fixed
+- **A card the wide graph left with no layer gets its graph narrowed too.** The graph-width rule
+  held a card's compute buffers to its share of its memory only where the fitter had placed some
+  layers there, so it skipped the shortest case: a graph as wide as the context whose buffers took
+  the room of the first layer. On a 24 GB card with 12 GiB free, Qwen3.6-35B Q4_K_M at a 40960
+  context placed 0 of 41 layers and decoded on the host at 12.5 tok/s, a 28.6k-token prompt waiting
+  13 minutes for its first token. The rule and the second placement at the narrower width now cover
+  a card with no layer on it: 10240 tokens wide, all 41 layers and a 5.2 GiB expert cache, 75-81
+  tok/s and a first token after 8.4 s (`docs/bench-data/2026-11-10-zero-layer-width/`).
 - **The device expert cache is kept only where it measured faster.** `--auto` armed a cache of the
   experts used most on any card that computes them faster than the host, which is necessary and not
   sufficient: each miss crosses the link first. On two 24 GB cards over PCIe 3, GLM-4.7 (355B, a

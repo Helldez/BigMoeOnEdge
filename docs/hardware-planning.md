@@ -765,7 +765,12 @@ count in this pool where its memory is the host's. A device with memory of its o
 in that memory. Where the fitter left whole layers on the host beside it, a byte of buffer there is a
 byte of some layer's dense part: there its buffers are held to the same share of the device's memory,
 each card against its own (two cards of different sizes each reserve their part, and the smaller runs
-short first). Because the fitter placed the layers around buffers as wide as the graph it was given,
+short first). A card the fitter placed no layer on at all is the shortest case, not an exception: the
+wide buffers took the room the first layer needed. On a 24 GB card with 12 GiB left free,
+Qwen3.6-35B Q4_K_M at a 40960 context reserved 11.8 GiB of device buffers at the full width, the
+fitter placed 0 of 41 layers and the decode ran on the host at 12.5 tok/s; narrowed to 10240 tokens,
+it placed all 41 with a 5.2 GiB expert cache and decoded at 75-81 tok/s, and a 28.6k-token prompt's
+first token came after 8.4 s rather than 13 minutes. Because the fitter placed the layers around buffers as wide as the graph it was given,
 a plan that narrows the graph on a device places again at the narrower width (`probe_and_plan`), and
 the rules run on that placement. Where every layer is on the device, the graph stays as wide as the
 host's share allows. There a narrower graph would trade prefill for a larger device cache, and that

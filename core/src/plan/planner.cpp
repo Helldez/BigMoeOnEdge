@@ -1008,8 +1008,11 @@ void choose_graph_width(Planning & s) {
     // there that is no trade, the whole model fitting the device, is asked of the fitter by
     // probe_and_plan, since only a placement can say it.
     const uint64_t device_memory = device_in_pool ? 0 : s.hw.device_local_memory();
-    const bool device_short = device_memory > 0 && s.placement.fitted && s.placement.n_gpu_layers > 0 &&
-                              s.placement.device_compute_per_token > 0 &&
+    // No layer on the card at all is the shortest of all: the wide graph's buffers took the room the
+    // first layer needed. Measured on a 24 GB card with 12 GiB left free, Qwen3.6-35B Q4_K_M at a 40960
+    // context: the full width reserved 11.8 GiB of device buffers, the fitter placed 0 of 41 layers and
+    // the decode ran on the host at 12.5 tok/s; at 10240 tokens it placed all 41 and decoded at 75-81.
+    const bool device_short = device_memory > 0 && s.placement.fitted && s.placement.device_compute_per_token > 0 &&
                               (uint32_t) s.placement.n_gpu_layers <= s.model.n_layer;
     const uint32_t device_width = device_short ? device_share_width(s.placement, s.hw, s.pol) : 0;
     auto device_buffers = [&](uint32_t w) { return s.placement.at_width(w).device_compute_bytes; };

@@ -965,6 +965,18 @@ int main() {
             check(wn * 2 * dev_per_token > dcap || wn == pol.ubatch_min,
                   "width: the widest whose device buffers fit, not a narrower one", std::to_string(wn));
 
+            // No layer on the card at all: the wide graph's buffers took the room of the first one. That is
+            // the shortest of all, and the graph narrows the same way.
+            Placement no_layers = short_card;
+            no_layers.n_gpu_layers = 0;
+            no_layers.device_bytes = 0;
+            const Plan from_none = plan_run(big_ctx, card, model, no_layers, PlanRequest{});
+            const Decision * d0 = find(from_none, "ubatch");
+            const uint64_t w0 = (uint64_t) from_none.config.n_ubatch;
+            check(w0 > 0 && w0 < 16384 && w0 * dev_per_token <= dcap && d0 && d0->source == Source::Policy,
+                  "width: a device the wide graph left with no layer narrows it too",
+                  d0 ? std::to_string(w0) + ": " + d0->reason : "no decision");
+
             // Every layer on the card, the experts on the host (a cache's job): the wide graph costs
             // cache, not a dense part, and that trade is not this rule's. The graph stays wide.
             Placement all_layers = short_card;
