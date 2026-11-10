@@ -885,12 +885,16 @@ static void schedule_tests() {
           "a time of day that does not exist is refused");
     check(!parse_schedule(json{{"kind", "weekly"}, {"at", "10:00"}}, s, err), "weekly without a weekday is refused");
     check(!parse_schedule(json{{"kind", "hourly"}}, s, err), "an unknown kind is refused");
+#if !defined(_WIN32)
+    // The C runtime on Windows reads no zone names from TZ (only a US-rule "CET-1CEST" form), and
+    // the scheduler there follows the system's zone, so the daylight-saving case is POSIX's to prove.
     set_tz("Europe/Rome");
     check(parse_schedule(json{{"kind", "daily"}, {"at", "09:00"}}, s, err) &&
               next_run(s, 1792735200 /* 2026-10-23 08:00 Rome, CEST */, true) == 1792735200 + 3600,
           "daily in a zone with daylight saving: local time of day");
     check(next_run(s, 1792825200 /* 2026-10-24 09:00 CEST */, true) == 1792825200 + day + 3600,
           "across the change to winter time the day is 25 hours");
+#endif
     set_tz("UTC");
 }
 
