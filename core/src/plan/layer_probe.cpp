@@ -40,6 +40,7 @@
 #include "../io/platform_io.h"
 #include "../moe/tensor_names.h"
 
+#include "bmoe/log.h"
 #include "ggml-backend.h"
 #include "ggml.h"
 #include "gguf.h"
@@ -48,6 +49,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <exception>
 #include <string>
 #include <vector>
@@ -462,6 +464,131 @@ LayerRun run_layer(ggml_backend_dev_t dev, const Layer & L, int n_threads) {
     return r;
 }
 
+// The tokens of a node whose exact result is computed: enough rows to catch a kernel that differs per
+// token, few enough that a double-precision product over a real layer stays a fraction of the probe.
+constexpr int64_t k_exact_tokens = 4;
+
+// The exact result of the nodes whose outputs are compared (the first copy's, and of the decode groups
+// only the first), from the weights dequantized and multiplied in double: what both backends compute
+// within their own rounding. A node's vector is a prefix of its output, the first k_exact_tokens
+// tokens of it, since outputs are token-major. Empty where a node is not compared or a type has no
+// conversion to float, and then that node falls back to the host as the reference.
+struct Exact {
+    std::vector<std::vector<double>> dec_e, dec_d, wide_e, wide_d;
+};
+
+bool dequant_row(const Matrix & m, int64_t expert, int64_t row, std::vector<float> & out) {
+    const size_t rs = ggml_row_size(m.type, m.ne0);
+    const size_t off = (size_t) expert * (size_t) m.expert_bytes + (size_t) row * rs;
+    if (off + rs > m.bytes.size()) return false;
+    out.resize((size_t) m.ne0);
+    const uint8_t * p = m.bytes.data() + off;
+    if (m.type == GGML_TYPE_F32) {
+        std::memcpy(out.data(), p, rs);
+        return true;
+    }
+    const ggml_type_traits * tt = ggml_get_type_traits(m.type);
+    if (!tt || !tt->to_float) return false;
+    tt->to_float(p, out.data(), m.ne0);
+    return true;
+}
+
+// out[t][j][r] for tokens t < n_tok: expert ids(t, j)'s row r against input slot (t, j).
+bool exact_expert(const Matrix & m,
+                  const std::vector<float> & x,
+                  int64_t k,
+                  int64_t n_tok,
+                  const std::function<int64_t(int64_t, int64_t)> & id,
+                  std::vector<double> & out) {
+    out.assign((size_t) (n_tok * k * m.ne1), 0.0);
+    std::vector<float> w;
+    for (int64_t t = 0; t < n_tok; ++t)
+        for (int64_t j = 0; j < k; ++j) {
+            const int64_t e = id(t, j);
+            const float * xi = x.data() + (size_t) ((t * k + j) * m.ne0);
+            for (int64_t r = 0; r < m.ne1; ++r) {
+                if (!dequant_row(m, e, r, w)) return false;
+                double acc = 0.0;
+                for (int64_t c = 0; c < m.ne0; ++c)
+                    acc += (double) w[(size_t) c] * (double) xi[c];
+                out[(size_t) ((t * k + j) * m.ne1 + r)] = acc;
+            }
+        }
+    return true;
+}
+
+bool exact_dense(const Matrix & m, const std::vector<float> & x, int64_t n_tok, std::vector<double> & out) {
+    out.assign((size_t) (n_tok * m.ne1), 0.0);
+    std::vector<float> w;
+    for (int64_t r = 0; r < m.ne1; ++r) {
+        if (!dequant_row(m, 0, r, w)) return false;
+        for (int64_t t = 0; t < n_tok; ++t) {
+            const float * xi = x.data() + (size_t) (t * m.ne0);
+            double acc = 0.0;
+            for (int64_t c = 0; c < m.ne0; ++c)
+                acc += (double) w[(size_t) c] * (double) xi[c];
+            out[(size_t) (t * m.ne1 + r)] = acc;
+        }
+    }
+    return true;
+}
+
+// The same inputs and routing run_layer builds, in the same order, so node i here is node i there.
+Exact exact_layer(const Layer & L) {
+    Exact ex;
+    const size_t n_ex = L.experts.size(), n_de = L.dense.size();
+    ex.dec_e.resize(n_ex * (size_t) L.replicas_e * (size_t) L.groups);
+    ex.wide_e.resize(n_ex);
+    ex.dec_d.resize(n_de * (size_t) L.replicas_d);
+    ex.wide_d.resize(n_de);
+    const int64_t held = L.experts.empty() ? 0 : L.experts.front().n_held;
+    uint32_t salt = 0;
+    for (size_t e = 0; e < n_ex; ++e) {
+        const Matrix & m = L.experts[e];
+        std::vector<float> vd, vw;
+        fill_input(vd, (size_t) (m.ne0 * L.k), ++salt);
+        fill_input(vw, (size_t) (m.ne0 * L.k * L.wide_tokens), ++salt);
+        // Decode, group 0: experts [0, k).
+        if (!exact_expert(
+                m, vd, L.k, 1, [](int64_t, int64_t j) { return j; },
+                ex.dec_e[e * (size_t) L.replicas_e * (size_t) L.groups]))
+            ex.dec_e[e * (size_t) L.replicas_e * (size_t) L.groups].clear();
+        const int64_t n_tok = std::min<int64_t>(k_exact_tokens, L.wide_tokens);
+        const int64_t k = L.k;
+        if (held <= 0 ||
+            !exact_expert(
+                m, vw, L.k, n_tok, [k, held](int64_t t, int64_t j) { return (t * k + j) % held; }, ex.wide_e[e]))
+            ex.wide_e[e].clear();
+    }
+    for (size_t di = 0; di < n_de; ++di) {
+        const Matrix & m = L.dense[di];
+        std::vector<float> vd, vw;
+        fill_input(vd, (size_t) m.ne0, ++salt);
+        fill_input(vw, (size_t) (m.ne0 * k_wide_batch), ++salt);
+        if (!exact_dense(m, vd, 1, ex.dec_d[di * (size_t) L.replicas_d])) ex.dec_d[di * (size_t) L.replicas_d].clear();
+        if (!exact_dense(m, vw, std::min<int64_t>(k_exact_tokens, k_wide_batch), ex.wide_d[di])) ex.wide_d[di].clear();
+    }
+    return ex;
+}
+
+// How far `run`'s outputs are from the exact result, as llama.cpp's normalized mean squared error
+// over every node that has both; a negative value where none has.
+double nmse_exact(const Part & run, const std::vector<std::vector<double>> & exact) {
+    double num = 0.0, den = 0.0;
+    bool any = false;
+    for (size_t i = 0; i < run.out.size() && i < exact.size(); ++i) {
+        const std::vector<double> & x = exact[i];
+        if (x.empty() || run.out[i].size() < x.size()) continue;
+        for (size_t j = 0; j < x.size(); ++j) {
+            const double d = (double) run.out[i][j] - x[j];
+            num += d * d;
+            den += x[j] * x[j];
+        }
+        any = true;
+    }
+    return any && den > 0.0 ? num / den : -1.0;
+}
+
 // Whether `dev` reproduced the host on every node of the first copy both ran; Unknown where none was.
 Tri agreement(const Part & dev, const Part & ref) {
     std::vector<float> a, b;
@@ -526,6 +653,16 @@ bool probe_real_layer(HardwareProfile & hw, const ModelProfile & model) {
     host->wide_matmul_gibs = hw.host_wide_matmul_gibs;
     host->wide_identity_ok = Tri::Yes; // the reference
 
+    // The exact result of the compared nodes, computed once: the reference a device is judged by.
+    const Exact ex = exact_layer(L);
+    const auto judged = [](const Part & dev, const Part & host, const std::vector<std::vector<double>> & exact,
+                           const char * name, const char * half) {
+        const double e_host = nmse_exact(host, exact), e_dev = nmse_exact(dev, exact);
+        if (e_host < 0.0 || e_host >= k_max_nmse || e_dev < 0.0) return agreement(dev, host);
+        log_printf(LogLevel::Info, "real layer: %s on the %s: %.2e from the exact result, the host %.2e (bound %.0e)",
+                   name, half, e_dev, e_host, k_max_nmse);
+        return e_dev < k_max_nmse ? Tri::Yes : Tri::No;
+    };
     const uint64_t needed = L.held_bytes();
     for (ComputeDevice & d : hw.devices) {
         if (d.is_cpu || !d.probe_here()) continue;
@@ -538,8 +675,13 @@ bool probe_real_layer(HardwareProfile & hw, const ModelProfile & model) {
         d.expert_gibs = blended(run.dec_e, host_e) / k_gib;
         d.dense_gibs = blended(run.dec_d, host_d) / k_gib;
         // Correctness first: at decode width a device that computes something else is refused for
-        // good, whatever the synthetic probe concluded on its one matrix.
-        const Tri dec_e = agreement(run.dec_e, ref.dec_e), dec_d = agreement(run.dec_d, ref.dec_d);
+        // good, whatever the synthetic probe concluded on its one matrix. Judged against the exact
+        // result where the host itself meets the bound on it: two backends round differently (a device
+        // quantizes the activations its own way), and comparing one with the other refused a device
+        // whose distance from the exact result was the host's own order. Against the host only where
+        // the exact result could not be computed, or the host is not within the bound of it either.
+        const Tri dec_e = judged(run.dec_e, ref.dec_e, ex.dec_e, d.name.c_str(), "experts");
+        const Tri dec_d = judged(run.dec_d, ref.dec_d, ex.dec_d, d.name.c_str(), "dense");
         if (dec_e == Tri::No || dec_d == Tri::No)
             d.identity_ok = Tri::No;
         else if (d.identity_ok == Tri::Unknown && dec_e == Tri::Yes)
@@ -549,7 +691,8 @@ bool probe_real_layer(HardwareProfile & hw, const ModelProfile & model) {
         const double wd = run.wide_d.rate() > 0.0 ? blended(run.wide_d, host_wd) : host_wd;
         if (run.wide_e.rate() > 0.0 || run.wide_d.rate() > 0.0) {
             d.wide_matmul_gibs = wide_rate(L, we, wd) / k_gib;
-            const Tri ae = agreement(run.wide_e, ref.wide_e), ad = agreement(run.wide_d, ref.wide_d);
+            const Tri ae = judged(run.wide_e, ref.wide_e, ex.wide_e, d.name.c_str(), "experts, wide");
+            const Tri ad = judged(run.wide_d, ref.wide_d, ex.wide_d, d.name.c_str(), "dense, wide");
             d.wide_identity_ok = (ae == Tri::No || ad == Tri::No)     ? Tri::No
                                  : (ae == Tri::Yes || ad == Tri::Yes) ? Tri::Yes
                                                                       : Tri::Unknown;

@@ -14,6 +14,18 @@ Semantic Versioning.
   CI and the release smoke now start `bmoe-desktop.exe` on Windows, so a missing import fails
   there rather than on a user's machine.
 
+## [Unreleased]
+
+### Fixed
+- **A device is judged against the exact result, not against the host.** The real-layer probe
+  refused a device whose expert matmul differed from the host's by more than llama.cpp's NMSE bound,
+  but two backends round differently, each quantizing the activations its own way. On a two-card
+  box both cards were refused on GLM-4.5-Air's Q5_0/Q5_1 experts, so no device expert cache was
+  armed, and the plan said they "do not execute" the expert matmul. The compared nodes are now also
+  computed in double precision from the dequantized weights, and a device passes if it is within the
+  same bound of that. The host stays the reference where no exact result can be computed, or where it
+  is not within the bound itself. The plan's log gives both distances.
+
 ## [0.40.2] - 2026-11-08
 
 ### Added

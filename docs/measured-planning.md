@@ -249,10 +249,17 @@ unchanged plan.
   accepting it), and everything is freed on every path. It runs in the isolated child with the other
   device probes; the facts line is `v=2` and carries `expert=` and `dense=`.
 - **Correctness first.** Every backend computes the same bytes on the same inputs; a device whose
-  result at one token disagrees with the host's (llama.cpp's own NMSE bound) is refused for good
-  (`identity_ok = No`), and at 128 tokens it is not armed for the prefill. A node a device has no
-  kernel for is left out of its graph and priced at the host's rate for that half, where the
-  scheduler would run it.
+  result at one token is not within llama.cpp's own NMSE bound is refused for good
+  (`identity_ok = No`), and at 128 tokens it is not armed for the prefill. Within the bound of what is
+  the exact result: the compared nodes are also computed in double precision from the weights
+  dequantized (the first decode group, and the first four tokens at width), and a device is judged
+  against that. Two backends round differently, since each quantizes the activations its own way, and
+  judging one by the other refused both cards of a two-card box on GLM-4.5-Air's Q5_0/Q5_1 experts,
+  where llama.cpp itself runs them. The host is the reference only where the exact result cannot be
+  computed (a type with no conversion to float) or the host is not within the bound of it either. The
+  plan's log line `real layer: <device> on the <half>: <e> from the exact result, the host <e>` gives
+  both distances. A node a device has no kernel for is left out of its graph and priced at the host's
+  rate for that half, where the scheduler would run it.
 - **The facts.** `expert_gibs` and `dense_gibs` per device and the host's `host_expert_gibs` and
   `host_dense_gibs`; `wide_matmul_gibs` is now the whole layer at 128 tokens. A rule comparing a host
   with a device reads both figures from the same experiment (`RatePair`): the real layer's where both
