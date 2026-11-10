@@ -1355,7 +1355,7 @@ int main(int argc, char ** argv) {
     // Acceptance is the number that decides whether speculation can pay at all; tokens-per-decode is
     // what it actually bought, and it is what tok/s above is a function of.
     if (s.mtp_decodes > 0 && cfg.spec.enabled()) {
-        const char * src = cfg.spec.is_mtp() ? "mtp" : "ngram";
+        const char * src = cfg.spec.source_name();
         std::printf("%s: %lld/%lld drafts accepted (%.1f%%), %.2f tokens per verify decode "
                     "(%lld decodes for %d tokens)\n",
                     src, s.mtp_accepted, s.mtp_drafted,

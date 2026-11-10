@@ -1026,17 +1026,19 @@ std::vector<ParamDesc> build() {
         ParamDesc d = row("spec", "Speculative drafts", G::Speculation, L::Advanced,
                           "Draft a continuation, then verify it in one wider decode. mtp uses the model's own "
                           "prediction head (needs the nextn block); ngram looks the recent tokens up in the "
-                          "prompt and the answer. Needs greedy decoding.");
+                          "prompt and the answer; drafter uses a draft model trained for this one, from "
+                          "--drafter-file. Needs greedy decoding.");
         d.form = true;
         d.type = ParamType::Choice;
         d.flag.clear();
-        d.value_hint = "mtp|ngram";
-        d.switches = {{"--mtp", "mtp"}, {"--ngram", "ngram"}};
+        d.value_hint = "mtp|ngram|drafter";
+        d.switches = {{"--mtp", "mtp"}, {"--ngram", "ngram"}, {"--drafter", "drafter"}};
         d.exclusive_switches = true;
         bind_choice<DraftSource>(d, [](RunConfig & c) -> DraftSource & { return c.spec.source; },
                                  {{DraftSource::none, {"none", "off"}},
                                   {DraftSource::mtp, {"mtp", "MTP head"}},
-                                  {DraftSource::ngram, {"ngram", "n-gram lookup"}}});
+                                  {DraftSource::ngram, {"ngram", "n-gram lookup"}},
+                                  {DraftSource::drafter, {"drafter", "Draft model"}}});
         d.details = "Guesses a few tokens ahead and checks them in one pass; the answer does not change. Needs "
                     "Temperature 0, and gains depend on the model.";
         t.push_back(d);
@@ -1071,8 +1073,29 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
-        ParamDesc d = row("mtp-p-min", "MTP confidence floor", G::Speculation, L::Advanced,
-                          "MTP only: stop drafting when the head's best candidate falls below this "
+        ParamDesc d = row("drafter-file", "Draft model file", G::Speculation, L::Advanced,
+                          "Drafter only: a GGUF holding a draft model trained for this model (a DFlash or "
+                          "DSpark drafter, or any kind llama.cpp's speculative driver reads). The file's "
+                          "header says which kind it is.");
+        d.type = ParamType::Text;
+        d.value_hint = "PATH";
+        bind_string(d, [](RunConfig & c) -> std::string & { return c.spec.drafter_file; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("drafter-on-devices", "Draft model on devices", G::Speculation, L::Advanced,
+                          "Drafter only: load the draft model on the devices the model's layers are on, "
+                          "instead of the host. Set by the hardware planner where the draft model fits "
+                          "beside the expert cache, whose bytes it takes.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--drafter-on-devices", "true"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.spec.drafter_on_devices; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("mtp-p-min", "Draft confidence floor", G::Speculation, L::Advanced,
+                          "MTP and drafter: stop drafting when the best candidate falls below this "
                           "probability (0 = always draft the full width).");
         d.type = ParamType::Float;
         d.value_hint = "F";

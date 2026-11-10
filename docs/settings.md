@@ -41,7 +41,7 @@ setting passed by hand is left alone.
 | Drop cold experts | `--drop-cold-experts` &nbsp;`0` (off) to `1.0` | Skips a routed expert only when it is a cache miss *and* the router wanted it less than that share of an even split. Quality is spent only where it buys a read. Lossy and not reproducible: what is skipped depends on what the cache held. |
 | Expert substitution *(experimental)* | `--expert-substitute` &nbsp;`0` (off) to `1.0` | Nudges each routing toward experts already in the cache: a resident expert takes a slot only when the router scored it within that margin of the one it displaces. Same number of experts, fewer reads. Lossy and cache-dependent, like dropping ([detail](cache-aware-substitution.md)). |
 | Active experts | `--n-expert-used` &nbsp;`0` (the model's own), or any smaller count | Consults fewer experts per token than the model asks for, cutting compute and reads together. Lossy, but reproducible: the same prompt gives the same answer. |
-| Speculative drafts | `--mtp` or `--ngram`, with `--draft` &nbsp;`1` to `8` &nbsp;and, for the head, `--mtp-p-min` &nbsp;`0` to `1.0` | Drafts the next few tokens and verifies the group in one decode, keeping only what the model itself would have produced. Nothing is approximated. Wins when weights move once per group, loses when the wider verify widens each layer's read set ([mtp](mtp.md), [ngram](ngram.md)). |
+| Speculative drafts | `--mtp`, `--ngram` or `--drafter` with `--drafter-file` (a draft model trained for this one), with `--draft` &nbsp;`1` to `8` &nbsp;and, for a head or a draft model, `--mtp-p-min` &nbsp;`0` to `1.0` | Drafts the next few tokens and verifies the group in one decode, keeping only what the model itself would have produced. Nothing is approximated. Wins when weights move once per group, loses when the wider verify widens each layer's read set ([mtp](mtp.md), [ngram](ngram.md), [drafter](drafter.md)). |
 | Route experts early *(experimental)* | `--route-ahead` &nbsp;`0` (off) to `8` layers | Commits a layer's routing that many layers early, so its reads start early and can never be wasted. Lossy: some slots route differently. Excludes both prefetchers and speculative drafts ([detail](route-ahead.md)). |
 | Route-ahead int8 gates *(experimental)* | `--gate-mirror` &nbsp;`auto`, `on`, `off` &nbsp;(default `auto`) | With route-ahead: rank the prediction on an int8 copy of the router gates (a quarter of the bytes) or on their own weights. `auto` times both on this machine at load, or in the `--auto` probe, and keeps the faster ([detail](route-ahead.md)). |
 
@@ -62,5 +62,5 @@ model computes.
 Each one is measured rather than assumed, and the numbers live with the method that produced them:
 [expert-dropping.md](expert-dropping.md),
 [cache-aware-substitution.md](cache-aware-substitution.md), [mtp.md](mtp.md),
-[ngram.md](ngram.md), [route-ahead.md](route-ahead.md). Judge any of them on your own
-task before relying on it.
+[ngram.md](ngram.md), [drafter.md](drafter.md), [route-ahead.md](route-ahead.md). Judge any of
+them on your own task before relying on it.

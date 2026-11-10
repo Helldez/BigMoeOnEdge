@@ -1,7 +1,8 @@
 # N-gram decoding (`--ngram`)
 
-`--ngram` is the second draft source for the same self-speculative loop [`--mtp`](mtp.md) drives. It
-drafts by **looking the recent tokens up in the text**: take the last few tokens, find where that
+`--ngram` is the second draft source for the same self-speculative loop [`--mtp`](mtp.md) drives
+(the third is a draft model, [`--drafter`](drafter.md)). It drafts by **looking the recent tokens up
+in the text**: take the last few tokens, find where that
 exact run occurred before — in the prompt or in what has been generated — and propose whatever
 followed it. No head, no draft context, no decode, no expert read. Off by default.
 

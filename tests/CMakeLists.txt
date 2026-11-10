@@ -54,6 +54,10 @@ target_include_directories(bmoe_prompt_stream_test PRIVATE ${CMAKE_SOURCE_DIR}/c
 add_test(NAME prompt_stream COMMAND bmoe_prompt_stream_test)
 
 # The real Session path must apply request-local grammar to both token selection sites.
+# The drafter source over two fixtures: the tiny MoE and a tiny draft model made for it.
+add_executable(bmoe_drafter_session_test drafter_session_test.cpp)
+target_link_libraries(bmoe_drafter_session_test PRIVATE bmoe_core)
+
 add_executable(bmoe_output_constraint_session_test output_constraint_session_test.cpp)
 target_link_libraries(bmoe_output_constraint_session_test PRIVATE bmoe_core)
 target_include_directories(bmoe_output_constraint_session_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/engine)
@@ -250,6 +254,17 @@ if(PYTHON3)
     add_test(NAME output_constraint_session COMMAND bmoe_output_constraint_session_test
              "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-qwen3moe.gguf")
     set_tests_properties(output_constraint_session PROPERTIES FIXTURES_REQUIRED TINY_MOE_MODEL_qwen3moe)
+
+    # A draft model for the qwen3moe fixture, and the session that drafts with it.
+    set(_drafter "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-drafter.gguf")
+    add_test(
+        NAME moe_make_tiny_drafter
+        COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/scripts/make-tiny-moe.py --arch dflash --out ${_drafter}
+    )
+    set_tests_properties(moe_make_tiny_drafter PROPERTIES FIXTURES_SETUP TINY_MOE_DRAFTER)
+    add_test(NAME drafter_session COMMAND bmoe_drafter_session_test
+             "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-qwen3moe.gguf" ${_drafter})
+    set_tests_properties(drafter_session PROPERTIES FIXTURES_REQUIRED "TINY_MOE_MODEL_qwen3moe;TINY_MOE_DRAFTER")
 
     if(TARGET bmoe_startup_pin_fit_test)
         add_test(NAME startup_pin_fit COMMAND bmoe_startup_pin_fit_test

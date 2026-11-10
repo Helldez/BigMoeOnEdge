@@ -11,6 +11,7 @@
 #include "bmoe/config.h"
 #include "bmoe/probe.h"
 
+#include "../engine/draft_driver.h"
 #include "../engine/kv_cache_type.h"
 #include "../moe/tensor_names.h"
 
@@ -120,33 +121,32 @@ Placement probe_placement(const char * model_path,
     // Any speculation keeps rollback snapshots of the recurrent state, one per drafted position, in
     // the target's own context (Session::open).
     if (spec && spec->enabled()) cparams.n_rs_seq = (uint32_t) spec->draft_max;
-    // The MTP draft context, opened as the session opens it: its head is the target's own block
-    // (weights already counted, the target loaded with it) or a file of its own on the host, and
-    // either way its state and compute buffers land on the devices beside the target's.
-    const bool mtp = spec && spec->is_mtp();
-    const bool own_head = mtp && !spec->mtp_head.empty();
-    mparams.load_mtp = mtp && !own_head;
+    // The draft context, opened as the session opens it (engine/draft_driver.h): the model's own
+    // head (weights already counted, the target loaded with it) or a draft file on the host or the
+    // devices, and either way its state and compute buffers land on the devices beside the target's.
+    const bool drafts = spec && spec->uses_driver();
+    const detail::DraftKind kind = spec ? detail::draft_kind(*spec) : detail::DraftKind{};
+    const bool own_file = drafts && spec->has_draft_file();
+    mparams.load_mtp = spec && spec->head_in_model();
     llama_model_params dmparams = llama_model_default_params();
     llama_context_params dcparams = cparams;
     common_fit_extra_model draft{};
-    if (mtp) {
-        dmparams.load_mtp = true;
-        if (own_head) dmparams.n_gpu_layers = spec->mtp_head_on_devices ? llama_model_default_params().n_gpu_layers : 0;
-        dcparams.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
-        dcparams.moe_cache_size = 0;
-        dcparams.n_rs_seq = 0;
-        dcparams.n_outputs_max = 0;
-        dcparams.n_ubatch = std::min<uint32_t>(cparams.n_ubatch,
-                                               (uint32_t) std::max(spec->draft_max + 1, SpecConfig::mtp_draft_ubatch));
-        draft.path_model = own_head ? spec->mtp_head.c_str() : model_path;
+    // A draft file the driver has no draft for is the session's error to report (Session::open).
+    const bool fit_draft = drafts && kind.known();
+    if (fit_draft) {
+        dmparams = detail::draft_file_model_params(kind, *spec, mparams.devices);
+        // A head inside the model is the target's own load, on the target's placement.
+        if (!own_file) dmparams.n_gpu_layers = llama_model_default_params().n_gpu_layers;
+        dcparams = detail::draft_context_params(kind, *spec, cparams);
+        draft.path_model = own_file ? spec->draft_file().c_str() : model_path;
         draft.mparams = &dmparams;
         draft.cparams = &dcparams;
-        draft.shares_model = !own_head;
+        draft.shares_model = !own_file;
     }
 
     const common_params_fit_status st =
         common_fit_params(model_path, &mparams, &cparams, tensor_split.data(), overrides.data(), margins.data(),
-                          fitter_n_ctx_min, mtp ? &draft : nullptr, GGML_LOG_LEVEL_WARN);
+                          fitter_n_ctx_min, fit_draft ? &draft : nullptr, GGML_LOG_LEVEL_WARN);
     if (st == COMMON_PARAMS_FIT_STATUS_ERROR) {
         pl.outcome = "the capacity fitter hit an error; planning as if there were no devices";
         return pl;

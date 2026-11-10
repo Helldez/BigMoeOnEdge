@@ -137,6 +137,13 @@ ValidationResult validate(const RunConfig & cfg) {
     // ignored: a caller who asked for both was promised something the engine cannot give.
     if (!cfg.spec.mtp_head.empty() && !cfg.spec.is_mtp())
         return fail("{mtp-head} is the head MTP drafts use: it needs {spec=mtp}");
+    if (!cfg.spec.drafter_file.empty() && !cfg.spec.is_drafter())
+        return fail("{drafter-file} is the draft model {spec=drafter} drafts with: it needs {spec=drafter}");
+    if (cfg.spec.is_drafter() && cfg.spec.drafter_file.empty())
+        return fail("{spec=drafter} needs the draft model's file in {drafter-file}: a drafter is trained for one "
+                    "model and comes in a file of its own.");
+    if (cfg.spec.drafter_on_devices && !cfg.spec.is_drafter())
+        return fail("{drafter-on-devices} places the draft model of {spec=drafter}: it needs {spec=drafter}");
     if (cfg.spec.enabled() && cfg.sampling.temp > 0.0f) {
         return fail("{spec} needs greedy decoding ({temp} at 0): a draft is checked against the single most likely "
                     "token, which is only the answer when nothing is sampled.");
@@ -150,15 +157,17 @@ ValidationResult validate(const RunConfig & cfg) {
     // A probability, so [0,1]. 1 would mean "only draft what the head is certain of", which is a
     // legitimate (if extreme) setting; above 1 nothing would ever be drafted and the flag would be
     // an expensive way to decode one token at a time.
-    if (cfg.spec.is_mtp() && !(cfg.spec.draft_p_min >= 0.0f && cfg.spec.draft_p_min <= SpecConfig::draft_p_min_max)) {
+    if (cfg.spec.uses_driver() &&
+        !(cfg.spec.draft_p_min >= 0.0f && cfg.spec.draft_p_min <= SpecConfig::draft_p_min_max)) {
         return fail("{mtp-p-min} must be between 0 and 1");
     }
     // Both of these are source-specific knobs. Accepting one against the other source would silently
     // do nothing, which is exactly the class of "the flag was ignored" bug this validation exists to
     // prevent — the caller asked for a behaviour the chosen source does not have.
     if (cfg.spec.is_ngram() && cfg.spec.draft_p_min != 0.0f) {
-        return fail("{mtp-p-min} is for MTP drafts (the head's own confidence in its proposal) and means nothing "
-                    "to n-gram drafts, which have no probabilities: their confidence gate is {ngram-min-match}.");
+        return fail("{mtp-p-min} is for drafts made by weights (the head's or the drafter's own confidence in its "
+                    "proposal) and means nothing to n-gram drafts, which have no probabilities: their confidence "
+                    "gate is {ngram-min-match}.");
     }
     if (cfg.spec.is_ngram() &&
         (cfg.spec.ngram_max_match < 1 || cfg.spec.ngram_max_match > SpecConfig::ngram_match_limit)) {

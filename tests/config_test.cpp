@@ -328,6 +328,28 @@ int main() {
         expect_ok("sampling without speculation stays valid", c);
     }
 
+    // The drafter source: a draft model in a file of its own. The file is the source, so one without
+    // the other is a contradiction, and it shares the head's confidence floor (both draft by weights).
+    {
+        RunConfig c = ok_base();
+        c.spec.source = DraftSource::drafter;
+        expect_fail("the drafter source without its file is rejected", c);
+        c.spec.drafter_file = "drafter.gguf";
+        expect_ok("the drafter source with its file is valid", c);
+        c.spec.draft_p_min = 0.6f;
+        expect_ok("the confidence floor applies to a drafter", c);
+        c.spec.draft_p_min = 1.5f;
+        expect_fail("a confidence floor above 1 is rejected for a drafter", c);
+        c.spec.draft_p_min = 0.0f;
+        c.spec.source = DraftSource::mtp;
+        expect_fail("a drafter file with the MTP source is rejected", c);
+        c.spec.source = DraftSource::none;
+        expect_fail("a drafter file with speculation off is rejected", c);
+        c.spec.drafter_file.clear();
+        c.spec.drafter_on_devices = true;
+        expect_fail("drafter placement without the drafter source is rejected", c);
+    }
+
     // The n-gram source: the same shared rules, plus its own gate, and no cross-talk with the
     // MTP-only knob — a flag the chosen source cannot act on is rejected, not silently ignored.
     {

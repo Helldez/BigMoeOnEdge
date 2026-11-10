@@ -23,6 +23,7 @@
 #include "../moe/tensor_names.h"
 #include "cache_brake.h"
 #include "context_checkpoints.h"
+#include "draft_driver.h"
 #include "kv_cache_type.h"
 #include "media_input.h"
 #include "prompt_stream.h"
@@ -354,19 +355,23 @@ struct Session::Impl {
         if (prefill) prefill->clear_state();
     }
 
-    // The MTP draft source (SpecConfig::source == mtp). A SECOND context over the SAME model,
-    // created with ctx_type = MTP so llama.cpp builds the nextn graph instead of the trunk one. It
-    // carries the same eval callback as the target — the hook is per-context, not per-model — so the
-    // MTP block's expert layer is captured and streamed by the one source both contexts share.
+    // A draft made by weights (SpecConfig::uses_driver) needs a SECOND context beside the target,
+    // and llama.cpp's speculative driver over the pair (engine/draft_driver.h). For the model's own
+    // head it is a context over the SAME model, of the type llama.cpp builds the nextn graph in, and
+    // it carries the same eval callback as the target — the hook is per-context, not per-model — so
+    // the head's expert layer is captured and streamed by the one source both contexts share. For a
+    // draft file it is a context over that file's model, with no callback: nothing of it is streamed.
     //
     // The n-gram source has no equivalent state: it drafts from the token history alone, which is
-    // why it costs no context, no memory and no expert read. Everything below this pair is shared by
-    // both sources, because the verify half of the loop does not care who drafted.
-    // The MTP head when it comes in a file of its own (SpecConfig::mtp_head); null when the head is
-    // the model's own nextn block. Declared before the draft context so it outlives it.
+    // why it costs no context, no memory and no expert read. Everything below this group is shared
+    // by every source, because the verify half of the loop does not care who drafted.
+    // The draft weights when they come in a file of their own (SpecConfig::draft_file): the head's
+    // file or a drafter. Null when the head is the model's own nextn block. Declared before the draft
+    // context so it outlives it. draft_kind is what drafts, as llama.cpp's driver names it.
+    detail::DraftKind draft_kind;
     std::unique_ptr<llama_model, void (*)(llama_model *)> model_dft{nullptr, llama_model_free};
     std::unique_ptr<llama_context, void (*)(llama_context *)> ctx_dft{nullptr, llama_free};
-    common_speculative_ptr mtp;
+    common_speculative_ptr draft_driver;
     // Serves both roles on the speculative path, never both at once: a prefill chunk (up to
     // n_batch tokens, logits on the last) and a verify pass (1 + draft_max tokens, logits on all).
     llama_batch mtp_batch{};
@@ -434,7 +439,7 @@ struct Session::Impl {
     // kv, so they go wherever it goes.
     detail::ContextCheckpoints checkpoints;
     bool checkpoint_size_logged = false; // the size is the model's, so said once per session
-    detail::CheckpointContexts checkpoint_contexts() { return {ctx.get(), ctx_dft.get(), mtp.get()}; }
+    detail::CheckpointContexts checkpoint_contexts() { return {ctx.get(), ctx_dft.get(), draft_driver.get()}; }
     void forget_kv_tokens() {
         kv.clear();
         checkpoints.clear();
@@ -514,7 +519,7 @@ struct Session::Impl {
     void build_sampler(const SessionConfig & c);
     void install_abort_callback();
     bool init_speculation(Opening & o);
-    bool init_mtp_driver(Opening & o);
+    bool init_draft_driver(Opening & o);
     bool stage_experts_in_host_buffer(Opening & o);
     bool bind_streaming(Opening & o);
     bool capture_warmup(Opening & o);
@@ -554,7 +559,7 @@ struct Session::Impl {
         if (smpl) llama_sampler_free(smpl); // independent of ctx/model; free before them
         // The speculative driver holds both contexts and detaches the backend samplers it
         // installed on the draft one, so it goes before either context is freed.
-        mtp.reset();
+        draft_driver.reset();
         if (mtp_batch_owned) llama_batch_free(mtp_batch);
         if (media_batch_owned) llama_batch_free(media_batch);
         ctx_dft.reset();
@@ -935,7 +940,7 @@ bool Session::Impl::load_model(Opening & o) {
     // TENSOR_SKIP by default, and only --mtp builds a graph over them. n_layer_nextn comes from
     // the gguf metadata either way, so the "this model has no trained head" check below is
     // unaffected by this flag.
-    mparams.load_mtp = cfg.spec.is_mtp() && cfg.spec.mtp_head.empty();
+    mparams.load_mtp = cfg.spec.head_in_model();
 
     // The prefill device joins the scheduler as the model's only non-CPU device, with no layer
     // assigned to it: every weight still loads from the mmap, and the device runs nothing until
@@ -1028,17 +1033,28 @@ bool Session::Impl::load_model(Opening & o) {
     llama_model * m = llama_model_load_from_file(cfg.model_path.c_str(), mparams);
     if (!m) return o.fail("could not load the model: " + cfg.model_path);
     model.reset(m);
-    if (cfg.spec.is_mtp() && !cfg.spec.mtp_head.empty()) {
-        // The head whole and resident, where the plan put it: on the devices the target's layers
-        // are on (its bytes taken from the device expert cache) or on the host. One layer the
-        // streamer does not serve, small beside the model, computed for a draft position at a time.
-        llama_model_params hp = llama_model_default_params();
-        hp.n_gpu_layers = cfg.spec.mtp_head_on_devices ? llama_model_default_params().n_gpu_layers : 0;
-        hp.devices = mparams.devices; // the same list, so the head cannot land on a device the plan left out
-        hp.load_mtp = true;
-        llama_model * h = llama_model_load_from_file(cfg.spec.mtp_head.c_str(), hp);
-        if (!h) return o.fail("could not load {mtp-head}: " + cfg.spec.mtp_head);
+    draft_kind = detail::draft_kind(cfg.spec);
+    if (cfg.spec.has_draft_file()) {
+        const std::string & file = cfg.spec.draft_file();
+        // A drafter is whatever its header says, read by the driver that will draft with it.
+        if (!draft_kind.known())
+            return o.fail("{drafter-file} names a file llama.cpp's speculative driver has no draft for (its header "
+                          "is neither a draft model's nor an MTP head's): " +
+                          file);
+        // The draft weights whole and resident, where the plan put them: on the devices the target's
+        // layers are on (their bytes taken from the device expert cache) or on the host. Weights the
+        // streamer does not serve, small beside the model, computed for a draft step at a time.
+        const llama_model_params hp = detail::draft_file_model_params(draft_kind, cfg.spec, mparams.devices);
+        llama_model * h = llama_model_load_from_file(file.c_str(), hp);
+        if (!h)
+            return o.fail(std::string("could not load ") + (cfg.spec.is_mtp() ? "{mtp-head}" : "{drafter-file}") +
+                          ": " + file);
         model_dft.reset(h);
+        if (!draft_kind.is_head() && !common_speculative_are_compatible(m, h))
+            return o.fail("{drafter-file} was not made for this model: its vocabulary differs from the model's "
+                          "(a drafter is trained for one model and converted with that model's tokenizer): " +
+                          file);
+        log_printf(LogLevel::Info, "draft file: %s (%s)", file.c_str(), draft_kind.name().c_str());
     }
     return true;
 }
@@ -1054,10 +1070,10 @@ bool Session::Impl::read_model(Opening & o) {
     // trained MTP head — which is most ggufs, including quants of MTP-capable models that were
     // converted without the nextn tensors.
     n_layer_nextn = llama_model_n_layer_nextn(m);
-    if (model_dft && llama_model_n_layer_nextn(model_dft.get()) <= 0)
+    if (cfg.spec.is_mtp() && model_dft && llama_model_n_layer_nextn(model_dft.get()) <= 0)
         return o.fail("{mtp-head} names a file with no MTP head in it (its nextn_predict_layers is absent or zero): " +
                       cfg.spec.mtp_head);
-    if (cfg.spec.is_mtp() && !model_dft && n_layer_nextn <= 0)
+    if (cfg.spec.head_in_model() && n_layer_nextn <= 0)
         return o.fail("{spec=mtp} needs a model with a trained MTP head, and this model has none (no nextn block "
                       "in the file): give a head file in {mtp-head}, or use {spec=ngram}, which works with "
                       "any model since it drafts from the text rather than from the weights.");
@@ -1149,7 +1165,7 @@ bool Session::Impl::build_hook(Opening & o) {
     // on the hook and the streamer must span the trunk PLUS the head. The index space is contiguous
     // and the tensor naming identical, so this bound is the only thing standing between the streamer
     // and the MTP experts — left at n_layer they are silently skipped and stay mmap-resident.
-    o.n_layer_streamed = n_layer + (cfg.spec.is_mtp() && !model_dft ? n_layer_nextn : 0);
+    o.n_layer_streamed = n_layer + (cfg.spec.head_in_model() ? n_layer_nextn : 0);
     hook = std::make_unique<RouterHook>(o.layout, o.n_layer_streamed);
     hook->set_prefetch_layers(cfg.moe.prefetch_layers);
     hook->set_drop_policy(cfg.moe.drop_cold_frac, cfg.moe.drop_renorm, cfg.moe.drop_prefill);
@@ -1265,40 +1281,20 @@ bool Session::Impl::create_contexts(Opening & o) {
     const int n_threads_batch = cfg.n_threads_batch > 0 ? cfg.n_threads_batch : cfg.n_threads;
     llama_set_n_threads(c, cfg.n_threads, n_threads_batch);
 
-    // The MTP draft context: same model, same eval callback, but ctx_type = MTP so llama.cpp builds
-    // the nextn graph. It keeps its own (single-position) KV, hence n_rs_seq = 0 — nothing is ever
-    // rolled back on the draft side, the target is the one that speculates.
-    if (cfg.spec.is_mtp()) {
-        llama_context_params dparams = cparams;
-        dparams.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
-        // One device cache, the target's: the draft's own expert layer is served from the host, and a
-        // second cache would take as much device memory again for a head that routes one position.
-        dparams.moe_cache_size = 0;
-        dparams.n_rs_seq = 0;
-        // The target's output cap is about the target's logits; the draft keeps llama.cpp's own,
-        // which its narrow ubatch below already bounds.
-        dparams.n_outputs_max = 0;
-        // Compute buffers are reserved for the WIDEST ubatch, and left at the target's width the
-        // draft context reserves gigabytes for a graph it never runs: the widest thing it ever
-        // computes is a prefill chunk, and at decode time it is 1 + draft_max positions. On this
-        // engine every MiB reserved is a MiB the expert cache does not get, and the cache is what
-        // decides whether the widened verify read set is a hit or a flash read — so an oversized
-        // draft context does not merely waste memory, it eats the feature's own prize. Measured on
-        // the desktop host: leaving it at the target's width cost ~1 GiB of expert cache and 3
-        // points of hit rate. n_batch stays as it is — the speculative driver sizes its internal
-        // batch from it and must still accept a whole prefill chunk, which llama.cpp then splits
-        // into ubatches of the width below.
-        dparams.n_ubatch = (uint32_t) std::max(cfg.spec.draft_max + 1, SpecConfig::mtp_draft_ubatch);
-        if (dparams.n_ubatch > cparams.n_ubatch) dparams.n_ubatch = cparams.n_ubatch;
+    // The draft context. For the model's own head: the same model and the same eval callback, in a
+    // context of the kind llama.cpp builds the head's graph in. For a draft file: that file's model.
+    // Either way it keeps its own narrow graph and KV (detail::draft_context_params).
+    if (cfg.spec.uses_driver()) {
+        llama_context_params dparams = detail::draft_context_params(draft_kind, cfg.spec, cparams);
         if (model_dft) {
-            // A head of its own: its layer is not the streamer's, and it reads the target's hidden
-            // states through the context it drafts for.
+            // Weights of its own: not the streamer's, and they read the target's hidden states (and
+            // whatever of the target's weights the draft shares) through the context they draft for.
             dparams.cb_eval = nullptr;
             dparams.cb_eval_user_data = nullptr;
             dparams.ctx_other = ctx.get();
         }
         llama_context * d = llama_init_from_model(model_dft ? model_dft.get() : model.get(), dparams);
-        if (!d) return o.fail("failed to create the MTP draft context");
+        if (!d) return o.fail("failed to create the draft context (" + draft_kind.name() + ")");
         ctx_dft.reset(d);
         llama_set_n_threads(d, cfg.n_threads, n_threads_batch);
     }
@@ -1341,33 +1337,21 @@ void Session::Impl::install_abort_callback() {
         this);
 }
 
-// The MTP speculative driver over the two contexts as they are now: it holds both, so a context made
+// The speculative driver over the two contexts as they are now: it holds both, so a context made
 // again (the device cache's, arm_device_cache) needs a driver made again.
-bool Session::Impl::init_mtp_driver(Opening & o) {
-    const SessionConfig & cfg = o.cfg;
-    common_params_speculative sp;
-    sp.types = {COMMON_SPECULATIVE_TYPE_DRAFT_MTP};
-    sp.draft.n_max = cfg.spec.draft_max;
-    sp.draft.n_min = 0; // never skip a whole draft; width is bounded by n_max and p_min below
-    // The head's own confidence floor for continuing to draft. At 0 (the default) it drafts
-    // n_max tokens however unsure it is, which is what the host was measured at; above 0 the
-    // width becomes adaptive per step. See SpecConfig::draft_p_min for why that pays twice on a
-    // streamed device.
-    sp.draft.p_min = cfg.spec.draft_p_min;
-    sp.draft.ctx_tgt = ctx.get(); // two contexts: over one model, or over the model and its head
-    sp.draft.ctx_dft = ctx_dft.get();
-    mtp.reset(common_speculative_init(sp, /*n_seq*/ 1));
-    if (!mtp) return o.fail("failed to initialise MTP speculative decoding");
+bool Session::Impl::init_draft_driver(Opening & o) {
+    draft_driver.reset(detail::make_draft_driver(draft_kind, o.cfg.spec, ctx.get(), ctx_dft.get()));
+    if (!draft_driver) return o.fail("failed to initialise speculative decoding (" + draft_kind.name() + ")");
     return true;
 }
 
-// The speculative driver (MTP) and the verify batch every speculation source shares.
+// The speculative driver (a head or a drafter) and the verify batch every speculation source shares.
 bool Session::Impl::init_speculation(Opening & o) {
     const SessionConfig & cfg = o.cfg;
-    // Built before the capture warm-up on purpose: the driver's constructor turns on nextn
-    // extraction for both contexts, which is what the target graph looks like for the rest of the
-    // session. Capturing the graph it actually runs beats capturing the one it briefly had.
-    if (cfg.spec.is_mtp() && !init_mtp_driver(o)) return false;
+    // Built before the capture warm-up on purpose: the driver's constructor turns on the extraction
+    // of the hidden states its draft reads, which is what the target graph looks like for the rest of
+    // the session. Capturing the graph it actually runs beats capturing the one it briefly had.
+    if (cfg.spec.uses_driver() && !init_draft_driver(o)) return false;
 
     // The wide verify batch belongs to the loop, not to a source: whoever drafted, the target is
     // handed 1 + draft_max positions in one decode. Allocated for any speculation, which is what
@@ -1395,15 +1379,16 @@ bool Session::Impl::capture_warmup(Opening & o) {
     hook->begin_capture();
     llama_token warm_tok = llama_vocab_bos(vocab);
     if (warm_tok < 0) warm_tok = 0;
-    if (o.cfg.spec.is_mtp()) {
+    if (o.cfg.spec.uses_driver()) {
         batch_fill(mtp_batch, &warm_tok, 1, /*pos0*/ 0, /*all_logits*/ true);
         if (llama_decode(c, mtp_batch) != 0) return o.fail("capture warm-up decode failed");
-        // The MTP graph is built only by a decode on the draft context, and process() is what
-        // issues it. Without this pass the head's expert layer never reaches the eval callback,
-        // so it would stay unbound and silently mmap-resident — the one thing streaming exists
-        // to avoid on a model that does not fit.
-        if (!common_speculative_process(mtp.get(), to_common_batch(mtp_batch)))
-            return o.fail("MTP capture warm-up failed: the draft context could not process the batch");
+        // The draft graph is built only by a decode on the draft context, and process() is what
+        // issues it. Without this pass the model's own head never reaches the eval callback, so its
+        // expert layer would stay unbound and silently mmap-resident — the one thing streaming
+        // exists to avoid on a model that does not fit. A draft file has nothing to bind, and takes
+        // the same pass so a pair that cannot draft fails here, at load, rather than on a turn.
+        if (!common_speculative_process(draft_driver.get(), to_common_batch(mtp_batch)))
+            return o.fail("draft capture warm-up failed: the draft context could not process the batch");
     } else {
         llama_batch warm = llama_batch_get_one(&warm_tok, 1);
         if (llama_decode(c, warm) != 0) return o.fail("capture warm-up decode failed");
@@ -1660,14 +1645,14 @@ bool Session::Impl::arm_device_cache(Opening & o) {
     if (cfg.n_gpu_layers == 0) return o.fail("{device-cache-mb} needs layers on a device: set {gpu-layers} above 0");
     // The speculative driver holds both contexts, and both are made again: it goes first, and is
     // made again over the new ones.
-    const bool had_mtp = mtp != nullptr;
-    mtp.reset();
+    const bool had_driver = draft_driver != nullptr;
+    draft_driver.reset();
     ctx_dft.reset();
     ctx.reset();
     device_cache_armed = true;
     if (!create_contexts(o)) return false;
     install_abort_callback();
-    return !had_mtp || init_mtp_driver(o);
+    return !had_driver || init_draft_driver(o);
 }
 
 // The experts a device cache uploads from, copied into a buffer of the device backend's own host
@@ -1977,9 +1962,9 @@ void Session::Impl::describe_run(Opening & o) {
         ri.cache_type_v = kv_cache_type_name(this->cfg.cache_type_v);
         ri.chatml = cfg.chatml;
         ri.compute_trace_layers = compute_trace && compute_trace->layers_only();
-        ri.spec = cfg.spec.is_mtp() ? "mtp" : cfg.spec.is_ngram() ? "ngram" : "off";
+        ri.spec = cfg.spec.source_name();
         ri.spec_draft_max = cfg.spec.enabled() ? cfg.spec.draft_max : 0;
-        ri.mtp_p_min = cfg.spec.is_mtp() ? cfg.spec.draft_p_min : 0.0f;
+        ri.mtp_p_min = cfg.spec.uses_driver() ? cfg.spec.draft_p_min : 0.0f;
         ri.ngram_min_match = cfg.spec.is_ngram() ? cfg.spec.ngram_min_match : 0;
         ri.temp = cfg.sampling.temp;
         ri.top_k = cfg.sampling.top_k;
@@ -2335,12 +2320,12 @@ struct Session::Impl::Turn {
     // ── prefill ──
     PrefillTally prefill_tally;
     // Two predicates, deliberately distinct. spec_on is "the verify loop runs" — a wide batch, an
-    // accept pass, a rollback — and both sources need all of it. mtp_on is "the draft comes from the
-    // head", which is the only thing that needs the second context and llama.cpp's `common`
-    // speculative driver. Conflating them is what would make the n-gram source pay for a draft
-    // context it never uses.
+    // accept pass, a rollback — and every source needs all of it. driver_on is "the draft comes
+    // from weights" (the head or a draft model), which is the only thing that needs the second
+    // context and llama.cpp's `common` speculative driver. Conflating them is what would make the
+    // n-gram source pay for a draft context it never uses.
     bool spec_on = false;
-    bool mtp_on = false;
+    bool driver_on = false;
     int prefill_device_tokens = 0;
     uint64_t arena_read0 = 0;
     double arena_stall0 = 0.0;
@@ -2672,9 +2657,9 @@ struct Session::Impl::Turn {
         prefill_tally.begin(moe.enabled, im.source);
         const auto t_prefill0 = clock_t_::now();
         spec_on = im.cfg.spec.enabled();
-        mtp_on = im.mtp != nullptr;
+        driver_on = im.draft_driver != nullptr;
         if (tk.stream.has_media()) im.media_in_conversation = true;
-        if (im.media_in_conversation && (spec_on || mtp_on)) {
+        if (im.media_in_conversation && (spec_on || driver_on)) {
             if (!im.media_spec_logged) {
                 im.media_spec_logged = true;
                 log_printf(LogLevel::Info, "speculation is off for a conversation holding an image: the draft "
@@ -2682,7 +2667,7 @@ struct Session::Impl::Turn {
                                            "conversation");
             }
             spec_on = false;
-            mtp_on = false;
+            driver_on = false;
         }
         // With a prefill device the prompt goes in one ubatch per decode, so each graph's width is one
         // we chose and can place: wide pieces on the device, a narrow tail on the CPU. Left to
@@ -2721,7 +2706,7 @@ struct Session::Impl::Turn {
                 rc = im.media->decode_media(ctx, tk, next_media, tk.stream.pos_at((size_t) i), pf_step,
                                             [&](llama_batch_ext * b) { return im.decode_placed_ext(ctx, b); });
             } else {
-                if (mtp_on) {
+                if (driver_on) {
                     // Positions are absolute here — the prompt token at index i sits at position i,
                     // reused prefix included — which is exactly what llama_batch_get_one would have
                     // inferred.
@@ -2759,8 +2744,8 @@ struct Session::Impl::Turn {
             // or the first draft is made from a hidden state that never saw the prompt. It is a second
             // context on the host's backends, so the weights go home for its walk, slots kept, and the
             // next wide chunk takes them out again.
-            if (mtp_on && im.prefill) im.place_prefill(false, /*hold_slots*/ true);
-            if (mtp_on && !common_speculative_process(im.mtp.get(), to_common_batch(pf)))
+            if (driver_on && im.prefill) im.place_prefill(false, /*hold_slots*/ true);
+            if (driver_on && !common_speculative_process(im.draft_driver.get(), to_common_batch(pf)))
                 return fail(RunError::Failed, "MTP draft context failed to process the prefill batch");
         }
         im.place_prefill(false); // decode reads the host bindings
@@ -2777,7 +2762,7 @@ struct Session::Impl::Turn {
         }
         // Announced only once the prompt is in both contexts: begin() checks how far the draft context
         // has actually got, so calling it before prefill would warn about a gap that is about to close.
-        if (mtp_on) common_speculative_begin(im.mtp.get(), /*seq_id*/ 0, tokens);
+        if (driver_on) common_speculative_begin(im.draft_driver.get(), /*seq_id*/ 0, tokens);
         llama_synchronize(ctx); // the last chunk may still be queued on a device, as in the decode bracket
         prefill_seconds = secs(t_prefill0, clock_t_::now());
         // Prefill attribution, closed here (the begin() snapshot sits above the chunk loop): deltas
@@ -2899,15 +2884,16 @@ struct Session::Impl::Turn {
         const auto d0 = clock_t_::now();
         const uint64_t db0 = moe.enabled ? im.source.stats().read_bytes : 0;
         im.draft_buf.clear();
-        if (mtp_on) {
-            common_speculative_draft_params & dp = common_speculative_get_draft_params(im.mtp.get(), /*seq*/ 0);
+        if (driver_on) {
+            common_speculative_draft_params & dp =
+                common_speculative_get_draft_params(im.draft_driver.get(), /*seq*/ 0);
             dp.drafting = true;
             dp.n_max = std::min(im.cfg.spec.draft_max, room);
             dp.pos0 = n_past; // upstream renamed n_past -> pos0 (#28715); text-only, so the same value
             dp.id_last = tok;
             dp.prompt = &mtp_ctx;
             dp.result = &im.draft_buf;
-            common_speculative_draft(im.mtp.get());
+            common_speculative_draft(im.draft_driver.get());
             if ((int) im.draft_buf.size() > room) im.draft_buf.resize((size_t) room);
             s.n_draft = (int) im.draft_buf.size();
 
@@ -2917,7 +2903,7 @@ struct Session::Impl::Turn {
             // last stored position). The catch-up is what replaces those rows with ones
             // conditioned on the target's own hidden states instead of the head's guesses.
             if (!llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), /*seq*/ 0, n_past, -1))
-                return fail(RunError::Failed, "the MTP draft context does not support rewinding its KV cache");
+                return fail(RunError::Failed, "the draft context does not support rewinding its KV cache");
         } else {
             // The n-gram source reads the text and nothing else: no draft context, no decode, no
             // expert read, so the bytes bracketed around this arm are zero by construction. When
@@ -3029,12 +3015,12 @@ struct Session::Impl::Turn {
         //
         // The n-gram source has no state to catch up: its next draft is read off the token
         // history the emit block appends to, which is already correct by the time it is read.
-        if (mtp_on) {
+        if (driver_on) {
             const auto p0 = clock_t_::now();
             const uint64_t pb0 = moe.enabled ? im.source.stats().read_bytes : 0;
             batch_fill(im.mtp_batch, verify_toks.data(), 1 + s.n_acc, n_past, /*all_logits*/ false);
-            if (!common_speculative_process(im.mtp.get(), to_common_batch(im.mtp_batch)))
-                return fail(RunError::Failed, "MTP draft context failed to process the verify batch");
+            if (!common_speculative_process(im.draft_driver.get(), to_common_batch(im.mtp_batch)))
+                return fail(RunError::Failed, "the draft context failed to process the verify batch");
             s.draft_s += secs(p0, clock_t_::now());
             if (moe.enabled) im.mtp_draft_read_bytes += im.source.stats().read_bytes - pb0;
         }
@@ -3048,7 +3034,7 @@ struct Session::Impl::Turn {
             if (!llama_memory_seq_rm(llama_get_memory(ctx), /*seq*/ 0, keep, -1))
                 return fail(RunError::Failed, "failed to roll back the rejected draft tokens from the KV cache");
         }
-        if (mtp_on) common_speculative_accept(im.mtp.get(), /*seq*/ 0, (uint16_t) s.n_acc);
+        if (driver_on) common_speculative_accept(im.draft_driver.get(), /*seq*/ 0, (uint16_t) s.n_acc);
         return true;
     }
 
@@ -3218,7 +3204,7 @@ struct Session::Impl::Turn {
         // The draft context mirrors the target's positions (process() decodes the same batches into
         // it), so it is trimmed to the same point — not cleared, or a continued chat turn would
         // feed it only the new suffix and draft from a state that never saw the conversation.
-        if (mtp_on && !llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), 0, emitted_end, -1))
+        if (driver_on && !llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), 0, emitted_end, -1))
             llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
     }
 

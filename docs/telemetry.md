@@ -187,11 +187,12 @@ measured routing perturbation: 100% minus it is the fraction of routed slots tha
 expert the router did not choose. See [route-ahead.md](route-ahead.md). The CSV preamble records
 the flag (`route_ahead=`).
 
-With `--mtp` or `--ngram` a summary line is added, prefixed with the source that drafted:
+With `--mtp`, `--ngram` or `--drafter` a summary line is added, prefixed with the source that drafted:
 
 ```
-mtp:   <accepted>/<drafted> drafts accepted (<pct>%), <t> tokens per verify decode (<d> decodes for <n> tokens)
-ngram: <accepted>/<drafted> drafts accepted (<pct>%), <t> tokens per verify decode (<d> decodes for <n> tokens)
+mtp:     <accepted>/<drafted> drafts accepted (<pct>%), <t> tokens per verify decode (<d> decodes for <n> tokens)
+ngram:   <accepted>/<drafted> drafts accepted (<pct>%), <t> tokens per verify decode (<d> decodes for <n> tokens)
+drafter: <accepted>/<drafted> drafts accepted (<pct>%), <t> tokens per verify decode (<d> decodes for <n> tokens)
 ```
 
 Acceptance is what decides whether speculation can pay at all — for `--mtp` it is a property of the
@@ -275,7 +276,7 @@ prints just the summary lines.
   route_ahead=<n> predict_prefetch=<0|1> predict_log=<0|1> predict_spec_max=<n> prefetch_sync=<0|1>
   dense_weights=<mmap|warm|anon|pinned> drop_cold_frac=<f> drop_renorm=<0|1> drop_prefill=<0|1>
   substitute_lambda=<f>
-# temp=<f> top_k=<n> top_p=<f> seed=<u> compute_trace_layers=<n> spec=<off|mtp|ngram>
+# temp=<f> top_k=<n> top_p=<f> seed=<u> compute_trace_layers=<n> spec=<off|mtp|ngram|drafter>
   spec_draft_max=<n> mtp_p_min=<f> ngram_min_match=<n>
 ```
 
