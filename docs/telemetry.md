@@ -371,12 +371,14 @@ units as the `BMOE_DONE` keys of those names (see the protocol notes above), app
 existing readers ignore them. A recorded run can now answer "what did the prompt cost, and in
 what" without the protocol line.
 
-With `--prefill-device`, four more: `prefill_dev_tokens=<int>` (prompt tokens whose graph ran on the
+With `--prefill-device`, five more: `prefill_dev_tokens=<int>` (prompt tokens whose graph ran on the
 device), `prefill_dev_nodes=<int>` (graph nodes the device actually computed, i.e. whose output
 landed in a device buffer: the proof it ran, where the token count only says the weights were moved),
-`prefill_dev_read_mib=<f>` (experts the device arena read from flash) and `prefill_dev_stall_s=<s>`
-(wall time the device graph waited at a layer for the arena). All zero when the device is off; the
-last two also without streaming, where there is no arena. Same names in `BMOE_DONE`.
+`prefill_dev_read_mib=<f>` (experts the device arena read from flash), `prefill_dev_stall_s=<s>`
+(wall time the device graph waited at a layer for the arena) and `prefill_dev_cache_mib=<f>`
+(experts the arena copied from the expert cache instead of reading them, `--prefill-from-cache`).
+All zero when the device is off; the last three also without streaming, where there is no arena.
+Same names in `BMOE_DONE`.
 
 The trailing block is the memory picture, added so a run can be diagnosed from its own file:
 
@@ -651,7 +653,7 @@ BMOE_DONE  {"id":<int>,"cancelled":<bool>,"tokens":<int>,"tok_s":<float>,
             "prefill_cpu_s":<float>,"prefill_read_mib":<float>,"prefill_io_s":<float>,
             "prefill_stall_s":<float>,"prefill_mgmt_s":<float>,
             "prefill_dev_tokens":<int>,"prefill_dev_nodes":<int>,"prefill_dev_read_mib":<float>,
-            "prefill_dev_stall_s":<float>,
+            "prefill_dev_stall_s":<float>,"prefill_dev_cache_mib":<float>,
             "token_demand_mib":<float>,"mtp_drafted":<int>,"mtp_accepted":<int>,"mtp_decodes":<int>,
             "mtp_draft_s_tok":<float>,"drafted_steps":<int>,"loop_overhead_s_tok":<float>,
             "reasoning":"<string>","text":"<string>"}
@@ -660,7 +662,7 @@ BMOE_DECIDE {"id":<int>,"cancelled":<bool>,"best":<int>,"choice_logp":[<float|nu
              "store_s":<float>,"prefill_s":<float>,"prefill_cpu_s":<float>,"prefill_read_mib":<float>,
              "prefill_io_s":<float>,"prefill_stall_s":<float>,"prefill_mgmt_s":<float>,
              "prefill_dev_tokens":<int>,"prefill_dev_read_mib":<float>,"prefill_dev_stall_s":<float>,
-             "prefill_dev_routed":<int>,"prefill_dev_demand":<int>,"prefix_state_mib":<float>}
+             "prefill_dev_cache_mib":<float>,"prefill_dev_routed":<int>,"prefill_dev_demand":<int>,"prefix_state_mib":<float>}
 BMOE_ERROR {"id":<int>,"fatal":<bool>,"code":"<string>","msg":"<string>"}
 ```
 
@@ -681,7 +683,8 @@ is minus infinity. `best` is the index of the highest. `n_reused` tokens were re
 prefix state and `n_prefilled` were prefilled; the `prefill_*` keys read exactly as `BMOE_DONE`'s.
 `prefill_dev_tokens` is how many of the prefilled tokens ran on the prefill device (`0` without
 `--prefill-device`); `prefill_dev_read_mib` and `prefill_dev_stall_s` are its expert arena's reads and
-the time the graph waited on them, as in `BMOE_DONE` and apart from the streamer's `prefill_read_mib`.
+the time the graph waited on them, and `prefill_dev_cache_mib` what it copied from the expert cache
+instead, as in `BMOE_DONE` and apart from the streamer's `prefill_read_mib`.
 In routed mode (the default), `prefill_dev_routed` counts the (layer, expert) pairs the prefill routed to
 and `prefill_dev_demand` those the prediction missed and the arena read at the routing node (both `0`
 with `--no-prefill-routed`). `prefix_state_mib` is the memory the kept state holds after the call. There is

@@ -56,9 +56,11 @@ from options back to every UI.
 
 **Desktop and Windows at parity.** A package per OS now ships beside the archives: `BigMoeOnEdge.app`
 in a `.dmg`, a per-user Windows installer and an AppImage (#385). Owed: the `.dmg` notarised and the
-installer signed, and an app that updates itself. In the engine, what Windows lacks: the device
-probes in a process of their own, the cache lock, the byte-identity gates in its CI job, and one
-documented planner run.
+installer signed, and an app that updates itself. In the engine, Windows probes devices in a
+process of their own, samples residency, runs the byte-identity gates in its CI job, and has one
+documented planner run ([hardware-planning.md](hardware-planning.md#a-planner-run-on-windows)).
+Still open there: the container limit a job object sets, and the process's own memory figures. The cache lock is left out on purpose: `VirtualLock`
+is bounded by a working-set quota that is not the process's to raise.
 
 **The box that stays on.** The first always-on use is in the field: a mini-PC serving a 400B MoE
 to a coding agent for hours on one prompt, built from source and started by hand in a terminal
@@ -366,6 +368,15 @@ model shape alone, the engine now prices it there, records it as `cache_cycle_mb
 the resolved budget falls under it. It warns rather than refuses: the budget is legal and the run is
 byte-correct, it just cannot hit. See [cache-sizing.md](cache-sizing.md).
 
+Reopened in 0.40.2 for the two places where the verdict above did not look: **below the cycle** and
+**during a prompt**. A global decayed-frequency eviction with a short half-life (8 tokens) is not a
+per-layer cap, so it keeps the cache's self-balancing; it hits a quarter of lookups where LRU hits
+none (6.1 → 8.5 tok/s on the Mac at 0.76 cycles) and reads 1 - 11 % less above the cycle, and it is
+now the default. A CPU prefill's misses enter at the cold end, which halves what a long prompt reads.
+Neither changes the "no policy recovers the Bélády gap" result above the cycle: there the gain is a
+few percent. Admission filters on decode (second touch, TinyLFU, set dueling) were replayed and all
+lost to LRU. See [cache-sizing.md](cache-sizing.md#the-eviction-policy).
+
 ## More architectures
 
 Any MoE llama.cpp loads whose experts come in one of the three layouts it builds (split, fused
@@ -409,8 +420,9 @@ binds, above.
 
 The cache is capacity-bound, not policy-bound (reuse is broad, not skewed), so the simplest win is
 more budget — which `--cache-mb auto` now takes automatically, capped by `--cache-ceil-mb`
-([cache-sizing.md](cache-sizing.md)). Admission policies and a persistent cross-run cache
-remain unexplored.
+([cache-sizing.md](cache-sizing.md)). Admission on decode was replayed and lost to LRU; a prompt's
+misses now enter cold, and a device prefill reads what the cache holds instead of flash
+([npu-prefill.md](npu-prefill.md)). A persistent cross-run cache remains unexplored.
 
 ## The experts a device does not hold, computed beside it
 

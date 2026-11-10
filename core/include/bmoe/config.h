@@ -124,6 +124,30 @@ struct MoeStreamConfig {
     // (docs/pressure.md is why). Inert wherever nothing presses on memory.
     bool cache_brake = true;
 
+    // Which cached expert the budget evicts. 0: the least recently used (LRU). Above 0: the one
+    // with the least decayed frequency, every use counting half as much after this many tokens
+    // (ties go to the least recently used). Below one token's working set (cache_cycle) LRU is a
+    // cyclic scan that evicts exactly what the next token needs and hits 0%; a short half-life keeps
+    // the experts the recent tokens shared instead. Replayed on recorded routing of Qwen3.6-35B-A3B
+    // and OLMoE (docs/cache-sizing.md), half-life 8 read 25-36% fewer bytes than LRU below the cycle,
+    // 1-11% fewer above it, and 2-4% more only at exactly one cycle; 32 and longer lost to LRU above
+    // the cycle on Qwen. Measured on a 16 GB Mac (Qwen3.6-35B-A3B Q4_K_M, 192 greedy tokens): 440 MiB,
+    // 0% -> 27% hit and 6.1 -> 8.5 tok/s; 1170 and 2900 MiB, 4-5% fewer bytes. Lossless: only what
+    // stays in RAM changes. The planner's replay (bmoe/routing.h) uses the same policy.
+    static constexpr int cache_freq_half_life_default = 8;
+    int cache_freq_half_life = cache_freq_half_life_default;
+
+    // Admit a prefill's misses at the cold end of the cache instead of the hot one. A wide graph
+    // touches nearly every expert of a layer, so admitting its misses hot is a cyclic scan: each
+    // ubatch evicts what the next one needs (prefill hit 1-5%). Entered cold, a miss is still
+    // resident for its own layer but is the first victim, and what the cache held before the prompt
+    // survives to serve the next ubatch. Measured on a 16 GB Mac, four 3.6-4.3k-token documents
+    // prefilled on the CPU at ubatch 512 with an 8000 MiB cache: 423 -> 211 GiB read, prefill 17%
+    // faster, decode unchanged. A graph is wide from `prefill_cold_min_tokens` tokens; a speculative
+    // verify window is far narrower and admits hot. Lossless: only what stays in RAM changes.
+    bool cache_prefill_cold = true;
+    static constexpr int prefill_cold_min_tokens = 32;
+
     // Overlap async expert reads with FFN compute instead of blocking on them: load_layer()
     // publishes the reads and returns immediately, and the CPU mul_mat_id kernel blocks per
     // expert (via the fork's expert-ready hook) only if that expert's slice is not yet in.
@@ -361,6 +385,11 @@ struct MoeStreamConfig {
     static constexpr int cache_min_mb = 1500; // smallest non-pathological cache (see above)
     static constexpr int io_threads_max = 8;
     static constexpr int prefetch_layers_max = 8;
+    static constexpr int cache_freq_half_life_max = 4096; // tokens; far beyond it is plain frequency
+
+    // TEST ONLY: the width from which a graph's misses are admitted cold, in tokens (0 keeps
+    // prefill_cold_min_tokens). Lets a gate reach the cold path whatever its prompt's length.
+    int test_prefill_cold_min_tokens = 0;
     // A record's memory is a few ints per layer per token; this keeps the longest one in single MiB.
     static constexpr int routing_record_tokens_max = 4096;
     static constexpr int route_ahead_max = 8; // beyond this the staleness has no measured meaning
@@ -541,6 +570,12 @@ struct PrefillDeviceConfig {
     // than this fraction of its experts gets the next layer read whole.
     bool routed = true;
     float routed_full_frac = 0.85f;
+
+    // Fill the arena from the expert cache where it can: an expert the decode cache holds is copied
+    // from RAM instead of read from flash. The arena never admits into the cache and a device graph
+    // never evicts from it, so what the cache held before the prompt is what serves it; on a follow-up
+    // turn that is most of what the prompt routes to. The bytes are the same either way.
+    bool from_cache = true;
     static constexpr float routed_full_frac_min = 0.0f; // exclusive: 0 would read every layer whole
     static constexpr float routed_full_frac_max = 1.0f; // inclusive: 1 never falls back
     // TEST ONLY: in routed mode, skip the reads at the routing node, so the graph computes on whatever
