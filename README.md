@@ -33,9 +33,11 @@ the model needs them. Android, iOS, macOS, Windows and Linux, built on llama.cpp
 </tr>
 </table>
 
-<p align="center">▶ <a href="https://github.com/Helldez/BigMoeOnEdge/releases/download/v0.39.0/bigmoeonedge-0.39-tour.mp4"><b>Watch the tour</b></a> (2:38): models, the planner, chat, the agent on a folder, tasks and connected apps on a 16 GB Mac.</p>
-
 Qwen3.6-35B-A3B (21 GB) in real time on each device. The model is larger than each device's memory.
+
+**The tour** (2:38): models, the planner, chat, the agent on a folder, tasks and connected apps on a 16 GB Mac.
+
+https://github.com/user-attachments/assets/16371803-b96b-42a4-b147-cb1b7d515c73
 
 ## What it does
 
@@ -132,6 +134,21 @@ print(reply.choices[0].message.content)
 opencode, 65536 for Claude Code
 ([sizing the context](docs/server-api.md#sizing-the-context-for-a-client)).
 
+```jsonc
+// opencode, ~/.config/opencode/opencode.json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "bmoe": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": { "baseURL": "http://127.0.0.1:8765/v1", "apiKey": "local" },
+      "models": { "<model id from /v1/models>": { "limit": { "context": 32768, "output": 8192 } } }
+    }
+  },
+  "model": "bmoe/<model id from /v1/models>"
+}
+```
+
 ```bash
 # Claude Code
 export ANTHROPIC_BASE_URL=http://127.0.0.1:8765
@@ -154,8 +171,7 @@ wire_api = "responses"
 env_key = "BMOE_API_KEY"   # export BMOE_API_KEY=local
 ```
 
-For opencode, add the server as an OpenAI-compatible provider at `http://127.0.0.1:8765/v1`. Under
-**Connect apps**, the app writes the settings for Codex CLI and opencode and shows the ones for
+Under **Connect apps**, the app writes the settings for opencode and Codex CLI and shows the ones for
 Claude Code.
 
 **The agent.** The desktop app has its own agent: it works in a folder you choose, reads and edits

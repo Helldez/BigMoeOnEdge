@@ -66,6 +66,14 @@ Semantic Versioning.
   - **Tests:** byte-identity gates G21a–c drop every offered entry at once (`--cache-discard-drop`,
     debug), on the serial and the overlapped two-wave paths, and check that the re-read path ran.
     ([cache-sizing.md](docs/cache-sizing.md))
+### Changed
+- **The README shows opencode's settings first.** Under "Coding agents", `README.md` and its five
+  translations open with an `opencode.json` that adds the server as an OpenAI-compatible provider,
+  with the 32768-token context the paragraph above it names, then Claude Code and Codex CLI. Before,
+  opencode had one sentence after the other two's settings.
+- **The tour plays in the README.** The "Watch the tour" link pointed at an MP4 release asset, which a
+  browser downloads instead of playing; the video is now a GitHub attachment that plays in the page,
+  under the device GIFs, in `README.md` and its five translations (which had no link to it).
 
 ## [0.40.3] - 2026-11-09
 
