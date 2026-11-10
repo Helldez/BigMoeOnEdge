@@ -56,9 +56,11 @@ from options back to every UI.
 
 **Desktop and Windows at parity.** A package per OS now ships beside the archives: `BigMoeOnEdge.app`
 in a `.dmg`, a per-user Windows installer and an AppImage (#385). Owed: the `.dmg` notarised and the
-installer signed, and an app that updates itself. In the engine, what Windows lacks: the device
-probes in a process of their own, the cache lock, the byte-identity gates in its CI job, and one
-documented planner run.
+installer signed, and an app that updates itself. In the engine, Windows probes devices in a
+process of their own, samples residency, runs the byte-identity gates in its CI job, and has one
+documented planner run ([hardware-planning.md](hardware-planning.md#a-planner-run-on-windows)).
+Still open there: the container limit a job object sets, and the process's own memory figures. The cache lock is left out on purpose: `VirtualLock`
+is bounded by a working-set quota that is not the process's to raise.
 
 **The box that stays on.** The first always-on use is in the field: a mini-PC serving a 400B MoE
 to a coding agent for hours on one prompt, built from source and started by hand in a terminal

@@ -28,6 +28,21 @@ Semantic Versioning.
   direct-link field downloads with Go, on the same terms as their buttons. While the keyboard is
   showing, the status line and the navigation bar are hidden app-wide instead of riding on top of
   it and covering the screen's own buttons; they come back when it closes.
+- **A settings file that does not parse is set aside on Windows too.** The agent store renamed a
+  broken `tasks.json` (or any of its files) to `.bad` while the stream reading it was still open,
+  which Windows refuses, so the broken file stayed and was read again on every start.
+- **A client's settings file is shown in the platform's own separators** (`server/connect.cpp`):
+  on Windows the path read `...\home\.c/config.toml`.
+
+### Changed
+- **The byte-identity gates run in the Windows CI job** (#234), which only compiled before: MSVC,
+  the overlap gates with the expert-ready hook required, as on Linux. The two daylight-saving
+  scheduler checks stay POSIX's, since the Windows C runtime reads no zone names from `TZ`.
+
+### Documentation
+- One planner run on Windows, in `docs/hardware-planning.md`, the device probed in a process of its
+  own on an integrated GPU among it, and the roadmap, platform and
+  backend pages say what Windows still owes.
 
 ## [0.40.3] - 2026-11-09
 
