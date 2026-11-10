@@ -99,6 +99,7 @@ public:
         // still raise the byte count, and therefore the number to look at when it does.
         long long evictions = 0;
         long long rereads = 0;
+        long long cold_admits = 0; // misses a wide graph admitted at the cold end (cache_prefill_cold)
         // Eval-thread waits that are NOT part of the windows above, split out because each lives
         // inside a different residual and hid there. `drain_wait` is the top of the async load:
         // waiting for the previous layer's batch to finish before its jobs_/flags are reused —

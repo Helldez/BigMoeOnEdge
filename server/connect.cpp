@@ -42,7 +42,8 @@ void replace_all(std::string & s, const std::string & from, const std::string & 
 std::string expand_home(const std::string & file, const std::string & home) {
     if (file.compare(0, 2, "~/") != 0) return file;
     if (home.empty()) return "";
-    return (fs::u8path(home) / fs::u8path(file.substr(2))).u8string();
+    // The catalog spells paths with '/'; shown and opened in the platform's own separator.
+    return (fs::u8path(home) / fs::u8path(file.substr(2))).make_preferred().u8string();
 }
 
 const json * find_entry(const json & catalog, const std::string & id) {

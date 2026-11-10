@@ -55,6 +55,7 @@ struct PrefillStats {
     // without a device.
     double device_read_mib = 0.0;
     double device_stall_seconds = 0.0;
+    double device_cache_mib = 0.0; // copied from the expert cache instead of read (from_cache)
     long long device_routed = 0;
     long long device_demand = 0;
 };

@@ -31,6 +31,7 @@ import io.bigmoeonedge.app.engine.appliedChanges
 import io.bigmoeonedge.app.engine.diagnosticText
 import io.bigmoeonedge.app.engine.loadTargetChosen
 import io.bigmoeonedge.app.engine.planFigures
+import io.bigmoeonedge.app.engine.rateText
 import io.bigmoeonedge.app.engine.PlanDecision
 import io.bigmoeonedge.app.engine.PlanDevice
 import io.bigmoeonedge.app.engine.PlanPool
@@ -302,20 +303,20 @@ private fun SpeedWell(f: PlanFigures, fromLastLoad: Boolean, modifier: Modifier)
         Text("Tokens", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         when {
             f.measuredTokS != null -> {
-                Figure(fmt(f.measuredTokS), "tok/s measured")
-                if (f.deltaPct != null && f.predictedTokS != null) {
+                Figure(rateText(f.measuredTokS), "tok/s measured")
+                if (f.deltaPct != null && f.delta != null && f.predictedTokS != null) {
                     if (fromLastLoad) {
                         Text(
-                            String.format(Locale.US, "%+.0f%% against the %s expected", f.deltaPct, fmt(f.predictedTokS)),
+                            "${f.delta.badge} ${f.delta.against}",
                             fontSize = 12.sp, color = if (f.deltaPct >= 0) okColor() else warnColor(),
                         )
                     } else {
-                        Text("${fmt(f.predictedTokS)} tok/s expected under this plan", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("${rateText(f.predictedTokS)} tok/s expected under this plan", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
             f.predictedTokS != null -> {
-                Figure(fmt(f.predictedTokS), "tok/s expected")
+                Figure(rateText(f.predictedTokS), "tok/s expected")
                 Text(if (fromLastLoad) "Measured after the first answer" else "Measured after a load", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             else -> Text("No prediction", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -578,8 +579,6 @@ private fun deviceColour(d: PlanDevice): Color = when (d.status) {
     "refused", "unusable" -> MaterialTheme.colorScheme.error
     else -> MaterialTheme.colorScheme.onSurfaceVariant
 }
-
-private fun fmt(v: Double) = String.format(Locale.US, "%.1f", v)
 
 /** Binary units, as the web UI shows them, so a figure reads the same on both. */
 private fun bytesLabel(bytes: Long): String {

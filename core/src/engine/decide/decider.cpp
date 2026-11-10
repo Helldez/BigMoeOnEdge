@@ -93,6 +93,7 @@ DecideResult run_decide(IDecideBackend & backend, IPrefixCache * cache, const De
     r.prefill.mgmt_seconds = head.mgmt_seconds + tail.mgmt_seconds;
     r.prefill.device_tokens = head.device_tokens + tail.device_tokens;
     r.prefill.device_read_mib = head.device_read_mib + tail.device_read_mib;
+    r.prefill.device_cache_mib = head.device_cache_mib + tail.device_cache_mib;
     r.prefill.device_stall_seconds = head.device_stall_seconds + tail.device_stall_seconds;
     r.prefill.device_routed = head.device_routed + tail.device_routed;
     r.prefill.device_demand = head.device_demand + tail.device_demand;
