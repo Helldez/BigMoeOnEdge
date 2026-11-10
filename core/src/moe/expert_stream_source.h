@@ -140,7 +140,9 @@ public:
     // (or there is no cache). `bytes` is the slice's size. For readers on other threads while a
     // device graph runs: the eval thread is inside that graph, which reads its experts from the
     // arena and never stages or evicts here, and every entry valid at that point was fully read by
-    // the graph before it. Nothing may call it while a host graph could be evicting.
+    // the graph before it. Nothing may call it while a host graph could be evicting. An entry
+    // offered to the kernel is not resident here: its bytes may be gone, and taking it back is the
+    // eval thread's.
     const void * resident_slice(int il, int e, int p, uint64_t & bytes) const;
 
     // The share of the cache's resident pages the system has taken back, from one page of each of up

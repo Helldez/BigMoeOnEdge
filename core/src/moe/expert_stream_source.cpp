@@ -935,6 +935,9 @@ const void * ExpertStreamSource::resident_slice(int il, int e, int p, uint64_t &
         return nullptr;
     const int32_t id = il * n_expert_ + e;
     if ((size_t) id >= cvalid_.size() || !cvalid_[id] || !lbuf_[p][il]) return nullptr;
+    // An entry offered to the kernel (cache_discard) may already be gone, and only the eval thread
+    // may take one back: for a reader on another thread it is not resident, and a flash read serves.
+    if (disc_.offered(id)) return nullptr;
     bytes = layers_[il].proj[p].nb2;
     if (bytes == 0) return nullptr;
     return (const char *) lbuf_[p][il] + (uint64_t) e * bytes;
