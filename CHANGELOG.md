@@ -64,6 +64,13 @@ Semantic Versioning.
 - **The byte-identity gates run in the Windows CI job** (#234), which only compiled before: MSVC,
   the overlap gates with the expert-ready hook required, as on Linux. The two daylight-saving
   scheduler checks stay POSIX's, since the Windows C runtime reads no zone names from `TZ`.
+- **The README shows opencode's settings first.** Under "Coding agents", `README.md` and its five
+  translations open with an `opencode.json` that adds the server as an OpenAI-compatible provider,
+  with the 32768-token context the paragraph above it names, then Claude Code and Codex CLI. Before,
+  opencode had one sentence after the other two's settings.
+- **The tour plays in the README.** The "Watch the tour" link pointed at an MP4 release asset, which a
+  browser downloads instead of playing; the video is now a GitHub attachment that plays in the page,
+  under the device GIFs, in `README.md` and its five translations (which had no link to it).
 
 ### Fixed
 - **The planner no longer refuses a prefill device for a cache that is already off** (#508). It
