@@ -96,4 +96,31 @@ private:
     long long lost_on_lookup_ = 0;
 };
 
+// The budget of a cache the kernel may drop from. Down by what the kernel takes, so a cache larger
+// than the machine lets it keep stops refilling only to be dropped again; back up - never past the
+// budget its owner set - once a whole window passes without a drop, and only as fast as misses need
+// room. Probing upward is safe here as it is not for ordinary memory: growing into pressure costs
+// the kernel a drop and the cache a re-read, never a write.
+class DropFollowingBudget {
+public:
+    // The owner set the budget (at load, or an explicit resize such as the brake's): the new
+    // ceiling, and where the budget starts. `window` is how many generations without a drop
+    // count as the kernel having stopped taking.
+    void reset(size_t budget, size_t floor, uint32_t window);
+    void set_floor(size_t floor);
+    size_t current() const { return current_; }
+
+    // The kernel dropped `bytes` in generation `gen`.
+    void dropped(size_t bytes, uint32_t gen);
+
+    // A load needs `need` bytes beyond the budget in generation `gen`: the budget grows by up to
+    // that when the kernel has been quiet for a window, and not past the ceiling.
+    size_t make_room(size_t need, uint32_t gen);
+
+private:
+    size_t ceiling_ = 0, floor_ = 1, current_ = 0;
+    uint32_t window_ = 0, last_drop_ = 0;
+    bool dropped_ever_ = false;
+};
+
 } // namespace bmoe

@@ -226,8 +226,9 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         cstamp_.assign(n_entry, 0);
         // One pass of the stack, plus the layers route-ahead stages before their compute, is the
         // newest an entry can be and still be in a kernel's or an I/O lane's hands.
-        disc_.init(n_entry, (uint32_t) n_layer_ + discard_after_ + 1, discard_drop_,
-                   discard_wanted_ ? &platform_span_ops() : nullptr,
+        offer_window_ = (uint32_t) n_layer_ + discard_after_ + 1;
+        follow_.reset(cache_max_, pin_floor_, offer_window_);
+        disc_.init(n_entry, offer_window_, discard_drop_, discard_wanted_ ? &platform_span_ops() : nullptr,
                    [this](int32_t id, const std::function<void(Span)> & fn) {
                        for (int p = 0; p < ExpertLayout::max_slots; ++p) {
                            uintptr_t b0 = 0, b1 = 0;
@@ -789,6 +790,7 @@ void ExpertStreamSource::set_cache_budget(size_t bytes) {
         // Growing evicts nothing, so it needs no quiesce — and must not do one: cancelling the
         // speculative reads in flight on every grow would quietly defeat --prefetch.
         cache_max_ = std::min(bytes, total_expert_bytes_);
+        follow_.reset(cache_max_, pin_floor_, offer_window_);
         ++cache_resizes_;
         return;
     }
@@ -798,6 +800,7 @@ void ExpertStreamSource::set_cache_budget(size_t bytes) {
     // chosen at init), and load_layer branches on cache_max_ == 0 to pick shared-slot vs LRU — so a
     // runtime zero would route into buffers that do not exist. This shrinks toward, never to, zero.
     cache_max_ = std::max<size_t>(1, bytes);
+    follow_.reset(cache_max_, pin_floor_, offer_window_); // an explicit resize (the brake's) is the new ceiling
     ++cache_resizes_;
     // No cstamp guard: with no decode in flight, nothing is staged for the current generation, so
     // every resident entry (coldest first) is a valid eviction target.
@@ -1211,13 +1214,16 @@ void ExpertStreamSource::retire_dropped_tail() {
     }
 }
 
-// The budget gives up what the kernel took. A cache larger than the machine will let it keep is
-// refilled only to be dropped again, where one the size of what survives settles: no churn, and
-// still nothing written. Never under one token's cycle, and never back up within the run, for the
-// reason the brake does not grow back (docs/pressure.md).
+// The budget follows what the kernel lets the cache keep (DropFollowingBudget): down by each drop,
+// never under one token's cycle, and back up to the budget last set once the kernel stops taking.
 void ExpertStreamSource::shrink_for_drop(size_t bytes) {
-    const size_t floor = std::max<size_t>(pin_floor_, 1);
-    if (cache_max_ > floor) cache_max_ = std::max(floor, cache_max_ > bytes ? cache_max_ - bytes : 0);
+    follow_.dropped(bytes, cgen_);
+    cache_max_ = follow_.current();
+}
+
+// Before a load evicts to budget: room for what it staged, where the kernel has stopped dropping.
+void ExpertStreamSource::regrow_for_load() {
+    if (disc_.enabled() && cresident_ > cache_max_) cache_max_ = follow_.make_room(cresident_ - cache_max_, cgen_);
 }
 
 // One load's discard bookkeeping: offer what left the window, retire what the kernel took.
@@ -1487,6 +1493,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
 
     if (cache_max_) {
         const auto te0 = clock_t_::now();
+        regrow_for_load();
         evict_to_budget(/*spare_current=*/true);
         mgmt_ns_.fetch_add(
             (long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - te0).count());
@@ -1708,6 +1715,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
     //    guaranteed no stale in-flight jobs, and current-gen entries (cstamp_ == cgen_) — the
     //    ones just staged — are never chosen, so eviction only releases pages nobody is reading.
     if (cache_max_) {
+        regrow_for_load();
         evict_to_budget(/*spare_current=*/true);
     }
     mgmt_ns_.fetch_add((long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - tm0).count());

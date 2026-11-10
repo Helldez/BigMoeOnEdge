@@ -2,6 +2,8 @@
 
 #include "../io/platform_io.h"
 
+#include <algorithm>
+
 namespace bmoe {
 
 namespace {
@@ -74,6 +76,30 @@ bool DiscardableEntries::dropped(int32_t id) {
         if (verdict == -1) verdict = ops_->held(s);
     });
     return verdict == 0;
+}
+
+void DropFollowingBudget::reset(size_t budget, size_t floor, uint32_t window) {
+    ceiling_ = budget;
+    current_ = budget;
+    window_ = window;
+    dropped_ever_ = false;
+    set_floor(floor);
+}
+
+void DropFollowingBudget::set_floor(size_t floor) {
+    floor_ = floor > 0 ? floor : 1;
+}
+
+void DropFollowingBudget::dropped(size_t bytes, uint32_t gen) {
+    last_drop_ = gen;
+    dropped_ever_ = true;
+    if (current_ > floor_) current_ = std::max(floor_, current_ > bytes ? current_ - bytes : 0);
+}
+
+size_t DropFollowingBudget::make_room(size_t need, uint32_t gen) {
+    const bool quiet = !dropped_ever_ || gen - last_drop_ >= window_;
+    if (quiet && current_ < ceiling_) current_ = std::min(ceiling_, current_ + need);
+    return current_;
 }
 
 } // namespace bmoe
