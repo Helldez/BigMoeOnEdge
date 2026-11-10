@@ -188,8 +188,23 @@ The writes left are the process's own, mostly the Metal shader cache. The machin
 on the day of the table above, so compare the arms with each other, not with that table.
 `pio::vm_reclaim` costs about 0.3 µs per projection on Darwin. On Linux it writes one word of every
 page of the entry and reads another, because nothing else reports a loss there. That is about 33 µs
-per 1.77 MB expert on the test phone, and `MADV_FREE` itself about 100 µs. Both are paid only when an
-expert goes cold and when it comes back, not on every hit; a phone engine run is still owed.
+per 1.77 MB expert on the test phone, and `MADV_FREE` itself about 100 µs. Both are paid only when
+an expert goes cold and when it comes back, not on every hit.
+
+On the test phone (Android 16, 12 GB, Qwen3.6-35B-A3B Q4_K_M, `--auto`, 128 tokens, arms
+alternating) the result is neutral on speed and moves the pressure from zram to drops:
+
+| | decode, three runs | cache management | dropped by the kernel | stored to zram |
+|---|---|---:|---:|---:|
+| ordinary (`--no-cache-discard`) | 1.62, 2.88, 2.80 tok/s | 30–33 ms/token | ~10 MiB | 2.6–4.6 GiB |
+| offered | 1.41, 2.81, 2.92 tok/s | 52–65 ms/token | 0.6–3.0 GiB | 1.8–4.9 GiB |
+
+Android grants no lock, so there the cache was ordinary memory before and nothing pinned pushed other
+apps out. The pressure went to zram, which is RAM, not flash, unless a vendor's NAND writeback is on.
+Offered, the kernel dropped up to 3 GiB of cache instead of compressing it. The brake, which halved
+the ordinary cache in every run, never fired, because a dropped offer is not a loss to it. Each
+offer is one `madvise` per projection, which costs about 25 ms per token: the price of an expert
+going cold on Linux, and the place to make it cheaper.
 
 ## Flags
 
