@@ -68,6 +68,17 @@ Semantic Versioning.
   5.3e-4 from the exact result on GLM-4.5-Air's Q5_0/Q5_1 experts, while a wrong kernel is off by
   1e-1 or more. The host stays the reference where no exact result can be computed, or where it
   is not within the bound itself. The plan's log gives both distances.
+- **The device expert cache is kept only where it measured faster.** `--auto` armed a cache of the
+  experts used most on any card that computes them faster than the host, which is necessary and not
+  sufficient: each miss crosses the link first. On two 24 GB cards over PCIe 3, GLM-4.7 (355B, a
+  cache of a tenth of its experts, misses at 4.5 GB/s) decoded at 1.6 tok/s against 3.9 for the
+  capacity fitter's placement. The two sides are now measured across loads, as the thread count and
+  overlap are within one. A load with nothing measured arms the cache and times its decode (a
+  `RateProbe`: the median of the trial's windows, after its longest settle). The next load times the
+  fitter's placement, and the plan after keeps the faster, the cache holding within the planner's 10%
+  margin. Each load's side is merged into the record the front-end keeps for the model and machine,
+  which now merges measurements rather than replacing them. New parameter `--trial-device-cache`
+  (set by the plan). Gate G25e: both sides timed, byte-identical, with a rate in the record.
 
 ## [0.40.2] - 2026-11-08
 

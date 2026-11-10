@@ -275,12 +275,33 @@ int main() {
               "record: two machines' verdicts read back as written" + (parsed ? "" : " (" + err + ")"));
         check(find_measured_knobs(back, a.hardware, "0.35.1") && !find_measured_knobs(back, a.hardware, "0.36.0"),
               "record: a verdict is this machine's AND this engine's");
+        std::vector<MeasuredKnobs> bad;
         MeasuredKnobs a2 = a;
         a2.threads = 8;
         keep_measured_knobs(back, a2);
         check(back.size() == 2 && find_measured_knobs(back, a.hardware, "0.35.1")->threads == 8,
               "record: keeping a machine's verdict replaces the one it had");
-        std::vector<MeasuredKnobs> bad;
+        // The device tier is measured across loads: each load brings one side, and keeping it must not
+        // lose the other side or the knobs an earlier load measured.
+        MeasuredKnobs on;
+        on.hardware = a.hardware;
+        on.engine = a.engine;
+        on.device_cache_tps = 1.6;
+        keep_measured_knobs(back, on);
+        MeasuredKnobs off = on;
+        off.device_cache_tps = 0.0;
+        off.no_device_cache_tps = 3.94;
+        keep_measured_knobs(back, off);
+        const MeasuredKnobs * kept = find_measured_knobs(back, a.hardware, "0.35.1");
+        check(kept && kept->threads == 8 && kept->overlap == 1 && std::fabs(kept->device_cache_tps - 1.6) < 1e-9 &&
+                  std::fabs(kept->no_device_cache_tps - 3.94) < 1e-9 && kept->verdicts() == 4,
+              "record: each load's side of the device tier is merged, nothing an earlier load measured is lost");
+        std::vector<MeasuredKnobs> again;
+        check(parse_measured_knobs(format_measured_knobs(back), again, err) && again.size() == 2 &&
+                  std::fabs(find_measured_knobs(again, a.hardware, "0.35.1")->no_device_cache_tps - 3.94) < 1e-3,
+              "record: the device tier's rates read back as written");
+        check(!parse_measured_knobs("bmoe-measured-knobs 1\nhardware=a engine=b device_cache_tps=-1\n", bad, err),
+              "record: a negative rate is refused");
         check(!parse_measured_knobs("bmoe-measured-knobs 1\nthreads=4\n", bad, err),
               "record: a line naming no machine is refused");
         check(!parse_measured_knobs("something else\n", bad, err), "record: another format is refused");
@@ -365,6 +386,37 @@ int main() {
         const Outcome o = run(k, sim, 1);
         check(o.done && o.winner == 0 && k.abandoned(1) && k.rounds(1) == 2,
               "settled: 5% faster cannot reach the margin after two rounds and stops there");
+    }
+
+    // ── the rate probe: one side of the device tier, timed ──
+    {
+        KnobTrialPolicy rp;
+        rp.window_tokens = 4;
+        // A cache in view settles as the trial does, then times 2 * rounds + 1 windows and gives their median.
+        RateProbe r(/*settle*/ true, /*hits_visible*/ true, rp);
+        // One step a window (the first is the warm-up), one stalled window in five.
+        for (int w = 0; w < 1000 && !r.done(); ++w) {
+            const double spt = w % 5 == 3 ? 0.5 : 0.1;
+            r.record(spt * rp.window_tokens, rp.window_tokens, 100, 90);
+        }
+        check(r.done() && r.windows() == r.windows_wanted() && r.windows_wanted() == 2 * rp.rounds + 1 &&
+                  std::fabs(r.tokens_per_second() - 10.0) < 1e-6,
+              "rate probe: the median of 2 * rounds + 1 windows, a stalled window does not move it");
+        // A device cache out of view: the longest settle the trial makes, whatever the counters say.
+        RateProbe blind(true, /*hits_visible*/ false, rp);
+        int steps = 0;
+        while (blind.settling() && steps < 10000) {
+            blind.record(0.1, 1, 0, 0);
+            ++steps;
+        }
+        check(steps == rp.settle_windows_max * rp.window_tokens + rp.warm_tokens,
+              "rate probe: a cache out of view waits settle_windows_max windows");
+        RateProbe now(/*settle*/ false, true, rp);
+        check(!now.settling() && now.tokens_per_second() == 0.0, "rate probe: no settle, no rate before it is done");
+        now.record(0.1, 2, 0, 0);
+        now.interrupt();
+        now.record(0.1, 1, 0, 0); // the warm-up after an interruption is not timed
+        check(now.windows() == 0, "rate probe: an interruption drops the window in progress");
     }
 
     if (failures) {

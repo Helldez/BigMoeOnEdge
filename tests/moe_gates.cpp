@@ -74,7 +74,8 @@
 //       inside a window (b), and the trial must have reached its verdicts.
 //   G25 the device tier: llama.cpp's device-side expert cache over resident experts (a), over
 //       streamed experts (b) and streamed under n-gram speculation (c), each == the resident
-//       placement.
+//       placement; and each side of the device tier timed for a decision across loads (e), with its
+//       rate in the record.
 //   G26 the real-layer probe fills every device's facts and agrees with the host on the layer's
 //       matmuls; it is timed, not gated, on the tiny models.
 //
@@ -1769,6 +1770,40 @@ int main(int argc, char ** argv) {
                     } else {
                         fails += check("G25c device cache, streamed, n-gram speculation == resident experts", s_placed,
                                        s_cached_spec);
+                    }
+                    // e) each side of the device tier timed for a decision across loads
+                    // (KnobTrialConfig::device_tier): the rate probe switches nothing, so each answer is
+                    // its placement's, and the record must carry the rate, or a plan has nothing to
+                    // compare. Long enough for the longest settle the probe makes and its windows.
+                    RunConfig ref_t = placed;
+                    ref_t.n_predict = 64;
+                    std::string s_ref_t;
+                    if (!gen(ref_t, s_ref_t, err)) {
+                        std::printf("[FAIL] G25e the reference run failed: %s\n", err.c_str());
+                        ++fails;
+                    } else {
+                        for (int side : {1, 0}) {
+                            RunConfig timed = side ? cached : placed;
+                            timed.n_predict = ref_t.n_predict;
+                            timed.trial.device_tier = side;
+                            timed.trial.window_tokens = 2;
+                            const RunResult rt = run(timed);
+                            const double tps = side ? rt.knobs.device_cache_tps : rt.knobs.no_device_cache_tps;
+                            const std::string what =
+                                std::string("G25e ") + (side ? "with" : "without") + " a device cache, timed";
+                            if (!rt) {
+                                std::printf("[FAIL] %s: the run failed: %s\n", what.c_str(), rt.error.c_str());
+                                ++fails;
+                                continue;
+                            }
+                            fails += check((what + " == resident experts").c_str(), s_ref_t, rt.generated_text);
+                            if (!(tps > 0.0)) {
+                                std::printf("[FAIL] %s: no rate in the record\n", what.c_str());
+                                ++fails;
+                            } else {
+                                std::printf("[PASS] %s: %.1f tok/s in the record\n", what.c_str(), tps);
+                            }
+                        }
                     }
                 }
             }

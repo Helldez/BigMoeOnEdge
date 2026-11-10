@@ -2254,6 +2254,55 @@ int main() {
         }
         check(validate(tier.config).ok, "device tier, cache faster: a valid config", validate(tier.config).error);
 
+        // Decided across loads: the first load arms the cache and times it, the next times the
+        // fitter's placement, the plan after keeps the faster (MeasuredKnobs::device_cache_tps).
+        {
+            check(tier.config.trial.device_tier == 1, "device tier, nothing measured: the cache is armed and timed",
+                  std::to_string(tier.config.trial.device_tier));
+            ModelProfile once = model;
+            once.knobs.device_cache_tps = 1.6;
+            const Plan second = plan_run(base_cfg(), slow_cores, once, half, PlanRequest{}, PlannerPolicy::defaults());
+            const Decision * e = find(second, "device-cache-mb");
+            check(second.config.moe.device_cache_mb == 0 && second.config.trial.device_tier == 0 &&
+                      second.config.buft_overrides.size() == 24 && e && e->source == Source::Policy,
+                  "device tier, the cache timed: this load times the fitter's placement as it made it",
+                  e ? e->reason : "no decision");
+            check(validate(second.config).ok, "device tier, second load: a valid config",
+                  validate(second.config).error);
+
+            ModelProfile lost = once;
+            lost.knobs.no_device_cache_tps = 3.94; // the fitter's placement decoded 2.5x faster
+            const Plan third = plan_run(base_cfg(), slow_cores, lost, half, PlanRequest{}, PlannerPolicy::defaults());
+            e = find(third, "device-cache-mb");
+            check(third.config.moe.device_cache_mb == 0 && third.config.trial.device_tier == -1 &&
+                      third.config.buft_overrides.size() == 24 && e && e->source == Source::Measured &&
+                      e->reason.find("1.60 tok/s with a device cache against 3.94") != std::string::npos,
+                  "device tier, the fitter's placement measured faster: it is kept, and the plan says by how much",
+                  e ? e->reason : "no decision");
+
+            ModelProfile won = once;
+            won.knobs.device_cache_tps = 17.5;
+            won.knobs.no_device_cache_tps = 9.9;
+            const Plan kept = plan_run(base_cfg(), slow_cores, won, half, PlanRequest{}, PlannerPolicy::defaults());
+            e = find(kept, "device-cache-mb");
+            check(kept.config.moe.device_cache_mb > 0 && kept.config.trial.device_tier == -1 && e &&
+                      e->reason.find("measured: 17.50 tok/s with a device cache") != std::string::npos,
+                  "device tier, the cache measured faster: armed, nothing timed again", e ? e->reason : "no decision");
+
+            ModelProfile tie = once;
+            tie.knobs.device_cache_tps = 10.0;
+            tie.knobs.no_device_cache_tps = 10.5; // inside the margin: the rule's choice holds
+            const Plan held = plan_run(base_cfg(), slow_cores, tie, half, PlanRequest{}, PlannerPolicy::defaults());
+            check(held.config.moe.device_cache_mb > 0 && held.config.trial.device_tier == -1,
+                  "device tier, the two inside the margin: the cache holds");
+
+            // A caller who placed it is not measured against.
+            PlanRequest pin;
+            pin.pinned.push_back("device-cache-mb");
+            const Plan pinned = plan_run(base_cfg(), slow_cores, model, half, pin, PlannerPolicy::defaults());
+            check(pinned.config.trial.device_tier == -1, "device tier, pinned by the caller: nothing timed");
+        }
+
         // The device's rate unmeasured: nothing says it is the faster processor, and nothing moves.
         HardwareProfile no_rate = slow_cores;
         no_rate.devices[0].memory_bandwidth_gibs = 0.0;

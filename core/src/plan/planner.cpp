@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 namespace bmoe {
 
@@ -517,6 +518,47 @@ void choose_device_tier(Planning & s) {
                std::string(nums) + ", inside the " + u64s((uint64_t) (s.pol.min_backend_win * 100.0f + 0.5f)) + "%" +
                    " margin of each other, so the fastest processor is not the device and nothing moves");
         return;
+    }
+    // Decided across loads, by measurement (MeasuredKnobs::device_cache_tps). The rule above says the
+    // device is the faster processor, which is necessary and not sufficient: every miss of the cache
+    // crosses the link before the device computes it, and where the cache holds a small part of the
+    // experts on a slow link that is the whole token. Measured on two 24 GB cards over PCIe 3, a 355B
+    // model: a cache of a tenth of its experts decoded at 1.6 tok/s where the fitter's placement did
+    // 3.9; on a 12 GB card over PCIe 4 the cache won 17.5 to 9.9. A price of the misses would have to
+    // know the hit rate the cache reaches and what the host really decodes at, and both are what a
+    // run measures and a plan guesses. So a load with no measurement arms the cache and times it, the
+    // next runs the fitter's placement and times that, and the plan after keeps the faster; the cache
+    // holds where the two are within the margin a measured win needs.
+    {
+        const MeasuredKnobs & mk = s.model.knobs;
+        char measured[200];
+        std::snprintf(measured, sizeof(measured),
+                      "%.2f tok/s with a device cache against %.2f with the fitter's placement", mk.device_cache_tps,
+                      mk.no_device_cache_tps);
+        const std::string margin = u64s((uint64_t) (s.pol.min_backend_win * 100.0f + 0.5f)) + "%";
+        if (mk.device_cache_tps > 0.0 && mk.no_device_cache_tps > 0.0) {
+            if (mk.no_device_cache_tps > mk.device_cache_tps * (1.0 + (double) s.pol.min_backend_win)) {
+                s.note("device-cache-mb", "0", Source::Measured,
+                       "The experts stay where the fitter put them: on this machine that decoded faster than a "
+                       "device cache.",
+                       std::string(nums) + "; measured on earlier loads of this model here: " + measured +
+                           ", past the " + margin + " margin");
+                return;
+            }
+            std::snprintf(nums + std::strlen(nums), sizeof(nums) - std::strlen(nums), "; measured: %s", measured);
+        } else if (mk.device_cache_tps > 0.0) {
+            s.p.config.trial.device_tier = 0;
+            char before[64];
+            std::snprintf(before, sizeof(before), "%.2f", mk.device_cache_tps);
+            s.note("device-cache-mb", "0", Source::Policy,
+                   "This load times the experts where the fitter put them, against the device cache timed before.",
+                   std::string(nums) + "; an earlier load of this model here decoded at " + before +
+                       " tok/s with a device cache, and this one measures the fitter's placement so the next "
+                       "plan can keep the faster");
+            return;
+        } else {
+            s.p.config.trial.device_tier = 1;
+        }
     }
     // Every layer's experts back to the host, where the streamer or the resident set serves them, and
     // the bytes the fitter gave them, with what it left free, become the cache. The regime and the

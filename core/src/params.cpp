@@ -536,6 +536,17 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("trial-device-cache", "Measure the device tier", G::Cache, L::Experimental,
+                          "Time the decode of this load's side of the device tier, to be compared across loads: 1 "
+                          "with a device expert cache, 0 without one. -1 times neither. Changes no output; the plan "
+                          "sets it while the two sides have not both been measured on this machine.");
+        d.value_hint = "N";
+        bounds(d, -1, 1, "side");
+        special(d, "-1", "off");
+        bind_int(d, [](RunConfig & c) -> int & { return c.trial.device_tier; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("release-mmap", "Unmap the file after load", G::Streaming, L::Advanced,
                           "Unmap the model file after load once nothing reads through it. On Windows a live "
                           "mapping serialises the streamer's concurrent reads. Needs dense weights anon or "
