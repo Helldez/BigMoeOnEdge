@@ -225,8 +225,7 @@ minutes. Swap is a write to flash, and writes are what wear it.
 So where the platform can take memory back by dropping it, the cache is offered rather than locked
 (`--cache-discard`, on by default, off with `--no-cache-discard`). An entry no layer used in the last
 pass of the stack is handed to the kernel (`pio::vm_offer`: a volatile purgeable object on Darwin,
-`MADV_FREE` on Linux and Android, `OfferVirtualMemory` on Windows), which reclaims it before it
-compresses or swaps anything. A lookup that finds an offered entry takes it back first
+`MADV_FREE` on Linux and Android), which reclaims it before it compresses or swaps anything. A lookup that finds an offered entry takes it back first
 (`pio::vm_reclaim`). If the kernel dropped it, the hit becomes a miss and the entry is read again
 from the model file, a read and not a write. A drop also lowers the budget by that entry, so a cache
 larger than the machine will let it keep settles where it is not refilled only to be dropped again.
@@ -234,12 +233,18 @@ A dropped entry that nothing asks for again is found at the LRU tail, where the 
 oldest-first reclaim leaves it. Each load retires dropped entries from the tail up to the first one
 still held, sampling one page of each with `mincore` (`pio::vm_offered_held`), so the cache's resident
 figure is what RAM still holds. Where the platform cannot tell a kept offer from a dropped one without
-taking it back, the sweep stops at once: Windows unmaps an offered range the moment it is offered
-(out of the working set and `PAGE_NOACCESS` until reclaimed), so residency there would read every
-offer as dropped. Correctness never rests on that sweep: a lookup always takes an entry back first,
+taking it back, the sweep stops at once. Correctness never rests on that sweep: a lookup always takes an entry back first,
 and no other thread reads an offered entry (a device prefill copying from the cache reads it from the
 file instead). The policy is its own module, `moe/discardable_entries`, over a port that `platform_io` implements; its
 test runs it against a fake kernel.
+
+Windows has the API (`OfferVirtualMemory` / `ReclaimVirtualMemory`) but not yet the mechanism: an
+offered range leaves the working set and turns `PAGE_NOACCESS` the moment it is offered, kept or not,
+and the offer and the reclaim each cost microseconds per page: about 1 ms per 1.7 MiB entry, twice
+that with the decode threads busy, paid on every reuse of an offered entry. On a 15 GB Windows 11 PC with
+Qwen3.6-35B-A3B Q4_K_M, decode was 2.2-2.9 tok/s offered against 3.7-4.8 with an ordinary cache, the
+same bytes and hits, the whole gap in cache management. `pio::vm_discard_supported` answers false
+there, so the cache is ordinary memory as before, the planner prices it so, and G21 is skipped.
 
 The budget follows what the kernel lets the cache keep, both ways (`DropFollowingBudget`, in the same
 module). It goes down by each drop, never under one token's cycle. Once a whole window passes

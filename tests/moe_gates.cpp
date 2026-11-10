@@ -100,6 +100,7 @@
 #include "bmoe/probe.h"
 #include "bmoe/session.h"
 #include "gguf_offsets.h"
+#include "platform_io.h"
 
 #include "ggml-backend.h"
 
@@ -628,7 +629,11 @@ int main(int argc, char ** argv) {
     // weight, which no output survives. The cache holds every expert, so nothing is evicted and every
     // drop is a would-be hit. G21a also proves the drops happened - a gate whose path never ran
     // would pass the same way. G18b is the same cache offered and never dropped (reclaim intact).
-    {
+    // A platform without the mechanism (pio::vm_discard_supported) keeps an ordinary cache: nothing
+    // is offered, so there is no re-read path to prove.
+    if (!pio::vm_discard_supported()) {
+        std::printf("[SKIP] G21a-d (this platform offers no memory for the kernel to drop)\n");
+    } else {
         RunConfig dropall = base(model);
         dropall.moe.enabled = true;
         dropall.moe.cache_mb = 64;
@@ -757,20 +762,22 @@ int main(int argc, char ** argv) {
 
         // G21c — the discard re-read on the async path: a dropped hit has to become a miss whose
         // reads are published and waited on per expert, with two-wave splitting its commits.
-        RunConfig ovdrop = ov2w;
-        ovdrop.moe.cache_mb = 64;
-        ovdrop.moe.cache_discard = true;
-        ovdrop.moe.cache_discard_drop = true;
-        const RunResult rod = run(ovdrop);
-        if (!rod) {
-            std::fprintf(stderr, "G21c run failed: %s\n", rod.error.c_str());
-            return 2;
-        }
-        fails += check("G21c overlap + two-wave, every offered entry dropped == streaming(cache off)", s_s0,
-                       rod.generated_text);
-        if (rod.summary.cache_discarded_on_hit == 0) {
-            std::printf("[FAIL] G21c no entry was dropped and read again on the async path\n");
-            ++fails;
+        if (pio::vm_discard_supported()) {
+            RunConfig ovdrop = ov2w;
+            ovdrop.moe.cache_mb = 64;
+            ovdrop.moe.cache_discard = true;
+            ovdrop.moe.cache_discard_drop = true;
+            const RunResult rod = run(ovdrop);
+            if (!rod) {
+                std::fprintf(stderr, "G21c run failed: %s\n", rod.error.c_str());
+                return 2;
+            }
+            fails += check("G21c overlap + two-wave, every offered entry dropped == streaming(cache off)", s_s0,
+                           rod.generated_text);
+            if (rod.summary.cache_discarded_on_hit == 0) {
+                std::printf("[FAIL] G21c no entry was dropped and read again on the async path\n");
+                ++fails;
+            }
         }
     }
 

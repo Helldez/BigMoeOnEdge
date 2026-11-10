@@ -28,8 +28,8 @@ Semantic Versioning.
     0.6–1.8 GB of swap writes per 512-token answer, against 0.13 GB in 10 idle minutes. Flash wears
     with writes.
   - **The fix:** where the platform lets a process offer memory for the kernel to drop rather than
-    swap (Darwin purgeable objects, Linux and Android `MADV_FREE`, Windows `OfferVirtualMemory`),
-    the cache is offered instead of pinned. An expert no layer used in the last pass is handed over.
+    swap (Darwin purgeable objects, Linux and Android `MADV_FREE`), the cache is offered instead of
+    pinned. An expert no layer used in the last pass is handed over.
     A lookup takes it back first, and reads it again from the model file if the kernel dropped it.
     Each drop also lowers the budget, so a cache larger than the machine will let it keep settles
     instead of churning. Once a pass of the model goes by without a drop, the budget grows back,
@@ -44,9 +44,11 @@ Semantic Versioning.
   - **Tests:** byte-identity gates G21a–d drop every offered entry at once (`--cache-discard-drop`,
     debug), on the serial and the overlapped two-wave paths and under a prompt admitted cold (a
     dropped entry a prompt reads again enters at the cold end, like that prompt's other misses), and
-    check that the re-read path ran. They run on Windows too, where they found that an offered range
-    reads as not resident at once and is unreadable until reclaimed: the tail sweep there no longer
-    retires live entries, and a device prefill no longer copies an offered entry from the cache.
+    check that the re-read path ran. A device prefill copying from the cache reads an offered entry
+    from the file instead, since its bytes may be gone.
+  - **Not on Windows yet.** `OfferVirtualMemory` unmaps an offered range at once, and the offer and
+    the reclaim cost microseconds per page on every reuse: on a 15 GB PC decode fell from 3.7-4.8 to 2.2-2.9 tok/s, the whole gap in
+    cache management. The cache there stays ordinary memory, as before, and G21 is skipped.
     ([cache-sizing.md](docs/cache-sizing.md))
 - **The expert cache evicts by decayed frequency** (`--cache-half-life`, 8 tokens by default; `0`
   is the LRU it replaces). Below one token's worth of experts LRU evicts what the next token reads
