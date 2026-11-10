@@ -1,0 +1,13 @@
+[
+ {
+  "engine": "q36-main-long",
+  "prompt": "long",
+  "prompt_tokens": 9714,
+  "gen_tokens": 256,
+  "ttft_s": 2.03,
+  "prefill_tps": 4788.8,
+  "decode_tps": 128.26,
+  "server_timings": null,
+  "text": "Here's a thinking process:\n\n1.  **Analyze User Input:**\n   - **Input Text:** A detailed technical document about a hardware planning system (`--auto`) for an AI inference engine (likely `bmoe-cli`/`llama.cpp`-based). It covers:\n     - How `--auto` works (measures, plans, runs, explains)\n     - Two-s"
+ }
+]

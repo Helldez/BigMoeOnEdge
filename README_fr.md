@@ -38,6 +38,10 @@ depuis la flash quand le modèle en a besoin. Android, iOS, macOS, Windows et Li
 Qwen3.6-35B-A3B (21 GB) en temps réel sur chaque appareil. Le modèle est plus grand que la mémoire de chaque
 appareil.
 
+**La visite** (2:38) : les modèles, le planificateur, le chat, l'agent sur un dossier, les tâches et les apps connectées sur un Mac de 16 GB.
+
+https://github.com/user-attachments/assets/16371803-b96b-42a4-b147-cb1b7d515c73
+
 ## Ce qu'il fait
 
 - **Exécute des modèles qui ne tiennent pas en mémoire.** Un modèle MoE utilise quelques experts par token.
@@ -66,6 +70,7 @@ appareil.
 | **Portable Apple silicon** | 16 GB | Qwen3.8-Flash-Next 125B | 76 GB | flash | 7-9 |
 |  |  | Qwen3.6-35B-A3B | 21 GB | flash | 18-24 |
 | **Portable Windows** | 16 GB | Qwen3.6-35B-A3B | 21 GB | flash | 5 |
+| **GPU de bureau** (NVIDIA) | 12 GB + 128 GB RAM | Qwen3.8-Flash-Next 125B | 84 GB | RAM, cache GPU | 16-17 |
 | **GPU de bureau** (NVIDIA) | 16 GB + 32 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | flash, cache GPU | 19-21 |
 | **GPU de bureau** (NVIDIA) | 24 GB + 96 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM, cache GPU | 70 |
 |  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
@@ -128,6 +133,21 @@ print(reply.choices[0].message.content)
 32768 suffit pour opencode, 65536 pour Claude Code
 ([dimensionner le contexte](docs/server-api.md#sizing-the-context-for-a-client)).
 
+```jsonc
+// opencode, ~/.config/opencode/opencode.json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "bmoe": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": { "baseURL": "http://127.0.0.1:8765/v1", "apiKey": "local" },
+      "models": { "<model id from /v1/models>": { "limit": { "context": 32768, "output": 8192 } } }
+    }
+  },
+  "model": "bmoe/<model id from /v1/models>"
+}
+```
+
 ```bash
 # Claude Code
 export ANTHROPIC_BASE_URL=http://127.0.0.1:8765
@@ -150,8 +170,7 @@ wire_api = "responses"
 env_key = "BMOE_API_KEY"   # export BMOE_API_KEY=local
 ```
 
-Pour opencode, ajoutez le serveur comme fournisseur compatible OpenAI à l'adresse `http://127.0.0.1:8765/v1`.
-Sous **Connect apps**, l'application écrit les réglages pour Codex CLI et opencode et affiche ceux de
+Sous **Connect apps**, l'application écrit les réglages pour opencode et Codex CLI et affiche ceux de
 Claude Code.
 
 **L'agent.** L'application de bureau a son propre agent : il travaille dans un dossier que vous choisissez,

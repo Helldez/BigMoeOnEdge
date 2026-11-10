@@ -1,0 +1,24 @@
+[
+ {
+  "engine": "doc-2",
+  "prompt": "long",
+  "prompt_tokens": 9515,
+  "gen_tokens": 256,
+  "ttft_s": 11.66,
+  "prefill_tps": 816.2,
+  "decode_tps": 15.18,
+  "server_timings": null,
+  "text": "Hmm, the user has shared a detailed technical document about hardware planning for a MoE (Mixture of Experts) engine called bmoe-cli. They want me to summarize this complex document in just five bullet points.\n\nLooking at this document, it's quite technical and covers several aspects of automatic ha"
+ },
+ {
+  "engine": "doc-2",
+  "prompt": "a",
+  "prompt_tokens": 45,
+  "gen_tokens": 256,
+  "ttft_s": 1.59,
+  "prefill_tps": 28.4,
+  "decode_tps": 18.26,
+  "server_timings": null,
+  "text": "We are going to explain the routing mechanism in a mixture-of-experts (MoE) language model and how it enables running a model larger than RAM by streaming experts from flash storage.\n\n### 1. Mixture-of-Experts (MoE) Overview\nIn an MoE model, the model is composed of multiple \"expert\" networks (typic"
+ }
+]

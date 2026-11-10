@@ -52,10 +52,15 @@ sleep, inside `llama_decode`, where no tok/s counter can see it. System-wide her
 | | reclaim cost | restore cost |
 |---|---|---|
 | **clean file-backed** (mmap'd weights, page cache) | **free** — dropped, no I/O | re-read from the file |
-| **anonymous** (our expert cache buffers) | compress + write to zram, maybe writeback to NAND | read + decompress |
+| **anonymous** (our expert cache buffers, before `--cache-discard`) | compress + write to zram, and to NAND only if the vendor's zram writeback ("RAM expansion") is on | read + decompress |
+| **offered** (the expert cache since `--cache-discard`, `MADV_FREE`) | **free** — dropped, no I/O | re-read from the file |
 
 The expert cache is *a copy of bytes that already exist in the gguf*, held in the one form the kernel
-must write out to reclaim. `pswpout` on this device: **36.8 M pages ≈ 140 GB written since boot**.
+must write out to reclaim. `pswpout` on this device: **36.8 M pages ≈ 140 GB written since boot**,
+though into zram, which is RAM: `dumpsys meminfo` shows zram's total equal to `SwapTotal`, so there
+is no other swap device, and `pswpout` counts zram stores too. Whether the vendor's NAND writeback
+runs cannot be read without root (`/sys/block/zram0/bd_stat`); on the test device the vendor's runtime switch for it
+reads off.
 Worse, Q4_K_M weights are high-entropy, so zram stores them near-uncompressed: the swapout burns CPU
 both ways and frees almost nothing. *(Inference — `/sys/block/zram0/mm_stat` is root-only; check
 `huge_pages` vs `pages_stored` with root to settle it.)*

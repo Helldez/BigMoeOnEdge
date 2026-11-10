@@ -22,6 +22,7 @@
 #include "../io/platform_io.h"
 #include "../io/file_reader.h"
 #include "dense_weights.h" // DenseWeights + DenseTensorRef
+#include "discardable_entries.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -131,6 +132,18 @@ public:
     // and exercised by the shrink gate. This is the only thing that moves the budget after init.
     void set_cache_budget(size_t bytes);
     size_t cache_budget() const { return cache_max_; }
+    // The run's effective top-k: a batch of ids is that many per token, which is how load_layer tells
+    // a wide graph (cache_prefill_cold) from a decode or a verify window. Before the first decode.
+    void set_top_k(int k) { top_k_ = std::max(0, k); }
+
+    // Where projection p of expert e of layer il sits in the cache, or null when it is not resident
+    // (or there is no cache). `bytes` is the slice's size. For readers on other threads while a
+    // device graph runs: the eval thread is inside that graph, which reads its experts from the
+    // arena and never stages or evicts here, and every entry valid at that point was fully read by
+    // the graph before it. Nothing may call it while a host graph could be evicting. An entry
+    // offered to the kernel is not resident here: its bytes may be gone, and taking it back is the
+    // eval thread's.
+    const void * resident_slice(int il, int e, int p, uint64_t & bytes) const;
 
     // The share of the cache's resident pages the system has taken back, from one page of each of up
     // to `n` entries spread over the LRU. What the cache wrote and the kernel then compressed, swapped
@@ -152,7 +165,10 @@ public:
     // The floor a pin refusal may not shrink the cache under: one token's worst-case cycle, which
     // only the caller knows because the routing width is its to resolve. Unset, a part-way refusal
     // ends pinning and leaves the budget alone.
-    void set_pin_floor(size_t bytes) { pin_floor_ = bytes; }
+    void set_pin_floor(size_t bytes) {
+        pin_floor_ = bytes;
+        follow_.set_floor(bytes);
+    }
 
     // ── I/O trace (diagnostics; see bmoe/decode_trace.h) ────────────────────────────
     // When on, every read_slice records one row. Rows are appended under a dedicated leaf mutex
@@ -234,14 +250,47 @@ private:
 
     // Commit the pages of one (layer, expert, projection) cache slice so a read can land in it.
     bool commit_proj_pages(int il, int e, int p);
+    bool commit_slice(int il, int e, int p);
     void pin_pages(void * p, size_t sz);
 
     // LRU helpers (active only when cache_max_ > 0)
     void lru_unlink(int32_t id);
     void lru_push_front(int32_t id);
     void lru_push_back(int32_t id);
+    void admit_entry(int32_t id); // a miss enters the LRU (cold end in a cold batch) and the offer window
     size_t entry_bytes(int il) const;
     void evict_tail();
+    void evict_entry(int32_t id);
+    // Evict to budget under the configured policy. `spare_current` keeps every entry the layer in
+    // flight staged (cstamp_ == cgen_): its reads may still be landing, and its matmul needs it.
+    void evict_to_budget(bool spare_current);
+
+    // Decayed-frequency eviction (MoeStreamConfig::cache_freq_half_life > 0). A use at pass t adds
+    // growth^t to the entry's score instead of decaying every score each pass: the order is the
+    // same as a decayed count, and a pass costs one multiply instead of a sweep. A pass is one
+    // graph's walk over the layers (one token in decode, one ubatch in prefill), detected as a
+    // non-increasing layer index. Scores are rescaled before the weight could overflow.
+    void freq_touch(int32_t id);
+    void freq_pass_check(int il);
+    int freq_half_life_ = 0;
+    // cache_prefill_cold: this batch is a wide graph whose misses enter cold; cold_gen_ marks the
+    // entries entered cold in the current generation so no promotion of the same batch warms them.
+    bool prefill_cold_ = false;
+    bool cold_batch_ = false;
+    int cold_min_tokens_ = MoeStreamConfig::prefill_cold_min_tokens;
+    int top_k_ = 0; // routed experts per token (set_top_k); 0 leaves the cold rule off
+    std::vector<uint64_t> cold_gen_;
+    int freq_last_il_ = -1;
+    double freq_growth_ = 1.0;
+    double freq_weight_ = 1.0;
+    size_t min_entry_bytes_ = 0;
+    std::vector<double> cfreq_;
+    struct EvictCand {
+        double score;
+        int32_t rank; // position cold to hot: the LRU order that breaks a tie
+        int32_t id;
+    };
+    std::vector<EvictCand> evict_cand_;
 
     // I/O trace buffer. Its own leaf mutex, never held across a read: the lanes append
     // concurrently, and the eval thread swaps the buffer out between decodes.
@@ -275,7 +324,7 @@ private:
     // the cache paying twice, and it is the only way a "100% useful" prefetch can still raise
     // the byte count. Reported per run; cheap enough (one byte per entry, one branch per read).
     std::vector<uint8_t> ever_evicted_;
-    long long rereads_ = 0, evictions_ = 0;
+    long long rereads_ = 0, evictions_ = 0, cold_admits_ = 0;
     // Eval-thread wait counters (see IExpertSource::Stats): the async load's previous-batch drain
     // (lives in the compute residual) and the route-ahead adoption wait (lives inside mgmt).
     // Eval-thread only, like the LRU itself — two clock reads per wait, nothing on the lanes.
@@ -302,7 +351,7 @@ private:
     void * slot_[ExpertLayout::max_slots] = {nullptr, nullptr, nullptr};
 
     // LRU mode (cache on): per-(layer, projection) reserved buffers
-    size_t cache_max_ = 0; // live budget in bytes; only an explicit set_cache_budget() moves it
+    size_t cache_max_ = 0; // live budget in bytes: set_cache_budget(), and with a discardable cache follow_
     size_t page_ = pio::vm_page();
 
     // Every expert of every bound layer resident: the ceiling any budget is clamped to, and (under
@@ -344,6 +393,21 @@ private:
     std::vector<int32_t> cprev_, cnext_;
     std::vector<uint32_t> cstamp_;
     std::vector<uint8_t> cspec_; // 1 if this resident entry was filled speculatively, until first hit
+
+    // Discardable cache (MoeStreamConfig::cache_discard): the policy lives in DiscardableEntries;
+    // this source owns the entries, their LRU and the budget, and says which spans an entry owns.
+    DiscardableEntries disc_;
+    bool discard_wanted_ = false;
+    bool discard_drop_ = false;  // debug: drop an offer just before a lookup takes it back
+    uint32_t discard_after_ = 0; // generations route-ahead stages ahead of compute
+    long long swept_ = 0;        // dropped offers retired from the LRU tail
+    uint32_t offer_window_ = 0;  // generations an entry stays ordinary after its last use
+    DropFollowingBudget follow_; // the live budget while the kernel may drop from the cache
+    void settle_offers();
+    void retire_dropped_tail();
+    void shrink_for_drop(size_t bytes);
+    void regrow_for_load();
+    bool entry_body(int32_t id, int p, uintptr_t & b0, uintptr_t & b1) const;
     int32_t chead_ = -1, ctail_ = -1;
     uint32_t cgen_ = 0;
     size_t cresident_ = 0;

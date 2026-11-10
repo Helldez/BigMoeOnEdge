@@ -126,6 +126,13 @@ struct PlannerPolicy {
     static PlannerPolicy defaults() { return PlannerPolicy(); }
 };
 
+// The widest graph, halving from the width `placement` was projected at and never below
+// `policy.ubatch_min`, whose compute buffers on every device with memory of its own stay inside
+// `policy.compute_share_max` of that device's memory (each card against its own). The projected width
+// where they already do; 0 where the device side's slope was not measured or no device has memory of
+// its own. Read by the width rule and by probe_and_plan, which asks the fitter what that width buys.
+uint32_t device_share_width(const Placement & placement, const HardwareProfile & hw, const PlannerPolicy & policy);
+
 // As above, with the margins overridden. The four-argument form calls this with the defaults.
 Plan plan_run(const RunConfig & base,
               const HardwareProfile & hw,

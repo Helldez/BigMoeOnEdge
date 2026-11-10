@@ -1,0 +1,219 @@
+ggml_vulkan: No devices found.
+load_backend: loaded Vulkan backend from /root/rel/plain/bmoe-cli-v0.40.2-linux-x86_64/libggml-vulkan.so
+load_backend: loaded CPU backend from /root/rel/plain/bmoe-cli-v0.40.2-linux-x86_64/libggml-cpu-haswell.so
+bmoe: memory: phase=auto-probe-begin process_footprint_mib=-1.000 process_headroom_mib=123170.090 rss_mib=73.227 compressed_or_swap_mib=0.000 system_available_mib=102868.152
+bmoe: memory: phase=auto-hardware process_footprint_mib=-1.000 process_headroom_mib=123169.840 rss_mib=73.230 compressed_or_swap_mib=0.000 system_available_mib=102868.152
+bmoe: memory: phase=auto-device-support process_footprint_mib=-1.000 process_headroom_mib=123147.848 rss_mib=95.480 compressed_or_swap_mib=0.000 system_available_mib=103007.914
+bmoe: memory: phase=auto-bandwidth process_footprint_mib=-1.000 process_headroom_mib=123108.711 rss_mib=134.836 compressed_or_swap_mib=0.000 system_available_mib=105655.262
+bmoe: memory: phase=auto-device-costs process_footprint_mib=-1.000 process_headroom_mib=123108.711 rss_mib=134.836 compressed_or_swap_mib=0.000 system_available_mib=105655.262
+bmoe: memory: phase=auto-storage process_footprint_mib=-1.000 process_headroom_mib=123064.848 rss_mib=134.840 compressed_or_swap_mib=0.000 system_available_mib=103180.477
+bmoe: memory: phase=auto-headroom process_footprint_mib=-1.000 process_headroom_mib=123064.848 rss_mib=134.840 compressed_or_swap_mib=0.000 system_available_mib=103181.867
+bmoe: memory: phase=auto-probe-end process_footprint_mib=-1.000 process_headroom_mib=123035.043 rss_mib=165.074 compressed_or_swap_mib=0.000 system_available_mib=109430.949
+llama_model_loader: additional 1 GGUFs metadata loaded.
+llama_model_loader: loaded meta data with 67 key-value pairs and 1224 tensors from /root/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf (version GGUF V3 (latest))
+llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+llama_model_loader: - kv   0:                       general.architecture str              = qwen4exp
+llama_model_loader: - kv   1:                               general.type str              = model
+llama_model_loader: - kv   2:                     general.sampling.top_k i32              = 20
+llama_model_loader: - kv   3:                     general.sampling.top_p f32              = 0.950000
+llama_model_loader: - kv   4:                      general.sampling.temp f32              = 1.000000
+llama_model_loader: - kv   5:                               general.name str              = Qwen3.8-Flash-Next GSQ-RCO
+llama_model_loader: - kv   6:                        general.description str              = A Preview of the Qwen4 Architecture
+llama_model_loader: - kv   7:                         general.size_label str              = 512x56B
+llama_model_loader: - kv   8:                       qwen4exp.block_count u32              = 48
+llama_model_loader: - kv   9:                    qwen4exp.context_length u32              = 262144
+llama_model_loader: - kv  10:                  qwen4exp.embedding_length u32              = 2560
+llama_model_loader: - kv  11:              qwen4exp.attention.head_count u32              = 24
+llama_model_loader: - kv  12:           qwen4exp.attention.head_count_kv u32              = 2
+llama_model_loader: - kv  13:           qwen4exp.rope.dimension_sections arr[i32,4]       = [11, 11, 10, 0]
+llama_model_loader: - kv  14:                    qwen4exp.rope.freq_base f32              = 10000000.000000
+llama_model_loader: - kv  15:  qwen4exp.attention.layer_norm_rms_epsilon f32              = 0.000001
+llama_model_loader: - kv  16:                      qwen4exp.expert_count u32              = 512
+llama_model_loader: - kv  17:                 qwen4exp.expert_used_count u32              = 10
+llama_model_loader: - kv  18:              qwen4exp.attention.key_length u32              = 256
+llama_model_loader: - kv  19:            qwen4exp.attention.value_length u32              = 256
+llama_model_loader: - kv  20:        qwen4exp.expert_feed_forward_length u32              = 640
+llama_model_loader: - kv  21: qwen4exp.expert_shared_feed_forward_length u32              = 640
+llama_model_loader: - kv  22:                   qwen4exp.ssm.conv_kernel u32              = 4
+llama_model_loader: - kv  23:                    qwen4exp.ssm.state_size u32              = 128
+llama_model_loader: - kv  24:                   qwen4exp.ssm.group_count u32              = 16
+llama_model_loader: - kv  25:                qwen4exp.ssm.time_step_rank u32              = 48
+llama_model_loader: - kv  26:                    qwen4exp.ssm.inner_size u32              = 6144
+llama_model_loader: - kv  27:           qwen4exp.full_attention_interval u32              = 4
+llama_model_loader: - kv  28:              qwen4exp.rope.dimension_count u32              = 64
+llama_model_loader: - kv  29:            qwen4exp.hyper_connection.count u32              = 4
+llama_model_loader: - kv  30:         qwen4exp.hyper_connection.low_rank u32              = 320
+llama_model_loader: - kv  31:      qwen4exp.attention.indexer.head_count u32              = 4
+llama_model_loader: - kv  32:      qwen4exp.attention.indexer.key_length u32              = 128
+llama_model_loader: - kv  33:           qwen4exp.attention.indexer.top_k u32              = 2048
+llama_model_loader: - kv  34:         qwen4exp.attention.compress_ratios arr[i32,48]      = [0, 0, 0, 4, 0, 0, 0, 4, 0, 0, 0, 4, ...
+llama_model_loader: - kv  35:                        qwen4exp.ple.layers arr[i32,1]       = [1]
+llama_model_loader: - kv  36:                    qwen4exp.ple.ngram_size u32              = 3
+llama_model_loader: - kv  37:               qwen4exp.ple.heads_per_ngram u32              = 8
+llama_model_loader: - kv  38:                   qwen4exp.ple.conv_kernel u32              = 4
+llama_model_loader: - kv  39:                  qwen4exp.ple.eos_token_id u32              = 248044
+llama_model_loader: - kv  40:  qwen4exp.embedding_length_per_layer_input u32              = 160
+llama_model_loader: - kv  41:             qwen4exp.ple.layer_multipliers arr[u64,3]       = [23703573157769, 20109073645365, 8052...
+llama_model_loader: - kv  42:                  qwen4exp.ple.head_offsets arr[u64,16]      = [0, 20000003, 40000026, 60000059, 800...
+llama_model_loader: - kv  43:              qwen4exp.ple.head_vocab_sizes arr[u64,16]      = [20000003, 20000023, 20000033, 200000...
+llama_model_loader: - kv  44:                       tokenizer.ggml.model str              = gpt2
+llama_model_loader: - kv  45:                         tokenizer.ggml.pre str              = qwen35
+llama_model_loader: - kv  46:                      tokenizer.ggml.tokens arr[str,248320]  = ["!", "\"", "#", "$", "%", "&", "'", ...
+llama_model_loader: - kv  47:                  tokenizer.ggml.token_type arr[i32,248320]  = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, ...
+llama_model_loader: - kv  48:                      tokenizer.ggml.merges arr[str,247587]  = ["Ġ Ġ", "ĠĠ ĠĠ", "i n", "Ġ t",...
+llama_model_loader: - kv  49:                tokenizer.ggml.eos_token_id u32              = 248046
+llama_model_loader: - kv  50:            tokenizer.ggml.padding_token_id u32              = 248044
+llama_model_loader: - kv  51:                tokenizer.ggml.bos_token_id u32              = 248044
+llama_model_loader: - kv  52:               tokenizer.ggml.add_bos_token bool             = false
+llama_model_loader: - kv  53:                    tokenizer.chat_template str              = {%- set image_count = namespace(value...
+llama_model_loader: - kv  54:                qwen4exp.ple.image_token_id u32              = 248056
+llama_model_loader: - kv  55:                       general.quantized_by str              = ISTA DASLab
+llama_model_loader: - kv  56:                           general.repo_url str              = https://huggingface.co/ISTA-DASLab/Qw...
+llama_model_loader: - kv  57:                      quantize.imatrix.file str              = imatrix-qwen3.8-flash-next.gguf
+llama_model_loader: - kv  58:                   quantize.imatrix.dataset str              = calib_qwen3.8-flash-next.tokids
+llama_model_loader: - kv  59:             quantize.imatrix.entries_count u32              = 926
+llama_model_loader: - kv  60:              quantize.imatrix.chunks_count u32              = 1000
+llama_model_loader: - kv  61:                          general.file_type u32              = 26
+llama_model_loader: - kv  62:               general.quantization_version u32              = 2
+llama_model_loader: - kv  63:                                   split.no u16              = 0
+llama_model_loader: - kv  64:                                split.count u16              = 2
+llama_model_loader: - kv  65:                        split.tensors.count i32              = 1224
+llama_model_loader: - kv  66:                               general.tags arr[str,7]       = ["gguf", "gsq", "rco", "quantization"...
+llama_model_loader: - type  f32:  292 tensors
+llama_model_loader: - type  f16:    1 tensors
+llama_model_loader: - type q8_0:    1 tensors
+llama_model_loader: - type q4_K:   47 tensors
+llama_model_loader: - type q5_K:   35 tensors
+llama_model_loader: - type q6_K:  129 tensors
+llama_model_loader: - type iq3_xxs:   34 tensors
+llama_model_loader: - type iq4_nl:   87 tensors
+llama_model_loader: - type iq3_s:   20 tensors
+llama_model_loader: - type iq2_s:   40 tensors
+llama_model_loader: - type iq4_xs:   45 tensors
+llama_model_loader: - type bf16:  484 tensors
+llama_model_loader: - type q2_0:    9 tensors
+print_info: file format = GGUF V3 (latest)
+print_info: file type   = IQ3_S - 3.4375 bpw
+print_info: file size   = 77.86 GiB (3.78 BPW) 
+load: 0 unused tokens
+load: printing all EOG tokens:
+load:   - 248044 ('<|endoftext|>')
+load:   - 248046 ('<|im_end|>')
+load:   - 248063 ('<|fim_pad|>')
+load:   - 248064 ('<|repo_name|>')
+load:   - 248065 ('<|file_sep|>')
+load: special tokens cache size = 33
+load: token to piece cache size = 1.7581 MB
+print_info: arch                  = qwen4exp
+print_info: vocab_only            = 0
+print_info: no_alloc              = 0
+print_info: n_ctx_train           = 262144
+print_info: n_embd_inp            = 2560
+print_info: n_embd                = 2560
+print_info: n_embd_out            = 10240
+print_info: n_layer               = 48
+print_info: n_layer_all           = 48
+print_info: n_head                = 24
+print_info: n_head_kv             = 2
+print_info: n_rot                 = 64
+print_info: n_swa                 = 0
+print_info: is_swa_any            = 0
+print_info: non_causal_type       = 0
+print_info: n_embd_head_k         = 256
+print_info: n_embd_head_v         = 256
+print_info: n_gqa                 = 12
+print_info: n_embd_k_gqa          = 512
+print_info: n_embd_v_gqa          = 512
+print_info: f_norm_eps            = 0.0e+00
+print_info: f_norm_rms_eps        = 1.0e-06
+print_info: f_clamp_kqv           = 0.0e+00
+print_info: f_max_alibi_bias      = 0.0e+00
+print_info: f_logit_scale         = 0.0e+00
+print_info: f_attn_scale          = 0.0e+00
+print_info: f_attn_value_scale    = 0.0000
+print_info: n_ff                  = 0
+print_info: n_expert              = 512
+print_info: n_expert_used         = 10
+print_info: n_expert_groups       = 0
+print_info: n_group_used          = 0
+print_info: causal attn           = 1
+print_info: pooling type          = -1
+print_info: rope type             = 40
+print_info: rope scaling          = linear
+print_info: freq_base_train       = 10000000.0
+print_info: freq_scale_train      = 1
+print_info: n_ctx_orig_yarn       = 262144
+print_info: rope_yarn_log_mul     = 0.0000
+print_info: rope_finetuned        = unknown
+print_info: mrope sections        = [11, 11, 10, 0]
+print_info: model type            = A3B
+print_info: model params          = 176.94 B
+print_info: general.name          = Qwen3.8-Flash-Next GSQ-RCO
+print_info: vocab type            = BPE
+print_info: n_vocab               = 248320
+print_info: n_merges              = 247587
+print_info: BOS token             = 248044 '<|endoftext|>'
+print_info: EOS token             = 248046 '<|im_end|>'
+print_info: EOT token             = 248046 '<|im_end|>'
+print_info: PAD token             = 248044 '<|endoftext|>'
+print_info: LF token              = 198 'Ċ'
+print_info: FIM PRE token         = 248060 '<|fim_prefix|>'
+print_info: FIM SUF token         = 248062 '<|fim_suffix|>'
+print_info: FIM MID token         = 248061 '<|fim_middle|>'
+print_info: FIM PAD token         = 248063 '<|fim_pad|>'
+print_info: FIM REP token         = 248064 '<|repo_name|>'
+print_info: FIM SEP token         = 248065 '<|file_sep|>'
+print_info: EOG token             = 248044 '<|endoftext|>'
+print_info: EOG token             = 248046 '<|im_end|>'
+print_info: EOG token             = 248063 '<|fim_pad|>'
+print_info: EOG token             = 248064 '<|repo_name|>'
+print_info: EOG token             = 248065 '<|file_sep|>'
+print_info: max token length      = 256
+load_tensors: loading model tensors, this can take a while... (load_mode = mmap)
+add: tensor per_layer_token_embd.weight (size = 27465 MiB) lazy read enabled
+load_tensors: enabling prefetch for 'per_layer_token_embd.weight'
+load_tensors:   CPU_Mapped model buffer size = 52267.55 MiB
+load_tensors:   CPU_Mapped model buffer size = 27465.95 MiB
+..................................................................
+bmoe: memory: phase=model-loaded process_footprint_mib=-1.000 process_headroom_mib=102796.562 rss_mib=52432.969 compressed_or_swap_mib=0.000 system_available_mib=115511.723
+llama_init_from_model: enabling flash_attn since it is required for quantized V cache
+llama_context: constructing llama_context
+llama_context: n_seq_max             = 1
+llama_context: n_ctx                 = 2048
+llama_context: n_ctx_seq             = 2048
+llama_context: n_batch               = 2048
+llama_context: n_ubatch              = 2048
+llama_context: causal_attn           = 1
+llama_context: flash_attn            = enabled
+llama_context: kv_unified            = false
+llama_context: freq_base             = 10000000.0
+llama_context: freq_scale            = 1
+llama_context: n_rs_seq              = 0
+llama_context: n_outputs_max         = 128
+llama_context: n_outputs_max_per_seq = 1
+llama_context: n_ctx_seq (2048) < n_ctx_train (262144) -- the full capacity of the model will not be utilized
+llama_context:        CPU  output buffer size =     0.95 MiB
+llama_kv_cache:        CPU KV buffer size =    25.50 MiB
+llama_kv_cache: size =   25.50 MiB (  2048 cells,  12 layers,  1/1 seqs), K (q8_0):   12.75 MiB, V (q8_0):   12.75 MiB
+llama_kv_cache: n_rot_k = 256, n_embd_head_k_all = 256
+llama_kv_cache: n_rot_v = 64, n_embd_head_k_all = 256
+init_rotation:        CPU rotation buffer size =     3.19 MiB
+llama_memory_recurrent:        CPU RS buffer size =   112.57 MiB
+llama_memory_recurrent: size =  112.57 MiB (     1 cells,  48 layers,  1 seqs  0 rs_seq), R (f32):    4.22 MiB, S (f32):  108.00 MiB, P (f32):    0.35 MiB
+operator(): creating indexer KV cache, size = 2048 cells
+llama_kv_cache:        CPU KV buffer size =     6.38 MiB
+llama_kv_cache: size =    6.38 MiB (  2048 cells,  12 layers,  1/1 seqs), K (q8_0):    6.38 MiB, V (q8_0):    0.00 MiB
+llama_kv_cache: n_rot_k = 256, n_embd_head_k_all = 256
+llama_kv_cache: n_rot_v = 0, n_embd_head_k_all = 0
+init_rotation:        CPU rotation buffer size =     3.00 MiB
+sched_reserve: reserving ...
+resolve_fused_ops: resolving fused DeepSeek V4 HC support:
+resolve_fused_ops: fused DeepSeek V4 HC pre enabled
+resolve_fused_ops: fused DeepSeek V4 HC comb enabled
+resolve_fused_ops: fused DeepSeek V4 HC post enabled
+resolve_fused_ops: resolving fused top-k mask support:
+resolve_fused_ops: fused top-k mask enabled
+sched_reserve:        CPU compute buffer size =   644.96 MiB
+sched_reserve: graph: nodes = 6631, splits = 1, input objects = 6, input tensors = 18
+sched_reserve: reserve took 35.44 ms, sched copies = 1
+bmoe: memory: phase=session-ready process_footprint_mib=-1.000 process_headroom_mib=102607.570 rss_mib=52621.676 compressed_or_swap_mib=0.000 system_available_mib=115323.953
