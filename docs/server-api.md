@@ -313,7 +313,10 @@ See [Sizing the context for a client](#sizing-the-context-for-a-client).
 ### `POST /api/session/load`
 
 Opens a session with the current config (unloading any loaded one first). Body: optional
-`{"model": "<path>"}`, which sets the `model` parameter first. Returns `202` once the load is under
+`{"model": "<path>"}`, which sets the `model` parameter first; it is saved, and stays the model a
+load opens (and the Plan page plans for while nothing is loaded) until its file is gone: the server
+forgets a saved model whose file no longer exists, at start and after a delete, while one given
+with `-m` at launch stays. Returns `202` once the load is under
 way; progress arrives as `state` events. `400` if the config does not validate (body carries the
 error). With `auto_plan` on, the previous session is unloaded, the machine is measured and the plan
 applied before the load starts, which adds the planner's probes (about 15 s) to the request. When
@@ -965,7 +968,9 @@ Windows) puts the others back, deletes nothing and answers `500` naming it. `400
 that is not one (a separator, `..`, a drive), `404` when the models directory has no such model (a
 scan directory's models are loaded in place and never deleted here), `409` with `code: "in_use"`
 while it is loaded or loading (unload it first) or while a running download writes one of its
-files, `403` with `code: "local_only"` from a client whose connection is not loopback.
+files, `403` with `code: "local_only"` from a client whose connection is not loopback. When the
+deleted model was the saved `model` setting, that setting is forgotten too and a `config` event says
+so: there is nothing left to load or plan for under that name.
 
 ### `POST /api/models/url`
 
