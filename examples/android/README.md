@@ -259,7 +259,8 @@ lands on its row.
 its header even when closed: Off, On with the phone's address, or On but not on a network. Switched
 on, the engine listens on every interface, and the card shows the phone's address on its Wi-Fi or
 Ethernet network (`http://<phone IP>:8765`, ready to copy and kept current when the network
-changes), the API key (masked, with Show, Copy and New key) and the base URL a client takes,
+changes), the API key (on its own line in blocks of four, masked, with Show, Copy and New key
+below it) and the base URL a client takes,
 `http://<phone IP>:8765/v1`. Any OpenAI-compatible client then uses it with
 `Authorization: Bearer <key>`: a laptop's coding agent, Open WebUI, a script. Prompts and answers
 cross the network unencrypted, as the card says; use it on a network you trust. A coding agent needs

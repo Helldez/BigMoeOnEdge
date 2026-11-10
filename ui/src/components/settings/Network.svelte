@@ -13,6 +13,7 @@
   let on = $derived(desktopState.prefs.serveOnNetwork === true);
   let addresses = $derived(desktopState.info?.network?.addresses ?? []);
   let key = $derived(desktopState.info?.network?.key ?? '');
+  let blocks = $derived((showKey ? key : '•'.repeat(key.length || 24)).match(/.{1,4}/gu) ?? []);
   let status = $derived(!on ? t('network.off') : addresses.length ? t('network.on', { address: addresses[0] }) : t('network.noNetwork'));
 
   async function toggle(next: boolean) {
@@ -69,8 +70,11 @@
       {/each}
     {/if}
     <h3>{t('network.key')}</h3>
+    <!-- On its own full-width line, wrapping if it must, so no part of it is ever cut off. Blocks
+         of four to read it off, spaced by a margin rather than a character: a selection copies the
+         raw key, as Copy does. -->
+    <code class="big key">{#each blocks as b, i (i)}<span>{b}</span>{/each}</code>
     <div class="row">
-      <code class="big">{showKey ? key : '•'.repeat(24)}</code>
       <button type="button" onclick={() => (showKey = !showKey)}>{showKey ? t('network.hide') : t('network.show')}</button>
       <button type="button" onclick={() => copy(key)} disabled={!key}>{copied === key && key ? t('network.copied') : t('network.copy')}</button>
       <button type="button" onclick={newKey} disabled={busy}>{t('network.newKey')}</button>
@@ -119,6 +123,13 @@
     min-width: 0;
     overflow-wrap: anywhere;
     font-size: 0.9375rem;
+  }
+  .key {
+    display: block;
+    margin-bottom: var(--s2);
+  }
+  .key span + span {
+    margin-left: 0.5ch;
   }
   .small {
     font-size: 0.8125rem;

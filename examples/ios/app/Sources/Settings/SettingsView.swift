@@ -472,7 +472,8 @@ struct ShareSection: View {
             }
             Text("API key").font(.ui(13)).foregroundStyle(Palette.muted).padding(.top, 4)
             // Masked by default: the screen may be seen or recorded by someone the key is not for.
-            Text(showKey ? engine.networkKey : String(repeating: "•", count: min(engine.networkKey.count, 24)))
+            // On its own full-width line, wrapping if it must, so no part of it is ever cut off.
+            Text(keyBlocks(showKey ? engine.networkKey : String(repeating: "•", count: min(engine.networkKey.count, 24))))
                 .font(.mono(15)).foregroundStyle(Palette.text).textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: Grid.s) {
@@ -502,6 +503,18 @@ struct ShareSection: View {
             Text("Prompts and answers cross the network unencrypted: use it on a network you trust.")
                 .font(.ui(12)).foregroundStyle(Palette.warn).fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    /// The key in blocks of four, to read it off the screen. Spaced by kerning rather than a
+    /// character, so a selection copies the raw key, as Copy does.
+    private func keyBlocks(_ key: String) -> AttributedString {
+        var out = AttributedString()
+        for (i, c) in key.enumerated() {
+            var ch = AttributedString(String(c))
+            if i % 4 == 3, i < key.count - 1 { ch.kern = 8 }
+            out += ch
+        }
+        return out
     }
 
     private func copyButton(_ text: String, id: String) -> some View {
