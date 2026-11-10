@@ -234,7 +234,10 @@ measurement instead of a guess ([measured-planning.md](measured-planning.md#step
   incumbent's, three rounds a candidate, on the user's own answer. A candidate wins only if it
   decodes faster by `min_backend_win` (10%, the device rule's margin) in the median of its rounds'
   ratios against the mean of the two incumbent windows around it, so a drift linear over a round
-  cancels and one stalled window does not decide. The thread count is measured first, then overlap
+  cancels and one stalled window does not decide. A candidate stops early once the median can no
+  longer make it a winner, or after one window that ran apart from the incumbent: every token of it
+  slower than the incumbent's slowest by more than the incumbent's own range and the margin. The
+  thread count is measured first, then overlap
   starting from its verdict. Both together take about 200 decoded tokens after the cache settles
   (fewer with one thread candidate), spread over as many turns of the session as that needs: a
   request that ends inside a window drops it, and the next takes up where the trial stood. A

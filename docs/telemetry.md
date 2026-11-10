@@ -584,6 +584,7 @@ answer's decode alternates the knob between timed windows, and the engine logs w
 bmoe: knob trial: the cache has settled; measuring the decode thread count
 bmoe: knob trial: <n> decode threads (against <n>): decoded <pct>% faster in the median of <r> rounds
 bmoe: knob trial: <n> decode threads (against <n>): held: the best candidate was <+pct>% in the median of <r> rounds, inside the 10% margin
+bmoe: knob trial: <n> decode threads settled as no win after <r> round[s][, every token past the incumbent's range]: <ms> ms/token against <ms>
 bmoe: knob trial: overlap <on|off> (against <on|off>): ...
 ```
 

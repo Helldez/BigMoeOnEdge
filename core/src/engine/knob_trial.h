@@ -68,15 +68,25 @@ public:
     double gain(int cand) const;
     // Complete rounds measured for arm `cand`.
     int rounds(int cand) const;
-    // Whether arm `cand` stopped being measured because the rounds left could not make it a winner:
-    // the median of `rounds` ratios is past the margin once more than half of them are, so a
-    // candidate with that many losing rounds on record has its verdict, and its other windows leave
-    // the schedule. No constant of its own: the margin and the round count decide it. Measured on a
-    // phone: eight decode threads against four ran every window at ten times the seconds per token,
-    // and the third such round would only have repeated what two had settled.
+    // Whether arm `cand` stopped being measured, for one of two reasons, neither with a constant of
+    // its own; its windows still to run leave the schedule, and what it measured stays on record.
+    //  - The rounds left could not make it a winner: the median of `rounds` ratios is past the margin
+    //    once more than half of them are, so a candidate with that many losing rounds has its verdict.
+    //    Measured on a phone: eight decode threads against four ran every window at ten times the
+    //    seconds per token, and the third such round would only have repeated what two had settled.
+    //  - One window ran apart from the incumbent: its fastest step was slower than the incumbent's
+    //    slowest step in this trial by more than the incumbent's own range (slowest over fastest),
+    //    and by more than the margin. The median is there for a stall elsewhere in the machine, and a
+    //    stall slows some steps of a window, not every one; a gap wider than any swing the incumbent
+    //    has shown is not one a swing can bridge. The bound is what the trial measured: the margin on
+    //    a steady machine, the incumbent's spread on a noisy one. Measured on a phone: eight decode
+    //    threads against four ran every token at about twenty times the incumbent's, and the second
+    //    such window, required by the median alone, was another 18 s of stutter that decided nothing.
     bool abandoned(int cand) const { return cand > 0 && cand <= n_cand_ && dead_[(size_t) cand]; }
     // The arm the last record() gave up, 0 when none: for the session's log line.
     int last_abandoned() const { return last_abandoned_; }
+    // Whether it was given up on one window apart from the incumbent, rather than on the median.
+    bool last_abandoned_apart() const { return last_apart_; }
 
     // The windows in the order they are run, and their seconds per token so far: for a log line.
     const std::vector<int> & schedule() const { return schedule_; }
@@ -86,6 +96,7 @@ private:
     enum class Phase { Settle, Measure, Done };
     void close_window();
     void abandon(int cand);
+    bool apart(size_t window) const;
     void decide();
     std::vector<double> ratios(int cand) const;
 
@@ -94,15 +105,19 @@ private:
     Phase phase_ = Phase::Settle;
     std::vector<int> schedule_; // the arm of each timed window: 0 c1 0 c2 0 c1 0 ... 0
     std::vector<double> spt_;   // seconds per token of each window closed, in schedule order
+    std::vector<double> lo_;    // its fastest step's seconds per token, in the same order
     int warm_left_ = 0;
     int tokens_ = 0;
     double seconds_ = 0.0;
+    double step_lo_ = 0.0, step_hi_ = 0.0; // of the window in progress
+    double inc_lo_ = 0.0, inc_hi_ = 0.0;   // of every incumbent step timed in this trial
     uint64_t lookups_ = 0, hits_ = 0;
     double last_hit_ = -1.0;
     int settle_windows_ = 0;
     int winner_ = 0;
     std::vector<char> dead_; // per arm, 1 once given up
     int last_abandoned_ = 0;
+    bool last_apart_ = false;
 };
 
 // The decode rate of the configuration a load runs, timed on the user's own answer as the trial

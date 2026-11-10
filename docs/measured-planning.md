@@ -169,12 +169,19 @@ output with the gates (`bmoe_moe_gates`), since every knob here is lossless.
   past the margin as soon as two are, so two losing rounds settle it and the third leaves the
   schedule, whatever the hardware (eight threads on a phone with four fast cores ran every window
   at ten times the seconds per token, and three such rounds tripled the first answer); one stalled
-  round settles nothing, as before. The cache brake does not read a token decoded under a candidate
+  round settles nothing, as before. One window settles a candidate that ran apart from the
+  incumbent: its fastest token slower than the incumbent's slowest token in the trial by more than
+  the incumbent's own range (slowest over fastest) and the margin. The bound is the noise the trial
+  measured, not a constant: a stall elsewhere slows some tokens of a window, not every one, and a
+  gap wider than any swing the incumbent has shown is the arm's own (on a 12 GB phone, eight threads
+  against four ran about 2 s a token against 0.1 s, and the median's second losing window was 18 s
+  of stutter). The cache brake does not read a token decoded under a candidate
   ([pressure.md](pressure.md)). The `knob_trial`
   test holds it on synthetic timings: equal arms under 10% noise never win over 50 seeds, a 25% win
   always does, 5% is a tie, 12% wins, a run that slows to twice the time per token measures a 20%
   win as 20%, one stalled window does not overturn the median, a window cut by the end of a request
-  is dropped.
+  is dropped, a candidate twenty times slower stops after one window and leaves the schedule, a 5%
+  loss does not, and a loss inside the incumbent's own spread is left to the median.
 - **Which knobs switch live.** `--threads` through `llama_set_n_threads` (decode only; prefill keeps
   its count). `--overlap` too, by a change to the streamer rather than a reload: serial and overlapped
   reads differ only in whether the first read lane is the eval thread or a worker of its own, so the
