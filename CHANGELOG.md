@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **Tool calls stream while the model writes them, to every client.** A call was sent once the turn
+  had been parsed, so a local model writing a 21 KB file at 4 tok/s showed nothing for 34 minutes:
+  the desktop UI an answer frozen on its first sentence, and an external agent a silent stream. The
+  per-token parse that already separated the reasoning now also reads the calls being written, with
+  the model's own template, so no tool, model or call format is named anywhere, and each endpoint
+  sends them in its protocol's own form: `tool_calls` deltas on `/v1/chat/completions`,
+  `input_json_delta` on `/v1/messages`, `function_call_arguments.delta` on `/v1/responses`
+  ([server-api.md](docs/server-api.md)). The agent shows a call as its tool's card from the first
+  piece, `composing`, with its title as far as the arguments go and the size written so far, and the
+  same card then runs it ([agent.md](docs/agent.md)); a conversation routed to a provider gets the
+  same card from the provider's stream. A call opens once its arguments begin, keeps the id it
+  opened with, and its arguments are only ever appended to (the parser's own contract, which
+  llama.cpp's server streams by too); a template the partial parse cannot read sends its calls
+  whole, as before.
+
 ## [0.41.1] - 2026-11-11
 
 ### Fixed

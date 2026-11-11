@@ -291,9 +291,13 @@ bool parse_chat_request(const json & body, const RunConfig & cfg, OpenAiChatRequ
     return true;
 }
 
+std::string tool_call_id(const std::string & response_id, size_t index) {
+    return "call_" + response_id + "_" + std::to_string(index);
+}
+
 void ensure_tool_call_ids(std::vector<ChatToolCall> & calls, const std::string & response_id) {
     for (size_t i = 0; i < calls.size(); ++i)
-        if (calls[i].id.empty()) calls[i].id = "call_" + response_id + "_" + std::to_string(i);
+        if (calls[i].id.empty()) calls[i].id = tool_call_id(response_id, i);
 }
 
 std::string finish_reason(const RunResult & r, int n_predict) {
@@ -358,6 +362,21 @@ json chunk_json(const ChatResponseMeta & meta, const json & delta, const json & 
 
 json tool_calls_delta(const std::vector<ChatToolCall> & calls) {
     return {{"tool_calls", tool_calls_json(calls, /*indexed*/ true)}};
+}
+
+json tool_call_events_delta(const std::vector<ToolCallEvent> & events) {
+    json calls = json::array();
+    for (const ToolCallEvent & e : events) {
+        // The protocol has no close: a call ends where the next one begins, or with the turn.
+        if (e.type == ToolCallEvent::Type::Open)
+            calls.push_back({{"index", (int) e.index},
+                             {"id", e.id},
+                             {"type", "function"},
+                             {"function", {{"name", e.name}, {"arguments", ""}}}});
+        else if (e.type == ToolCallEvent::Type::Delta)
+            calls.push_back({{"index", (int) e.index}, {"function", {{"arguments", e.arguments}}}});
+    }
+    return calls.empty() ? json(nullptr) : json{{"tool_calls", calls}};
 }
 
 json usage_chunk_json(const ChatResponseMeta & meta, const RunSummary & s) {
