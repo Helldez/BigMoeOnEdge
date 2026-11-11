@@ -7,6 +7,20 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **A page the agent wrote can reach the internet in the preview** (`--preview-network`). The
+  workspace preview loaded nothing from anywhere, so a page that takes anything from the network,
+  a library from a CDN, a font, data it fetches, showed its HTML around an empty or black canvas
+  while the same file worked opened directly. On a server listening on loopback only (the desktop)
+  the preview now reaches https hosts as any page a person opens does, for every kind of load;
+  beyond loopback it stays shut. Either way it stays sandboxed in an opaque origin, apart from the
+  UI, the key and this server's API. `--preview-network on|off` overrides the default (`auto`)
+  ([server-api.md](docs/server-api.md), "Security model").
+
+### Fixed
+- **A page's own script runs in the preview, as the security model says.** The preview route set a
+  second policy of its own, without `allow-scripts`, over the one the security model describes, so
+  no script ran at all, inline or not: a page built in JavaScript showed only its static HTML. The
+  route now leaves the policy to the one place that sets it for every preview response.
 - **Tool calls stream while the model writes them, to every client.** A call was sent once the turn
   had been parsed, so a local model writing a 21 KB file at 4 tok/s showed nothing for 34 minutes:
   the desktop UI an answer frozen on its first sentence, and an external agent a silent stream. The
@@ -28,6 +42,12 @@ Semantic Versioning.
   default, as before), the way engine parameters given at launch hold; a choice made from the UI
   replaces it. The help now says which flags it takes: the parameter table's, not `bmoe-cli`'s own
   run options ([server-api.md](docs/server-api.md)).
+- **`write_file` no longer reads the model back the file it just wrote.** Its result was the whole
+  diff, which for a new file is the content the call carried, up to the 12 KiB result cap. A local
+  model writing a 677-line page read 12 KiB of it back, ran out of context, and its next call was cut
+  off after 131 characters. The result now states the effect: created or replaced, lines, bytes, and
+  for a replaced file how many lines the changed span had and has. The card still shows the whole diff;
+  `edit_file` still answers with its diff, which tells the model where each edit landed.
 - **A second load no longer decodes a whole session at half speed to time a placement that cannot
   win.** Since #524 the device expert cache is kept across loads by measurement: the first load times
   the cache, the second the capacity fitter's placement. On a 12 GB card with Qwen3.6-35B the second
