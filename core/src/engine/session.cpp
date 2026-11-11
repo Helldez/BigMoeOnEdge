@@ -2268,18 +2268,24 @@ void Session::Impl::trial_step(double seconds, int tokens) {
     if (const int dead = k.last_abandoned()) {
         const std::vector<double> & w = k.window_seconds_per_token();
         const size_t n = w.size();
-        const int r = k.rounds(dead);
-        // Apart: every token of its window past the incumbent's whole range, so one round decided it.
-        const char * why = k.last_abandoned_apart() ? ", every token past the incumbent's range" : "";
-        if (trials.stage == stage_threads)
+        const std::string what = trials.stage == stage_threads
+                                     ? std::to_string(trials.threads[(size_t) dead]) + " decode threads"
+                                     : std::string("overlap ") + (trials.overlap[(size_t) dead] ? "on" : "off");
+        if (k.last_abandoned_cut()) {
+            // Cut inside its window: the candidate's window is the last one closed, and the bar it
+            // passed is the incumbent's, measured in this trial.
             log_printf(LogLevel::Info,
-                       "knob trial: %d decode threads settled as no win after %d round%s%s: %.0f ms/token against %.0f",
-                       trials.threads[(size_t) dead], r, r == 1 ? "" : "s", why, 1e3 * w[n - 2], 1e3 * w[n - 1]);
-        else
+                       "knob trial: %s settled as no win inside its first window: %.0f ms/token, where the "
+                       "window could spend %.0f a token and still stand inside the incumbent's range",
+                       what.c_str(), 1e3 * w[n - 1], 1e3 * k.apart_bar());
+        } else {
+            const int r = k.rounds(dead);
+            // Apart: every token of its window past the incumbent's whole range, so one round decided it.
+            const char * why = k.last_abandoned_apart() ? ", every token past the incumbent's range" : "";
             log_printf(LogLevel::Info,
-                       "knob trial: overlap %s settled as no win after %d round%s%s: %.0f ms/token against %.0f",
-                       trials.overlap[(size_t) dead] ? "on" : "off", r, r == 1 ? "" : "s", why, 1e3 * w[n - 2],
-                       1e3 * w[n - 1]);
+                       "knob trial: %s settled as no win after %d round%s%s: %.0f ms/token against %.0f", what.c_str(),
+                       r, r == 1 ? "" : "s", why, 1e3 * w[n - 2], 1e3 * w[n - 1]);
+        }
     }
     if (k.done()) {
         finish_trial_stage();

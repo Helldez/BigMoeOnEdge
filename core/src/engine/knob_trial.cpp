@@ -33,6 +33,7 @@ int KnobTrial::arm() const {
 
 void KnobTrial::interrupt() {
     tokens_ = 0;
+    past_ = 0;
     seconds_ = 0.0;
     step_lo_ = step_hi_ = 0.0;
     lookups_ = hits_ = 0;
@@ -42,6 +43,7 @@ void KnobTrial::interrupt() {
 void KnobTrial::record(double seconds, int tokens, uint64_t lookups, uint64_t hits) {
     last_abandoned_ = 0;
     last_apart_ = false;
+    last_cut_ = false;
     if (phase_ == Phase::Done || tokens <= 0 || !(seconds > 0.0)) return;
     if (warm_left_ > 0) {
         warm_left_ -= tokens; // a step is timed whole or not at all
@@ -54,7 +56,17 @@ void KnobTrial::record(double seconds, int tokens, uint64_t lookups, uint64_t hi
     seconds_ += seconds;
     lookups_ += lookups;
     hits_ += hits;
-    if (tokens_ >= pol_.window_tokens) close_window();
+    // A candidate window decided before its end. Two things, both already true whatever its
+    // remaining tokens take: its seconds exceed what the whole window may spend and still stand
+    // inside the bar, so its mean is past it (no token takes less than nothing); and more than half
+    // of its tokens are past the bar, so its median token is too. The second is what keeps a stall
+    // out: a stall elsewhere in the machine slows some tokens of a window, not most of them, and the
+    // median of the rounds is there for it.
+    const double bar = apart_bar();
+    if (arm() > 0 && bar > 0.0 && seconds / (double) tokens > bar) past_ += tokens;
+    cut_ = arm() > 0 && tokens_ < pol_.window_tokens && bar > 0.0 && seconds_ > bar * (double) pol_.window_tokens &&
+           2 * past_ > pol_.window_tokens;
+    if (tokens_ >= pol_.window_tokens || cut_) close_window();
 }
 
 void KnobTrial::close_window() {
@@ -63,6 +75,7 @@ void KnobTrial::close_window() {
     const double lo = step_lo_, hi = step_hi_;
     const int prev_arm = arm();
     tokens_ = 0;
+    past_ = 0;
     seconds_ = 0.0;
     step_lo_ = step_hi_ = 0.0;
     lookups_ = hits_ = 0;
@@ -79,6 +92,16 @@ void KnobTrial::close_window() {
 
     spt_.push_back(spt);
     lo_.push_back(lo);
+    if (cut_) {
+        // Decided before its end (record()): the candidate is settled now, its incumbent window
+        // still runs, and the round's ratio is completed by it like any other.
+        cut_ = false;
+        abandon(prev_arm);
+        last_apart_ = true;
+        last_cut_ = true;
+        if (arm() != prev_arm) warm_left_ = pol_.warm_tokens;
+        return;
+    }
     // The incumbent's range is taken over every step it ran in this trial, settling left out: the
     // windows of a cache still filling say nothing about the noise of a settled one.
     if (prev_arm == 0) {
@@ -137,9 +160,16 @@ void KnobTrial::abandon(int cand) {
 // Candidate window k against every incumbent step so far, the window just closed after it included,
 // so a drift that slows the incumbent as well raises the bar with it.
 bool KnobTrial::apart(size_t k) const {
-    if (!(inc_lo_ > 0.0) || !(inc_hi_ > 0.0)) return false;
-    const double spread = std::max(inc_hi_ / inc_lo_, 1.0 + pol_.min_win);
-    return lo_[k] > inc_hi_ * spread;
+    const double bar = apart_bar();
+    return bar > 0.0 && lo_[k] > bar;
+}
+
+// The seconds per token past which a candidate is apart from the incumbent: its slowest step in
+// this trial, times its own range (slowest over fastest) or the margin, whichever is wider. 0 before
+// an incumbent window has been timed.
+double KnobTrial::apart_bar() const {
+    if (!(inc_lo_ > 0.0) || !(inc_hi_ > 0.0)) return 0.0;
+    return inc_hi_ * std::max(inc_hi_ / inc_lo_, 1.0 + pol_.min_win);
 }
 
 std::vector<double> KnobTrial::ratios(int cand) const {

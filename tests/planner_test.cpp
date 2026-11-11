@@ -2358,6 +2358,40 @@ int main() {
                   "knobs on: the trial is part of the command line that reproduces the plan", armed.to_flags());
         }
 
+        // The sweep's own rungs: a count above the incumbent that it measured short of the margin is
+        // answered and not tried again under a decode; a count below it is still tried, and a count
+        // the sweep never asked is tried as before.
+        {
+            HardwareProfile swept = het;
+            swept.thread_rates = {{1, 20.0}, {2, 38.0}, {4, 70.0}, {8, 100.0}, {10, 104.0}};
+            const Plan p = plan_run(base_cfg(), swept, model, on);
+            check(p.config.trial.threads == std::vector<int>({4}),
+                  "sweep answered: 10 (4% over 8, alone) is not tried; 4, below the incumbent, is",
+                  std::to_string(p.config.trial.threads.size()));
+            const Decision * t = find(p, "trial-threads");
+            check(t && t->value == "4" && t->reason.find("10 is not tried") != std::string::npos,
+                  "sweep answered: the trial's note says which count it skips and why", t ? t->reason : "none");
+
+            // Past the margin alone, the sweep did not answer it: a decode decides.
+            swept.thread_rates.back().gibs = 115.0;
+            const Plan q = plan_run(base_cfg(), swept, model, on);
+            check(q.config.trial.threads == std::vector<int>({10, 4}),
+                  "sweep answered: a count the sweep measured past the margin is still tried");
+
+            // Nothing left to try: the plan says the sweep answered, and arms no thread trial.
+            HardwareProfile alike = desktop();
+            alike.devices.clear();
+            alike.n_cores = 8;
+            alike.core_classes = {8};
+            alike.best_threads = 4;
+            alike.thread_rates = {{1, 20.0}, {2, 38.0}, {4, 70.0}, {8, 60.0}};
+            const Plan r = plan_run(base_cfg(), alike, model, on);
+            const Decision * n = find(r, "trial-threads");
+            check(r.config.trial.threads.empty() && n && n->value == "none" && n->source == Source::Measured,
+                  "sweep answered: with every candidate answered no thread trial is armed, and the plan says so",
+                  n ? n->value : "none");
+        }
+
         // A stored verdict: applied, stated as measured on this model, and nothing is measured again.
         ModelProfile measured = model;
         measured.knobs.hardware = "0123456789abcdef";

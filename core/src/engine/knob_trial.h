@@ -82,11 +82,20 @@ public:
     //    a steady machine, the incumbent's spread on a noisy one. Measured on a phone: eight decode
     //    threads against four ran every token at about twenty times the incumbent's, and the second
     //    such window, required by the median alone, was another 18 s of stutter that decided nothing.
+    //    The window need not run to its end for that: once its seconds exceed the bar times the
+    //    window's tokens and more than half of its tokens are past the bar, its mean and its median
+    //    are past it whatever the tokens left take, and it is cut there. Measured on a phone: the
+    //    one window left still ran nine steps at 2.4-3.0 s each against a bar near 0.6 s.
     bool abandoned(int cand) const { return cand > 0 && cand <= n_cand_ && dead_[(size_t) cand]; }
     // The arm the last record() gave up, 0 when none: for the session's log line.
     int last_abandoned() const { return last_abandoned_; }
     // Whether it was given up on one window apart from the incumbent, rather than on the median.
     bool last_abandoned_apart() const { return last_apart_; }
+    // Whether that window was cut before its end: the last window closed is then the candidate's,
+    // and no incumbent window has closed after it yet.
+    bool last_abandoned_cut() const { return last_cut_; }
+    // The seconds per token a candidate's window must exceed to be apart, 0 before it is known.
+    double apart_bar() const;
 
     // The windows in the order they are run, and their seconds per token so far: for a log line.
     const std::vector<int> & schedule() const { return schedule_; }
@@ -118,6 +127,9 @@ private:
     std::vector<char> dead_; // per arm, 1 once given up
     int last_abandoned_ = 0;
     bool last_apart_ = false;
+    bool last_cut_ = false;
+    int past_ = 0;     // tokens of the window in progress past the bar
+    bool cut_ = false; // the window in progress is decided before its end
 };
 
 // The decode rate of the configuration a load runs, timed on the user's own answer as the trial
