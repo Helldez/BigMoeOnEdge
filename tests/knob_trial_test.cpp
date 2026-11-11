@@ -492,8 +492,11 @@ int main() {
             cand_steps += a == 1;
         check(o.done && o.winner == 0 && k.abandoned(1) && k.rounds(1) == 1 && o.apart == 1,
               "apart: twenty times slower stops after one round (" + std::to_string(k.rounds(1)) + ")");
-        check(cand_steps == pol.window_tokens + pol.warm_tokens,
-              "apart: the candidate ran one window and its warm-up only (" + std::to_string(cand_steps) + " steps)");
+        // Cut inside its window: once more than half of its tokens are past the bar, and with them
+        // the seconds the whole window may spend.
+        check(cand_steps == pol.warm_tokens + pol.window_tokens / 2 + 1,
+              "apart: the candidate's window is cut after more than half of it (" + std::to_string(cand_steps) +
+                  " steps)");
         check(o.steps <= 3 * (pol.window_tokens + pol.warm_tokens),
               "apart: the trial ended after the bracketing window (" + std::to_string(o.steps) + " steps)");
         check(k.gain(1) > 0.0 && k.gain(1) < 0.1, "apart: the round it ran stays on record as the loss it measured");
@@ -513,7 +516,7 @@ int main() {
         check(o.done && o.winner == 1 && k.abandoned(2) && !k.abandoned(1) && k.rounds(2) == 1 &&
                   k.rounds(1) == pol.rounds,
               "apart: the collapsing candidate stops after one round, the 25% faster one keeps its rounds and wins");
-        check(slow_steps == pol.window_tokens + pol.warm_tokens,
+        check(slow_steps == pol.warm_tokens + pol.window_tokens / 2 + 1,
               "apart: the schedule skips the collapsing candidate's later windows (" + std::to_string(slow_steps) +
                   " steps)");
         bool bracketed = true;
@@ -550,7 +553,7 @@ int main() {
         Sim sim;
         sim.spt = [](int arm, int t) {
             if (arm != 1) return 0.050;
-            return (t >= 6 && t < 9) ? 0.400 : 0.040;
+            return (t >= 6 && t < 8) ? 0.400 : 0.040; // half of its first window
         };
         const Outcome o = run(k, sim, 1);
         check(o.done && o.winner == 1 && !k.abandoned(1) && k.rounds(1) == pol.rounds,
@@ -573,6 +576,38 @@ int main() {
         const Outcome f = run(steady, flat, 1);
         check(f.done && f.winner == 0 && f.apart == 1 && steady.rounds(1) == 1,
               "spread: the same loss against a steady incumbent is apart after one window");
+    }
+    // ── the phone's collapse at the session's own window: cut after more than half of it ──
+    // Four threads near 0.11 s a token, eight at 2.4-3.0 s: the window #539 left ran nine steps of
+    // stutter, where five past the bar (and the seconds the whole window may spend) decide it.
+    {
+        KnobTrialPolicy session_pol; // the session's window
+        KnobTrial k(1, false, session_pol);
+        Sim sim;
+        sim.spt = [](int arm, int) { return arm == 1 ? 2.6 : 0.11; };
+        sim.noise = 0.15;
+        const Outcome o = run(k, sim, 1);
+        int cand_steps = 0;
+        for (int a : o.arms)
+            cand_steps += a == 1;
+        check(o.done && o.winner == 0 && o.apart == 1 && k.rounds(1) == 1 &&
+                  cand_steps == session_pol.warm_tokens + session_pol.window_tokens / 2 + 1,
+              "cut: a collapse at the session's window costs its warm-up and five tokens, not nine (" +
+                  std::to_string(cand_steps) + " steps)");
+    }
+    // ── a stall over half of a window cuts nothing: the faster candidate is measured through and wins ──
+    {
+        KnobTrialPolicy session_pol;
+        KnobTrial k(1, false, session_pol);
+        Sim sim;
+        const int first_cand = session_pol.warm_tokens + session_pol.window_tokens + session_pol.warm_tokens;
+        sim.spt = [first_cand, &session_pol](int arm, int t) {
+            if (arm != 1) return 0.050;
+            return (t >= first_cand && t < first_cand + session_pol.window_tokens / 2) ? 0.800 : 0.040;
+        };
+        const Outcome o = run(k, sim, 1);
+        check(o.done && o.winner == 1 && !k.abandoned(1) && o.apart == 0,
+              "cut: a stall over half of the candidate's window is not a collapse; it still wins");
     }
     // ── a tie inside the margin is settled too: measured for two rounds, not three ──
     {

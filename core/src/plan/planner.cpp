@@ -2833,11 +2833,27 @@ void note_overlap(Planning & s) {
                flag_spelling("overlap", "true"));
 }
 
+// The rate the thread sweep measured at `n` threads, 0 when it did not ask that count.
+double swept_rate(const HardwareProfile & hw, int n) {
+    for (const HardwareProfile::ThreadRate & r : hw.thread_rates)
+        if ((int) r.threads == n) return r.gibs;
+    return 0.0;
+}
+
 // The thread counts a trial tries against the incumbent: where a barrier would start or stop
 // waiting on a slower class (the running sums of the core classes), every core, and half of them
 // where all are alike (a machine with two hardware threads a core reports both). The ones nearest
 // the incumbent first, as many as the trial takes.
-std::vector<int> thread_candidates(const HardwareProfile & hw, int incumbent) {
+//
+// Less a count the sweep already answered: one above the incumbent that the sweep measured short of
+// the trial's margin over it (`min_win`). The sweep ran it with every core to itself; a decode runs
+// it beside the expert reads, which take cores of their own, so more threads only meet more
+// contention there, and a count that could not win alone cannot win under load. Measured on a
+// phone: eight threads against four, every core, ran each decoded token about twenty times slower.
+// A count below the incumbent stays: what the reads take from the cores is what the sweep cannot see,
+// and leaving them cores is what such a count tries. `skipped` gets the counts left out.
+std::vector<int>
+thread_candidates(const HardwareProfile & hw, int incumbent, double min_win, std::vector<int> & skipped) {
     std::vector<int> pool;
     uint32_t sum = 0;
     for (uint32_t k : hw.core_classes) {
@@ -2854,6 +2870,16 @@ std::vector<int> thread_candidates(const HardwareProfile & hw, int incumbent) {
                                   // quota or the affinity mask would only time-slice.
                                   return n < 1 || n > RunConfig::threads_max || n == incumbent ||
                                          (hw.n_cores > 0 && n > (int) hw.n_cores);
+                              }),
+               pool.end());
+    const double at_incumbent = swept_rate(hw, incumbent);
+    pool.erase(std::remove_if(pool.begin(), pool.end(),
+                              [&](int n) {
+                                  const double rate = swept_rate(hw, n);
+                                  const bool answered = n > incumbent && at_incumbent > 0.0 && rate > 0.0 &&
+                                                        rate < at_incumbent * (1.0 + min_win);
+                                  if (answered) skipped.push_back(n);
+                                  return answered;
                               }),
                pool.end());
     std::stable_sort(pool.begin(), pool.end(),
@@ -2903,8 +2929,22 @@ void apply_measured_threads(Planning & s, int would_have) {
 void arm_thread_trial(Planning & s) {
     RunConfig & c = s.p.config;
     if (!s.req.measure_knobs || s.req.is_pinned("trial-threads") || !c.trial.threads.empty()) return;
-    const std::vector<int> cand = thread_candidates(s.hw, c.n_threads);
-    if (cand.empty()) return;
+    std::vector<int> skipped;
+    const std::vector<int> cand = thread_candidates(s.hw, c.n_threads, s.pol.min_backend_win, skipped);
+    // What the sweep already answered, said in the note that follows or, with nothing left to try, alone.
+    std::string answered;
+    if (!skipped.empty())
+        answered = "; " + thread_list(skipped, " and ") + (skipped.size() == 1 ? " is" : " are") +
+                   " not tried: the sweep measured " + (skipped.size() == 1 ? "it" : "them") + " short of " +
+                   margin_pct(s) + " over " + u64s((uint64_t) c.n_threads) +
+                   " with every core to itself, and a decode's expert reads only take cores away";
+    if (cand.empty()) {
+        if (!skipped.empty())
+            s.note("trial-threads", "none", Source::Measured,
+                   "The first answer measures no other thread count: the sweep already answered.",
+                   "the counts a trial would try against " + u64s((uint64_t) c.n_threads) + " are answered" + answered);
+        return;
+    }
     c.trial.threads = cand;
     std::string value;
     for (size_t i = 0; i < cand.size(); ++i)
@@ -2917,7 +2957,7 @@ void arm_thread_trial(Planning & s) {
                u64s((uint64_t) c.n_threads) + " and " + thread_list(cand, " and ") +
                " (where a slower class of core starts, every core, or half of them where all are alike), and "
                "switches only to a count " +
-               margin_pct(s) + " faster in the median of its rounds; the next load starts from the verdict");
+               margin_pct(s) + " faster in the median of its rounds; the next load starts from the verdict" + answered);
 }
 
 // ── threads: the classes are a fact, the rule that read them was wrong ─────────

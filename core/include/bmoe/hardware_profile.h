@@ -363,6 +363,16 @@ struct HardwareProfile {
     // to ask the machine.
     uint32_t best_threads = 0;
 
+    // Every rung of that sweep, at the rate it reached: the counts the machine was asked about and
+    // its answer for each, empty when unmeasured. A count past `best_threads` whose rate is here was
+    // asked and lost, with every core left to it; the knob trial does not ask it again under a
+    // decode, where the expert reads take cores of their own (planner.cpp, thread_candidates).
+    struct ThreadRate {
+        uint32_t threads = 0;
+        double gibs = 0.0;
+    };
+    std::vector<ThreadRate> thread_rates;
+
     // How fast the HOST consumes weight bytes in THIS MODEL's own format, in GiB/s, 0 when
     // unmeasured. Not raw memory bandwidth, and the difference is the point: a quantized matmul
     // carries dequantisation work per byte, so it reaches a different rate and scales differently

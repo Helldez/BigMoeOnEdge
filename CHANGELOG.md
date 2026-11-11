@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.41.1] - 2026-11-11
+
+### Fixed
+- **A collapsing thread count no longer stutters a phone's first answer for 20 s.** On a 12 GB
+  phone with Qwen3.6-35B, the knob trial still ran eight decode threads against four for a whole
+  window, nine tokens at 2.4-3.0 s each against 0.11 s. Two changes, neither with a constant of its
+  own:
+  - **Counts the sweep already answered are not tried.** A count above the incumbent that the plan's
+    thread sweep measured short of the 10% margin over it, with every core to itself, cannot win
+    beside the expert reads, which take cores of their own; the plan's `trial-threads` note names
+    the counts it skips. A count below the incumbent is still tried. On the Mac the sweep picked 8
+    and measured 10 short; decoding confirmed it (10 threads 19.7-20.2 tok/s, 8 threads 20.7).
+  - **A candidate's window is cut once it is decided:** more than half of its tokens past the
+    incumbent's whole range and its seconds past what the window may spend inside it. On the phone's
+    figures the collapse costs six tokens instead of nine; a stall over half a window is still
+    measured through ([hardware-planning.md](docs/hardware-planning.md)).
+
 ## [0.41.0] - 2026-11-11
 
 ### Added

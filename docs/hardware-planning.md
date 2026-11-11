@@ -240,7 +240,11 @@ measurement instead of a guess ([measured-planning.md](measured-planning.md#step
 - **The trial.** `--trial-threads N[,M]` names one or two decode thread counts to try against
   `--threads`; the plan picks the ones nearest the incumbent among the running sums of the core
   classes (where a barrier starts waiting on a slower class), every core, and half of them where all
-  are alike. `--trial-overlap` tries the other overlap setting. Once the cache's hit rate has
+  are alike, less a count above the incumbent that the plan's own thread sweep measured short of the
+  margin over it: the sweep ran it with every core to itself, a decode runs it beside the expert
+  reads, so a count that could not win alone cannot win there (on a phone, eight threads against
+  four, every core, decoded each token about twenty times slower). A count below the incumbent is
+  still tried: what the reads take from the cores is what the sweep cannot see. `--trial-overlap` tries the other overlap setting. Once the cache's hit rate has
   settled (two windows in a row within two points), decode windows of `--trial-window` tokens
   (default 8) alternate incumbent, candidate, incumbent, every candidate window between two of the
   incumbent's, three rounds a candidate, on the user's own answer. A candidate wins only if it
@@ -248,7 +252,11 @@ measurement instead of a guess ([measured-planning.md](measured-planning.md#step
   ratios against the mean of the two incumbent windows around it, so a drift linear over a round
   cancels and one stalled window does not decide. A candidate stops early once the median can no
   longer make it a winner, or after one window that ran apart from the incumbent: every token of it
-  slower than the incumbent's slowest by more than the incumbent's own range and the margin. The
+  slower than the incumbent's slowest by more than the incumbent's own range and the margin. That
+  window is cut before its end once more than half of its tokens are past that bar and its seconds
+  exceed what the whole window may spend inside it: its mean and its median are then past the bar
+  whatever the rest would take, while a stall elsewhere in the machine, which slows some tokens of a
+  window and not most, still runs to the median of the rounds. The
   thread count is measured first, then overlap
   starting from its verdict. Both together take about 200 decoded tokens after the cache settles
   (fewer with one thread candidate), spread over as many turns of the session as that needs: a
