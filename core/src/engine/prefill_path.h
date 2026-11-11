@@ -106,7 +106,7 @@ private:
     llama_context * ctx_ = nullptr;
     ExpertStreamSource * cache_ = nullptr;
     ExpertStreamSource * cache_read_ = nullptr;
-    size_t yielded_budget_ = 0; // the cache budget to give back when the slots are released; 0 = nothing yielded
+    bool lent_ = false; // the slots hold memory lent by the cache, returned when they are released
     bool said_no_room_ = false;
     std::vector<LayerExperts> arena_layers_;
     std::vector<std::string> arena_shards_;
