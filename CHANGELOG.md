@@ -36,6 +36,12 @@ Semantic Versioning.
   llama.cpp's server streams by too); a template the partial parse cannot read sends its calls
   whole, as before.
 ### Fixed
+- **`bmoe-server --auto` starts instead of exiting with `unknown arg`.** The help offered "the
+  bmoe-cli flags", and `--auto` is how `bmoe-cli` plans a run, but the server took only the engine's
+  parameter table. It now takes `--auto` and `--no-auto`, for one run over the saved choice (on by
+  default, as before), the way engine parameters given at launch hold; a choice made from the UI
+  replaces it. The help now says which flags it takes: the parameter table's, not `bmoe-cli`'s own
+  run options ([server-api.md](docs/server-api.md)).
 - **`write_file` no longer reads the model back the file it just wrote.** Its result was the whole
   diff, which for a new file is the content the call carried, up to the 12 KiB result cap. A local
   model writing a 677-line page read 12 KiB of it back, ran out of context, and its next call was cut

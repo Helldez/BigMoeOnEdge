@@ -149,6 +149,7 @@ struct Options {
     bool models_only = false;             // every client, local ones too, names models in the models folder only
     bool chat_only = false;               // conversations are plain chat: no agent tools, workspaces or tasks
     std::string preview_network = "auto"; // whether a workspace preview reaches the internet (preview_network_for)
+    int auto_plan = -1;                   // --auto 1, --no-auto 0, -1 unsaid: the saved choice holds
     bool open_browser = false;
     bool autoload = false;       // load the model the settings name at start and whenever a request finds none
     std::string log_file;        // --log-file: the console's output goes here instead, rotated at start
@@ -208,6 +209,8 @@ void print_usage(const char * argv0) {
                 "                       whether a page the agent wrote, previewed in the UI, may reach the\n"
                 "                       internet (https) as any page you open can; it never reaches this\n"
                 "                       server. auto (default): on when listening on loopback only\n"
+                "  --auto | --no-auto   whether each load measures the machine and plans first, for this run\n"
+                "                       (default: the choice saved from the UI, on until someone turns it off)\n"
                 "  --no-isolated-probes the planner probes compute devices in this process instead of a child each\n"
                 "  --hf-endpoint URL    where Hugging Face repositories are read from (default %s; a mirror)\n"
                 "  --feed-url URL       the signed release feed backend packs and updates are read from\n"
@@ -220,8 +223,9 @@ void print_usage(const char * argv0) {
                 "  -h, --help           this text\n"
                 "      --version        print the engine version\n"
                 "\n"
-                "Engine parameters are the bmoe-cli flags (bmoe-cli --help lists them). Given here, they\n"
-                "hold for this run and outrank saved settings; -m loads that model at start.\n"
+                "Engine parameters are the flags of the engine's parameter table (bmoe-cli --describe-params\n"
+                "lists them; bmoe-cli's own run options, such as --plan-explain, are not among them). Given\n"
+                "here, they hold for this run and outrank saved settings; -m loads that model at start.\n"
                 "\n"
                 "%s service install|uninstall|start|stop|status: the server as a service of your init\n"
                 "system, started at login (%s service --help).\n",
@@ -284,7 +288,11 @@ int parse_args(int argc, char ** argv, Options & o) {
                 std::fprintf(stderr, "bmoe-server: --preview-network takes auto, on or off\n");
                 return 2;
             }
-        } else if (a == flag::autoload)
+        } else if (a == "--auto")
+            o.auto_plan = 1;
+        else if (a == "--no-auto")
+            o.auto_plan = 0;
+        else if (a == flag::autoload)
             o.autoload = true;
         else if (a == flag::log_file)
             o.log_file = next();
@@ -1571,6 +1579,7 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     for (const std::string & w : app.lib.warnings())
         std::fprintf(stderr, "warning: %s\n", w.c_str());
     app.store.set_launch_values(o.launch);
+    if (o.auto_plan >= 0) app.store.set_launch_auto_plan(o.auto_plan == 1);
     if (app.forget_missing_model())
         std::fprintf(stderr, "note: the saved model's file is gone; no model is selected until one is chosen\n");
     app.host.set_host_info(platform::host_info);

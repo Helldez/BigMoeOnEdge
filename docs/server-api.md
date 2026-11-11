@@ -405,7 +405,9 @@ runs replaces the flag's. `args` is the equivalent `bmoe-cli` command line (for 
 command"). `reload_required` is true when a session-scoped value differs from the loaded
 session's, and `reload_keys` names those parameters in table order (empty with no session). `plan` is the last applied plan's decisions (see below), or `null`. `auto_plan` is
 whether every load plans first: on by default in a build with the planner, always false without
-one; `PUT /api/config` with `{"auto_plan": false}` turns it off, and the choice is saved.
+one; `PUT /api/config` with `{"auto_plan": false}` turns it off, and the choice is saved. The
+server's `--auto` and `--no-auto` set it for one run, over the saved choice and without saving it,
+as engine parameters given at launch do; a choice made through `PUT /api/config` replaces theirs.
 
 ### `PUT /api/config`
 

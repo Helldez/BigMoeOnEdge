@@ -69,9 +69,12 @@ public:
     json plan_decisions() const;
 
     // Whether every load plans first. A server setting, not an engine parameter, so it lives beside
-    // the values rather than in the table. `fallback` is the answer until someone sets it.
+    // the values rather than in the table. `fallback` is the answer until someone sets it. Layered as
+    // the values are: what the server was launched with (--auto, --no-auto) holds for this run over
+    // the saved choice and is never saved; a person's choice is saved and replaces it.
     bool auto_plan(bool fallback) const;
-    void set_auto_plan(bool on); // persists
+    void set_auto_plan(bool on); // persists, and drops the launch layer's
+    void set_launch_auto_plan(bool on);
 
     // The folders a person chose for models: where downloads land ("" for the server's default,
     // <data dir>/models) and the other folders listed beside it. Server settings like auto_plan;
@@ -94,6 +97,8 @@ private:
     json decisions_ = nullptr;
     bool auto_plan_set_ = false;
     bool auto_plan_ = false;
+    bool launch_auto_plan_set_ = false;
+    bool launch_auto_plan_ = false;
     ModelFolders folders_;
 };
 

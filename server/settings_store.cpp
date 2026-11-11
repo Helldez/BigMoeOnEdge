@@ -159,6 +159,7 @@ std::vector<std::string> SettingsStore::launch_keys() const {
 
 bool SettingsStore::auto_plan(bool fallback) const {
     std::lock_guard<std::mutex> lk(m_);
+    if (launch_auto_plan_set_) return launch_auto_plan_;
     return auto_plan_set_ ? auto_plan_ : fallback;
 }
 
@@ -166,7 +167,14 @@ void SettingsStore::set_auto_plan(bool on) {
     std::lock_guard<std::mutex> lk(m_);
     auto_plan_set_ = true;
     auto_plan_ = on;
+    launch_auto_plan_set_ = false;
     save_locked();
+}
+
+void SettingsStore::set_launch_auto_plan(bool on) {
+    std::lock_guard<std::mutex> lk(m_);
+    launch_auto_plan_set_ = true;
+    launch_auto_plan_ = on;
 }
 
 SettingsStore::ModelFolders SettingsStore::model_folders() const {
