@@ -144,10 +144,11 @@ struct Options {
     std::vector<std::string> scan_dirs; // more directories whose models are listed, never written
     std::vector<std::string> allow_origins;
     std::string api_key;
-    std::string api_key_file; // --api-key-file: the key, read at start, never on the command line
-    bool no_api_key = false;  // listen beyond loopback with no key, on purpose
-    bool models_only = false; // every client, local ones too, names models in the models folder only
-    bool chat_only = false;   // conversations are plain chat: no agent tools, workspaces or tasks
+    std::string api_key_file;             // --api-key-file: the key, read at start, never on the command line
+    bool no_api_key = false;              // listen beyond loopback with no key, on purpose
+    bool models_only = false;             // every client, local ones too, names models in the models folder only
+    bool chat_only = false;               // conversations are plain chat: no agent tools, workspaces or tasks
+    std::string preview_network = "auto"; // whether a workspace preview reaches the internet (preview_network_for)
     bool open_browser = false;
     bool autoload = false;       // load the model the settings name at start and whenever a request finds none
     std::string log_file;        // --log-file: the console's output goes here instead, rotated at start
@@ -203,6 +204,10 @@ void print_usage(const char * argv0) {
                 "  --models-only        local clients too may only open models from the folders models\n"
                 "                       are listed from (clients on the network always are)\n"
                 "  --chat-only          conversations are plain chat: no agent tools, workspaces or tasks\n"
+                "  --preview-network auto|on|off\n"
+                "                       whether a page the agent wrote, previewed in the UI, may reach the\n"
+                "                       internet (https) as any page you open can; it never reaches this\n"
+                "                       server. auto (default): on when listening on loopback only\n"
                 "  --no-isolated-probes the planner probes compute devices in this process instead of a child each\n"
                 "  --hf-endpoint URL    where Hugging Face repositories are read from (default %s; a mirror)\n"
                 "  --feed-url URL       the signed release feed backend packs and updates are read from\n"
@@ -273,7 +278,13 @@ int parse_args(int argc, char ** argv, Options & o) {
             o.models_only = true;
         else if (a == "--chat-only")
             o.chat_only = true;
-        else if (a == flag::autoload)
+        else if (a == "--preview-network") {
+            o.preview_network = next();
+            if (o.preview_network != "auto" && o.preview_network != "on" && o.preview_network != "off") {
+                std::fprintf(stderr, "bmoe-server: --preview-network takes auto, on or off\n");
+                return 2;
+            }
+        } else if (a == flag::autoload)
             o.autoload = true;
         else if (a == flag::log_file)
             o.log_file = next();
@@ -1429,9 +1440,10 @@ void register_guards(httplib::Server & svr, const Options & o) {
         return httplib::Server::HandlerResponse::Handled;
     });
     // On every response, the refusals above and the UI's files alike.
-    svr.set_post_routing_handler([](const httplib::Request & req, httplib::Response & res) {
+    const bool preview_network = preview_network_for(o.preview_network, policy.loopback);
+    svr.set_post_routing_handler([preview_network](const httplib::Request & req, httplib::Response & res) {
         const bool preview = is_preview_path(req.path) && res.status == 200;
-        for (const auto & h : preview ? preview_headers() : security_headers())
+        for (const auto & h : preview ? preview_headers(preview_network) : security_headers())
             if (!res.has_header(h.first)) res.set_header(h.first, h.second);
     });
     // A handler that reads a field of the wrong type out of a request throws; that is the client's

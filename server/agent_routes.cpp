@@ -421,9 +421,8 @@ void register_agent_routes(httplib::Server & svr, const AgentRouteDeps & d) {
         std::ostringstream ss;
         ss << f.rdbuf();
         res.set_content(ss.str(), content_type_of(path));
-        // Whatever the file holds is shown, never run as part of this origin.
-        res.set_header("Content-Security-Policy",
-                       "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'");
+        // Whatever the file holds is shown, never run as part of this origin: its policy is the one
+        // every preview response gets (preview_headers in access.h), set after routing, in one place.
         res.set_header("Content-Disposition", "inline");
     });
 
