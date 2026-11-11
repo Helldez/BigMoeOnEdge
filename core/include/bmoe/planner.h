@@ -88,6 +88,14 @@ struct PlannerPolicy {
     // The narrowest graph the width is brought down to. llama.cpp's own physical batch: nothing
     // here has been measured below it, and under it a prefill is mostly passes over the experts.
     uint32_t ubatch_min = 512;
+    // The widest graph a device with memory of its own is planned at: an evidence boundary, not a
+    // measurement of this machine. A device's expert matmul can hold a whole pass's tokens in a
+    // per-block scratch whose size the backend fixes, and past it the pass aborts the process (#533:
+    // `GGML_ASSERT(nbytes_shared <= smpbo)`, ~25k tokens on 24-32 GB cards, ~16k where the scratch is
+    // 64 KB). Measured on a 32 GB card at a 32768-token graph: a 28.6k-token prompt aborted the
+    // server. Half of the smallest of those limits, so no shipped backend has been shown to fail at
+    // it; a prompt past it takes more passes, which cost little once a pass is this wide.
+    uint32_t ubatch_max_device = 8192;
 
     // Whether THIS ENGINE can hand a device the memory a streamed expert is made of. It is a fact
     // about our own streamer rather than about any machine, which is why it lives here and not in

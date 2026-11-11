@@ -866,6 +866,10 @@ int main() {
         const uint64_t per_token = 256 * KiB; // 16384 tokens wide is 4 GiB of buffers
         const HardwareProfile hw = desktop();
         const PlannerPolicy pol = PlannerPolicy::defaults();
+        // The rules below weigh a device's width by its memory and by measurement; the evidence bound on
+        // a device's pass (ubatch_max_device, #533) is checked on its own at the end, so it is off here.
+        PlannerPolicy unbounded = pol;
+        unbounded.ubatch_max_device = 0;
         const uint64_t cap =
             (uint64_t) ((double) (hw.holdable_bytes ? hw.holdable_bytes : hw.residency_budget) * pol.compute_share_max);
 
@@ -981,7 +985,7 @@ int main() {
             // cache, not a dense part, and that trade is not this rule's. The graph stays wide.
             Placement all_layers = short_card;
             all_layers.n_gpu_layers = (int32_t) model.n_layer + 1;
-            const Plan layers_kept = plan_run(big_ctx, card, model, all_layers, PlanRequest{});
+            const Plan layers_kept = plan_run(big_ctx, card, model, all_layers, PlanRequest{}, unbounded);
             check(layers_kept.config.n_ubatch == 0,
                   "width: every layer on the card keeps the widest graph, experts on the host or not",
                   std::to_string(layers_kept.config.n_ubatch));
@@ -990,9 +994,27 @@ int main() {
             Placement whole = short_card;
             whole.n_gpu_layers = (int32_t) model.n_layer + 1;
             whole.host_expert_layers.clear();
-            const Plan wide_kept = plan_run(big_ctx, card, model, whole, PlanRequest{});
+            const Plan wide_kept = plan_run(big_ctx, card, model, whole, PlanRequest{}, unbounded);
             check(wide_kept.config.n_ubatch == 0, "width: a device the model fits whole keeps the widest graph",
                   std::to_string(wide_kept.config.n_ubatch));
+            // The same card under the default policy: the memory would take the wide graph, but a device
+            // computes it, and its expert matmul is not known to run a pass past ubatch_max_device (#533).
+            const Plan bounded = plan_run(big_ctx, card, model, whole, PlanRequest{});
+            const Decision * db = find(bounded, "ubatch");
+            check((uint32_t) bounded.config.n_ubatch == pol.ubatch_max_device && db && db->source == Source::Policy &&
+                      db->reason.find("#533") != std::string::npos && validate(bounded.config).ok,
+                  "width: a device's graph is bounded by the widest pass its expert matmul is known to run",
+                  db ? std::to_string(bounded.config.n_ubatch) + ": " + db->reason : "no decision");
+            check(bounded.placement.compute_width == pol.ubatch_max_device,
+                  "width: the bounded width's buffers are the ones charged",
+                  std::to_string(bounded.placement.compute_width));
+            // A graph already inside the bound is left as wide as the context.
+            RunConfig small_ctx = big_ctx;
+            small_ctx.n_ctx = 4096;
+            Placement whole_small = whole.at_width(4096);
+            const Plan inside = plan_run(small_ctx, card, model, whole_small, PlanRequest{});
+            check(inside.config.n_ubatch == 0, "width: a graph inside the device bound stays as wide as the context",
+                  std::to_string(inside.config.n_ubatch));
 
             // Two cards of different sizes: inside the share of both together, past it on the smaller
             // one, which reserves its own half of the buffers. Each card is held to its own memory.
@@ -1060,7 +1082,7 @@ int main() {
                 const auto plan_with = [&](const MeasuredKnobs & k) {
                     ModelProfile mm = model;
                     mm.knobs = k;
-                    return plan_run(big_ctx, no_tier, mm, roomy_layers, PlanRequest{}, pol);
+                    return plan_run(big_ctx, no_tier, mm, roomy_layers, PlanRequest{}, unbounded);
                 };
                 const Plan first = plan_with(MeasuredKnobs{});
                 check(narrow > 0 && narrow < 16384 && first.config.trial.width_side == 1 &&
@@ -1107,14 +1129,14 @@ int main() {
                 PlanRequest pin_ub;
                 pin_ub.pinned.push_back("ubatch");
                 ModelProfile mm = model;
-                const Plan pinned_ub = plan_run(big_ctx, no_tier, mm, roomy_layers, pin_ub, pol);
+                const Plan pinned_ub = plan_run(big_ctx, no_tier, mm, roomy_layers, pin_ub, unbounded);
                 check(pinned_ub.config.trial.width_side == -1, "width across loads, pinned: nothing timed");
             }
 
             // A slope the device side did not measure decides nothing there.
             Placement blind_dev = short_card;
             blind_dev.device_compute_per_token = 0;
-            const Plan unmeasured = plan_run(big_ctx, card, model, blind_dev, PlanRequest{});
+            const Plan unmeasured = plan_run(big_ctx, card, model, blind_dev, PlanRequest{}, unbounded);
             check(unmeasured.config.n_ubatch == 0, "width: an unmeasured device slope leaves the graph wide",
                   std::to_string(unmeasured.config.n_ubatch));
         }

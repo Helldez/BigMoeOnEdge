@@ -803,7 +803,13 @@ the side that cannot overcommit.
 
 The rule is the widest graph whose buffers stay inside a share of what the process may hold
 (`PlannerPolicy::compute_share_max`, a tenth), found by halving from the context and never below
-`ubatch_min`. Inside the share nothing changes and the knob keeps its default. A device's buffers
+`ubatch_min`. Inside the share nothing changes and the knob keeps its default. Where a device with
+memory of its own computes the graph, the width is also bounded by `ubatch_max_device` (8192): a
+device's expert matmul can keep a whole pass's tokens in a per-block scratch of a size the backend
+fixes, and past it the pass aborts the process (#533, `GGML_ASSERT(nbytes_shared <= smpbo)` at
+~25k tokens on 24-32 GB cards, ~16k where the scratch is 64 KB). On a 32 GB card at a 32768-token
+graph, a 28.6k-token prompt aborted the server. The bound is an evidence boundary: half of the
+smallest of those limits. A longer prompt takes more passes. A device's buffers
 count in this pool where its memory is the host's. A device with memory of its own pays for its width
 in that memory. Where the fitter left whole layers on the host beside it, a byte of buffer there is a
 byte of some layer's dense part: there its buffers are held to the same share of the device's memory,

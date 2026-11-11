@@ -1101,12 +1101,33 @@ void choose_graph_width(Planning & s) {
                "width is not this plan's to choose; keeping the default");
         return;
     }
+    // A device that computes the graph is bounded by the widest pass its expert matmul is known to
+    // run (PlannerPolicy::ubatch_max_device), whatever its memory allows.
+    const bool on_device = device_memory > 0 && s.placement.fitted && s.placement.n_gpu_layers > 0;
+    const uint32_t bound =
+        on_device && s.pol.ubatch_max_device > 0 ? std::max(s.pol.ubatch_max_device, s.pol.ubatch_min) : 0;
     uint32_t w = full;
-    while (w / 2 >= s.pol.ubatch_min && over(w))
+    while (w / 2 >= s.pol.ubatch_min && (over(w) || (bound > 0 && w > bound)))
         w /= 2;
     const std::string pct = u64s((uint64_t) (s.pol.compute_share_max * 100.0f + 0.5f)) + "%";
     const std::string share = pct + " of the " + u64s(mib(s.holdable)) + " MiB this process may hold";
     const bool device_bound = device_short && device_over(full);
+    if (bound > 0 && w < full && !over(full) && !device_bound) {
+        // Narrowed by the bound alone: the memory would have taken the wide graph.
+        s.placement = s.placement.at_width(w);
+        p.placement = s.placement;
+        p.config.n_ubatch = (int) w;
+        s.note("ubatch", u64s(w), Source::Policy,
+               u64s(w) + " tokens per pass: the widest a device's expert matmul is known to run.",
+               "a graph as wide as the context (" + u64s(full) +
+                   " tokens) would fit in memory, but a device computes "
+                   "it, and past " +
+                   u64s(bound) +
+                   " tokens a pass can abort in the backend's expert matmul (#533); a "
+                   "longer prompt takes more passes. " +
+                   flag_spelling("ubatch") + " sets it by hand");
+        return;
+    }
     if (w == full && width_across_loads(s, full)) return;
     if (w == full) {
         s.note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Derived,

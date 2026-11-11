@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **A long prompt no longer aborts the server on a large NVIDIA or AMD card (#533).** Where a card
+  had room for the compute buffers of a graph as wide as the context, the plan kept it that wide. A
+  prompt past ~25k tokens (~16k on AMD) then went into one pass, and the card's expert matmul aborted
+  the process (`mmid.cu: GGML_ASSERT(nbytes_shared <= smpbo)`). Reproduced on 0.41.2 on a 32 GB card
+  with a 28.6k-token prompt at a 32768 context. A device that computes the graph is now planned at
+  most `ubatch_max_device` (8192) tokens per pass, half of the smallest limit seen. A longer prompt
+  takes more passes ([hardware-planning.md](docs/hardware-planning.md)).
+
 ## [0.41.2] - 2026-11-11
 
 ### Added
