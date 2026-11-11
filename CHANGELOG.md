@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.41.3] - 2026-11-11
 
 ### Fixed
 - **A long prompt no longer aborts the server on a large NVIDIA or AMD card (#533).** Where a card
