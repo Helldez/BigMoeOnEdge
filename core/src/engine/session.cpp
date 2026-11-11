@@ -3328,7 +3328,7 @@ struct Session::Impl::Turn {
         const size_t budget = im.source.cache_budget();
         const size_t next = CacheBrake::braked(budget, im.source.cache_floor());
         if (next >= budget) return;
-        im.source.set_cache_budget(next);
+        im.source.brake_cache_budget(next);
         log_printf(LogLevel::Info,
                    "cache brake: a token took %.0f ms of compute against %.0f, and %.0f%% of the cache's sampled "
                    "pages were no longer in RAM; cache %zu -> %zu MiB",
