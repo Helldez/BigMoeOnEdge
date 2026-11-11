@@ -927,6 +927,13 @@ static void settings_tests() {
     SettingsStore third(defaults, path.u8string());
     third.load();
     check(!third.auto_plan(true), "auto_plan, once turned off, stays off across a restart");
+    third.set_launch_auto_plan(true);
+    check(third.auto_plan(false), "--auto at launch holds for this run over the saved choice");
+    SettingsStore fresh(defaults, path.u8string());
+    fresh.load();
+    check(!fresh.auto_plan(true), "and is never saved");
+    third.set_auto_plan(false);
+    check(!third.auto_plan(true), "a person's choice replaces what the server was launched with");
 
     // A value saved by an earlier run is under the flags of this one: -m / -c at start win.
     third.set_launch_values({{"temp", "0.2"}});

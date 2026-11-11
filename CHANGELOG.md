@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **`bmoe-server --auto` starts instead of exiting with `unknown arg`.** The help offered "the
+  bmoe-cli flags", and `--auto` is how `bmoe-cli` plans a run, but the server took only the engine's
+  parameter table. It now takes `--auto` and `--no-auto`, for one run over the saved choice (on by
+  default, as before), the way engine parameters given at launch hold; a choice made from the UI
+  replaces it. The help now says which flags it takes: the parameter table's, not `bmoe-cli`'s own
+  run options ([server-api.md](docs/server-api.md)).
+
 ## [0.41.1] - 2026-11-11
 
 ### Fixed
