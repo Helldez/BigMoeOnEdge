@@ -1195,6 +1195,16 @@ static void composing_tests() {
           "the card appears while the call is written, and the call runs on the same card");
     check(composing.back().value("title", "") == "Write page.html" && composing.back().value("bytes", 0) > 0,
           "the card's title follows the arguments as far as they go, with the size written so far");
+    // The arguments stream as `delta` events on the card: joined, they are the call the card ran.
+    std::string arguments;
+    const std::string dhead = "event: delta\ndata: ";
+    for (size_t at = all.find(dhead); at != std::string::npos; at = all.find(dhead, at + 1)) {
+        const size_t from = at + dhead.size();
+        const json ev = json::parse(all.substr(from, all.find('\n', from) - from));
+        if (ev.value("item", "") == tool.value("id", "")) arguments += ev.value("arguments", "");
+    }
+    check(json::parse(arguments, nullptr, false) == tool["args"],
+          "the call's arguments stream to the card as they are written, each piece once");
     check(tool.value("state", "") == "done" && tool.value("title", "") == "Write page.html" &&
               slurp(rig->ws.path / "page.html") == "<p>hi</p>\n",
           "the stored card is the call that ran");

@@ -850,6 +850,7 @@ std::string Agent::run_rounds(Run & run, const std::string & conv_id) {
             std::string arguments;
             bool shown = false;
             size_t shown_bytes = 0;
+            size_t sent_arguments = 0; // how much of `arguments` went out as `delta` events
         };
         std::vector<Card> cards;
         const auto refresh_card = [&](Card & c) {
@@ -859,6 +860,18 @@ std::string Agent::run_rounds(Run & run, const std::string & conv_id) {
             c.shown = true;
             c.shown_bytes = c.arguments.size();
             publish_item(conv_id, c.item, false);
+            // The arguments themselves, as what each token adds to them, the way an answer's text
+            // streams: a client can show the call as it is written (a page, line by line) without
+            // the whole being sent again on every token. Whole characters only.
+            const size_t whole = complete_utf8_prefix_size(c.arguments);
+            if (whole > c.sent_arguments) {
+                d_.bus->publish("delta",
+                                json{{"conversation", conv_id},
+                                     {"item", c.item.value("id", "")},
+                                     {"arguments", c.arguments.substr(c.sent_arguments, whole - c.sent_arguments)}},
+                                audience_of(conv_id));
+                c.sent_arguments = whole;
+            }
         };
         // Cards whose calls will not run end with why. Live only: the stored conversation, which
         // keeps only what a round decided, never held them.

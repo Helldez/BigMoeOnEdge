@@ -67,6 +67,8 @@ export interface ToolItem extends ItemBase {
   mcp?: string;
   /** While composing: how much of the call's arguments the model has written so far, in bytes. */
   bytes?: number;
+  /** While composing: the arguments as written so far (a JSON object cut anywhere), from `delta`s. */
+  draft?: string;
 }
 export interface NoticeItem extends ItemBase {
   kind: 'notice';
@@ -95,6 +97,8 @@ export interface DeltaEvent {
   item: string;
   text?: string;
   reasoning?: string;
+  /** What a tool call the model is writing adds to its arguments (the card is in state `composing`). */
+  arguments?: string;
 }
 
 export type SkillSource = 'bundled' | 'user' | 'workspace' | (string & {});
