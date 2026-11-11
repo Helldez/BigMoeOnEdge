@@ -64,8 +64,8 @@ android {
         applicationId 'io.bigmoeonedge.example'
         minSdk 29
         targetSdk 34
-        versionCode 70
-        versionName '0.41.1'
+        versionCode 71
+        versionName '0.41.2'
         buildConfigField 'String', 'GIT_SHA', "\"${gitSha}\""
         ndk {
             // The engine ships as prebuilt arm64 binaries staged by build-android.ps1.

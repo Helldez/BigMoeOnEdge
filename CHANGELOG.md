@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.41.2] - 2026-11-11
 
 ### Added
 - **A page the agent wrote can reach the internet in the preview** (`--preview-network`). The
@@ -15,12 +15,6 @@ Semantic Versioning.
   beyond loopback it stays shut. Either way it stays sandboxed in an opaque origin, apart from the
   UI, the key and this server's API. `--preview-network on|off` overrides the default (`auto`)
   ([server-api.md](docs/server-api.md), "Security model").
-
-### Fixed
-- **A page's own script runs in the preview, as the security model says.** The preview route set a
-  second policy of its own, without `allow-scripts`, over the one the security model describes, so
-  no script ran at all, inline or not: a page built in JavaScript showed only its static HTML. The
-  route now leaves the policy to the one place that sets it for every preview response.
 - **Tool calls stream while the model writes them, to every client.** A call was sent once the turn
   had been parsed, so a local model writing a 21 KB file at 4 tok/s showed nothing for 34 minutes:
   the desktop UI an answer frozen on its first sentence, and an external agent a silent stream. The
@@ -35,7 +29,12 @@ Semantic Versioning.
   opened with, and its arguments are only ever appended to (the parser's own contract, which
   llama.cpp's server streams by too); a template the partial parse cannot read sends its calls
   whole, as before.
+
 ### Fixed
+- **A page's own script runs in the preview, as the security model says.** The preview route set a
+  second policy of its own, without `allow-scripts`, over the one the security model describes, so
+  no script ran at all, inline or not: a page built in JavaScript showed only its static HTML. The
+  route now leaves the policy to the one place that sets it for every preview response.
 - **`bmoe-server --auto` starts instead of exiting with `unknown arg`.** The help offered "the
   bmoe-cli flags", and `--auto` is how `bmoe-cli` plans a run, but the server took only the engine's
   parameter table. It now takes `--auto` and `--no-auto`, for one run over the saved choice (on by
