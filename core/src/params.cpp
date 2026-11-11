@@ -682,7 +682,7 @@ std::vector<ParamDesc> build() {
         ParamDesc d = row("ubatch", "Batch width", G::Memory, L::Advanced,
                           "Widest graph computed at once (0 = as wide as the context, up to " +
                               std::to_string(RunConfig::ubatch_auto_max) +
-                              "). Compute buffers are "
+                              "; with --auto the plan chooses it from this machine's memory). Compute buffers are "
                               "reserved for it, so a smaller value hands RAM back to the expert cache at the cost "
                               "of prefill speed; decode is unaffected.");
         d.value_hint = "N";
