@@ -129,9 +129,20 @@ public:
     // Explicitly set the cache budget in bytes and evict down to it immediately (clamped to the
     // full expert-set size). PRECONDITION: no decode in flight — the caller must not be inside a
     // load_layer/generate. Intended for an app's memory-pressure callback (Android onTrimMemory)
-    // and exercised by the shrink gate. This is the only thing that moves the budget after init.
+    // and exercised by the shrink gate. The owner's budget: the brake and a device prefill's loan
+    // move the live budget under it (below) without replacing it.
     void set_cache_budget(size_t bytes);
     size_t cache_budget() const { return cache_max_; }
+    // The cache brake's resize. An ordinary cache: the new budget, as set_cache_budget. A
+    // discardable one: the budget comes down and the budget its owner set stays the ceiling, so it
+    // climbs back once the system settles (DropFollowingBudget::braked). Same precondition.
+    void brake_cache_budget(size_t bytes);
+    // A device prefill's slots borrow `bytes` from the cache for one prompt and give them back
+    // (PrefillPath::place). The loan never becomes the cache's budget: what the owner set, and with
+    // a discardable cache where the kernel let it climb, is what return_cache restores. Same
+    // precondition.
+    void lend_cache(size_t bytes);
+    void return_cache();
     // The run's effective top-k: a batch of ids is that many per token, which is how load_layer tells
     // a wide graph (cache_prefill_cold) from a decode or a verify window. Before the first decode.
     void set_top_k(int k) { top_k_ = std::max(0, k); }
@@ -403,6 +414,8 @@ private:
     long long swept_ = 0;        // dropped offers retired from the LRU tail
     uint32_t offer_window_ = 0;  // generations an entry stays ordinary after its last use
     DropFollowingBudget follow_; // the live budget while the kernel may drop from the cache
+    size_t lent_from_ = 0;       // an ordinary cache's budget before a loan; 0 = nothing lent
+    void move_budget(size_t bytes);
     void settle_offers();
     void retire_dropped_tail();
     void shrink_for_drop(size_t bytes);
