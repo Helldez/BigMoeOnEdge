@@ -134,6 +134,7 @@ EngineHost::EngineHost(EventBus & bus, SessionOpener open) : bus_(bus), open_(st
 
 EngineHost::~EngineHost() {
     set_log_sink(nullptr); // before anything goes: the sink reaches into bus_
+    before_open_cancel_ = true;
     cancel();
     if (loader_.joinable()) loader_.join();
     std::lock_guard<std::mutex> g(gen_m_);
@@ -153,20 +154,42 @@ void EngineHost::begin_planning() {
     {
         std::lock_guard<std::mutex> lk(m_);
         if (!planning_.load() && state_ != State::Loading) load_started_ = std::chrono::steady_clock::now();
+        planning_ = true;
     }
-    planning_ = true;
     publish_state();
 }
 
 void EngineHost::end_planning() {
-    planning_ = false;
+    {
+        // Under the lock a waiting turn reads it with (take_turn), so its wake-up is not lost.
+        std::lock_guard<std::mutex> lk(m_);
+        planning_ = false;
+    }
     publish_state();
 }
 
 std::string EngineHost::load(const RunConfig & effective, const RunConfig & requested) {
+    return load(effective, requested, std::nullopt);
+}
+
+std::string
+EngineHost::load(const RunConfig & effective, const RunConfig & requested, std::optional<OpenFallback> fallback) {
     const ValidationResult v = validate(effective);
     if (!v) return engine_message(v.error);
     std::lock_guard<std::mutex> life(life_m_);
+    // A calibration the server started on its own gives way to a load a person asked for: cancelled
+    // as an unload cancels it, so nothing is opened after it.
+    bool supersede = false;
+    {
+        std::lock_guard<std::mutex> lk(m_);
+        supersede = state_ == State::Loading && calibrating_.load();
+    }
+    if (supersede) {
+        before_open_cancel_ = true;
+        before_open_stop_ = true;
+        if (loader_.joinable()) loader_.join();
+    }
+    before_open_cancel_ = false; // this load's own: only an unload during it cancels it
     {
         std::lock_guard<std::mutex> lk(m_);
         if (state_ == State::Loading) return "a model is already loading";
@@ -180,8 +203,51 @@ std::string EngineHost::load(const RunConfig & effective, const RunConfig & requ
     if (loader_.joinable()) loader_.join(); // the previous load finished: its state was not Loading
     publish_state();
     cancel();
+    start_loader(effective, nullptr, std::move(fallback));
+    return "";
+}
 
-    loader_ = std::thread([this, effective] {
+bool EngineHost::idle() const {
+    std::lock_guard<std::mutex> lk(m_);
+    return state_ == State::Ready && !generating_.load() && turns_.empty();
+}
+
+void EngineHost::note_request() {
+    if (calibrating_.load()) before_open_stop_ = true;
+}
+
+bool EngineHost::load_when_idle(const RunConfig & effective, const RunConfig & requested, BeforeOpen before_open) {
+    if (!validate(effective)) return false;
+    std::lock_guard<std::mutex> life(life_m_);
+    {
+        std::lock_guard<std::mutex> lk(m_);
+        // Armed before the line is looked at: a turn that enters it after the look finds the flag and
+        // stops the step (note_request), and one that entered before is seen here and wins.
+        before_open_stop_ = false;
+        before_open_cancel_ = false;
+        calibrating_ = true;
+        if (state_ != State::Ready || generating_.load() || !turns_.empty()) {
+            calibrating_ = false;
+            return false;
+        }
+        load_started_ = std::chrono::steady_clock::now();
+        state_ = State::Loading;
+        error_.clear();
+        // The model stays named: it is the one the step times and the one it loads again.
+        requested_ = requested;
+        last_turn_ = nullptr;
+    }
+    if (loader_.joinable()) loader_.join();
+    publish_state();
+    start_loader(effective, std::move(before_open), std::nullopt);
+    return true;
+}
+
+void EngineHost::start_loader(const RunConfig & effective_in,
+                              BeforeOpen before_open,
+                              std::optional<OpenFallback> fallback) {
+    loader_ = std::thread([this, effective_in, before_open, fallback] {
+        RunConfig effective = effective_in;
         // Wait out any generation, then drop the old session BEFORE opening the new one: two large
         // models resident at once is exactly the memory this engine exists to avoid spending.
         std::lock_guard<std::mutex> g(gen_m_);
@@ -192,13 +258,54 @@ std::string EngineHost::load(const RunConfig & effective, const RunConfig & requ
             // figure on its way out, and that figure is the old model's.
             last_turn_ = nullptr;
         }
+        if (before_open) {
+            RunConfig requested;
+            {
+                std::lock_guard<std::mutex> lk(m_);
+                requested = requested_;
+            }
+            before_open(effective, requested, BeforeOpenSignals{before_open_stop_, before_open_cancel_});
+            {
+                std::lock_guard<std::mutex> lk(m_);
+                requested_ = requested;
+            }
+            // Unloaded, or the host is ending: the session it would open is not wanted by anyone.
+            if (before_open_cancel_.load()) {
+                {
+                    std::lock_guard<std::mutex> lk(m_);
+                    state_ = State::Empty;
+                    model_ = nullptr;
+                    calibrating_ = false;
+                }
+                publish_state();
+                return;
+            }
+        }
+        if (calibrating_.exchange(false)) publish_state(); // a load now, no longer a calibration
         std::string error;
         std::shared_ptr<HostedSession> s = open_(session_config_from(effective), error);
+        // The pending side would not open: the other side, which a plan may serve instead. Not for a
+        // load an unload has cancelled. Only an open of the other side says the first failure was the
+        // side's: where both fail, the first error is the one reported, and nothing is told.
+        if (!s && fallback && !before_open_cancel_.load()) {
+            std::string second;
+            std::shared_ptr<HostedSession> other = open_(session_config_from(fallback->effective), second);
+            if (other) {
+                s = std::move(other);
+                effective = fallback->effective;
+                {
+                    std::lock_guard<std::mutex> lk(m_);
+                    requested_ = fallback->requested;
+                }
+                if (fallback->taken) fallback->taken(error);
+            }
+        }
         {
             std::lock_guard<std::mutex> lk(m_);
             if (!s) {
                 state_ = State::Error;
                 error_ = error.empty() ? "the model failed to load" : engine_message(error);
+                model_ = nullptr; // the model a calibration kept named is gone with it
             } else {
                 session_ = s;
                 routing_kept_ = 0; // a new session records afresh
@@ -240,11 +347,11 @@ std::string EngineHost::load(const RunConfig & effective, const RunConfig & requ
                        s->n_ctx(), RunConfig::ctx_for_clients, raise.c_str());
         }
     });
-    return "";
 }
 
 void EngineHost::unload() {
     std::lock_guard<std::mutex> life(life_m_);
+    before_open_cancel_ = true; // a step before an open ends, and nothing is opened after it
     cancel();
     if (loader_.joinable()) loader_.join();
     {
@@ -265,6 +372,7 @@ json EngineHost::last_turn() const {
 }
 
 void EngineHost::cancel() {
+    before_open_stop_ = true; // a step before an open ends with whatever is cancelled
     std::shared_ptr<HostedSession> s;
     {
         std::lock_guard<std::mutex> lk(m_);
@@ -285,7 +393,16 @@ bool EngineHost::loaded_or_loading() const {
 
 std::string EngineHost::model_name() const {
     std::lock_guard<std::mutex> lk(m_);
-    return model_.is_object() ? model_.value("name", "") : "";
+    if (model_.is_object()) return model_.value("name", "");
+    // Loading: the file being loaded, which a request that waits for the load is answered by.
+    if (state_ == State::Loading && !requested_.model_path.empty())
+        return std::filesystem::u8path(requested_.model_path).filename().u8string();
+    return "";
+}
+
+bool EngineHost::model_coming() const {
+    std::lock_guard<std::mutex> lk(m_);
+    return state_ == State::Ready || state_ == State::Loading || planning_.load();
 }
 
 bool EngineHost::vision() const {
@@ -311,17 +428,23 @@ json EngineHost::info() const {
     const bool overlap = expert_ready_hook_available();
     std::lock_guard<std::mutex> lk(m_);
     const bool planning = planning_.load();
+    const bool calibrating = calibrating_.load() && state_ == State::Loading;
+    // A calibration reads as the model it times, ready: the server takes requests through it, each
+    // waiting for the model as for any load (load_when_idle).
     json j{{"version", version()},
            {"overlap_available", overlap},
            {"planner_available", planner_available_.load()},
            {"host", host_info_ ? host_info_() : json::object()},
-           {"state", planning && state_ == State::Empty ? "planning" : state_name((int) state_)},
+           {"state", calibrating                          ? "ready"
+                     : planning && state_ == State::Empty ? "planning"
+                                                          : state_name((int) state_)},
            {"error", error_},
            {"model", model_},
-           {"generating", generating_.load()}};
+           {"generating", generating_.load()},
+           {"calibrating", calibrating}};
     // Seconds since the load under way began, planning included: a UI counts on from the value
     // it received and the moment it received it, so its own clock and the server's never meet.
-    if (planning || state_ == State::Loading)
+    if (planning || (state_ == State::Loading && !calibrating))
         j["load_elapsed_s"] = std::chrono::duration<double>(std::chrono::steady_clock::now() - load_started_).count();
     return j;
 }
@@ -341,11 +464,12 @@ std::unique_lock<std::mutex> EngineHost::take_turn() {
     for (;;) {
         {
             std::unique_lock<std::mutex> lk(m_);
-            state_cv_.wait(lk, [&] { return state_ != State::Loading; });
+            // A load in auto mode measures first: a turn waits through that as through the load.
+            state_cv_.wait(lk, [&] { return state_ != State::Loading && !planning_.load(); });
         }
         std::unique_lock<std::mutex> g(gen_m_);
         std::lock_guard<std::mutex> lk(m_);
-        if (state_ != State::Loading) return g;
+        if (state_ != State::Loading && !planning_.load()) return g;
     }
 }
 
@@ -354,6 +478,13 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
                              const std::function<bool()> & still_wanted,
                              const std::atomic<bool> * stop) {
     ChatOutcome out;
+    // Declared first, so it runs last: after the turn has left the line and released the model.
+    struct TurnEnd {
+        EngineHost & h;
+        ~TurnEnd() {
+            if (h.turn_end_) h.turn_end_();
+        }
+    } turn_end{*this};
     switch (turns_.enter(still_wanted)) {
     case TurnQueue::Admit::Granted:
         break;
@@ -372,6 +503,7 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
         TurnQueue & q;
         ~Leave() { q.leave(); }
     } leave{turns_};
+    note_request(); // in the line first, so a calibration that looked at it sees this turn or stops for it
     std::unique_lock<std::mutex> g = take_turn();
     // A turn may have been stopped after admission while a load held the context. Do not start
     // it on the new session. Queue callbacks may write, so only the atomic is read here.
@@ -500,6 +632,12 @@ void EngineHost::keep_routing(const HostedSession & s) {
 
 DecideOutcome EngineHost::decide(const DecideRequest & req, const std::function<bool()> & still_wanted) {
     DecideOutcome out;
+    struct TurnEnd {
+        EngineHost & h;
+        ~TurnEnd() {
+            if (h.turn_end_) h.turn_end_();
+        }
+    } turn_end{*this};
     switch (turns_.enter(still_wanted)) {
     case TurnQueue::Admit::Granted:
         break;
@@ -518,6 +656,7 @@ DecideOutcome EngineHost::decide(const DecideRequest & req, const std::function<
         TurnQueue & q;
         ~Leave() { q.leave(); }
     } leave{turns_};
+    note_request();
     std::unique_lock<std::mutex> g = take_turn();
 
     std::shared_ptr<HostedSession> s;

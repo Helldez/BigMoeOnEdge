@@ -59,12 +59,14 @@ std::vector<std::string> SettingsStore::load() {
 
 void SettingsStore::set_launch_values(std::map<std::string, std::string> values) {
     std::lock_guard<std::mutex> lk(m_);
+    ++revision_;
     launch_ = std::move(values);
 }
 
 json SettingsStore::apply(const json & values, const std::vector<std::string> & reset) {
     json rejected = json::object();
     std::lock_guard<std::mutex> lk(m_);
+    ++revision_;
     for (const std::string & k : reset) {
         user_.erase(k);
         launch_.erase(k);
@@ -97,6 +99,7 @@ bool SettingsStore::forget_missing_model(const std::function<bool(const std::str
     if (launch_.count("model")) return false;
     const auto it = user_.find("model");
     if (it == user_.end() || it->second.empty() || exists(it->second)) return false;
+    ++revision_;
     user_.erase(it);
     save_locked();
     return true;
@@ -104,8 +107,37 @@ bool SettingsStore::forget_missing_model(const std::function<bool(const std::str
 
 void SettingsStore::apply_plan(std::map<std::string, std::string> values, json decisions) {
     std::lock_guard<std::mutex> lk(m_);
+    ++revision_;
     plan_ = std::move(values);
     decisions_ = std::move(decisions);
+}
+
+RunConfig SettingsStore::config_with_plan(const std::map<std::string, std::string> & values) const {
+    std::lock_guard<std::mutex> lk(m_);
+    RunConfig c = defaults_;
+    std::string err;
+    for (const auto * layer : {&values, &user_, &launch_})
+        for (const auto & kv : *layer)
+            if (const ParamDesc * d = find_param(kv.first)) d->set(c, kv.second, err);
+    return c;
+}
+
+uint64_t SettingsStore::revision() const {
+    std::lock_guard<std::mutex> lk(m_);
+    return revision_;
+}
+
+bool SettingsStore::apply_plan_if(uint64_t rev,
+                                  bool auto_fallback,
+                                  std::map<std::string, std::string> values,
+                                  json decisions) {
+    std::lock_guard<std::mutex> lk(m_);
+    const bool plans = launch_auto_plan_set_ ? launch_auto_plan_ : auto_plan_set_ ? auto_plan_ : auto_fallback;
+    if (rev != revision_ || !plans) return false;
+    ++revision_;
+    plan_ = std::move(values);
+    decisions_ = std::move(decisions);
+    return true;
 }
 
 RunConfig SettingsStore::build_locked() const {
@@ -165,6 +197,7 @@ bool SettingsStore::auto_plan(bool fallback) const {
 
 void SettingsStore::set_auto_plan(bool on) {
     std::lock_guard<std::mutex> lk(m_);
+    ++revision_;
     auto_plan_set_ = true;
     auto_plan_ = on;
     launch_auto_plan_set_ = false;
@@ -173,6 +206,7 @@ void SettingsStore::set_auto_plan(bool on) {
 
 void SettingsStore::set_launch_auto_plan(bool on) {
     std::lock_guard<std::mutex> lk(m_);
+    ++revision_;
     launch_auto_plan_set_ = true;
     launch_auto_plan_ = on;
 }

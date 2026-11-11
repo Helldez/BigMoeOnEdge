@@ -492,7 +492,8 @@ phone, a Windows machine and a discrete card the archives now carry a CUDA modul
   the proposal in [#238](https://github.com/Helldez/BigMoeOnEdge/pull/238), on hold, would read at
   run time.
 - **The graph width, anywhere but where it was measured.** `--auto` now chooses `--ubatch` from
-  the compute buffers a width reserves, projected at the width the session opens with. The rule and
+  the compute buffers a width reserves, projected at the default width and priced past it by
+  extending the measured per-token cost at the run's context. The rule and
   its one policy figure were sized on a single laptop; a phone with an NPU, a machine with no
   accelerator, a discrete GPU and a system that commits what it reserves each owe a run before the
   rule is believed there ([hardware-planning.md](hardware-planning.md#the-widest-graph)).

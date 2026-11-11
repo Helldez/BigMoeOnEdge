@@ -76,7 +76,8 @@ Placement probe_placement(const char * model_path,
     // into, the KV and compute for that context land on the host, the one place that is not.
     cparams.n_ctx = n_ctx ? n_ctx : llama_context_default_params().n_ctx;
     // The widths the session opens with (session_config_from, Session::open): one batch per
-    // context, computed in graphs `n_ubatch` wide, or one graph when that is 0. Left at the fitter's
+    // context, computed in graphs `n_ubatch` wide (the caller hands RunConfig::graph_width, never 0;
+    // a 0 here still reads as one graph as wide as the context). Left at the fitter's
     // defaults, the compute buffers it projects are those of a 512-wide graph whatever the run is
     // about to reserve.
     cparams.n_batch = cparams.n_ctx;

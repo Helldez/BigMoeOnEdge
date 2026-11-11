@@ -2,6 +2,7 @@
 #include "image_probe.h"
 
 #include "bmoe/log.h"
+#include "bmoe/params.h"
 
 #include "mtmd-helper.h"
 #include "mtmd.h"
@@ -218,6 +219,27 @@ bool MediaInput::tokenize(const std::string & text,
     return ok;
 }
 
+namespace {
+
+std::string one_pass_refusal(size_t image, int n_tokens, int n_ubatch) {
+    return "image " + std::to_string(image + 1) + " takes " + std::to_string(n_tokens) +
+           " tokens that attend to each other both ways, so it has to go in one pass of the graph, which is " +
+           std::to_string(n_ubatch) + " tokens wide: set " + flag_spelling("ubatch") + " to at least " +
+           std::to_string(n_tokens) + ", or " + flag_spelling("image-max-tokens") + " to at most " +
+           std::to_string(n_ubatch);
+}
+
+} // namespace
+
+std::string MediaInput::width_refusal(const Tokenized & t, int n_ubatch) const {
+    for (size_t k = 0; k < t.chunks.size(); ++k) {
+        const int n_tokens = (int) mtmd_input_chunk_get_n_tokens(t.chunks[k]);
+        if (n_tokens > n_ubatch && mtmd_decode_use_non_causal(ctx_, t.chunks[k]))
+            return one_pass_refusal(k, n_tokens, n_ubatch);
+    }
+    return std::string();
+}
+
 int MediaInput::decode_media(llama_context * ctx,
                              const Tokenized & t,
                              size_t k,
@@ -226,6 +248,15 @@ int MediaInput::decode_media(llama_context * ctx,
                              const std::function<int(llama_batch_ext *)> & decode) const {
     if (k >= t.chunks.size() || n_batch <= 0) return -1;
     const mtmd_input_chunk * chunk = t.chunks[k];
+    // Some encoders' tokens attend to each other both ways; the library says which, per chunk. Such
+    // an image is one pass of the graph or nothing: checked before the encoder spends its time.
+    const bool non_causal = mtmd_decode_use_non_causal(ctx_, chunk);
+    const int n_ubatch = (int) llama_n_ubatch(ctx);
+    if (non_causal && (int) mtmd_input_chunk_get_n_tokens(chunk) > n_ubatch) {
+        log_printf(LogLevel::Error, "%s",
+                   one_pass_refusal(k, (int) mtmd_input_chunk_get_n_tokens(chunk), n_ubatch).c_str());
+        return -1;
+    }
     const auto t0 = std::chrono::steady_clock::now();
     if (mtmd_encode_chunk(ctx_, chunk) != 0) return -1;
     // A cancel during the encode ended its graph early (stop_encoder_on_cancel): its output is
@@ -248,13 +279,13 @@ int MediaInput::decode_media(llama_context * ctx,
         mtmd_helper_image_get_decoder_pos(it, pos0, pos2d.data());
     }
 
-    // Some encoders' tokens attend to each other both ways; the library says which, per chunk.
-    const bool non_causal = mtmd_decode_use_non_causal(ctx_, chunk);
     if (non_causal) llama_set_causal_attn(ctx, false);
+    // Both ways means the whole image in one batch: split, each piece would attend to itself alone.
+    const int step = non_causal ? n_tokens : n_batch;
     int rc = 0;
     llama_batch_ext * b = llama_batch_ext_init(ctx);
-    for (int off = 0; off < n_tokens && rc == 0; off += n_batch) {
-        const int n = std::min(n_batch, n_tokens - off);
+    for (int off = 0; off < n_tokens && rc == 0; off += step) {
+        const int n = std::min(step, n_tokens - off);
         llama_batch_ext_clear(b);
         for (int i = off; i < off + n; ++i) {
             const llama_embd e = {embd + (size_t) i * n_embd, 1, n_embd};

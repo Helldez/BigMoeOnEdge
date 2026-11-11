@@ -5,7 +5,8 @@ serves the UI's static files, and exposes a small JSON API plus an OpenAI-compat
 endpoint, so any OpenAI client can use it too, and the Anthropic Messages and OpenAI Responses
 APIs that Claude Code and Codex CLI speak.
 
-It binds to `127.0.0.1` on port 8765 by default and, unless started with a key (`--api-key-file` or
+It binds to `127.0.0.1` on port 8765 by default (`--port N` to change it; `--port 0` takes any free
+port and prints the one it took) and, unless started with a key (`--api-key-file` or
 `--api-key`), has no authentication:
 it is a local program, like the CLI. See [Security model](#security-model) for exactly what that
 does and does not protect. On a machine that stays on it runs as a service of the person's init
@@ -293,6 +294,7 @@ key, under the same security statement.
             "ctx_advice": {"recommended": 16384, "short": true, "param": "ctx-size", "refused": false,
                            "warn": false}},
   "generating": false,
+  "calibrating": false,
   "load_elapsed_s": 12.4
 }
 ```
@@ -303,7 +305,15 @@ it, so the count is the server's, the same on every screen and after a screen ch
 
 `state` is one of `empty` (no model), `planning` (a load in auto mode is measuring the machine
 before it loads: tens of seconds on a phone, nothing loaded meanwhile), `loading`, `ready`, `error`
-(the last load failed; `error` says why). `model` is `null` unless `state` is `ready`. `streaming` is whether expert streaming is
+(the last load failed; `error` says why). A request that needs the model while one is loading or a
+load in auto mode is measuring first, whoever started it, waits for it rather than being refused,
+and is answered with the loaded model's name. A load asked for during a calibration supersedes it. `calibrating` is true while a
+load-time calibration runs ([measured-planning.md](measured-planning.md#decisions-across-loads-timed-at-load)):
+the plan the model was loaded with left a decision to time, and once the server had been idle for a
+minute after an answer it unloaded the model to time each side. `state` reads `ready` and `model`
+names the model meanwhile, since the server still takes requests: one that arrives stops the
+calibration and waits for the model to load again. `plan_progress` events name each candidate.
+`model` is `null` unless `state` is `ready`. `streaming` is whether expert streaming is
 on for the loaded session: with it off the engine is plain llama.cpp on mmap, and the UI must say so.
 Whether a model will stream is only known once it has loaded (a dense model, a plan that declines),
 so a UI says nothing about it before. `compute_threads` and `busy_threads` are what a CPU figure is
@@ -857,7 +867,7 @@ limit.
 | `backend` | a backend pack's install: `id` (the pack), `kind` (`backend`), `file`, `received`, `total`, `state` (`running`, `done`, `error`, `cancelled`), `error` (with `running`: the step, such as `unpacking`); with `done`, `restart_required` and `in_place` (false when the pack replaces one in use and takes its place at the next start) |
 | `update` | the installer's download: the same fields with `id` `update`, and with `done` its `path` and `version` |
 | `config` | the `GET /api/config` object, after any change |
-| `plan_progress` | a measurement (`GET /api/plan?measure=1`, or an auto load) entering a stage: `step` (`devices`, `model`, `compute`, `storage`, `memory`, `placement`, `rules`), its words `label`, `index` from 0 and `count`; then `{"step": "done"}` when it ends. A UI shows `label`; `step` is the protocol |
+| `plan_progress` | a measurement (`GET /api/plan?measure=1`, or an auto load) entering a stage: `step` (`devices`, `model`, `compute`, `storage`, `memory`, `placement`, `rules`), its words `label`, `index` from 0 and `count`; then `{"step": "done"}` when it ends. A load-time calibration reports `step` `calibrate` once per candidate it opens, `index` its place and `count` the most it opens, then `done`. A UI shows `label`; `step` is the protocol |
 | `conversation` | an agent conversation's `{id, title, state, updated}`, whenever one of those changes ([agent.md](agent.md#events)) |
 | `item` | `{conversation, item}`: an agent item added or changed, whole |
 | `delta` | `{conversation, item, text?, reasoning?, arguments?}`: what a streaming assistant item adds, or (`arguments`) what a `composing` tool call adds to its arguments |
