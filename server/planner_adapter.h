@@ -9,17 +9,30 @@
 
 #include "json_util.h"
 
+#include "bmoe/auto_plan.h"
+#include "bmoe/calibrate.h"
 #include "bmoe/config.h"
 #include "bmoe/measured_knobs.h"
 #include "bmoe/routing.h"
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace bmoe::server {
+
+// What a plan was made from, for the rules to run again on (bmoe/auto_plan.h, replan): the probed
+// facts, the config the plan was asked for and the keys the operator pinned. A load-time calibration
+// plans on it after each candidate, with the model unloaded, without probing the machine again.
+struct PlanBasis {
+    AutoPlan facts;
+    RunConfig cfg;
+    PlanRequest req;
+};
 
 struct PlanOutcome {
     bool ok = false;
@@ -36,7 +49,24 @@ struct PlanOutcome {
     // Its place in the order this server measured plans in (0: no plan): the load's plan is the one
     // the model runs with only while no measurement followed it (plan_view.h, held_plan).
     uint64_t seq = 0;
+    // What it was made from; null without a planner.
+    std::shared_ptr<const PlanBasis> basis;
+
+    // Whether it leaves a decision across loads to time (bmoe/calibrate.h, side_pending).
+    bool side_pending() const;
+    // Whether a calibration from the record `start` would open anything: a side pending on it, or a
+    // side that failed to open before and is due to be tried again (bmoe/calibrate.h,
+    // calibration_due). The rules alone, no probe (replan_rules): safe with a model loaded.
+    bool calibration_due(const MeasuredKnobs & start) const;
+    // Whether the side opposite the pending one has a rate in the record: it opened and decoded here.
+    bool other_side_measured() const;
 };
+
+// `plan` with its pending side counted as one that failed to open: the plan on the other side,
+// decided. What a served load opens instead of a side not proven to open, and what it falls back to
+// when the pending side's open fails. Not ok when nothing is pending, or when the other decision
+// then has a side pending too (there is no side known to open).
+PlanOutcome plan_other_side(const PlanOutcome & plan);
 
 bool planner_available();
 
@@ -60,6 +90,22 @@ PlanOutcome make_plan(const RunConfig & cfg,
                       const RoutingTrace * routing = nullptr,
                       const std::vector<MeasuredKnobs> * knobs = nullptr,
                       bool measure_knobs = false);
+
+// A load-time calibration of `plan` (bmoe/calibrate.h), on the facts it was made from: `start` is the
+// record of measurements to start from (what this machine kept for the model, which a served answer
+// may have grown since the plan), and `run` opens each candidate. `on_step` hears each candidate as it
+// starts, as make_plan's does. With the model unloaded: the candidates need the memory it holds.
+struct CalibrationOutcome {
+    bool ran = false;      // a calibration ran (the plan had a side pending, and there is a planner)
+    bool aborted = false;  // a candidate was stopped before its verdict
+    bool complete = false; // no side is left pending
+    PlanOutcome plan;      // the plan on the final record, to load
+    MeasuredKnobs knobs;   // that record, for the caller to keep
+};
+CalibrationOutcome calibrate_plan_outcome(const PlanOutcome & plan,
+                                          const MeasuredKnobs & start,
+                                          const RunCandidate & run,
+                                          const PlanStepFn & on_step = nullptr);
 
 // The child's side of an isolated probe: probe `device` for `model_path`, print its facts after
 // the marker, and return the process's exit code. 3 when there is no such device or no planner.

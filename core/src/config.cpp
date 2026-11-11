@@ -95,13 +95,14 @@ ValidationResult validate(const RunConfig & cfg) {
     if (cfg.n_ctx <= 0) {
         return fail("{ctx-size} must be at least 1 token");
     }
-    // 0 means "as wide as the context"; anything larger than the context would be reserved for a
-    // batch that can never arrive, which is the opposite of what this knob is for.
+    // 0 means "as wide as the context", up to RunConfig::ubatch_auto_max; anything larger than the context would be
+    // reserved for a batch that can never arrive, which is the opposite of what this knob is for.
     if (cfg.ctx_checkpoints < 0) return fail("{ctx-checkpoints} cannot be negative (0 keeps none)");
     if (cfg.checkpoint_min_step < 0)
         return fail("{checkpoint-min-step} cannot be negative (0 sets no minimum spacing)");
     if (cfg.n_ubatch < 0) {
-        return fail("{ubatch} cannot be negative (0 makes it as wide as the context)");
+        return fail("{ubatch} cannot be negative (0 makes it as wide as the context, up to " +
+                    std::to_string(RunConfig::ubatch_auto_max) + ")");
     }
     if (cfg.n_ubatch > cfg.n_ctx) {
         return fail("{ubatch} (" + std::to_string(cfg.n_ubatch) + ") is wider than {ctx-size} (" +

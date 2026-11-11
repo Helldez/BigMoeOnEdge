@@ -388,6 +388,10 @@ measures the other's recovery. What a front-end decides is in its options: wheth
 read (`--no-probe-io`), whether memory is measured by holding it (`--probe-mem`, never from the
 server), and how it starts itself again to probe a device. The composition lives with the adapters,
 because it starts llama.cpp's backends; it decides nothing, and the rules it ends in stay pure.
+A front-end may also hand it a candidate runner (`AutoPlanOptions::calibrate`): where the plan leaves
+a decision across loads pending, each side is then timed as a short load and the decided plan
+returned, with the record to keep (`bmoe-cli --auto` does; the server calibrates later, once idle,
+through `calibrate_plan` on the facts it kept).
 
 Inside, `plan_run` is a list of named stages over one planning state - the widest graph, the regime,
 the placement, the accelerator axis, the dense policy, the ledger and the prefill device, the cache
@@ -780,10 +784,22 @@ reads: it put the same iGPU at 1.5x.
 ## The widest graph
 
 A prompt is computed in graphs `--ubatch` tokens wide, and llama.cpp reserves its compute buffers
-for the widest of them. Left alone the width follows the context: one graph per context, which is
-the fastest prefill there is. The buffers grow with it, a row of activations per token, and they are
-memory the expert cache does not get - for a pass that happens once per prompt, against a cache
-that is read on every token.
+for the widest of them. Left alone the width follows the context, up to 8192 tokens
+(`RunConfig::ubatch_auto_max`): one graph per prompt that fits in it, which is the fastest prefill
+there is. Past it the buffers stop following the context alone. The attention mask is a row of the
+whole context per token of width, so a graph as wide as a 32768 context made a CPU host reserve
+past what it could allocate, and an allocation inside llama.cpp aborted the process before the
+reservation could say so (#566: 2945 MiB at 16384, 4801 MiB refused at 24576). That default is
+the width of a run nothing planned, and the width the planner's probe measures at, so the probe
+itself never reserves a graph that wide. The buffers grow with the width, a row of activations per
+token, and they are memory the expert cache does not get - for a pass that happens once per prompt,
+against a cache that is read on every token.
+
+Where a projector is loaded with a cap on an image's tokens (`--image-max-tokens`), neither the
+default nor the plan goes narrower than that cap (`RunConfig::graph_width_floor`): some projectors'
+image tokens attend to each other both ways, and llama.cpp then takes the whole image in one pass. A
+width set by hand is the caller's; an image wider than it is refused before anything is encoded, with
+the two numbers and the settings to change.
 
 Two things were wrong at once. The ledger read the buffers from the capacity fitter, which projects
 them at llama.cpp's own default of 512 tokens whatever the session is about to open with; and the
@@ -803,7 +819,31 @@ the side that cannot overcommit.
 
 The rule is the widest graph whose buffers stay inside a share of what the process may hold
 (`PlannerPolicy::compute_share_max`, a tenth), found by halving from the context and never below
-`ubatch_min`. Inside the share nothing changes and the knob keeps its default. A device's buffers
+`ubatch_min` (or the image floor above). The plan starts from the whole context even where the probe
+measured a narrower default: the probe projects the buffers at its width and at half of it, both at
+the run's context, so the slope it reads already carries what the attention mask costs a token of
+width at that context, and a wider graph at the same context is priced by extending that line
+(`Placement::at_width`). The plan's notes say when a width was priced that way. Where a device's part
+of the buffers was not measured, nothing wider than the probe is priced, and the plan stays at the
+probe's width. So a host with room gets a prompt as long as the context in one pass, and the #566
+host, whose buffers at a 32768-token graph would be about 6.9 GB, narrows to what fits its share.
+Whatever width the plan picks is the one the session opens with. Where a device with
+memory of its own computes the graph, the width is also bounded by `ubatch_max_device` (8192): a
+device's expert matmul can keep a whole pass's tokens in a per-block scratch of a size the backend
+fixes, and past it the pass aborts the process (#533, `GGML_ASSERT(nbytes_shared <= smpbo)` at
+~25k tokens on 24-32 GB cards, ~16k where the scratch is 64 KB). On a 32 GB card at a 32768-token
+graph, a 28.6k-token prompt aborted the server. The bound is an evidence boundary: half of the
+smallest of those limits. A longer prompt takes more passes. The two bounds are kept apart on
+purpose: `ubatch_auto_max` is the width of a run nothing planned, whatever computes it, and the
+width the probe places the layers at; `ubatch_max_device` is what stops a planned graph short of
+the context on a device. It is no wider than the default, so a device's graph is never planned past
+the width the fitter placed against. A device computes the graph where it holds layers, where a
+device expert cache computes the experts there, or where a prefill device takes the prompts; a
+prefill device the plan arms itself is chosen after the width, so the width is held to the bound
+again once it is armed. The image floor does not lift this bound: a cap on an image's tokens past
+8192 would widen every prompt's pass on the device, which is the abort the bound exists for. There
+the bound wins, and an image whose tokens attend both ways and do not fit the pass is refused with
+the error that names `--ubatch` and `--image-max-tokens`; the plan's note says so. A device's buffers
 count in this pool where its memory is the host's. A device with memory of its own pays for its width
 in that memory. Where the fitter left whole layers on the host beside it, a byte of buffer there is a
 byte of some layer's dense part: there its buffers are held to the same share of the device's memory,
@@ -840,7 +880,11 @@ the narrow graph. One that does has both sides' prefill of them timed before any
 Measured on two 24 GB cards with GLM-4.5-Air: 14.2 tok/s decoded at 16384 tokens wide against 19.4 at
 512, where the wide graph prefilled a 9.5k-token prompt at 610 tok/s and a 512-wide one, in
 llama.cpp, at 104. A width set by hand is left alone and charged in
-full; a slope that was not measured decides nothing.
+full; a slope that was not measured decides nothing. With load-time calibration (on by default) both
+widths' decodes are timed as short candidate loads before the plan is served, and with no request
+seen yet the decode rates alone weigh them, until the loads it serves record their requests: every
+load with the width's trade does, a side timed or not
+([measured-planning.md](measured-planning.md#decisions-across-loads-timed-at-load)).
 
 Measured on a 12 GB card (RTX 3060 class, 120 GiB of host memory) with Qwen3.8-Flash-Next Q2_0 at a
 16384 context. The graph as wide as the context reserved 6644 MiB of the card for compute buffers.
@@ -1143,7 +1187,10 @@ The fitter's placement is timed only where it could win, since timing it costs a
 rate: its ceiling (`fitter_decode_ceiling`: the bytes it computes on the host at the host's probed
 expert rate, the rest at the fastest device's, nothing for crossings or overheads), raised by
 `rate_ceiling_slack` for a probe that reads low, has to beat the cache's measured rate by
-`min_backend_win`. Where it cannot, the second load keeps the cache and the plan says why.
+`min_backend_win`. Where it cannot, the second load keeps the cache and the plan says why. With
+load-time calibration (on by default) the "loads" are short candidate loads timed before the plan is
+served, the tier first and the width then on its winner, and a side that cannot be opened loses
+([measured-planning.md](measured-planning.md#decisions-across-loads-timed-at-load)).
 
 The layers the fitter split (`price_layers_home`, [measured-planning.md](measured-planning.md#step-3-the-cost-of-a-device-measured-on-a-real-layer)):
 where the capacity fitter put the dense part of some layers on a device and left their experts on

@@ -335,6 +335,7 @@ std::string plan_step_label(const std::string & step) {
     if (step == "memory") return "Memory";
     if (step == "placement") return "Placement";
     if (step == "rules") return "Decisions";
+    if (step == "calibrate") return "Timing the placements";
     return sentence_case(step);
 }
 
