@@ -780,8 +780,13 @@ reads: it put the same iGPU at 1.5x.
 ## The widest graph
 
 A prompt is computed in graphs `--ubatch` tokens wide, and llama.cpp reserves its compute buffers
-for the widest of them. Left alone the width follows the context: one graph per context, which is
-the fastest prefill there is. The buffers grow with it, a row of activations per token, and they are
+for the widest of them. Left alone the width follows the context, up to 8192 tokens
+(`RunConfig::ubatch_auto_max`): one graph per prompt that fits in it, which is the fastest prefill
+there is. Past it the buffers stop following the context alone. The attention mask is a row of the
+whole context per token of width, so a graph as wide as a 32768 context made a CPU host reserve
+past what it could allocate, and an allocation inside llama.cpp aborted the process before the
+reservation could say so (#566: 2945 MiB at 16384, 4801 MiB refused at 24576). The same default
+is the width the planner's probe measures at and starts from. The buffers grow with it, a row of activations per token, and they are
 memory the expert cache does not get - for a pass that happens once per prompt, against a cache
 that is read on every token.
 

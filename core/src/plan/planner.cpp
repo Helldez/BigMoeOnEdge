@@ -1112,6 +1112,12 @@ void choose_graph_width(Planning & s) {
     const std::string pct = u64s((uint64_t) (s.pol.compute_share_max * 100.0f + 0.5f)) + "%";
     const std::string share = pct + " of the " + u64s(mib(s.holdable)) + " MiB this process may hold";
     const bool device_bound = device_short && device_over(full);
+    // What the widest graph is, said as it is: the context, or the default width under it
+    // (RunConfig::ubatch_auto_max) when the context is longer.
+    const std::string widest = full < (uint32_t) p.config.n_ctx
+                                   ? "the default graph (" + u64s(full) + " tokens, as wide as the context up to " +
+                                         u64s((uint64_t) RunConfig::ubatch_auto_max) + ")"
+                                   : "a graph as wide as the context (" + u64s(full) + " tokens)";
     if (bound > 0 && w < full && !over(full) && !device_bound) {
         // Narrowed by the bound alone: the memory would have taken the wide graph.
         s.placement = s.placement.at_width(w);
@@ -1119,8 +1125,8 @@ void choose_graph_width(Planning & s) {
         p.config.n_ubatch = (int) w;
         s.note("ubatch", u64s(w), Source::Policy,
                u64s(w) + " tokens per pass: the widest a device's expert matmul is known to run.",
-               "a graph as wide as the context (" + u64s(full) +
-                   " tokens) would fit in memory, but a device computes "
+               widest +
+                   " would fit in memory, but a device computes "
                    "it, and past " +
                    u64s(bound) +
                    " tokens a pass can abort in the backend's expert matmul (#533); a "
@@ -1131,9 +1137,12 @@ void choose_graph_width(Planning & s) {
     if (w == full && width_across_loads(s, full)) return;
     if (w == full) {
         s.note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Derived,
-               "A prompt runs in one pass: that takes only " + size_brief(buffers(full)) + ".",
-               "a graph as wide as the context reserves " + u64s(mib(buffers(full))) +
-                   " MiB of compute buffers, inside " + share + ": a prompt is computed in one pass");
+               (full < (uint32_t) p.config.n_ctx
+                    ? "A prompt up to " + u64s(full) + " tokens runs in one pass: that takes only "
+                    : std::string("A prompt runs in one pass: that takes only ")) +
+                   size_brief(buffers(full)) + ".",
+               widest + " reserves " + u64s(mib(buffers(full))) + " MiB of compute buffers, inside " + share +
+                   ": a prompt that wide is computed in one pass");
         return;
     }
     const uint64_t before = device_bound ? device_buffers(full) : buffers(full);
@@ -1147,7 +1156,7 @@ void choose_graph_width(Planning & s) {
     s.note("ubatch", u64s(w), Source::Policy,
            u64s(w) + " tokens per pass; wider would take " + size_brief(before) +
                (device_bound ? " of the device's memory." : " from the cache."),
-           "a graph as wide as the context would reserve " + u64s(mib(before)) + " MiB of compute buffers" +
+           widest + " would reserve " + u64s(mib(before)) + " MiB of compute buffers" +
                (device_bound ? " on the devices" : "") + ", more than " + where + "; at " + u64s(w) + " tokens it is " +
                u64s(mib(after)) +
                " MiB. A prompt takes more passes and the expert cache keeps the rest: a prompt is paid once and a "

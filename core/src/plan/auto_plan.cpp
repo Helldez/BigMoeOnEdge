@@ -97,7 +97,7 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     const BackendChoice backends = req.is_pinned("device-list") || req.is_pinned("devices")
                                        ? BackendChoice{}
                                        : choose_backends(r.hw, (double) PlannerPolicy::defaults().min_backend_win);
-    const Placement placement = probe_placement(path, r.model, r.hw, (uint32_t) cfg.n_ctx, (uint32_t) cfg.n_ubatch,
+    const Placement placement = probe_placement(path, r.model, r.hw, (uint32_t) cfg.n_ctx, (uint32_t) cfg.graph_width(),
                                                 cfg.cache_type_k, cfg.cache_type_v, backends.keep, &cfg.spec);
     detail::log_memory_snapshot("auto-probe-end");
     starting(); // rules

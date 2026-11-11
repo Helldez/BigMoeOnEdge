@@ -14,6 +14,15 @@ Semantic Versioning.
   with a 28.6k-token prompt at a 32768 context. A device that computes the graph is now planned at
   most `ubatch_max_device` (8192) tokens per pass, half of the smallest limit seen. A longer prompt
   takes more passes ([hardware-planning.md](docs/hardware-planning.md)).
+- **A long context no longer aborts the load on a CPU host (#566).** With `--ubatch` left at 0 the
+  graph was as wide as the context, and the host's compute buffers grow with width x context (the
+  attention mask). On a 15 GB Windows host with Qwen3.6-35B-A3B: 2945 MiB at a 16384 context, the
+  load refused at 24576, and at 32768 the process aborted inside llama.cpp
+  (`GGML_ASSERT(ctx->mem_buffer != NULL)`), with or without `--auto`, since the planner's probe
+  asked for the same width. 0 now means as wide as the context up to 8192 tokens
+  (`RunConfig::ubatch_auto_max`), decided in one place the session, the probe and the planner
+  share. A prompt that fits in one pass still takes one; a longer one takes more. At 32768 the
+  same model loads.
 
 ## [0.41.2] - 2026-11-11
 

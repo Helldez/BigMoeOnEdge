@@ -295,6 +295,32 @@ int main() {
         expect_fail("a negative n_ubatch is rejected", c);
     }
 
+    // graph_width: the one place 0 becomes a width (#566). As wide as the context up to
+    // ubatch_auto_max; a set n_ubatch is the caller's, never widened past the context.
+    {
+        auto width_is = [](const char * name, int n_ctx, int n_ubatch, int want) {
+            RunConfig c = ok_base();
+            c.n_ctx = n_ctx;
+            c.n_ubatch = n_ubatch;
+            if (c.graph_width() == want) {
+                std::printf("[PASS] %s
+", name);
+            } else {
+                std::printf("[FAIL] %s
+  expected %d, got %d
+", name, want, c.graph_width());
+                ++failures;
+            }
+        };
+        const int cap = RunConfig::ubatch_auto_max;
+        width_is("0 under the bound follows the context", 4096, 0, 4096);
+        width_is("0 at the bound follows the context", cap, 0, cap);
+        width_is("0 past the bound stops at it", 32768, 0, cap);
+        width_is("a set width is kept", 32768, 512, 512);
+        width_is("a set width past the bound is the caller's", 32768, 16384, 16384);
+        width_is("a set width is never wider than the context", 2048, 4096, 2048);
+    }
+
     // Speculation: lossless only under greedy, and the draft width is bounded on both sides.
     // These rules are shared by every draft source, so they are checked against the MTP one.
     {
