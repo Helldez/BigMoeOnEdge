@@ -531,38 +531,55 @@ served (`bmoe/calibrate.h`):
   fixed seed (greedy prose falls into loops that replay a few experts) and returns its token ids; a
   later one replays them teacher-forced, so both sides route the same tokens and differ only in where
   the experts run. Speculation is off: a draft's acceptance would time the drafter. Before each
-  candidate opens, the system's cache of the model's files is handed back (`pio::drop_file_cache`
-  over every shard, the projector and an MTP head), so the later side does not load and decode from
-  memory what the first read from the drive. Where the system has no such advice (Darwin, Windows)
-  the later side keeps that advantage, by whatever the cache still holds. A stop is honoured before
-  each open and as soon as a load returns, as well as at every decoded token.
+  candidate opens, the system's cache of the model's files is evened out, so the later side does not
+  load and decode from memory what the first read from the drive: the cache of every shard, the
+  projector and an MTP head is handed back where the system takes the advice
+  (`pio::drop_file_cache`), and the dense part, which every token reads whatever the placement, is
+  then read in on every system alike. Each candidate so opens with exactly the dense part cached,
+  where a drop is a no-op (Darwin, Windows) as where it is not. What stays uneven there is the experts
+  a placement loads through the mapping, which the later side may find partly cached; they are not
+  read in, since a model larger than the memory is what this engine exists for. A stop is honoured
+  before each open and as soon as a load returns, as well as at every decoded token.
 - **Bounded by measurement.** The windows are the knob trial's (`KnobTrialPolicy`), and the turn ends
   once the rate is known. A cache whose hits the session sees settles as the trial does; a device
   expert cache, filled inside llama.cpp, settles once two windows in a row agree within the margin
   (`RateProbe::settle_on_rate`), where the session's own timing waits the longest settle. The second
   side of a decision is cut once a timed window's fastest step is past the first side's range by the
   margin (`apart_bar`, the knob trial's own test for a candidate apart from its incumbent).
-- **A side that cannot be opened loses, this time.** A candidate that fails to load or to decode (out
-  of device memory, most likely) is marked as not viable for the rest of that calibration, and the
-  plan made on the record treats that side as the loser, so the calibration stops asking for it and
-  serves the other. The mark is never kept: a failure may be the machine's state at that moment
-  (another program holding the card's memory, a driver's hiccup), and the next calibration tries the
-  side again. A request the session refuses (a context too short for the instruction) marks nothing.
+- **A side that cannot be opened loses, and is tried again only by a calibration.** A candidate, or a
+  served load, that fails to load or to decode a side (out of device memory, most likely) adds one to
+  that side's failed-open count in the record (`unviable=side:n`, scoped like every other measurement
+  to this machine's fingerprint and the engine version). A side with any is the loser in every plan
+  made on the record, so no served load opens what is known not to open. A failure may be the
+  machine's state at that moment (another program holding the card's memory, a driver's hiccup), so
+  a calibration offers the side again while its count is under `k_unviable_retries` (two: a second
+  failure, on another calibration, is taken as the side not fitting this machine with this engine,
+  and each try costs a load that fails). A rate measured for the side clears the count; a calibration
+  stopped before it reached the side leaves it. A request the session refuses (a context too short
+  for the instruction) counts nothing.
+- **A served load never opens a pending side not proven to open.** With calibration on, a plan whose
+  pending side's other side has opened and decoded here before is served on that other side, and the
+  pending one is opened only as a calibration's candidate. Where neither side is proven (the first
+  load), or calibration is off, the load serves the plan's side and times it as before, and if that
+  open fails the server opens the other side instead of ending with no model
+  (`EngineHost::OpenFallback`), counting the failure against the side.
 - **What is kept, and what is not.** The rates go in the model's `.knobs` record as a served load's
   do, so the next plan of the file on this machine starts decided. The candidates' output is thrown
   away, and they write no `decode_compute_s` or `decode_hit`: those are the served configuration's.
   The winner is then opened fresh, as a plain load, so what is served is byte for byte what the same
   plan would load without a calibration. With no request served yet, the width weighs the two decode
-  rates alone (`usage_requests` 0). That verdict is provisional: every load whose plan has the
-  width's trade records the requests it serves against the narrow width (`KnobTrialConfig::width_narrow`
-  is set on it whether or not it times a side), so once long prompts show up the plan asks for each
-  side's prefill of them, timed on a served load as before, and weighs the requests again.
+  rates alone (`usage_requests` 0). That verdict is provisional: a width decided so names the narrow
+  width on its loads with no side to time (`KnobTrialConfig::width_narrow` alone), and they record the
+  requests they serve; the plan after weighs those, asking for each side's prefill of long prompts if
+  they show up, timed on a served load as before. Only that case records: a width decided on requests
+  already seen (all a load timed across loads ever leaves) carries no width value, records nothing,
+  and stays where it was decided, as it always has.
 
 **Where it runs.** `bmoe-cli --auto` calibrates at load, before the first answer, and says so on one
 line; with nowhere to keep the verdict (no `--routing-dir`) it does not, and says that instead, since
 every run would pay the candidates again. `bmoe-server` never holds the first answer for it: the
 model loads on the plan's own side and serves at once, the served load timing that side as before.
-Once the server has been idle for `kCalibrationIdleDelay` (a minute, `server.h`) after an answer,
+Once the server has been idle for `kCalibrationIdleDelay` (a minute, `http_server.cpp`) after an answer,
 nothing running and nothing waiting, it unloads the model, times each side, keeps the record and
 loads the decided plan, as one load (`EngineHost::load_when_idle`). The delay is the gap a
 conversation has: a person reads the answer before typing, an agent runs its tools between turns,
@@ -570,17 +587,21 @@ and each new answer starts the wait again. Meanwhile `/api/info` reads `ready` w
 and the model's name, and `plan_progress` events name each candidate (`step` `calibrate`): the
 server is busy and still takes requests. A request that arrives stops the candidate in flight and
 waits for that load, as it waits for any load the server runs, never refused; what was measured
-until then is kept. An unload, a shutdown or another model chosen meanwhile ends it too: what was
-measured is kept, but nothing is opened after it and the plan is not applied to settings that are no
-longer that model's. One attempt per load of a plan, tried again at the next idle point when a turn
-slipped in as it started. `--no-calibrate` (the `calibrate` parameter) turns it off, and the
+until then is kept. A load a person asks for meanwhile supersedes it, and an unload or a shutdown
+ends it: what was measured is kept, and nothing is opened after it. The decided plan is applied only
+if no setting has moved since the calibration began and loads still plan (`apply_plan_if`, the check
+and the write under the settings' one lock), and the load opens the settings the plan was made for;
+another model chosen, auto planning turned off or a setting changed meanwhile leaves the settings as
+the person left them. It does not start at all with auto planning off. One attempt per load of a
+plan, tried again at the next idle point when a turn slipped in as it started. `--no-calibrate` (the `calibrate` parameter) turns it off, and the
 decisions are timed across loads exactly as before.
 
 **Where it does not.** Both decisions exist only beside a device with memory of its own: the tier
 needs one (`device_tier_device`), and the width's trade is declined on a pool shared with the host
 (`devices_share_host_memory`). A phone, a unified-memory Mac and a machine without a graphics card
 never have a side pending, so they never open a candidate; with nothing pending `calibrate()` opens
-nothing and the plan is the one it always was.
+nothing and the plan is the one it always was. The Android and iOS apps run their server on the phone, so they never see
+`calibrating` and show no label for it; the web UI does.
 
 **Judged by.** The `calibrate` test runs the loop on fake ports: it ends, runs the sides in the
 planner's order, opens nothing the planner does not ask for, treats a candidate that cannot open as
@@ -590,8 +611,11 @@ Gates G24f (the width, on the host) and G25f (the tier, on the loopback device) 
 candidates: no side left pending, both rates in the record, and the winner, opened fresh, equal to
 the resident answer; G24g that a load with the width's trade and no side timed records its requests.
 `engine_host_test` drives the server's idle load with a scripted session, and `server_app_test` the
-whole server over HTTP with the engine and the planner scripted: the calibration starts once idle,
-and a request during it, with no `--autoload`, stops it and is answered.
+whole server over HTTP with the engine and the planner scripted: the calibration starts once idle;
+a request during it, with no `--autoload`, stops it and is answered; a cancel, an unload, another
+model chosen, a load asked for and a final open that fails each end it as above; a served load whose
+side will not open opens the other side and counts the failure; and a side measured before is served
+instead of a pending one not proven.
 
 Owed: a run on a card of each class, the second load's decode against the first's, with the
 candidates' wall time, and the server's idle path against a client that sends turns back to back.

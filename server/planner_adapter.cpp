@@ -156,6 +156,35 @@ bool PlanOutcome::side_pending() const {
     return ok && basis && bmoe::side_pending(basis->facts.plan);
 }
 
+bool PlanOutcome::calibration_due() const {
+    return ok && basis && bmoe::calibration_due(basis->facts.plan, basis->facts.model.knobs);
+}
+
+bool PlanOutcome::other_side_measured() const {
+    if (!side_pending()) return false;
+    const KnobTrialConfig & t = basis->facts.plan.config.trial;
+    const MeasuredKnobs & k = basis->facts.model.knobs;
+    if (t.device_tier >= 0) return (t.device_tier == 1 ? k.no_device_cache_tps : k.device_cache_tps) > 0.0;
+    return k.width_narrow == t.width_narrow && (t.width_side == 1 ? k.narrow_decode_tps : k.wide_decode_tps) > 0.0;
+}
+
+PlanOutcome plan_other_side(const PlanOutcome & plan) {
+#if !defined(BMOE_HAVE_PLANNER)
+    (void) plan;
+    return {};
+#else
+    if (!plan.side_pending()) return {};
+    auto basis = std::make_shared<PlanBasis>(*plan.basis);
+    MeasuredKnobs k = basis->facts.model.knobs;
+    record_side_unviable(basis->facts.plan.config.trial, k);
+    basis->facts.plan = replan(basis->facts, basis->cfg, basis->req, k);
+    PlanOutcome o = outcome_of(*basis);
+    o.hardware = plan.hardware;
+    o.basis = std::move(basis);
+    return o;
+#endif
+}
+
 CalibrationOutcome calibrate_plan_outcome(const PlanOutcome & plan,
                                           const MeasuredKnobs & start,
                                           const RunCandidate & run,
@@ -168,7 +197,7 @@ CalibrationOutcome calibrate_plan_outcome(const PlanOutcome & plan,
     (void) on_step;
     return c;
 #else
-    if (!plan.side_pending()) return c;
+    if (!plan.ok || !plan.basis) return c;
     auto basis = std::make_shared<PlanBasis>(*plan.basis);
     // The record as it stands now: a served answer may have timed a side since the plan was made, and
     // the plan on it may already ask for less.
@@ -178,7 +207,7 @@ CalibrationOutcome calibrate_plan_outcome(const PlanOutcome & plan,
     if (on_step)
         step = [&on_step](const char * key, int index, int count) { on_step(key, plan_step_label(key), index, count); };
     const CalibrationResult & r = calibrate_plan(basis->facts, basis->cfg, basis->req, run, step);
-    c.ran = true;
+    c.ran = basis->facts.calibrated;
     c.aborted = r.aborted;
     c.complete = !bmoe::side_pending(basis->facts.plan);
     c.knobs = basis->facts.model.knobs;

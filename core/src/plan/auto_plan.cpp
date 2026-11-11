@@ -206,7 +206,7 @@ const CalibrationResult & calibrate_plan(AutoPlan & ap,
                                          const PlanRequest & req,
                                          const RunCandidate & run,
                                          const std::function<void(const char * step, int index, int count)> & on_step) {
-    if (!side_pending(ap.plan)) return ap.calibration;
+    if (!calibration_due(ap.plan, ap.model.knobs)) return ap.calibration;
     const RunCandidate reported = [&](const RunConfig & c, const CalibrationRun & cr) {
         if (on_step) on_step(k_calibrate_step, cr.index, cr.runs_max);
         return run(c, cr);

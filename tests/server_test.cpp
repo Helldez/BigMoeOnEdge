@@ -52,6 +52,7 @@
 #include "bmoe/planner.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <chrono>
 #include <limits>
 #include <cstdio>
@@ -922,33 +923,53 @@ static void responses_tests() {
           "a failed turn ends the stream with response.failed");
 }
 
-// The idle timer behind a server's calibration: it fires once the quiet period passes, a touch
-// meanwhile starts the wait again, a cancel forgets it, and a stop ends it for good.
+// The idle timer behind a server's calibration, on a clock the test moves (no thread, no sleep): it
+// fires once the quiet period has passed, a touch meanwhile starts the wait again, a cancel forgets
+// it, and a stop ends it for good. Then the same with its own thread on the real clock, where only
+// what is eventually true is checked.
 static void idle_timer_tests() {
     using namespace std::chrono_literals;
-    std::atomic<int> fired{0};
-    IdleTimer t([&] { ++fired; });
+    using Clock = std::chrono::steady_clock;
+    Clock::time_point now{};
+    int fired = 0;
+    IdleTimer t([&] { ++fired; }, [&] { return now; }, /*threaded*/ false);
     t.touch(30ms);
-    std::this_thread::sleep_for(10ms);
-    check(fired == 0, "idle timer: not before the quiet period");
-    std::this_thread::sleep_for(100ms);
-    check(fired == 1, "idle timer: fires once after it");
+    now += 29ms;
+    check(!t.poll() && fired == 0, "idle timer: not before the quiet period");
+    now += 1ms;
+    check(t.poll() && fired == 1, "idle timer: fires once it has passed");
+    check(!t.poll() && fired == 1, "idle timer: and only once");
     t.touch(60ms);
     for (int i = 0; i < 4; ++i) {
-        std::this_thread::sleep_for(30ms);
-        t.touch(60ms); // an answer each time, before the period ends
+        now += 40ms;
+        check(!t.poll(), "idle timer: an answer each time, before the period ends");
+        t.touch(60ms);
     }
     check(fired == 1, "idle timer: each touch starts the wait again");
-    std::this_thread::sleep_for(150ms);
-    check(fired == 2, "idle timer: and it fires once touches stop");
+    now += 60ms;
+    check(t.poll() && fired == 2, "idle timer: and it fires once touches stop");
     t.touch(30ms);
     t.cancel();
-    std::this_thread::sleep_for(80ms);
-    check(fired == 2, "idle timer: a cancel forgets the pending fire");
+    now += 1s;
+    check(!t.poll() && fired == 2, "idle timer: a cancel forgets the pending fire");
     t.stop();
     t.touch(1ms);
-    std::this_thread::sleep_for(30ms);
-    check(fired == 2, "idle timer: stopped, a touch does nothing");
+    now += 1s;
+    check(!t.poll() && fired == 2, "idle timer: stopped, a touch does nothing");
+
+    std::mutex m;
+    std::condition_variable cv;
+    int real_fired = 0;
+    IdleTimer real([&] {
+        std::lock_guard<std::mutex> lk(m);
+        ++real_fired;
+        cv.notify_all();
+    });
+    real.touch(1ms);
+    std::unique_lock<std::mutex> lk(m);
+    check(cv.wait_for(lk, 10s, [&] { return real_fired == 1; }), "idle timer: its thread fires on the real clock");
+    lk.unlock();
+    real.stop();
 }
 
 static void queue_tests() {

@@ -68,11 +68,25 @@ using Replan = std::function<Plan(const MeasuredKnobs &)>;
 // Load `config` as a candidate, time a short decode, and close it.
 using RunCandidate = std::function<CandidateTiming(const RunConfig &, const CalibrationRun &)>;
 
+// How many failed opens of a side a calibration still tries again (MeasuredKnobs::*_unviable). A
+// side that failed once is tried at the next calibration: the failure may have been the machine's
+// state at that moment, another program holding the card's memory or a driver's hiccup. Failing on a
+// second calibration as well is taken as the side not fitting this machine with this engine, and it
+// is not tried again, since each try costs a load that fails, sometimes after minutes. A new engine
+// version keeps a record of its own, and tries again.
+inline constexpr int k_unviable_retries = 2;
+
 struct CalibrationPolicy {
     // The most candidates opened: every side of every decision once. A plan that keeps asking past
     // this is left to the across-loads timing.
     int runs_max = k_calibration_decisions * k_calibration_sides;
+    // A side is offered again while it has failed fewer times than this.
+    int unviable_retries = k_unviable_retries;
 };
+
+// Whether a calibration of a plan made on `knobs` could open anything: a side the plan leaves pending,
+// or one that failed to open before and is due to be tried again.
+bool calibration_due(const Plan & p, const MeasuredKnobs & knobs, const CalibrationPolicy & pol = {});
 
 struct CalibrationResult {
     Plan plan;             // the plan on the final record: the one to serve

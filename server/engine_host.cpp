@@ -154,20 +154,41 @@ void EngineHost::begin_planning() {
     {
         std::lock_guard<std::mutex> lk(m_);
         if (!planning_.load() && state_ != State::Loading) load_started_ = std::chrono::steady_clock::now();
+        planning_ = true;
     }
-    planning_ = true;
     publish_state();
 }
 
 void EngineHost::end_planning() {
-    planning_ = false;
+    {
+        // Under the lock a waiting turn reads it with (take_turn), so its wake-up is not lost.
+        std::lock_guard<std::mutex> lk(m_);
+        planning_ = false;
+    }
     publish_state();
 }
 
 std::string EngineHost::load(const RunConfig & effective, const RunConfig & requested) {
+    return load(effective, requested, std::nullopt);
+}
+
+std::string
+EngineHost::load(const RunConfig & effective, const RunConfig & requested, std::optional<OpenFallback> fallback) {
     const ValidationResult v = validate(effective);
     if (!v) return engine_message(v.error);
     std::lock_guard<std::mutex> life(life_m_);
+    // A calibration the server started on its own gives way to a load a person asked for: cancelled
+    // as an unload cancels it, so nothing is opened after it.
+    bool supersede = false;
+    {
+        std::lock_guard<std::mutex> lk(m_);
+        supersede = state_ == State::Loading && calibrating_.load();
+    }
+    if (supersede) {
+        before_open_cancel_ = true;
+        before_open_stop_ = true;
+        if (loader_.joinable()) loader_.join();
+    }
     {
         std::lock_guard<std::mutex> lk(m_);
         if (state_ == State::Loading) return "a model is already loading";
@@ -181,7 +202,7 @@ std::string EngineHost::load(const RunConfig & effective, const RunConfig & requ
     if (loader_.joinable()) loader_.join(); // the previous load finished: its state was not Loading
     publish_state();
     cancel();
-    start_loader(effective, nullptr);
+    start_loader(effective, nullptr, std::move(fallback));
     return "";
 }
 
@@ -217,12 +238,14 @@ bool EngineHost::load_when_idle(const RunConfig & effective, const RunConfig & r
     }
     if (loader_.joinable()) loader_.join();
     publish_state();
-    start_loader(effective, std::move(before_open));
+    start_loader(effective, std::move(before_open), std::nullopt);
     return true;
 }
 
-void EngineHost::start_loader(const RunConfig & effective_in, BeforeOpen before_open) {
-    loader_ = std::thread([this, effective_in, before_open] {
+void EngineHost::start_loader(const RunConfig & effective_in,
+                              BeforeOpen before_open,
+                              std::optional<OpenFallback> fallback) {
+    loader_ = std::thread([this, effective_in, before_open, fallback] {
         RunConfig effective = effective_in;
         // Wait out any generation, then drop the old session BEFORE opening the new one: two large
         // models resident at once is exactly the memory this engine exists to avoid spending.
@@ -257,14 +280,26 @@ void EngineHost::start_loader(const RunConfig & effective_in, BeforeOpen before_
                 return;
             }
         }
-        calibrating_ = false;
+        if (calibrating_.exchange(false)) publish_state(); // a load now, no longer a calibration
         std::string error;
         std::shared_ptr<HostedSession> s = open_(session_config_from(effective), error);
+        // The pending side would not open: the other side, which a plan may serve instead.
+        if (!s && fallback) {
+            if (fallback->taken) fallback->taken(error);
+            effective = fallback->effective;
+            {
+                std::lock_guard<std::mutex> lk(m_);
+                requested_ = fallback->requested;
+            }
+            error.clear();
+            s = open_(session_config_from(effective), error);
+        }
         {
             std::lock_guard<std::mutex> lk(m_);
             if (!s) {
                 state_ = State::Error;
                 error_ = error.empty() ? "the model failed to load" : engine_message(error);
+                model_ = nullptr; // the model a calibration kept named is gone with it
             } else {
                 session_ = s;
                 routing_kept_ = 0; // a new session records afresh
@@ -352,7 +387,16 @@ bool EngineHost::loaded_or_loading() const {
 
 std::string EngineHost::model_name() const {
     std::lock_guard<std::mutex> lk(m_);
-    return model_.is_object() ? model_.value("name", "") : "";
+    if (model_.is_object()) return model_.value("name", "");
+    // Loading: the file being loaded, which a request that waits for the load is answered by.
+    if (state_ == State::Loading && !requested_.model_path.empty())
+        return std::filesystem::u8path(requested_.model_path).filename().u8string();
+    return "";
+}
+
+bool EngineHost::model_coming() const {
+    std::lock_guard<std::mutex> lk(m_);
+    return state_ == State::Ready || state_ == State::Loading || planning_.load();
 }
 
 bool EngineHost::vision() const {
@@ -414,11 +458,12 @@ std::unique_lock<std::mutex> EngineHost::take_turn() {
     for (;;) {
         {
             std::unique_lock<std::mutex> lk(m_);
-            state_cv_.wait(lk, [&] { return state_ != State::Loading; });
+            // A load in auto mode measures first: a turn waits through that as through the load.
+            state_cv_.wait(lk, [&] { return state_ != State::Loading && !planning_.load(); });
         }
         std::unique_lock<std::mutex> g(gen_m_);
         std::lock_guard<std::mutex> lk(m_);
-        if (state_ != State::Loading) return g;
+        if (state_ != State::Loading && !planning_.load()) return g;
     }
 }
 

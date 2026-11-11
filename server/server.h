@@ -3,11 +3,6 @@
 // process (iOS) calls it on a thread of its own and speaks the same API to loopback.
 #pragma once
 
-#include "hosted_session.h"
-#include "planner_adapter.h"
-
-#include <atomic>
-#include <chrono>
 #include <functional>
 #include <memory>
 #include <string>
@@ -15,6 +10,7 @@
 namespace bmoe::server {
 
 class HttpFetch;
+struct ServerSeams; // server_seams.h: what a test puts in place of the engine and the planner
 
 // Where the server listens unless told otherwise: this machine only, on one fixed port, so a client
 // that starts the server (an app, a browser bookmark) knows where to find it.
@@ -26,13 +22,6 @@ inline constexpr int kDefaultPort = 8765;
 // a longer answer than a one-shot prompt. Its context is RunConfig::ctx_for_clients, which holds a
 // long answer as well as an agent's first request.
 inline constexpr int kChatAnswerTokens = 0;
-
-// How long the server stays idle after an answer before a load-time calibration starts
-// (docs/measured-planning.md): the model is unloaded for it, and a request that arrives then waits
-// for a reload, so it waits out the gaps a conversation has. A person reads an answer before typing
-// the next message, and an agent runs its tools between turns; a minute covers both commonly enough
-// that the next turn arrives first, and is still short beside a session a calibration saves.
-inline constexpr std::chrono::seconds kCalibrationIdleDelay{60};
 
 // What an app that hosts the server in its own process supplies beyond the command line. Every
 // field is optional: left empty, the server does what the executable does.
@@ -46,21 +35,9 @@ struct Embedding {
     // Called again with an empty function once it no longer listens, before what the stop reaches
     // is gone: from then on the stop it was given must not be called.
     std::function<void(std::function<void()> stop)> listening;
-
-    // A test of the server's own policy puts these in place of the engine and the planner, so the
-    // HTTP path runs with no model; left empty, the real ones. `open_session` opens what a load
-    // installs (hosted_session.h); `plan` makes an auto load's plan of a config (make_plan);
-    // `calibrate` runs a load-time calibration of a plan from a record, stopping when `stop` is
-    // raised (calibrate_plan_outcome); `calibration_idle_delay` is how long the server is idle before
-    // it calibrates, which a test shortens.
-    SessionOpener open_session;
-    std::function<PlanOutcome(const RunConfig & cfg)> plan;
-    std::function<CalibrationOutcome(const PlanOutcome & plan,
-                                     const MeasuredKnobs & start,
-                                     const std::atomic<bool> & stop,
-                                     const PlanStepFn & on_step)>
-        calibrate;
-    std::chrono::milliseconds calibration_idle_delay{kCalibrationIdleDelay};
+    // For a test of the server's own policy only (server_seams.h); null in every real use. Not owned:
+    // it outlives run().
+    const ServerSeams * seams = nullptr;
 };
 
 // Parses `argv` like the executable (`--help` lists the options), serves, and returns the exit

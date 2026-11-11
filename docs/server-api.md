@@ -304,8 +304,9 @@ it, so the count is the server's, the same on every screen and after a screen ch
 
 `state` is one of `empty` (no model), `planning` (a load in auto mode is measuring the machine
 before it loads: tens of seconds on a phone, nothing loaded meanwhile), `loading`, `ready`, `error`
-(the last load failed; `error` says why). A request that needs the model while one is loading,
-whoever started the load, waits for it rather than being refused. `calibrating` is true while a
+(the last load failed; `error` says why). A request that needs the model while one is loading or a
+load in auto mode is measuring first, whoever started it, waits for it rather than being refused,
+and is answered with the loaded model's name. A load asked for during a calibration supersedes it. `calibrating` is true while a
 load-time calibration runs ([measured-planning.md](measured-planning.md#decisions-across-loads-timed-at-load)):
 the plan the model was loaded with left a decision to time, and once the server had been idle for a
 minute after an answer it unloaded the model to time each side. `state` reads `ready` and `model`

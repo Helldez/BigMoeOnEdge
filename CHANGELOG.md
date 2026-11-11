@@ -22,9 +22,10 @@ Semantic Versioning.
   `--routing-dir`, where the result is kept); the server answers first and calibrates after a minute
   idle, giving way to any request, which waits for the model instead of being refused (`/api/info`
   reads `ready` with `calibrating`, `plan_progress` step `calibrate`, a label in the UI). Before each
-  candidate the system's cache of the model's files is handed back where the system allows, so both
-  sides start cold. A side that cannot be opened loses for that calibration only and is tried again
-  the next time. Only machines with a graphics
+  candidate the system's cache of the model's files is evened out, so every side starts from the same
+  cache. A side that cannot be opened is counted in the record and loses every plan; a calibration
+  tries it again once, and a served load never opens it, nor a pending side not yet proven to open
+  where the other side is: a load whose side fails opens the other side instead. Only machines with a graphics
   card that has memory of its own have such a decision: phones and shared-memory computers never
   calibrate. `--no-calibrate` keeps the timing across loads
   ([measured-planning.md](docs/measured-planning.md#decisions-across-loads-timed-at-load)).
@@ -34,10 +35,12 @@ Semantic Versioning.
   widths' decode timed and no request served (what a calibration leaves) kept the full width
   whatever the rates said, since a request of no tokens weighs nothing; the faster decode now
   decides there.
-  It is provisional: every load whose plan has the width's trade now records its requests, a side
-  timed or not, so long prompts that show up later bring each side's prefill into the verdict.
-- **A request that needs the model waits for a load the server is running** instead of a 503 when
-  the server was started without `--autoload`.
+  It is provisional: the loads of a width decided so record their requests, and long prompts that show
+  up later bring each side's prefill into the verdict. A width decided on requests, as the timing
+  across loads always decides it, records nothing more and stays as it was.
+- **A request that needs the model waits for a load the server is running**, or for one still
+  measuring the machine, instead of a 503 when the server was started without `--autoload`, and is
+  answered with the loaded model's name. `--port 0` takes any free port.
 
 ## [0.41.2] - 2026-11-11
 

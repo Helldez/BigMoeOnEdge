@@ -7,9 +7,14 @@
 #include "../moe/gguf_offsets.h"
 #include "knob_trial.h"
 
+#include <algorithm>
 #include <atomic>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace bmoe {
 
@@ -32,22 +37,61 @@ constexpr const char * k_calibration_prompt =
 constexpr float k_calibration_temp = 0.7f;
 constexpr uint32_t k_calibration_seed = 1234;
 
-// Every candidate starts from the same cold system cache. Whatever the previous candidate read
-// through the model's mapping (the weights of a load, the dense part a streamed run reads) stays in
-// the system's cache after it closes, and the next would load and decode from memory what the first
-// read from the drive: the later side measured on a warmer machine, by however much the cache held.
-// Handed back before each open, every shard of the model and the files beside it. Where the system
-// offers no such advice (pio::drop_file_cache: Darwin, Windows) the bias stays, and favours the later
-// side by what the cache still holds.
-void drop_model_file_cache(const RunConfig & cfg) {
+// The piece the dense part is read in by: large enough that the reads are sequential at the drive's
+// rate, small beside any memory a model is run in.
+constexpr size_t k_warm_read_bytes = size_t(8) << 20;
+
+// Every candidate starts from the same system cache of the model's files. Whatever the previous
+// candidate read through the model's mapping stays in the system's cache after it closes, and the
+// next would load and decode from memory what the first read from the drive: the later side measured
+// on a warmer machine. So before each open the cache of every shard (and the files beside the model)
+// is handed back where the system takes the advice (pio::drop_file_cache), and then the dense part,
+// the tensors every token reads whatever the placement, is read in on every system alike: each
+// candidate opens with exactly the dense part cached, where a drop is a no-op (Darwin, Windows) as
+// where it is not. What stays uneven where the cache cannot be dropped is the experts a placement
+// loads through the mapping: the later candidate may find some of the earlier one's still cached.
+// They are not read in, since a model larger than the memory is what this engine exists for.
+void even_model_file_cache(const RunConfig & cfg) {
     const GgufOffsets offs = read_gguf_offsets(cfg.model_path.c_str());
-    if (offs.ok)
-        for (const std::string & p : offs.shard_paths)
-            pio::drop_file_cache(p.c_str());
-    else
-        pio::drop_file_cache(cfg.model_path.c_str());
     for (const std::string * p : {&cfg.mmproj, &cfg.spec.mtp_head})
         if (!p->empty()) pio::drop_file_cache(p->c_str());
+    if (!offs.ok) {
+        pio::drop_file_cache(cfg.model_path.c_str());
+        return;
+    }
+    for (const std::string & p : offs.shard_paths)
+        pio::drop_file_cache(p.c_str());
+    const GgufModelInfo info = read_gguf_model_info(cfg.model_path.c_str());
+    const ExpertLayout layout = discover_expert_layout(offs.extents, info.n_expert);
+    // The dense tensors' byte ranges, per shard, in file order.
+    std::vector<std::vector<std::pair<uint64_t, uint64_t>>> ranges(offs.shard_paths.size());
+    for (const TensorExtent & t : offs.extents) {
+        int il = -1;
+        if (layout.ok && layout.slot_of(t.name.c_str(), il) >= 0) continue;
+        const auto off = offs.off_by_name.find(t.name), size = offs.size_by_name.find(t.name);
+        const auto file = offs.file_by_name.find(t.name);
+        if (off == offs.off_by_name.end() || size == offs.size_by_name.end() || file == offs.file_by_name.end())
+            continue;
+        if (file->second >= 0 && (size_t) file->second < ranges.size())
+            ranges[(size_t) file->second].push_back({off->second, size->second});
+    }
+    std::vector<char> buf(k_warm_read_bytes);
+    for (size_t f = 0; f < ranges.size(); ++f) {
+        std::sort(ranges[f].begin(), ranges[f].end());
+        // A stream for its 64-bit offsets on every platform; read through the system's cache, as the
+        // mapping a load reads by is.
+        std::ifstream in(std::filesystem::u8path(offs.shard_paths[f]), std::ios::binary);
+        if (!in) continue;
+        for (const auto & r : ranges[f]) {
+            in.clear();
+            in.seekg((std::streamoff) r.first);
+            for (uint64_t left = r.second; left > 0 && in;) {
+                const size_t n = (size_t) std::min<uint64_t>(left, buf.size());
+                in.read(buf.data(), (std::streamsize) n);
+                left -= n;
+            }
+        }
+    }
 }
 
 } // namespace
@@ -69,7 +113,7 @@ run_calibration_candidate(const RunConfig & cfg, const CalibrationRun & run, con
     if (!(sc.sampling.temp > 0.0f)) sc.sampling.temp = k_calibration_temp;
     sc.sampling.seed = k_calibration_seed;
 
-    drop_model_file_cache(cfg);
+    even_model_file_cache(cfg);
     std::string error;
     std::unique_ptr<Session> s = Session::open(sc, error);
     // A load takes seconds to minutes and cannot be stopped inside: a stop raised meanwhile is honoured

@@ -560,7 +560,9 @@ std::vector<ParamDesc> build() {
     {
         ParamDesc d = row("trial-width-narrow", "Narrow graph width compared", G::Prefill, L::Experimental,
                           "The narrower graph width --trial-width compares with the plan's own, in tokens. Prompts "
-                          "longer than it are the ones whose prefill is timed. 0 is none.");
+                          "longer than it are the ones whose prefill is timed. Set alone, it records the requests a "
+                          "load serves against it, timing nothing: the plan does so where it chose the width before "
+                          "any request was seen. 0 is none.");
         d.value_hint = "N";
         bounds(d, 0, RunConfig::tokens_max, "tokens");
         special(d, "0", "none");

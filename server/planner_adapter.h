@@ -54,7 +54,18 @@ struct PlanOutcome {
 
     // Whether it leaves a decision across loads to time (bmoe/calibrate.h, side_pending).
     bool side_pending() const;
+    // Whether a calibration has anything to do: a pending side, or a side that failed to open before
+    // and is due to be tried again (bmoe/calibrate.h, calibration_due).
+    bool calibration_due() const;
+    // Whether the side opposite the pending one has a rate in the record: it opened and decoded here.
+    bool other_side_measured() const;
 };
+
+// `plan` with its pending side counted as one that failed to open: the plan on the other side,
+// decided. What a served load opens instead of a side not proven to open, and what it falls back to
+// when the pending side's open fails. Not ok when nothing is pending, or when the other decision
+// then has a side pending too (there is no side known to open).
+PlanOutcome plan_other_side(const PlanOutcome & plan);
 
 bool planner_available();
 

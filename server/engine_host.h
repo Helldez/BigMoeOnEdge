@@ -23,6 +23,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -108,6 +109,17 @@ public:
     // way.
     std::string load(const RunConfig & effective, const RunConfig & requested);
 
+    // What a load opens when `effective` cannot be opened: the plan's other side, where the plan left
+    // a decision across loads pending (docs/measured-planning.md). `taken` hears why the first open
+    // failed, on the loader thread, before the fallback opens; the session then runs `requested`.
+    struct OpenFallback {
+        RunConfig effective, requested;
+        std::function<void(const std::string & error)> taken;
+    };
+    // load() with a fallback. A load started while a calibration runs (load_when_idle) supersedes it:
+    // the calibration is cancelled, as by unload(), and this load goes ahead.
+    std::string load(const RunConfig & effective, const RunConfig & requested, std::optional<OpenFallback> fallback);
+
     // A step a load runs on its own thread between closing the old session and opening the new one,
     // with the memory the old one held given back: where a server's load-time calibration opens its
     // candidates (docs/measured-planning.md). It may change the configs the load then opens (the
@@ -137,6 +149,9 @@ public:
     json info() const;
     bool ready() const;
     bool loaded_or_loading() const;
+    // A model is or will soon be there: loaded, loading, or a load in auto mode measuring first. What
+    // a request waits for rather than being refused.
+    bool model_coming() const;
     bool generating() const { return generating_; }
     std::string model_name() const;
     // Whether the loaded model reads images (a projector was paired or named at load).
@@ -196,7 +211,7 @@ private:
 
     // Start the loader thread for `effective`, after any before-open step. The caller holds life_m_
     // and has set the state to Loading.
-    void start_loader(const RunConfig & effective, BeforeOpen before_open);
+    void start_loader(const RunConfig & effective, BeforeOpen before_open, std::optional<OpenFallback> fallback);
     // A turn or a decision arrived: a step before an open stops for it (BeforeOpen).
     void note_request();
 

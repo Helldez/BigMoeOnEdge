@@ -29,11 +29,26 @@ std::string side_words(const KnobTrialConfig & t, const RunConfig & c) {
            std::to_string(width) + " tokens wide)";
 }
 
-// What the plan reads of a record: its kept text, and the sides this calibration could not open,
-// which the text leaves out (MeasuredKnobs::device_cache_unviable).
+// What the plan reads of a record: all of it, failed opens included.
 std::string record_state(const MeasuredKnobs & k) {
-    return format_measured_knobs({k}) + (k.device_cache_unviable ? "c" : "") + (k.no_device_cache_unviable ? "f" : "") +
-           (k.wide_unviable ? "w" : "") + (k.narrow_unviable ? "n" : "");
+    return format_measured_knobs({k});
+}
+
+// Every side a record counts failed opens of, as the trial that names it.
+std::vector<KnobTrialConfig> counted_sides(const MeasuredKnobs & k) {
+    std::vector<KnobTrialConfig> v;
+    for (int s : {1, 0}) {
+        KnobTrialConfig t;
+        t.device_tier = s;
+        v.push_back(t);
+    }
+    for (int s : {1, 0}) {
+        KnobTrialConfig t;
+        t.width_side = s;
+        t.width_narrow = k.width_narrow;
+        v.push_back(t);
+    }
+    return v;
 }
 
 // A run, under the side it answered.
@@ -47,6 +62,16 @@ struct Timed {
 
 bool side_pending(const Plan & p) {
     return p.config.trial.device_tier >= 0 || p.config.trial.width_side >= 0;
+}
+
+bool calibration_due(const Plan & p, const MeasuredKnobs & knobs, const CalibrationPolicy & pol) {
+    if (side_pending(p)) return true;
+    MeasuredKnobs k = knobs;
+    for (const KnobTrialConfig & t : counted_sides(k)) {
+        const int n = *unviable_count(t, k);
+        if (n > 0 && n < pol.unviable_retries) return true;
+    }
+    return false;
 }
 
 RunConfig calibration_candidate(const RunConfig & planned) {
@@ -65,6 +90,19 @@ CalibrationResult calibrate(const Plan & first,
     CalibrationResult r;
     r.plan = first;
     r.knobs = start;
+    // A side that failed to open on an earlier load is offered again while its count is under the
+    // retry budget: the record the plan reads leaves it out, and the plan asks for it if it would.
+    MeasuredKnobs kept = start;
+    std::vector<KnobTrialConfig> offered;
+    for (const KnobTrialConfig & t : counted_sides(start)) {
+        int * n = unviable_count(t, r.knobs);
+        if (*n > 0 && *n < pol.unviable_retries) {
+            *n = 0;
+            offered.push_back(t);
+        }
+    }
+    if (!offered.empty() && replan) r.plan = replan(r.knobs);
+    std::vector<KnobTrialConfig> tried; // sides opened (or found unopenable) by this calibration
     std::vector<Timed> timed;
     std::vector<int32_t> reference; // the first run's tokens, which every later run replays
     // A run's rate answers its own side, and at most one side of the other decision when a later plan
@@ -117,8 +155,14 @@ CalibrationResult calibrate(const Plan & first,
         }
 
         const std::string before = record_state(r.knobs);
+        tried.push_back(side);
         if (!timing.created) {
+            // One more failure on top of what the record kept for this side.
+            KnobTrialConfig at = side;
+            const bool same_width = decision_of(side) == 0 || kept.width_narrow == side.width_narrow;
+            const int before_n = same_width ? *unviable_count(at, kept) : 0;
             record_side_unviable(side, r.knobs);
+            *unviable_count(side, r.knobs) = before_n + 1;
             log_printf(LogLevel::Info, "calibration: the candidate %s could not be opened (%s); that side loses",
                        words.c_str(), timing.error.c_str());
         } else if (timing.tokens_per_second > 0.0) {
@@ -140,6 +184,21 @@ CalibrationResult calibrate(const Plan & first,
         }
         r.plan = replan(r.knobs);
     }
+    // A side offered again but not reached (stopped, or the plan never asked for it) keeps its count.
+    bool restored = false;
+    for (const KnobTrialConfig & t : offered) {
+        bool reached = false;
+        for (const KnobTrialConfig & u : tried)
+            reached = reached || (decision_of(u) == decision_of(t) && side_of(u) == side_of(t));
+        if (reached || (decision_of(t) == 1 && r.knobs.width_narrow != kept.width_narrow)) continue;
+        KnobTrialConfig at = t;
+        int * n = unviable_count(at, r.knobs);
+        if (*n == 0) {
+            *n = *unviable_count(at, kept);
+            restored = true;
+        }
+    }
+    if (restored && replan) r.plan = replan(r.knobs);
     r.complete = !side_pending(r.plan);
     return r;
 }

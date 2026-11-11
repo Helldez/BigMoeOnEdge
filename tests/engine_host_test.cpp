@@ -1098,8 +1098,77 @@ static void calibration_tests() {
     }
 }
 
+// A load asked for during a calibration supersedes it; a load whose config will not open opens its
+// fallback (the plan's other side); a turn sent while a load in auto mode is still measuring waits
+// for it rather than being refused.
+static void supersede_and_fallback_tests() {
+    {
+        auto bus_owner = std::make_unique<EventBus>();
+        Script script;
+        auto host_owner = std::make_unique<EngineHost>(*bus_owner, opener(script));
+        EngineHost & host = *host_owner;
+        check(host.load(config(), config()).empty() && wait_state(host, "ready"), "supersede: loaded");
+        Gate in_step;
+        std::atomic<bool> cancelled{false};
+        host.load_when_idle(config(), config(),
+                            [&](RunConfig &, RunConfig &, const EngineHost::BeforeOpenSignals & sig) {
+                                in_step.release();
+                                for (int i = 0; i < 5000 && !sig.stop.load(); ++i)
+                                    std::this_thread::sleep_for(1ms);
+                                cancelled = sig.cancelled.load();
+                            });
+        check(in_step.wait(), "supersede: the step is running");
+        check(host.load(config(), config()).empty(), "supersede: a load during the calibration is taken");
+        check(cancelled && wait_calibrated(host) && script.opened == 2,
+              "supersede: the calibration is cancelled, opens nothing, and the load opens its session");
+    }
+    {
+        auto bus_owner = std::make_unique<EventBus>();
+        Script script;
+        std::atomic<int> attempts{0};
+        SessionOpener first_fails = [&](const SessionConfig & c,
+                                        std::string & error) -> std::unique_ptr<HostedSession> {
+            if (attempts++ == 0) {
+                error = "out of device memory";
+                return nullptr;
+            }
+            ++script.opened;
+            (void) c;
+            return std::make_unique<FakeSession>(script);
+        };
+        auto host_owner = std::make_unique<EngineHost>(*bus_owner, first_fails);
+        EngineHost & host = *host_owner;
+        EngineHost::OpenFallback fb;
+        fb.effective = config();
+        fb.requested = config();
+        fb.requested.n_threads = 3;
+        std::string why;
+        fb.taken = [&](const std::string & e) { why = e; };
+        check(host.load(config(), config(), fb).empty() && wait_state(host, "ready"),
+              "fallback: the first config fails, the load still ends ready");
+        RunConfig three = config();
+        three.n_threads = 3;
+        check(why == "out of device memory" && attempts == 2 && host.reload_keys(three).empty(),
+              "fallback: told why, and the session runs the fallback's settings");
+    }
+    {
+        auto bus_owner = std::make_unique<EventBus>();
+        Script script;
+        auto host_owner = std::make_unique<EngineHost>(*bus_owner, opener(script));
+        EngineHost & host = *host_owner;
+        host.begin_planning();
+        check(host.model_coming() && !host.loaded_or_loading(), "planning: a model is coming");
+        auto pending = std::async(std::launch::async, [&] { return host.chat(turn(), nullptr); });
+        check(host.load(config(), config()).empty(), "planning: then the load");
+        host.end_planning();
+        const ChatOutcome out = pending.get();
+        check(out.status == 200 && out.result.generated_text == "hi", "planning: a turn sent while measuring waits");
+    }
+}
+
 int main() {
     routing_store_tests();
+    supersede_and_fallback_tests();
     calibration_tests();
     load_tests();
     loading_tests();

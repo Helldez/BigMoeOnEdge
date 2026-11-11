@@ -158,6 +158,46 @@ int main() {
               "unviable: the cache failed to open, the fitter's placement is served without timing it");
     }
 
+    // ── a side that failed to open before: lost on every plan, tried again by a calibration within
+    //    the retry budget, cleared by a success, kept by a failure or when it is not reached ──
+    {
+        MeasuredKnobs start;
+        start.device_cache_tps = 12.0;
+        start.no_device_cache_unviable = 1;
+        check(!side_pending(tier_rules(start)) && calibration_due(tier_rules(start), start),
+              "retry: the failed side loses the plan, and a calibration is due to try it again");
+        Runs runs;
+        const CalibrationResult ok =
+            calibrate(tier_rules(start), start, tier_rules,
+                      table(runs, [](const RunConfig & c) { return timed(c.moe.device_cache_mb > 0 ? 12.0 : 20.0); }));
+        check(ok.runs == 1 && runs.configs.size() == 1 && runs.configs[0].moe.device_cache_mb == 0 &&
+                  ok.knobs.no_device_cache_unviable == 0 && ok.knobs.no_device_cache_tps == 20.0 &&
+                  ok.plan.config.moe.device_cache_mb == 0 && ok.complete,
+              "retry: the side is opened again, opens, and wins");
+        Runs again;
+        const CalibrationResult bad = calibrate(tier_rules(start), start, tier_rules,
+                                                table(again, [](const RunConfig &) { return CandidateTiming{}; }));
+        check(bad.runs == 1 && bad.knobs.no_device_cache_unviable == 2 && bad.plan.config.moe.device_cache_mb == 4096,
+              "retry: a second failure counts on top of the first, and the other side is served");
+        check(!calibration_due(bad.plan, bad.knobs), "retry: past the budget it is not due again");
+        Runs none;
+        const CalibrationResult spent =
+            calibrate(bad.plan, bad.knobs, tier_rules, table(none, [](const RunConfig &) { return timed(1.0); }));
+        check(spent.runs == 0 && spent.knobs.no_device_cache_unviable == 2,
+              "retry: past the budget, nothing is opened");
+        Runs stopped;
+        const CalibrationResult aborted =
+            calibrate(tier_rules(start), start, tier_rules, table(stopped, [](const RunConfig &) {
+                          CandidateTiming t;
+                          t.created = true;
+                          t.aborted = true;
+                          return t;
+                      }));
+        check(aborted.aborted && aborted.knobs.no_device_cache_unviable == 1 &&
+                  aborted.plan.config.moe.device_cache_mb == 4096 && !side_pending(aborted.plan),
+              "retry: stopped before a verdict, the side keeps its count and still loses the plan");
+    }
+
     // ── the device tier, then the graph width at the winner: a configuration already timed is not
     //    opened again, and a width side is set against the other width only ──
     {

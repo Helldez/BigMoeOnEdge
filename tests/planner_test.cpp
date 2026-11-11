@@ -1144,6 +1144,21 @@ int main() {
                           dw->reason.find("a request here decodes") != std::string::npos,
                       "width, decided on the decode alone: the recorded long prompts turn it to the full width",
                       dw ? dw->reason : "none");
+                // A width decided on requests already seen (the across-loads timing, calibration off)
+                // records nothing more: its loads carry no width value, so a session of another mix
+                // hands on no usage, the kept record is unchanged, and the width stays where it was.
+                MeasuredKnobs decided_k = used;
+                std::vector<MeasuredKnobs> kept_k = {decided_k};
+                const Plan decided_p = plan_with(kept_k[0]);
+                MeasuredKnobs other_mix; // what a load of the decided plan hands on: no width usage
+                other_mix.mix_requests = 3;
+                other_mix.mix_gen_tokens = 4000;
+                keep_measured_knobs(kept_k, other_mix);
+                const Plan after = plan_with(kept_k[0]);
+                check(decided_p.config.trial.width_narrow == 0 && decided_p.config.trial.width_side == -1 &&
+                          decided_p.to_flags().find("trial-width") == std::string::npos &&
+                          after.config.n_ubatch == decided_p.config.n_ubatch && kept_k[0].usage_requests == 5,
+                      "width decided on requests: no width value on its loads, and it stays across sessions");
                 cal.narrow_decode_tps = 14.5; // inside the margin
                 check(plan_with(cal).config.n_ubatch == 0 && plan_with(cal).config.trial.width_side == -1,
                       "width, no request served, inside the margin: the full width holds");

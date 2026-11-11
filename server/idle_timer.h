@@ -3,7 +3,9 @@
 // for its idle point this way (http_server.cpp, kCalibrationIdleDelay): an answer's end touches it,
 // and the next answer, a moment later, touches it again before it fires.
 //
-// Pure policy over a thread and a clock: no session, no HTTP, so it is tested on its own.
+// The clock is injected: the thread waits on the real one, and a test drives a timer with no thread
+// on a clock of its own, calling poll() at the instants it chooses, so what it checks never depends
+// on how fast the machine runs.
 #pragma once
 
 #include <chrono>
@@ -16,21 +18,30 @@ namespace bmoe::server {
 
 class IdleTimer {
 public:
-    // `fire` runs on the timer's own thread, never twice at once.
-    explicit IdleTimer(std::function<void()> fire);
+    using Clock = std::function<std::chrono::steady_clock::time_point()>;
+
+    // `fire` runs on the timer's thread (or in poll()), never twice at once. `threaded` false: no
+    // thread is made, and the timer fires only from poll().
+    explicit IdleTimer(
+        std::function<void()> fire, Clock now = [] { return std::chrono::steady_clock::now(); }, bool threaded = true);
     ~IdleTimer(); // stop()
 
-    // Fire once `delay` has passed with no other touch. The first touch makes the thread.
+    // Fire once `delay` has passed on the clock with no other touch.
     void touch(std::chrono::milliseconds delay);
     // Forget a pending fire.
     void cancel();
     // Forget it, wait for a fire in progress to end, and end the thread; touch() is then ignored.
     void stop();
+    // Fire now if the quiet period has passed: true when it fired.
+    bool poll();
 
 private:
     void loop();
+    bool take_due_locked(); // pending and past due: no longer pending
 
     std::function<void()> fire_;
+    Clock now_;
+    const bool threaded_;
     std::mutex m_;
     std::condition_variable cv_;
     std::thread thread_;
