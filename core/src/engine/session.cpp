@@ -1996,7 +1996,8 @@ void Session::Impl::describe_run(Opening & o) {
         ri.engine_version = version();
         ri.n_threads = cfg.n_threads;
         ri.n_ctx = cfg.n_ctx;
-        ri.n_ubatch = cfg.n_ubatch;
+        // The width the context was opened with, never the 0 that left it to the default.
+        ri.n_ubatch = ctx ? (int) llama_n_ubatch(ctx.get()) : cfg.n_ubatch;
         ri.cache_type_k = kv_cache_type_name(this->cfg.cache_type_k); // what was allocated, after any fallback
         ri.cache_type_v = kv_cache_type_name(this->cfg.cache_type_v);
         ri.chatml = cfg.chatml;
@@ -2191,8 +2192,7 @@ void Session::Impl::rate_step(double seconds, int tokens, uint64_t lookups, uint
     else
         std::snprintf(what, sizeof(what), "with the graph %s (%d tokens wide)",
                       cfg.trial.width_side == 1 ? "at the plan's width" : "narrowed",
-                      cfg.trial.width_side == 1 ? (cfg.n_ubatch > 0 ? cfg.n_ubatch : cfg.n_ctx)
-                                                : cfg.trial.width_narrow);
+                      cfg.trial.width_side == 1 ? (int) llama_n_ubatch(ctx.get()) : cfg.trial.width_narrow);
     if (settling && !r.settling()) log_printf(LogLevel::Info, "knob trial: timing the decode %s", what);
     if (!r.done()) return;
     const double tps = r.tokens_per_second();
@@ -2706,6 +2706,13 @@ struct Session::Impl::Turn {
                 // Nothing was decoded yet: a request at fault (a marker count, an image the
                 // projector cannot read or one too large) leaves the session usable.
                 return fail(invalid ? RunError::InvalidRequest : RunError::Failed, err);
+            }
+            // An image that must go in one pass and is wider than the graph: refused here, with the
+            // context untouched, rather than failing half way through the prefill.
+            const std::string too_wide = im.media->width_refusal(tk, (int) llama_n_ubatch(im.ctx.get()));
+            if (!too_wide.empty()) {
+                undo_history();
+                return fail(RunError::InvalidRequest, too_wide);
             }
             n_prompt = (int) tokens.size();
         } else {

@@ -190,7 +190,8 @@ row() {
     hdr() { grep -o "[ #]$1=[^ ]*" "$csv" | head -1 | cut -d= -f2; }
     local streams="resident"; [ "$(hdr moe_stream)" = "1" ] && streams="streams"
     [ "$(hdr overlap)" = "1" ] && streams="$streams, overlap"
-    # n_ubatch=0 in the header is the engine's default, not a width of zero.
+    # n_ubatch=0 (or absent) in the header is an older engine's default, not a width of zero; newer
+    # engines record the width the context was opened with.
     local ubatch; ubatch="$(hdr n_ubatch)"; [ "${ubatch:-0}" != "0" ] || ubatch="default"
     local mib_per_tok
     mib_per_tok="$(awk -v r="$(key read_MiB)" -v n="$(key tokens)" 'BEGIN { if (n>0) printf "%.0f", r/n; else print "n/a" }')"

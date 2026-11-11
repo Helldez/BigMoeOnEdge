@@ -95,6 +95,12 @@ struct PlannerPolicy {
     // 64 KB). Measured on a 32 GB card at a 32768-token graph: a 28.6k-token prompt aborted the
     // server. Half of the smallest of those limits, so no shipped backend has been shown to fail at
     // it; a prompt past it takes more passes, which cost little once a pass is this wide.
+    //
+    // Two bounds hold the width, and this is the planned one. A run nothing planned opens at most
+    // RunConfig::ubatch_auto_max wide, whatever computes it; a plan starts from the whole context,
+    // priced from the probe's measurement, and narrows for memory, so on a device this bound is what
+    // stops it short of the context. It is no wider than that default, so a device's graph is never
+    // planned past the width the fitter placed its layers against (planner_test checks the order).
     uint32_t ubatch_max_device = 8192;
 
     // Whether THIS ENGINE can hand a device the memory a streamed expert is made of. It is a fact
@@ -143,11 +149,15 @@ struct PlannerPolicy {
 };
 
 // The widest graph, halving from the width `placement` was projected at and never below
-// `policy.ubatch_min`, whose compute buffers on every device with memory of its own stay inside
-// `policy.compute_share_max` of that device's memory (each card against its own). The projected width
-// where they already do; 0 where the device side's slope was not measured or no device has memory of
-// its own. Read by the width rule and by probe_and_plan, which asks the fitter what that width buys.
-uint32_t device_share_width(const Placement & placement, const HardwareProfile & hw, const PlannerPolicy & policy);
+// `policy.ubatch_min` (nor `floor`, the narrowest an image allows: RunConfig::graph_width_floor), whose
+// compute buffers on every device with memory of its own stay inside `policy.compute_share_max` of
+// that device's memory (each card against its own). The projected width where they already do; 0
+// where the device side's slope was not measured or no device has memory of its own. Read by the
+// width rule and by probe_and_plan, which asks the fitter what that width buys.
+uint32_t device_share_width(const Placement & placement,
+                            const HardwareProfile & hw,
+                            const PlannerPolicy & policy,
+                            uint32_t floor = 0);
 
 // As above, with the margins overridden. The four-argument form calls this with the defaults.
 Plan plan_run(const RunConfig & base,

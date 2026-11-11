@@ -303,12 +303,9 @@ int main() {
             c.n_ctx = n_ctx;
             c.n_ubatch = n_ubatch;
             if (c.graph_width() == want) {
-                std::printf("[PASS] %s
-", name);
+                std::printf("[PASS] %s\n", name);
             } else {
-                std::printf("[FAIL] %s
-  expected %d, got %d
-", name, want, c.graph_width());
+                std::printf("[FAIL] %s\n  expected %d, got %d\n", name, want, c.graph_width());
                 ++failures;
             }
         };
@@ -319,6 +316,32 @@ int main() {
         width_is("a set width is kept", 32768, 512, 512);
         width_is("a set width past the bound is the caller's", 32768, 16384, 16384);
         width_is("a set width is never wider than the context", 2048, 4096, 2048);
+
+        // An image whose tokens must go in one pass: the default width is never under the most one
+        // image takes (graph_width_floor), and only where a projector is configured with a cap.
+        auto image_width_is = [](const char * name, const char * mmproj, int image_max, int n_ctx, int n_ubatch,
+                                 int want_floor, int want) {
+            RunConfig c = ok_base();
+            c.mmproj = mmproj;
+            c.image_max_tokens = image_max;
+            c.n_ctx = n_ctx;
+            c.n_ubatch = n_ubatch;
+            if (c.graph_width_floor() == want_floor && c.graph_width() == want) {
+                std::printf("[PASS] %s\n", name);
+            } else {
+                std::printf("[FAIL] %s\n  expected floor %d width %d, got %d %d\n", name, want_floor, want,
+                            c.graph_width_floor(), c.graph_width());
+                ++failures;
+            }
+        };
+        image_width_is("no projector: no image floor", "", 16384, 32768, 0, 0, cap);
+        image_width_is("a projector without a cap: no image floor", "p.gguf", 0, 32768, 0, 0, cap);
+        image_width_is("an image cap under the default width changes nothing", "p.gguf", 4096, 32768, 0, 4096, cap);
+        image_width_is("an image cap past the default width widens the default", "p.gguf", 12000, 32768, 0, 12000,
+                       12000);
+        image_width_is("the image floor never passes the context", "p.gguf", 20000, 16384, 0, 16384, 16384);
+        image_width_is("a set width stays the caller's under the image floor", "p.gguf", 12000, 32768, 1024, 12000,
+                       1024);
     }
 
     // Speculation: lossless only under greedy, and the draft width is bounded on both sides.

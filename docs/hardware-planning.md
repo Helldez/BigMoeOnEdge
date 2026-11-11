@@ -785,10 +785,17 @@ for the widest of them. Left alone the width follows the context, up to 8192 tok
 there is. Past it the buffers stop following the context alone. The attention mask is a row of the
 whole context per token of width, so a graph as wide as a 32768 context made a CPU host reserve
 past what it could allocate, and an allocation inside llama.cpp aborted the process before the
-reservation could say so (#566: 2945 MiB at 16384, 4801 MiB refused at 24576). The same default
-is the width the planner's probe measures at and starts from. The buffers grow with it, a row of activations per token, and they are
-memory the expert cache does not get - for a pass that happens once per prompt, against a cache
-that is read on every token.
+reservation could say so (#566: 2945 MiB at 16384, 4801 MiB refused at 24576). That default is
+the width of a run nothing planned, and the width the planner's probe measures at, so the probe
+itself never reserves a graph that wide. The buffers grow with the width, a row of activations per
+token, and they are memory the expert cache does not get - for a pass that happens once per prompt,
+against a cache that is read on every token.
+
+Where a projector is loaded with a cap on an image's tokens (`--image-max-tokens`), neither the
+default nor the plan goes narrower than that cap (`RunConfig::graph_width_floor`): some projectors'
+image tokens attend to each other both ways, and llama.cpp then takes the whole image in one pass. A
+width set by hand is the caller's; an image wider than it is refused before anything is encoded, with
+the two numbers and the settings to change.
 
 Two things were wrong at once. The ledger read the buffers from the capacity fitter, which projects
 them at llama.cpp's own default of 512 tokens whatever the session is about to open with; and the
@@ -808,13 +815,25 @@ the side that cannot overcommit.
 
 The rule is the widest graph whose buffers stay inside a share of what the process may hold
 (`PlannerPolicy::compute_share_max`, a tenth), found by halving from the context and never below
-`ubatch_min`. Inside the share nothing changes and the knob keeps its default. Where a device with
+`ubatch_min` (or the image floor above). The plan starts from the whole context even where the probe
+measured a narrower default: the probe projects the buffers at its width and at half of it, both at
+the run's context, so the slope it reads already carries what the attention mask costs a token of
+width at that context, and a wider graph at the same context is priced by extending that line
+(`Placement::at_width`). The plan's notes say when a width was priced that way. Where a device's part
+of the buffers was not measured, nothing wider than the probe is priced, and the plan stays at the
+probe's width. So a host with room gets a prompt as long as the context in one pass, and the #566
+host, whose buffers at a 32768-token graph would be about 6.9 GB, narrows to what fits its share.
+Whatever width the plan picks is the one the session opens with. Where a device with
 memory of its own computes the graph, the width is also bounded by `ubatch_max_device` (8192): a
 device's expert matmul can keep a whole pass's tokens in a per-block scratch of a size the backend
 fixes, and past it the pass aborts the process (#533, `GGML_ASSERT(nbytes_shared <= smpbo)` at
 ~25k tokens on 24-32 GB cards, ~16k where the scratch is 64 KB). On a 32 GB card at a 32768-token
 graph, a 28.6k-token prompt aborted the server. The bound is an evidence boundary: half of the
-smallest of those limits. A longer prompt takes more passes. A device's buffers
+smallest of those limits. A longer prompt takes more passes. The two bounds are kept apart on
+purpose: `ubatch_auto_max` is the width of a run nothing planned, whatever computes it, and the
+width the probe places the layers at; `ubatch_max_device` is what stops a planned graph short of
+the context on a device. It is no wider than the default, so a device's graph is never planned past
+the width the fitter placed against. A device's buffers
 count in this pool where its memory is the host's. A device with memory of its own pays for its width
 in that memory. Where the fitter left whole layers on the host beside it, a byte of buffer there is a
 byte of some layer's dense part: there its buffers are held to the same share of the device's memory,

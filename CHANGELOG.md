@@ -21,8 +21,19 @@ Semantic Versioning.
   (`GGML_ASSERT(ctx->mem_buffer != NULL)`), with or without `--auto`, since the planner's probe
   asked for the same width. 0 now means as wide as the context up to 8192 tokens
   (`RunConfig::ubatch_auto_max`), decided in one place the session, the probe and the planner
-  share. A prompt that fits in one pass still takes one; a longer one takes more. At 32768 the
+  share, and the probe measures at that width. `--auto` still plans from the whole context: the
+  probe's per-token cost is measured at the run's context, so a wider graph is priced by extending
+  it, and the plan keeps the one-pass prefill of a long prompt where the memory takes it, narrows
+  where it does not (at 32768 that host's buffers would be about 6.9 GB), and holds a device's graph
+  at `ubatch_max_device`. The width the plan picks is the one the session opens with, and the run's
+  CSV header records that width rather than `0` ([telemetry.md](docs/telemetry.md)). At 32768 the
   same model loads.
+- **An image a projector reads both ways no longer fails half way through the prefill.** Some
+  projectors' image tokens attend to each other both ways, and llama.cpp takes such an image in one
+  pass of the graph, so one wider than the graph could not be decoded. With a projector and
+  `--image-max-tokens` set, neither the default width nor the plan now goes narrower than that cap;
+  a width set by hand that an image does not fit is refused before the image is encoded, naming
+  both numbers and the setting to change ([hardware-planning.md](docs/hardware-planning.md)).
 
 ## [0.41.2] - 2026-11-11
 

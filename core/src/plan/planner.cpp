@@ -949,7 +949,10 @@ void size_budget(Planning & s) {
 // the widest graph, since its buffers take nothing from anything there.
 } // namespace
 
-uint32_t device_share_width(const Placement & placement, const HardwareProfile & hw, const PlannerPolicy & policy) {
+uint32_t device_share_width(const Placement & placement,
+                            const HardwareProfile & hw,
+                            const PlannerPolicy & policy,
+                            uint32_t min_width) {
     const uint32_t full = placement.compute_width;
     if (full == 0 || placement.device_compute_per_token == 0) return 0;
     const uint64_t device_memory = hw.device_local_memory();
@@ -969,8 +972,9 @@ uint32_t device_share_width(const Placement & placement, const HardwareProfile &
         }
         return !per_card && (double) q.device_compute_bytes > (double) device_memory * policy.compute_share_max;
     };
+    const uint32_t lo = std::max(policy.ubatch_min, min_width);
     uint32_t w = full;
-    while (w / 2 >= policy.ubatch_min && over(w))
+    while (w / 2 >= lo && over(w))
         w /= 2;
     return w;
 }
@@ -993,7 +997,7 @@ bool width_across_loads(Planning & s, uint32_t full) {
     if (s.req.is_pinned("ubatch") || devices_share_host_memory(s.hw) || !pl.fitted || pl.n_gpu_layers == 0 ||
         pl.host_expert_layers.empty() || p.config.trial.device_tier >= 0)
         return false;
-    const uint32_t narrow = device_share_width(pl, s.hw, s.pol);
+    const uint32_t narrow = device_share_width(pl, s.hw, s.pol, (uint32_t) p.config.graph_width_floor());
     if (narrow == 0 || narrow >= full) return false;
     const MeasuredKnobs & mk = s.model.knobs;
     const bool same = mk.width_narrow == (int) narrow;
@@ -1009,7 +1013,7 @@ bool width_across_loads(Planning & s, uint32_t full) {
             p.placement = s.placement;
             p.config.n_ubatch = (int) narrow;
         }
-        s.note("ubatch", side ? u64s((uint64_t) p.config.n_ubatch) : n, Source::Policy,
+        s.note("ubatch", side ? u64s((uint64_t) p.config.graph_width()) : n, Source::Policy,
                side ? "This load times the graph at its own width, against " + n + " tokens on another load."
                     : "This load times the graph " + n + " tokens wide, against its own width timed before.",
                why);
@@ -1051,7 +1055,7 @@ bool width_across_loads(Planning & s, uint32_t full) {
                std::string(nums) + ", past the " + margin + " margin");
         return true;
     }
-    s.note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Measured,
+    s.note("ubatch", u64s((uint64_t) p.config.graph_width()), Source::Measured,
            "A prompt runs in one pass: on this machine's own requests the full width is as fast or faster.",
            std::string(nums) + "; the narrow graph is not faster by the " + margin + " margin");
     return true;
@@ -1079,67 +1083,96 @@ void choose_graph_width(Planning & s) {
     // the decode ran on the host at 12.5 tok/s; at 10240 tokens it placed all 41 and decoded at 75-81.
     const bool device_short = device_memory > 0 && s.placement.fitted && s.placement.device_compute_per_token > 0 &&
                               (uint32_t) s.placement.n_gpu_layers <= s.model.n_layer;
-    const uint32_t device_width = device_short ? device_share_width(s.placement, s.hw, s.pol) : 0;
+    // The narrowest graph: llama.cpp's own physical batch, or the most tokens one image takes where
+    // its tokens must go in one pass (RunConfig::graph_width_floor).
+    const uint32_t narrowest = std::max(s.pol.ubatch_min, (uint32_t) p.config.graph_width_floor());
+    const uint32_t device_width = device_short ? device_share_width(s.placement, s.hw, s.pol, narrowest) : 0;
     auto device_buffers = [&](uint32_t w) { return s.placement.at_width(w).device_compute_bytes; };
     auto device_over = [&](uint32_t w) { return device_width > 0 && w > device_width; };
     auto over = [&](uint32_t w) {
         return buffers(w) > s.holdable * (double) s.pol.compute_share_max || (device_short && device_over(w));
     };
-    const uint32_t full = s.placement.compute_width;
+    const uint32_t probed = s.placement.compute_width;
     if (s.req.is_pinned("ubatch")) {
         s.note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Operator,
                u64s((uint64_t) p.config.n_ubatch) + " tokens per pass, as you set it.",
                "set by the caller; the planner leaves it alone" +
-                   (full ? ", and the compute buffers are counted at that width: " + u64s(mib(buffers(full))) + " MiB"
-                         : std::string()));
+                   (probed
+                        ? ", and the compute buffers are counted at that width: " + u64s(mib(buffers(probed))) + " MiB"
+                        : std::string()));
         return;
     }
-    if (full == 0 || s.placement.host_compute_per_token == 0) {
+    if (probed == 0 || s.placement.host_compute_per_token == 0) {
         s.note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Unprobed,
-               u64s((uint64_t) p.config.n_ubatch) + " tokens per pass, the default: its memory cost was not measured.",
+               u64s((uint64_t) p.config.graph_width()) +
+                   " tokens per pass, the default: its memory cost was not measured.",
                "what a token of graph width costs in compute buffers was not measured here, so the "
                "width is not this plan's to choose; keeping the default");
         return;
     }
+    // The widest candidate is the whole context where the width was left to the default. The probe
+    // measured the buffers at the default width (RunConfig::graph_width), which a long context caps,
+    // and at half of it, both at this context, so the per-token slope already carries what the
+    // attention mask costs a token of width here: a wider graph at the same context is priced by
+    // extending that line (Placement::at_width). Where a device's part of the buffers was not
+    // measured, a wider graph is not priced, and the candidate stays the probed width.
+    uint32_t n_ctx = (uint32_t) p.config.n_ctx;
+    if (s.placement.n_ctx > 0 && s.placement.n_ctx < n_ctx) n_ctx = s.placement.n_ctx;
+    const bool device_priced = s.placement.device_compute_bytes == 0 || s.placement.device_compute_per_token > 0;
+    const bool extend = p.config.n_ubatch == 0 && device_priced && probed < n_ctx;
+    const uint32_t full = extend ? n_ctx : probed;
     // A device that computes the graph is bounded by the widest pass its expert matmul is known to
     // run (PlannerPolicy::ubatch_max_device), whatever its memory allows.
     const bool on_device = device_memory > 0 && s.placement.fitted && s.placement.n_gpu_layers > 0;
-    const uint32_t bound =
-        on_device && s.pol.ubatch_max_device > 0 ? std::max(s.pol.ubatch_max_device, s.pol.ubatch_min) : 0;
-    uint32_t w = full;
-    while (w / 2 >= s.pol.ubatch_min && (over(w) || (bound > 0 && w > bound)))
+    const uint32_t bound = on_device && s.pol.ubatch_max_device > 0 ? std::max(s.pol.ubatch_max_device, narrowest) : 0;
+    const uint32_t top = bound > 0 && full > bound ? bound : full;
+    uint32_t w = top;
+    while (w / 2 >= narrowest && over(w))
         w /= 2;
+    // The width taken: its buffers charged, and the session told it whenever it is not the width the
+    // config opens with anyway (at the context the placement settles, which apply_placement adopts).
+    RunConfig opened = p.config;
+    opened.n_ctx = (int) n_ctx;
+    const uint32_t default_width = (uint32_t) opened.graph_width();
+    auto take = [&](uint32_t width) {
+        s.placement = s.placement.at_width(width);
+        p.placement = s.placement;
+        if (width != default_width) p.config.n_ubatch = (int) width;
+    };
     const std::string pct = u64s((uint64_t) (s.pol.compute_share_max * 100.0f + 0.5f)) + "%";
     const std::string share = pct + " of the " + u64s(mib(s.holdable)) + " MiB this process may hold";
     const bool device_bound = device_short && device_over(full);
-    // What the widest graph is, said as it is: the context, or the default width under it
-    // (RunConfig::ubatch_auto_max) when the context is longer.
-    const std::string widest = full < (uint32_t) p.config.n_ctx
-                                   ? "the default graph (" + u64s(full) + " tokens, as wide as the context up to " +
-                                         u64s((uint64_t) RunConfig::ubatch_auto_max) + ")"
-                                   : "a graph as wide as the context (" + u64s(full) + " tokens)";
-    if (bound > 0 && w < full && !over(full) && !device_bound) {
-        // Narrowed by the bound alone: the memory would have taken the wide graph.
-        s.placement = s.placement.at_width(w);
-        p.placement = s.placement;
-        p.config.n_ubatch = (int) w;
+    // What the widest graph is, said as it is, and how its buffers were priced when it is wider than
+    // the probe measured.
+    const std::string widest =
+        full >= n_ctx ? "a graph as wide as the context (" + u64s(full) + " tokens" +
+                            (full > probed ? ", its buffers priced by extending the " + u64s(mib(buffers(probed))) +
+                                                 " MiB measured " + u64s(probed) +
+                                                 " tokens wide at this context along the cost of a token of width "
+                                                 "measured there)"
+                                           : std::string(")"))
+                      : "a graph " + u64s(full) +
+                            " tokens wide (the width the placement was measured at; a wider one is not priced here)";
+    if (bound > 0 && w == top && top < full) {
+        // Narrowed by the bound: inside it, the memory takes the graph.
+        const bool full_fits = !over(full);
+        take(w);
+        if (width_across_loads(s, w)) return;
         s.note("ubatch", u64s(w), Source::Policy,
                u64s(w) + " tokens per pass: the widest a device's expert matmul is known to run.",
-               widest +
-                   " would fit in memory, but a device computes "
-                   "it, and past " +
-                   u64s(bound) +
-                   " tokens a pass can abort in the backend's expert matmul (#533); a "
-                   "longer prompt takes more passes. " +
+               widest + (full_fits ? " would fit in memory" : " would not fit in memory either") +
+                   ", but a device computes it, and past " + u64s(bound) +
+                   " tokens a pass can abort in the backend's expert matmul (#533); a longer prompt takes more "
+                   "passes. " +
                    flag_spelling("ubatch") + " sets it by hand");
         return;
     }
-    if (w == full && width_across_loads(s, full)) return;
     if (w == full) {
-        s.note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Derived,
-               (full < (uint32_t) p.config.n_ctx
-                    ? "A prompt up to " + u64s(full) + " tokens runs in one pass: that takes only "
-                    : std::string("A prompt runs in one pass: that takes only ")) +
+        take(full);
+        if (width_across_loads(s, full)) return;
+        s.note("ubatch", u64s(full), Source::Derived,
+               (full < n_ctx ? "A prompt up to " + u64s(full) + " tokens runs in one pass: that takes only "
+                             : std::string("A prompt runs in one pass: that takes only ")) +
                    size_brief(buffers(full)) + ".",
                widest + " reserves " + u64s(mib(buffers(full))) + " MiB of compute buffers, inside " + share +
                    ": a prompt that wide is computed in one pass");
@@ -1150,9 +1183,12 @@ void choose_graph_width(Planning & s) {
     const std::string where = device_bound ? pct + " of the " + u64s(mib(device_memory)) +
                                                  " MiB of device memory, where the fitter left layers on the host"
                                            : share;
-    s.placement = s.placement.at_width(w);
-    p.placement = s.placement;
-    p.config.n_ubatch = (int) w;
+    // Held at the floor an image sets, past the share: said, since the share alone would go narrower.
+    const std::string image_floor =
+        narrowest > s.pol.ubatch_min && w / 2 < narrowest && over(w)
+            ? " It stays at least " + u64s(narrowest) + " tokens wide: an image takes up to that many, in one pass."
+            : std::string();
+    take(w);
     s.note("ubatch", u64s(w), Source::Policy,
            u64s(w) + " tokens per pass; wider would take " + size_brief(before) +
                (device_bound ? " of the device's memory." : " from the cache."),
@@ -1160,8 +1196,8 @@ void choose_graph_width(Planning & s) {
                (device_bound ? " on the devices" : "") + ", more than " + where + "; at " + u64s(w) + " tokens it is " +
                u64s(mib(after)) +
                " MiB. A prompt takes more passes and the expert cache keeps the rest: a prompt is paid once and a "
-               "token every time. " +
-               flag_spelling("ubatch") + " sets it by hand");
+               "token every time." +
+               image_floor + " " + flag_spelling("ubatch") + " sets it by hand");
 }
 
 // The bytes that would have to be resident on the host if nothing were streamed, and the regime

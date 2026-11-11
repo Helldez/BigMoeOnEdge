@@ -76,11 +76,18 @@ public:
                   std::string & err,
                   bool & invalid) const;
 
+    // Why the images of `t` cannot be decoded into a context whose graph is `n_ubatch` tokens wide,
+    // or empty when they can. An image whose tokens attend to each other both ways (the projector says
+    // which, per image) has to go in one pass of the graph, and llama.cpp refuses a wider one; checked
+    // before anything is encoded or decoded, so the request is refused with the session untouched.
+    std::string width_refusal(const Tokenized & t, int n_ubatch) const;
+
     // Encode span k of `t` and hand its embeddings to `decode`, n_batch tokens at a time, positioned
     // from pos0 (the span's own 2-D positions under M-RoPE, pos0 + i otherwise). The model's
     // attention mode is switched for the span where its projector asks (some encoders are read with
-    // non-causal attention) and restored after. Returns 0, or the first non-zero `decode` result, or
-    // -1 when the encoder failed.
+    // non-causal attention) and restored after; such a span goes in one batch, and one wider than the
+    // context's graph fails before it is encoded (width_refusal says why). Returns 0, or the first
+    // non-zero `decode` result, or -1 when the encoder failed or the span does not fit the graph.
     int decode_media(llama_context * ctx,
                      const Tokenized & t,
                      size_t k,

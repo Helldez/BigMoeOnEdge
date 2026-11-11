@@ -50,7 +50,7 @@ Everything here is safe to tune. The generated text does not change.
 | `-t` | 4 | `min(8, cores)` | many cores, or many slow ones | compute s/tok |
 | `--overlap` | off | on | never off, except to A/B it | stall s/tok falls, compute does not |
 | `--dense-weights` | `anon` | `anon` | the model fits in RAM: use `warm` | `majflt/tok` |
-| `--ubatch` | 0 (follow `n_ctx`, up to 8192) | 512 | memory is tight: it trades prefill width for RAM | reserved compute buffer, then hit rate |
+| `--ubatch` | 0 (follow `n_ctx`, up to 8192; `--auto` plans it) | 512 | memory is tight: it trades prefill width for RAM | reserved compute buffer, then hit rate |
 
 ### Lossy: the output changes
 
