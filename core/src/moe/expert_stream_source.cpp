@@ -783,7 +783,8 @@ void ExpertStreamSource::maybe_sample_dense() {
 }
 
 // Explicit budget change from outside a decode (an app's memory-pressure callback, or the shrink
-// gate). The only thing that moves the budget after init.
+// gate): the owner's new budget. The brake and a prefill's loan move the live budget below it
+// (brake_cache_budget, lend_cache) without replacing it.
 void ExpertStreamSource::set_cache_budget(size_t bytes) {
     if (cache_max_ == 0) return; // initialised off (shared-slot mode); the LRU buffers do not exist
     if (bytes > cache_max_) {
@@ -800,11 +801,51 @@ void ExpertStreamSource::set_cache_budget(size_t bytes) {
     // chosen at init), and load_layer branches on cache_max_ == 0 to pick shared-slot vs LRU — so a
     // runtime zero would route into buffers that do not exist. This shrinks toward, never to, zero.
     cache_max_ = std::max<size_t>(1, bytes);
-    follow_.reset(cache_max_, pin_floor_, offer_window_); // an explicit resize (the brake's) is the new ceiling
+    follow_.reset(cache_max_, pin_floor_, offer_window_); // an owner's explicit resize is the new ceiling
     ++cache_resizes_;
     // No cstamp guard: with no decode in flight, nothing is staged for the current generation, so
     // every resident entry (coldest first) is a valid eviction target.
     evict_to_budget(/*spare_current=*/false);
+}
+
+// The live budget to `bytes`, the ceiling untouched: what brake_cache_budget and a loan move.
+void ExpertStreamSource::move_budget(size_t bytes) {
+    bytes = std::max<size_t>(1, std::min(bytes, total_expert_bytes_));
+    if (bytes == cache_max_) return;
+    const bool shrink = bytes < cache_max_;
+    if (shrink) quiesce_spec(); // as set_cache_budget: no worker mid-write to an evicted page
+    cache_max_ = bytes;
+    ++cache_resizes_;
+    if (shrink) evict_to_budget(/*spare_current=*/false);
+}
+
+void ExpertStreamSource::brake_cache_budget(size_t bytes) {
+    if (cache_max_ == 0) return;
+    if (!disc_.enabled()) return set_cache_budget(bytes);
+    disc_.pressure();
+    follow_.braked(bytes, cgen_);
+    move_budget(follow_.current());
+}
+
+void ExpertStreamSource::lend_cache(size_t bytes) {
+    if (cache_max_ == 0 || bytes == 0) return;
+    if (!disc_.enabled()) {
+        if (lent_from_ == 0) lent_from_ = cache_max_;
+        return set_cache_budget(cache_max_ > bytes ? cache_max_ - bytes : 1);
+    }
+    follow_.lend(bytes);
+    move_budget(follow_.current());
+}
+
+void ExpertStreamSource::return_cache() {
+    if (cache_max_ == 0) return;
+    if (!disc_.enabled()) {
+        if (lent_from_ > 0) set_cache_budget(lent_from_);
+        lent_from_ = 0;
+        return;
+    }
+    follow_.end_loan();
+    move_budget(follow_.current());
 }
 
 double ExpertStreamSource::cache_lost_frac(int n) {
@@ -1229,7 +1270,8 @@ void ExpertStreamSource::regrow_for_load() {
 // One load's discard bookkeeping: offer what left the window, retire what the kernel took.
 void ExpertStreamSource::settle_offers() {
     if (!disc_.enabled() || cache_max_ == 0) return;
-    disc_.offer_cold(cgen_, [this](int32_t id) { return cvalid_[id] != 0; });
+    disc_.offer_cold(
+        cgen_, [this](int32_t id) { return cvalid_[id] != 0; }, ctail_ != -1 ? disc_.last_use(ctail_) : cgen_);
     retire_dropped_tail();
 }
 
