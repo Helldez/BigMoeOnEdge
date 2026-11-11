@@ -421,10 +421,13 @@ ResponsesStream::ResponsesStream(ChatResponseMeta meta)
 std::string ResponsesStream::tool_frames(const std::vector<ToolCallEvent> & events) {
     std::string f;
     for (const ToolCallEvent & e : events) {
+        // The call's output_index is the item it becomes. Read after the open message or reasoning item
+        // is closed, since closing it takes the next index: read before, a call after any text named the
+        // message's index in output_item.added and its own in every event after.
+        if (e.type == ToolCallEvent::Type::Open && !call_open_) f += frames(blocks_.close());
         const int index = (int) output_.size();
         switch (e.type) {
         case ToolCallEvent::Type::Open:
-            if (!call_open_) f += frames(blocks_.close());
             call_open_ = true;
             call_ = {e.id, e.name, ""};
             call_item_id_ = item_id("fc", meta_, output_.size());

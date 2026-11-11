@@ -578,6 +578,12 @@ static void tool_call_stream_tests() {
               done["output"][0]["type"] == "message" && done["output"][1]["call_id"] == "call_msg_9_0" &&
               done["output"][1]["arguments"] == "{\"path\":\"h.txt\"}",
           "a Responses stream sends the arguments in pieces, and completes with the message then the call");
+    bool same_index = true;
+    for (const auto & fr : rf)
+        if (fr.first.rfind("response.function_call_arguments", 0) == 0 ||
+            (fr.first.rfind("response.output_item", 0) == 0 && fr.second["item"]["type"] == "function_call"))
+            same_index = same_index && fr.second["output_index"] == 1;
+    check(same_index, "every event of a call after text names the call's own output_index, the added one too");
 }
 
 static AnthropicRequest
