@@ -7,6 +7,20 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **A page the agent wrote can reach the internet in the preview** (`--preview-network`). The
+  workspace preview loaded nothing from anywhere, so a page that takes anything from the network,
+  a library from a CDN, a font, data it fetches, showed its HTML around an empty or black canvas
+  while the same file worked opened directly. On a server listening on loopback only (the desktop)
+  the preview now reaches https hosts as any page a person opens does, for every kind of load;
+  beyond loopback it stays shut. Either way it stays sandboxed in an opaque origin, apart from the
+  UI, the key and this server's API. `--preview-network on|off` overrides the default (`auto`)
+  ([server-api.md](docs/server-api.md), "Security model").
+
+### Fixed
+- **A page's own script runs in the preview, as the security model says.** The preview route set a
+  second policy of its own, without `allow-scripts`, over the one the security model describes, so
+  no script ran at all, inline or not: a page built in JavaScript showed only its static HTML. The
+  route now leaves the policy to the one place that sets it for every preview response.
 - **Tool calls stream while the model writes them, to every client.** A call was sent once the turn
   had been parsed, so a local model writing a 21 KB file at 4 tok/s showed nothing for 34 minutes:
   the desktop UI an answer frozen on its first sentence, and an external agent a silent stream. The
