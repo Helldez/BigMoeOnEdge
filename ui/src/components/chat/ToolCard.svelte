@@ -19,7 +19,7 @@
     fetch: 'globe',
     think: 'spark',
   };
-  export const STATE_TONE: Record<string, string> = { running: 'info', waiting: 'warn', done: 'ok', denied: '', error: 'err' };
+  export const STATE_TONE: Record<string, string> = { composing: 'info', running: 'info', waiting: 'warn', done: 'ok', denied: '', error: 'err' };
 </script>
 
 <script lang="ts">
@@ -30,6 +30,7 @@
   import DiffView from './DiffView.svelte';
   import type { ToolItem } from '../../lib/agent';
   import { diffStat } from '../../lib/items';
+  import { formatBytes } from '../../lib/format';
   import { agent } from '../../stores/agent.svelte';
   import { preview } from '../../stores/preview.svelte';
   import { t } from '../../lib/text';
@@ -58,7 +59,10 @@
     {#if item.diff && (stat.added || stat.removed)}
       <span class="stat figure"><span class="add">+{stat.added}</span> <span class="del">−{stat.removed}</span></span>
     {/if}
-    {#if item.state === 'running'}
+    {#if item.state === 'composing'}
+      <!-- The model is still writing the call: how much so far, which is all there is to show yet. -->
+      <span class="badge info"><span class="pulse"></span>{item.bytes ? t('tool.composing.size', { size: formatBytes(item.bytes) }) : t('tool.state.composing')}</span>
+    {:else if item.state === 'running'}
       <span class="badge info"><span class="pulse"></span>{t('tool.state.running')}</span>
     {:else if item.state !== 'done'}
       <span class="badge {STATE_TONE[item.state] ?? ''}">{t(`tool.state.${item.state}`)}</span>
@@ -68,7 +72,7 @@
         <Icon name="eye" size={15} />{t('preview.open')}
       </button>
     {/if}
-    {#if !waiting && (item.result || item.diff || detail || item.args)}
+    {#if !waiting && item.state !== 'composing' && (item.result || item.diff || detail || item.args)}
       <button type="button" class="ghost icon small" aria-expanded={open} aria-label={open ? t('action.hideDetails') : t('action.showDetails')} title={open ? t('action.hideDetails') : t('action.showDetails')} onclick={() => (open = !open)}>
         <Icon name={open ? 'chevronDown' : 'chevronRight'} size={16} />
       </button>

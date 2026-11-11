@@ -42,24 +42,33 @@ json anthropic_usage_json(const RunSummary & s);
 json message_json(const ChatResponseMeta & meta, const RunResult & r, const std::string & finish);
 
 // One turn's event stream, frame by frame. start() opens it (message_start), on_token() follows the
-// per-token answer, finish() closes it with the final answer, the tool calls, the stop reason and
-// the usage; error() ends it on a failed turn instead. Every call returns the frames to write.
+// per-token answer and the calls being written, finish() closes it with the final answer, the rest
+// of the calls, the stop reason and the usage; error() ends it on a failed turn instead. Every call
+// returns the frames to write.
+//
+// A call becomes a tool_use block as soon as it opens (ToolCallStream), its input arriving as
+// input_json_delta pieces while the model writes it. Content blocks are sequential, so the open text
+// block closes first, and text the model writes while a call's block is open waits for it to close.
 class AnthropicStream {
 public:
-    explicit AnthropicStream(ChatResponseMeta meta) : meta_(std::move(meta)) {}
+    explicit AnthropicStream(ChatResponseMeta meta);
     std::string start() const;
     static std::string ping();
-    std::string on_token(const std::string & text, const std::string & reasoning);
+    std::string
+    on_token(const std::string & text, const std::string & reasoning, const std::vector<ChatToolCall> & calls = {});
     // `r`'s tool calls must carry their ids (ensure_tool_call_ids).
     std::string finish(const RunResult & r, const std::string & finish);
     static std::string error(int status, const std::string & message, const std::string & code);
 
 private:
     std::string frames(const std::vector<BlockEvent> & events);
+    std::string tool_frames(const std::vector<ToolCallEvent> & events);
 
     ChatResponseMeta meta_;
     BlockStream blocks_;
-    int index_ = 0; // the next content block's index
+    ToolCallStream calls_;
+    bool tool_open_ = false; // a call's block is open: text waits
+    int index_ = 0;          // the next content block's index
 };
 
 } // namespace bmoe::server

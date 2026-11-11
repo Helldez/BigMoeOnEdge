@@ -804,7 +804,7 @@ void agent_turn(App & app,
             ChatOutcome out = app.host.chat(
                 turn,
                 [&](const TokenMetrics & m) {
-                    return out_stream.alive() && out_stream.write(s.on_token(m.text, m.reasoning));
+                    return out_stream.alive() && out_stream.write(s.on_token(m.text, m.reasoning, m.tool_calls));
                 },
                 [&] { return out_stream.write(keepalive); });
             if (out.status != 200) {
@@ -956,6 +956,8 @@ void register_routes(httplib::Server & svr, App & app) {
                 return cr.turn.json_schema.empty() ? text : text.substr(0, complete_utf8_prefix_size(text));
             };
             bool first = true;
+            // Calls travel as the model writes them, argument by argument (ToolCallStream).
+            ToolCallStream calls([id = meta.id](size_t i) { return tool_call_id(id, i); });
             ChatOutcome out = app.host.chat(
                 cr.turn,
                 [&](const TokenMetrics & m) {
@@ -964,10 +966,11 @@ void register_routes(httplib::Server & svr, App & app) {
                     json extra = nullptr;
                     const std::string text = stream_text(m.text), reasoning = stream_text(m.reasoning);
                     if (first) delta["role"] = "assistant";
+                    bool text_moved = true;
                     if (starts_with(text, sent_text) && starts_with(reasoning, sent_reasoning)) {
                         const std::string dt = text.substr(sent_text.size());
                         const std::string dr = reasoning.substr(sent_reasoning.size());
-                        if (dt.empty() && dr.empty() && !first) return true;
+                        text_moved = !dt.empty() || !dr.empty();
                         if (!dt.empty()) delta["content"] = dt;
                         if (!dr.empty()) delta["reasoning_content"] = dr;
                     } else {
@@ -975,10 +978,12 @@ void register_routes(httplib::Server & svr, App & app) {
                         delta["reasoning_content"] = reasoning;
                         extra = json{{"reset", true}};
                     }
+                    if (text_moved || first) chunk(delta, nullptr, extra);
                     first = false;
                     sent_text = text;
                     sent_reasoning = reasoning;
-                    chunk(delta, nullptr, extra);
+                    const json call_delta = tool_call_events_delta(calls.update(m.tool_calls));
+                    if (!call_delta.is_null()) chunk(call_delta, nullptr, nullptr);
                     return out_stream.alive();
                 },
                 // Waiting for a turn: an SSE comment keeps the connection open through proxies
@@ -1009,11 +1014,15 @@ void register_routes(httplib::Server & svr, App & app) {
                     }
                     chunk(delta, nullptr, extra);
                 }
-                // A call is only known whole, once the turn has been parsed, so it travels in one
-                // delta rather than argument by argument.
-                if (!out.result.tool_calls.empty()) {
-                    ensure_tool_call_ids(out.result.tool_calls, meta.id);
-                    chunk(tool_calls_delta(out.result.tool_calls), nullptr, nullptr);
+                // What the parsed calls add to the streamed ones, and any call no token showed, whole.
+                if (calls.opened() == 0) {
+                    if (!out.result.tool_calls.empty()) {
+                        ensure_tool_call_ids(out.result.tool_calls, meta.id);
+                        chunk(tool_calls_delta(out.result.tool_calls), nullptr, nullptr);
+                    }
+                } else {
+                    const json rest = tool_call_events_delta(calls.finish(out.result.tool_calls));
+                    if (!rest.is_null()) chunk(rest, nullptr, nullptr);
                 }
                 chunk(json::object(), finish_reason(out.result, out.n_predict),
                       json{{"summary", summary_json(out.result.summary, out.result.cancelled)}});

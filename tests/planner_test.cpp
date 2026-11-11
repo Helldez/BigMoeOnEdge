@@ -2687,6 +2687,36 @@ int main() {
             check(validate(second.config).ok, "device tier, second load: a valid config",
                   validate(second.config).error);
 
+            // The fitter's placement is timed only where it could win. Here its ceiling is 13.4 tok/s:
+            // its 24 host layers' experts (291.5 MiB a token) at the host's 4 GiB/s, the rest at the
+            // card's 881 GiB/s; 16.8 with the probe's slack. A cache measured at 20 (22 with the
+            // margin) is past what it could reach: kept, and nothing timed.
+            ModelProfile fast = model;
+            fast.knobs.device_cache_tps = 20.0;
+            const Plan untimed = plan_run(base_cfg(), slow_cores, fast, half, PlanRequest{}, PlannerPolicy::defaults());
+            e = find(untimed, "device-cache-mb");
+            check(untimed.config.moe.device_cache_mb > 0 && untimed.config.trial.device_tier == -1 && e &&
+                      e->source == Source::Measured && e->reason.find("could reach 16.") != std::string::npos &&
+                      e->reason.find("so it is not timed") != std::string::npos,
+                  "device tier, the cache measured past the fitter's ceiling: kept, the slower side never timed",
+                  e ? e->reason : "no decision");
+            check(validate(untimed.config).ok, "device tier, the cache past the ceiling: a valid config",
+                  validate(untimed.config).error);
+            // At 15 (16.5 with the margin) the ceiling's 16.8 could still win: it is timed.
+            ModelProfile near = model;
+            near.knobs.device_cache_tps = 15.0;
+            const Plan timed = plan_run(base_cfg(), slow_cores, near, half, PlanRequest{}, PlannerPolicy::defaults());
+            e = find(timed, "device-cache-mb");
+            check(timed.config.moe.device_cache_mb == 0 && timed.config.trial.device_tier == 0 && e &&
+                      e->reason.find("could reach 16.") != std::string::npos,
+                  "device tier, the cache inside the fitter's ceiling: the fitter's placement is timed",
+                  e ? e->reason : "no decision");
+            // The same cache with no slack for the probe: 13.4 cannot reach 16.5, nothing is timed.
+            PlannerPolicy exact = PlannerPolicy::defaults();
+            exact.rate_ceiling_slack = 0.0f;
+            check(plan_run(base_cfg(), slow_cores, near, half, PlanRequest{}, exact).config.trial.device_tier == -1,
+                  "device tier, no slack: the ceiling alone decides");
+
             ModelProfile lost = once;
             lost.knobs.no_device_cache_tps = 3.94; // the fitter's placement decoded 2.5x faster
             const Plan third = plan_run(base_cfg(), slow_cores, lost, half, PlanRequest{}, PlannerPolicy::defaults());

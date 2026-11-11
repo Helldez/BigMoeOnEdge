@@ -556,8 +556,8 @@ other.
 
 **One generation at a time, in order.** A request that arrives while another runs waits its turn;
 while it waits, a streaming response receives SSE comment lines (`: waiting for a turn`) so the
-connection stays open. Once its turn runs, any 15 s with nothing to send (a long prefill, a tool
-call, which is sent only once parsed) gets a keep-alive on every streaming endpoint (a `: ping`
+connection stays open. Once its turn runs, any 15 s with nothing to send (a long prefill, a
+stretch the parser holds back) gets a keep-alive on every streaming endpoint (a `: ping`
 comment; `event: ping` on `/v1/messages`): a client or proxy that drops a silent stream never sees
 one, however slow the machine or long the call. A client that disconnects while it waits gives its place up and stops
 nothing else; a streaming client that disconnects during its own answer stops that answer. A
@@ -568,9 +568,14 @@ Chunks are OpenAI `chat.completion.chunk` objects; the delta carries `content` a
 reasoning models, `reasoning_content`. When the chat parser reclassifies already-sent text (a
 closing reasoning tag), a chunk carries `"bmoe": {"reset": true}` and its delta holds the FULL
 `content` / `reasoning_content` so far, which the client must use to replace, not append; a client
-that does not know the extension appends it. Tool calls arrive in one delta after the text, each
-whole (`index`, `id`, `type`, `function.name`, `function.arguments`), because a call is only known
-once the turn has been parsed. The last choice chunk has `finish_reason` (`stop`, `length`,
+that does not know the extension appends it. Tool calls stream while the model writes them, as
+the protocol has it: a call's first delta carries its `index`, `id`, `type` and `function.name`,
+and the following ones pieces of `function.arguments` by `index`, which a client appends. The
+same per-token parse that separates the reasoning reads the calls, with the model's own template,
+so this holds for every tool, model and call format; a call opens once its arguments begin (its
+name is whole by then), keeps the id it opened with, and its arguments are only ever appended to,
+held back to the last whole UTF-8 character. A call no token showed (a template the partial parse
+cannot read) arrives whole after the text, as before. The last choice chunk has `finish_reason` (`stop`, `length`,
 `tool_calls`, or `cancelled`) and `"bmoe": {"summary": {...}}` with the run summary (same keys as
 the `done` event). With `stream_options.include_usage`, one more chunk follows with empty `choices`
 and `usage`.
@@ -636,7 +641,13 @@ each agent at the server. What they share:
   snapshot that reclassifies earlier text is not sent until a later one extends it again. The
   parser holds back markup it cannot classify yet, so in practice the stream carries the whole
   answer; if a final answer does not extend what was sent, the client keeps what it holds. Tool
-  calls are known whole once the turn is parsed, and arrive after the text, each in one piece.
+  calls stream the same way while the model writes them: a call opens as a `tool_use` block
+  (Messages) or a `function_call` item (Responses) once its arguments begin, its input arriving as
+  `input_json_delta` / `function_call_arguments.delta` pieces under the id the final answer uses.
+  Blocks and items are sequential, so the open text block closes first, and text the model writes
+  while a call is open waits for it. The pieces are what the model wrote; a call whose arguments do
+  not end as a JSON object reaches the client as written (sent before the turn ended, it cannot be
+  replaced by `{}`). A call no token showed arrives whole after the text, as before.
   A reasoning model's thinking is sent as thinking (Messages) or reasoning items (Responses)
   whether or not the client asked to see it, so that the client returns it in the next request
   and the prompt still matches the KV.
@@ -713,8 +724,8 @@ Streaming response: each event named in `event:` and in its data's `type`, numbe
 `sequence_number`. `response.created` and `response.in_progress`; then per item
 `response.output_item.added`, its deltas (`response.reasoning_text.delta` for reasoning;
 `response.content_part.added`, `response.output_text.delta`, `.done` and
-`response.content_part.done` for a message; `response.function_call_arguments.delta` and `.done`,
-the whole arguments in one delta, for a call) and `response.output_item.done` with the item whole;
+`response.content_part.done` for a message; `response.function_call_arguments.delta` and `.done`
+for a call, the arguments in pieces while the model writes them) and `response.output_item.done` with the item whole;
 and last `response.completed` (or `response.incomplete`) with the response object, its `output`
 and `usage`. While the request waits its place in line, and after any 15 s of its turn with
 nothing else to send, an SSE comment.

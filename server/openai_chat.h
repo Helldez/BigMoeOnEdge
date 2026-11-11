@@ -7,6 +7,7 @@
 // of the text - is not here either: that is llama.cpp's chat layer, reached through the session.
 #pragma once
 
+#include "agent_protocol.h"
 #include "bmoe/config.h"
 #include "bmoe/runtime.h"
 #include "chat_turn.h"
@@ -41,7 +42,9 @@ struct ChatResponseMeta {
 };
 
 // The model writes a call's name and arguments; the protocol also wants an id the client can answer
-// to. Calls that came back without one get an id derived from the response's own.
+// to. Calls that came back without one get an id derived from the response's own, by their place in
+// the answer: the same id whether the call was streamed while written or sent once parsed.
+std::string tool_call_id(const std::string & response_id, size_t index);
 void ensure_tool_call_ids(std::vector<ChatToolCall> & calls, const std::string & response_id);
 
 // stop | length | tool_calls | cancelled.
@@ -59,6 +62,11 @@ json chunk_json(const ChatResponseMeta & meta, const json & delta, const json & 
 
 // The delta that delivers a turn's tool calls, each whole in one piece.
 json tool_calls_delta(const std::vector<ChatToolCall> & calls);
+
+// The delta that carries calls while they are written (ToolCallStream): an opening call with its
+// index, id and name, then pieces of its arguments by index, as the protocol streams them. null when
+// the events add nothing a client reads.
+json tool_call_events_delta(const std::vector<ToolCallEvent> & events);
 
 // The chunk stream_options.include_usage asks for: no choices, only the counts.
 json usage_chunk_json(const ChatResponseMeta & meta, const RunSummary & s);

@@ -27,12 +27,15 @@ public:
     const std::string & text() const { return text_; }
     const std::string & reasoning() const { return reasoning_; }
     std::vector<ChatToolCall> tool_calls() const;
+    // The calls as the stream has them so far, arguments as received: what grows by appending while
+    // the service writes them (TokenMetrics::tool_calls). A call is listed once it has a name.
+    std::vector<ChatToolCall> partial_tool_calls() const;
     const std::string & finish_reason() const { return finish_; }
     bool done() const { return done_; }
     // What the service said went wrong, from an `error` object in the stream or the body.
     const std::string & error() const { return error_; }
     bool saw_event() const { return events_ > 0; }
-    // Whether the last feed() changed the text or the reasoning: a token for the UI.
+    // Whether the last feed() changed the text, the reasoning or a call: a token for the UI.
     bool changed() {
         const bool c = changed_;
         changed_ = false;

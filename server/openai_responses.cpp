@@ -415,25 +415,77 @@ std::string ResponsesStream::frames(const std::vector<BlockEvent> & events) {
     return f;
 }
 
-std::string ResponsesStream::on_token(const std::string & text, const std::string & reasoning) {
-    return frames(blocks_.update(text, reasoning));
+ResponsesStream::ResponsesStream(ChatResponseMeta meta)
+    : meta_(std::move(meta)), calls_([id = meta_.id](size_t i) { return tool_call_id(id, i); }) {}
+
+std::string ResponsesStream::tool_frames(const std::vector<ToolCallEvent> & events) {
+    std::string f;
+    for (const ToolCallEvent & e : events) {
+        // The call's output_index is the item it becomes. Read after the open message or reasoning item
+        // is closed, since closing it takes the next index: read before, a call after any text named the
+        // message's index in output_item.added and its own in every event after.
+        if (e.type == ToolCallEvent::Type::Open && !call_open_) f += frames(blocks_.close());
+        const int index = (int) output_.size();
+        switch (e.type) {
+        case ToolCallEvent::Type::Open:
+            call_open_ = true;
+            call_ = {e.id, e.name, ""};
+            call_item_id_ = item_id("fc", meta_, output_.size());
+            f +=
+                event("response.output_item.added",
+                      {{"output_index", index}, {"item", function_call_item(call_item_id_, call_, "", "in_progress")}});
+            break;
+        case ToolCallEvent::Type::Delta:
+            call_.arguments += e.arguments;
+            f += event("response.function_call_arguments.delta",
+                       {{"item_id", call_item_id_}, {"output_index", index}, {"delta", e.arguments}});
+            break;
+        case ToolCallEvent::Type::Close: {
+            f += event("response.function_call_arguments.done", {{"item_id", call_item_id_},
+                                                                 {"output_index", index},
+                                                                 {"name", call_.name},
+                                                                 {"arguments", call_.arguments}});
+            json item = function_call_item(call_item_id_, call_, call_.arguments, "completed");
+            f += event("response.output_item.done", {{"output_index", index}, {"item", item}});
+            output_.push_back(std::move(item));
+            call_open_ = false;
+            break;
+        }
+        }
+    }
+    return f;
+}
+
+std::string ResponsesStream::on_token(const std::string & text,
+                                      const std::string & reasoning,
+                                      const std::vector<ChatToolCall> & calls) {
+    std::string f = call_open_ ? std::string() : frames(blocks_.update(text, reasoning));
+    return f + tool_frames(calls_.update(calls));
 }
 
 std::string ResponsesStream::finish(const RunResult & r, const std::string & finish) {
-    std::string f = frames(blocks_.finish(r.generated_text, r.reasoning_text));
-    // A call is known whole once the turn is parsed, so its arguments travel in one delta.
-    for (const ChatToolCall & c : r.tool_calls) {
-        const int index = (int) output_.size();
-        const std::string id = item_id("fc", meta_, output_.size());
-        f += event("response.output_item.added",
-                   {{"output_index", index}, {"item", function_call_item(id, c, "", "in_progress")}});
-        f += event("response.function_call_arguments.delta",
-                   {{"item_id", id}, {"output_index", index}, {"delta", c.arguments}});
-        f += event("response.function_call_arguments.done",
-                   {{"item_id", id}, {"output_index", index}, {"name", c.name}, {"arguments", c.arguments}});
-        json item = function_call_item(id, c, c.arguments, "completed");
-        f += event("response.output_item.done", {{"output_index", index}, {"item", item}});
-        output_.push_back(std::move(item));
+    std::string f;
+    if (calls_.opened() == 0) {
+        // No call was seen while it was written: the answer, then each call whole.
+        f = frames(blocks_.finish(r.generated_text, r.reasoning_text));
+        for (const ChatToolCall & c : r.tool_calls) {
+            const int index = (int) output_.size();
+            const std::string id = item_id("fc", meta_, output_.size());
+            f += event("response.output_item.added",
+                       {{"output_index", index}, {"item", function_call_item(id, c, "", "in_progress")}});
+            f += event("response.function_call_arguments.delta",
+                       {{"item_id", id}, {"output_index", index}, {"delta", c.arguments}});
+            f += event("response.function_call_arguments.done",
+                       {{"item_id", id}, {"output_index", index}, {"name", c.name}, {"arguments", c.arguments}});
+            json item = function_call_item(id, c, c.arguments, "completed");
+            f += event("response.output_item.done", {{"output_index", index}, {"item", item}});
+            output_.push_back(std::move(item));
+        }
+    } else {
+        // The calls already streaming end first, then whatever answer text the turn adds after them.
+        std::vector<ChatToolCall> calls = r.tool_calls;
+        f = tool_frames(calls_.finish(calls));
+        f += frames(blocks_.finish(r.generated_text, r.reasoning_text));
     }
     json res = response_object(meta_, "completed", output_);
     set_status(res, finish);

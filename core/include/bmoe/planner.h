@@ -123,6 +123,14 @@ struct PlannerPolicy {
     // noise. Measured 19 against 19 on a phone, which is not a finding.
     float min_backend_win = 0.10f;
 
+    // How far a decode may run past a ceiling the plan computes from probed rates, as a fraction. A
+    // ceiling adds what a token reads at each processor's probed rate and leaves out the crossings,
+    // the misses and every overhead, so it is above what decodes; but a probe's rate can read below
+    // the decode's own. Measured on two 16 GB cards with GLM-4.5-Air: the host's expert rate probed
+    // 23.8 GiB/s, the fitter's placement then decoded at 9.34 tok/s against a ceiling of 8.5 (+10%).
+    // A quarter is the plan's own accuracy bound (a prediction within 25% of the measurement).
+    float rate_ceiling_slack = 0.25f;
+
     static PlannerPolicy defaults() { return PlannerPolicy(); }
 };
 
