@@ -42,6 +42,16 @@ Semantic Versioning.
   bound above changes the narrow width many plans compare, and a rate measured against another
   narrow width answers another comparison: such a record's width rates are reset, as a new width
   always reset them, and timed again.
+
+### Fixed
+- **A request that needs the model waits for a load the server is running**, or for one still
+  measuring the machine, instead of a 503 when the server was started without `--autoload`, and is
+  answered with the loaded model's name. `--port 0` takes any free port. The port is bound before
+  the compute backends load, so it is the server's at once and a client that connects early waits
+  for the server to serve.
+
+## [0.41.3] - 2026-11-11
+
 ### Fixed
 - **A long prompt no longer aborts the server on a large NVIDIA or AMD card (#533).** Where a card
   had room for the compute buffers of a graph as wide as the context, the plan kept it that wide. A
@@ -72,11 +82,6 @@ Semantic Versioning.
   (where a device computes the graph, its 8192-token bound wins);
   a width set by hand that an image does not fit is refused before the image is encoded, naming
   both numbers and the setting to change ([hardware-planning.md](docs/hardware-planning.md)).
-- **A request that needs the model waits for a load the server is running**, or for one still
-  measuring the machine, instead of a 503 when the server was started without `--autoload`, and is
-  answered with the loaded model's name. `--port 0` takes any free port. The port is bound before
-  the compute backends load, so it is the server's at once and a client that connects early waits
-  for the server to serve.
 
 ## [0.41.2] - 2026-11-11
 
