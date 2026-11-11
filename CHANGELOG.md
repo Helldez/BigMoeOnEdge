@@ -4,6 +4,39 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **A long prompt no longer aborts the server on a large NVIDIA or AMD card (#533).** Where a card
+  had room for the compute buffers of a graph as wide as the context, the plan kept it that wide. A
+  prompt past ~25k tokens (~16k on AMD) then went into one pass, and the card's expert matmul aborted
+  the process (`mmid.cu: GGML_ASSERT(nbytes_shared <= smpbo)`). Reproduced on 0.41.2 on a 32 GB card
+  with a 28.6k-token prompt at a 32768 context. A device that computes the graph (layers on it, a
+  device expert cache, or a prefill device) is now planned at most `ubatch_max_device` (8192) tokens
+  per pass, half of the smallest limit seen, and an `--image-max-tokens` cap past it does not lift
+  it. A longer prompt takes more passes ([hardware-planning.md](docs/hardware-planning.md)).
+- **A long context no longer aborts the load on a CPU host (#566).** With `--ubatch` left at 0 the
+  graph was as wide as the context, and the host's compute buffers grow with width x context (the
+  attention mask). On a 15 GB Windows host with Qwen3.6-35B-A3B: 2945 MiB at a 16384 context, the
+  load refused at 24576, and at 32768 the process aborted inside llama.cpp
+  (`GGML_ASSERT(ctx->mem_buffer != NULL)`), with or without `--auto`, since the planner's probe
+  asked for the same width. 0 now means as wide as the context up to 8192 tokens
+  (`RunConfig::ubatch_auto_max`), decided in one place the session, the probe and the planner
+  share, and the probe measures at that width. `--auto` still plans from the whole context: the
+  probe's per-token cost is measured at the run's context, so a wider graph is priced by extending
+  it, and the plan keeps the one-pass prefill of a long prompt where the memory takes it, narrows
+  where it does not (at 32768 that host's buffers would be about 6.9 GB), and holds a device's graph
+  at `ubatch_max_device`. The width the plan picks is the one the session opens with, and the run's
+  CSV header records that width rather than `0` ([telemetry.md](docs/telemetry.md)). At 32768 the
+  same model loads.
+- **An image a projector reads both ways no longer fails half way through the prefill.** Some
+  projectors' image tokens attend to each other both ways, and llama.cpp takes such an image in one
+  pass of the graph, so one wider than the graph could not be decoded. With a projector and
+  `--image-max-tokens` set, neither the default width nor the plan now goes narrower than that cap
+  (where a device computes the graph, its 8192-token bound wins);
+  a width set by hand that an image does not fit is refused before the image is encoded, naming
+  both numbers and the setting to change ([hardware-planning.md](docs/hardware-planning.md)).
+
 ## [0.41.2] - 2026-11-11
 
 ### Added

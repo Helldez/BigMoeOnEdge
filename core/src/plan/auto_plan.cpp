@@ -97,7 +97,7 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     const BackendChoice backends = req.is_pinned("device-list") || req.is_pinned("devices")
                                        ? BackendChoice{}
                                        : choose_backends(r.hw, (double) PlannerPolicy::defaults().min_backend_win);
-    const Placement placement = probe_placement(path, r.model, r.hw, (uint32_t) cfg.n_ctx, (uint32_t) cfg.n_ubatch,
+    const Placement placement = probe_placement(path, r.model, r.hw, (uint32_t) cfg.n_ctx, (uint32_t) cfg.graph_width(),
                                                 cfg.cache_type_k, cfg.cache_type_v, backends.keep, &cfg.spec);
     detail::log_memory_snapshot("auto-probe-end");
     starting(); // rules
@@ -107,8 +107,11 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     // fitter's to give (the dense part of every layer before any cache), so it places again at that
     // width and the rules run on what it places. That includes a device the wide buffers left with no
     // layer at all, where placing again is the whole point. The width stays the first plan's decision:
-    // it was made against the wide placement, which is what it narrowed. One pass, since the width
-    // only narrows.
+    // it was made against the wide placement, which is what it narrowed. One pass. A plan may also
+    // choose a graph wider than the probe's (the whole context, priced from the probe's slope), but
+    // only where no device's placement depends on it: a device that computes the graph is bounded at
+    // PlannerPolicy::ubatch_max_device, no wider than the probed default, and one short of room at
+    // its share of the probed width.
     const uint32_t width = (uint32_t) r.plan.config.n_ubatch;
     if (!req.is_pinned("ubatch") && placement.fitted && !placement.shared_memory_placement &&
         (placement.n_gpu_layers > 0 || placement.device_compute_per_token > 0) && width > 0 &&
@@ -148,7 +151,8 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     else if (!req.is_pinned("ubatch") && placement.fitted && !placement.shared_memory_placement &&
              placement.n_gpu_layers != 0 && !placement.host_expert_layers.empty() &&
              (r.plan.config.n_ubatch == 0 || (uint32_t) r.plan.config.n_ubatch >= placement.compute_width)) {
-        const uint32_t candidate = device_share_width(placement, r.hw, PlannerPolicy::defaults());
+        const uint32_t candidate =
+            device_share_width(placement, r.hw, PlannerPolicy::defaults(), (uint32_t) cfg.graph_width_floor());
         if (candidate > 0 && candidate < placement.compute_width) {
             const Placement at_width = probe_placement(path, r.model, r.hw, (uint32_t) cfg.n_ctx, candidate,
                                                        cfg.cache_type_k, cfg.cache_type_v, backends.keep, &cfg.spec);
