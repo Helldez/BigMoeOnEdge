@@ -122,9 +122,16 @@ bool confine_model_path(const std::string & requested,
 const std::vector<std::pair<std::string, std::string>> & security_headers();
 
 // The preview of a workspace file (`GET /api/conversations/<id>/file`) is framed by the UI and may
-// be a page with script of its own: it gets these instead, a policy that sandboxes it and lets it
-// reach nothing. `is_preview_path` says which responses those are.
+// be a page with script of its own: it gets these instead, a policy that sandboxes it and keeps it
+// from this server. `network`: whether it may also reach the internet (https), as any page a person
+// opens can; without it it loads nothing from anywhere. `is_preview_path` says which responses
+// those are.
 bool is_preview_path(const std::string & path);
-const std::vector<std::pair<std::string, std::string>> & preview_headers();
+const std::vector<std::pair<std::string, std::string>> & preview_headers(bool network);
+
+// --preview-network: "on", "off", or "auto", which follows where the server listens. On loopback
+// only, the previewing person is the one at this machine, and the page reaches the internet as the
+// pages they open do; beyond loopback a preview is also opened from other machines, and stays shut.
+bool preview_network_for(const std::string & mode, bool loopback);
 
 } // namespace bmoe::server

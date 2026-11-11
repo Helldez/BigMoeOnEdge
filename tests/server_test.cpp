@@ -1306,15 +1306,29 @@ static void access_tests() {
               !is_preview_path("/api/conversations/a/b/file") && !is_preview_path("/api/conversations/abc") &&
               !is_preview_path("/api/conversations/abc/files"),
           "a preview is one conversation's file route");
-    const auto pcsp = [] {
-        for (const auto & h : preview_headers())
+    const auto preview_csp = [](bool network) {
+        for (const auto & h : preview_headers(network))
             if (h.first == "Content-Security-Policy") return h.second;
         return std::string();
-    }();
-    check(pcsp.rfind("sandbox allow-scripts;", 0) == 0 && pcsp.find("allow-same-origin") == std::string::npos &&
-              pcsp.find("connect-src 'none'") != std::string::npos &&
-              pcsp.find("frame-ancestors 'self'") != std::string::npos && pcsp.find("'self';") == std::string::npos,
-          "a preview runs sandboxed in an opaque origin, reaches nothing, and only the UI frames it");
+    };
+    const std::string pcsp = preview_csp(false), ncsp = preview_csp(true);
+    // Either way: sandboxed in an opaque origin, never this server (an http origin, and no 'self'),
+    // no form, no frame of its own, and only the UI frames it.
+    for (const std::string & c : {pcsp, ncsp})
+        check(c.rfind("sandbox allow-scripts;", 0) == 0 && c.find("allow-same-origin") == std::string::npos &&
+                  c.find("'self';") == std::string::npos && c.find("http:") == std::string::npos &&
+                  c.find("frame-src") == std::string::npos && c.find("form-action 'none'") != std::string::npos &&
+                  c.find("frame-ancestors 'self'") != std::string::npos,
+              "a preview runs sandboxed, apart from this server, and only the UI frames it");
+    check(pcsp.find("connect-src 'none'") != std::string::npos && pcsp.find("https:") == std::string::npos,
+          "without the network a preview loads nothing from anywhere");
+    check(ncsp.find("script-src 'unsafe-inline' 'unsafe-eval' blob: https:") != std::string::npos &&
+              ncsp.find("connect-src https: wss:") != std::string::npos &&
+              ncsp.find("img-src data: blob: https:") != std::string::npos,
+          "with it a preview reaches https hosts for every kind of load, as any page does");
+    check(preview_network_for("auto", true) && !preview_network_for("auto", false) &&
+              preview_network_for("on", false) && !preview_network_for("off", true),
+          "auto follows where the server listens; on and off are the operator's");
 }
 
 static void file_tests() {
