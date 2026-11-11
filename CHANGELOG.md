@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.42.0] - 2026-11-12
 
 ### Added
 - **A tool call shows what it writes while the model writes it.** Since 0.41.2 a call being written
