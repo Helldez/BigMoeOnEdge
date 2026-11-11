@@ -566,7 +566,7 @@ int table_main(const Args & a) {
 // is wrong, and by how much, on every machine on record.
 int errors_main(const Args & a) {
     if (a.file.empty()) return usage();
-    std::printf("%-34s %-8s %7s %8s %8s %7s | %8s %8s | %8s %8s | %7s %7s\n", "record", "os", "RAM GiB", "pred s/t",
+    std::printf("%-52s %-8s %7s %8s %8s %7s | %8s %8s | %8s %8s | %7s %7s\n", "record", "os", "RAM GiB", "pred s/t",
                 "meas s/t", "error", "pred hit", "meas hit", "cache MiB", "had MiB", "swap MiB", "majflt/t");
     int n = 0;
     double sum_abs = 0.0;
@@ -586,7 +586,7 @@ int errors_main(const Args & a) {
         ++n;
         sum_abs += error < 0 ? -error : error;
         const auto os = rec.env.find("os");
-        std::printf("%-34.34s %-8.8s %7.1f %8.3f %8.3f %+6.0f%% | %7.0f%% %7.1f%% | %8.0f %8.0f | %7.0f %7.2f\n",
+        std::printf("%-52.52s %-8.8s %7.1f %8.3f %8.3f %+6.0f%% | %7.0f%% %7.1f%% | %8.0f %8.0f | %7.0f %7.2f\n",
                     std::filesystem::u8path(path).filename().u8string().c_str(),
                     os == rec.env.end() ? "?" : os->second.c_str(),
                     (double) rec.hw.memory_total / (1024.0 * 1024.0 * 1024.0), predicted, measured, error,
