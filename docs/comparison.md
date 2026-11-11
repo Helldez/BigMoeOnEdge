@@ -66,21 +66,24 @@ show orders of magnitude rather than a ranking. BigMoeOnEdge's are the README's,
 
 ## Same machine, same file
 
-Measured here, both engines on one rented 24 GB card (RTX 3090 class, 94 GB of RAM), the same GGUF,
-client and prompts, two loads each, decode in tokens per second
-([bench-data](bench-data/2026-11-10-same-card-lucebox/README.md)). BigMoeOnEdge is the 0.41.0
-release candidate with `--auto`; Lucebox runs its own RTX 3090 recipe for each model, with PFlash
-(lossy prompt compression) off.
+Measured here, both engines on one rented 24 GB card (RTX 3090 class, 62 GB of RAM), the same GGUF,
+client and prompts, decode in tokens per second
+([bench-data](bench-data/2026-11-11-same-card-lucebox/README.md)). BigMoeOnEdge is the 0.41.2
+release with `--auto`, its second load. Lucebox gets two rows per model: lossless (`--spark`, PFlash
+off, no drafter) and its published RTX 3090 recipe; the better of the two is shown.
 
 | Model, card | BigMoeOnEdge | Lucebox |
 |---|---|---|
-| Qwen3.6-35B-A3B Q4_K_M, whole card | **135**; 28.6k-token prompt: first token in **5.3 s**, then **109** | 108; 37 s, then 88 |
-| same, 12 GiB of the card free | **75-81**; **8.4 s**, then 67 (with #531) | 51-76; 78 s, then **72** |
-| Gemma 4 26B-A4B Q4_K_M, whole card | **107-115** prose, 113 code; 29.5k prompt **10 s**, then 65 | 106-109 prose, **249-254** code (its DFlash drafter); 29.5k prompt refused (KVFlash pool) |
+| Qwen3.6-35B-A3B Q4_K_M, whole card | **154**; 28.6k-token prompt: first token in **4.7 s**, then **124** | 123; 37 s, then 102 |
+| same, 12 GiB of the card free | 67 prose, **59** code; **9.2 s**, then 56 | **69** prose, 42 code; 74 s, then **77** |
+| Laguna XS 2.1 33B Q4_K_M, whole card | **93**; 28.6k prompt **17 s**, then 40 | 84-86 (its README: ~100); 28.6k prompt refused |
+| Gemma 4 26B-A4B Q4_K_M, whole card | 114; 28.6k prompt **8.8 s**, then 66 | **131**; **288** code with its DFlash drafter; 28.6k prompt refused |
 
-Lucebox's drafters are trained per model and verified by the target, so on a model it ships one for
-the decode of predictable text (code) is more than twice this engine's; this engine has a drafter
-only where the model carries its own MTP head.
+Lucebox decodes Gemma 4 faster without a drafter, and its drafters are trained per model and
+verified by the target, so on a model it ships one for the decode of predictable text (code) is more
+than twice this engine's. This engine's draft-model support (#534) is not released yet. An earlier
+run on another 3090 box with the 0.41.0 release candidate is in
+[bench-data/2026-11-10-same-card-lucebox](bench-data/2026-11-10-same-card-lucebox/README.md).
 
 ## Reading the tables
 
