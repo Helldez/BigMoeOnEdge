@@ -28,6 +28,8 @@ void DiscardableEntries::init(
     ops_ = ops && ops->supported() ? ops : nullptr;
     spans_ = std::move(spans);
     offer_after_ = offer_after;
+    after_ = offer_after;
+    restart_ = true;
     drop_before_reclaim_ = drop_before_reclaim;
     offered_.assign(enabled() ? n_entry : 0, 0);
     last_use_.assign(enabled() ? n_entry : 0, 0);
@@ -41,9 +43,23 @@ void DiscardableEntries::used(int32_t id, uint32_t gen) {
     uses_.emplace_back(id, gen);
 }
 
-void DiscardableEntries::offer_cold(uint32_t gen, const std::function<bool(int32_t)> & valid) {
+void DiscardableEntries::kernel_dropped() {
+    after_ = offer_after_;
+    restart_ = true; // the next offer_cold, which knows the generation, starts the quiet stretch
+}
+
+void DiscardableEntries::offer_cold(uint32_t gen, const std::function<bool(int32_t)> & valid, uint32_t oldest_use) {
     if (!enabled()) return;
-    while (!uses_.empty() && uses_.front().second + offer_after_ <= gen) {
+    if (restart_) changed_ = gen;
+    restart_ = false;
+    const uint32_t cap = std::max(offer_after_, (gen - oldest_use) / 2);
+    if (after_ > cap) {
+        after_ = cap; // the cache got younger (a resize, a turnover): the older half stays offered
+    } else if (after_ < cap && gen - changed_ >= after_) {
+        after_ = after_ > cap / 2 ? cap : after_ * 2; // a whole window without a drop
+        changed_ = gen;
+    }
+    while (!uses_.empty() && uses_.front().second + after_ <= gen) {
         const auto [id, g] = uses_.front();
         uses_.pop_front();
         if (offered_[id] || last_use_[id] != g || !valid(id)) continue;
@@ -66,6 +82,7 @@ bool DiscardableEntries::take_back(int32_t id) {
     // refill lands in memory the next offer can hand over like any other.
     spans_(id, [&](Span s) { ops_->prepare(s); });
     ++lost_on_lookup_;
+    kernel_dropped();
     return false;
 }
 
@@ -75,6 +92,7 @@ bool DiscardableEntries::dropped(int32_t id) {
     spans_(id, [&](Span s) {
         if (verdict == -1) verdict = ops_->held(s);
     });
+    if (verdict == 0) kernel_dropped();
     return verdict == 0;
 }
 
@@ -83,6 +101,8 @@ void DropFollowingBudget::reset(size_t budget, size_t floor, uint32_t window) {
     current_ = budget;
     window_ = window;
     dropped_ever_ = false;
+    brakes_ = 0;
+    lent_ = 0;
     set_floor(floor);
 }
 
@@ -96,9 +116,31 @@ void DropFollowingBudget::dropped(size_t bytes, uint32_t gen) {
     if (current_ > floor_) current_ = std::max(floor_, current_ > bytes ? current_ - bytes : 0);
 }
 
+void DropFollowingBudget::braked(size_t budget, uint32_t gen) {
+    last_drop_ = gen;
+    dropped_ever_ = true;
+    // Capped where the doubled stretch would overflow a generation count; long before that it
+    // already outlasts any session.
+    if (brakes_ < 16) ++brakes_;
+    current_ = std::max(floor_, std::min(current_, budget));
+}
+
+void DropFollowingBudget::lend(size_t bytes) {
+    const size_t before = current_;
+    current_ = current_ > bytes ? current_ - bytes : 1;
+    lent_ += before - current_;
+}
+
+void DropFollowingBudget::end_loan() {
+    current_ = std::min(ceiling_, current_ + lent_);
+    lent_ = 0;
+}
+
 size_t DropFollowingBudget::make_room(size_t need, uint32_t gen) {
-    const bool quiet = !dropped_ever_ || gen - last_drop_ >= window_;
-    if (quiet && current_ < ceiling_) current_ = std::min(ceiling_, current_ + need);
+    const uint64_t quiet_for = (uint64_t) window_ << brakes_;
+    const bool quiet = !dropped_ever_ || (uint64_t) (uint32_t) (gen - last_drop_) >= quiet_for;
+    const size_t limit = ceiling_ > lent_ ? ceiling_ - lent_ : 1;
+    if (quiet && current_ < limit) current_ = std::min(limit, current_ + need);
     return current_;
 }
 
