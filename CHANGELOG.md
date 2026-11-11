@@ -74,7 +74,9 @@ Semantic Versioning.
   both numbers and the setting to change ([hardware-planning.md](docs/hardware-planning.md)).
 - **A request that needs the model waits for a load the server is running**, or for one still
   measuring the machine, instead of a 503 when the server was started without `--autoload`, and is
-  answered with the loaded model's name. `--port 0` takes any free port.
+  answered with the loaded model's name. `--port 0` takes any free port. The port is bound before
+  the compute backends load, so it is the server's at once and a client that connects early waits
+  for the server to serve.
 
 ## [0.41.2] - 2026-11-11
 

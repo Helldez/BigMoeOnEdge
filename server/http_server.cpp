@@ -1751,16 +1751,48 @@ int run(int argc, char ** argv, const Embedding & embedding) {
         }
     }
     const std::string data_dir = o.data_dir.empty() ? platform::default_data_dir() : o.data_dir;
+    // The socket is bound before any slow start-up work (loading the compute backends, which on some
+    // machines compiles a GPU library for tens of seconds): the port is the server's from here, a
+    // client that connects meanwhile waits in the listen queue until the server serves, and --port 0
+    // reports the port it took at once. A device probe's child serves nothing and binds nothing.
+    httplib::Server svr;
+    if (o.probe_device.empty()) {
+        // A worker is held for a request's whole life, and a connection past the queue is closed at
+        // once instead of waiting with no bound behind workers that may not come free.
+        svr.new_task_queue = [] { return new httplib::ThreadPool(kWorkerThreads, 0, kMaxQueuedRequests); };
+        svr.set_socket_options(set_listener_options);
+        // A request body here is a chat history, with its images inline as base64, or a handful of
+        // settings. The library's default would let every worker buffer far more than that.
+        svr.set_payload_max_length(kMaxRequestBytes);
+        // --port 0 takes any free port, which is then the one printed, served and allowed as an
+        // origin: bound before the guards are made from it.
+        if (o.port == 0) {
+            o.port = svr.bind_to_any_port(o.host);
+            if (o.port <= 0) {
+                std::fprintf(stderr, "bmoe-server: cannot listen on %s\n", o.host.c_str());
+                return 1;
+            }
+        } else if (!svr.bind_to_port(o.host, o.port)) {
+            std::fprintf(stderr, "bmoe-server: cannot listen on %s:%d (in use?)\n", o.host.c_str(), o.port);
+            return 1;
+        }
+        if (embedding.seams && embedding.seams->bound) embedding.seams->bound(o.port);
+    }
+    // A test with the engine scripted (ServerSeams::load_backends) loads no compute backend: nothing
+    // it runs computes, and its timing would hang on the machine's driver.
+    const bool load_backends = !embedding.seams || embedding.seams->load_backends;
     // What a backend reads from its environment, set before any backend is loaded.
-    platform::prepare_compute_backends(data_dir);
+    if (load_backends) platform::prepare_compute_backends(data_dir);
     // Every backend beside the executable, then the packs installed into the data folder (a pack
     // replaced while in use is moved into place first), before anything asks ggml about devices.
     const std::string backends_root = (fs::u8path(data_dir) / "backends").u8string();
     for (const std::string & w : finish_pending_packs(backends_root))
         std::fprintf(stderr, "warning: %s\n", w.c_str());
     const std::vector<std::string> pack_dirs = backend_pack_dirs(backends_root);
-    platform::prepare_backend_modules(extra_backend_modules(platform::executable_dir(), pack_dirs));
-    register_backends(pack_dirs);
+    if (load_backends) {
+        platform::prepare_backend_modules(extra_backend_modules(platform::executable_dir(), pack_dirs));
+        register_backends(pack_dirs);
+    }
     // The child of an isolated device probe: one device, its facts on one line, nothing else. If
     // the driver ends this process, or it never returns, that is the parent's answer about the device.
     if (!o.probe_device.empty()) {
@@ -1832,7 +1864,7 @@ int run(int argc, char ** argv, const Embedding & embedding) {
         uc.public_key = kFeedPublicKey;
         uc.target = platform::build_target();
         uc.version = version();
-        uc.registered = backend_inventory().names;
+        if (load_backends) uc.registered = backend_inventory().names;
         uc.library_loads = platform::library_loads;
         app.updates = std::make_unique<UpdateService>(app.bus, *app.net, uc);
     }
@@ -1907,27 +1939,6 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     app.agent_routes.has_key = !o.api_key.empty();
     app.agent_routes.home = platform::home_dir();
 
-    httplib::Server svr;
-    // A worker is held for a request's whole life, and a connection past the queue is closed at
-    // once instead of waiting with no bound behind workers that may not come free.
-    svr.new_task_queue = [] { return new httplib::ThreadPool(kWorkerThreads, 0, kMaxQueuedRequests); };
-    svr.set_socket_options(set_listener_options);
-    // A request body here is a chat history, with its images inline as base64, or a handful of
-    // settings. The library's default would let every worker buffer far more than that.
-    svr.set_payload_max_length(kMaxRequestBytes);
-    // --port 0 takes any free port, which is then the one printed, served
-    // and allowed as an origin: bound before the guards are made from it.
-    if (o.port == 0) {
-        o.port = svr.bind_to_any_port(o.host);
-        if (o.port <= 0) {
-            std::fprintf(stderr, "bmoe-server: cannot listen on %s\n", o.host.c_str());
-            return 1;
-        }
-    } else if (!svr.bind_to_port(o.host, o.port)) {
-        std::fprintf(stderr, "bmoe-server: cannot listen on %s:%d (in use?)\n", o.host.c_str(), o.port);
-        return 1;
-    }
-    if (embedding.seams && embedding.seams->bound) embedding.seams->bound(o.port);
     register_guards(svr, o);
     register_routes(svr, app);
     register_agent_routes(svr, app.agent_routes);

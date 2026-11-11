@@ -51,6 +51,12 @@ namespace fs = std::filesystem;
 
 static int failures = 0;
 
+// The most any one event here may take: a ceiling, never a pace. Every wait is for an event (the
+// port bound, a state, a count), which on a fast machine comes in milliseconds; the ceiling is for the
+// slowest runner, where loading the server's own libraries alone has taken tens of seconds, and only
+// a server that never answers reaches it.
+constexpr std::chrono::seconds k_ceiling{180};
+
 static void check(bool ok, const std::string & what) {
     std::printf("[%s] %s\n", ok ? "PASS" : "FAIL", what.c_str());
     std::fflush(stdout);
@@ -104,7 +110,7 @@ struct Script {
     // What the next plan's record holds: the pending side's other side measured or not.
     bool other_measured = false;
 
-    template <class F> bool wait(F pred, std::chrono::milliseconds limit = 20s) {
+    template <class F> bool wait(F pred, std::chrono::milliseconds limit = k_ceiling) {
         std::unique_lock<std::mutex> lk(m);
         return cv.wait_for(lk, limit, pred);
     }
@@ -134,7 +140,7 @@ int chat(httplib::Client & cli) {
 
 // Wait until /api/info satisfies `pred`; it changes on the server's own threads.
 bool wait_info(httplib::Client & cli, const std::function<bool(const json &)> & pred) {
-    const auto end = std::chrono::steady_clock::now() + 20s;
+    const auto end = std::chrono::steady_clock::now() + k_ceiling;
     while (std::chrono::steady_clock::now() < end) {
         if (pred(get_json(cli, "/api/info"))) return true;
         std::this_thread::sleep_for(5ms);
@@ -245,6 +251,7 @@ int main() {
         return c;
     };
     seams.calibration_idle_delay = 20ms;
+    seams.load_backends = false; // nothing here computes; the start does not wait on the machine's driver
     std::promise<int> port_promise;
     seams.bound = [&](int port) { port_promise.set_value(port); };
     seams.turn_ended = [&](bool armed) {
@@ -270,17 +277,20 @@ int main() {
         argv.push_back(a.data());
     std::thread server([&] { run((int) argv.size(), argv.data(), emb); });
 
+    // The port is reported as soon as the socket is bound, before the server's start-up work; a request
+    // sent before the server serves waits in the listen queue.
     auto port_future = port_promise.get_future();
     auto stop_future = stop_promise.get_future();
-    const bool listening = port_future.wait_for(30s) == std::future_status::ready &&
-                           stop_future.wait_for(30s) == std::future_status::ready;
-    check(listening, "the server listens on the port the system chose");
-    if (!listening) {
+    const bool bound = port_future.wait_for(k_ceiling) == std::future_status::ready;
+    check(bound, "the server binds the port the system chose");
+    if (!bound) {
         server.detach();
         return 1;
     }
     httplib::Client cli("127.0.0.1", port_future.get());
-    cli.set_read_timeout(30, 0);
+    cli.set_connection_timeout(k_ceiling);
+    cli.set_read_timeout(k_ceiling);
+    cli.set_write_timeout(k_ceiling);
 
     const auto opened = [&] {
         std::lock_guard<std::mutex> lk(sc.m);
@@ -416,6 +426,12 @@ int main() {
               "with the other side measured here, the pending side is left to the calibration");
     }
 
+    const bool listening = stop_future.wait_for(k_ceiling) == std::future_status::ready;
+    check(listening, "the server is listening");
+    if (!listening) {
+        server.detach();
+        return 1;
+    }
     stop_future.get()();
     server.join();
     std::error_code ec;
