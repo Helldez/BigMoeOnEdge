@@ -77,6 +77,8 @@ https://github.com/user-attachments/assets/16371803-b96b-42a4-b147-cb1b7d515c73
 | **GPU de bureau** (NVIDIA) | 24 GB + 94 GB RAM | Qwen3.6-35B-A3B | 21 GB | GPU | 135 |
 |  | dont 12 GB libres | Qwen3.6-35B-A3B | 21 GB | RAM, cache GPU | 75-81 |
 |  | 24 GB + 94 GB RAM | Gemma 4 26B-A4B | 17 GB | GPU | 107-115 |
+| **GPU de bureau** (NVIDIA) | 24 GB + 62 GB RAM | Qwen3.6-35B-A3B | 21 GB | GPU | 154 |
+|  |  | Laguna XS 2.1 33B | 20 GB | GPU | 93 |
 | **GPU de centre de données** (AMD, ROCm) | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
 
 Une plage est l'écart entre les exécutions. Méthode et toutes les exécutions :

@@ -57,6 +57,14 @@ Semantic Versioning.
   the compute backends load, so it is the server's at once and a client that connects early waits
   for the server to serve.
 
+### Documentation
+- **The same-card comparison with Lucebox, measured again on 0.41.2.** On a rented 24 GB card
+  (RTX 3090 class), Qwen3.6-35B-A3B decodes at 154 tok/s against Lucebox's 123, Laguna XS 2.1 33B
+  at 93 against 84-86, and a 28.6k-token prompt reaches its first token 4-8 times sooner. Lucebox
+  leads on Gemma 4 26B-A4B (131 against 114, 288 on code with its drafter) and on decode after a long
+  prompt with 12 GiB of the card free. In [comparison.md](docs/comparison.md#same-machine-same-file),
+  the README's speed table and its translations, and [benchmarks.md](docs/benchmarks.md).
+
 ## [0.41.3] - 2026-11-11
 
 ### Fixed
