@@ -7,6 +7,16 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Fixed
+- **A second load no longer decodes a whole session at half speed to time a placement that cannot
+  win.** Since #524 the device expert cache is kept across loads by measurement: the first load times
+  the cache, the second the capacity fitter's placement. On a 12 GB card with Qwen3.6-35B the second
+  load decoded at 37 tok/s against 68 in v0.40.3, timing a placement whose ceiling was 55 against
+  the cache's measured 73.5. That ceiling is now computed before the second load, from the rates this
+  machine probed and the bytes the model reads. It covers the experts the fitter left on the host at
+  the host's rate and the rest at the device's, and leaves out crossings and overheads. The fitter's
+  placement is timed only where that ceiling, plus a quarter for a probe that reads low
+  (`rate_ceiling_slack`), beats the cache by the 10% margin. Elsewhere the cache stays, and the plan
+  says why ([measured-planning.md](docs/measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache)).
 - **A discardable cache no longer loses its budget for good** ([#550](https://github.com/Helldez/BigMoeOnEdge/issues/550)).
   On a 16 GB Mac, 10-turn chats with Qwen3.6-35B-A3B Q4_K_M decoded 17.0 and 18.2 tok/s against 15.5 and 16.0 on 0.41.1,
   with 4.6-5.6 GB of cache against 2.5. With Gemma-4-26B-A4B Q4_0, 0.41.1's second session fell to 10.9 tok/s at 0.8 GB
