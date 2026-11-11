@@ -11,7 +11,7 @@ Semantic Versioning.
   diff, which for a new file is the content the call carried, up to the 12 KiB result cap. A local
   model writing a 677-line page read 12 KiB of it back, ran out of context, and its next call was cut
   off after 131 characters. The result now states the effect: created or replaced, lines, bytes, and
-  for a replaced file how many lines were added and removed. The card still shows the whole diff;
+  for a replaced file how many lines the changed span had and has. The card still shows the whole diff;
   `edit_file` still answers with its diff, which tells the model where each edit landed.
 
 ## [0.41.1] - 2026-11-11

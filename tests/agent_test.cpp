@@ -518,7 +518,7 @@ static void loop_tests() {
         rig->agent->send(c, "rewrite", json::array(), false, false, item);
         check(rig->wait_done(c), "the run ends");
         check(last_tool_message(rig->last_request()) ==
-                  "File written successfully: replaced a.txt, 2 lines (6 bytes). 1 line added, 2 removed.",
+                  "File written successfully: replaced a.txt, 2 lines (6 bytes). The changed span: 2 lines became 1.",
               "a replaced file is reported with how much of it changed");
     }
     {

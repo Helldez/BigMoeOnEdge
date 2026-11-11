@@ -120,15 +120,22 @@ write_summary(const std::string & rel, const std::string & content, const std::s
                     std::to_string(lines) + (lines == 1 ? " line" : " lines") + " (" + std::to_string(content.size()) +
                     " bytes).";
     if (existed) {
+        // unified_diff is one hunk from the first changed line to the last: what it counts is the span
+        // between them, so the summary says that, not lines added and removed. The header ends at the
+        // hunk's "@@" line: a content line may itself start with "---" or "+++".
         size_t added = 0, removed = 0;
+        bool body = false;
         std::istringstream in(diff);
         for (std::string l; std::getline(in, l);) {
-            if (l.rfind("+++", 0) == 0 || l.rfind("---", 0) == 0) continue;
+            if (!body) {
+                body = l.rfind("@@", 0) == 0;
+                continue;
+            }
             added += !l.empty() && l[0] == '+';
             removed += !l.empty() && l[0] == '-';
         }
-        s += " " + std::to_string(added) + (added == 1 ? " line" : " lines") + " added, " + std::to_string(removed) +
-             " removed.";
+        s += " The changed span: " + std::to_string(removed) + (removed == 1 ? " line" : " lines") + " became " +
+             std::to_string(added) + ".";
     }
     return s;
 }
