@@ -293,6 +293,7 @@ key, under the same security statement.
             "ctx_advice": {"recommended": 16384, "short": true, "param": "ctx-size", "refused": false,
                            "warn": false}},
   "generating": false,
+  "calibrating": false,
   "load_elapsed_s": 12.4
 }
 ```
@@ -303,7 +304,12 @@ it, so the count is the server's, the same on every screen and after a screen ch
 
 `state` is one of `empty` (no model), `planning` (a load in auto mode is measuring the machine
 before it loads: tens of seconds on a phone, nothing loaded meanwhile), `loading`, `ready`, `error`
-(the last load failed; `error` says why). `model` is `null` unless `state` is `ready`. `streaming` is whether expert streaming is
+(the last load failed; `error` says why). `calibrating` is true while a load-time calibration runs
+([measured-planning.md](measured-planning.md#decisions-across-loads-timed-at-load)): the plan the
+model was loaded with left a decision to time, and once the server was idle after an answer it
+unloaded the model to time each side; `state` reads `loading` meanwhile, a request waits for the
+model as it waits for any load and stops the calibration first, and `plan_progress` events name
+each candidate. `model` is `null` unless `state` is `ready`. `streaming` is whether expert streaming is
 on for the loaded session: with it off the engine is plain llama.cpp on mmap, and the UI must say so.
 Whether a model will stream is only known once it has loaded (a dense model, a plan that declines),
 so a UI says nothing about it before. `compute_threads` and `busy_threads` are what a CPU figure is
@@ -857,7 +863,7 @@ limit.
 | `backend` | a backend pack's install: `id` (the pack), `kind` (`backend`), `file`, `received`, `total`, `state` (`running`, `done`, `error`, `cancelled`), `error` (with `running`: the step, such as `unpacking`); with `done`, `restart_required` and `in_place` (false when the pack replaces one in use and takes its place at the next start) |
 | `update` | the installer's download: the same fields with `id` `update`, and with `done` its `path` and `version` |
 | `config` | the `GET /api/config` object, after any change |
-| `plan_progress` | a measurement (`GET /api/plan?measure=1`, or an auto load) entering a stage: `step` (`devices`, `model`, `compute`, `storage`, `memory`, `placement`, `rules`), its words `label`, `index` from 0 and `count`; then `{"step": "done"}` when it ends. A UI shows `label`; `step` is the protocol |
+| `plan_progress` | a measurement (`GET /api/plan?measure=1`, or an auto load) entering a stage: `step` (`devices`, `model`, `compute`, `storage`, `memory`, `placement`, `rules`), its words `label`, `index` from 0 and `count`; then `{"step": "done"}` when it ends. A load-time calibration reports `step` `calibrate` once per candidate it opens, `index` its place and `count` the most it opens, then `done`. A UI shows `label`; `step` is the protocol |
 | `conversation` | an agent conversation's `{id, title, state, updated}`, whenever one of those changes ([agent.md](agent.md#events)) |
 | `item` | `{conversation, item}`: an agent item added or changed, whole |
 | `delta` | `{conversation, item, text?, reasoning?}`: what a streaming assistant item adds |

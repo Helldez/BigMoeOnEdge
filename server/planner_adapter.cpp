@@ -39,6 +39,10 @@ int run_device_probe_child(const std::string & model_path, const std::string & d
 #endif
 }
 
+#if defined(BMOE_HAVE_PLANNER)
+static PlanOutcome outcome_of(const PlanBasis & b);
+#endif
+
 PlanOutcome make_plan(const RunConfig & cfg,
                       const std::vector<std::string> & pinned,
                       bool isolated_probes,
@@ -86,9 +90,23 @@ PlanOutcome make_plan(const RunConfig & cfg,
         opt.on_step = [&on_step](const char * step, int index, int count) {
             on_step(step, plan_step_label(step), index, count);
         };
-    const AutoPlan planned = probe_and_plan(cfg, req, opt);
-    const HardwareProfile & hw = planned.hw;
-    const Plan & plan = planned.plan;
+    auto basis = std::make_shared<PlanBasis>();
+    basis->facts = probe_and_plan(cfg, req, opt);
+    basis->cfg = cfg;
+    basis->req = req;
+    o = outcome_of(*basis);
+    o.basis = std::move(basis);
+    return o;
+#endif
+}
+
+#if defined(BMOE_HAVE_PLANNER)
+// A plan as the API returns it: what it changes, through the parameter table, and why.
+static PlanOutcome outcome_of(const PlanBasis & b) {
+    PlanOutcome o;
+    const RunConfig & cfg = b.cfg;
+    const HardwareProfile & hw = b.facts.hw;
+    const Plan & plan = b.facts.plan;
 
     // What the plan changes, read through the parameter table: every parameter whose value in the
     // plan's config differs from the config it was given.
@@ -131,6 +149,43 @@ PlanOutcome make_plan(const RunConfig & cfg,
     // What a person reads first: the outcome, the memory, the devices (plan_view.h).
     o.body.update(plan_view(hw, plan));
     return o;
+}
+#endif
+
+bool PlanOutcome::side_pending() const {
+    return ok && basis && bmoe::side_pending(basis->facts.plan);
+}
+
+CalibrationOutcome calibrate_plan_outcome(const PlanOutcome & plan,
+                                          const MeasuredKnobs & start,
+                                          const RunCandidate & run,
+                                          const PlanStepFn & on_step) {
+    CalibrationOutcome c;
+#if !defined(BMOE_HAVE_PLANNER)
+    (void) plan;
+    (void) start;
+    (void) run;
+    (void) on_step;
+    return c;
+#else
+    if (!plan.side_pending()) return c;
+    auto basis = std::make_shared<PlanBasis>(*plan.basis);
+    // The record as it stands now: a served answer may have timed a side since the plan was made, and
+    // the plan on it may already ask for less.
+    basis->facts.plan = replan(basis->facts, basis->cfg, basis->req, start);
+    basis->facts.model.knobs = start;
+    std::function<void(const char *, int, int)> step;
+    if (on_step)
+        step = [&on_step](const char * key, int index, int count) { on_step(key, plan_step_label(key), index, count); };
+    const CalibrationResult & r = calibrate_plan(basis->facts, basis->cfg, basis->req, run, step);
+    c.ran = true;
+    c.aborted = r.aborted;
+    c.complete = !bmoe::side_pending(basis->facts.plan);
+    c.knobs = basis->facts.model.knobs;
+    c.plan = outcome_of(*basis);
+    c.plan.hardware = plan.hardware;
+    c.plan.basis = std::move(basis);
+    return c;
 #endif
 }
 

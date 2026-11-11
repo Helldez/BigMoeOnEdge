@@ -421,7 +421,10 @@ without a device of their own, an unchanged plan.
   plan line gives the two figures. On GLM-4.7 over PCIe 3 (cache 1.6 tok/s) and GLM-4.5-Air (cache
   4.6-5.9), it is still timed, and won.
   The front-end merges each load's side into the record it keeps for the model and machine. Gate G25e
-  times both sides on the loopback device, byte-identical, with a rate in the record.
+  times both sides on the loopback device, byte-identical, with a rate in the record. Where the plan
+  is calibrated at load, both sides are timed before it is served instead, each a short load of its
+  own ([below](#decisions-across-loads-timed-at-load)); the across-loads timing is what a load with
+  calibration off, or one it left incomplete, does.
 - **Not done.** The double reads stay, measured rather than removed: on a model that fits the host,
   the experts are resident and nothing is read. Pipeline parallelism on several devices is not
   weighed. A warm start of the device cache from the record's hottest experts is not built: the first
@@ -493,6 +496,85 @@ a prefill device whose room takes the expert cache away ([hardware-planning.md](
 the prefill plan); with nothing recorded it decides as it did before. Checked: record round-trip and
 merge checks in the `knob_trial` test, planner checks for both outcomes and for the unpriced one,
 and gate G24e (a load's record carries its one request).
+
+## Decisions across loads, timed at load
+
+Two decisions in Step 4's neighbourhood are fixed when the model or its context is created, so one
+load cannot try both sides: the device tier (a cache of experts on the card, or the capacity fitter's
+whole layers: `MeasuredKnobs::device_cache_tps`, `no_device_cache_tps`) and the graph width where a
+wide graph's compute buffers take device memory the experts would use (`width_narrow` and its
+rates, [hardware-planning.md](hardware-planning.md#the-widest-graph)). Timed across loads, each side
+cost a whole session of a person's use at whatever rate it decoded. On rented cards a model's second
+load decoded at 37 tok/s instead of 68 on a 12 GB card, and at 35 instead of 84 on a 32 GB one; on the
+32 GB card the width's side, which would have given back about 13 GB of device memory taken by a
+32768-wide graph's buffers, waited behind the tier's.
+
+**What it does.** Where a plan leaves such a side pending, each side is opened as a short candidate
+load of its own and timed before the plan is served, and the plan on the grown record is the one
+served (`bmoe/calibrate.h`):
+
+- **The planner stays the oracle.** A side is pending exactly when the plan sets one
+  (`KnobTrialConfig::device_tier` or `width_side`). `calibrate()` runs that candidate, puts its rate
+  in the record with the mapping a session's own timing uses (`record_side_rate`, one decision per
+  load: the tier where the plan names one, else the width), and asks the planner again
+  (`replan`: `probe_and_plan`'s planning half on the same facts, the fitter's re-fits at a narrower
+  width included, no probe). Every rule above holds as it is: the fitter's placement is still timed
+  only where its ceiling could win, and a side wins only past `min_backend_win`. The tier is decided
+  first, the width then on the winner, as the planner already orders them; a configuration already
+  timed is not opened again (the cache side at the plan's width answers the width's wide side too).
+  At most four candidates, every side of both decisions once; a plan that asks past that, or asks
+  for something a short decode cannot measure (the prefill of long prompts a machine has been
+  sending), is served as it stands and its load times the rest as before.
+- **A candidate** is a `Session` of its own (`run_calibration_candidate`), opened, given one fixed
+  generic instruction through the model's own chat template, and closed. Its decode is the ordinary
+  one, every token through the same hook, streamer and caches. The first candidate samples with a
+  fixed seed (greedy prose falls into loops that replay a few experts) and returns its token ids; a
+  later one replays them teacher-forced, so both sides route the same tokens and differ only in where
+  the experts run. Speculation is off: a draft's acceptance would time the drafter.
+- **Bounded by measurement.** The windows are the knob trial's (`KnobTrialPolicy`), and the turn ends
+  once the rate is known. A cache whose hits the session sees settles as the trial does; a device
+  expert cache, filled inside llama.cpp, settles once two windows in a row agree within the margin
+  (`RateProbe::settle_on_rate`), where the session's own timing waits the longest settle. The second
+  side of a decision is cut once a timed window's fastest step is past the first side's range by the
+  margin (`apart_bar`, the knob trial's own test for a candidate apart from its incumbent).
+- **A side that cannot be opened loses.** A candidate that fails to load or to decode (out of device
+  memory, most likely) is recorded as not viable (`unviable=` in the record), and the plan treats
+  that side as the loser and stops asking for it; a rate measured for it later clears the mark. A
+  request the session refuses (a context too short for the instruction) marks nothing.
+- **What is kept, and what is not.** The rates go in the model's `.knobs` record as a served load's
+  do, so the next plan of the file on this machine starts decided. The candidates' output is thrown
+  away, and they write no `decode_compute_s` or `decode_hit`: those are the served configuration's.
+  The winner is then opened fresh, as a plain load, so what is served is byte for byte what the same
+  plan would load without a calibration. With no request served yet, the width weighs the two decode
+  rates alone (`usage_requests` 0); later loads that time the width's prefill weigh the requests as
+  before.
+
+**Where it runs.** `bmoe-cli --auto` calibrates at load, before the first answer, and says so on one
+line. `bmoe-server` never holds the first answer for it: the model loads on the plan's own side and
+serves at once, the served load timing that side as before. At the first idle point after an answer,
+nothing running and nothing waiting, the server unloads the model, times each side, keeps the record
+and loads the decided plan, as one load (`EngineHost::load_when_idle`): `calibrating` in `/api/info`,
+`state` `loading`, `plan_progress` events with `step` `calibrate`. A request that arrives meanwhile
+stops the candidate in flight and waits for that load, as it waits for any; what was measured until
+then is kept. One attempt per load of a plan. `--no-calibrate` (the `calibrate` parameter) turns it
+off, and the decisions are timed across loads exactly as before.
+
+**Where it does not.** Both decisions exist only beside a device with memory of its own: the tier
+needs one (`device_tier_device`), and the width's trade is declined on a pool shared with the host
+(`devices_share_host_memory`). A phone, a unified-memory Mac and a machine without a graphics card
+never have a side pending, so they never open a candidate; with nothing pending `calibrate()` opens
+nothing and the plan is the one it always was.
+
+**Judged by.** The `calibrate` test runs the loop on fake ports: it ends, runs the sides in the
+planner's order, opens nothing the planner does not ask for, treats a candidate that cannot open as
+the losing side, replays the first run's tokens against the other side's range, and stops for an
+aborted run. `planner_test` runs it on the real rules for both decisions and the ceiling's skip.
+Gates G24f (the width, on the host) and G25f (the tier, on the loopback device) run the engine's own
+candidates: no side left pending, both rates in the record, and the winner, opened fresh, equal to
+the resident answer. `engine_host_test` drives the server's idle load with a scripted session.
+
+Owed: a run on a card of each class, the second load's decode against the first's, with the
+candidates' wall time, and the server's idle path against a client that sends turns back to back.
 
 ## What the planner looks like afterwards
 

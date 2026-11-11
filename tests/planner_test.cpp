@@ -15,6 +15,7 @@
 #include "bmoe/config.h"
 #include "bmoe/allocate.h"
 #include "bmoe/backend_choice.h"
+#include "bmoe/calibrate.h"
 #include "bmoe/planner.h"
 #include "bmoe/probe.h"
 
@@ -1109,6 +1110,58 @@ int main() {
                 ModelProfile mm = model;
                 const Plan pinned_ub = plan_run(big_ctx, no_tier, mm, roomy_layers, pin_ub, pol);
                 check(pinned_ub.config.trial.width_side == -1, "width across loads, pinned: nothing timed");
+
+                // A load-time calibration times both decodes before any request is served: with none
+                // seen, the decode rates alone weigh the two widths (bmoe/calibrate.h).
+                MeasuredKnobs cal;
+                cal.width_narrow = (int) narrow;
+                cal.wide_decode_tps = 14.2;
+                cal.narrow_decode_tps = 19.4;
+                const Plan unserved = plan_with(cal);
+                dw = find(unserved, "ubatch");
+                check(cal.usage_requests == 0 && unserved.config.n_ubatch == (int) narrow &&
+                          unserved.config.trial.width_side == -1 && dw && dw->source == Source::Measured &&
+                          dw->reason.find("no request served yet") != std::string::npos,
+                      "width, no request served: the faster decode decides", dw ? dw->reason : "none");
+                cal.narrow_decode_tps = 14.5; // inside the margin
+                check(plan_with(cal).config.n_ubatch == 0 && plan_with(cal).config.trial.width_side == -1,
+                      "width, no request served, inside the margin: the full width holds");
+                // A width a calibration could not open loses.
+                MeasuredKnobs fails_narrow;
+                fails_narrow.width_narrow = (int) narrow;
+                fails_narrow.narrow_unviable = true;
+                const Plan wide_kept = plan_with(fails_narrow);
+                dw = find(wide_kept, "ubatch");
+                check(wide_kept.config.n_ubatch == 0 && wide_kept.config.trial.width_side == -1 && dw &&
+                          dw->source == Source::Measured && dw->reason.find("failed") != std::string::npos,
+                      "width, the narrow graph could not be opened: the full width stands", dw ? dw->reason : "none");
+                MeasuredKnobs fails_wide = fails_narrow;
+                fails_wide.narrow_unviable = false;
+                fails_wide.wide_unviable = true;
+                const Plan narrow_kept = plan_with(fails_wide);
+                check(narrow_kept.config.n_ubatch == (int) narrow && narrow_kept.config.trial.width_side == -1,
+                      "width, the full width could not be opened: the narrow graph stands");
+                // Another narrow width: what failed against the old one answers nothing.
+                fails_narrow.width_narrow = (int) narrow * 2;
+                check(plan_with(fails_narrow).config.trial.width_side == 1,
+                      "width, a failure at another narrow width: measured afresh");
+
+                // The whole loop on the real rules: calibrate() asks the plan, times each side it names,
+                // and serves the narrow graph that decoded faster, with no request served.
+                const auto width_run = [&](const RunConfig & c, const CalibrationRun &) {
+                    CandidateTiming t;
+                    t.created = true;
+                    t.tokens_per_second = c.n_ubatch == (int) narrow ? 19.4 : 14.2;
+                    t.step_lo = t.step_hi = 1.0 / t.tokens_per_second;
+                    t.tokens = {1, 2, 3};
+                    return t;
+                };
+                const CalibrationResult cw = calibrate(first, MeasuredKnobs{}, plan_with, width_run);
+                check(cw.complete && cw.runs == 2 && cw.plan.config.n_ubatch == (int) narrow &&
+                          cw.knobs.wide_decode_tps == 14.2 && cw.knobs.narrow_decode_tps == 19.4 &&
+                          cw.knobs.width_narrow == (int) narrow,
+                      "calibration, graph width: both sides timed, the narrow graph served",
+                      std::to_string(cw.runs) + " runs, ubatch " + std::to_string(cw.plan.config.n_ubatch));
             }
 
             // A slope the device side did not measure decides nothing there.
@@ -2748,6 +2801,58 @@ int main() {
             pin.pinned.push_back("device-cache-mb");
             const Plan pinned = plan_run(base_cfg(), slow_cores, model, half, pin, PlannerPolicy::defaults());
             check(pinned.config.trial.device_tier == -1, "device tier, pinned by the caller: nothing timed");
+
+            // A side a load-time calibration could not open loses (bmoe/calibrate.h).
+            ModelProfile no_cache = model;
+            no_cache.knobs.device_cache_unviable = true;
+            const Plan fitter_kept =
+                plan_run(base_cfg(), slow_cores, no_cache, half, PlanRequest{}, PlannerPolicy::defaults());
+            e = find(fitter_kept, "device-cache-mb");
+            check(fitter_kept.config.moe.device_cache_mb == 0 && fitter_kept.config.trial.device_tier == -1 &&
+                      fitter_kept.config.buft_overrides.size() == 24 && e && e->source == Source::Measured,
+                  "device tier, the cache could not be opened: the fitter's placement, nothing timed",
+                  e ? e->reason : "no decision");
+            ModelProfile no_fitter = model;
+            no_fitter.knobs.no_device_cache_unviable = true;
+            const Plan cache_kept =
+                plan_run(base_cfg(), slow_cores, no_fitter, half, PlanRequest{}, PlannerPolicy::defaults());
+            e = find(cache_kept, "device-cache-mb");
+            check(cache_kept.config.moe.device_cache_mb > 0 && cache_kept.config.trial.device_tier == -1 && e &&
+                      e->reason.find("failed") != std::string::npos,
+                  "device tier, the fitter's placement could not be opened: the cache, nothing timed",
+                  e ? e->reason : "no decision");
+
+            // The whole loop on the real rules: the cache side first, then the fitter's placement, and
+            // the faster served. Each candidate is told by its config alone.
+            const auto replan_tier = [&](const MeasuredKnobs & k) {
+                ModelProfile mm = model;
+                mm.knobs = k;
+                return plan_run(base_cfg(), slow_cores, mm, half, PlanRequest{}, PlannerPolicy::defaults());
+            };
+            const auto tier_run = [](double cache, double fitter) {
+                return [cache, fitter](const RunConfig & c, const CalibrationRun &) {
+                    CandidateTiming t;
+                    t.created = true;
+                    t.tokens_per_second = c.moe.device_cache_mb > 0 ? cache : fitter;
+                    t.step_lo = t.step_hi = 1.0 / t.tokens_per_second;
+                    t.tokens = {7, 8, 9};
+                    return t;
+                };
+            };
+            const CalibrationResult won_c = calibrate(tier, MeasuredKnobs{}, replan_tier, tier_run(15.0, 9.9));
+            check(won_c.complete && won_c.runs == 2 && won_c.plan.config.moe.device_cache_mb > 0 &&
+                      won_c.knobs.device_cache_tps == 15.0 && won_c.knobs.no_device_cache_tps == 9.9,
+                  "calibration, device tier: both sides timed in one load, the cache served",
+                  std::to_string(won_c.runs) + " runs");
+            const CalibrationResult lost_c = calibrate(tier, MeasuredKnobs{}, replan_tier, tier_run(1.6, 3.94));
+            check(lost_c.complete && lost_c.runs == 2 && lost_c.plan.config.moe.device_cache_mb == 0 &&
+                      lost_c.plan.config.buft_overrides.size() == 24,
+                  "calibration, device tier: the fitter's placement decoded faster and is served");
+            // The cache past the fitter's ceiling: the fitter's side is never opened.
+            const CalibrationResult ceiling_c = calibrate(tier, MeasuredKnobs{}, replan_tier, tier_run(20.0, 30.0));
+            check(ceiling_c.complete && ceiling_c.runs == 1 && ceiling_c.plan.config.moe.device_cache_mb > 0 &&
+                      ceiling_c.knobs.no_device_cache_tps == 0.0,
+                  "calibration, device tier: past the fitter's ceiling, one candidate only");
         }
 
         // The device's rate unmeasured: nothing says it is the faster processor, and nothing moves.

@@ -388,6 +388,10 @@ measures the other's recovery. What a front-end decides is in its options: wheth
 read (`--no-probe-io`), whether memory is measured by holding it (`--probe-mem`, never from the
 server), and how it starts itself again to probe a device. The composition lives with the adapters,
 because it starts llama.cpp's backends; it decides nothing, and the rules it ends in stay pure.
+A front-end may also hand it a candidate runner (`AutoPlanOptions::calibrate`): where the plan leaves
+a decision across loads pending, each side is then timed as a short load and the decided plan
+returned, with the record to keep (`bmoe-cli --auto` does; the server calibrates later, once idle,
+through `calibrate_plan` on the facts it kept).
 
 Inside, `plan_run` is a list of named stages over one planning state - the widest graph, the regime,
 the placement, the accelerator axis, the dense policy, the ledger and the prefill device, the cache
@@ -840,7 +844,10 @@ the narrow graph. One that does has both sides' prefill of them timed before any
 Measured on two 24 GB cards with GLM-4.5-Air: 14.2 tok/s decoded at 16384 tokens wide against 19.4 at
 512, where the wide graph prefilled a 9.5k-token prompt at 610 tok/s and a 512-wide one, in
 llama.cpp, at 104. A width set by hand is left alone and charged in
-full; a slope that was not measured decides nothing.
+full; a slope that was not measured decides nothing. With load-time calibration (on by default) both
+widths' decodes are timed as short candidate loads before the plan is served, and with no request
+seen yet the decode rates alone weigh them
+([measured-planning.md](measured-planning.md#decisions-across-loads-timed-at-load)).
 
 Measured on a 12 GB card (RTX 3060 class, 120 GiB of host memory) with Qwen3.8-Flash-Next Q2_0 at a
 16384 context. The graph as wide as the context reserved 6644 MiB of the card for compute buffers.
@@ -1143,7 +1150,10 @@ The fitter's placement is timed only where it could win, since timing it costs a
 rate: its ceiling (`fitter_decode_ceiling`: the bytes it computes on the host at the host's probed
 expert rate, the rest at the fastest device's, nothing for crossings or overheads), raised by
 `rate_ceiling_slack` for a probe that reads low, has to beat the cache's measured rate by
-`min_backend_win`. Where it cannot, the second load keeps the cache and the plan says why.
+`min_backend_win`. Where it cannot, the second load keeps the cache and the plan says why. With
+load-time calibration (on by default) the "loads" are short candidate loads timed before the plan is
+served, the tier first and the width then on its winner, and a side that cannot be opened loses
+([measured-planning.md](measured-planning.md#decisions-across-loads-timed-at-load)).
 
 The layers the fitter split (`price_layers_home`, [measured-planning.md](measured-planning.md#step-3-the-cost-of-a-device-measured-on-a-real-layer)):
 where the capacity fitter put the dense part of some layers on a device and left their experts on

@@ -1050,12 +1050,30 @@ int main(int argc, char ** argv) {
         std::vector<MeasuredKnobs> knobs_kept;
         if (routing.load_knobs(knobs_kept)) opt.knobs = &knobs_kept;
         req.measure_knobs = !routing.knobs_path.empty();
+        // A decision the plan can only settle by timing both sides is timed here, before the first
+        // answer, each side a short load of its own (bmoe/calibrate.h); said once, since the loads are
+        // the wait a person sees. A plan that is only printed opens nothing.
+        if (cfg.calibrate && !plan_only) {
+            opt.calibrate = [](const RunConfig & c, const CalibrationRun & run) {
+                return run_calibration_candidate(c, run);
+            };
+            opt.on_step = [](const char * step, int index, int) {
+                if (index == 0 && std::string(step) == k_calibrate_step)
+                    std::fprintf(stderr,
+                                 "bmoe: calibrating: timing each placement this plan could take on this machine "
+                                 "before the first answer (%s skips it)\n",
+                                 flag_spelling("calibrate", "false").c_str());
+            };
+        }
         const AutoPlan planned = probe_and_plan(cfg, req, opt);
         const HardwareProfile & hw = planned.hw;
         const ModelProfile & mp = planned.model;
         const Plan & plan = planned.plan;
         cfg = plan.config;
         routing.hardware = hardware_fingerprint(hw);
+        // What the calibration measured, kept as a served load's verdicts are: the next plan of the file
+        // on this machine starts decided.
+        if (planned.calibrated) routing.keep_knobs(planned.calibration.knobs);
         predicted_s_per_token = plan.allocation.seconds_per_token;
         // What the plan credited, from the curve when there was one: the figure its prediction stands on.
         if (plan.allocation.cache_bytes > 0 && plan.allocation.cache_hit_credited > 0)

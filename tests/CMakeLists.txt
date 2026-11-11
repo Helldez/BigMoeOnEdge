@@ -317,3 +317,10 @@ add_test(NAME cache_brake COMMAND bmoe_cache_brake_test)
 add_executable(bmoe_knob_trial_test knob_trial_test.cpp)
 target_link_libraries(bmoe_knob_trial_test PRIVATE bmoe_core)
 add_test(NAME knob_trial COMMAND bmoe_knob_trial_test)
+
+# Load-time calibration's loop (bmoe/calibrate.h) with fake ports: it ends, runs the sides in the
+# planner's order, opens nothing it is not asked for, treats a candidate that cannot open as the
+# losing side, and replays the first run's tokens. Pure policy, no model.
+add_executable(bmoe_calibrate_test calibrate_test.cpp)
+target_link_libraries(bmoe_calibrate_test PRIVATE bmoe_core)
+add_test(NAME calibrate COMMAND bmoe_calibrate_test)

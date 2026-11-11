@@ -14,7 +14,9 @@
 //   * decide() follows the same rule on `fatal`;
 //   * the engine's diagnostics reach the bus as `log` events while a host lives;
 //   * a context short of what a server's clients send is flagged in the ready state and warned of
-//     in the log at load, and a context_full refusal is logged with the way to raise it.
+//     in the log at load, and a context_full refusal is logged with the way to raise it;
+//   * a load-time calibration's load starts only when the host is idle, runs its step with the old
+//     session gone, opens what the step settled on, and stops the step for a turn that arrives.
 //
 // Checks are explicit (not <cassert>): the Release build defines NDEBUG, which compiles assert out.
 
@@ -964,8 +966,123 @@ static void routing_store_tests() {
     fs::remove_all(root, ec);
 }
 
+// A server's load-time calibration runs as a load the host starts only when idle, with a step between
+// closing the old session and opening the new one (EngineHost::load_when_idle): the step runs with the
+// old session gone, may change what is opened, and stops for any turn that arrives, which then waits
+// for the load and runs on the new session. Nothing in flight is cancelled to start it.
+static void calibration_tests() {
+    // The turn-end hook: called once a turn has left the line, when the host is idle again.
+    {
+        auto bus_owner = std::make_unique<EventBus>();
+        Script script;
+        auto host_owner = std::make_unique<EngineHost>(*bus_owner, opener(script));
+        EngineHost & host = *host_owner;
+        std::atomic<int> ends{0};
+        std::atomic<bool> idle_at_end{false};
+        host.set_turn_end_hook([&] {
+            ++ends;
+            idle_at_end = host.idle();
+        });
+        check(!host.idle(), "calibration: an empty host is not idle");
+        check(host.load(config(), config()).empty() && wait_state(host, "ready"), "calibration: the model loads");
+        check(host.idle(), "calibration: a ready host with no turn is idle");
+        check(host.chat(turn(), nullptr).status == 200 && ends == 1 && idle_at_end,
+              "calibration: the turn-end hook runs after the answer, with the host idle");
+    }
+    // The step runs with the old session closed, changes what is opened, and the host reads loading.
+    {
+        auto bus_owner = std::make_unique<EventBus>();
+        Script script;
+        auto host_owner = std::make_unique<EngineHost>(*bus_owner, opener(script));
+        EngineHost & host = *host_owner;
+        check(host.load(config(), config()).empty() && wait_state(host, "ready"), "calibration: loaded");
+        std::atomic<int> alive_in_step{-1};
+        Gate in_step, leave_step;
+        const bool started = host.load_when_idle(
+            config(), config(), [&](RunConfig & effective, RunConfig & requested, const std::atomic<bool> &) {
+                alive_in_step = script.alive.load();
+                in_step.release();
+                leave_step.wait();
+                effective.n_threads = 3;
+                requested.n_threads = 3;
+            });
+        check(started && in_step.wait(), "calibration: an idle host starts the step");
+        const json during = host.info();
+        check(alive_in_step == 0 && during.value("state", "") == "loading" && during.value("calibrating", false) &&
+                  !host.ready(),
+              "calibration: the step runs with the old session gone, the host loading");
+        leave_step.release();
+        check(wait_state(host, "ready") && script.opened == 2 && !host.info().value("calibrating", true),
+              "calibration: then the new session opens");
+        RunConfig three = config();
+        three.n_threads = 3;
+        check(host.reload_keys(three).empty() && !host.reload_keys(config()).empty(),
+              "calibration: the session runs what the step settled on");
+    }
+    // A turn that arrives during the step stops it, waits for the load, and runs on the new session.
+    {
+        auto bus_owner = std::make_unique<EventBus>();
+        Script script;
+        auto host_owner = std::make_unique<EngineHost>(*bus_owner, opener(script));
+        EngineHost & host = *host_owner;
+        check(host.load(config(), config()).empty() && wait_state(host, "ready"), "calibration: loaded again");
+        Gate in_step;
+        std::atomic<bool> stopped{false};
+        host.load_when_idle(config(), config(), [&](RunConfig &, RunConfig &, const std::atomic<bool> & stop) {
+            in_step.release();
+            for (int i = 0; i < 5000 && !stop.load(); ++i)
+                std::this_thread::sleep_for(1ms);
+            stopped = stop.load();
+        });
+        check(in_step.wait(), "calibration: the step is running");
+        auto pending = std::async(std::launch::async, [&] { return host.chat(turn(), nullptr); });
+        const ChatOutcome out = pending.get();
+        check(stopped && out.status == 200 && out.result.generated_text == "hi" && script.opened == 2,
+              "calibration: a turn stops the step, then runs on the session the load opened");
+    }
+    // Not idle: nothing starts, and the turn in flight is not touched.
+    {
+        auto bus_owner = std::make_unique<EventBus>();
+        Script script;
+        script.turn = Script::Turn::Block;
+        auto host_owner = std::make_unique<EngineHost>(*bus_owner, opener(script));
+        EngineHost & host = *host_owner;
+        check(host.load(config(), config()).empty() && wait_state(host, "ready"), "calibration: loaded, blocking");
+        auto pending = std::async(std::launch::async, [&] { return host.chat(turn(), nullptr); });
+        check(script.started.wait(), "calibration: a turn is generating");
+        std::atomic<bool> ran{false};
+        const bool started = host.load_when_idle(
+            config(), config(), [&](RunConfig &, RunConfig &, const std::atomic<bool> &) { ran = true; });
+        check(!started && !ran && script.cancels == 0 && host.ready(),
+              "calibration: refused while a turn runs, which goes on");
+        host.cancel();
+        (void) pending.get();
+        check(wait_state(host, "ready") && script.opened == 1, "calibration: the session is the one loaded");
+    }
+    // An unload during the step stops it and ends empty.
+    {
+        auto bus_owner = std::make_unique<EventBus>();
+        Script script;
+        auto host_owner = std::make_unique<EngineHost>(*bus_owner, opener(script));
+        EngineHost & host = *host_owner;
+        check(host.load(config(), config()).empty() && wait_state(host, "ready"), "calibration: loaded once more");
+        Gate in_step;
+        std::atomic<bool> stopped{false};
+        host.load_when_idle(config(), config(), [&](RunConfig &, RunConfig &, const std::atomic<bool> & stop) {
+            in_step.release();
+            for (int i = 0; i < 5000 && !stop.load(); ++i)
+                std::this_thread::sleep_for(1ms);
+            stopped = stop.load();
+        });
+        check(in_step.wait(), "calibration: the step is running again");
+        host.unload();
+        check(stopped && state(host) == "empty" && script.alive == 0, "calibration: an unload stops the step");
+    }
+}
+
 int main() {
     routing_store_tests();
+    calibration_tests();
     load_tests();
     loading_tests();
     request_tests();

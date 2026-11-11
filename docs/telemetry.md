@@ -601,7 +601,7 @@ hardware=<16 hex> engine=<version> threads=<n> threads_tried=<incumbent,candidat
   overlap=<-1|0|1> overlap_incumbent=<-1|0|1> overlap_gain=<f> rounds=<n>
   device_cache_tps=<f> no_device_cache_tps=<f> width_narrow=<n> wide_decode_tps=<f>
   narrow_decode_tps=<f> wide_prefill_tps=<f> narrow_prefill_tps=<f> usage_gen_tokens=<f>
-  usage_long_prompt_tokens=<f> usage_requests=<n>                              (one line)
+  usage_long_prompt_tokens=<f> usage_requests=<n> ... [unviable=<side,...>]     (one line)
 ```
 
 `threads=0` and `overlap=-1` mean not measured, and so does a rate of 0. The two rates are the device
@@ -620,6 +620,18 @@ request. Their decode is timed with these lines:
 bmoe: knob trial: timing the decode with the graph <at the plan's width|narrowed> (<n> tokens wide)
 bmoe: knob trial: <f> tok/s with the graph <...> (<n> tokens wide), the median of <n> windows
 ```
+
+A load-time calibration ([measured-planning.md](measured-planning.md#decisions-across-loads-timed-at-load))
+puts its rates in the same keys, with these lines:
+
+```
+bmoe: calibration: timing the decode <side> (candidate <i> of at most <n>)
+bmoe: calibration: <f> tok/s <side>, <the median of <n> windows|cut once past the other side's range>
+```
+
+`unviable` lists the sides a calibration could not open (`device_cache`, `no_device_cache`, `wide`,
+`narrow`; the width's at `width_narrow`), written only when there is one: the plan treats each as the
+losing side. A name the reader does not know is skipped.
 
 Keeping a record merges it into the one already kept for that machine and engine: each measurement it
 carries replaces that one, and the rest stay, so a load that measured one side does not lose the other.

@@ -40,8 +40,10 @@
 #include "service_manager.h"
 
 #include "bmoe/config.h"
+#include "bmoe/measured_knobs.h"
 #include "bmoe/params.h"
 #include "bmoe/probe.h"
+#include "bmoe/session.h"
 #include "bmoe/version.h"
 
 #include <cpp-httplib/httplib.h>
@@ -445,6 +447,9 @@ struct App {
     // measurement and must not replace it.
     PlanOutcome load_plan;
     std::atomic<uint64_t> plan_seq{0};
+    // The load plan left a decision across loads to time, and its calibration has not run: it runs at
+    // the first idle point after an answer (maybe_calibrate). Under plan_m.
+    bool calibration_armed = false;
 
     // The network, for reading a repository (http_fetch.h), and where its bytes in flight go.
     std::unique_ptr<HttpFetch> net;
@@ -483,7 +488,17 @@ struct App {
             rec.engine = version();
             routing.keep_knobs(model, rec);
         });
+        host.set_turn_end_hook([this] { maybe_calibrate(); });
     }
+
+    // A calibration step runs on the host's loader thread and reaches into the members declared after
+    // the host (the routing store): the loader is joined while they are all alive, and no turn ending
+    // during the shutdown starts another.
+    ~App() {
+        stopping = true;
+        host.unload();
+    }
+    std::atomic<bool> stopping{false};
 
     // Each model's recorded routing, kept for the next plan of that file (routing_store.h).
     RoutingStore routing;
@@ -655,6 +670,7 @@ struct App {
             if (p.ok) {
                 store.apply_plan(p.values, p.decisions);
                 std::lock_guard<std::mutex> lk(plan_m);
+                calibration_armed = p.side_pending();
                 load_plan = p;
                 last_plan = std::move(p);
             }
@@ -664,6 +680,7 @@ struct App {
             // answered as the one this session runs with.
             std::lock_guard<std::mutex> lk(plan_m);
             load_plan = PlanOutcome{};
+            calibration_armed = false;
         }
         // The planning flag is cleared after the load has been asked for, so the state goes from
         // planning straight to loading (or to the error) with no empty in between.
@@ -672,6 +689,11 @@ struct App {
             ~EndPlanning() { h.end_planning(); }
         } end_planning{host};
         const RunConfig requested = store.config();
+        return host.load(effective_config(requested), requested);
+    }
+
+    // The config a load opens for the settings `requested`.
+    RunConfig effective_config(const RunConfig & requested) {
         RunConfig effective = requested;
         const std::vector<std::string> ops = store.operator_keys();
         const bool pinned = std::find(ops.begin(), ops.end(), "moe-stream") != ops.end();
@@ -683,7 +705,71 @@ struct App {
         // The projector beside the model, unless one was named: a model whose folder holds its
         // mmproj file reads images with nothing set.
         if (effective.mmproj.empty()) effective.mmproj = lib.projector_for(requested.model_path);
-        return host.load(effective, requested);
+        return effective;
+    }
+
+    // Load-time calibration, as a server does it (bmoe/calibrate.h, docs/measured-planning.md). The
+    // first answer is never held for it: the model loads on the plan's own side and serves at once.
+    // Once it is idle after an answer - nothing running, nothing waiting - the model is unloaded, each
+    // side opened as a short candidate and timed, the record kept, and the decided plan loaded, all as
+    // one load the host runs (EngineHost::load_when_idle). A request that arrives meanwhile stops the
+    // candidate in flight and waits for that load, as it waits for any; what was measured until then is
+    // kept, and the served load times the rest as before. One attempt per load of a plan.
+    void maybe_calibrate() {
+        if (stopping) return;
+        std::unique_lock<std::mutex> load(load_m, std::try_to_lock);
+        if (!load) return; // a load is under way: its own plan decides
+        PlanOutcome lp;
+        {
+            std::lock_guard<std::mutex> lk(plan_m);
+            if (!calibration_armed) return;
+            lp = load_plan;
+        }
+        const RunConfig requested = store.config();
+        const std::string model = lp.body.value("model", "");
+        if (!requested.calibrate || !lp.side_pending() || model.empty() || host.model_path() != model) return;
+        if (!host.idle()) return;
+        {
+            std::lock_guard<std::mutex> lk(plan_m);
+            calibration_armed = false;
+        }
+        auto calibrate_step = [this, lp, model](RunConfig & effective, RunConfig & req,
+                                                const std::atomic<bool> & stop) {
+            // The record as this machine keeps it now: the answers served since the plan may have
+            // timed a side.
+            std::vector<MeasuredKnobs> kept;
+            MeasuredKnobs start;
+            if (routing.load_knobs(model, kept))
+                if (const MeasuredKnobs * k = find_measured_knobs(kept, lp.hardware, version())) start = *k;
+            const CalibrationOutcome c = calibrate_plan_outcome(
+                lp, start,
+                [&stop](const RunConfig & cfg, const CalibrationRun & run) {
+                    return run_calibration_candidate(cfg, run, &stop);
+                },
+                [this](const std::string & step, const std::string & label, int index, int count) {
+                    bus.publish("plan_progress",
+                                json{{"step", step}, {"label", label}, {"index", index}, {"count", count}});
+                });
+            bus.publish("plan_progress", json{{"step", "done"}});
+            if (!c.ran) return;
+            MeasuredKnobs rec = c.knobs;
+            rec.hardware = lp.hardware;
+            rec.engine = version();
+            if (!rec.empty()) routing.keep_knobs(model, rec);
+            if (!c.plan.ok) return;
+            PlanOutcome p = c.plan;
+            p.seq = ++plan_seq;
+            store.apply_plan(p.values, p.decisions);
+            {
+                std::lock_guard<std::mutex> lk(plan_m);
+                load_plan = p;
+                last_plan = std::move(p);
+            }
+            publish_config();
+            req = store.config();
+            effective = effective_config(req);
+        };
+        host.load_when_idle(effective_config(requested), requested, calibrate_step);
     }
 
     // Everything that only means something on a running stream, turned off with it. A default the
@@ -1726,6 +1812,7 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     // A stop ends what keeps a worker busy first (a generation, every event stream), since the
     // server's stop waits for its workers.
     const auto stop = [&svr, &app] {
+        app.stopping = true;
         app.host.cancel();
         app.agent->shutdown();
         app.updates->cancel();

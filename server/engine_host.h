@@ -107,6 +107,24 @@ public:
     // compares against. Returns an error for a config that cannot start, "" once the load is under
     // way.
     std::string load(const RunConfig & effective, const RunConfig & requested);
+
+    // A step a load runs on its own thread between closing the old session and opening the new one,
+    // with the memory the old one held given back: where a server's load-time calibration opens its
+    // candidates (docs/measured-planning.md). It may change the configs the load then opens (the
+    // decided plan's). `stop` is raised when a turn or a decision arrives, and when the load is
+    // cancelled or replaced: the step then ends as soon as it can and the load opens what it settled.
+    using BeforeOpen =
+        std::function<void(RunConfig & effective, RunConfig & requested, const std::atomic<bool> & stop)>;
+    // load() with `before_open` run first, started only while the host is idle (idle()): ready, no
+    // turn running, none waiting. Nothing in flight is cancelled. False when it did not start. The
+    // state reads "loading", with `calibrating` set in info(), until the new session is open, so a
+    // turn that arrives meanwhile waits for it as it waits for any load, and stops the step.
+    bool load_when_idle(const RunConfig & effective, const RunConfig & requested, BeforeOpen before_open);
+    // Ready, with no turn running or waiting for the model.
+    bool idle() const;
+    // Called on the thread of a turn or a decision once it has left the line, whatever its outcome:
+    // where a front-end looks for the idle point after an answer. Set before any turn.
+    void set_turn_end_hook(std::function<void()> hook) { turn_end_ = std::move(hook); }
     void unload();
     void cancel();
 
@@ -169,6 +187,17 @@ private:
     void keep_routing(const HostedSession & s);
     // Likewise the knob trial's verdicts, when a new one came in.
     void keep_knobs(const HostedSession & s);
+
+    // Start the loader thread for `effective`, after any before-open step. The caller holds life_m_
+    // and has set the state to Loading.
+    void start_loader(const RunConfig & effective, BeforeOpen before_open);
+    // A turn or a decision arrived: a step before an open stops for it (BeforeOpen).
+    void note_request();
+
+    std::function<void()> turn_end_;
+    // Raised to stop a before-open step; `calibrating_` while one may run (load_when_idle).
+    std::atomic<bool> before_open_stop_{false};
+    std::atomic<bool> calibrating_{false};
 
     std::function<void(const std::string &, const MeasuredKnobs &)> knobs_sink_;
     int knobs_kept_ = 0; // verdicts in the record last handed on; under gen_m_

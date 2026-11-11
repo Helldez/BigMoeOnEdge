@@ -389,6 +389,44 @@ int main() {
         check(!parse_measured_knobs("bmoe-measured-knobs 1\nhardware=a engine=b decode_hit=1.5\n", bad, err),
               "record: a hit rate past 1 is refused");
 
+        // Sides a calibration could not open (bmoe/calibrate.h): written only when there is one, read
+        // back, counted, cleared by a rate for the same side, and read past by an engine that does not
+        // know a side's name.
+        MeasuredKnobs uv;
+        uv.hardware = a.hardware;
+        uv.engine = "0.42.0";
+        check(format_measured_knobs({uv}).find("unviable") == std::string::npos,
+              "record: no side failed, no unviable key");
+        uv.no_device_cache_unviable = true;
+        uv.width_narrow = 2048;
+        uv.narrow_unviable = true;
+        std::vector<MeasuredKnobs> uback;
+        check(parse_measured_knobs(format_measured_knobs({uv}), uback, err) && uback.size() == 1 &&
+                  uback[0].no_device_cache_unviable && uback[0].narrow_unviable && !uback[0].device_cache_unviable &&
+                  !uback[0].wide_unviable && uback[0].verdicts() == 2,
+              "record: the sides that could not open read back and count as verdicts");
+        check(
+            parse_measured_knobs("bmoe-measured-knobs 1\nhardware=a engine=b unviable=wide,later_side\n", uback, err) &&
+                uback.size() == 1 && uback[0].wide_unviable,
+            "record: a side name from a later engine is read past");
+        check(!parse_measured_knobs("bmoe-measured-knobs 1\nhardware=a engine=b unviable=\n", uback, err),
+              "record: an empty side list is refused");
+        std::vector<MeasuredKnobs> ukept = {uv};
+        MeasuredKnobs timed_later;
+        timed_later.hardware = uv.hardware;
+        timed_later.engine = uv.engine;
+        timed_later.no_device_cache_tps = 8.0;
+        keep_measured_knobs(ukept, timed_later);
+        check(!ukept[0].no_device_cache_unviable && ukept[0].no_device_cache_tps == 8.0 && ukept[0].narrow_unviable,
+              "record: a side timed later is viable after all; the other failure stays");
+        MeasuredKnobs other_narrow;
+        other_narrow.hardware = uv.hardware;
+        other_narrow.engine = uv.engine;
+        other_narrow.width_narrow = 4096;
+        keep_measured_knobs(ukept, other_narrow);
+        check(!ukept[0].narrow_unviable && ukept[0].width_narrow == 4096,
+              "record: a failure at another narrow width answers nothing at the new one");
+
         // The request mix: recorded on every load, read back as written, counted so a front-end keeps
         // it as it grows, replaced whole by a later load that served requests, and absent from a record
         // an earlier engine wrote. The host's prefill rate survives a load whose long prompts all ran
@@ -650,6 +688,80 @@ int main() {
         now.interrupt();
         now.record(0.1, 1, 0, 0); // the warm-up after an interruption is not timed
         check(now.windows() == 0, "rate probe: an interruption drops the window in progress");
+    }
+
+    // ── the helpers a load-time calibration shares with the trial ──
+    {
+        // The bar is the reference's slowest step times its range or the margin, whichever is wider.
+        check(std::fabs(apart_bar(0.10, 0.11, 0.05) - 0.11 * 1.1) < 1e-12, "apart bar: a noisy reference, its range");
+        check(std::fabs(apart_bar(0.10, 0.10, 0.05) - 0.10 * 1.05) < 1e-12, "apart bar: a steady one, the margin");
+        check(apart_bar(0.0, 0.1, 0.05) == 0.0, "apart bar: no reference, no bar");
+        check(within_margin(0.100, 0.104, 0.05) && within_margin(0.104, 0.100, 0.05) &&
+                  !within_margin(0.100, 0.110, 0.05) && !within_margin(0.0, 0.1, 0.05),
+              "within margin: either way round, and never against nothing");
+    }
+    // ── the rate probe settled on the rate where the hits are out of view ──
+    {
+        KnobTrialPolicy rp;
+        rp.window_tokens = 4;
+        // A device cache filling: the first windows slow, then steady. On the rate, the probe starts
+        // timing at the first two windows that agree, far before the longest wait.
+        const auto windows_to_settle = [&rp](RateProbe & r, const std::function<double(int)> & spt) {
+            for (int i = 0; i < rp.warm_tokens; ++i)
+                r.record(1.0, 1, 0, 0); // the warm-up after the prefill, not timed
+            int w = 0;
+            for (; w < 100 && r.settling(); ++w)
+                for (int i = 0; i < rp.window_tokens; ++i)
+                    r.record(spt(w), 1, 0, 0);
+            return w;
+        };
+        RateProbe on_rate(/*settle*/ true, /*hits_visible*/ false, rp);
+        on_rate.settle_on_rate();
+        const int settled = windows_to_settle(on_rate, [](int w) { return w == 0 ? 0.5 : w == 1 ? 0.3 : 0.1; });
+        check(settled == 4 && settled < rp.settle_windows_max,
+              "rate settle: two windows of one rate end the wait, " + std::to_string(settled) + " windows");
+        RateProbe never(true, false, rp);
+        never.settle_on_rate();
+        check(windows_to_settle(never, [](int w) { return w % 2 ? 0.3 : 0.1; }) == rp.settle_windows_max,
+              "rate settle: a rate that never steadies still ends at the longest wait");
+        RateProbe blind(true, false, rp);
+        check(windows_to_settle(blind, [](int) { return 0.1; }) == rp.settle_windows_max,
+              "rate settle: off, a cache out of view still waits the longest");
+        check(RateProbe(true, true, rp).tokens_max() ==
+                  rp.warm_tokens + (rp.settle_windows_max + 2 * rp.rounds + 1) * rp.window_tokens,
+              "rate probe: the most tokens it can take");
+    }
+    // ── the rate probe set against the other side: cut once past its range, never during the settle ──
+    {
+        KnobTrialPolicy rp;
+        rp.window_tokens = 4;
+        RateProbe slow(/*settle*/ false, true, rp);
+        slow.set_reference(0.050, 0.055);
+        int steps = 0;
+        while (!slow.done() && steps < 1000) {
+            slow.record(0.080, 1, 0, 0);
+            ++steps;
+        }
+        check(slow.done() && slow.cut() && slow.windows() == 1 && std::fabs(slow.tokens_per_second() - 12.5) < 1e-9,
+              "cut: one window past the reference's range ends it, its rate kept");
+        RateProbe close(false, true, rp);
+        close.set_reference(0.050, 0.055);
+        for (int i = 0; i < 1000 && !close.done(); ++i)
+            close.record(0.056, 1, 0, 0);
+        check(close.done() && !close.cut() && close.windows() == close.windows_wanted(),
+              "cut: a side inside the bar runs every window");
+        check(std::fabs(close.step_lo() - 0.056) < 1e-12 && std::fabs(close.step_hi() - 0.056) < 1e-12,
+              "rate probe: the timed steps' range, for the other side's cut");
+        RateProbe cold(true, true, rp);
+        cold.set_reference(0.050, 0.055);
+        for (int i = 0; i < 40 && cold.settling(); ++i)
+            cold.record(0.5, 1, 100, (uint64_t) (i * 2)); // a cache filling: slow, and never past the bar's say
+        check(!cold.cut(), "cut: not while the cache is settling");
+        RateProbe partial(false, true, rp);
+        for (int i = 0; i < rp.warm_tokens + 2 * rp.window_tokens; ++i)
+            partial.record(0.1, 1, 0, 0);
+        check(!partial.done() && partial.tokens_per_second() == 0.0 && std::fabs(partial.rate_so_far() - 10.0) < 1e-9,
+              "rate so far: the windows timed before the answer ended");
     }
 
     if (failures) {

@@ -99,6 +99,9 @@ core/
     measured_knobs.h
                     the lossless knobs' verdicts as a value (what the first answer measured), their
                     text form, and the hardware fingerprint a verdict is kept against
+    calibrate.h     load-time calibration: the decisions across loads (device tier, graph width)
+                    timed at load, each side a short candidate load, over two ports (Replan,
+                    RunCandidate); the planner names the side, the loop runs it and asks again
     probe.h         the adapters' entry points: what fills the two profiles
     auto_plan.h     probe_and_plan: the one probe-and-plan sequence every front-end calls, the
                     adapters in their order and then the rules; the options are what differs
@@ -144,6 +147,10 @@ core/
                   shared by generate / perplexity / decide
                 knob_trial — the A/B of a lossless knob on the first answer: interleaved windows,
                   the median of per-round ratios, a margin to win (measured-planning.md, Step 2)
+                calibration_run — the engine's candidate for a load-time calibration: a session
+                  opened for one side, one short timed answer (the first sampled, the others
+                  replaying its tokens), closed (measured-planning.md, "Decisions across loads,
+                  timed at load")
                 decide/ — Session::decide() (see decide.md): pure policy over an IDecideBackend
                   port (prompt split, choice scoring, IPrefixCache), plus one llama.cpp adapter
     plan/       the hardware planner (hardware-planning.md). Two halves that must not mix:
@@ -153,6 +160,8 @@ core/
                 routing - the routing record's text form, the LRU replay over it, the hit curve
                   and the hottest experts (measured-planning.md, Step 1); pure as the rules
                 measured_knobs - the knob verdicts' text form and the hardware fingerprint (Step 2)
+                calibrate - load-time calibration's loop: run the side the plan names, record its
+                  rate, plan again; pure as the rules
                 hardware_probe, model_probe, storage_probe, headroom_probe, bandwidth_probe,
                   layer_probe (one real layer of the model, its experts and its dense matrices, on
                   every backend: measured-planning.md, Step 3), gate_probe,
@@ -162,7 +171,9 @@ core/
                   llama.cpp may appear
                 auto_plan - the composition of the two: the probes in the order a plan is
                   measured in, then plan_run(). With the adapters because it starts the backends;
-                  it decides nothing, and bmoe-cli --auto and the server's /api/plan both call it
+                  it decides nothing, and bmoe-cli --auto and the server's /api/plan both call it.
+                  replan() runs its planning half again on the same facts, which is what a
+                  calibration plans with between candidates (calibrate_plan)
     params.cpp  the parameter table's rows (see params.h)
     log.cpp     the log port's default sink and level filter (see log.h)
     metrics/    csv_metrics_sink, route_trace_sink, decode_trace_sink

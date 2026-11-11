@@ -4,6 +4,35 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **The decisions timed across loads are timed at load instead** (`--calibrate`, on by default). Two
+  plan decisions are fixed when a model is loaded, so each side used to be timed over a whole session
+  of use: whether a graphics card with memory of its own holds a cache of experts or the capacity
+  fitter's whole layers, and how wide the graph is where its buffers take the card's memory. On
+  rented cards a model's second load decoded at 37 tok/s instead of 68 (12 GB card) and 35 instead
+  of 84 (32 GB card), and on the 32 GB card the width's side, worth ~13 GB of the card, waited behind
+  the tier's. Now, where the plan leaves such a side pending, each side is opened as a short load of
+  its own, timed on one fixed instruction through the model's chat template (the first sampled, the
+  others replaying its tokens so both route alike), and the faster served, opened fresh. The planner
+  names every side as before (the fitter's placement is still timed only where it could win), a side
+  that cannot be opened loses, and the rates are kept in the model's `.knobs` record, so the next
+  load starts decided. `bmoe-cli --auto` does it before the first answer and says so; the server
+  answers first and calibrates once idle after an answer, giving way to any request
+  (`calibrating` in `/api/info`, `plan_progress` step `calibrate`). Only machines with a graphics
+  card that has memory of its own have such a decision: phones and shared-memory computers never
+  calibrate. `--no-calibrate` keeps the timing across loads
+  ([measured-planning.md](docs/measured-planning.md#decisions-across-loads-timed-at-load)).
+
+### Changed
+- **The graph width's decision weighs the decode alone until a request is seen.** A record with both
+  widths' decode timed and no request served (what a calibration leaves) kept the full width
+  whatever the rates said, since a request of no tokens weighs nothing; the faster decode now
+  decides there.
+- **The `.knobs` record names the sides that could not be opened** (`unviable=`), written only when
+  there is one; an older engine reads past it ([telemetry.md](docs/telemetry.md)).
+
 ## [0.41.2] - 2026-11-11
 
 ### Added

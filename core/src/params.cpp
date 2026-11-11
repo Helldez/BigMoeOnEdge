@@ -568,6 +568,21 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("calibrate", "Calibrate at load", G::Cache, L::Advanced,
+                          "Where the automatic plan cannot tell which of two placements on a graphics card decodes "
+                          "faster, time each side as a short load of its own and serve the faster. Off, each side "
+                          "is timed over a whole session of use instead. Changes no output.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--calibrate", "true"}, {"--no-calibrate", "false"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.calibrate; });
+        d.details = "Only machines with a graphics card that has memory of its own have such a choice: a phone or a "
+                    "computer whose graphics share its memory never calibrates. The command line does it before "
+                    "the first answer; the app serves first and calibrates once it is idle, giving way to any "
+                    "request.";
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("release-mmap", "Unmap the file after load", G::Streaming, L::Advanced,
                           "Unmap the model file after load once nothing reads through it. On Windows a live "
                           "mapping serialises the streamer's concurrent reads. Needs dense weights anon or "

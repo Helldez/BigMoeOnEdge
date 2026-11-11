@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <sstream>
 #include <utility>
+#include <vector>
 
 namespace bmoe {
 
@@ -49,6 +50,43 @@ bool parse_ints(const std::string & s, std::vector<int> & out) {
         out.push_back((int) v);
     }
     return true;
+}
+
+// The sides a record can mark as not viable, by the name the text format gives them.
+std::vector<std::pair<const char *, bool>> unviable_sides(const MeasuredKnobs & r) {
+    return {{"device_cache", r.device_cache_unviable},
+            {"no_device_cache", r.no_device_cache_unviable},
+            {"wide", r.wide_unviable},
+            {"narrow", r.narrow_unviable}};
+}
+
+bool parse_unviable(const std::string & s, MeasuredKnobs & r) {
+    if (s.empty()) return false;
+    std::stringstream ss(s);
+    std::string part;
+    while (std::getline(ss, part, ',')) {
+        if (part == "device_cache")
+            r.device_cache_unviable = true;
+        else if (part == "no_device_cache")
+            r.no_device_cache_unviable = true;
+        else if (part == "wide")
+            r.wide_unviable = true;
+        else if (part == "narrow")
+            r.narrow_unviable = true;
+        else if (part.empty())
+            return false;
+        // Another name is a later engine's side: read past it, as an unknown key is.
+    }
+    return true;
+}
+
+// A rate measured against another narrow width answers another comparison: a new narrow width
+// starts the width's record afresh.
+void set_width_narrow(MeasuredKnobs & r, int narrow) {
+    if (narrow <= 0 || narrow == r.width_narrow) return;
+    r.width_narrow = narrow;
+    r.wide_decode_tps = r.narrow_decode_tps = r.wide_prefill_tps = r.narrow_prefill_tps = 0.0;
+    r.wide_unviable = r.narrow_unviable = false;
 }
 
 } // namespace
@@ -100,6 +138,12 @@ std::string format_measured_knobs(const std::vector<MeasuredKnobs> & records) {
             std::snprintf(num, sizeof(num), "%.3f", kv.second);
             out += std::string(" ") + kv.first + "=" + num;
         }
+        // Sides that could not be opened: written only when there is one, so a record without any reads
+        // as it always did, and an older engine reads past the key.
+        std::string unviable;
+        for (const auto & kv : unviable_sides(r))
+            if (kv.second) unviable += (unviable.empty() ? "" : ",") + std::string(kv.first);
+        if (!unviable.empty()) out += " unviable=" + unviable;
         out += "\n";
     }
     return out;
@@ -196,6 +240,8 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
                 ok = as_double(r.mix_wide_prompt_tokens);
             else if (k == "host_prefill_tps")
                 ok = as_double(r.host_prefill_tps);
+            else if (k == "unviable")
+                ok = parse_unviable(v, r);
             // An unknown key is a later engine's addition: read past it, the record still holds.
             if (!ok) {
                 error = "line " + std::to_string(n) + ": bad value for " + k;
@@ -236,16 +282,31 @@ void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKno
                 r.overlap_gain = rec.overlap_gain;
             }
             if (rec.threads > 0 || rec.overlap >= 0) r.rounds = rec.rounds;
-            if (rec.device_cache_tps > 0.0) r.device_cache_tps = rec.device_cache_tps;
-            if (rec.no_device_cache_tps > 0.0) r.no_device_cache_tps = rec.no_device_cache_tps;
+            // A side that opened and was timed is viable after all; one that could not open stays marked
+            // until a load times it.
+            if (rec.device_cache_tps > 0.0) {
+                r.device_cache_tps = rec.device_cache_tps;
+                r.device_cache_unviable = false;
+            }
+            if (rec.no_device_cache_tps > 0.0) {
+                r.no_device_cache_tps = rec.no_device_cache_tps;
+                r.no_device_cache_unviable = false;
+            }
+            r.device_cache_unviable = r.device_cache_unviable || rec.device_cache_unviable;
+            r.no_device_cache_unviable = r.no_device_cache_unviable || rec.no_device_cache_unviable;
             // A different narrow width is a different comparison: what was measured against the old
             // one no longer answers it.
-            if (rec.width_narrow > 0 && rec.width_narrow != r.width_narrow) {
-                r.width_narrow = rec.width_narrow;
-                r.wide_decode_tps = r.narrow_decode_tps = r.wide_prefill_tps = r.narrow_prefill_tps = 0.0;
+            set_width_narrow(r, rec.width_narrow);
+            if (rec.wide_decode_tps > 0.0) {
+                r.wide_decode_tps = rec.wide_decode_tps;
+                r.wide_unviable = false;
             }
-            if (rec.wide_decode_tps > 0.0) r.wide_decode_tps = rec.wide_decode_tps;
-            if (rec.narrow_decode_tps > 0.0) r.narrow_decode_tps = rec.narrow_decode_tps;
+            if (rec.narrow_decode_tps > 0.0) {
+                r.narrow_decode_tps = rec.narrow_decode_tps;
+                r.narrow_unviable = false;
+            }
+            r.wide_unviable = r.wide_unviable || rec.wide_unviable;
+            r.narrow_unviable = r.narrow_unviable || rec.narrow_unviable;
             if (rec.wide_prefill_tps > 0.0) r.wide_prefill_tps = rec.wide_prefill_tps;
             if (rec.narrow_prefill_tps > 0.0) r.narrow_prefill_tps = rec.narrow_prefill_tps;
             if (rec.usage_requests > 0) {
@@ -276,6 +337,27 @@ void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKno
             return;
         }
     records.push_back(rec);
+}
+
+void record_side_rate(const KnobTrialConfig & trial, double tokens_per_second, MeasuredKnobs & rec) {
+    if (!(tokens_per_second > 0.0)) return;
+    if (trial.device_tier >= 0) {
+        (trial.device_tier == 1 ? rec.device_cache_tps : rec.no_device_cache_tps) = tokens_per_second;
+        (trial.device_tier == 1 ? rec.device_cache_unviable : rec.no_device_cache_unviable) = false;
+    } else if (trial.width_side >= 0) {
+        set_width_narrow(rec, trial.width_narrow);
+        (trial.width_side == 1 ? rec.wide_decode_tps : rec.narrow_decode_tps) = tokens_per_second;
+        (trial.width_side == 1 ? rec.wide_unviable : rec.narrow_unviable) = false;
+    }
+}
+
+void record_side_unviable(const KnobTrialConfig & trial, MeasuredKnobs & rec) {
+    if (trial.device_tier >= 0) {
+        (trial.device_tier == 1 ? rec.device_cache_unviable : rec.no_device_cache_unviable) = true;
+    } else if (trial.width_side >= 0) {
+        set_width_narrow(rec, trial.width_narrow);
+        (trial.width_side == 1 ? rec.wide_unviable : rec.narrow_unviable) = true;
+    }
 }
 
 const MeasuredKnobs * find_measured_knobs(const std::vector<MeasuredKnobs> & records,
