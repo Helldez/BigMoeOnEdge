@@ -484,6 +484,108 @@ static void block_stream_tests() {
     check(estimate_prompt_tokens(est) > 900 && estimate_prompt_tokens(est) < 1100, "the estimate grows with the text");
 }
 
+// Calls streamed while the model writes them: the rules every protocol shares, then each framing.
+static void tool_call_stream_tests() {
+    using T = ToolCallEvent::Type;
+    const auto id_for = [](size_t i) { return "call_r_" + std::to_string(i); };
+    ToolCallStream s(id_for);
+    std::vector<ToolCallEvent> e = s.update({{"", "write", ""}});
+    check(e.empty() && s.opened() == 0, "a call whose arguments have not begun is not opened: its name may still grow");
+    e = s.update({{"", "write_file", "{\"path\":\"a"}});
+    check(e.size() == 2 && e[0].type == T::Open && e[0].id == "call_r_0" && e[0].name == "write_file" &&
+              e[1].type == T::Delta && e[1].arguments == "{\"path\":\"a",
+          "a call opens once its arguments begin, with the id it keeps, and sends what it has");
+    e = s.update({{"", "write_file", "{\"path\":\"a.html\",\"content\":\"\xC3"}});
+    check(e.size() == 1 && e[0].arguments == ".html\",\"content\":\"",
+          "arguments that grow send the rest, held to whole characters");
+    e = s.update({{"", "write_file", "{\"path\":\"b"}});
+    check(e.empty() && !s.diverged(), "a snapshot that takes arguments back sends nothing, and waits");
+    e = s.update({{"", "write_file", "{\"path\":\"a.html\",\"content\":\"\xC3\xA9\"}"}, {"", "run", "{\"c"}});
+    check(e.size() == 4 && e[0].arguments == "\xC3\xA9\"}" && e[1].type == T::Close && e[1].index == 0 &&
+              e[2].type == T::Open && e[2].index == 1 && e[3].arguments == "{\"c",
+          "a second call opening closes the first, whose arguments are whole");
+    std::vector<ChatToolCall> final_calls = {{"", "write_file", "{\"path\":\"a.html\",\"content\":\"\xC3\xA9\"}"},
+                                             {"", "run", "{\"cmd\":\"ls\"}"},
+                                             {"model_id", "get_info", "{}"}};
+    e = s.finish(final_calls);
+    check(e.size() == 5 && e[0].index == 1 && e[0].arguments == "md\":\"ls\"}" && e[1].type == T::Close &&
+              e[2].type == T::Open && e[2].id == "model_id" && e[3].arguments == "{}" && e[4].type == T::Close &&
+              !s.diverged(),
+          "finish sends what the parsed calls add, and a call no token showed opens whole");
+    check(final_calls[0].id == "call_r_0" && final_calls[1].id == "call_r_1" && final_calls[2].id == "model_id",
+          "every final call carries the id its stream announced");
+    ToolCallStream d(id_for);
+    d.update({{"", "f", "{\"a\":1"}});
+    std::vector<ChatToolCall> other = {{"", "f", "{\"b\":2}"}};
+    d.finish(other);
+    check(d.diverged(), "final arguments that contradict the stream are reported, never sent over it");
+
+    // What a call's card reads while the model writes: the whole scalar members, never an exception.
+    check(json_object_prefix("").empty() && json_object_prefix("[1,").empty() && json_object_prefix("{\"pa").empty() &&
+              json_object_prefix("{\"path\":\"src/ma").empty(),
+          "nothing whole yet is an empty object");
+    check(json_object_prefix("{\"path\":\"a.html\",\"content\":\"<html>") == json{{"path", "a.html"}},
+          "a whole member is read while the next is still being written");
+    check(json_object_prefix("{\"cmd\":\"ls \\\"x\\\"\", \"n\": true, \"o\": {\"k\": [1, \"}\"]}, \"t\": 2,") ==
+              json{{"cmd", "ls \"x\""}, {"n", true}, {"t", 2}},
+          "escapes are decoded, nested values left out, scalars after them still read");
+
+    // OpenAI chat: a call opens with its index, id and name, then its arguments by index.
+    ToolCallStream o(id_for);
+    const json opened = tool_call_events_delta(o.update({{"", "run", "{\"c"}}));
+    check(opened["tool_calls"].size() == 2 && opened["tool_calls"][0]["index"] == 0 &&
+              opened["tool_calls"][0]["id"] == "call_r_0" && opened["tool_calls"][0]["function"]["name"] == "run" &&
+              opened["tool_calls"][0]["function"]["arguments"] == "" &&
+              opened["tool_calls"][1]["function"]["arguments"] == "{\"c" && !opened["tool_calls"][1].contains("id"),
+          "the chat delta names a call once, then streams its arguments");
+    check(tool_call_events_delta(o.update({{"", "run", "{\"c"}})).is_null(), "nothing new is no chunk");
+
+    // Anthropic: the text block closes before the call's block, the input arrives in pieces.
+    RunResult r;
+    r.generated_text = "On it.";
+    r.tool_calls = {{"", "write_file", "{\"path\":\"h.txt\"}"}};
+    const ChatResponseMeta meta{"msg_9", 5, "m.gguf"};
+    AnthropicStream a(meta);
+    std::string wire = a.start();
+    wire += a.on_token("On it.", "");
+    wire += a.on_token("On it.", "", {{"", "write_file", "{\"pa"}});
+    wire += a.on_token("On it.", "", {{"", "write_file", "{\"path\":\"h."}});
+    wire += a.finish(r, "tool_calls");
+    const auto af = sse_frames(wire);
+    check(names_of(af) == "message_start content_block_start content_block_delta content_block_stop "
+                          "content_block_start content_block_delta content_block_delta content_block_delta "
+                          "content_block_stop message_delta message_stop",
+          "the call becomes a tool_use block while it is written, after the text block closes");
+    std::string input;
+    for (size_t i = 5; i <= 7; ++i)
+        input += af[i].second["delta"]["partial_json"].get<std::string>();
+    check(af[4].second["content_block"]["id"] == "call_msg_9_0" && af[4].second["index"] == 1 &&
+              json::parse(input)["path"] == "h.txt",
+          "the pieces join into the call's input, under the id the final answer uses");
+
+    // Responses: the call is a function_call item from its first piece.
+    ResponsesStream rs(meta);
+    wire = rs.start();
+    wire += rs.on_token("On it.", "");
+    wire += rs.on_token("On it.", "", {{"", "write_file", "{\"pa"}});
+    wire += rs.finish(r, "tool_calls");
+    const auto rf = sse_frames(wire);
+    std::string args;
+    for (const auto & fr : rf)
+        if (fr.first == "response.function_call_arguments.delta") args += fr.second["delta"].get<std::string>();
+    const json & done = rf.back().second["response"];
+    check(json::parse(args)["path"] == "h.txt" && done["output"].size() == 2 &&
+              done["output"][0]["type"] == "message" && done["output"][1]["call_id"] == "call_msg_9_0" &&
+              done["output"][1]["arguments"] == "{\"path\":\"h.txt\"}",
+          "a Responses stream sends the arguments in pieces, and completes with the message then the call");
+    bool same_index = true;
+    for (const auto & fr : rf)
+        if (fr.first.rfind("response.function_call_arguments", 0) == 0 ||
+            (fr.first.rfind("response.output_item", 0) == 0 && fr.second["item"]["type"] == "function_call"))
+            same_index = same_index && fr.second["output_index"] == 1;
+    check(same_index, "every event of a call after text names the call's own output_index, the added one too");
+}
+
 static AnthropicRequest
 anthropic(const std::string & body, bool * ok = nullptr, std::string * err = nullptr, bool think = false) {
     AnthropicRequest r;
@@ -2529,6 +2631,7 @@ int main() {
     service_tests();
     protocol_tests();
     block_stream_tests();
+    tool_call_stream_tests();
     anthropic_tests();
     responses_tests();
     queue_tests();

@@ -38,22 +38,33 @@ json responses_error_json(int status, const std::string & message, const std::st
 json response_json(const ChatResponseMeta & meta, const RunResult & r, const std::string & finish);
 
 // One turn's event stream, frame by frame, as AnthropicStream: start() sends response.created and
-// response.in_progress, on_token() follows the per-token answer, finish() closes every item and ends
-// with response.completed (or response.incomplete on the budget), error() with response.failed.
+// response.in_progress, on_token() follows the per-token answer and the calls being written,
+// finish() closes every item and ends with response.completed (or response.incomplete on the
+// budget), error() with response.failed.
+//
+// A call becomes a function_call item as soon as it opens (ToolCallStream), its arguments arriving
+// as function_call_arguments.delta while the model writes them. Output items are sequential, so the
+// open message or reasoning item completes first, and text written while a call is open waits.
 class ResponsesStream {
 public:
-    explicit ResponsesStream(ChatResponseMeta meta) : meta_(std::move(meta)) {}
+    explicit ResponsesStream(ChatResponseMeta meta);
     std::string start();
-    std::string on_token(const std::string & text, const std::string & reasoning);
+    std::string
+    on_token(const std::string & text, const std::string & reasoning, const std::vector<ChatToolCall> & calls = {});
     std::string finish(const RunResult & r, const std::string & finish);
     std::string error(int status, const std::string & message, const std::string & code);
 
 private:
     std::string event(const std::string & type, json data);
     std::string frames(const std::vector<BlockEvent> & events);
+    std::string tool_frames(const std::vector<ToolCallEvent> & events);
 
     ChatResponseMeta meta_;
     BlockStream blocks_;
+    ToolCallStream calls_;
+    bool call_open_ = false;
+    ChatToolCall call_{}; // the open call: its call_id, name and the arguments sent so far
+    std::string call_item_id_;
     int seq_ = 0;                 // sequence_number, on every event
     json output_ = json::array(); // the items closed so far, in order: what the final response lists
     std::string open_;            // the open item's text

@@ -65,7 +65,7 @@ prompt and a project's `AGENTS.md`. A model used to one works with the other.
   |---|---|
   | `user` | `text` |
   | `assistant` | `text`, `reasoning`, `streaming`, `tool_calls` (`[{id, name, arguments}]`, when the round called tools) |
-  | `tool` | `tool`, `title` (plain words: "Read src/main.cpp"), `args` (object), `state` (`running`, `waiting`, `done`, `denied`, `error`), `result` (text, capped), `diff` (unified, for edits), `file` (workspace-relative path the tool produced or changed, for the preview), `call_id`, `shortened` (true once the context ran short: the model then reads a few lines of `result`, the person still the whole), `mcp` (the server, for an MCP server's tool) |
+  | `tool` | `tool`, `title` (plain words: "Read src/main.cpp"), `args` (object), `state` (`composing`, `running`, `waiting`, `done`, `denied`, `error`), `bytes` (while composing: how much of the call's arguments the model has written), `result` (text, capped), `diff` (unified, for edits), `file` (workspace-relative path the tool produced or changed, for the preview), `call_id`, `shortened` (true once the context ran short: the model then reads a few lines of `result`, the person still the whole), `mcp` (the server, for an MCP server's tool) |
   | `notice` | `text`, `level` (`info`, `warn`, `error`): why something did not happen, in plain words |
 
 ## The run
@@ -78,8 +78,15 @@ then the items as messages, and only the tools the conversation may use. The pro
 (under 4,000 characters, about 1,000 tokens, the tool definitions apart; `tests/agent_test.cpp`
 prints its size): every token of it is prefilled for every new conversation. When the workspace has
 an `AGENTS.md` at its root, the convention coding agents share for a project's own instructions,
-its first 8 KiB are appended to it. What the model writes streams as `delta` events; its
-tool calls run under the mode, their results are appended, and the next round asks again, until an
+its first 8 KiB are appended to it. What the model writes streams as `delta` events; a call
+it is writing is its tool's card from the first piece of its arguments, in state `composing`,
+its title following the arguments as far as they go ("Write page.html") and `bytes` the size
+written so far, updated with the tokens that grow it as the answer's text is: a call can take a
+local model minutes to write, and the person sees what it is. The card is the same whatever the
+tool (built-in or MCP) or the route (local model or provider), since it reads only the call. When
+the round ends the same card, by its `id`, runs the call; a card whose call will not run (the run
+stopped, the answer ended first) ends `denied` or `error` with why, live only, since the stored
+conversation keeps what a round decided. Its tool calls run under the mode, their results are appended, and the next round asks again, until an
 answer that calls no tool or the round limit (30 rounds per message; a notice says so, and another
 message lets it go on). The same call failing the same way three times in a row also stops the run,
 with a notice: a small model that repeats a refused call would otherwise spend every round on it.

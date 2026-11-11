@@ -57,6 +57,65 @@ std::vector<BlockEvent> BlockStream::finish(const std::string & text, const std:
     return out;
 }
 
+std::vector<BlockEvent> BlockStream::close() {
+    std::vector<BlockEvent> out;
+    if (open_) out.push_back({BlockEvent::Type::Close, current_, ""});
+    open_ = false;
+    return out;
+}
+
+ToolCallStream::ToolCallStream(std::function<std::string(size_t)> id_for) : id_for_(std::move(id_for)) {}
+
+void ToolCallStream::advance(size_t i, const ChatToolCall & c, bool final, std::vector<ToolCallEvent> & out) {
+    if (i == sent_.size()) {
+        // Not open yet. Before its arguments begin, a call's name may still be growing.
+        if (!final && (c.name.empty() || c.arguments.empty())) return;
+        if (!sent_.empty() && !sent_.back().closed) {
+            sent_.back().closed = true;
+            out.push_back({ToolCallEvent::Type::Close, i - 1, "", "", ""});
+        }
+        const std::string id = c.id.empty() ? id_for_(i) : c.id;
+        sent_.push_back({id, "", false});
+        out.push_back({ToolCallEvent::Type::Open, i, id, c.name, ""});
+    }
+    Sent & s = sent_[i];
+    if (s.closed) return;
+    if (!starts_with(c.arguments, s.arguments)) {
+        diverged_ = diverged_ || final;
+        return;
+    }
+    std::string piece = c.arguments.substr(s.arguments.size());
+    if (!final) piece.resize(complete_utf8_prefix_size(piece));
+    if (piece.empty()) return;
+    s.arguments += piece;
+    out.push_back({ToolCallEvent::Type::Delta, i, "", "", std::move(piece)});
+}
+
+std::vector<ToolCallEvent> ToolCallStream::update(const std::vector<ChatToolCall> & calls) {
+    std::vector<ToolCallEvent> out;
+    // Calls open in order: one that is not open yet holds back every call after it.
+    for (size_t i = 0; i < calls.size() && i <= sent_.size(); ++i)
+        advance(i, calls[i], false, out);
+    return out;
+}
+
+std::vector<ToolCallEvent> ToolCallStream::finish(std::vector<ChatToolCall> & calls) {
+    std::vector<ToolCallEvent> out;
+    for (size_t i = 0; i < calls.size(); ++i) {
+        advance(i, calls[i], true, out);
+        calls[i].id = sent_[i].id;
+    }
+    for (size_t i = 0; i < sent_.size(); ++i) {
+        if (sent_[i].closed) continue;
+        sent_[i].closed = true;
+        out.push_back({ToolCallEvent::Type::Close, i, "", "", ""});
+    }
+    // A call the stream announced that the final answer no longer holds is closed with what it had,
+    // and cannot be taken back.
+    diverged_ = diverged_ || sent_.size() > calls.size();
+    return out;
+}
+
 std::string sse_event(const std::string & name, const json & data) {
     return "event: " + name + "\ndata: " + data.dump(-1, ' ', false, json::error_handler_t::replace) + "\n\n";
 }

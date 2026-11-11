@@ -6,6 +6,7 @@
 // as CSV for benchmarking. The engine itself makes no formatting decisions.
 #pragma once
 
+#include "bmoe/chat.h"
 #include "bmoe/predict_stats.h"
 
 #include <cstdint>
@@ -107,6 +108,13 @@ struct TokenMetrics {
     // Display-only, and kept apart from `text` on purpose: the UI shows it as a distinct thinking
     // block rather than letting it leak into the answer. See docs/telemetry.md.
     std::string reasoning;
+    // The calls the answer holds so far, as the same per-token parse reads them: the model's own
+    // template recognises them, so no format, model or tool is named here. A call's name is known
+    // once its arguments begin; its id may stay empty until the turn ends; the last call's
+    // arguments are the JSON written so far, and grow by appending (the parser's contract, which a
+    // client that concatenates fragments relies on). Display-only: what the turn decided is
+    // RunResult::tool_calls. Empty with chat off or when the answer has no call.
+    std::vector<ChatToolCall> tool_calls;
 };
 
 struct RunSummary {

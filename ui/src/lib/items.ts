@@ -168,7 +168,9 @@ export function runSummary(items: readonly Item[]): RunSummary {
   const created = new Set<string>();
   for (const it of items) {
     if (it.kind !== 'tool') continue;
-    if (it.state === 'running' || it.state === 'waiting') s.pending++;
+    if (it.state === 'running' || it.state === 'waiting' || it.state === 'composing') s.pending++;
+    // A call still being written has done nothing yet: it counts once it runs.
+    if (it.state === 'composing') continue;
     if (it.state === 'error') s.failed++;
     const ok = it.state !== 'denied' && it.state !== 'error';
     const path = toolPath(it) || it.id;
