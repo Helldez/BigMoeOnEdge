@@ -140,5 +140,83 @@ int main() {
         b.dropped(10, 50);
         check(b.current() == 500, "a drop at or under the floor leaves the budget where it is");
     }
+    {
+        FakeKernel k;
+        DiscardableEntries d;
+        d.init(16, 3, false, &k, two_spans());
+        d.offer_cold(100, all_valid, 0);
+        check(d.window() == 3, "the window starts at offer_after");
+        d.offer_cold(103, all_valid, 0);
+        d.offer_cold(109, all_valid, 0);
+        check(d.window() == 12, "it doubles each time it passes whole without a drop");
+        d.offer_cold(121, all_valid, 0);
+        d.offer_cold(145, all_valid, 0);
+        d.offer_cold(193, all_valid, 0);
+        d.offer_cold(289, all_valid, 0);
+        check(d.window() == 144, "and never covers more than the younger half of the ages the cache holds");
+        d.offer_cold(290, all_valid, 280);
+        check(d.window() == 5, "a younger cache narrows it at once");
+    }
+    {
+        FakeKernel k;
+        DiscardableEntries d;
+        d.init(16, 3, false, &k, two_spans());
+        d.used(1, 0);
+        d.offer_cold(10, all_valid, 0);
+        check(d.offered(1), "an entry past the window is offered");
+        d.offer_cold(13, all_valid, 0);
+        d.offer_cold(19, all_valid, 0);
+        check(d.window() == 9, "quiet: the window widened");
+        k.pressure_takes(&arena[1][0]);
+        check(!d.take_back(1), "the kernel took the entry");
+        d.offer_cold(20, all_valid, 0);
+        check(d.window() == 3, "a drop returns the window to offer_after");
+        d.offer_cold(22, all_valid, 0);
+        check(d.window() == 3, "and the quiet stretch restarts from the drop");
+        d.offer_cold(25, all_valid, 0);
+        d.offer_cold(31, all_valid, 0);
+        check(d.window() == 12, "quiet again: it widens again");
+        d.pressure();
+        d.offer_cold(32, all_valid, 0);
+        check(d.window() == 3, "the owner's measured pressure (the brake) narrows it as a drop does");
+    }
+    {
+        FakeKernel k;
+        DiscardableEntries d;
+        d.init(16, 3, false, &k, two_spans());
+        d.offer_cold(100, all_valid);
+        d.offer_cold(200, all_valid);
+        check(d.window() == 3, "without the owner's oldest use the window stays at offer_after");
+    }
+    {
+        DropFollowingBudget b;
+        b.reset(1000, 100, 10);
+        b.braked(500, 0);
+        check(b.current() == 500 && b.ceiling() == 1000, "a brake lowers the budget and keeps the owner's ceiling");
+        check(b.make_room(100, 15) == 500, "after a brake, one quiet window is not enough");
+        check(b.make_room(100, 20) == 600, "two quiet windows after the first brake, it climbs back");
+        b.braked(300, 30);
+        check(b.make_room(100, 69) == 300, "a second brake doubles the quiet stretch again");
+        check(b.make_room(100, 70) == 400, "and after it the cache climbs once more");
+        check(b.make_room(5000, 71) == 1000, "never past the owner's ceiling");
+        b.braked(50, 80);
+        check(b.current() == 100, "a brake never takes the budget under the floor");
+    }
+    {
+        DropFollowingBudget b;
+        b.reset(1000, 100, 10);
+        b.lend(300);
+        check(b.current() == 700 && b.ceiling() == 1000, "a loan lowers the budget, not the ceiling");
+        check(b.make_room(500, 5) == 700, "nothing grows into a loan");
+        b.dropped(200, 6);
+        b.end_loan();
+        check(b.current() == 800, "the loan comes back on top of what the kernel left");
+        check(b.make_room(500, 16) == 1000, "and a loan is no pressure: growth waits one window, as after a drop");
+        b.reset(1000, 100, 10);
+        b.lend(5000);
+        check(b.current() == 1, "a loan larger than the cache leaves it one byte, as the shared-slot guard needs");
+        b.end_loan();
+        check(b.current() == 1000, "and returns it whole");
+    }
     return fails ? 1 : 0;
 }
