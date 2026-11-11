@@ -107,10 +107,13 @@ struct MeasuredKnobs {
     double mix_gen_tokens = 0.0, mix_wide_prompt_tokens = 0.0;
     double host_prefill_tps = 0.0;
 
-    // Sides of a decision across loads that could not be opened here (bmoe/calibrate.h): a load-time
-    // calibration whose candidate failed to load, most likely short of device memory. The plan treats
-    // such a side as the loser, so it stops asking for it; a rate measured for that side later clears
-    // it. The width's two are for `width_narrow` only, as its rates are.
+    // Sides of a decision across loads that could not be opened by this calibration (bmoe/calibrate.h):
+    // a candidate that failed to load, most likely short of device memory. The plan made on the record
+    // treats such a side as the loser, so the calibration stops asking for it and serves the other.
+    // Held for that calibration only, never written to the kept record (format_measured_knobs leaves
+    // them out): the failure may be the machine's state at that moment (another program holding the
+    // card's memory, a driver's hiccup), and the next calibration tries the side again. The width's
+    // two are for `width_narrow` only, as its rates are.
     bool device_cache_unviable = false, no_device_cache_unviable = false;
     bool wide_unviable = false, narrow_unviable = false;
 
@@ -122,8 +125,7 @@ struct MeasuredKnobs {
         return (threads > 0) + (overlap >= 0) + (device_cache_tps > 0.0) + (no_device_cache_tps > 0.0) +
                (wide_decode_tps > 0.0) + (narrow_decode_tps > 0.0) + (wide_prefill_tps > 0.0) +
                (narrow_prefill_tps > 0.0) + usage_requests + (decode_compute_s > 0.0) + (decode_hit >= 0.0) +
-               mix_requests + (host_prefill_tps > 0.0) + device_cache_unviable + no_device_cache_unviable +
-               wide_unviable + narrow_unviable;
+               mix_requests + (host_prefill_tps > 0.0);
     }
 };
 

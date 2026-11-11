@@ -46,6 +46,7 @@
 #include "stream_keepalive.h"
 #include "sha256.h"
 #include "turn_queue.h"
+#include "idle_timer.h"
 #include "url_entry.h"
 
 #include "bmoe/planner.h"
@@ -919,6 +920,35 @@ static void responses_tests() {
     check(e.size() == 1 && e[0].first == "response.failed" &&
               e[0].second["response"]["error"]["code"] == "context_length_exceeded",
           "a failed turn ends the stream with response.failed");
+}
+
+// The idle timer behind a server's calibration: it fires once the quiet period passes, a touch
+// meanwhile starts the wait again, a cancel forgets it, and a stop ends it for good.
+static void idle_timer_tests() {
+    using namespace std::chrono_literals;
+    std::atomic<int> fired{0};
+    IdleTimer t([&] { ++fired; });
+    t.touch(30ms);
+    std::this_thread::sleep_for(10ms);
+    check(fired == 0, "idle timer: not before the quiet period");
+    std::this_thread::sleep_for(100ms);
+    check(fired == 1, "idle timer: fires once after it");
+    t.touch(60ms);
+    for (int i = 0; i < 4; ++i) {
+        std::this_thread::sleep_for(30ms);
+        t.touch(60ms); // an answer each time, before the period ends
+    }
+    check(fired == 1, "idle timer: each touch starts the wait again");
+    std::this_thread::sleep_for(150ms);
+    check(fired == 2, "idle timer: and it fires once touches stop");
+    t.touch(30ms);
+    t.cancel();
+    std::this_thread::sleep_for(80ms);
+    check(fired == 2, "idle timer: a cancel forgets the pending fire");
+    t.stop();
+    t.touch(1ms);
+    std::this_thread::sleep_for(30ms);
+    check(fired == 2, "idle timer: stopped, a touch does nothing");
 }
 
 static void queue_tests() {
@@ -2648,6 +2678,7 @@ static void keepalive_tests() {
 }
 
 int main() {
+    idle_timer_tests();
     thermal_tests();
     service_tests();
     protocol_tests();

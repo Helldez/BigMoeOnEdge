@@ -1052,8 +1052,10 @@ int main(int argc, char ** argv) {
         req.measure_knobs = !routing.knobs_path.empty();
         // A decision the plan can only settle by timing both sides is timed here, before the first
         // answer, each side a short load of its own (bmoe/calibrate.h); said once, since the loads are
-        // the wait a person sees. A plan that is only printed opens nothing.
-        if (cfg.calibrate && !plan_only) {
+        // the wait a person sees. A plan that is only printed opens nothing, and one with nowhere to
+        // keep the verdict does not calibrate: every run would pay the candidates again for it.
+        const bool calibrate_unkept = cfg.calibrate && !plan_only && routing.knobs_path.empty();
+        if (cfg.calibrate && !plan_only && !routing.knobs_path.empty()) {
             opt.calibrate = [](const RunConfig & c, const CalibrationRun & run) {
                 return run_calibration_candidate(c, run);
             };
@@ -1074,6 +1076,9 @@ int main(int argc, char ** argv) {
         // What the calibration measured, kept as a served load's verdicts are: the next plan of the file
         // on this machine starts decided.
         if (planned.calibrated) routing.keep_knobs(planned.calibration.knobs);
+        if (calibrate_unkept && side_pending(plan))
+            std::fprintf(stderr, "bmoe: not calibrating at load: there is nowhere to keep the result (--routing-dir "
+                                 "DIR keeps it), so this run times the plan's own side\n");
         predicted_s_per_token = plan.allocation.seconds_per_token;
         // What the plan credited, from the curve when there was one: the figure its prediction stands on.
         if (plan.allocation.cache_bytes > 0 && plan.allocation.cache_hit_credited > 0)

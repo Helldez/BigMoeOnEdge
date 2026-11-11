@@ -134,6 +134,7 @@ EngineHost::EngineHost(EventBus & bus, SessionOpener open) : bus_(bus), open_(st
 
 EngineHost::~EngineHost() {
     set_log_sink(nullptr); // before anything goes: the sink reaches into bus_
+    before_open_cancel_ = true;
     cancel();
     if (loader_.joinable()) loader_.join();
     std::lock_guard<std::mutex> g(gen_m_);
@@ -201,6 +202,7 @@ bool EngineHost::load_when_idle(const RunConfig & effective, const RunConfig & r
         // Armed before the line is looked at: a turn that enters it after the look finds the flag and
         // stops the step (note_request), and one that entered before is seen here and wins.
         before_open_stop_ = false;
+        before_open_cancel_ = false;
         calibrating_ = true;
         if (state_ != State::Ready || generating_.load() || !turns_.empty()) {
             calibrating_ = false;
@@ -209,7 +211,7 @@ bool EngineHost::load_when_idle(const RunConfig & effective, const RunConfig & r
         load_started_ = std::chrono::steady_clock::now();
         state_ = State::Loading;
         error_.clear();
-        model_ = nullptr;
+        // The model stays named: it is the one the step times and the one it loads again.
         requested_ = requested;
         last_turn_ = nullptr;
     }
@@ -238,9 +240,22 @@ void EngineHost::start_loader(const RunConfig & effective_in, BeforeOpen before_
                 std::lock_guard<std::mutex> lk(m_);
                 requested = requested_;
             }
-            before_open(effective, requested, before_open_stop_);
-            std::lock_guard<std::mutex> lk(m_);
-            requested_ = requested;
+            before_open(effective, requested, BeforeOpenSignals{before_open_stop_, before_open_cancel_});
+            {
+                std::lock_guard<std::mutex> lk(m_);
+                requested_ = requested;
+            }
+            // Unloaded, or the host is ending: the session it would open is not wanted by anyone.
+            if (before_open_cancel_.load()) {
+                {
+                    std::lock_guard<std::mutex> lk(m_);
+                    state_ = State::Empty;
+                    model_ = nullptr;
+                    calibrating_ = false;
+                }
+                publish_state();
+                return;
+            }
         }
         calibrating_ = false;
         std::string error;
@@ -295,6 +310,7 @@ void EngineHost::start_loader(const RunConfig & effective_in, BeforeOpen before_
 
 void EngineHost::unload() {
     std::lock_guard<std::mutex> life(life_m_);
+    before_open_cancel_ = true; // a step before an open ends, and nothing is opened after it
     cancel();
     if (loader_.joinable()) loader_.join();
     {
@@ -362,18 +378,23 @@ json EngineHost::info() const {
     const bool overlap = expert_ready_hook_available();
     std::lock_guard<std::mutex> lk(m_);
     const bool planning = planning_.load();
+    const bool calibrating = calibrating_.load() && state_ == State::Loading;
+    // A calibration reads as the model it times, ready: the server takes requests through it, each
+    // waiting for the model as for any load (load_when_idle).
     json j{{"version", version()},
            {"overlap_available", overlap},
            {"planner_available", planner_available_.load()},
            {"host", host_info_ ? host_info_() : json::object()},
-           {"state", planning && state_ == State::Empty ? "planning" : state_name((int) state_)},
+           {"state", calibrating                          ? "ready"
+                     : planning && state_ == State::Empty ? "planning"
+                                                          : state_name((int) state_)},
            {"error", error_},
            {"model", model_},
            {"generating", generating_.load()},
-           {"calibrating", calibrating_.load()}};
+           {"calibrating", calibrating}};
     // Seconds since the load under way began, planning included: a UI counts on from the value
     // it received and the moment it received it, so its own clock and the server's never meet.
-    if (planning || state_ == State::Loading)
+    if (planning || (state_ == State::Loading && !calibrating))
         j["load_elapsed_s"] = std::chrono::duration<double>(std::chrono::steady_clock::now() - load_started_).count();
     return j;
 }

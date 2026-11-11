@@ -73,6 +73,7 @@
 //       answer it decodes: == resident over one long answer (a) and over four turns that each end
 //       inside a window (b), and the trial must have reached its verdicts. The graph width's side
 //       timed for a decision across loads (c) == resident, with its rates and request in the record.
+//       A load with the width's trade and no side timed records its requests, no rate (g).
 //       A load-time calibration of the width (f): each side opened as a candidate and timed, the
 //       second replaying the first's tokens, no side left pending, both rates in the record, and the
 //       winner, opened fresh, == resident.
@@ -2067,6 +2068,30 @@ int main(int argc, char ** argv) {
             std::printf("[PASS] G24c the record holds the width's side: decode %.1f tok/s, prefill %.1f tok/s, "
                         "%.0f tokens a request\n",
                         mw.wide_decode_tps, mw.wide_prefill_tps, mw.usage_gen_tokens);
+        }
+
+        // G24g: a load whose plan has the width's trade and times no side (a width already decided)
+        // records its requests against the narrow width all the same, and no rate: a width decided on
+        // the decode alone is weighed again once the requests are seen.
+        {
+            RunConfig wu = wref;
+            wu.trial.width_narrow = 2;
+            const RunResult ru = run(wu);
+            if (!ru) {
+                std::fprintf(stderr, "G24g run failed: %s\n", ru.error.c_str());
+                return 2;
+            }
+            fails += check("G24g width recorded, no side timed == resident", s_wref, ru.generated_text);
+            const MeasuredKnobs & mu = ru.knobs;
+            if (mu.usage_requests != 1 || mu.width_narrow != 2 || mu.wide_decode_tps > 0.0 ||
+                mu.wide_prefill_tps > 0.0 || mu.narrow_prefill_tps > 0.0) {
+                std::printf("[FAIL] G24g the record lacks the requests, or times a side: %d requests, narrow %d\n",
+                            mu.usage_requests, mu.width_narrow);
+                ++fails;
+            } else {
+                std::printf("[PASS] G24g the requests recorded with no side timed: %.0f tokens a request\n",
+                            mu.usage_gen_tokens);
+            }
         }
 
         // G24f: a load-time calibration (bmoe/calibrate.h) of the graph width, through the engine's own

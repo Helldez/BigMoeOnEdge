@@ -1123,6 +1123,27 @@ int main() {
                           unserved.config.trial.width_side == -1 && dw && dw->source == Source::Measured &&
                           dw->reason.find("no request served yet") != std::string::npos,
                       "width, no request served: the faster decode decides", dw ? dw->reason : "none");
+                check(unserved.config.trial.width_narrow == (int) narrow && validate(unserved.config).ok,
+                      "width, decided: the load still records its requests against the narrow width");
+                // Provisional: the loads that verdict serves record their requests, and once long prompts
+                // show up the prefill of each side is timed (the side without it, on a served load), and
+                // then weighs in: here enough to turn the verdict to the full width.
+                MeasuredKnobs used = cal;
+                used.usage_requests = 5;
+                used.usage_gen_tokens = 500;
+                used.usage_long_prompt_tokens = 9500;
+                const Plan needs_prefill = plan_with(used);
+                check(needs_prefill.config.trial.width_side == 1,
+                      "width, decided on the decode, then long prompts recorded: a side's prefill is timed");
+                used.wide_prefill_tps = 610;
+                used.narrow_prefill_tps = 104;
+                const Plan flipped = plan_with(used);
+                dw = find(flipped, "ubatch");
+                check(flipped.config.n_ubatch == 0 && flipped.config.trial.width_side == -1 && dw &&
+                          dw->source == Source::Measured &&
+                          dw->reason.find("a request here decodes") != std::string::npos,
+                      "width, decided on the decode alone: the recorded long prompts turn it to the full width",
+                      dw ? dw->reason : "none");
                 cal.narrow_decode_tps = 14.5; // inside the margin
                 check(plan_with(cal).config.n_ubatch == 0 && plan_with(cal).config.trial.width_side == -1,
                       "width, no request served, inside the margin: the full width holds");

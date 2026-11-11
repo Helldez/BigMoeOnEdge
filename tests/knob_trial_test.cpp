@@ -389,43 +389,28 @@ int main() {
         check(!parse_measured_knobs("bmoe-measured-knobs 1\nhardware=a engine=b decode_hit=1.5\n", bad, err),
               "record: a hit rate past 1 is refused");
 
-        // Sides a calibration could not open (bmoe/calibrate.h): written only when there is one, read
-        // back, counted, cleared by a rate for the same side, and read past by an engine that does not
-        // know a side's name.
+        // Sides a calibration could not open (bmoe/calibrate.h) are that calibration's alone: never
+        // written, so a failure of the moment is not kept as the machine's, and not counted as a
+        // verdict a front-end keeps.
         MeasuredKnobs uv;
         uv.hardware = a.hardware;
         uv.engine = "0.42.0";
-        check(format_measured_knobs({uv}).find("unviable") == std::string::npos,
-              "record: no side failed, no unviable key");
         uv.no_device_cache_unviable = true;
         uv.width_narrow = 2048;
         uv.narrow_unviable = true;
         std::vector<MeasuredKnobs> uback;
-        check(parse_measured_knobs(format_measured_knobs({uv}), uback, err) && uback.size() == 1 &&
-                  uback[0].no_device_cache_unviable && uback[0].narrow_unviable && !uback[0].device_cache_unviable &&
-                  !uback[0].wide_unviable && uback[0].verdicts() == 2,
-              "record: the sides that could not open read back and count as verdicts");
-        check(
-            parse_measured_knobs("bmoe-measured-knobs 1\nhardware=a engine=b unviable=wide,later_side\n", uback, err) &&
-                uback.size() == 1 && uback[0].wide_unviable,
-            "record: a side name from a later engine is read past");
-        check(!parse_measured_knobs("bmoe-measured-knobs 1\nhardware=a engine=b unviable=\n", uback, err),
-              "record: an empty side list is refused");
-        std::vector<MeasuredKnobs> ukept = {uv};
-        MeasuredKnobs timed_later;
-        timed_later.hardware = uv.hardware;
-        timed_later.engine = uv.engine;
+        check(format_measured_knobs({uv}).find("unviable") == std::string::npos &&
+                  parse_measured_knobs(format_measured_knobs({uv}), uback, err) && uback.size() == 1 &&
+                  !uback[0].no_device_cache_unviable && !uback[0].narrow_unviable && uv.verdicts() == 0,
+              "record: a side that could not open is not written, and is no verdict");
+        std::vector<MeasuredKnobs> ukept;
+        keep_measured_knobs(ukept, uv);
+        MeasuredKnobs timed_later = uv;
+        timed_later.no_device_cache_unviable = false;
         timed_later.no_device_cache_tps = 8.0;
         keep_measured_knobs(ukept, timed_later);
-        check(!ukept[0].no_device_cache_unviable && ukept[0].no_device_cache_tps == 8.0 && ukept[0].narrow_unviable,
-              "record: a side timed later is viable after all; the other failure stays");
-        MeasuredKnobs other_narrow;
-        other_narrow.hardware = uv.hardware;
-        other_narrow.engine = uv.engine;
-        other_narrow.width_narrow = 4096;
-        keep_measured_knobs(ukept, other_narrow);
-        check(!ukept[0].narrow_unviable && ukept[0].width_narrow == 4096,
-              "record: a failure at another narrow width answers nothing at the new one");
+        check(ukept.size() == 1 && ukept[0].no_device_cache_tps == 8.0,
+              "record: the side is timed by a later calibration as any other");
 
         // The request mix: recorded on every load, read back as written, counted so a front-end keeps
         // it as it grows, replaced whole by a later load that served requests, and absent from a record

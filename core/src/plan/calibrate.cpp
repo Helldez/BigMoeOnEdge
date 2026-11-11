@@ -29,6 +29,13 @@ std::string side_words(const KnobTrialConfig & t, const RunConfig & c) {
            std::to_string(width) + " tokens wide)";
 }
 
+// What the plan reads of a record: its kept text, and the sides this calibration could not open,
+// which the text leaves out (MeasuredKnobs::device_cache_unviable).
+std::string record_state(const MeasuredKnobs & k) {
+    return format_measured_knobs({k}) + (k.device_cache_unviable ? "c" : "") + (k.no_device_cache_unviable ? "f" : "") +
+           (k.wide_unviable ? "w" : "") + (k.narrow_unviable ? "n" : "");
+}
+
 // A run, under the side it answered.
 struct Timed {
     std::vector<std::string> identity; // the candidate's config, as its arguments
@@ -109,7 +116,7 @@ CalibrationResult calibrate(const Plan & first,
             }
         }
 
-        const std::string before = format_measured_knobs({r.knobs});
+        const std::string before = record_state(r.knobs);
         if (!timing.created) {
             record_side_unviable(side, r.knobs);
             log_printf(LogLevel::Info, "calibration: the candidate %s could not be opened (%s); that side loses",
@@ -124,7 +131,7 @@ CalibrationResult calibrate(const Plan & first,
         }
         timed.push_back({identity, side, timing});
         // Nothing new in the record: the plan would ask the same again.
-        if (format_measured_knobs({r.knobs}) == before) {
+        if (record_state(r.knobs) == before) {
             log_printf(LogLevel::Info,
                        "calibration: the decode %s gave the plan nothing new; the served load times "
                        "what is left",

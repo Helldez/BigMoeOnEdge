@@ -12,14 +12,16 @@
   let info = $derived(server.info);
   let downloads = $derived(downloadSummary(server.downloads));
   let tone = $derived(
-    !server.connected ? 'err' : !info ? '' : info.state === 'ready' ? (info.generating ? 'info' : 'ok') : info.state === 'error' ? 'err' : info.state === 'empty' ? '' : 'warn',
+    !server.connected ? 'err' : !info ? '' : info.calibrating ? 'warn' : info.state === 'ready' ? (info.generating ? 'info' : 'ok') : info.state === 'error' ? 'err' : info.state === 'empty' ? '' : 'warn',
   );
   let stateText = $derived(
     !server.connected
       ? t('status.unreachable')
       : !info
         ? t('status.connecting')
-        : info.state === 'ready'
+        : info.calibrating
+          ? t('status.calibrating')
+          : info.state === 'ready'
           ? info.generating
             ? t('status.generating')
             : t('status.ready')

@@ -56,11 +56,12 @@ Plan plan_on_facts(const AutoPlan & facts, const RunConfig & cfg, const PlanRequ
             const KnobTrialConfig trial = plan.config.trial;
             plan = plan_run(narrow, hw, model, at_width, req);
             // Narrowed again on the new placement: that decision stands, it is the narrower one. So does
-            // a width trial the first plan set: the second sees its narrow width as the full one.
+            // a width trial the first plan set, and the narrow width its requests are recorded against:
+            // the second sees its narrow width as the full one.
             if (plan.config.n_ubatch == (int) width) {
                 for (Decision & d : plan.decisions)
                     if (d.knob == "ubatch" && !kept.knob.empty()) d = kept;
-                if (trial.width_side >= 0 && plan.config.trial.device_tier < 0) {
+                if ((trial.width_side >= 0 || trial.width_narrow > 0) && plan.config.trial.device_tier < 0) {
                     plan.config.trial.width_side = trial.width_side;
                     plan.config.trial.width_narrow = trial.width_narrow;
                 }

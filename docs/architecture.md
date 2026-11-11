@@ -15,7 +15,8 @@ server/         bmoe-server: the application framework every UI speaks to (docs/
                 and the engine behind the desktop web UI (docs/server-api.md)
                 openai_chat (the chat protocol), anthropic_messages and openai_responses (the
                 agent protocols, over agent_protocol's append-only stream), image_part (an image as
-                a protocol carries it, inline, to the engine's ChatImage), turn_queue,
+                a protocol carries it, inline, to the engine's ChatImage), turn_queue, idle_timer (the
+                quiet period after an answer a load-time calibration waits out),
                 settings_store, event_bus, json_util,
                 model_files (which gguf names make one model, the one-level folder scan, and what a
                 file is for by its header: model, projector, draft), plan_view (the plan as the Plan

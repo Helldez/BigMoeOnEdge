@@ -111,14 +111,20 @@ public:
     // A step a load runs on its own thread between closing the old session and opening the new one,
     // with the memory the old one held given back: where a server's load-time calibration opens its
     // candidates (docs/measured-planning.md). It may change the configs the load then opens (the
-    // decided plan's). `stop` is raised when a turn or a decision arrives, and when the load is
-    // cancelled or replaced: the step then ends as soon as it can and the load opens what it settled.
-    using BeforeOpen =
-        std::function<void(RunConfig & effective, RunConfig & requested, const std::atomic<bool> & stop)>;
+    // decided plan's). Two signals, kept apart because they end differently: `stop` is raised when a
+    // turn or a decision arrives (or cancel() is called), and the load then opens what the step
+    // settled, for the turn to run on; `cancelled` is raised by unload() and the host's end, and then
+    // nothing is opened and the step must leave every setting as it found it (stop is raised too).
+    struct BeforeOpenSignals {
+        const std::atomic<bool> & stop;
+        const std::atomic<bool> & cancelled;
+    };
+    using BeforeOpen = std::function<void(RunConfig & effective, RunConfig & requested, const BeforeOpenSignals &)>;
     // load() with `before_open` run first, started only while the host is idle (idle()): ready, no
-    // turn running, none waiting. Nothing in flight is cancelled. False when it did not start. The
-    // state reads "loading", with `calibrating` set in info(), until the new session is open, so a
-    // turn that arrives meanwhile waits for it as it waits for any load, and stops the step.
+    // turn running, none waiting. Nothing in flight is cancelled. False when it did not start. Until
+    // the new session is open, info() reads "ready" with `calibrating` set and the model that was
+    // loaded: the server is busy and still takes requests, each waiting for the load as for any and
+    // stopping the step first.
     bool load_when_idle(const RunConfig & effective, const RunConfig & requested, BeforeOpen before_open);
     // Ready, with no turn running or waiting for the model.
     bool idle() const;
@@ -195,8 +201,10 @@ private:
     void note_request();
 
     std::function<void()> turn_end_;
-    // Raised to stop a before-open step; `calibrating_` while one may run (load_when_idle).
+    // Raised to stop a before-open step, and to skip the open after it; `calibrating_` while one may
+    // run (load_when_idle).
     std::atomic<bool> before_open_stop_{false};
+    std::atomic<bool> before_open_cancel_{false};
     std::atomic<bool> calibrating_{false};
 
     std::function<void(const std::string &, const MeasuredKnobs &)> knobs_sink_;

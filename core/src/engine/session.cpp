@@ -2067,6 +2067,9 @@ void Session::Impl::arm_trials() {
         trials.cost_probe =
             std::make_unique<RateProbe>(!t.enabled() || device_cache, /*hits_visible*/ !device_cache, pol);
     }
+    // The requests are recorded against the narrow width on every load whose plan has the width's
+    // trade, a side timed or not (note_width_turn).
+    if (t.width_narrow > 0) trials.result.width_narrow = t.width_narrow;
     if (!t.enabled()) return;
     if (!t.threads.empty()) {
         trials.threads.push_back(cfg.n_threads);
@@ -2082,7 +2085,6 @@ void Session::Impl::arm_trials() {
             trials.overlap = {cfg.moe.overlap ? 1 : 0, cfg.moe.overlap ? 0 : 1};
     }
     trials.rate = t.device_tier >= 0 || t.width_side >= 0;
-    if (t.width_side >= 0) trials.result.width_narrow = t.width_narrow;
     trials.stage = stage_done;
     next_trial_stage(/*settled*/ false);
 }
@@ -2201,11 +2203,14 @@ void Session::Impl::rate_step(double seconds, int tokens, uint64_t lookups, uint
     next_trial_stage(/*settled*/ true);
 }
 
-// A turn of a width trial: what it asked of the model, for the plan that weighs the two widths, and
-// the prefill of a prompt the width changes, timed on this load's side.
+// A turn of a load whose plan has the width's trade (KnobTrialConfig::width_narrow): what it asked of
+// the model, for the plan that weighs the two widths, and, where the load times a side, the prefill of
+// a prompt the width changes on that side. Recorded with no side timed too: a width decided on the
+// decode alone, before any request was seen, is weighed again on the requests (planner.cpp,
+// width_across_loads).
 void Session::Impl::note_width_turn(int n_prompt, double prefill_seconds, int n_generated) {
     const KnobTrialConfig & t = cfg.trial;
-    if (t.width_side < 0) return;
+    if (t.width_narrow <= 0) return;
     ++trials.width_requests;
     trials.width_gen += n_generated;
     if (n_prompt > t.width_narrow && prefill_seconds > 0.0) {
@@ -2217,7 +2222,7 @@ void Session::Impl::note_width_turn(int n_prompt, double prefill_seconds, int n_
     r.usage_requests = trials.width_requests;
     r.usage_gen_tokens = trials.width_gen / trials.width_requests;
     r.usage_long_prompt_tokens = trials.width_long_tokens / trials.width_requests;
-    if (trials.width_long_seconds > 0.0)
+    if (t.width_side >= 0 && trials.width_long_seconds > 0.0)
         (t.width_side == 1 ? r.wide_prefill_tps : r.narrow_prefill_tps) =
             trials.width_long_tokens / trials.width_long_seconds;
 }

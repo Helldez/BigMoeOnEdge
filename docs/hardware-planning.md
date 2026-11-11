@@ -846,7 +846,8 @@ Measured on two 24 GB cards with GLM-4.5-Air: 14.2 tok/s decoded at 16384 tokens
 llama.cpp, at 104. A width set by hand is left alone and charged in
 full; a slope that was not measured decides nothing. With load-time calibration (on by default) both
 widths' decodes are timed as short candidate loads before the plan is served, and with no request
-seen yet the decode rates alone weigh them
+seen yet the decode rates alone weigh them, until the loads it serves record their requests: every
+load with the width's trade does, a side timed or not
 ([measured-planning.md](measured-planning.md#decisions-across-loads-timed-at-load)).
 
 Measured on a 12 GB card (RTX 3060 class, 120 GiB of host memory) with Qwen3.8-Flash-Next Q2_0 at a

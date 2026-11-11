@@ -18,9 +18,13 @@ Semantic Versioning.
   others replaying its tokens so both route alike), and the faster served, opened fresh. The planner
   names every side as before (the fitter's placement is still timed only where it could win), a side
   that cannot be opened loses, and the rates are kept in the model's `.knobs` record, so the next
-  load starts decided. `bmoe-cli --auto` does it before the first answer and says so; the server
-  answers first and calibrates once idle after an answer, giving way to any request
-  (`calibrating` in `/api/info`, `plan_progress` step `calibrate`). Only machines with a graphics
+  load starts decided. `bmoe-cli --auto` does it before the first answer and says so (with
+  `--routing-dir`, where the result is kept); the server answers first and calibrates after a minute
+  idle, giving way to any request, which waits for the model instead of being refused (`/api/info`
+  reads `ready` with `calibrating`, `plan_progress` step `calibrate`, a label in the UI). Before each
+  candidate the system's cache of the model's files is handed back where the system allows, so both
+  sides start cold. A side that cannot be opened loses for that calibration only and is tried again
+  the next time. Only machines with a graphics
   card that has memory of its own have such a decision: phones and shared-memory computers never
   calibrate. `--no-calibrate` keeps the timing across loads
   ([measured-planning.md](docs/measured-planning.md#decisions-across-loads-timed-at-load)).
@@ -30,8 +34,10 @@ Semantic Versioning.
   widths' decode timed and no request served (what a calibration leaves) kept the full width
   whatever the rates said, since a request of no tokens weighs nothing; the faster decode now
   decides there.
-- **The `.knobs` record names the sides that could not be opened** (`unviable=`), written only when
-  there is one; an older engine reads past it ([telemetry.md](docs/telemetry.md)).
+  It is provisional: every load whose plan has the width's trade now records its requests, a side
+  timed or not, so long prompts that show up later bring each side's prefill into the verdict.
+- **A request that needs the model waits for a load the server is running** instead of a 503 when
+  the server was started without `--autoload`.
 
 ## [0.41.2] - 2026-11-11
 

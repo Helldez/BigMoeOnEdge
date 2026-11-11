@@ -23,6 +23,7 @@
 #include "feed_key.h"
 #include "hf_repo.h"
 #include "http_fetch.h"
+#include "idle_timer.h"
 #include "json_util.h"
 #include "model_inspect.h"
 #include "model_library.h"
@@ -465,11 +466,12 @@ struct App {
         std::string added,
         std::string scratch,
         std::string routing_dir,
-        const std::function<std::unique_ptr<HttpFetch>(const std::string &)> & fetch)
-        : opt(std::move(o)), store(server_defaults(), std::move(settings_path)), host(bus),
+        const Embedding & embedding)
+        : opt(std::move(o)), store(server_defaults(), std::move(settings_path)),
+          host(bus, embedding.open_session ? embedding.open_session : SessionOpener(open_real_session)),
           lib(std::move(models_dir), opt.scan_dirs, std::move(catalog), std::move(added), opt.hf_endpoint, bus),
-          net(fetch ? fetch(scratch) : curl_fetch(scratch, opt.hf_endpoint)), scratch_dir(std::move(scratch)),
-          routing(std::move(routing_dir)) {
+          net(embedding.fetch ? embedding.fetch(scratch) : curl_fetch(scratch, opt.hf_endpoint)),
+          scratch_dir(std::move(scratch)), routing(std::move(routing_dir)) {
         host.set_routing_sink(
             [this](const std::string & model, const RoutingTrace & rec) { routing.keep(model, rec); });
         // A verdict is kept against the machine the plan of that model measured; with no plan of it
@@ -488,14 +490,46 @@ struct App {
             rec.engine = version();
             routing.keep_knobs(model, rec);
         });
-        host.set_turn_end_hook([this] { maybe_calibrate(); });
+        plan_fn = embedding.plan;
+        calibrate_fn = embedding.calibrate;
+        if (!calibrate_fn)
+            calibrate_fn = [](const PlanOutcome & p, const MeasuredKnobs & start, const std::atomic<bool> & stop,
+                              const PlanStepFn & on_step) {
+                return calibrate_plan_outcome(
+                    p, start,
+                    [&stop](const RunConfig & cfg, const CalibrationRun & run) {
+                        return run_calibration_candidate(cfg, run, &stop);
+                    },
+                    on_step);
+            };
+        calibration_idle_delay = embedding.calibration_idle_delay;
+        // An answer's end starts the wait for the idle point; the next answer starts it again.
+        host.set_turn_end_hook([this] {
+            if (stopping) return;
+            bool armed = false;
+            {
+                std::lock_guard<std::mutex> lk(plan_m);
+                armed = calibration_armed;
+            }
+            if (armed) idle.touch(calibration_idle_delay);
+        });
     }
+
+    // The planner and the calibration, the engine's own unless a test put others in (Embedding).
+    std::function<PlanOutcome(const RunConfig &)> plan_fn;
+    std::function<CalibrationOutcome(
+        const PlanOutcome &, const MeasuredKnobs &, const std::atomic<bool> &, const PlanStepFn &)>
+        calibrate_fn;
+    std::chrono::milliseconds calibration_idle_delay{kCalibrationIdleDelay};
+    // Waits out the quiet period after an answer, then looks for the idle point (maybe_calibrate).
+    IdleTimer idle{[this] { maybe_calibrate(); }};
 
     // A calibration step runs on the host's loader thread and reaches into the members declared after
     // the host (the routing store): the loader is joined while they are all alive, and no turn ending
     // during the shutdown starts another.
     ~App() {
         stopping = true;
+        idle.stop();
         host.unload();
     }
     std::atomic<bool> stopping{false};
@@ -587,6 +621,12 @@ struct App {
         // what they do not cover, since the verdict has a place to be kept.
         std::vector<MeasuredKnobs> knobs;
         const bool have_knobs = routing.load_knobs(cfg.model_path, knobs);
+        if (plan_fn) {
+            PlanOutcome p = plan_fn(cfg);
+            bus.publish("plan_progress", json{{"step", "done"}});
+            p.seq = ++plan_seq;
+            return p;
+        }
         PlanOutcome p = make_plan(
             cfg, store.operator_keys(), opt.isolated_probes,
             [this](const std::string & step, const std::string & label, int index, int count) {
@@ -648,10 +688,12 @@ struct App {
     // load of the model the settings name has just been asked for. Otherwise why the request is
     // refused (503 `no_model`). The load is asked for under load_m, so the requests that arrive
     // together ask once and the others find it loading.
+    // A load under way, whoever started it (a person, --autoload, or a calibration the server runs
+    // when idle), is a model coming: the turn waits for it in the host's line, and a calibration stops
+    // for it (EngineHost::load_when_idle). Refusing it would answer 503 for a model seconds from ready.
     std::string model_for_request() {
-        if (host.ready()) return "";
-        if (!opt.autoload) return "no model is loaded: load one from the Models page";
         if (host.loaded_or_loading()) return "";
+        if (!opt.autoload) return "no model is loaded: load one from the Models page";
         if (store.config().model_path.empty()) return "no model is selected: choose one from the Models page";
         std::lock_guard<std::mutex> load(load_m);
         if (host.loaded_or_loading()) return "";
@@ -728,35 +770,34 @@ struct App {
         const RunConfig requested = store.config();
         const std::string model = lp.body.value("model", "");
         if (!requested.calibrate || !lp.side_pending() || model.empty() || host.model_path() != model) return;
-        if (!host.idle()) return;
+        if (!host.idle()) return; // a turn's end will touch the timer again
         {
             std::lock_guard<std::mutex> lk(plan_m);
             calibration_armed = false;
         }
         auto calibrate_step = [this, lp, model](RunConfig & effective, RunConfig & req,
-                                                const std::atomic<bool> & stop) {
+                                                const EngineHost::BeforeOpenSignals & sig) {
             // The record as this machine keeps it now: the answers served since the plan may have
             // timed a side.
             std::vector<MeasuredKnobs> kept;
             MeasuredKnobs start;
             if (routing.load_knobs(model, kept))
                 if (const MeasuredKnobs * k = find_measured_knobs(kept, lp.hardware, version())) start = *k;
-            const CalibrationOutcome c = calibrate_plan_outcome(
-                lp, start,
-                [&stop](const RunConfig & cfg, const CalibrationRun & run) {
-                    return run_calibration_candidate(cfg, run, &stop);
-                },
-                [this](const std::string & step, const std::string & label, int index, int count) {
+            const CalibrationOutcome c = calibrate_fn(
+                lp, start, sig.stop, [this](const std::string & step, const std::string & label, int index, int count) {
                     bus.publish("plan_progress",
                                 json{{"step", step}, {"label", label}, {"index", index}, {"count", count}});
                 });
             bus.publish("plan_progress", json{{"step", "done"}});
             if (!c.ran) return;
+            // What was measured is this model's on this machine, whatever happens to the load: kept.
             MeasuredKnobs rec = c.knobs;
             rec.hardware = lp.hardware;
             rec.engine = version();
             if (!rec.empty()) routing.keep_knobs(model, rec);
-            if (!c.plan.ok) return;
+            // Unloaded, shutting down, or another model chosen meanwhile: the settings are no longer
+            // this model's, and this plan is not applied to them.
+            if (!c.plan.ok || sig.cancelled.load() || stopping || store.config().model_path != model) return;
             PlanOutcome p = c.plan;
             p.seq = ++plan_seq;
             store.apply_plan(p.values, p.decisions);
@@ -769,7 +810,11 @@ struct App {
             req = store.config();
             effective = effective_config(req);
         };
-        host.load_when_idle(effective_config(requested), requested, calibrate_step);
+        // A turn that slipped in between the look and the start wins: the next idle point tries again.
+        if (!host.load_when_idle(effective_config(requested), requested, calibrate_step)) {
+            std::lock_guard<std::mutex> lk(plan_m);
+            calibration_armed = true;
+        }
     }
 
     // Everything that only means something on a running stream, turned off with it. A default the
@@ -1647,7 +1692,7 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     const std::string scratch = (fs::u8path(data_dir) / "tmp").u8string();
 
     const std::string routing_dir = (fs::u8path(data_dir) / "routing").u8string();
-    App app(o, settings, models_dir, catalog, added, scratch, routing_dir, embedding.fetch);
+    App app(o, settings, models_dir, catalog, added, scratch, routing_dir, embedding);
     app.default_models_dir = absolute((fs::u8path(data_dir) / "models").u8string());
     for (const std::string & w : app.store.load())
         std::fprintf(stderr, "warning: %s\n", w.c_str());

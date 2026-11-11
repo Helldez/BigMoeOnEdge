@@ -966,6 +966,17 @@ static void routing_store_tests() {
     fs::remove_all(root, ec);
 }
 
+// Until a calibration's load has opened its session.
+static bool wait_calibrated(const EngineHost & h, std::chrono::milliseconds limit = 5s) {
+    const auto end = std::chrono::steady_clock::now() + limit;
+    while (std::chrono::steady_clock::now() < end) {
+        const json i = h.info();
+        if (!i.value("calibrating", true) && i.value("state", "") == "ready") return true;
+        std::this_thread::sleep_for(2ms);
+    }
+    return false;
+}
+
 // A server's load-time calibration runs as a load the host starts only when idle, with a step between
 // closing the old session and opening the new one (EngineHost::load_when_idle): the step runs with the
 // old session gone, may change what is opened, and stops for any turn that arrives, which then waits
@@ -999,7 +1010,8 @@ static void calibration_tests() {
         std::atomic<int> alive_in_step{-1};
         Gate in_step, leave_step;
         const bool started = host.load_when_idle(
-            config(), config(), [&](RunConfig & effective, RunConfig & requested, const std::atomic<bool> &) {
+            config(), config(),
+            [&](RunConfig & effective, RunConfig & requested, const EngineHost::BeforeOpenSignals &) {
                 alive_in_step = script.alive.load();
                 in_step.release();
                 leave_step.wait();
@@ -1008,12 +1020,13 @@ static void calibration_tests() {
             });
         check(started && in_step.wait(), "calibration: an idle host starts the step");
         const json during = host.info();
-        check(alive_in_step == 0 && during.value("state", "") == "loading" && during.value("calibrating", false) &&
-                  !host.ready(),
-              "calibration: the step runs with the old session gone, the host loading");
+        check(alive_in_step == 0 && during.value("state", "") == "ready" && during.value("calibrating", false) &&
+                  during["model"].is_object() && !during.contains("load_elapsed_s") && !host.ready() &&
+                  host.loaded_or_loading(),
+              "calibration: the step runs with the old session gone; the host reads ready and calibrating, "
+              "with its model");
         leave_step.release();
-        check(wait_state(host, "ready") && script.opened == 2 && !host.info().value("calibrating", true),
-              "calibration: then the new session opens");
+        check(wait_calibrated(host) && script.opened == 2, "calibration: then the new session opens");
         RunConfig three = config();
         three.n_threads = 3;
         check(host.reload_keys(three).empty() && !host.reload_keys(config()).empty(),
@@ -1027,17 +1040,19 @@ static void calibration_tests() {
         EngineHost & host = *host_owner;
         check(host.load(config(), config()).empty() && wait_state(host, "ready"), "calibration: loaded again");
         Gate in_step;
-        std::atomic<bool> stopped{false};
-        host.load_when_idle(config(), config(), [&](RunConfig &, RunConfig &, const std::atomic<bool> & stop) {
-            in_step.release();
-            for (int i = 0; i < 5000 && !stop.load(); ++i)
-                std::this_thread::sleep_for(1ms);
-            stopped = stop.load();
-        });
+        std::atomic<bool> stopped{false}, cancelled{false};
+        host.load_when_idle(config(), config(),
+                            [&](RunConfig &, RunConfig &, const EngineHost::BeforeOpenSignals & sig) {
+                                in_step.release();
+                                for (int i = 0; i < 5000 && !sig.stop.load(); ++i)
+                                    std::this_thread::sleep_for(1ms);
+                                stopped = sig.stop.load();
+                                cancelled = sig.cancelled.load();
+                            });
         check(in_step.wait(), "calibration: the step is running");
         auto pending = std::async(std::launch::async, [&] { return host.chat(turn(), nullptr); });
         const ChatOutcome out = pending.get();
-        check(stopped && out.status == 200 && out.result.generated_text == "hi" && script.opened == 2,
+        check(stopped && !cancelled && out.status == 200 && out.result.generated_text == "hi" && script.opened == 2,
               "calibration: a turn stops the step, then runs on the session the load opened");
     }
     // Not idle: nothing starts, and the turn in flight is not touched.
@@ -1052,7 +1067,7 @@ static void calibration_tests() {
         check(script.started.wait(), "calibration: a turn is generating");
         std::atomic<bool> ran{false};
         const bool started = host.load_when_idle(
-            config(), config(), [&](RunConfig &, RunConfig &, const std::atomic<bool> &) { ran = true; });
+            config(), config(), [&](RunConfig &, RunConfig &, const EngineHost::BeforeOpenSignals &) { ran = true; });
         check(!started && !ran && script.cancels == 0 && host.ready(),
               "calibration: refused while a turn runs, which goes on");
         host.cancel();
@@ -1067,16 +1082,19 @@ static void calibration_tests() {
         EngineHost & host = *host_owner;
         check(host.load(config(), config()).empty() && wait_state(host, "ready"), "calibration: loaded once more");
         Gate in_step;
-        std::atomic<bool> stopped{false};
-        host.load_when_idle(config(), config(), [&](RunConfig &, RunConfig &, const std::atomic<bool> & stop) {
-            in_step.release();
-            for (int i = 0; i < 5000 && !stop.load(); ++i)
-                std::this_thread::sleep_for(1ms);
-            stopped = stop.load();
-        });
+        std::atomic<bool> stopped{false}, cancelled{false};
+        host.load_when_idle(config(), config(),
+                            [&](RunConfig &, RunConfig &, const EngineHost::BeforeOpenSignals & sig) {
+                                in_step.release();
+                                for (int i = 0; i < 5000 && !sig.stop.load(); ++i)
+                                    std::this_thread::sleep_for(1ms);
+                                stopped = sig.stop.load();
+                                cancelled = sig.cancelled.load();
+                            });
         check(in_step.wait(), "calibration: the step is running again");
         host.unload();
-        check(stopped && state(host) == "empty" && script.alive == 0, "calibration: an unload stops the step");
+        check(stopped && cancelled && state(host) == "empty" && script.alive == 0 && script.opened == 1,
+              "calibration: an unload stops the step, says it was cancelled, and nothing is opened after it");
     }
 }
 

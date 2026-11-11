@@ -122,6 +122,12 @@ if(TARGET bmoe_server)
     add_executable(bmoe_agent_test agent_test.cpp)
     target_link_libraries(bmoe_agent_test PRIVATE bmoe_server)
     add_test(NAME agent COMMAND bmoe_agent_test)
+
+    # The server end to end over HTTP with the engine and the planner scripted (server.h, Embedding):
+    # a load-time calibration started when idle, and a request during it answered, not refused.
+    add_executable(bmoe_server_app_test server_app_test.cpp)
+    target_link_libraries(bmoe_server_app_test PRIVATE bmoe_server cpp-httplib)
+    add_test(NAME server_app COMMAND bmoe_server_app_test)
 endif()
 
 # release_file_mappings: on Windows it must find and drop this process's own view + section of a

@@ -91,6 +91,9 @@ export interface Info {
   error: string;
   model: ModelInfo | null;
   generating: boolean;
+  /** The server is timing where the model runs fastest (`state` reads `ready`): a message sent now
+   * stops it and waits for the model. Absent from an older server. */
+  calibrating?: boolean;
   /** While `planning` or `loading`: seconds since that load began (absent from an older server). */
   load_elapsed_s?: number;
 }

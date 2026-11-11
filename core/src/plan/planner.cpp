@@ -1008,13 +1008,19 @@ bool width_across_loads(Planning & s, uint32_t full) {
         return false;
     const uint32_t narrow = device_share_width(pl, s.hw, s.pol);
     if (narrow == 0 || narrow >= full) return false;
+    // Every load of a machine with this trade records the requests it serves against the narrow width,
+    // whether or not it times a side (KnobTrialConfig::width_narrow): a width decided before any
+    // request was seen is weighed again once they are, and a side whose prefill the requests now need
+    // is timed on a load as before.
+    p.config.trial.width_narrow = (int) narrow;
     const MeasuredKnobs & mk = s.model.knobs;
     const bool same = mk.width_narrow == (int) narrow;
     const double wd = same ? mk.wide_decode_tps : 0.0, nd = same ? mk.narrow_decode_tps : 0.0;
     const double wp = same ? mk.wide_prefill_tps : 0.0, np = same ? mk.narrow_prefill_tps : 0.0;
     // With no request seen yet (a load-time calibration times the decode before any is served), a
     // request is weighed as a token decoded: the decode rates alone decide, where a weight of nothing
-    // would hold the wide graph whatever they measured.
+    // would hold the wide graph whatever they measured. Provisional: the loads it serves record their
+    // requests (above), and the plan after weighs those.
     const bool served = mk.usage_requests > 0;
     const double gen = served ? mk.usage_gen_tokens : 1.0, longp = served ? mk.usage_long_prompt_tokens : 0.0;
     const std::string n = u64s(narrow);
@@ -1078,7 +1084,7 @@ bool width_across_loads(Planning & s, uint32_t full) {
     else
         std::snprintf(nums, sizeof(nums),
                       "measured: decode %.2f tok/s at the full width against %.2f at %u; no request served yet, so the "
-                      "decode alone weighs them",
+                      "decode alone weighs them until the requests this machine serves are recorded",
                       wd, nd, narrow);
     const std::string margin = u64s((uint64_t) (s.pol.min_backend_win * 100.0f + 0.5f)) + "%";
     if (t_wide > t_narrow * (1.0 + (double) s.pol.min_backend_win)) {
