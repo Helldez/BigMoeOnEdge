@@ -95,7 +95,10 @@ other software, or other people, on that machine or on a network it was told to 
     'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none';
     object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'`. The page loads
     nothing from anywhere: anything it takes from the network (a library, a font, data it fetches)
-    is missing.
+    is missing. It is not a seal on what leaves: a policy does not govern navigation, so a script
+    that sets `location`, or a link a person follows, can still carry what the page holds to another
+    site. What a preview holds is the agent's own work, so read a page the agent wrote before you
+    preview it when the conversation handled anything private.
   - **on**: the same, with `https:` added to every kind of load (`script-src 'unsafe-inline'
     'unsafe-eval' blob: https:`, `style-src`, `img-src`, `font-src`, `media-src`, `connect-src
     https: wss:`, `worker-src blob: https:`). The page reaches https hosts as any page a person opens
