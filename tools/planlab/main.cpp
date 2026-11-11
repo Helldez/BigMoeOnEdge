@@ -254,15 +254,18 @@ void observe(Facts & o,
 // ── record ──────────────────────────────────────────────────────────────────────────────────
 int record_main(const Args & a) {
     RunConfig cfg = a.cfg;
-    if (cfg.model_path.empty() || a.out.empty()) return usage();
+    if (cfg.model_path.empty()) return usage();
 
     // The child of an isolated device probe (bmoe/auto_plan.h): one device, its facts, nothing else.
+    // Before anything the parent's command needs: the child is started with the model and the
+    // device alone, and a child that stops at a missing -o is read as a device that failed.
     if (!a.probe_device.empty()) {
         std::string line;
         if (!probe_device_child(cfg.model_path.c_str(), a.probe_device, line)) return 3;
         std::printf("%s\n", line.c_str());
         return 0;
     }
+    if (a.out.empty()) return usage();
 
     PlanRequest req;
     req.pinned.assign(a.seen.begin(), a.seen.end());
@@ -304,6 +307,13 @@ int record_main(const Args & a) {
         rec.env["recorded_utc"] = day;
     }
     std::fputs(planned.plan.explain().c_str(), stdout);
+    // A device its probe lost is left out of the plan, and the record is then of a machine without
+    // it. That is a finding when the driver is at fault and a wasted record when the tool is, so it
+    // is said where it cannot be missed.
+    for (const ComputeDevice & d : planned.hw.devices)
+        if (d.usable == Tri::No)
+            std::fprintf(stderr, "planlab: WARNING: device %s was left out of this plan: %s\n", d.name.c_str(),
+                         d.unusable_reason.c_str());
 
     // Replayed once before it is written: a record that does not make the plan it was taken from is
     // missing a fact, and the place to learn that is the machine that still has it.
