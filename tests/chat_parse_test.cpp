@@ -76,7 +76,7 @@ static void expect_true(const char * name, bool cond) {
 }
 
 // Render a one-turn conversation and return the applied chat params (prompt + serialized grammar).
-static common_chat_params apply_template(bool enable_thinking) {
+static common_chat_params apply_template(bool enable_thinking, const std::vector<common_chat_tool> & tools = {}) {
     static const std::string tmpl = read_file(BMOE_QWEN3_TEMPLATE_PATH);
     auto tmpls = common_chat_templates_init(/*model=*/nullptr, tmpl);
 
@@ -86,12 +86,64 @@ static common_chat_params apply_template(bool enable_thinking) {
 
     common_chat_templates_inputs inputs;
     inputs.messages = {user};
+    inputs.tools = tools;
     inputs.add_generation_prompt = true;
     inputs.use_jinja = true;
     inputs.enable_thinking = enable_thinking;
     inputs.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
 
     return common_chat_templates_apply(tmpls.get(), inputs);
+}
+
+static bool starts_with(const std::string & s, const std::string & prefix) {
+    return s.compare(0, prefix.size(), prefix) == 0;
+}
+
+// The per-token parse of a call being written (TokenMetrics::tool_calls) is what every endpoint
+// streams by, and clients append the pieces: so the partial calls must only ever grow by
+// appending, from the first token that shows one to the final parse. This pins that contract on a
+// real template, so a submodule bump that broke it fails here rather than in a client.
+static void partial_tool_call_checks() {
+    common_chat_tool write_file;
+    write_file.name = "write_file";
+    write_file.description = "Write a file";
+    write_file.parameters = R"({"type":"object","properties":{"path":{"type":"string"},)"
+                            R"("content":{"type":"string"}},"required":["path","content"]})";
+    common_chat_params cp = apply_template(/*enable_thinking=*/true, {write_file});
+    common_chat_parser_params pp = bmoe::detail::build_parse_params(cp);
+
+    const std::string out = "Writing it.\n</think>\n\n"
+                            "<tool_call>\n<function=write_file>\n"
+                            "<parameter=path>\npage.html\n</parameter>\n"
+                            "<parameter=content>\n<p>caf\xC3\xA9</p>\n<p>two</p>\n</parameter>\n"
+                            "</function>\n</tool_call>";
+    std::vector<common_chat_tool_call> prev;
+    bool grows = true, threw = false, seen_before_end = false;
+    for (size_t n = 1; n <= out.size(); n += 3) {
+        common_chat_msg m;
+        try {
+            m = common_chat_parse(common_chat_input(out.substr(0, n)), /*is_partial=*/true, pp);
+        } catch (const std::exception & e) {
+            threw = true;
+            std::printf("  partial parse threw at %zu bytes: %s\n", n, e.what());
+            break;
+        }
+        if (m.tool_calls.size() < prev.size()) grows = false;
+        for (size_t i = 0; i < prev.size() && i < m.tool_calls.size(); ++i) {
+            if (!starts_with(m.tool_calls[i].arguments, prev[i].arguments)) grows = false;
+            if (!prev[i].arguments.empty() && m.tool_calls[i].name != prev[i].name) grows = false;
+        }
+        if (!m.tool_calls.empty() && !m.tool_calls[0].arguments.empty() && n + 3 <= out.size()) seen_before_end = true;
+        prev = m.tool_calls;
+    }
+    common_chat_msg fin = common_chat_parse(common_chat_input(out), /*is_partial=*/false, pp);
+    expect_true("partial tool-call parse does not throw", !threw);
+    expect_true("a call is visible while it is being written", seen_before_end);
+    expect_true("partial calls only grow by appending, and keep their name once arguments begin", grows);
+    expect_true("the final call extends the last partial one",
+                fin.tool_calls.size() == 1 && !prev.empty() &&
+                    starts_with(fin.tool_calls[0].arguments, prev[0].arguments));
+    expect_eq("the final call is the one written", fin.tool_calls.empty() ? "" : fin.tool_calls[0].name, "write_file");
 }
 
 int main() {
@@ -151,6 +203,8 @@ int main() {
     expect_true("partial parse leaks no reasoning into content", partial.content.empty());
     expect_true("partial parse exposes the reasoning span for a live thinking block",
                 !partial.reasoning_content.empty());
+
+    partial_tool_call_checks();
 
     if (failures == 0) {
         std::printf("all chat-parse checks passed\n");

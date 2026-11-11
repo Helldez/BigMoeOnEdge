@@ -2747,6 +2747,9 @@ struct Session::Impl::Turn {
     struct ShownView {
         std::string content;   // the answer, reasoning stripped
         std::string reasoning; // the thinking span, empty unless the parser split one out
+        // The calls written so far, read by the same parse: whichever tool and whatever format the
+        // template uses, a call that is still being written is visible (TokenMetrics::tool_calls).
+        std::vector<ChatToolCall> tool_calls{};
     };
     ShownView shown_view(const std::string & raw, bool partial) const {
         if (!chat_on) return {raw, ""};
@@ -2758,7 +2761,7 @@ struct Session::Impl::Turn {
         if (prefilled_answer && !structured()) return {raw, ""};
         try {
             common_chat_msg msg = common_chat_parse(common_chat_input(raw), partial, parse_params);
-            return {msg.content, msg.reasoning_content};
+            return {msg.content, msg.reasoning_content, detail::from_common_tool_calls(msg.tool_calls)};
         } catch (const std::exception & e) {
             if (structured()) return {}; // never leak an unparsed reasoning/tool envelope as JSON
             detail::warn_parse_failed_once(e.what());
@@ -3295,6 +3298,7 @@ struct Session::Impl::Turn {
                 ShownView sv = shown_view(gen, /*partial*/ true);
                 m.text = std::move(sv.content);
                 m.reasoning = std::move(sv.reasoning);
+                m.tool_calls = std::move(sv.tool_calls);
             }
             if (e == 0) {
                 tally.record(m, wall, s.f1 - s.f0, s.c1 - s.c0, im.turn, moe.enabled ? &st : nullptr);

@@ -188,7 +188,8 @@ private:
                   json & item_out);
     // One conversation's rounds, on the run's thread; the final answer's text.
     std::string run_rounds(Run & run, const std::string & conv_id);
-    json run_tool(Run & run, const json & conv, const ChatToolCall & call);
+    // `item_id`: the card the call already has from while it was written; empty for a new one.
+    json run_tool(Run & run, const json & conv, const ChatToolCall & call, const std::string & item_id = "");
     bool wait_approval(Run & run, const std::string & conv_id, json & item);
     ChatOutcome ask_model(Run & run,
                           const json & conv,

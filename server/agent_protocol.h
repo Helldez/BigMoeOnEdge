@@ -11,6 +11,7 @@
 #include "chat_turn.h"
 #include "json_util.h"
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -33,12 +34,14 @@ struct BlockEvent {
 //
 // The parser holds back markup it cannot classify yet, so in practice every snapshot extends the
 // last; when a final answer does not extend what was sent, the client keeps the text it holds and
-// diverged() says so. Tool calls are not text: they are known whole once the turn is parsed, and
-// travel as blocks of their own after this stream finishes.
+// diverged() says so. Tool calls are not text: they travel as blocks of their own (ToolCallStream),
+// and a protocol that cannot interleave closes the open text block before a call's block opens.
 class BlockStream {
 public:
     std::vector<BlockEvent> update(const std::string & text, const std::string & reasoning);
     std::vector<BlockEvent> finish(const std::string & text, const std::string & reasoning);
+    // Closes the open block, if any; text that follows opens a new one.
+    std::vector<BlockEvent> close();
     bool diverged() const { return diverged_; }
 
 private:
@@ -47,6 +50,50 @@ private:
     std::string sent_[2]; // per kind: everything sent, over every block of that kind
     bool open_ = false;
     BlockKind current_ = BlockKind::Reasoning;
+    bool diverged_ = false;
+};
+
+struct ToolCallEvent {
+    enum class Type { Open, Delta, Close };
+    Type type;
+    size_t index;          // the call's place in the answer, from 0
+    std::string id;        // Open: the id the call keeps to the end
+    std::string name;      // Open
+    std::string arguments; // Delta: what this event appends to the call's arguments
+};
+
+// The calls an answer holds, as the per-token parse sees them (TokenMetrics::tool_calls), turned
+// into append-only events every protocol can frame: a call opens, its arguments arrive in pieces,
+// and it closes. The rules are BlockStream's, so the same guarantee holds - what a client was sent
+// is never contradicted:
+//  - a call opens once its arguments have begun: every template writes the name before them, so the
+//    name is whole by then, and the id the call keeps is fixed at that moment (the model's own, or
+//    `id_for(index)` when it wrote none);
+//  - a snapshot whose arguments extend what was sent sends the difference, held back to the last
+//    whole UTF-8 character; one that does not sends nothing until a later one extends it again;
+//  - calls open in order, and a call opening closes the one before it, whose arguments are complete.
+// finish() takes the turn's final calls: it sends what each adds, opens and fills whole any call no
+// snapshot showed, closes them all, and gives every call the id its stream announced, so the final
+// answer and the stream name the same call the same way. A final call whose arguments do not extend
+// what was sent leaves the client with what it holds, and diverged() says so.
+class ToolCallStream {
+public:
+    explicit ToolCallStream(std::function<std::string(size_t)> id_for);
+    std::vector<ToolCallEvent> update(const std::vector<ChatToolCall> & calls);
+    std::vector<ToolCallEvent> finish(std::vector<ChatToolCall> & calls);
+    size_t opened() const { return sent_.size(); }
+    bool diverged() const { return diverged_; }
+
+private:
+    struct Sent {
+        std::string id;
+        std::string arguments;
+        bool closed = false;
+    };
+    void advance(size_t i, const ChatToolCall & c, bool final, std::vector<ToolCallEvent> & out);
+
+    std::function<std::string(size_t)> id_for_;
+    std::vector<Sent> sent_;
     bool diverged_ = false;
 };
 

@@ -164,6 +164,8 @@ export const en = {
   'choose.needTwo': 'Give at least two options, one per line.',
 
   // Tool calls and approvals.
+  'tool.state.composing': 'Writing',
+  'tool.composing.size': 'Writing · {size}',
   'tool.state.running': 'Running',
   'tool.state.waiting': 'Waiting for you',
   'tool.state.done': 'Done',

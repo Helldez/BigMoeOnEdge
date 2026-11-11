@@ -100,6 +100,9 @@ struct Turn {
     std::vector<ChatToolCall> calls;
     bool context_full = false;
     bool hold_before_token = false;
+    // The calls also travel with the tokens, half written on the first: what a model writing a
+    // long call looks like to the agent (TokenMetrics::tool_calls).
+    bool stream_calls = false;
 };
 
 struct Script {
@@ -158,9 +161,15 @@ public:
         // The answer arrives as two tokens, as a stream would show it.
         TokenMetrics m;
         m.text = t.text.substr(0, t.text.size() / 2);
+        if (t.stream_calls && !t.calls.empty()) {
+            ChatToolCall half = t.calls[0];
+            half.arguments.resize(half.arguments.size() / 2);
+            m.tool_calls = {half};
+        }
         ++s_.tokens;
         if (on_token) on_token(m);
         m.text = t.text;
+        if (t.stream_calls) m.tool_calls = t.calls;
         ++s_.tokens;
         if (on_token) on_token(m);
         r.ok = true;
@@ -1143,6 +1152,42 @@ static void access_tests() {
 }
 
 // An event for local clients only never reaches a stream from the network.
+// A call the model is still writing is its tool's card from the first piece, and the same card runs it.
+static void composing_tests() {
+    auto rig = std::make_unique<Rig>();
+    auto q = rig->bus->subscribe(true);
+    const std::string c = rig->conversation("full");
+    Turn writes{"", {call("write_file", {{"path", "page.html"}, {"content", "<p>hi</p>\n"}})}};
+    writes.stream_calls = true;
+    rig->say({writes, {"Written.", {}}});
+    json item;
+    check(rig->agent->send(c, "write a page", json::array(), false, false, item).ok(), "a message starts a run");
+    check(rig->wait_done(c), "the run ends");
+    std::string all, f;
+    while (EventBus::next(*q, f, 20ms) && !f.empty())
+        all += f;
+    rig->bus->unsubscribe(q);
+    std::vector<json> composing;
+    const std::string head = "event: item\ndata: ";
+    for (size_t at = all.find(head); at != std::string::npos; at = all.find(head, at + 1)) {
+        const size_t from = at + head.size();
+        const json ev = json::parse(all.substr(from, all.find('\n', from) - from));
+        if (ev["item"].value("state", "") == "composing") composing.push_back(ev["item"]);
+    }
+    const json tool = rig->items_of(c, "tool")[0];
+    check(!composing.empty() && composing.front().value("tool", "") == "write_file" &&
+              composing.front().value("id", "") == tool.value("id", ""),
+          "the card appears while the call is written, and the call runs on the same card");
+    check(composing.back().value("title", "") == "Write page.html" && composing.back().value("bytes", 0) > 0,
+          "the card's title follows the arguments as far as they go, with the size written so far");
+    check(tool.value("state", "") == "done" && tool.value("title", "") == "Write page.html" &&
+              slurp(rig->ws.path / "page.html") == "<p>hi</p>\n",
+          "the stored card is the call that ran");
+    const json answers = rig->items_of(c, "assistant");
+    check(answers[0]["tool_calls"][0].value("id", "") == tool.value("call_id", ""),
+          "the round's call and its card share the id the card announced");
+}
+
 static void audience_tests() {
     EventBus bus;
     auto here = bus.subscribe(true);
@@ -1681,6 +1726,7 @@ int main() {
     store_tests();
     access_tests();
     audience_tests();
+    composing_tests();
     external_agent_tests();
     command_tests();
     loop_tests();

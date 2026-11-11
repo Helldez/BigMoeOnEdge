@@ -41,6 +41,17 @@ describe('the item reducer', () => {
     expect(items[1]).toMatchObject({ text: 'Hello!', streaming: false });
   });
 
+  it('turns a card the model is still writing into the call that runs, in place', () => {
+    let items: Item[] = [{ id: 'a1', kind: 'assistant', text: '', streaming: true }];
+    items = upsertItem(items, tool('t1', 'write_file', { state: 'composing', title: 'write_file', bytes: 0 }));
+    items = upsertItem(items, tool('t1', 'write_file', { state: 'composing', title: 'Write page.html', bytes: 12000 }));
+    expect(items[1]).toMatchObject({ state: 'composing', title: 'Write page.html', bytes: 12000 });
+    expect(runSummary(items)).toMatchObject({ pending: 1, created: 0 });
+    items = upsertItem(items, tool('t1', 'write_file', { state: 'done', title: 'Write page.html', args: { path: 'page.html' } }));
+    expect(items.map((i) => i.id)).toEqual(['a1', 't1']);
+    expect(runSummary(items)).toMatchObject({ pending: 0, created: 1 });
+  });
+
   it('ignores a delta for an item that is not an answer', () => {
     const items: Item[] = [{ id: 'u1', kind: 'user', text: 'hi' }];
     expect(applyDelta(items, { conversation: 'c', item: 'u1', text: 'x' })).toEqual(items);

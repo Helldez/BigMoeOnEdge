@@ -1,4 +1,5 @@
 #include "agent.h"
+#include "agent_protocol.h"
 #include "image_part.h"
 #include "agent_run.h"
 
@@ -90,18 +91,23 @@ std::string short_text(const std::string & s, size_t max_chars) {
 }
 
 std::string title_for(const std::string & tool, const json & a) {
-    if (tool == "read_file") return "Read " + arg(a, "path");
+    // A title names its object; arguments without it (a call still being written, or one the model
+    // wrote without it) are named by the tool rather than by a verb with nothing after it.
+    const auto of = [&](const std::string & verb, const std::string & object, const std::string & close = "") {
+        return object.empty() ? tool : verb + object + close;
+    };
+    if (tool == "read_file") return of("Read ", arg(a, "path"));
     if (tool == "file_glob_search") {
         const std::string inc = arg(a, "include");
         const std::string where = arg(a, "path").empty() ? std::string(".") : arg(a, "path");
         return inc.empty() || inc == "**" ? "List " + where : "Find " + short_text(inc, 40) + " in " + where;
     }
-    if (tool == "grep_search") return "Search for \"" + short_text(arg(a, "pattern"), 40) + "\"";
+    if (tool == "grep_search") return of("Search for \"", short_text(arg(a, "pattern"), 40), "\"");
     if (tool == "get_info") return "Get the system's info";
-    if (tool == "write_file") return "Write " + arg(a, "path");
-    if (tool == "edit_file") return "Edit " + arg(a, "path");
-    if (tool == "exec_shell_command") return "Run " + short_text(arg(a, "command"), 60);
-    if (tool == "use_skill") return "Use the skill " + arg(a, "name");
+    if (tool == "write_file") return of("Write ", arg(a, "path"));
+    if (tool == "edit_file") return of("Edit ", arg(a, "path"));
+    if (tool == "exec_shell_command") return of("Run ", short_text(arg(a, "command"), 60));
+    if (tool == "use_skill") return of("Use the skill ", arg(a, "name"));
     return tool;
 }
 
@@ -545,6 +551,7 @@ ChatOutcome Agent::ask_provider(Run & run,
                 TokenMetrics tm;
                 tm.text = ps.text();
                 tm.reasoning = ps.reasoning();
+                tm.tool_calls = ps.partial_tool_calls();
                 if (!on_token(tm)) wanted = false;
             }
             return wanted && !run.stop.load();
@@ -637,13 +644,19 @@ Refusal Agent::approve(const std::string & conversation, const std::string & ite
 
 // ---- tools ----
 
-json Agent::run_tool(Run & run, const json & conv, const ChatToolCall & call) {
+json Agent::run_tool(Run & run, const json & conv, const ChatToolCall & call, const std::string & item_id) {
     const std::string conv_id = conv.value("id", "");
     json args;
     std::string why;
     const bool args_ok = call_arguments(call.arguments, args, why);
-    json item{{"id", new_id("i")}, {"kind", "tool"},     {"tool", call.name}, {"title", title_for(call.name, args)},
-              {"args", args},      {"state", "running"}, {"result", ""},      {"call_id", call.id}};
+    json item{{"id", item_id.empty() ? new_id("i") : item_id},
+              {"kind", "tool"},
+              {"tool", call.name},
+              {"title", title_for(call.name, args)},
+              {"args", args},
+              {"state", "running"},
+              {"result", ""},
+              {"call_id", call.id}};
     const auto finish = [&](const std::string & state, const std::string & result) {
         item["state"] = state;
         item["result"] = cap_text(result, k_tool_result_max_bytes);
@@ -786,6 +799,37 @@ std::string Agent::run_rounds(Run & run, const std::string & conv_id) {
         std::string sent_text, sent_reasoning;
         bool shown = false;
         const std::string item_id = item.value("id", "");
+        // The calls the model is writing, each shown as its tool's card from the moment it begins
+        // (ToolCallStream): composing, with its title as far as the arguments tell it and the size
+        // written so far, updated with the tokens that grow it as the answer's text is. When the
+        // round ends the same card runs the call. Whatever the tool, the model or the route: the
+        // card reads only the call, and the title is the tool's own.
+        ToolCallStream drafts([&item_id](size_t i) { return "call_" + item_id + "_" + std::to_string(i); });
+        struct Card {
+            json item;
+            std::string arguments;
+            bool shown = false;
+            size_t shown_bytes = 0;
+        };
+        std::vector<Card> cards;
+        const auto refresh_card = [&](Card & c) {
+            if (c.shown && c.arguments.size() == c.shown_bytes) return;
+            c.item["title"] = title_for(c.item.value("tool", ""), json_object_prefix(c.arguments));
+            c.item["bytes"] = c.arguments.size();
+            c.shown = true;
+            c.shown_bytes = c.arguments.size();
+            publish_item(conv_id, c.item, false);
+        };
+        // Cards whose calls will not run end with why. Live only: the stored conversation, which
+        // keeps only what a round decided, never held them.
+        const auto drop_cards = [&](size_t from, const std::string & state, const std::string & why) {
+            for (size_t k = from; k < cards.size(); ++k) {
+                cards[k].item["state"] = state;
+                cards[k].item["result"] = why;
+                publish_item(conv_id, cards[k].item, false);
+            }
+            cards.resize(std::min(from, cards.size()));
+        };
         const auto on_token = [&](const TokenMetrics & m) {
             const std::string text = m.text.substr(0, complete_utf8_prefix_size(m.text));
             const std::string reasoning = m.reasoning.substr(0, complete_utf8_prefix_size(m.reasoning));
@@ -807,10 +851,32 @@ std::string Agent::run_rounds(Run & run, const std::string & conv_id) {
             }
             sent_text = text;
             sent_reasoning = reasoning;
+            for (const ToolCallEvent & e : drafts.update(m.tool_calls)) {
+                if (e.type == ToolCallEvent::Type::Open) {
+                    cards.push_back({json{{"id", new_id("i")},
+                                          {"kind", "tool"},
+                                          {"tool", e.name},
+                                          {"title", e.name},
+                                          {"args", json::object()},
+                                          {"state", "composing"},
+                                          {"bytes", 0},
+                                          {"result", ""},
+                                          {"call_id", e.id}},
+                                     ""});
+                } else if (e.type == ToolCallEvent::Type::Delta && e.index < cards.size()) {
+                    cards[e.index].arguments += e.arguments;
+                }
+            }
+            // After the whole token, so a card that opened shows what the token already wrote of it.
+            for (Card & c : cards)
+                refresh_card(c);
             return !run.stop.load();
         };
         ChatOutcome out = ask_model(run, conv, req, on_token);
         if (out.status != 200) {
+            drop_cards(0, run.stop.load() ? "denied" : "error",
+                       run.stop.load() ? "Not done: the run was stopped."
+                                       : "Not done: the answer ended before the call was complete.");
             if (shown) {
                 item["text"] = sent_text;
                 item["reasoning"] = sent_reasoning;
@@ -857,27 +923,33 @@ std::string Agent::run_rounds(Run & run, const std::string & conv_id) {
         }
         ++rounds;
         RunResult & r = out.result;
+        // Each call keeps the id its card announced; one no token showed gets one by its place.
+        drafts.finish(r.tool_calls);
+        // A card the parsed answer no longer holds cannot run.
+        drop_cards(r.tool_calls.size(), "error", "Not done: the finished answer did not keep this call.");
         json calls = json::array();
-        for (size_t i = 0; i < r.tool_calls.size(); ++i) {
-            if (r.tool_calls[i].id.empty()) r.tool_calls[i].id = "call_" + item_id + "_" + std::to_string(i);
-            calls.push_back(
-                {{"id", r.tool_calls[i].id}, {"name", r.tool_calls[i].name}, {"arguments", r.tool_calls[i].arguments}});
-        }
+        for (const ChatToolCall & c : r.tool_calls)
+            calls.push_back({{"id", c.id}, {"name", c.name}, {"arguments", c.arguments}});
         item["text"] = r.generated_text;
         item["reasoning"] = r.reasoning_text;
         item["streaming"] = false;
         if (!calls.empty()) item["tool_calls"] = calls;
         publish_item(conv_id, item);
         if (r.cancelled || run.stop.load()) {
+            drop_cards(0, "denied", "Not done: the run was stopped.");
             notice(conv_id, "info", "Stopped.");
             return final_text.empty() ? r.generated_text : final_text;
         }
         final_text = r.generated_text;
         if (r.tool_calls.empty()) return final_text;
-        for (const ChatToolCall & c : r.tool_calls) {
-            if (run.stop.load()) break;
+        for (size_t k = 0; k < r.tool_calls.size(); ++k) {
+            const ChatToolCall & c = r.tool_calls[k];
+            if (run.stop.load()) {
+                drop_cards(k, "denied", "Not done: the run was stopped.");
+                break;
+            }
             d_.store->conversation(conv_id, conv);
-            const json done = run_tool(run, conv, c);
+            const json done = run_tool(run, conv, c, k < cards.size() ? cards[k].item.value("id", "") : "");
             if (done.value("state", "") != "error") {
                 last_failure.clear();
                 same_failures = 0;
@@ -891,6 +963,7 @@ std::string Agent::run_rounds(Run & run, const std::string & conv_id) {
             same_failures = failure == last_failure ? same_failures + 1 : 1;
             last_failure = failure;
             if (same_failures >= k_max_same_failed_calls) {
+                drop_cards(k + 1, "denied", "Not done: the run stopped before this call.");
                 notice(conv_id, "error",
                        "Stopped: the model asked for the same thing " + std::to_string(same_failures) +
                            " times and it failed the same way each time. Rephrase the request, or check what the "
