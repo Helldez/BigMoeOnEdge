@@ -401,8 +401,10 @@ static void loop_tests() {
         check(slurp(rig->ws.path / "notes" / "hello.txt") == "hi\n", "the approved write happened");
         const json done = rig->items_of(c, "tool")[0];
         check(done.value("state", "") == "done", "the tool item reads done");
-        check(last_tool_message(rig->last_request()).find("File written successfully.") == 0,
-              "the model reads the result in the next round");
+        check(last_tool_message(rig->last_request()) ==
+                  "File written successfully: created notes/hello.txt, 1 line (3 bytes).",
+              "the model reads the effect in the next round, not the content it wrote");
+        check(done.value("diff", "").find("+hi") != std::string::npos, "the card still shows the whole diff");
         const json answers = rig->items_of(c, "assistant");
         check(answers.size() == 2 && answers[1].value("text", "") == "Written." && !answers[1].value("streaming", true),
               "the final answer is the last assistant item, no longer streaming");
@@ -505,6 +507,19 @@ static void loop_tests() {
         check(rig->items_of(c, "assistant").back().value("text", "") == "Read it.",
               "and the run goes on to its answer");
         check(rig->items_of(c, "notice").size() == 1, "a notice says the results were shortened");
+    }
+    {
+        // A file written over another: the model is told what it replaced, in counts.
+        auto rig = std::make_unique<Rig>();
+        spit(rig->ws.path / "a.txt", "one\ntwo\nthree\n");
+        const std::string c = rig->conversation("full");
+        rig->say({{"", {call("write_file", {{"path", "a.txt"}, {"content", "one\n2\n"}})}}, {"Done.", {}}});
+        json item;
+        rig->agent->send(c, "rewrite", json::array(), false, false, item);
+        check(rig->wait_done(c), "the run ends");
+        check(last_tool_message(rig->last_request()) ==
+                  "File written successfully: replaced a.txt, 2 lines (6 bytes). 1 line added, 2 removed.",
+              "a replaced file is reported with how much of it changed");
     }
     {
         auto rig = std::make_unique<Rig>(false);

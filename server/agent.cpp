@@ -109,6 +109,30 @@ ToolOutput fail(const std::string & why) {
     return {false, "Error: " + why, "", ""};
 }
 
+// What write_file tells the model: the effect, in counts. The content is what the model wrote in the
+// call, so reading it back would only spend the context; what it could not know is whether a file
+// was there, and how much of it changed.
+std::string
+write_summary(const std::string & rel, const std::string & content, const std::string & diff, bool existed) {
+    size_t lines = (size_t) std::count(content.begin(), content.end(), '\n');
+    if (!content.empty() && content.back() != '\n') ++lines;
+    std::string s = "File written successfully: " + std::string(existed ? "replaced " : "created ") + rel + ", " +
+                    std::to_string(lines) + (lines == 1 ? " line" : " lines") + " (" + std::to_string(content.size()) +
+                    " bytes).";
+    if (existed) {
+        size_t added = 0, removed = 0;
+        std::istringstream in(diff);
+        for (std::string l; std::getline(in, l);) {
+            if (l.rfind("+++", 0) == 0 || l.rfind("---", 0) == 0) continue;
+            added += !l.empty() && l[0] == '+';
+            removed += !l.empty() && l[0] == '-';
+        }
+        s += " " + std::to_string(added) + (added == 1 ? " line" : " lines") + " added, " + std::to_string(removed) +
+             " removed.";
+    }
+    return s;
+}
+
 // The change write_file or edit_file would make: the new content and its diff. Run before an
 // approval, so the card shows exactly what a yes will write, and again after it.
 bool plan_change(const std::string & ws,
@@ -711,16 +735,25 @@ json Agent::run_tool(Run & run, const json & conv, const ChatToolCall & call) {
         o = {true, json{{"os", d_.os_name}, {"cwd", ws}}.dump(), "", ""};
     else if (call.name == "write_file" || call.name == "edit_file") {
         // Planned again: the file may have changed while the card waited.
-        if (!plan_change(ws, call.name, args, target, content, diff, err) || !write_whole(target, content, err))
+        const bool planned = plan_change(ws, call.name, args, target, content, diff, err);
+        std::error_code ec;
+        const bool existed = planned && fs::exists(fs::u8path(target), ec);
+        if (!planned || !write_whole(target, content, err))
             o = fail(err);
         else {
             item["diff"] = diff;
-            o = {true,
-                 diff.empty()
-                     ? "No change: the file already had that content."
-                     : (call.name == "write_file" ? "File written successfully.\n" : "File edited successfully.\n") +
-                           diff,
-                 diff, workspace_relative(ws, target)};
+            // The card shows the diff; the model is told the effect. An edit's diff carries what the
+            // model did not write (the lines around it, where it landed), so it is the answer; a whole
+            // file's diff is the content the model just wrote, so the answer counts it instead.
+            const std::string rel = workspace_relative(ws, target);
+            std::string said;
+            if (diff.empty())
+                said = "No change: the file already had that content.";
+            else if (call.name == "edit_file")
+                said = "File edited successfully.\n" + diff;
+            else
+                said = write_summary(rel, content, diff, existed);
+            o = {true, said, diff, rel};
         }
     } else if (call.name == "exec_shell_command") {
         const long asked_s = args.contains("timeout") && args["timeout"].is_number() ? args["timeout"].get<long>() : 0;
