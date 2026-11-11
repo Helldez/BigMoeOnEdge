@@ -121,10 +121,19 @@ against the one measured, the cache priced against the cache the run had, and th
 faults the run saw. Run it before and after a change to the cost model: the change is good when
 the error falls across the machines, not on the one it was tuned on.
 
-Records are files, and nothing collects them for you: `record` writes where `-o` says, on the
-machine it ran on. Bring the `.planrec` and its `.csv` back from a phone or a rented box before it
-is gone. Working records live in the ignored `.bench/plan-records/`; the ones worth a test go to
-`tests/plan-records/` after a read for identifying data.
+### Where they are kept
+
+`record` writes where `-o` says, on the machine it ran on: bring the `.planrec` and its `.csv` back
+from a phone or a rented box before it is gone. Then:
+
+- **`docs/bench-data/plan-records/`** is the data set. Every record from the project's own test
+  runs goes there, after the read for identifying data its README describes. The `plan_records`
+  test checks each still reads and plans; it does not hold them to the plan they recorded.
+- **`tests/plan-records/`** is the few that gate rule changes (see The corpus below).
+
+Recording is something the project's own runs do by default. For anyone else it is off: the
+community benchmark script makes a record only with `BENCH_PLAN_RECORD=1`
+([community-benchmarks.md](community-benchmarks.md)), and the file is theirs to read and attach.
 
 ## Replaying one
 

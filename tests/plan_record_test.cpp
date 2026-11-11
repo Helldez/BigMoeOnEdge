@@ -298,6 +298,34 @@ int main(int argc, char ** argv) {
         }
     }
 
+    // ── the data set: every record kept in docs/bench-data/plan-records ──────────────────
+    // Not held to the plan it recorded - adding a row must never block a rule change - only to
+    // being a record this build reads and plans from.
+    if (argc > 2) {
+        size_t n = 0;
+        std::error_code ec;
+        for (const auto & e : std::filesystem::recursive_directory_iterator(argv[2], ec)) {
+            if (e.path().extension() != ".planrec") continue;
+            ++n;
+            const std::string name = e.path().filename().string();
+            PlanRecord r;
+            if (!parse_plan_record(read_file(e.path()), r, err, &unknown)) {
+                check(false, name + ": is a plan record", err);
+                continue;
+            }
+            problems.clear();
+            const Replay again = replay_plan(r, record_config(r, problems), r.request);
+            check(problems.empty() && unknown.empty(), name + ": reads and plans on this build",
+                  !problems.empty() ? problems.front()
+                  : unknown.empty() ? ""
+                                    : "unknown key " + unknown.front());
+            if (r.ran() && again.plan.allocation.seconds_per_token > 0.0)
+                std::printf("       %s: predicts %.3f s/token, its run measured %.3f\n", name.c_str(),
+                            again.plan.allocation.seconds_per_token, fact(r.observed, "seconds_per_token"));
+        }
+        std::printf("%zu record(s) in the data set %s\n", n, argv[2]);
+    }
+
     std::printf("%s (%d failure%s)\n", failures ? "FAILED" : "OK", failures, failures == 1 ? "" : "s");
     return failures ? 1 : 0;
 }

@@ -17,7 +17,9 @@ Semantic Versioning.
   carries where it ran (system, kernel, swap and its kind, a container's limit), the prediction in
   parts, and the run as distributions per token with the process's and the system's memory through
   it; `errors DIR` sets the prediction beside the measurement for every record and `table DIR`
-  writes them all as one CSV, the table a better predictor is to be built on. Records kept in
+  writes them all as one CSV, the table a better predictor is to be built on. The project's own
+  test runs keep their records in `docs/bench-data/plan-records`; for anyone else it is off, and
+  `scripts/bench-report.sh` makes one only with `BENCH_PLAN_RECORD=1`. Records kept in
   `tests/plan-records` are replayed by the new `plan_records` test on every build: a rule change
   that moves the plan on a recorded machine fails with both plans printed, and each record made
   with a run prints the prediction beside the measurement. It says what the planner decides and

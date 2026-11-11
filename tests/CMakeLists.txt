@@ -292,11 +292,13 @@ add_test(NAME planner COMMAND bmoe_planner_test)
 
 # A plan's inputs as text, and every machine on record: each file in tests/plan-records is what
 # `bmoe-planlab record` wrote on one machine for one model, and must still make the plan it made
-# there (docs/plan-records.md). Pure policy as above: no model, no llama.cpp, no I/O beyond the files.
+# there (docs/plan-records.md). The larger set in docs/bench-data/plan-records, the data the
+# predictions are checked against, must only still read and plan. Pure policy as above: no model, no llama.cpp, no I/O beyond the files.
 add_executable(bmoe_plan_record_test plan_record_test.cpp ${CMAKE_SOURCE_DIR}/tools/planlab/plan_record.cpp)
 target_include_directories(bmoe_plan_record_test PRIVATE ${CMAKE_SOURCE_DIR}/tools/planlab)
 target_link_libraries(bmoe_plan_record_test PRIVATE bmoe_core)
-add_test(NAME plan_records COMMAND bmoe_plan_record_test ${CMAKE_CURRENT_SOURCE_DIR}/plan-records)
+add_test(NAME plan_records COMMAND bmoe_plan_record_test ${CMAKE_CURRENT_SOURCE_DIR}/plan-records
+                                  ${CMAKE_SOURCE_DIR}/docs/bench-data/plan-records)
 
 # The routing trace the planner prices the cache from: its LRU replay against scripts/route-replay.py
 # on the archived phone traces, the curve, the hottest experts and the text form. Pure policy.
