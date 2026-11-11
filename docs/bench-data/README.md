@@ -8,6 +8,10 @@ provenance so the tables in [../benchmarks.md](../benchmarks.md) can be traced b
 recommendation inside one is only valid for the build it was measured against. Read the
 maintained docs for current guidance; read these to check where a number came from.
 
+`plan-records/` is the exception to "not maintained": a single growing set of plan records
+([../plan-records.md](../plan-records.md)), one row per machine and model, read by the
+`plan_records` test on every build. See its own README.
+
 | Session | Captured against | Note |
 |---|---|---|
 | `2026-07-12/` | baseline cache/lane sweep | Feeds the cache-and-lanes tables in `benchmarks.md`. |
