@@ -83,8 +83,9 @@ cache-off (the default), and lets the dense-weights policy handle the other half
 
 There is one runtime move now, and it is the half of the governor that was never the problem.
 `--cache-brake` (on by default, `--no-cache-brake` to turn it off) halves the expert cache when the
-system takes it back mid-run, and that is all it does: it never grows the budget again within a run,
-and it never goes under one token's worst-case cycle.
+system takes it back mid-run, and that is all it does: it never grows an ordinary cache's budget again within a run,
+and it never goes under one token's worst-case cycle. A discardable cache is the exception (below): it climbs back by
+itself, because growing it into pressure costs a drop, never a write.
 
 It moves only when two signals agree, both about the engine's own work and its own pages, so it reads
 the same on every platform:
@@ -227,7 +228,10 @@ growing back does not hold here. Growing ordinary memory into pressure costs com
 before the next sample can see it, which is what made the governor oscillate. Growing an offered
 cache into pressure costs the kernel a drop and the cache a re-read, both cheap, and nothing is
 written. It grows only after a full pass with no drop, only as fast as misses need room, and never
-past the budget last set. A braked budget therefore stays braked.
+past the budget its owner set. A brake lowers it at once and does not replace that budget: the cache climbs back
+after the kernel has been quiet, and each brake doubles how long it waits ([cache-sizing.md](cache-sizing.md)). On a
+16 GB Mac a brake that set the halved budget as the new one held Gemma-4-26B at 0.8 GB of cache and 10.9 tok/s for the
+rest of a ten-turn chat.
 
 ## Portability of what remains
 

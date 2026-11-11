@@ -257,11 +257,32 @@ there, so the cache is ordinary memory as before, the planner prices it so, and 
 The budget follows what the kernel lets the cache keep, both ways (`DropFollowingBudget`, in the same
 module). It goes down by each drop, never under one token's cycle. Once a whole window passes
 without a drop, it goes back up, only as fast as misses need room and never past the budget last
-set: the plan's, or an explicit resize such as the brake's. The window is the one the offer already
-uses, a pass of the stack. Unlike the brake, this one grows back ([pressure.md](pressure.md)),
-because growing into pressure here costs a drop and a re-read, never a write: a picture that was
-true a minute ago is not kept for the rest of a long session. The brake's sensor skips offered entries, because a dropped offer is
+set by its owner: the plan's, or an app's explicit resize. The window is a pass of the stack. Growing into pressure here costs a
+drop and a re-read, never a write, so a picture that was true a minute ago is not kept for the rest of a long session.
+Two things move the budget under the owner's without replacing it. A device prefill's slots borrow from the cache for
+one prompt and give the bytes back (`lend_cache`/`return_cache`); before, the prompt's end set the budget the kernel had
+left as the new one, so every turn of a chat lowered it for good. And the brake ([pressure.md](pressure.md)) lowers a
+discardable cache at once but keeps the owner's budget as the ceiling: the cache climbs back once the kernel has been
+quiet, and each brake doubles how long it waits. The brake's sensor skips offered entries, because a dropped offer is
 this mechanism working, not the reclaim the brake watches for.
+
+The offer window follows the kernel too. It starts at a pass of the stack, the newest an entry can be while a kernel or
+an I/O lane may still use it. It doubles each time it passes whole with nothing dropped, and goes back to a pass at the
+first drop or brake, because what it kept out of the kernel's reach is what the system just compressed. It never covers
+more than the younger half of the ages the cache holds, so the older half is always offered and pressure always has
+something to take. With no pressure, a hot expert no longer pays an offer and a reclaim on every reuse.
+
+Ten-turn chats on the 16 GB Mac (two sessions per arm, `--auto`, 400 tokens a turn), before and after these three,
+swap 0 in every session:
+
+| | Qwen3.6-35B-A3B Q4_K_M | Gemma-4-26B-A4B Q4_0 |
+|---|---|---|
+| 0.41.1 | 15.5, 16.0 tok/s (cache 2.5-2.6 GB) | 20.0, 10.9 tok/s (cache 4.6 GB, then 0.8 GB after three brakes) |
+| with the fix | 17.0, 18.2 tok/s (cache 4.6-5.6 GB) | 15.9, 20.9 tok/s (cache 2.4, then 5.3 GB) |
+
+The brake fires more often now (6-10 times a session, against 0-3), because a cache that climbs back can be braked
+again. The doubling keeps it from settling into a period, but not from firing: what it costs is the open point in
+[#550](https://github.com/Helldez/BigMoeOnEdge/issues/550).
 
 Same machine, same binary, `--auto`, 512 tokens, the arms alternating with 30 s between runs:
 

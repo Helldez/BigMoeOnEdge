@@ -408,6 +408,18 @@ without a device of their own, an unchanged plan.
   the median of `2 * rounds + 1` windows, after the longest settle the trial makes, since a device
   cache fills out of the session's counters). The next load runs the fitter's placement and times it.
   The plan after keeps the faster, and the cache holds where the two are within `min_backend_win`.
+- **The slower side is not timed where it cannot win.** Timing the fitter's placement costs a whole
+  load at its rate. On a 12 GB card with Qwen3.6-35B the cache decoded at 73.5 tok/s, and the second
+  load then decoded a whole session at 37.8 to time a placement that could never have won. That
+  placement needs no price of a miss, because it pays none: it computes the experts the fitter left on
+  the host at the host's rate and everything else on the devices. Its ceiling (`fitter_decode_ceiling`)
+  adds what a token reads at each processor's probed rate and leaves out crossings and overheads (55
+  tok/s there). A probe can read below the decode: on two 16 GB cards with GLM-4.5-Air the ceiling
+  was 8.5 and the placement decoded at 9.34. So the ceiling is raised by `rate_ceiling_slack`, a
+  quarter, the plan's own accuracy bound. The fitter's placement is timed only where that reach beats
+  the cache's measured rate by `min_backend_win`; elsewhere the second load keeps the cache, and the
+  plan line gives the two figures. On GLM-4.7 over PCIe 3 (cache 1.6 tok/s) and GLM-4.5-Air (cache
+  4.6-5.9), it is still timed, and won.
   The front-end merges each load's side into the record it keeps for the model and machine. Gate G25e
   times both sides on the loopback device, byte-identical, with a rate in the record.
 - **Not done.** The double reads stay, measured rather than removed: on a model that fits the host,

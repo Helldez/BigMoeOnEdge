@@ -4,6 +4,32 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **A second load no longer decodes a whole session at half speed to time a placement that cannot
+  win.** Since #524 the device expert cache is kept across loads by measurement: the first load times
+  the cache, the second the capacity fitter's placement. On a 12 GB card with Qwen3.6-35B the second
+  load decoded at 37 tok/s against 68 in v0.40.3, timing a placement whose ceiling was 55 against
+  the cache's measured 73.5. That ceiling is now computed before the second load, from the rates this
+  machine probed and the bytes the model reads. It covers the experts the fitter left on the host at
+  the host's rate and the rest at the device's, and leaves out crossings and overheads. The fitter's
+  placement is timed only where that ceiling, plus a quarter for a probe that reads low
+  (`rate_ceiling_slack`), beats the cache by the 10% margin. Elsewhere the cache stays, and the plan
+  says why ([measured-planning.md](docs/measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache)).
+- **A discardable cache no longer loses its budget for good** ([#550](https://github.com/Helldez/BigMoeOnEdge/issues/550)).
+  On a 16 GB Mac, 10-turn chats with Qwen3.6-35B-A3B Q4_K_M decoded 17.0 and 18.2 tok/s against 15.5 and 16.0 on 0.41.1,
+  with 4.6-5.6 GB of cache against 2.5. With Gemma-4-26B-A4B Q4_0, 0.41.1's second session fell to 10.9 tok/s at 0.8 GB
+  after three brakes, and the fix held 20.9 at 5.3 GB. Swap stayed at 0. None of the three rules names a platform, a model
+  or a quant:
+  - **A device prefill's slots borrow from the cache and give it back.** The prompt's end used to set the budget the kernel
+    had left as the cache's new one, so every turn of a chat lowered it.
+  - **The brake lowers a discardable cache and keeps the owner's budget as its ceiling.** The cache climbs back once the
+    kernel has been quiet, and each brake doubles the wait. An ordinary cache is braked as before.
+  - **The offer window follows the kernel.** It doubles while nothing is dropped and narrows at the first drop or brake,
+    never past the younger half of the cache's ages, so a hot expert stops paying an offer and a reclaim on every reuse
+    when nothing is taken ([cache-sizing.md](docs/cache-sizing.md)).
+
 ## [0.41.1] - 2026-11-11
 
 ### Added
