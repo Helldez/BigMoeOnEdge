@@ -9,8 +9,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <filesystem>
-#include <fstream>
 #include <memory>
 #include <string>
 #include <utility>
@@ -37,18 +35,14 @@ constexpr const char * k_calibration_prompt =
 constexpr float k_calibration_temp = 0.7f;
 constexpr uint32_t k_calibration_seed = 1234;
 
-// The piece the dense part is read in by: large enough that the reads are sequential at the drive's
-// rate, small beside any memory a model is run in.
-constexpr size_t k_warm_read_bytes = size_t(8) << 20;
-
 // Every candidate starts from the same system cache of the model's files. Whatever the previous
 // candidate read through the model's mapping stays in the system's cache after it closes, and the
 // next would load and decode from memory what the first read from the drive: the later side measured
 // on a warmer machine. So before each open the cache of every shard (and the files beside the model)
 // is handed back where the system takes the advice (pio::drop_file_cache), and then the dense part,
 // the tensors every token reads whatever the placement, is read in on every system alike: each
-// candidate opens with exactly the dense part cached, where a drop is a no-op (Darwin, Windows) as
-// where it is not. What stays uneven where the cache cannot be dropped is the experts a placement
+// candidate opens with exactly the dense part cached, where pio::drop_file_cache is a no-op as where
+// it is not. What stays uneven where the cache cannot be dropped is the experts a placement
 // loads through the mapping: the later candidate may find some of the earlier one's still cached.
 // They are not read in, since a model larger than the memory is what this engine exists for.
 void even_model_file_cache(const RunConfig & cfg, const std::atomic<bool> * stop) {
@@ -77,24 +71,10 @@ void even_model_file_cache(const RunConfig & cfg, const std::atomic<bool> * stop
         if (file->second >= 0 && (size_t) file->second < ranges.size())
             ranges[(size_t) file->second].push_back({off->second, size->second});
     }
-    std::vector<char> buf(k_warm_read_bytes);
     for (size_t f = 0; f < ranges.size(); ++f) {
+        if (stop && stop->load(std::memory_order_relaxed)) return; // a waiting request does not wait through this
         std::sort(ranges[f].begin(), ranges[f].end());
-        // A stream for its 64-bit offsets on every platform; read through the system's cache, as the
-        // mapping a load reads by is.
-        std::ifstream in(std::filesystem::u8path(offs.shard_paths[f]), std::ios::binary);
-        if (!in) continue;
-        for (const auto & r : ranges[f]) {
-            in.clear();
-            in.seekg((std::streamoff) r.first);
-            for (uint64_t left = r.second; left > 0 && in;) {
-                // A request waiting for the model does not wait through this.
-                if (stop && stop->load(std::memory_order_relaxed)) return;
-                const size_t n = (size_t) std::min<uint64_t>(left, buf.size());
-                in.read(buf.data(), (std::streamsize) n);
-                left -= n;
-            }
-        }
+        pio::read_through_cache(offs.shard_paths[f].c_str(), ranges[f], stop);
     }
 }
 

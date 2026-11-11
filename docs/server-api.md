@@ -5,7 +5,8 @@ serves the UI's static files, and exposes a small JSON API plus an OpenAI-compat
 endpoint, so any OpenAI client can use it too, and the Anthropic Messages and OpenAI Responses
 APIs that Claude Code and Codex CLI speak.
 
-It binds to `127.0.0.1` on port 8765 by default and, unless started with a key (`--api-key-file` or
+It binds to `127.0.0.1` on port 8765 by default (`--port N` to change it; `--port 0` takes any free
+port and prints the one it took) and, unless started with a key (`--api-key-file` or
 `--api-key`), has no authentication:
 it is a local program, like the CLI. See [Security model](#security-model) for exactly what that
 does and does not protect. On a machine that stays on it runs as a service of the person's init

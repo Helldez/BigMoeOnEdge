@@ -190,8 +190,8 @@ ParamDesc & typical(ParamDesc & d, double lo, double hi) {
     return d;
 }
 
-ParamDesc & special(ParamDesc & d, std::string value, const char * label) {
-    d.specials.push_back({std::move(value), label});
+ParamDesc & special(ParamDesc & d, std::string value, std::string label) {
+    d.specials.push_back({std::move(value), std::move(label)});
     return d;
 }
 
@@ -697,13 +697,15 @@ std::vector<ParamDesc> build() {
     }
     {
         ParamDesc d = row("ubatch", "Batch width", G::Memory, L::Advanced,
-                          "Widest graph computed at once (0 = as wide as the context). Compute buffers are "
-                          "reserved for it, so a smaller value hands RAM back to the expert cache at the cost "
-                          "of prefill speed; decode is unaffected.");
+                          "Widest graph computed at once (0 = as wide as the context, up to " +
+                              std::to_string(RunConfig::ubatch_auto_max) +
+                              "; with --auto the plan chooses it from this machine's memory). Compute buffers are "
+                              "reserved for it, so a smaller value hands RAM back to the expert cache at the cost "
+                              "of prefill speed; decode is unaffected.");
         d.value_hint = "N";
         bounds(d, 0, RunConfig::tokens_max, "tokens");
         typical(d, usual::ubatch_lo, usual::ubatch_hi);
-        special(d, "0", "as wide as the context");
+        special(d, "0", "as wide as the context, up to " + std::to_string(RunConfig::ubatch_auto_max));
         bind_int(d, [](RunConfig & c) -> int & { return c.n_ubatch; });
         d.details = "Wider computes a long prompt faster but reserves memory taken from the expert cache. It does not "
                     "change how fast the answer is written.";

@@ -736,6 +736,39 @@ struct RunConfig {
     // prefill throughput, which processes a long prompt in more, smaller passes.
     int n_ubatch = 0;
 
+    // The widest graph a run computes at once when n_ubatch is 0: as wide as the context up to here.
+    // Past it the buffers stop following the context alone. The attention mask is a row of the
+    // whole context per token of width, so at width = context the host buffer grows with its square.
+    // Measured on a CPU host, Qwen3.6-35B-A3B Q4_K_M, flash attention on (#566): 2945 MiB at a 16384
+    // context, 4801 MiB refused at 24576, and at 32768 an allocation inside llama.cpp failing before
+    // the reservation could report it, which aborts the process. At this width the same 32768
+    // context reserves about 1.7 GB, and a prompt longer than it takes more passes; under it nothing
+    // changes, so the single pass that is the cheapest prefill for flash reads stays for every prompt
+    // that fits in one. This is the width of a run nothing planned, and the width --auto's probe
+    // measures at: a plan prices any other width from that measurement and may choose a wider graph
+    // where the memory takes it (choose_graph_width). The same figure the planner bounds a device at
+    // (PlannerPolicy::ubatch_max_device), for a different reason.
+    static constexpr int ubatch_auto_max = 8192;
+    // The narrowest graph an image allows: 0 without a projector or without a cap on an image's
+    // tokens. Some projectors' image tokens attend to each other both ways, and llama.cpp then takes
+    // the whole image in one pass of the graph, so an image wider than the graph cannot be decoded.
+    // The cap (image_max_tokens) is the most one image takes; neither the default width nor the
+    // planner goes under it. A width set by hand is the caller's, and the session says so when an
+    // image does not fit it.
+    int graph_width_floor() const {
+        if (mmproj.empty() || image_max_tokens <= 0) return 0;
+        return image_max_tokens < n_ctx ? image_max_tokens : n_ctx;
+    }
+    // The width this run's graphs are reserved for: n_ubatch when set, otherwise as wide as the
+    // context up to ubatch_auto_max (or up to graph_width_floor where an image needs more). The one
+    // place that turns 0 into a width: the session opens with it and the planner's probe measures
+    // at it.
+    int graph_width() const {
+        int w = n_ubatch > 0 ? n_ubatch : ubatch_auto_max;
+        if (n_ubatch <= 0 && w < graph_width_floor()) w = graph_width_floor();
+        return w < n_ctx ? w : n_ctx;
+    }
+
     // Context checkpoints, as llama.cpp's server keeps them (--ctx-checkpoints and
     // --checkpoint-min-step): copies of the part of the context's state that
     // cannot be cut at an arbitrary position, so a chat turn whose prompt diverges from the cached

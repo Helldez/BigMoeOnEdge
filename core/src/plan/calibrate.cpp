@@ -24,7 +24,7 @@ int side_of(const KnobTrialConfig & t) {
 
 std::string side_words(const KnobTrialConfig & t, const RunConfig & c) {
     if (t.device_tier >= 0) return t.device_tier ? "with a device expert cache" : "with the fitter's placement";
-    const int width = t.width_side ? (c.n_ubatch > 0 ? c.n_ubatch : c.n_ctx) : t.width_narrow;
+    const int width = t.width_side ? c.graph_width() : t.width_narrow;
     return std::string("with the graph ") + (t.width_side ? "at the plan's width" : "narrowed") + " (" +
            std::to_string(width) + " tokens wide)";
 }

@@ -15,10 +15,12 @@
 // decommits explicitly. Both honour a page-granularity that the caller rounds to.
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
@@ -252,6 +254,17 @@ void vm_drop_file_pages(void * p, size_t sz);
 // clean pages only; a page any process still maps stays. A no-op where the platform offers no such
 // advice (Windows, Darwin: neither has posix_fadvise).
 void drop_file_cache(const char * path);
+
+// Read the byte ranges {offset, size} of a file through the system's cache and discard the bytes:
+// what brings those pages into the cache as a mapping's reads would, on every platform alike, with
+// 64-bit offsets everywhere. In pieces of read_through_piece; `stop` (nullable) ends it between two.
+// False when the file cannot be opened or a read fails.
+bool read_through_cache(const char * path,
+                        const std::vector<std::pair<uint64_t, uint64_t>> & ranges,
+                        const std::atomic<bool> * stop = nullptr);
+// Large enough that the reads run sequentially at the drive's rate, small beside any memory a model
+// is run in.
+inline constexpr size_t read_through_piece = size_t(8) << 20;
 
 // Drop the resident pages of an ANONYMOUS range someone else allocated and still owns, keeping the
 // range valid: the next touch maps a zero page instead of faulting. For memory whose contents moved

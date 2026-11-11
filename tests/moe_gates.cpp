@@ -2144,7 +2144,7 @@ int main(int argc, char ** argv) {
             if (asked.size() != 2 || decoded.size() != 2 || decoded[0].empty() || !asked[0].replay.empty() ||
                 asked[1].replay != decoded[0] ||
                 !std::equal(decoded[0].begin(),
-                            decoded[0].begin() + (long) std::min(decoded[0].size(), decoded[1].size()),
+                            decoded[0].begin() + (long) (std::min)(decoded[0].size(), decoded[1].size()),
                             decoded[1].begin())) {
                 std::printf("[FAIL] G24f the second candidate did not replay the first one's tokens\n");
                 ++fails;

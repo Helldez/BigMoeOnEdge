@@ -294,8 +294,10 @@ parser that compares runs across that release reads both as the same mode. Field
   names its build after the checkout has moved on. `unknown` if the build did not define it. It sits
   on its own line so the `model=` line keeps starting with `model=`, which is how the app's CSV
   reader finds a run's name.
-- `n_ubatch` sets the compute-buffer reservation, so it moves the very memory columns below;
-  `0` means it follows `n_batch`.
+- `n_ubatch` sets the compute-buffer reservation, so it moves the very memory columns below. It
+  is the width the context was opened with, whatever set it: `--ubatch`, the plan, or the default
+  (as wide as the context up to 8192 tokens, `RunConfig::graph_width`). Files from earlier
+  releases record `0` for that default.
 - `cache_cycle_mb` is one token's **worst-case** routed bytes for this model at this `n_expert_used`,
   priced at load from tensor shapes. It is here so a budget can be judged without a second run: a
   `cache_mb` under it cannot hold a token cycle, so the hit rate is near zero however legal the

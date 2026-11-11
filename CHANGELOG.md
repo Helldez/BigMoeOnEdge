@@ -10,10 +10,9 @@ Semantic Versioning.
 - **The decisions timed across loads are timed at load instead** (`--calibrate`, on by default). Two
   plan decisions are fixed when a model is loaded, so each side used to be timed over a whole session
   of use: whether a graphics card with memory of its own holds a cache of experts or the capacity
-  fitter's whole layers, and how wide the graph is where its buffers take the card's memory. On
-  rented cards a model's second load decoded at 37 tok/s instead of 68 (12 GB card) and 35 instead
-  of 84 (32 GB card), and on the 32 GB card the width's side, worth ~13 GB of the card, waited behind
-  the tier's. Now, where the plan leaves such a side pending, each side is opened as a short load of
+  fitter's whole layers, and how wide the graph is where even a graph held to the device bound takes
+  more of the card's memory than its share. On rented cards a model's second load decoded at 37
+  tok/s instead of 68 (12 GB card) and 35 instead of 84 (32 GB card). Now, where the plan leaves such a side pending, each side is opened as a short load of
   its own, timed on one fixed instruction through the model's chat template (the first sampled, the
   others replaying its tokens so both route alike), and the faster served, opened fresh. The planner
   names every side as before (the fitter's placement is still timed only where it could win), a side
@@ -39,6 +38,40 @@ Semantic Versioning.
   It is provisional: the loads of a width decided so record their requests, and long prompts that show
   up later bring each side's prefill into the verdict. A width decided on requests, as the timing
   across loads always decides it, records nothing more and stays as it was.
+- **A kept `.knobs` record whose narrow width has moved starts its width figures afresh.** The device
+  bound above changes the narrow width many plans compare, and a rate measured against another
+  narrow width answers another comparison: such a record's width rates are reset, as a new width
+  always reset them, and timed again.
+### Fixed
+- **A long prompt no longer aborts the server on a large NVIDIA or AMD card (#533).** Where a card
+  had room for the compute buffers of a graph as wide as the context, the plan kept it that wide. A
+  prompt past ~25k tokens (~16k on AMD) then went into one pass, and the card's expert matmul aborted
+  the process (`mmid.cu: GGML_ASSERT(nbytes_shared <= smpbo)`). Reproduced on 0.41.2 on a 32 GB card
+  with a 28.6k-token prompt at a 32768 context. A device that computes the graph (layers on it, a
+  device expert cache, or a prefill device) is now planned at most `ubatch_max_device` (8192) tokens
+  per pass, half of the smallest limit seen, and an `--image-max-tokens` cap past it does not lift
+  it. A longer prompt takes more passes ([hardware-planning.md](docs/hardware-planning.md)).
+- **A long context no longer aborts the load on a CPU host (#566).** With `--ubatch` left at 0 the
+  graph was as wide as the context, and the host's compute buffers grow with width x context (the
+  attention mask). On a 15 GB Windows host with Qwen3.6-35B-A3B: 2945 MiB at a 16384 context, the
+  load refused at 24576, and at 32768 the process aborted inside llama.cpp
+  (`GGML_ASSERT(ctx->mem_buffer != NULL)`), with or without `--auto`, since the planner's probe
+  asked for the same width. 0 now means as wide as the context up to 8192 tokens
+  (`RunConfig::ubatch_auto_max`), decided in one place the session, the probe and the planner
+  share, and the probe measures at that width. `--auto` still plans from the whole context: the
+  probe's per-token cost is measured at the run's context, so a wider graph is priced by extending
+  it, and the plan keeps the one-pass prefill of a long prompt where the memory takes it, narrows
+  where it does not (at 32768 that host's buffers would be about 6.9 GB), and holds a device's graph
+  at `ubatch_max_device`. The width the plan picks is the one the session opens with, and the run's
+  CSV header records that width rather than `0` ([telemetry.md](docs/telemetry.md)). At 32768 the
+  same model loads.
+- **An image a projector reads both ways no longer fails half way through the prefill.** Some
+  projectors' image tokens attend to each other both ways, and llama.cpp takes such an image in one
+  pass of the graph, so one wider than the graph could not be decoded. With a projector and
+  `--image-max-tokens` set, neither the default width nor the plan now goes narrower than that cap
+  (where a device computes the graph, its 8192-token bound wins);
+  a width set by hand that an image does not fit is refused before the image is encoded, naming
+  both numbers and the setting to change ([hardware-planning.md](docs/hardware-planning.md)).
 - **A request that needs the model waits for a load the server is running**, or for one still
   measuring the machine, instead of a 503 when the server was started without `--autoload`, and is
   answered with the loaded model's name. `--port 0` takes any free port.

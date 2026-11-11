@@ -2,13 +2,12 @@
 //
 // Two plan decisions are fixed when the model or its context is created, so one load cannot try both
 // sides: whether a device with memory of its own holds a cache of experts or the capacity fitter's
-// whole layers (MeasuredKnobs::device_cache_tps), and how wide the graph is where its compute buffers
-// take device memory the experts would use (MeasuredKnobs::width_narrow). Timed across loads, each
-// side costs a whole session of a person's use at whatever rate it decodes: measured on rented cards,
-// a model's second load decoded at 37 tok/s instead of 68 on a 12 GB card and at 35 instead of 84 on
-// a 32 GB one, and on the 32 GB card the width's side, which would have given back ~13 GB of device
-// memory, waited behind the tier's. So a load that has such a decision pending opens each side as a
-// short candidate load of its own first, times its decode, and serves the winner.
+// whole layers (MeasuredKnobs::device_cache_tps), and how wide the graph is where even a graph held
+// to the device bound (PlannerPolicy::ubatch_max_device) takes more of the card's memory than its share
+// (MeasuredKnobs::width_narrow). Timed across loads, each side costs a whole session of a person's use
+// at whatever rate it decodes: measured on rented cards, a model's second load decoded at 37 tok/s
+// instead of 68 on a 12 GB card and at 35 instead of 84 on a 32 GB one. So a load that has such a decision pending
+// opens each side as a short candidate load of its own first, times its decode, and serves the winner.
 //
 // The planner stays the oracle. A side is pending exactly when the plan sets one
 // (KnobTrialConfig::device_tier or width_side, side_pending()); calibrate() runs that candidate,

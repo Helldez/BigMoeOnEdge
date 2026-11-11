@@ -501,13 +501,12 @@ and gate G24e (a load's record carries its one request).
 
 Two decisions in Step 4's neighbourhood are fixed when the model or its context is created, so one
 load cannot try both sides: the device tier (a cache of experts on the card, or the capacity fitter's
-whole layers: `MeasuredKnobs::device_cache_tps`, `no_device_cache_tps`) and the graph width where a
-wide graph's compute buffers take device memory the experts would use (`width_narrow` and its
-rates, [hardware-planning.md](hardware-planning.md#the-widest-graph)). Timed across loads, each side
-cost a whole session of a person's use at whatever rate it decoded. On rented cards a model's second
-load decoded at 37 tok/s instead of 68 on a 12 GB card, and at 35 instead of 84 on a 32 GB one; on the
-32 GB card the width's side, which would have given back about 13 GB of device memory taken by a
-32768-wide graph's buffers, waited behind the tier's.
+whole layers: `MeasuredKnobs::device_cache_tps`, `no_device_cache_tps`) and the graph width where
+even a graph held to the device bound (`ubatch_max_device`) takes more of the card's memory than its
+share, memory the experts would use (`width_narrow` and its rates,
+[hardware-planning.md](hardware-planning.md#the-widest-graph)). Timed across loads, each side cost a
+whole session of a person's use at whatever rate it decoded. On rented cards a model's second load
+decoded at 37 tok/s instead of 68 on a 12 GB card, and at 35 instead of 84 on a 32 GB one.
 
 **What it does.** Where a plan leaves such a side pending, each side is opened as a short candidate
 load of its own and timed before the plan is served, and the plan on the grown record is the one
