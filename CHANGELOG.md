@@ -36,6 +36,12 @@ Semantic Versioning.
   llama.cpp's server streams by too); a template the partial parse cannot read sends its calls
   whole, as before.
 ### Fixed
+- **`write_file` no longer reads the model back the file it just wrote.** Its result was the whole
+  diff, which for a new file is the content the call carried, up to the 12 KiB result cap. A local
+  model writing a 677-line page read 12 KiB of it back, ran out of context, and its next call was cut
+  off after 131 characters. The result now states the effect: created or replaced, lines, bytes, and
+  for a replaced file how many lines the changed span had and has. The card still shows the whole diff;
+  `edit_file` still answers with its diff, which tells the model where each edit landed.
 - **A second load no longer decodes a whole session at half speed to time a placement that cannot
   win.** Since #524 the device expert cache is kept across loads by measurement: the first load times
   the cache, the second the capacity fitter's placement. On a 12 GB card with Qwen3.6-35B the second
