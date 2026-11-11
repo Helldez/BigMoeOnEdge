@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **A second load no longer decodes a whole session at half speed to time a placement that cannot
+  win.** Since #524 the device expert cache is kept across loads by measurement: the first load times
+  the cache, the second the capacity fitter's placement. On a 12 GB card with Qwen3.6-35B the second
+  load decoded at 37 tok/s against 68 in v0.40.3, timing a placement whose ceiling was 55 against
+  the cache's measured 73.5. That ceiling is now computed before the second load, from the rates this
+  machine probed and the bytes the model reads. It covers the experts the fitter left on the host at
+  the host's rate and the rest at the device's, and leaves out crossings and overheads. The fitter's
+  placement is timed only where that ceiling, plus a quarter for a probe that reads low
+  (`rate_ceiling_slack`), beats the cache by the 10% margin. Elsewhere the cache stays, and the plan
+  says why ([measured-planning.md](docs/measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache)).
+
 ## [0.41.1] - 2026-11-11
 
 ### Fixed
