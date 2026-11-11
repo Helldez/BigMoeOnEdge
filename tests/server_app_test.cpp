@@ -396,9 +396,9 @@ int main() {
             std::lock_guard<std::mutex> lk(sc.m);
             sc.fail_next_opens = 1;
         }
-        const int failed = sc.open_failures;
+        const int failed = sc.open_failures, before = opened();
         check(post(cli, "/api/session/load", {{"model", model.u8string()}}) == 202, "a load whose side will fail");
-        check(sc.wait([&] { return sc.open_failures > failed && sc.opened > 0; }) && wait_info(cli, ready),
+        check(sc.wait([&] { return sc.open_failures > failed && sc.opened > before; }) && wait_info(cli, ready),
               "the pending side fails to open, and the other side is loaded instead");
         check(config_value(cli, "trial-device-cache") != "1", "the plan served is the other side's");
         check(read_knobs(dir / "routing").find("unviable=device_cache:1") != std::string::npos,

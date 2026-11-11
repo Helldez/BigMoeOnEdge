@@ -54,9 +54,10 @@ struct PlanOutcome {
 
     // Whether it leaves a decision across loads to time (bmoe/calibrate.h, side_pending).
     bool side_pending() const;
-    // Whether a calibration has anything to do: a pending side, or a side that failed to open before
-    // and is due to be tried again (bmoe/calibrate.h, calibration_due).
-    bool calibration_due() const;
+    // Whether a calibration from the record `start` would open anything: a side pending on it, or a
+    // side that failed to open before and is due to be tried again (bmoe/calibrate.h,
+    // calibration_due). The rules alone, no probe (replan_rules): safe with a model loaded.
+    bool calibration_due(const MeasuredKnobs & start) const;
     // Whether the side opposite the pending one has a rate in the record: it opened and decoded here.
     bool other_side_measured() const;
 };

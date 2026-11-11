@@ -110,8 +110,10 @@ public:
     std::string load(const RunConfig & effective, const RunConfig & requested);
 
     // What a load opens when `effective` cannot be opened: the plan's other side, where the plan left
-    // a decision across loads pending (docs/measured-planning.md). `taken` hears why the first open
-    // failed, on the loader thread, before the fallback opens; the session then runs `requested`.
+    // a decision across loads pending (docs/measured-planning.md). Not tried for a load an unload
+    // cancelled. `taken` hears why the first open failed, on the loader thread, once the fallback has
+    // opened; the session then runs `requested`. Where the fallback fails too, the load ends in error
+    // with the first open's reason and `taken` is not called.
     struct OpenFallback {
         RunConfig effective, requested;
         std::function<void(const std::string & error)> taken;

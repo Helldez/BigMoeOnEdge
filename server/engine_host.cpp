@@ -189,6 +189,7 @@ EngineHost::load(const RunConfig & effective, const RunConfig & requested, std::
         before_open_stop_ = true;
         if (loader_.joinable()) loader_.join();
     }
+    before_open_cancel_ = false; // this load's own: only an unload during it cancels it
     {
         std::lock_guard<std::mutex> lk(m_);
         if (state_ == State::Loading) return "a model is already loading";
@@ -283,16 +284,21 @@ void EngineHost::start_loader(const RunConfig & effective_in,
         if (calibrating_.exchange(false)) publish_state(); // a load now, no longer a calibration
         std::string error;
         std::shared_ptr<HostedSession> s = open_(session_config_from(effective), error);
-        // The pending side would not open: the other side, which a plan may serve instead.
-        if (!s && fallback) {
-            if (fallback->taken) fallback->taken(error);
-            effective = fallback->effective;
-            {
-                std::lock_guard<std::mutex> lk(m_);
-                requested_ = fallback->requested;
+        // The pending side would not open: the other side, which a plan may serve instead. Not for a
+        // load an unload has cancelled. Only an open of the other side says the first failure was the
+        // side's: where both fail, the first error is the one reported, and nothing is told.
+        if (!s && fallback && !before_open_cancel_.load()) {
+            std::string second;
+            std::shared_ptr<HostedSession> other = open_(session_config_from(fallback->effective), second);
+            if (other) {
+                s = std::move(other);
+                effective = fallback->effective;
+                {
+                    std::lock_guard<std::mutex> lk(m_);
+                    requested_ = fallback->requested;
+                }
+                if (fallback->taken) fallback->taken(error);
             }
-            error.clear();
-            s = open_(session_config_from(effective), error);
         }
         {
             std::lock_guard<std::mutex> lk(m_);

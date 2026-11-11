@@ -24,8 +24,9 @@ Semantic Versioning.
   reads `ready` with `calibrating`, `plan_progress` step `calibrate`, a label in the UI). Before each
   candidate the system's cache of the model's files is evened out, so every side starts from the same
   cache. A side that cannot be opened is counted in the record and loses every plan; a calibration
-  tries it again once, and a served load never opens it, nor a pending side not yet proven to open
-  where the other side is: a load whose side fails opens the other side instead. Only machines with a graphics
+  tries it again once, where the plan would still ask for it, and a served load never opens it, nor a
+  pending side not yet proven to open where the other side is: a load whose side fails opens the
+  other side instead (with calibration off, nothing is counted). Only machines with a graphics
   card that has memory of its own have such a decision: phones and shared-memory computers never
   calibrate. `--no-calibrate` keeps the timing across loads
   ([measured-planning.md](docs/measured-planning.md#decisions-across-loads-timed-at-load)).

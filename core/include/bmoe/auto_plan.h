@@ -121,6 +121,13 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
 // no probe. What a calibration plans with after each candidate (bmoe/calibrate.h, Replan).
 Plan replan(const AutoPlan & facts, const RunConfig & cfg, const PlanRequest & req, const MeasuredKnobs & knobs);
 
+// The rules alone on those facts, without the capacity fitter's re-fits at a narrower width: no
+// probe, nothing that reads the machine as it is now, so it may run with a model loaded. Which side
+// of a decision across loads is pending is the rules' (the re-fits keep the side the first plan named),
+// so this answers whether a calibration would open anything (calibration_due) at the cost of one
+// planning pass.
+Plan replan_rules(const AutoPlan & facts, const RunConfig & cfg, const PlanRequest & req, const MeasuredKnobs & knobs);
+
 // Calibrate `ap` (planned by probe_and_plan for `cfg` and `req`) with `run` as each candidate, and
 // leave the decided plan in it (AutoPlan::calibrated, calibration). `on_step` (nullable) hears each
 // candidate as it starts, as AutoPlanOptions::on_step does. A plan with nothing pending runs nothing.

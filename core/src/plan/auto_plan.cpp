@@ -195,6 +195,12 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     return r;
 }
 
+Plan replan_rules(const AutoPlan & facts, const RunConfig & cfg, const PlanRequest & req, const MeasuredKnobs & knobs) {
+    ModelProfile model = facts.model;
+    model.knobs = knobs;
+    return plan_run(cfg, facts.hw, model, facts.placement, req);
+}
+
 Plan replan(const AutoPlan & facts, const RunConfig & cfg, const PlanRequest & req, const MeasuredKnobs & knobs) {
     ModelProfile model = facts.model;
     model.knobs = knobs;
@@ -206,7 +212,8 @@ const CalibrationResult & calibrate_plan(AutoPlan & ap,
                                          const PlanRequest & req,
                                          const RunCandidate & run,
                                          const std::function<void(const char * step, int index, int count)> & on_step) {
-    if (!calibration_due(ap.plan, ap.model.knobs)) return ap.calibration;
+    if (!calibration_due(ap.plan, ap.model.knobs, [&](const MeasuredKnobs & k) { return replan(ap, cfg, req, k); }))
+        return ap.calibration;
     const RunCandidate reported = [&](const RunConfig & c, const CalibrationRun & cr) {
         if (on_step) on_step(k_calibrate_step, cr.index, cr.runs_max);
         return run(c, cr);

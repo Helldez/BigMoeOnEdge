@@ -410,9 +410,12 @@ int main() {
                                    err) &&
                   uback.size() == 1 && uback[0].wide_unviable == 1,
               "record: a bare side is one failure, and a side from a later engine is read past");
-        check(!parse_measured_knobs("bmoe-measured-knobs 1\nhardware=a engine=b unviable=\n", uback, err) &&
-                  !parse_measured_knobs("bmoe-measured-knobs 1\nhardware=a engine=b unviable=wide:0\n", uback, err),
-              "record: an empty list or a count under one is refused");
+        check(parse_measured_knobs("bmoe-measured-knobs 1\nhardware=a engine=b threads=4 unviable=,wide:0,narrow:x,"
+                                   "device_cache:2\n",
+                                   uback, err) &&
+                  uback.size() == 1 && uback[0].threads == 4 && uback[0].wide_unviable == 0 &&
+                  uback[0].narrow_unviable == 0 && uback[0].device_cache_unviable == 2,
+              "record: a part it cannot read is read past, and the rest of the record holds");
         std::vector<MeasuredKnobs> ukept = {uv};
         MeasuredKnobs again_failed = uv;
         again_failed.no_device_cache_unviable = 2;
@@ -431,6 +434,20 @@ int main() {
         check(ukept[0].no_device_cache_unviable == 0 && ukept[0].no_device_cache_tps == 8.0 &&
                   ukept[0].narrow_unviable == 2,
               "record: a side timed later opened after all; the other failure stays");
+        // A load handing on the side's old rate with a new failure: the failure stands. A new rate
+        // clears it.
+        std::vector<MeasuredKnobs> rated = {served_load};
+        rated[0].device_cache_tps = 12.0;
+        MeasuredKnobs failed_again = rated[0];
+        failed_again.device_cache_unviable = 1;
+        keep_measured_knobs(rated, failed_again);
+        check(rated[0].device_cache_unviable == 1, "record: a failure handed on beside the side's old rate is kept");
+        MeasuredKnobs opened_now = failed_again;
+        opened_now.device_cache_unviable = 0;
+        opened_now.device_cache_tps = 12.5;
+        keep_measured_knobs(rated, opened_now);
+        check(rated[0].device_cache_unviable == 0 && rated[0].device_cache_tps == 12.5,
+              "record: a rate measured since clears it");
         MeasuredKnobs other_narrow = served_load;
         other_narrow.width_narrow = 4096;
         keep_measured_knobs(ukept, other_narrow);

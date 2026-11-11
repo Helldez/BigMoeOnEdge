@@ -66,11 +66,11 @@ constexpr UnviableSide k_unviable_sides[] = {{"device_cache", &MeasuredKnobs::de
 // `name:count` (or `name`, one) per side, comma-separated. A name this engine does not know is a
 // later engine's side: read past, as an unknown key is.
 bool parse_unviable(const std::string & s, MeasuredKnobs & r) {
-    if (s.empty()) return false;
+    // A part this engine cannot read (an empty one, a count that is not one) is read past, as an
+    // unknown key is: a later engine may write what this one does not know, and the record holds.
     std::stringstream ss(s);
     std::string part;
     while (std::getline(ss, part, ',')) {
-        if (part.empty()) return false;
         const size_t colon = part.find(':');
         const std::string name = part.substr(0, colon);
         int n = 1;
@@ -78,7 +78,7 @@ bool parse_unviable(const std::string & s, MeasuredKnobs & r) {
             char * end = nullptr;
             const std::string v = part.substr(colon + 1);
             n = (int) std::strtol(v.c_str(), &end, 10);
-            if (v.empty() || *end || n < 1) return false;
+            if (v.empty() || *end || n < 1) continue;
         }
         for (const UnviableSide & u : k_unviable_sides)
             if (name == u.name) r.*u.count = n;
@@ -289,22 +289,25 @@ void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKno
                 r.overlap_gain = rec.overlap_gain;
             }
             if (rec.threads > 0 || rec.overlap >= 0) r.rounds = rec.rounds;
+            // A failed-open count only grows from what a load handed on (a calibration starts from the kept
+            // count and adds its own), and is cleared only by a rate measured since: a record handed on
+            // carries the side's earlier rate too, which says nothing about the failure after it.
+            const auto merge_unviable = [](int & kept, int handed, double kept_rate, double handed_rate) {
+                kept = handed_rate > 0.0 && handed_rate != kept_rate ? 0 : std::max(kept, handed);
+            };
+            merge_unviable(r.device_cache_unviable, rec.device_cache_unviable, r.device_cache_tps,
+                           rec.device_cache_tps);
+            merge_unviable(r.no_device_cache_unviable, rec.no_device_cache_unviable, r.no_device_cache_tps,
+                           rec.no_device_cache_tps);
             if (rec.device_cache_tps > 0.0) r.device_cache_tps = rec.device_cache_tps;
             if (rec.no_device_cache_tps > 0.0) r.no_device_cache_tps = rec.no_device_cache_tps;
-            // A failed-open count only grows from what a load handed on (a calibration starts from the kept
-            // count and adds its own), and a side that has since been timed opened after all.
-            const auto merge_unviable = [](int & kept, int handed, double rate) {
-                kept = rate > 0.0 ? 0 : std::max(kept, handed);
-            };
-            merge_unviable(r.device_cache_unviable, rec.device_cache_unviable, rec.device_cache_tps);
-            merge_unviable(r.no_device_cache_unviable, rec.no_device_cache_unviable, rec.no_device_cache_tps);
             // A different narrow width is a different comparison: what was measured against the old
             // one no longer answers it.
             set_width_narrow(r, rec.width_narrow);
+            merge_unviable(r.wide_unviable, rec.wide_unviable, r.wide_decode_tps, rec.wide_decode_tps);
+            merge_unviable(r.narrow_unviable, rec.narrow_unviable, r.narrow_decode_tps, rec.narrow_decode_tps);
             if (rec.wide_decode_tps > 0.0) r.wide_decode_tps = rec.wide_decode_tps;
             if (rec.narrow_decode_tps > 0.0) r.narrow_decode_tps = rec.narrow_decode_tps;
-            merge_unviable(r.wide_unviable, rec.wide_unviable, rec.wide_decode_tps);
-            merge_unviable(r.narrow_unviable, rec.narrow_unviable, rec.narrow_decode_tps);
             if (rec.wide_prefill_tps > 0.0) r.wide_prefill_tps = rec.wide_prefill_tps;
             if (rec.narrow_prefill_tps > 0.0) r.narrow_prefill_tps = rec.narrow_prefill_tps;
             if (rec.usage_requests > 0) {

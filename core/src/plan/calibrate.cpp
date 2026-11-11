@@ -64,14 +64,23 @@ bool side_pending(const Plan & p) {
     return p.config.trial.device_tier >= 0 || p.config.trial.width_side >= 0;
 }
 
-bool calibration_due(const Plan & p, const MeasuredKnobs & knobs, const CalibrationPolicy & pol) {
+bool calibration_due(const Plan & p,
+                     const MeasuredKnobs & knobs,
+                     const Replan & replan,
+                     const CalibrationPolicy & pol) {
     if (side_pending(p)) return true;
+    // A side due to be tried again is due only if the plan would ask for it with its count set aside:
+    // a decision a person pinned, or a narrow width that has moved, asks for nothing.
     MeasuredKnobs k = knobs;
+    bool offered = false;
     for (const KnobTrialConfig & t : counted_sides(k)) {
-        const int n = *unviable_count(t, k);
-        if (n > 0 && n < pol.unviable_retries) return true;
+        int * n = unviable_count(t, k);
+        if (*n > 0 && *n < pol.unviable_retries) {
+            *n = 0;
+            offered = true;
+        }
     }
-    return false;
+    return offered && replan && side_pending(replan(k));
 }
 
 RunConfig calibration_candidate(const RunConfig & planned) {

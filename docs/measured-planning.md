@@ -554,15 +554,24 @@ served (`bmoe/calibrate.h`):
   machine's state at that moment (another program holding the card's memory, a driver's hiccup), so
   a calibration offers the side again while its count is under `k_unviable_retries` (two: a second
   failure, on another calibration, is taken as the side not fitting this machine with this engine,
-  and each try costs a load that fails). A rate measured for the side clears the count; a calibration
-  stopped before it reached the side leaves it. A request the session refuses (a context too short
-  for the instruction) counts nothing.
+  and each try costs a load that fails), and only when the plan, with that count set aside, would ask
+  for the side at all: a decision a person pinned, or a narrow width that has moved, asks for nothing,
+  and the server does not unload a model for a calibration that would open nothing
+  (`calibration_due`, the rules alone, no probe). A rate measured since clears the count; a record
+  handed on beside the side's old rate does not; a calibration stopped before it reached the side
+  leaves it. A request the session refuses (a context too short for the instruction) counts nothing.
 - **A served load never opens a pending side not proven to open.** With calibration on, a plan whose
   pending side's other side has opened and decoded here before is served on that other side, and the
   pending one is opened only as a calibration's candidate. Where neither side is proven (the first
   load), or calibration is off, the load serves the plan's side and times it as before, and if that
   open fails the server opens the other side instead of ending with no model
-  (`EngineHost::OpenFallback`), counting the failure against the side.
+  (`EngineHost::OpenFallback`, never for a load an unload cancelled). Only an open of the other side
+  says the first failure was the side's: then, with calibration on, it counts against the side; where
+  both fail, the first open's reason is the error and nothing is counted. With calibration off nothing
+  would try the side again, so nothing is counted and those loads stay as they were. An "other side"
+  that leaves a side of the other decision pending is no side known to open, and is not offered. A
+  calibration stopped with a side still pending and no proven side to serve applies nothing: the load
+  opens the settings it was serving, which opened here.
 - **What is kept, and what is not.** The rates go in the model's `.knobs` record as a served load's
   do, so the next plan of the file on this machine starts decided. The candidates' output is thrown
   away, and they write no `decode_compute_s` or `decode_hit`: those are the served configuration's.

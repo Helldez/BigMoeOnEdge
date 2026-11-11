@@ -84,9 +84,13 @@ struct CalibrationPolicy {
     int unviable_retries = k_unviable_retries;
 };
 
-// Whether a calibration of a plan made on `knobs` could open anything: a side the plan leaves pending,
-// or one that failed to open before and is due to be tried again.
-bool calibration_due(const Plan & p, const MeasuredKnobs & knobs, const CalibrationPolicy & pol = {});
+// Whether a calibration of a plan made on `knobs` would open anything: a side the plan leaves pending,
+// or one that failed to open before, is under the retry budget, and that the plan asks for again once
+// its count is set aside (`replan` decides it, as calibrate() would).
+bool calibration_due(const Plan & p,
+                     const MeasuredKnobs & knobs,
+                     const Replan & replan,
+                     const CalibrationPolicy & pol = {});
 
 struct CalibrationResult {
     Plan plan;             // the plan on the final record: the one to serve

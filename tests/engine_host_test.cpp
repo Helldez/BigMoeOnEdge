@@ -1152,6 +1152,25 @@ static void supersede_and_fallback_tests() {
               "fallback: told why, and the session runs the fallback's settings");
     }
     {
+        // Both fail: the first open's reason is the error, and the side is not blamed.
+        auto bus_owner = std::make_unique<EventBus>();
+        std::atomic<int> attempts{0};
+        SessionOpener both_fail = [&](const SessionConfig &, std::string & error) -> std::unique_ptr<HostedSession> {
+            error = attempts++ == 0 ? "first: out of device memory" : "second: no such file";
+            return nullptr;
+        };
+        auto host_owner = std::make_unique<EngineHost>(*bus_owner, both_fail);
+        EngineHost & host = *host_owner;
+        EngineHost::OpenFallback fb;
+        fb.effective = config();
+        fb.requested = config();
+        bool told = false;
+        fb.taken = [&](const std::string &) { told = true; };
+        check(host.load(config(), config(), fb).empty() && wait_state(host, "error"), "fallback: both fail, an error");
+        check(attempts == 2 && !told && host.info().value("error", "").find("first") != std::string::npos,
+              "fallback: the first reason is reported, and the side is not blamed");
+    }
+    {
         auto bus_owner = std::make_unique<EventBus>();
         Script script;
         auto host_owner = std::make_unique<EngineHost>(*bus_owner, opener(script));

@@ -156,8 +156,19 @@ bool PlanOutcome::side_pending() const {
     return ok && basis && bmoe::side_pending(basis->facts.plan);
 }
 
-bool PlanOutcome::calibration_due() const {
-    return ok && basis && bmoe::calibration_due(basis->facts.plan, basis->facts.model.knobs);
+bool PlanOutcome::calibration_due(const MeasuredKnobs & start) const {
+#if !defined(BMOE_HAVE_PLANNER)
+    (void) start;
+    return false;
+#else
+    if (!ok || !basis) return false;
+    const auto rules = [this](const MeasuredKnobs & k) {
+        return replan_rules(basis->facts, basis->cfg, basis->req, k);
+    };
+    // The plan as made where the record has not moved since; the rules again on the record where it has.
+    const bool same = format_measured_knobs({start}) == format_measured_knobs({basis->facts.model.knobs});
+    return bmoe::calibration_due(same ? basis->facts.plan : rules(start), start, rules);
+#endif
 }
 
 bool PlanOutcome::other_side_measured() const {
@@ -178,6 +189,9 @@ PlanOutcome plan_other_side(const PlanOutcome & plan) {
     MeasuredKnobs k = basis->facts.model.knobs;
     record_side_unviable(basis->facts.plan.config.trial, k);
     basis->facts.plan = replan(basis->facts, basis->cfg, basis->req, k);
+    basis->facts.model.knobs = k;
+    // A side of the other decision pending is no side known to open: nothing to offer.
+    if (bmoe::side_pending(basis->facts.plan)) return {};
     PlanOutcome o = outcome_of(*basis);
     o.hardware = plan.hardware;
     o.basis = std::move(basis);

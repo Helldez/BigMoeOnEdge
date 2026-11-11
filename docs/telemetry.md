@@ -633,8 +633,8 @@ bmoe: calibration: <f> tok/s <side>, <the median of <n> windows|cut once past th
 `unviable` counts the failed opens of each side, a calibration's or a served load's
 (`device_cache`, `no_device_cache`, `wide`, `narrow`; the width's at `width_narrow`), as `side:n`,
 written only when there is one: the plan treats each as the losing side, and a calibration tries it
-again while the count is under its retry budget. A rate for the side clears it. A name the reader does
-not know is skipped.
+again while the count is under its retry budget. A rate measured since clears it. A name the reader does
+not know, or a part it cannot read, is skipped.
 
 Keeping a record merges it into the one already kept for that machine and engine: each measurement it
 carries replaces that one, and the rest stay, so a load that measured one side does not lose the other.

@@ -164,8 +164,12 @@ int main() {
         MeasuredKnobs start;
         start.device_cache_tps = 12.0;
         start.no_device_cache_unviable = 1;
-        check(!side_pending(tier_rules(start)) && calibration_due(tier_rules(start), start),
+        check(!side_pending(tier_rules(start)) && calibration_due(tier_rules(start), start, tier_rules),
               "retry: the failed side loses the plan, and a calibration is due to try it again");
+        // A planner that would not ask for the side now (a person pinned the decision): not due, so a
+        // server does not unload a model for a calibration that would open nothing.
+        const auto pinned = [](const MeasuredKnobs &) { return decided(4096); };
+        check(!calibration_due(decided(4096), start, pinned), "retry: a decision the plan no longer asks is not due");
         Runs runs;
         const CalibrationResult ok =
             calibrate(tier_rules(start), start, tier_rules,
@@ -179,7 +183,7 @@ int main() {
                                                 table(again, [](const RunConfig &) { return CandidateTiming{}; }));
         check(bad.runs == 1 && bad.knobs.no_device_cache_unviable == 2 && bad.plan.config.moe.device_cache_mb == 4096,
               "retry: a second failure counts on top of the first, and the other side is served");
-        check(!calibration_due(bad.plan, bad.knobs), "retry: past the budget it is not due again");
+        check(!calibration_due(bad.plan, bad.knobs, tier_rules), "retry: past the budget it is not due again");
         Runs none;
         const CalibrationResult spent =
             calibrate(bad.plan, bad.knobs, tier_rules, table(none, [](const RunConfig &) { return timed(1.0); }));

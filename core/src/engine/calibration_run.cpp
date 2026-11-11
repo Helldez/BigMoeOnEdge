@@ -51,7 +51,7 @@ constexpr size_t k_warm_read_bytes = size_t(8) << 20;
 // where it is not. What stays uneven where the cache cannot be dropped is the experts a placement
 // loads through the mapping: the later candidate may find some of the earlier one's still cached.
 // They are not read in, since a model larger than the memory is what this engine exists for.
-void even_model_file_cache(const RunConfig & cfg) {
+void even_model_file_cache(const RunConfig & cfg, const std::atomic<bool> * stop) {
     const GgufOffsets offs = read_gguf_offsets(cfg.model_path.c_str());
     for (const std::string * p : {&cfg.mmproj, &cfg.spec.mtp_head})
         if (!p->empty()) pio::drop_file_cache(p->c_str());
@@ -63,11 +63,13 @@ void even_model_file_cache(const RunConfig & cfg) {
         pio::drop_file_cache(p.c_str());
     const GgufModelInfo info = read_gguf_model_info(cfg.model_path.c_str());
     const ExpertLayout layout = discover_expert_layout(offs.extents, info.n_expert);
+    // Without the experts told apart, the dense part is the whole file: never read a model whole.
+    if (!layout.ok) return;
     // The dense tensors' byte ranges, per shard, in file order.
     std::vector<std::vector<std::pair<uint64_t, uint64_t>>> ranges(offs.shard_paths.size());
     for (const TensorExtent & t : offs.extents) {
         int il = -1;
-        if (layout.ok && layout.slot_of(t.name.c_str(), il) >= 0) continue;
+        if (layout.slot_of(t.name.c_str(), il) >= 0) continue;
         const auto off = offs.off_by_name.find(t.name), size = offs.size_by_name.find(t.name);
         const auto file = offs.file_by_name.find(t.name);
         if (off == offs.off_by_name.end() || size == offs.size_by_name.end() || file == offs.file_by_name.end())
@@ -86,6 +88,8 @@ void even_model_file_cache(const RunConfig & cfg) {
             in.clear();
             in.seekg((std::streamoff) r.first);
             for (uint64_t left = r.second; left > 0 && in;) {
+                // A request waiting for the model does not wait through this.
+                if (stop && stop->load(std::memory_order_relaxed)) return;
                 const size_t n = (size_t) std::min<uint64_t>(left, buf.size());
                 in.read(buf.data(), (std::streamsize) n);
                 left -= n;
@@ -113,7 +117,7 @@ run_calibration_candidate(const RunConfig & cfg, const CalibrationRun & run, con
     if (!(sc.sampling.temp > 0.0f)) sc.sampling.temp = k_calibration_temp;
     sc.sampling.seed = k_calibration_seed;
 
-    even_model_file_cache(cfg);
+    even_model_file_cache(cfg, stop);
     std::string error;
     std::unique_ptr<Session> s = Session::open(sc, error);
     // A load takes seconds to minutes and cannot be stopped inside: a stop raised meanwhile is honoured
