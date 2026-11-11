@@ -213,12 +213,10 @@ bool PrefillPath::place(bool on_device, bool hold_slots) {
     if (!dev_) return false;
     const bool turns = arena_ && arena_->on_demand();
     if (on_device && turns && !arena_->slots_held()) {
-        const size_t budget = cache_ ? cache_->cache_budget() : 0;
-        const size_t need = arena_->slot_bytes();
-        if (budget > 0) cache_->set_cache_budget(budget > need ? budget - need : 1);
+        if (cache_) cache_->lend_cache(arena_->slot_bytes());
         std::string err;
         if (!arena_->acquire(err)) {
-            if (budget > 0) cache_->set_cache_budget(budget);
+            if (cache_) cache_->return_cache();
             if (!said_no_room_)
                 log_printf(LogLevel::Warn, "prefill-device: %s; this prefill runs on the host", err.c_str());
             said_no_room_ = true;
@@ -228,7 +226,7 @@ bool PrefillPath::place(bool on_device, bool hold_slots) {
             }
             on_device = false;
         } else {
-            yielded_budget_ = budget;
+            lent_ = cache_ != nullptr;
         }
     }
     dev_->place(on_device);
@@ -238,8 +236,8 @@ bool PrefillPath::place(bool on_device, bool hold_slots) {
     }
     if (!on_device && !hold_slots && turns && arena_->slots_held()) {
         arena_->release();
-        if (cache_ && yielded_budget_ > 0) cache_->set_cache_budget(yielded_budget_);
-        yielded_budget_ = 0;
+        if (lent_) cache_->return_cache();
+        lent_ = false;
     }
     return on_device;
 }
