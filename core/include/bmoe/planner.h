@@ -101,6 +101,9 @@ struct PlannerPolicy {
     // priced from the probe's measurement, and narrows for memory, so on a device this bound is what
     // stops it short of the context. It is no wider than that default, so a device's graph is never
     // planned past the width the fitter placed its layers against (planner_test checks the order).
+    // "A device computes the graph" is any of: layers on a device of its own, a device expert cache, or
+    // a prefill device (one the plan arms is held to it once armed). The image floor
+    // (RunConfig::graph_width_floor) does not lift it: an image past it is refused instead.
     uint32_t ubatch_max_device = 8192;
 
     // Whether THIS ENGINE can hand a device the memory a streamed expert is made of. It is a fact

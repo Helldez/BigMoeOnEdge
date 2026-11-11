@@ -1232,6 +1232,26 @@ int main() {
                       dd->reason.find("#533") != std::string::npos && dd->reason.find("32768") != std::string::npos,
                   "width, long context: a device's graph is bounded at ubatch_max_device, not at the context",
                   dd ? std::to_string(card_plan.config.graph_width()) + ": " + dd->reason : "no decision");
+            // An image cap past the device's bound does not lift it: every prompt would pass wider on the
+            // device. The bound wins, and the plan says such an image is refused.
+            {
+                RunConfig big_images = long_ctx;
+                big_images.mmproj = "projector.gguf";
+                big_images.image_max_tokens = 12000;
+                check(big_images.graph_width() == 12000, "width, image past the bound: the default follows the cap");
+                Placement img_card = on_card;
+                img_card.compute_width = 12000;
+                img_card.raw_host_compute_bytes = 12000ull * 4 * KiB;
+                img_card.device_compute_bytes = 12000ull * 4 * KiB;
+                const Plan held = plan_run(big_images, big_card, model, img_card, PlanRequest{});
+                const Decision * dh2 = find(held, "ubatch");
+                check((uint32_t) held.config.graph_width() == pol.ubatch_max_device && dh2 &&
+                          dh2->reason.find("#533") != std::string::npos &&
+                          dh2->reason.find("image-max-tokens") != std::string::npos && validate(held.config).ok,
+                      "width, image past the bound: a device's bound wins, and the plan says images past it are "
+                      "refused",
+                      dh2 ? std::to_string(held.config.graph_width()) + ": " + dh2->reason : "no decision");
+            }
 
             // An image whose tokens go in one pass: the narrowing stops at the most one image takes.
             RunConfig with_images = long_ctx;
@@ -1789,6 +1809,43 @@ int main() {
         const uint64_t in_turn = 2 * 384 * MiB; // the expert slots, held only during a prefill
         check(on.config.prefill.device == "accel",
               "prefill: a device that wins wide and agrees is armed by its own name");
+        // The prefill device computes every pass as wide as the graph: a long context that the memory
+        // takes whole is held to the device's bound (#533) once the device is armed, and not otherwise.
+        {
+            RunConfig long_cfg = base_cfg();
+            long_cfg.n_ctx = 32768;
+            Placement probed;
+            probed.n_ctx = 32768;
+            probed.compute_width = 8192;
+            probed.host_compute_per_token = 1 * KiB;
+            probed.raw_host_compute_bytes = 8192ull * KiB;
+            const uint32_t dev_bound = PlannerPolicy::defaults().ubatch_max_device;
+            const Plan pre =
+                plan_run(long_cfg, machine(1500.0, Tri::Yes), mm, probed, PlanRequest{}, PlannerPolicy::defaults());
+            const Decision * dp = find(pre, "ubatch");
+            check(pre.config.prefill.device == "accel" && (uint32_t) pre.config.graph_width() == dev_bound && dp &&
+                      dp->reason.find("#533") != std::string::npos && validate(pre.config).ok,
+                  "width, prefill device armed by the plan: the graph is held to the device's bound",
+                  std::to_string(pre.config.graph_width()) + (dp ? ": " + dp->reason : std::string()));
+            check(pre.placement.compute_width == dev_bound,
+                  "width, prefill device armed by the plan: the bounded width's buffers are the ones charged",
+                  std::to_string(pre.placement.compute_width));
+            const Plan host_only =
+                plan_run(long_cfg, machine(150.0, Tri::Yes), mm, probed, PlanRequest{}, PlannerPolicy::defaults());
+            check(!host_only.config.prefill.enabled() && host_only.config.graph_width() == 32768,
+                  "width, no prefill device: the same graph stays as wide as the context",
+                  std::to_string(host_only.config.graph_width()));
+            // Named by the caller: bounded from the start.
+            RunConfig named_dev = long_cfg;
+            named_dev.prefill.device = "accel";
+            PlanRequest pin_dev;
+            pin_dev.pinned.push_back("prefill-device");
+            const Plan by_caller =
+                plan_run(named_dev, machine(1500.0, Tri::Yes), mm, probed, pin_dev, PlannerPolicy::defaults());
+            check((uint32_t) by_caller.config.graph_width() == dev_bound,
+                  "width, prefill device named by the caller: the graph is held to the device's bound",
+                  std::to_string(by_caller.config.graph_width()));
+        }
         check(on.config.prefill.best_effort, "prefill: a device the plan armed is never a condition for the load");
         // The expert slots take turns with the cache: it is idle exactly when they are busy, so
         // they are not charged to decode. What the cache gives up is only what stays.
@@ -2662,6 +2719,26 @@ int main() {
         const auto plan_on = [&](const HardwareProfile & h, const Placement & pl, const PlanRequest & r) {
             return plan_run(base_cfg(), h, model, pl, r, PlannerPolicy::defaults());
         };
+
+        // A device expert cache computes the experts on the device: a long context's graph is held to
+        // the device's bound (#533) even where the host's memory would take it whole.
+        {
+            RunConfig long_cfg = base_cfg();
+            long_cfg.n_ctx = 32768;
+            Placement half_long = half;
+            half_long.n_ctx = 32768;
+            half_long.compute_width = 8192;
+            half_long.host_compute_per_token = 1 * KiB;
+            half_long.raw_host_compute_bytes = 8192ull * KiB;
+            const Plan cached = plan_run(long_cfg, card, model, half_long, PlanRequest{}, PlannerPolicy::defaults());
+            const Decision * dw = find(cached, "ubatch");
+            check(cached.config.moe.device_cache_mb > 0 &&
+                      (uint32_t) cached.config.graph_width() == PlannerPolicy::defaults().ubatch_max_device && dw &&
+                      dw->reason.find("#533") != std::string::npos,
+                  "width, device expert cache: the graph is held to the device's bound",
+                  std::to_string(cached.config.moe.device_cache_mb) + " MiB cache, " +
+                      std::to_string(cached.config.graph_width()) + (dw ? ": " + dw->reason : std::string()));
+        }
 
         // No record of the routing yet: the cache still goes on the faster processor, and fills from use
         // as the RAM cache does. A record is what says how much of a token it serves, not whether.

@@ -1061,6 +1061,34 @@ bool width_across_loads(Planning & s, uint32_t full) {
     return true;
 }
 
+// Whether a device computes this graph's matmuls, from what the plan already holds: layers on a device
+// of its own (where llama.cpp's op offload also hands that device the wide host-weight matmuls), a device
+// expert cache (the experts computed on the device), or a prefill device the caller named. A device the
+// plan itself arms for the prefill is decided later, and bound_prefill_width holds the graph then.
+bool device_computes_graph(const Planning & s) {
+    const bool own = !devices_share_host_memory(s.hw) && s.hw.device_local_memory() > 0;
+    const bool layers = own && s.placement.fitted && s.placement.n_gpu_layers > 0;
+    const bool cache = s.p.config.moe.device_cache_mb > 0 || s.p.config.trial.device_tier == 1;
+    return layers || cache || s.p.config.prefill.enabled();
+}
+
+// The widest pass a device is planned at (PlannerPolicy::ubatch_max_device), never under ubatch_min.
+// The image floor does not lift it: a cap on an image's tokens would otherwise widen every prompt's
+// pass on the device past what its expert matmul is known to run (#533).
+uint32_t device_pass_bound(const PlannerPolicy & pol) {
+    return pol.ubatch_max_device > 0 ? std::max(pol.ubatch_max_device, pol.ubatch_min) : 0;
+}
+
+// What a device's bound does to images, said where it is narrower than their cap: an image wider than
+// the pass is refused with the error that names the settings, rather than every prompt going wider.
+std::string image_past_bound(const RunConfig & c, uint32_t bound) {
+    const uint32_t floor_w = (uint32_t) c.graph_width_floor();
+    if (bound == 0 || floor_w <= bound) return std::string();
+    return " An image may take up to " + u64s(floor_w) + " tokens (" + flag_spelling("image-max-tokens") +
+           "), past this bound: such an image, if its tokens attend both ways, is refused with a message naming "
+           "the settings, since the bound holds every prompt and an image is the rarer case.";
+}
+
 void choose_graph_width(Planning & s) {
     Plan & p = s.p;
     const bool device_in_pool = devices_share_host_memory(s.hw);
@@ -1085,7 +1113,10 @@ void choose_graph_width(Planning & s) {
                               (uint32_t) s.placement.n_gpu_layers <= s.model.n_layer;
     // The narrowest graph: llama.cpp's own physical batch, or the most tokens one image takes where
     // its tokens must go in one pass (RunConfig::graph_width_floor).
-    const uint32_t narrowest = std::max(s.pol.ubatch_min, (uint32_t) p.config.graph_width_floor());
+    // Where a device computes the graph, the image floor is held to the device's bound: the bound wins.
+    const uint32_t bound = device_computes_graph(s) ? device_pass_bound(s.pol) : 0;
+    const uint32_t image_w = (uint32_t) p.config.graph_width_floor();
+    const uint32_t narrowest = std::max(s.pol.ubatch_min, bound > 0 ? std::min(image_w, bound) : image_w);
     const uint32_t device_width = device_short ? device_share_width(s.placement, s.hw, s.pol, narrowest) : 0;
     auto device_buffers = [&](uint32_t w) { return s.placement.at_width(w).device_compute_bytes; };
     auto device_over = [&](uint32_t w) { return device_width > 0 && w > device_width; };
@@ -1103,7 +1134,7 @@ void choose_graph_width(Planning & s) {
         return;
     }
     if (probed == 0 || s.placement.host_compute_per_token == 0) {
-        s.note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Unprobed,
+        s.note("ubatch", u64s((uint64_t) p.config.graph_width()), Source::Unprobed,
                u64s((uint64_t) p.config.graph_width()) +
                    " tokens per pass, the default: its memory cost was not measured.",
                "what a token of graph width costs in compute buffers was not measured here, so the "
@@ -1122,9 +1153,8 @@ void choose_graph_width(Planning & s) {
     const bool extend = p.config.n_ubatch == 0 && device_priced && probed < n_ctx;
     const uint32_t full = extend ? n_ctx : probed;
     // A device that computes the graph is bounded by the widest pass its expert matmul is known to
-    // run (PlannerPolicy::ubatch_max_device), whatever its memory allows.
-    const bool on_device = device_memory > 0 && s.placement.fitted && s.placement.n_gpu_layers > 0;
-    const uint32_t bound = on_device && s.pol.ubatch_max_device > 0 ? std::max(s.pol.ubatch_max_device, narrowest) : 0;
+    // run (PlannerPolicy::ubatch_max_device, `bound` above), whatever its memory allows.
+    const std::string images = image_past_bound(p.config, bound);
     const uint32_t top = bound > 0 && full > bound ? bound : full;
     uint32_t w = top;
     while (w / 2 >= narrowest && over(w))
@@ -1163,8 +1193,8 @@ void choose_graph_width(Planning & s) {
                widest + (full_fits ? " would fit in memory" : " would not fit in memory either") +
                    ", but a device computes it, and past " + u64s(bound) +
                    " tokens a pass can abort in the backend's expert matmul (#533); a longer prompt takes more "
-                   "passes. " +
-                   flag_spelling("ubatch") + " sets it by hand");
+                   "passes." +
+                   images + " " + flag_spelling("ubatch") + " sets it by hand");
         return;
     }
     if (w == full) {
@@ -1175,7 +1205,7 @@ void choose_graph_width(Planning & s) {
                              : std::string("A prompt runs in one pass: that takes only ")) +
                    size_brief(buffers(full)) + ".",
                widest + " reserves " + u64s(mib(buffers(full))) + " MiB of compute buffers, inside " + share +
-                   ": a prompt that wide is computed in one pass");
+                   ": a prompt that wide is computed in one pass." + images);
         return;
     }
     const uint64_t before = device_bound ? device_buffers(full) : buffers(full);
@@ -1197,7 +1227,29 @@ void choose_graph_width(Planning & s) {
                u64s(mib(after)) +
                " MiB. A prompt takes more passes and the expert cache keeps the rest: a prompt is paid once and a "
                "token every time." +
-               image_floor + " " + flag_spelling("ubatch") + " sets it by hand");
+               image_floor + images + " " + flag_spelling("ubatch") + " sets it by hand");
+}
+
+// A prefill device the plan armed computes every prompt's pass, as wide as the graph: held to the
+// device's bound like any device that computes the graph (#533). The width rule ran before the device
+// was chosen, so a graph it left wider is narrowed here; narrower only gives memory back.
+void bound_prefill_width(Planning & s) {
+    Plan & p = s.p;
+    const uint32_t bound = device_pass_bound(s.pol);
+    if (s.req.is_pinned("ubatch") || bound == 0 || (uint32_t) p.config.graph_width() <= bound) return;
+    const uint32_t was = (uint32_t) p.config.graph_width();
+    s.placement = s.placement.at_width(bound);
+    p.placement = s.placement;
+    p.config.n_ubatch = (int) bound;
+    for (auto it = p.decisions.begin(); it != p.decisions.end();)
+        it = it->knob == "ubatch" ? p.decisions.erase(it) : it + 1;
+    s.note("ubatch", u64s(bound), Source::Policy,
+           u64s(bound) + " tokens per pass: the widest a device's expert matmul is known to run.",
+           "the plan chose " + u64s(was) + " tokens wide, and then armed " + p.config.prefill.device +
+               " for the prefill, which computes every pass; past " + u64s(bound) +
+               " tokens a pass can abort in the backend's expert matmul (#533), so a longer prompt takes more "
+               "passes." +
+               image_past_bound(p.config, bound) + " " + flag_spelling("ubatch") + " sets it by hand");
 }
 
 // The bytes that would have to be resident on the host if nothing were streamed, and the regime
@@ -2122,6 +2174,7 @@ Allocation fit_prefill_device(Planning & s,
     }
     ai = with;
     p.config.prefill.device = best.name;
+    bound_prefill_width(s);
     p.config.prefill.best_effort = true;
     p.config.prefill.slots = slots;
     p.config.prefill.slots_on_demand = turns;

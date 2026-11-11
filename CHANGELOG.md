@@ -11,9 +11,10 @@ Semantic Versioning.
   had room for the compute buffers of a graph as wide as the context, the plan kept it that wide. A
   prompt past ~25k tokens (~16k on AMD) then went into one pass, and the card's expert matmul aborted
   the process (`mmid.cu: GGML_ASSERT(nbytes_shared <= smpbo)`). Reproduced on 0.41.2 on a 32 GB card
-  with a 28.6k-token prompt at a 32768 context. A device that computes the graph is now planned at
-  most `ubatch_max_device` (8192) tokens per pass, half of the smallest limit seen. A longer prompt
-  takes more passes ([hardware-planning.md](docs/hardware-planning.md)).
+  with a 28.6k-token prompt at a 32768 context. A device that computes the graph (layers on it, a
+  device expert cache, or a prefill device) is now planned at most `ubatch_max_device` (8192) tokens
+  per pass, half of the smallest limit seen, and an `--image-max-tokens` cap past it does not lift
+  it. A longer prompt takes more passes ([hardware-planning.md](docs/hardware-planning.md)).
 - **A long context no longer aborts the load on a CPU host (#566).** With `--ubatch` left at 0 the
   graph was as wide as the context, and the host's compute buffers grow with width x context (the
   attention mask). On a 15 GB Windows host with Qwen3.6-35B-A3B: 2945 MiB at a 16384 context, the
@@ -31,7 +32,8 @@ Semantic Versioning.
 - **An image a projector reads both ways no longer fails half way through the prefill.** Some
   projectors' image tokens attend to each other both ways, and llama.cpp takes such an image in one
   pass of the graph, so one wider than the graph could not be decoded. With a projector and
-  `--image-max-tokens` set, neither the default width nor the plan now goes narrower than that cap;
+  `--image-max-tokens` set, neither the default width nor the plan now goes narrower than that cap
+  (where a device computes the graph, its 8192-token bound wins);
   a width set by hand that an image does not fit is refused before the image is encoded, naming
   both numbers and the setting to change ([hardware-planning.md](docs/hardware-planning.md)).
 

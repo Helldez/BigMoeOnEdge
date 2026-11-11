@@ -833,7 +833,13 @@ smallest of those limits. A longer prompt takes more passes. The two bounds are 
 purpose: `ubatch_auto_max` is the width of a run nothing planned, whatever computes it, and the
 width the probe places the layers at; `ubatch_max_device` is what stops a planned graph short of
 the context on a device. It is no wider than the default, so a device's graph is never planned past
-the width the fitter placed against. A device's buffers
+the width the fitter placed against. A device computes the graph where it holds layers, where a
+device expert cache computes the experts there, or where a prefill device takes the prompts; a
+prefill device the plan arms itself is chosen after the width, so the width is held to the bound
+again once it is armed. The image floor does not lift this bound: a cap on an image's tokens past
+8192 would widen every prompt's pass on the device, which is the abort the bound exists for. There
+the bound wins, and an image whose tokens attend both ways and do not fit the pass is refused with
+the error that names `--ubatch` and `--image-max-tokens`; the plan's note says so. A device's buffers
 count in this pool where its memory is the host's. A device with memory of its own pays for its width
 in that memory. Where the fitter left whole layers on the host beside it, a byte of buffer there is a
 byte of some layer's dense part: there its buffers are held to the same share of the device's memory,
