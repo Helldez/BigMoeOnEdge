@@ -82,7 +82,10 @@ its first 8 KiB are appended to it. What the model writes streams as `delta` eve
 it is writing is its tool's card from the first piece of its arguments, in state `composing`,
 its title following the arguments as far as they go ("Write page.html") and `bytes` the size
 written so far, updated with the tokens that grow it as the answer's text is: a call can take a
-local model minutes to write, and the person sees what it is. The card is the same whatever the
+local model minutes to write, and the person sees what it is. The arguments themselves stream on
+the card as `delta` events (`arguments`, what each token adds), and the UI shows the newest lines
+of the value being written: a page appears line by line instead of as a growing size. A client
+that joins mid-call sees the arguments from where it joined. The card is the same whatever the
 tool (built-in or MCP) or the route (local model or provider), since it reads only the call. When
 the round ends the same card, by its `id`, runs the call; a card whose call will not run (the run
 stopped, the answer ended first) ends `denied` or `error` with why, live only, since the stored
@@ -334,7 +337,7 @@ On `/api/events`, beside the existing ones:
 |---|---|
 | `conversation` | `{id, title, state, updated}`, whenever one of those changes |
 | `item` | `{conversation, item}`: an item was added or changed, whole |
-| `delta` | `{conversation, item, text?, reasoning?}`: what a streaming assistant item adds. When the model's parser takes back text it showed (a closing reasoning tag), an `item` event carries the item whole instead |
+| `delta` | `{conversation, item, text?, reasoning?, arguments?}`: what a streaming assistant item adds, or (`arguments`) what a tool call in state `composing` adds to its arguments, a JSON object cut anywhere. When the model's parser takes back text it showed (a closing reasoning tag), an `item` event carries the item whole instead |
 | `task` | the task, after it is saved and after a run starts or ends |
 
 An assistant item appears with its first token: a round that fails before one leaves no empty item.

@@ -7,6 +7,13 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **A tool call shows what it writes while the model writes it.** Since 0.41.2 a call being written
+  was a card with its size growing ("Writing · 28.0 KiB"), and the text appeared only once the call
+  ran: on a local model a 30 KiB page is half an hour of tokens with nothing to read. The server now
+  streams the arguments on the card as `delta` events (`arguments`, what each token adds, so the
+  traffic stays linear), and the card shows the newest lines of the value being written, decoded
+  from the JSON as it is cut: the page appears line by line. Any tool, built-in or MCP
+  ([agent.md](docs/agent.md)).
 - **The decisions timed across loads are timed at load instead** (`--calibrate`, on by default). Two
   plan decisions are fixed when a model is loaded, so each side used to be timed over a whole session
   of use: whether a graphics card with memory of its own holds a cache of experts or the capacity
