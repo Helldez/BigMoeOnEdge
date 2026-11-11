@@ -6,7 +6,25 @@ Semantic Versioning.
 
 ## [0.41.1] - 2026-11-11
 
+### Added
+- **A machine as a file, for whoever works on the planner (`bmoe-planlab`, a developer tool; not in
+  any release).** The rules are pure functions over what the probes report, so a machine nobody has
+  at hand is, to them, those facts. `bmoe-planlab record` writes everything `--auto` measured for
+  one model on one machine as text (no weights, no prompt, no local path), with what the plan's run
+  then measured; `bmoe-planlab replay` makes that machine's plan again anywhere, with no model and
+  no device, with a knob pinned (`--sweep cache-mb=...` prints the cache, the memory held and the
+  predicted speed per value) or a fact changed (`--set hw.residency_budget=...`). Records kept in
+  `tests/plan-records` are replayed by the new `plan_records` test on every build: a rule change
+  that moves the plan on a recorded machine fails with both plans printed, and each record made
+  with a run prints the prediction beside the measurement. It says what the planner decides and
+  predicts; whether a plan is fast is still the machine's to answer. `docs/plan-records.md`.
+
 ### Fixed
+- **A cache size set by hand is the one the plan's prediction is priced at.** With `--cache-mb`
+  pinned the plan charged that cache to its memory ledger and went on predicting the speed, and
+  crediting the hit rate, of the cache it would have chosen itself, so "predicted against measured"
+  compared the run with another configuration. The expert lane is now re-priced at the caller's
+  size by the arithmetic the ranking uses for its own (no hits under one token cycle).
 - **A collapsing thread count no longer stutters a phone's first answer for 20 s.** On a 12 GB
   phone with Qwen3.6-35B, the knob trial still ran eight decode threads against four for a whole
   window, nine tokens at 2.4-3.0 s each against 0.11 s. Two changes, neither with a constant of its

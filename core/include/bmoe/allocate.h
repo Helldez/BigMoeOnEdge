@@ -290,6 +290,18 @@ Allocation allocate(const HardwareProfile & hw,
                     const AllocationInputs & in,
                     const PlannerPolicy & pol);
 
+// Re-price an allocation for an expert cache of a size the CALLER set. The ranking above prices the
+// cache it would choose; a pinned size is the caller's authority, and the run holds that one. Without
+// this the plan charged the caller's cache to the ledger and went on predicting the speed of its own:
+// the same arithmetic the ranking prices its cache with, at the size given (no hits under one token
+// cycle), and the totals moved by the difference. `in` is what `a` was allocated from.
+void price_caller_cache(Allocation & a,
+                        const HardwareProfile & hw,
+                        const ModelProfile & model,
+                        const AllocationInputs & in,
+                        const PlannerPolicy & pol,
+                        uint64_t cache_bytes);
+
 // The compute this cost model prices one decoded token at on the host, every group of `model` at the
 // host's measured rates and no compute_scale: what a measured decode of the same configuration is
 // compared with to calibrate it. 0 where a rate is unmeasured.

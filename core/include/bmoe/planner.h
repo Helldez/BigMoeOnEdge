@@ -25,6 +25,8 @@
 #include "bmoe/placement.h"
 #include "bmoe/plan.h"
 
+#include <functional>
+
 namespace bmoe {
 
 // Resolve a run. `base` supplies the caller's starting point (model path, prompt, and any knob it
@@ -140,5 +142,27 @@ Plan plan_run(const RunConfig & base,
               const Placement & placement,
               const PlanRequest & request,
               const PlannerPolicy & policy);
+
+// The first stage, asked again: its placement with the widest graph `n_ubatch` tokens wide (0: as
+// wide as the context). The live source is the capacity fitter (probe_placement); a record of a
+// plan answers from what the fitter said when it was made (tools/planlab, docs/plan-records.md).
+// One answer of the first stage: the placement, and the graph width it was asked at (0: as wide as
+// the context).
+struct PlacedAt {
+    uint32_t n_ubatch = 0;
+    Placement placement;
+};
+
+using PlacementSource = std::function<Placement(uint32_t n_ubatch)>;
+
+// The whole second stage over a first stage that can be asked more than once: plan on the placement
+// at the caller's width, and where the plan narrows the graph and a device holds buffers of it, ask
+// for the placement at the narrower width and plan on that. Pure given `place`, so the sequence a
+// front-end runs on a machine is the one a test runs on a record of that machine.
+Plan plan_run_placed(const RunConfig & base,
+                     const HardwareProfile & hw,
+                     const ModelProfile & model,
+                     const PlanRequest & request,
+                     const PlacementSource & place);
 
 } // namespace bmoe

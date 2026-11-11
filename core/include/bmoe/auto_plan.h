@@ -18,6 +18,7 @@
 #include "bmoe/hardware_profile.h"
 #include "bmoe/model_profile.h"
 #include "bmoe/plan.h"
+#include "bmoe/planner.h"
 #include "bmoe/routing.h"
 
 #include <functional>
@@ -81,6 +82,9 @@ struct AutoPlan {
     HardwareProfile hw;
     ModelProfile model;
     Plan plan;
+    // Every placement the rules asked the first stage for, in the order asked, each at the width it
+    // was asked at: with the two profiles, everything the plan was made from (docs/plan-records.md).
+    std::vector<PlacedAt> placements;
 };
 
 // Probe this machine and `cfg.model_path`, then plan `cfg` on them. `req` carries what the caller

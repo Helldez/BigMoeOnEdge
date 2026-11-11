@@ -161,11 +161,17 @@ core/
                   machine and read a gguf; the only place in the planner where a platform or
                   llama.cpp may appear
                 auto_plan - the composition of the two: the probes in the order a plan is
-                  measured in, then plan_run(). With the adapters because it starts the backends;
+                  measured in, then plan_run_placed(): the rules over a first stage that can be
+                  asked again at another width. With the adapters because it starts the backends;
                   it decides nothing, and bmoe-cli --auto and the server's /api/plan both call it
     params.cpp  the parameter table's rows (see params.h)
     log.cpp     the log port's default sink and level filter (see log.h)
     metrics/    csv_metrics_sink, route_trace_sink, decode_trace_sink
+tools/          developer instruments (-DBMOE_BUILD_TOOLS=ON); not installed, in no release
+  iobench, membench   the storage and the memory, measured without the engine
+  planlab/      bmoe-planlab: everything --auto measured on a machine as a text record, and the
+                plan made again from one anywhere (plan-records.md); tests/plan-records is the
+                corpus the plan_records test replays
 third_party/
   llama.cpp     upstream submodule; public-API consumer, plus one optional overlap hook
 tests/          byte-identity gates
