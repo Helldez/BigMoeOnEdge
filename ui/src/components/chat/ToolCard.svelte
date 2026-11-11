@@ -31,6 +31,7 @@
   import type { ToolItem } from '../../lib/agent';
   import { diffStat } from '../../lib/items';
   import { formatBytes } from '../../lib/format';
+  import { draftText, tailLines } from '../../lib/toolDraft';
   import { agent } from '../../stores/agent.svelte';
   import { preview } from '../../stores/preview.svelte';
   import { t } from '../../lib/text';
@@ -50,6 +51,9 @@
   );
   let content = $derived(item.tool === 'write_file' ? arg('content') : '');
   let answering = $derived(!!agent.answering[item.id]);
+  // While the model writes the call: the newest lines of what it is writing (a page, a command),
+  // so a long call is watched as it grows rather than as a size.
+  let live = $derived(item.state === 'composing' && item.draft ? tailLines(draftText(item.draft)) : '');
 </script>
 
 <div class="tool" class:waiting role="group" aria-label={item.title}>
@@ -79,7 +83,9 @@
     {/if}
   </div>
 
-  {#if waiting}
+  {#if live}
+    <div class="body"><pre class="cmd live">{live}</pre></div>
+  {:else if waiting}
     <div class="approval">
       <p class="lead"><Icon name="shield" size={16} /><span>{t('approval.lead')}</span></p>
       {#if detail}<pre class="cmd">{detail}</pre>{/if}
@@ -179,6 +185,10 @@
   }
   .content {
     max-height: 12rem;
+  }
+  .live {
+    overflow: hidden;
+    color: var(--muted);
   }
   .buttons {
     display: flex;

@@ -860,7 +860,7 @@ limit.
 | `plan_progress` | a measurement (`GET /api/plan?measure=1`, or an auto load) entering a stage: `step` (`devices`, `model`, `compute`, `storage`, `memory`, `placement`, `rules`), its words `label`, `index` from 0 and `count`; then `{"step": "done"}` when it ends. A UI shows `label`; `step` is the protocol |
 | `conversation` | an agent conversation's `{id, title, state, updated}`, whenever one of those changes ([agent.md](agent.md#events)) |
 | `item` | `{conversation, item}`: an agent item added or changed, whole |
-| `delta` | `{conversation, item, text?, reasoning?}`: what a streaming assistant item adds |
+| `delta` | `{conversation, item, text?, reasoning?, arguments?}`: what a streaming assistant item adds, or (`arguments`) what a `composing` tool call adds to its arguments |
 | `task` | an agent task, after it is saved and after a run of it starts or ends |
 | `log` | one engine diagnostic (`bmoe/log.h`): `level` (`info`, `warn`, `error`) and `message`, the line the server also writes to stderr after `bmoe: `. For a person to read; a client decides nothing on its wording |
 
