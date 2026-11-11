@@ -14,6 +14,7 @@
 // is stored is the front-end's decision.
 #pragma once
 
+#include "bmoe/config.h"
 #include "bmoe/hardware_profile.h"
 
 #include <string>
@@ -106,6 +107,18 @@ struct MeasuredKnobs {
     double mix_gen_tokens = 0.0, mix_wide_prompt_tokens = 0.0;
     double host_prefill_tps = 0.0;
 
+    // Failed opens of each side of a decision across loads, on this machine and engine (the record's
+    // own scope): a calibration's candidate (bmoe/calibrate.h) or a served load that could not load
+    // that configuration, most likely short of device memory. A side with any is the loser in every
+    // plan made on the record, so no served load opens what is known not to open. Kept between loads,
+    // since a served load that met one would otherwise open it again and end with no model; retried
+    // only by a calibration, while the count is under CalibrationPolicy::unviable_retries, because a
+    // failure may be the machine's moment (another program holding the card's memory, a driver's
+    // hiccup). A rate measured for the side clears it. The width's two are for `width_narrow` only,
+    // as its rates are.
+    int device_cache_unviable = 0, no_device_cache_unviable = 0;
+    int wide_unviable = 0, narrow_unviable = 0;
+
     bool empty() const { return verdicts() == 0; }
     // How many measurements this record carries: a front-end keeps a record again when it grows. The
     // requests a width trial has seen count too, so the usage it weighs the two widths by is kept as it
@@ -114,7 +127,8 @@ struct MeasuredKnobs {
         return (threads > 0) + (overlap >= 0) + (device_cache_tps > 0.0) + (no_device_cache_tps > 0.0) +
                (wide_decode_tps > 0.0) + (narrow_decode_tps > 0.0) + (wide_prefill_tps > 0.0) +
                (narrow_prefill_tps > 0.0) + usage_requests + (decode_compute_s > 0.0) + (decode_hit >= 0.0) +
-               mix_requests + (host_prefill_tps > 0.0);
+               mix_requests + (host_prefill_tps > 0.0) + (device_cache_unviable > 0) + (no_device_cache_unviable > 0) +
+               (wide_unviable > 0) + (narrow_unviable > 0);
     }
 };
 
@@ -133,6 +147,17 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
 // carries replaces that one, and what it does not carry is kept. A load measures what its plan left
 // unmeasured, so the record of the load before holds the rest.
 void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKnobs & rec);
+
+// The decode rate of a load that ran the side `trial` names (KnobTrialConfig::device_tier or
+// width_side), put where a plan reads it. One decision per load: the device tier where it names one,
+// else the graph width, so a rate never answers two questions measured under one placement. The
+// session's own timing and a load-time calibration both put a rate here, so the plan reads one
+// mapping whichever measured it. Nothing when `trial` names no side.
+void record_side_rate(const KnobTrialConfig & trial, double tokens_per_second, MeasuredKnobs & rec);
+// The same side, one more failed open on its count (MeasuredKnobs::*_unviable).
+void record_side_unviable(const KnobTrialConfig & trial, MeasuredKnobs & rec);
+// The failed-open count of the side `trial` names, null when it names none.
+int * unviable_count(const KnobTrialConfig & trial, MeasuredKnobs & rec);
 
 // The record of this machine and engine, or null.
 const MeasuredKnobs * find_measured_knobs(const std::vector<MeasuredKnobs> & records,

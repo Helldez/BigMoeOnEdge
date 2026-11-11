@@ -46,11 +46,13 @@
 #include "stream_keepalive.h"
 #include "sha256.h"
 #include "turn_queue.h"
+#include "idle_timer.h"
 #include "url_entry.h"
 
 #include "bmoe/planner.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <chrono>
 #include <limits>
 #include <cstdio>
@@ -919,6 +921,55 @@ static void responses_tests() {
     check(e.size() == 1 && e[0].first == "response.failed" &&
               e[0].second["response"]["error"]["code"] == "context_length_exceeded",
           "a failed turn ends the stream with response.failed");
+}
+
+// The idle timer behind a server's calibration, on a clock the test moves (no thread, no sleep): it
+// fires once the quiet period has passed, a touch meanwhile starts the wait again, a cancel forgets
+// it, and a stop ends it for good. Then the same with its own thread on the real clock, where only
+// what is eventually true is checked.
+static void idle_timer_tests() {
+    using namespace std::chrono_literals;
+    using Clock = std::chrono::steady_clock;
+    Clock::time_point now{};
+    int fired = 0;
+    IdleTimer t([&] { ++fired; }, [&] { return now; }, /*threaded*/ false);
+    t.touch(30ms);
+    now += 29ms;
+    check(!t.poll() && fired == 0, "idle timer: not before the quiet period");
+    now += 1ms;
+    check(t.poll() && fired == 1, "idle timer: fires once it has passed");
+    check(!t.poll() && fired == 1, "idle timer: and only once");
+    t.touch(60ms);
+    for (int i = 0; i < 4; ++i) {
+        now += 40ms;
+        check(!t.poll(), "idle timer: an answer each time, before the period ends");
+        t.touch(60ms);
+    }
+    check(fired == 1, "idle timer: each touch starts the wait again");
+    now += 60ms;
+    check(t.poll() && fired == 2, "idle timer: and it fires once touches stop");
+    t.touch(30ms);
+    t.cancel();
+    now += 1s;
+    check(!t.poll() && fired == 2, "idle timer: a cancel forgets the pending fire");
+    t.stop();
+    t.touch(1ms);
+    now += 1s;
+    check(!t.poll() && fired == 2, "idle timer: stopped, a touch does nothing");
+
+    std::mutex m;
+    std::condition_variable cv;
+    int real_fired = 0;
+    IdleTimer real([&] {
+        std::lock_guard<std::mutex> lk(m);
+        ++real_fired;
+        cv.notify_all();
+    });
+    real.touch(1ms);
+    std::unique_lock<std::mutex> lk(m);
+    check(cv.wait_for(lk, 10s, [&] { return real_fired == 1; }), "idle timer: its thread fires on the real clock");
+    lk.unlock();
+    real.stop();
 }
 
 static void queue_tests() {
@@ -2649,6 +2700,7 @@ static void keepalive_tests() {
 }
 
 int main() {
+    idle_timer_tests();
     thermal_tests();
     service_tests();
     protocol_tests();

@@ -1,5 +1,6 @@
 #include "platform_io.h"
 
+#include <algorithm>
 #include <atomic>
 
 // System headers MUST be included at global scope, never inside the namespace below:
@@ -1528,5 +1529,28 @@ bool pinned_alloc(size_t, PinnedAlloc *) {
 void pinned_free(PinnedAlloc *) {}
 
 #endif
+
+bool read_through_cache(const char * path,
+                        const std::vector<std::pair<uint64_t, uint64_t>> & ranges,
+                        const std::atomic<bool> * stop) {
+    const fd_t fd = open_read(path, /*direct*/ false);
+    if (!fd_ok(fd)) return false;
+    std::vector<char> buf(read_through_piece);
+    bool ok = true;
+    for (const auto & r : ranges) {
+        for (uint64_t at = r.first, end = r.first + r.second; ok && at < end;) {
+            if (stop && stop->load(std::memory_order_relaxed)) {
+                close_fd(fd);
+                return true;
+            }
+            const size_t n = (size_t) (std::min)(end - at, (uint64_t) buf.size());
+            const long long got = pread_at(fd, buf.data(), n, at);
+            if (got <= 0) ok = false;
+            at += got > 0 ? (uint64_t) got : 0;
+        }
+    }
+    close_fd(fd);
+    return ok;
+}
 
 } // namespace bmoe::pio

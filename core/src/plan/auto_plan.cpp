@@ -22,6 +22,98 @@
 
 namespace bmoe {
 
+namespace {
+
+// The rules on the facts a probe gathered (probe_and_plan's planning half): plan_run on the first
+// stage's placement, and the capacity fitter asked again where the plan narrows the graph. `model`
+// is the facts' own, or the same with another record of measurements (replan).
+Plan plan_on_facts(const AutoPlan & facts, const RunConfig & cfg, const PlanRequest & req, const ModelProfile & model) {
+    const char * path = cfg.model_path.c_str();
+    const HardwareProfile & hw = facts.hw;
+    const Placement & placement = facts.placement;
+    Plan plan = plan_run(cfg, hw, model, placement, req);
+    // The fitter placed layers around compute buffers as wide as the graph it was given. Where the plan
+    // narrowed the graph and a device took buffers of it, the room the narrower buffers leave is the
+    // fitter's to give (the dense part of every layer before any cache), so it places again at that
+    // width and the rules run on what it places. That includes a device the wide buffers left with no
+    // layer at all, where placing again is the whole point. The width stays the first plan's decision:
+    // it was made against the wide placement, which is what it narrowed. One pass. A plan may also
+    // choose a graph wider than the probe's (the whole context, priced from the probe's slope), but
+    // only where no device's placement depends on it: a device that computes the graph is bounded at
+    // PlannerPolicy::ubatch_max_device, no wider than the probed default, and one short of room at
+    // its share of the probed width.
+    const uint32_t width = (uint32_t) plan.config.n_ubatch;
+    if (!req.is_pinned("ubatch") && placement.fitted && !placement.shared_memory_placement &&
+        (placement.n_gpu_layers > 0 || placement.device_compute_per_token > 0) && width > 0 &&
+        width < placement.compute_width) {
+        RunConfig narrow = cfg;
+        narrow.n_ubatch = (int) width;
+        const Placement at_width = probe_placement(path, model, hw, (uint32_t) cfg.n_ctx, width, cfg.cache_type_k,
+                                                   cfg.cache_type_v, facts.backends, &cfg.spec);
+        detail::log_memory_snapshot("auto-probe-narrow");
+        if (at_width.fitted) {
+            const Decision * first = nullptr;
+            for (const Decision & d : plan.decisions)
+                if (d.knob == "ubatch") first = &d;
+            const Decision kept = first ? *first : Decision{};
+            const KnobTrialConfig trial = plan.config.trial;
+            plan = plan_run(narrow, hw, model, at_width, req);
+            // Narrowed again on the new placement: that decision stands, it is the narrower one. So does
+            // a width trial the first plan set, and the narrow width its requests are recorded against:
+            // the second sees its narrow width as the full one.
+            if (plan.config.n_ubatch == (int) width) {
+                for (Decision & d : plan.decisions)
+                    if (d.knob == "ubatch" && !kept.knob.empty()) d = kept;
+                if ((trial.width_side >= 0 || trial.width_narrow > 0) && plan.config.trial.device_tier < 0) {
+                    plan.config.trial.width_side = trial.width_side;
+                    plan.config.trial.width_narrow = trial.width_narrow;
+                }
+            }
+        }
+    }
+    // Every layer on a device of its own and the experts still on the host, behind a device cache: a
+    // narrower graph may leave room for the whole model on the device, which serves every expert from
+    // device memory and computes a prompt without gathering experts into a cache, so it wins prefill
+    // and decode alike. Only a placement can say whether it fits, so the fitter is asked at the width
+    // the device's share allows, and the narrower graph is kept only where it places everything there.
+    // Measured on a 24 GB card with Qwen3.6-35B Q4_K_M at a 16384 context: 8192 tokens wide, the whole
+    // model fit, and decode went from 137-139 to 155-156 tok/s and a 9714-token prefill from 4789 to
+    // 5594 tok/s. Where it does not fit whole, the wide graph stands (that trade is not priced).
+    else if (!req.is_pinned("ubatch") && placement.fitted && !placement.shared_memory_placement &&
+             placement.n_gpu_layers != 0 && !placement.host_expert_layers.empty() &&
+             (plan.config.n_ubatch == 0 || (uint32_t) plan.config.n_ubatch >= placement.compute_width)) {
+        const uint32_t candidate =
+            device_share_width(placement, hw, PlannerPolicy::defaults(), (uint32_t) cfg.graph_width_floor());
+        if (candidate > 0 && candidate < placement.compute_width) {
+            const Placement at_width = probe_placement(path, model, hw, (uint32_t) cfg.n_ctx, candidate,
+                                                       cfg.cache_type_k, cfg.cache_type_v, facts.backends, &cfg.spec);
+            detail::log_memory_snapshot("auto-probe-whole");
+            if (at_width.fitted && at_width.host_expert_layers.empty() && at_width.n_gpu_layers != 0) {
+                RunConfig narrow = cfg;
+                narrow.n_ubatch = (int) candidate;
+                plan = plan_run(narrow, hw, model, at_width, req);
+                const std::string w = std::to_string(candidate);
+                for (Decision & d : plan.decisions)
+                    if (d.knob == "ubatch") {
+                        d.value = w;
+                        d.source = Source::Measured;
+                        d.brief = w + " tokens per pass: at this width the whole model fits on the device.";
+                        d.reason = "a graph as wide as the context left the experts on the host behind a device "
+                                   "cache; at " +
+                                   w +
+                                   " tokens the capacity fitter places every layer and every expert on the devices, "
+                                   "which serves every expert from device memory and computes a prompt without "
+                                   "gathering experts into a cache. " +
+                                   flag_spelling("ubatch") + " sets it by hand";
+                    }
+            }
+        }
+    }
+    return plan;
+}
+
+} // namespace
+
 AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const AutoPlanOptions & opt) {
     AutoPlan r;
     const char * path = cfg.model_path.c_str();
@@ -97,88 +189,45 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     const BackendChoice backends = req.is_pinned("device-list") || req.is_pinned("devices")
                                        ? BackendChoice{}
                                        : choose_backends(r.hw, (double) PlannerPolicy::defaults().min_backend_win);
-    const Placement placement = probe_placement(path, r.model, r.hw, (uint32_t) cfg.n_ctx, (uint32_t) cfg.graph_width(),
-                                                cfg.cache_type_k, cfg.cache_type_v, backends.keep, &cfg.spec);
+    r.placement = probe_placement(path, r.model, r.hw, (uint32_t) cfg.n_ctx, (uint32_t) cfg.graph_width(),
+                                  cfg.cache_type_k, cfg.cache_type_v, backends.keep, &cfg.spec);
+    r.backends = backends.keep;
     detail::log_memory_snapshot("auto-probe-end");
     starting(); // rules
-    r.plan = plan_run(cfg, r.hw, r.model, placement, req);
-    // The fitter placed layers around compute buffers as wide as the graph it was given. Where the plan
-    // narrowed the graph and a device took buffers of it, the room the narrower buffers leave is the
-    // fitter's to give (the dense part of every layer before any cache), so it places again at that
-    // width and the rules run on what it places. That includes a device the wide buffers left with no
-    // layer at all, where placing again is the whole point. The width stays the first plan's decision:
-    // it was made against the wide placement, which is what it narrowed. One pass. A plan may also
-    // choose a graph wider than the probe's (the whole context, priced from the probe's slope), but
-    // only where no device's placement depends on it: a device that computes the graph is bounded at
-    // PlannerPolicy::ubatch_max_device, no wider than the probed default, and one short of room at
-    // its share of the probed width.
-    const uint32_t width = (uint32_t) r.plan.config.n_ubatch;
-    if (!req.is_pinned("ubatch") && placement.fitted && !placement.shared_memory_placement &&
-        (placement.n_gpu_layers > 0 || placement.device_compute_per_token > 0) && width > 0 &&
-        width < placement.compute_width) {
-        RunConfig narrow = cfg;
-        narrow.n_ubatch = (int) width;
-        const Placement at_width = probe_placement(path, r.model, r.hw, (uint32_t) cfg.n_ctx, width, cfg.cache_type_k,
-                                                   cfg.cache_type_v, backends.keep, &cfg.spec);
-        detail::log_memory_snapshot("auto-probe-narrow");
-        if (at_width.fitted) {
-            const Decision * first = nullptr;
-            for (const Decision & d : r.plan.decisions)
-                if (d.knob == "ubatch") first = &d;
-            const Decision kept = first ? *first : Decision{};
-            const KnobTrialConfig trial = r.plan.config.trial;
-            r.plan = plan_run(narrow, r.hw, r.model, at_width, req);
-            // Narrowed again on the new placement: that decision stands, it is the narrower one. So does
-            // a width trial the first plan set: the second sees its narrow width as the full one.
-            if (r.plan.config.n_ubatch == (int) width) {
-                for (Decision & d : r.plan.decisions)
-                    if (d.knob == "ubatch" && !kept.knob.empty()) d = kept;
-                if (trial.width_side >= 0 && r.plan.config.trial.device_tier < 0) {
-                    r.plan.config.trial.width_side = trial.width_side;
-                    r.plan.config.trial.width_narrow = trial.width_narrow;
-                }
-            }
-        }
-    }
-    // Every layer on a device of its own and the experts still on the host, behind a device cache: a
-    // narrower graph may leave room for the whole model on the device, which serves every expert from
-    // device memory and computes a prompt without gathering experts into a cache, so it wins prefill
-    // and decode alike. Only a placement can say whether it fits, so the fitter is asked at the width
-    // the device's share allows, and the narrower graph is kept only where it places everything there.
-    // Measured on a 24 GB card with Qwen3.6-35B Q4_K_M at a 16384 context: 8192 tokens wide, the whole
-    // model fit, and decode went from 137-139 to 155-156 tok/s and a 9714-token prefill from 4789 to
-    // 5594 tok/s. Where it does not fit whole, the wide graph stands (that trade is not priced).
-    else if (!req.is_pinned("ubatch") && placement.fitted && !placement.shared_memory_placement &&
-             placement.n_gpu_layers != 0 && !placement.host_expert_layers.empty() &&
-             (r.plan.config.n_ubatch == 0 || (uint32_t) r.plan.config.n_ubatch >= placement.compute_width)) {
-        const uint32_t candidate =
-            device_share_width(placement, r.hw, PlannerPolicy::defaults(), (uint32_t) cfg.graph_width_floor());
-        if (candidate > 0 && candidate < placement.compute_width) {
-            const Placement at_width = probe_placement(path, r.model, r.hw, (uint32_t) cfg.n_ctx, candidate,
-                                                       cfg.cache_type_k, cfg.cache_type_v, backends.keep, &cfg.spec);
-            detail::log_memory_snapshot("auto-probe-whole");
-            if (at_width.fitted && at_width.host_expert_layers.empty() && at_width.n_gpu_layers != 0) {
-                RunConfig narrow = cfg;
-                narrow.n_ubatch = (int) candidate;
-                r.plan = plan_run(narrow, r.hw, r.model, at_width, req);
-                const std::string w = std::to_string(candidate);
-                for (Decision & d : r.plan.decisions)
-                    if (d.knob == "ubatch") {
-                        d.value = w;
-                        d.source = Source::Measured;
-                        d.brief = w + " tokens per pass: at this width the whole model fits on the device.";
-                        d.reason = "a graph as wide as the context left the experts on the host behind a device "
-                                   "cache; at " +
-                                   w +
-                                   " tokens the capacity fitter places every layer and every expert on the devices, "
-                                   "which serves every expert from device memory and computes a prompt without "
-                                   "gathering experts into a cache. " +
-                                   flag_spelling("ubatch") + " sets it by hand";
-                    }
-            }
-        }
-    }
+    r.plan = plan_on_facts(r, cfg, req, r.model);
+    if (opt.calibrate) calibrate_plan(r, cfg, req, opt.calibrate, opt.on_step);
     return r;
+}
+
+Plan replan_rules(const AutoPlan & facts, const RunConfig & cfg, const PlanRequest & req, const MeasuredKnobs & knobs) {
+    ModelProfile model = facts.model;
+    model.knobs = knobs;
+    return plan_run(cfg, facts.hw, model, facts.placement, req);
+}
+
+Plan replan(const AutoPlan & facts, const RunConfig & cfg, const PlanRequest & req, const MeasuredKnobs & knobs) {
+    ModelProfile model = facts.model;
+    model.knobs = knobs;
+    return plan_on_facts(facts, cfg, req, model);
+}
+
+const CalibrationResult & calibrate_plan(AutoPlan & ap,
+                                         const RunConfig & cfg,
+                                         const PlanRequest & req,
+                                         const RunCandidate & run,
+                                         const std::function<void(const char * step, int index, int count)> & on_step) {
+    if (!calibration_due(ap.plan, ap.model.knobs, [&](const MeasuredKnobs & k) { return replan(ap, cfg, req, k); }))
+        return ap.calibration;
+    const RunCandidate reported = [&](const RunConfig & c, const CalibrationRun & cr) {
+        if (on_step) on_step(k_calibrate_step, cr.index, cr.runs_max);
+        return run(c, cr);
+    };
+    ap.calibration =
+        calibrate(ap.plan, ap.model.knobs, [&](const MeasuredKnobs & k) { return replan(ap, cfg, req, k); }, reported);
+    ap.calibrated = true;
+    ap.plan = ap.calibration.plan;
+    ap.model.knobs = ap.calibration.knobs;
+    return ap.calibration;
 }
 
 bool probe_device_child(const char * model_path, const std::string & device, std::string & line) {

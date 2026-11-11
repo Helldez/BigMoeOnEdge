@@ -84,6 +84,7 @@ add_library(bmoe_server_core STATIC
     openai_responses.cpp
     image_part.cpp
     turn_queue.cpp
+    idle_timer.cpp
     event_bus.cpp
     json_util.cpp
     model_files.cpp

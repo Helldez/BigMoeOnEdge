@@ -857,6 +857,13 @@ struct RunConfig {
     DecideConfig decide;         // decide()'s prefix-state policy; off by default
     KnobTrialConfig trial;       // lossless knobs measured on the first real request; off by default
 
+    // Load-time calibration (bmoe/calibrate.h): where an automatic plan leaves a decision across
+    // loads pending (the device tier, the graph width), time each side as a short load of its own and
+    // serve the winner, instead of spending whole sessions on the slower side. A front-end that plans
+    // reads it; the engine does not. Off, those decisions are timed across loads as before. They only
+    // arise beside a device with memory of its own, so elsewhere this changes nothing.
+    bool calibrate = true;
+
     // Let llama.cpp's and ggml's DEBUG log lines through to stderr. Off, they are dropped: about
     // 1200 lines of graph bookkeeping per model load, which buried the engine's own output. For
     // debugging llama.cpp itself, not the engine. Process-wide, as llama.cpp's log is.

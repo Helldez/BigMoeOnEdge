@@ -583,7 +583,20 @@ void choose_device_tier(Planning & s) {
                       "%.2f tok/s with a device cache against %.2f with the fitter's placement", mk.device_cache_tps,
                       mk.no_device_cache_tps);
         const std::string margin = u64s((uint64_t) (s.pol.min_backend_win * 100.0f + 0.5f)) + "%";
-        if (mk.device_cache_tps > 0.0 && mk.no_device_cache_tps > 0.0) {
+        // A side a load-time calibration could not open loses, whatever the other measured: a cache
+        // that cannot be created leaves the fitter's placement, and a placement that cannot be loaded
+        // leaves the cache (bmoe/calibrate.h).
+        if (mk.device_cache_unviable) {
+            s.note("device-cache-mb", "0", Source::Measured,
+                   "The experts stay where the fitter put them: a device cache could not be opened here.",
+                   std::string(nums) + "; a load with a device cache failed on this machine, so the fitter's "
+                                       "placement stands");
+            return;
+        }
+        if (mk.no_device_cache_unviable) {
+            std::snprintf(nums + std::strlen(nums), sizeof(nums) - std::strlen(nums),
+                          "; a load with the fitter's placement failed on this machine, so the cache stands");
+        } else if (mk.device_cache_tps > 0.0 && mk.no_device_cache_tps > 0.0) {
             if (mk.no_device_cache_tps > mk.device_cache_tps * (1.0 + (double) s.pol.min_backend_win)) {
                 s.note("device-cache-mb", "0", Source::Measured,
                        "The experts stay where the fitter put them: on this machine that decoded faster than a "
@@ -991,6 +1004,11 @@ namespace {
 // cards with GLM-4.5-Air: 14.2 tok/s decoded at 16384 tokens wide against 19.4 at 512, where the wide
 // graph prefilled a 9.5k-token prompt at 610 tok/s and a 512-wide one, in llama.cpp, at 104. True when
 // it decided the width and said so.
+// What a request is weighed as while none has been seen: one decoded token and no long prompt. Any
+// positive figure makes the two widths' seconds a request proportional to their decode rates, which is
+// all there is to weigh then; one token is the plain unit of that ratio, not a guess at a request.
+constexpr double k_unserved_request_tokens = 1.0;
+
 bool width_across_loads(Planning & s, uint32_t full) {
     Plan & p = s.p;
     const Placement & pl = s.placement;
@@ -1003,7 +1021,15 @@ bool width_across_loads(Planning & s, uint32_t full) {
     const bool same = mk.width_narrow == (int) narrow;
     const double wd = same ? mk.wide_decode_tps : 0.0, nd = same ? mk.narrow_decode_tps : 0.0;
     const double wp = same ? mk.wide_prefill_tps : 0.0, np = same ? mk.narrow_prefill_tps : 0.0;
-    const double gen = mk.usage_gen_tokens, longp = mk.usage_long_prompt_tokens;
+    // With no request seen yet (a load-time calibration times the decode before any is served), a
+    // request is weighed as a token decoded: the decode rates alone decide, where a weight of nothing
+    // would hold the wide graph whatever they measured. Provisional: a width decided so names the
+    // narrow width on its loads with no side to time (KnobTrialConfig::width_narrow), and they record
+    // the requests they serve, which the plan after weighs. Only then: a width decided on requests
+    // already seen stays as it was decided, and its loads carry no measurement.
+    const bool served = mk.usage_requests > 0;
+    const double gen = served ? mk.usage_gen_tokens : k_unserved_request_tokens;
+    const double longp = served ? mk.usage_long_prompt_tokens : 0.0;
     const std::string n = u64s(narrow);
     const auto run_side = [&](int side, const std::string & why) {
         p.config.trial.width_side = side;
@@ -1020,6 +1046,21 @@ bool width_across_loads(Planning & s, uint32_t full) {
     };
     const std::string room = "the devices' compute buffers at the full width are past their share of the cards' "
                              "memory, which a narrower graph gives the experts";
+    // A side a load-time calibration could not open loses (bmoe/calibrate.h).
+    if (same && (mk.narrow_unviable || mk.wide_unviable)) {
+        const bool narrow_wins = mk.wide_unviable && !mk.narrow_unviable;
+        if (narrow_wins) {
+            s.placement = s.placement.at_width(narrow);
+            p.placement = s.placement;
+            p.config.n_ubatch = (int) narrow;
+        }
+        s.note("ubatch", narrow_wins ? n : u64s((uint64_t) p.config.graph_width()), Source::Measured,
+               narrow_wins ? n + " tokens per pass: the full width could not be opened here."
+                           : "A prompt runs in one pass: a graph " + n + " tokens wide could not be opened here.",
+               room + "; a load " + (narrow_wins ? std::string("at the full width") : n + " tokens wide") +
+                   " failed on this machine, so the other width stands");
+        return true;
+    }
     if (wd <= 0.0) {
         run_side(1, room + "; nothing is measured yet, so this load times the full width and a later one " + n +
                         " tokens");
@@ -1041,12 +1082,19 @@ bool width_across_loads(Planning & s, uint32_t full) {
     const double t_wide = gen / wd + (longp > 0.0 ? longp / wp : 0.0);
     const double t_narrow = gen / nd + (longp > 0.0 ? longp / np : 0.0);
     char nums[320];
-    std::snprintf(nums, sizeof(nums),
-                  "measured on earlier loads: decode %.2f tok/s at the full width against %.2f at %u, prefill of the "
-                  "prompts past %u at %.0f against %.0f; a request here decodes %.0f tokens and prefills %.0f past "
-                  "%u, so %.2f s against %.2f",
-                  wd, nd, narrow, narrow, wp, np, gen, longp, narrow, t_wide, t_narrow);
+    if (served)
+        std::snprintf(nums, sizeof(nums),
+                      "measured on earlier loads: decode %.2f tok/s at the full width against %.2f at %u, prefill of "
+                      "the prompts past %u at %.0f against %.0f; a request here decodes %.0f tokens and prefills %.0f "
+                      "past %u, so %.2f s against %.2f",
+                      wd, nd, narrow, narrow, wp, np, gen, longp, narrow, t_wide, t_narrow);
+    else
+        std::snprintf(nums, sizeof(nums),
+                      "measured: decode %.2f tok/s at the full width against %.2f at %u; no request served yet, so the "
+                      "decode alone weighs them until the requests this machine serves are recorded",
+                      wd, nd, narrow);
     const std::string margin = u64s((uint64_t) (s.pol.min_backend_win * 100.0f + 0.5f)) + "%";
+    if (!served) p.config.trial.width_narrow = (int) narrow;
     if (t_wide > t_narrow * (1.0 + (double) s.pol.min_backend_win)) {
         s.placement = s.placement.at_width(narrow);
         p.placement = s.placement;

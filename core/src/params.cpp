@@ -560,11 +560,28 @@ std::vector<ParamDesc> build() {
     {
         ParamDesc d = row("trial-width-narrow", "Narrow graph width compared", G::Prefill, L::Experimental,
                           "The narrower graph width --trial-width compares with the plan's own, in tokens. Prompts "
-                          "longer than it are the ones whose prefill is timed. 0 is none.");
+                          "longer than it are the ones whose prefill is timed. Set alone, it records the requests a "
+                          "load serves against it, timing nothing: the plan does so where it chose the width before "
+                          "any request was seen. 0 is none.");
         d.value_hint = "N";
         bounds(d, 0, RunConfig::tokens_max, "tokens");
         special(d, "0", "none");
         bind_int(d, [](RunConfig & c) -> int & { return c.trial.width_narrow; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("calibrate", "Calibrate at load", G::Cache, L::Advanced,
+                          "Where the automatic plan cannot tell which of two placements on a graphics card decodes "
+                          "faster, time each side as a short load of its own and serve the faster. Off, each side "
+                          "is timed over a whole session of use instead. Changes no output.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--calibrate", "true"}, {"--no-calibrate", "false"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.calibrate; });
+        d.details = "Only machines with a graphics card that has memory of its own have such a choice: a phone or a "
+                    "computer whose graphics share its memory never calibrates. The command line does it before "
+                    "the first answer; the app serves first and calibrates once it is idle, giving way to any "
+                    "request.";
         t.push_back(d);
     }
     {

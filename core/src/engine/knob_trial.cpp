@@ -168,8 +168,17 @@ bool KnobTrial::apart(size_t k) const {
 // this trial, times its own range (slowest over fastest) or the margin, whichever is wider. 0 before
 // an incumbent window has been timed.
 double KnobTrial::apart_bar() const {
-    if (!(inc_lo_ > 0.0) || !(inc_hi_ > 0.0)) return 0.0;
-    return inc_hi_ * std::max(inc_hi_ / inc_lo_, 1.0 + pol_.min_win);
+    return bmoe::apart_bar(inc_lo_, inc_hi_, pol_.min_win);
+}
+
+double apart_bar(double lo, double hi, double min_win) {
+    if (!(lo > 0.0) || !(hi > 0.0)) return 0.0;
+    return hi * std::max(hi / lo, 1.0 + min_win);
+}
+
+bool within_margin(double a, double b, double min_win) {
+    if (!(a > 0.0) || !(b > 0.0)) return false;
+    return std::max(a, b) / std::min(a, b) <= 1.0 + min_win;
 }
 
 std::vector<double> KnobTrial::ratios(int cand) const {
@@ -222,7 +231,11 @@ RateProbe::RateProbe(bool settle, bool hits_visible, KnobTrialPolicy pol) : pol_
 }
 
 double RateProbe::tokens_per_second() const {
-    if (phase_ != Phase::Done || spt_.empty()) return 0.0;
+    return phase_ == Phase::Done ? rate_so_far() : 0.0;
+}
+
+double RateProbe::rate_so_far() const {
+    if (spt_.empty()) return 0.0;
     std::vector<double> v = spt_;
     std::nth_element(v.begin(), v.begin() + (long) (v.size() / 2), v.end());
     const double spt = v[v.size() / 2];
@@ -232,6 +245,7 @@ double RateProbe::tokens_per_second() const {
 void RateProbe::interrupt() {
     tokens_ = 0;
     seconds_ = 0.0;
+    win_lo_ = 0.0;
     lookups_ = hits_ = 0;
     warm_left_ = pol_.warm_tokens;
 }
@@ -242,6 +256,12 @@ void RateProbe::record(double seconds, int tokens, uint64_t lookups, uint64_t hi
         warm_left_ -= tokens;
         return;
     }
+    const double step = seconds / (double) tokens;
+    win_lo_ = tokens_ == 0 ? step : std::min(win_lo_, step);
+    if (phase_ == Phase::Measure) {
+        step_lo_ = step_lo_ > 0.0 ? std::min(step_lo_, step) : step;
+        step_hi_ = std::max(step_hi_, step);
+    }
     tokens_ += tokens;
     seconds_ += seconds;
     lookups_ += lookups;
@@ -249,27 +269,44 @@ void RateProbe::record(double seconds, int tokens, uint64_t lookups, uint64_t hi
     if (tokens_ >= pol_.window_tokens) close_window();
 }
 
+void RateProbe::set_reference(double lo, double hi) {
+    ref_lo_ = lo;
+    ref_hi_ = hi;
+}
+
 void RateProbe::close_window() {
     const double spt = seconds_ / (double) tokens_;
     const double hit = lookups_ ? (double) hits_ / (double) lookups_ : -1.0;
     const uint64_t lookups = lookups_, hits = hits_;
+    const double lo = win_lo_;
     tokens_ = 0;
     seconds_ = 0.0;
     lookups_ = hits_ = 0;
+    win_lo_ = 0.0;
     if (phase_ == Phase::Settle) {
         ++settle_windows_;
-        // As the trial settles where the cache is in view; where it is not, the longest wait.
+        // As the trial settles where the cache is in view; where it is not, the longest wait, or two
+        // windows of one rate where the probe settles on the rate.
         const bool settled =
             hits_visible_ ? hit < 0.0 || (last_hit_ >= 0.0 && std::fabs(hit - last_hit_) <= pol_.settle_hit_delta) ||
                                 settle_windows_ >= pol_.settle_windows_max
-                          : settle_windows_ >= pol_.settle_windows_max;
+            : settle_on_rate_
+                ? within_margin(spt, last_spt_, pol_.min_win) || settle_windows_ >= pol_.settle_windows_max
+                : settle_windows_ >= pol_.settle_windows_max;
         last_hit_ = hit;
+        last_spt_ = spt;
         if (settled) phase_ = Phase::Measure;
         return;
     }
     spt_.push_back(spt);
     timed_lookups_ += lookups;
     timed_hits_ += hits;
+    const double bar = bmoe::apart_bar(ref_lo_, ref_hi_, pol_.min_win);
+    if (bar > 0.0 && lo > bar) {
+        cut_ = true;
+        phase_ = Phase::Done;
+        return;
+    }
     if ((int) spt_.size() >= windows_wanted()) phase_ = Phase::Done;
 }
 

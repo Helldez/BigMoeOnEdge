@@ -4,6 +4,52 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **The decisions timed across loads are timed at load instead** (`--calibrate`, on by default). Two
+  plan decisions are fixed when a model is loaded, so each side used to be timed over a whole session
+  of use: whether a graphics card with memory of its own holds a cache of experts or the capacity
+  fitter's whole layers, and how wide the graph is where even a graph held to the device bound takes
+  more of the card's memory than its share. On rented cards a model's second load decoded at 37
+  tok/s instead of 68 (12 GB card) and 35 instead of 84 (32 GB card). Now, where the plan leaves such a side pending, each side is opened as a short load of
+  its own, timed on one fixed instruction through the model's chat template (the first sampled, the
+  others replaying its tokens so both route alike), and the faster served, opened fresh. The planner
+  names every side as before (the fitter's placement is still timed only where it could win), a side
+  that cannot be opened loses, and the rates are kept in the model's `.knobs` record, so the next
+  load starts decided. `bmoe-cli --auto` does it before the first answer and says so (with
+  `--routing-dir`, where the result is kept); the server answers first and calibrates after a minute
+  idle, giving way to any request, which waits for the model instead of being refused (`/api/info`
+  reads `ready` with `calibrating`, `plan_progress` step `calibrate`, a label in the UI). Before each
+  candidate the system's cache of the model's files is evened out, so every side starts from the same
+  cache. A side that cannot be opened is counted in the record and loses every plan; a calibration
+  tries it again once, where the plan would still ask for it, and a served load never opens it, nor a
+  pending side not yet proven to open where the other side is: a load whose side fails opens the
+  other side instead (with calibration off, nothing is counted). Only machines with a graphics
+  card that has memory of its own have such a decision: phones and shared-memory computers never
+  calibrate. `--no-calibrate` keeps the timing across loads
+  ([measured-planning.md](docs/measured-planning.md#decisions-across-loads-timed-at-load)).
+
+### Changed
+- **The graph width's decision weighs the decode alone until a request is seen.** A record with both
+  widths' decode timed and no request served (what a calibration leaves) kept the full width
+  whatever the rates said, since a request of no tokens weighs nothing; the faster decode now
+  decides there.
+  It is provisional: the loads of a width decided so record their requests, and long prompts that show
+  up later bring each side's prefill into the verdict. A width decided on requests, as the timing
+  across loads always decides it, records nothing more and stays as it was.
+- **A kept `.knobs` record whose narrow width has moved starts its width figures afresh.** The device
+  bound above changes the narrow width many plans compare, and a rate measured against another
+  narrow width answers another comparison: such a record's width rates are reset, as a new width
+  always reset them, and timed again.
+
+### Fixed
+- **A request that needs the model waits for a load the server is running**, or for one still
+  measuring the machine, instead of a 503 when the server was started without `--autoload`, and is
+  answered with the loaded model's name. `--port 0` takes any free port. The port is bound before
+  the compute backends load, so it is the server's at once and a client that connects early waits
+  for the server to serve.
+
 ## [0.41.3] - 2026-11-11
 
 ### Fixed
