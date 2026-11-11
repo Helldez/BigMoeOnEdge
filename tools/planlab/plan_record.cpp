@@ -107,12 +107,6 @@ bool read(const std::string & s, int & v) {
     v = (int) std::strtol(s.c_str(), &end, 10);
     return !*end;
 }
-bool read(const std::string & s, long long & v) {
-    char * end = nullptr;
-    if (s.empty()) return false;
-    v = std::strtoll(s.c_str(), &end, 10);
-    return !*end;
-}
 bool read(const std::string & s, bool & v) {
     if (s != "true" && s != "false") return false;
     v = s == "true";
@@ -212,6 +206,21 @@ struct Io {
         }
         for (uint32_t i = 0; i < n; ++i)
             each(key + "." + std::to_string(i), v[i]);
+    }
+
+    // A table: every key under `prefix.`, whatever it is called.
+    void table(const std::string & prefix, Facts & t) {
+        if (writing) {
+            for (const auto & e : t)
+                out += prefix + "." + e.first + "=" + text(e.second) + "\n";
+            return;
+        }
+        t.clear();
+        const std::string lead = prefix + ".";
+        for (auto it = in->lower_bound(lead); it != in->end() && it->first.compare(0, lead.size(), lead) == 0; ++it) {
+            used->insert(it->first);
+            read(it->second, t[it->first.substr(lead.size())]);
+        }
     }
 
     void strings(const std::string & key, std::vector<std::string> & v) {
@@ -410,17 +419,9 @@ void fields(Io & io, PlanRecord & r) {
         fields(io, k, p.placement);
     });
     io.f("plan.resolved", r.resolved);
-    io.f("plan.predicted_s_per_token", r.predicted_s_per_token);
-    io.f("observed.generated_tokens", r.observed.generated_tokens);
-    io.f("observed.seconds_per_token", r.observed.seconds_per_token);
-    io.f("observed.compute_s_per_token", r.observed.compute_s_per_token);
-    io.f("observed.io_s_per_token", r.observed.io_s_per_token);
-    io.f("observed.cache_hit_decode_pct", r.observed.cache_hit_decode_pct);
-    io.f("observed.cache_budget_mib", r.observed.cache_budget_mib);
-    io.f("observed.cache_resident_mib", r.observed.cache_resident_mib);
-    io.f("observed.cache_discarded", r.observed.cache_discarded);
-    io.f("observed.prompt_tokens", r.observed.prompt_tokens);
-    io.f("observed.prefill_seconds", r.observed.prefill_seconds);
+    io.table("env", r.env);
+    io.table("predicted", r.predicted);
+    io.table("observed", r.observed);
 }
 
 // A path as the rules read it: whether there is one. Where it is on someone's drive is not a fact
@@ -443,6 +444,18 @@ RunConfig without_locations(RunConfig cfg) {
 }
 
 } // namespace
+
+double fact(const Facts & f, const std::string & key, double fallback) {
+    const auto it = f.find(key);
+    double v = 0.0;
+    return it != f.end() && read(it->second, v) ? v : fallback;
+}
+void set_fact(Facts & f, const std::string & key, double value) {
+    f[key] = text(value);
+}
+void set_fact(Facts & f, const std::string & key, long long value) {
+    f[key] = text(value);
+}
 
 std::string resolved_line(const Plan & plan) {
     std::string line = std::string("regime=") + regime_name(plan.regime);
@@ -470,7 +483,41 @@ PlanRecord make_plan_record(const RunConfig & base,
     r.model.expert_file = file_name(model.expert_file);
     r.placements = placements;
     r.resolved = resolved_line(plan);
-    r.predicted_s_per_token = plan.allocation.seconds_per_token;
+
+    // The prediction in parts, as the plan stated it.
+    const Allocation & a = plan.allocation;
+    Facts & p = r.predicted;
+    p["regime"] = regime_name(plan.regime);
+    p["streaming_declined"] = text(plan.streaming_declined);
+    set_fact(p, "seconds_per_token", a.seconds_per_token);
+    set_fact(p, "seconds_worst_case", a.seconds_worst_case);
+    set_fact(p, "cache_bytes", (long long) a.cache_bytes);
+    set_fact(p, "cache_locked_bytes", (long long) a.cache_locked_bytes);
+    set_fact(p, "cache_hit_credited", a.cache_hit_credited);
+    p["cache_hit_from_curve"] = text(model.hit_curve.measured);
+    set_fact(p, "resident_bytes", (long long) a.resident_bytes);
+    set_fact(p, "budget_bytes", (long long) a.budget_bytes);
+    p["dense_pinned"] = text(a.dense_pinned);
+    set_fact(p, "token_cycle_bytes", (long long) plan.token_cycle_bytes);
+    set_fact(p, "ledger.held", (long long) a.ledger.held);
+    set_fact(p, "ledger.holdable_cap", (long long) a.ledger.holdable_cap);
+    set_fact(p, "ledger.locked", (long long) a.ledger.locked);
+    if (a.ledger.lockable_cap_known) set_fact(p, "ledger.lockable_cap", (long long) a.ledger.lockable_cap);
+    for (const LedgerRow & row : a.ledger.rows) {
+        std::string name = row.name;
+        for (char & c : name)
+            if (c == ' ' || c == '=') c = '_';
+        set_fact(p, "ledger.row." + name, (long long) row.bytes);
+    }
+    for (int g = 0; g < (int) WeightGroup::count; ++g) {
+        if (model.groups[g].bytes == 0) continue;
+        const GroupPlacement & gp = a.groups[g];
+        const std::string k = std::string("group.") + group_name((WeightGroup) g);
+        p[k + ".lane"] = lane_name(gp.lane);
+        set_fact(p, k + ".resident_bytes", (long long) gp.resident_bytes);
+        set_fact(p, k + ".seconds_per_token", gp.seconds_per_token);
+        set_fact(p, k + ".on_device", (long long) (gp.device >= 0));
+    }
     return r;
 }
 

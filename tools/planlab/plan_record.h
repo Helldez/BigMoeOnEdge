@@ -30,30 +30,24 @@
 #include "bmoe/planner.h"
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace bmoe {
 
-// What the run this plan produced then measured. All unset on a record of a plan alone.
-struct PlanObserved {
-    int generated_tokens = 0;           // 0: no run was recorded
-    double seconds_per_token = 0.0;     // decode, wall
-    double compute_s_per_token = 0.0;   // of which compute
-    double io_s_per_token = 0.0;        // of which reading experts
-    double cache_hit_decode_pct = -1.0; // the expert cache over decoded tokens; -1: no cache
-    // What the cache really was, against what the plan credited hits at: the budget the run ended
-    // with, the bytes resident in it, and the experts the system dropped from it under pressure. A
-    // cache the kernel keeps smaller than its budget is most of a missed prediction where it happens.
-    double cache_budget_mib = 0.0;
-    double cache_resident_mib = 0.0;
-    long long cache_discarded = 0;
-    int prompt_tokens = 0;
-    double prefill_seconds = 0.0;
+// A section of a record that is a table rather than a struct: names and values, as text. Three
+// of them (below) are not read by any rule, so they are free to grow: a figure worth keeping is a
+// key added where it is measured, and every record made before it simply lacks the column. That is
+// deliberate. The records are meant to become the table a predictor is fitted on - by hand or by a
+// model - and what such a table needs is found out by using it, not decided here.
+using Facts = std::map<std::string, std::string>;
 
-    bool any() const { return generated_tokens > 0; }
-};
+// A numeric fact, or `fallback` when the key is absent or not a number.
+double fact(const Facts & f, const std::string & key, double fallback = 0.0);
+void set_fact(Facts & f, const std::string & key, double value);
+void set_fact(Facts & f, const std::string & key, long long value);
 
 struct PlanRecord {
     std::string engine; // bmoe::version() that made it
@@ -73,9 +67,23 @@ struct PlanRecord {
     // What the rules made of it when it was recorded: the regime and every parameter the plan
     // resolved, on one line (resolved_line). The line a replay is compared with.
     std::string resolved;
-    double predicted_s_per_token = 0.0;
 
-    PlanObserved observed;
+    // ── the three tables ────────────────────────────────────────────────────────────────
+    // Where it ran, as a person would describe it: the operating system and its version, the
+    // kernel, the processor's name, how much swap there is and of what kind, a container's memory
+    // limit. NO RULE READS THIS - the rules read the probed facts above, which is what keeps them
+    // free of platform names - but a table of runs is grouped and explained by it.
+    Facts env;
+    // What the cost model predicted, in parts: the total, each weight group's lane, bytes held and
+    // seconds, the cache and the hit rate credited, the ledger's rows. Kept as the plan stated it,
+    // so the error of every part can be read against what was measured, not only the total's.
+    Facts predicted;
+    // What the plan's run measured: speed and its parts as distributions over the decoded tokens,
+    // the cache as it really was, the process's and the system's memory through the run, the
+    // prefill and the load. Empty on a record of a plan alone.
+    Facts observed;
+
+    bool ran() const { return fact(observed, "generated_tokens") > 0; }
 };
 
 // A plan as one comparable line: its regime, then every parameter of the resolved config that is

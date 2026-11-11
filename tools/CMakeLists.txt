@@ -29,6 +29,6 @@ endif()
 # instrument: it is not installed and no release carries it. Unlike the two above it is the engine
 # itself that it drives, so it needs llama.cpp.
 if(BMOE_HAVE_LLAMA)
-    add_executable(bmoe-planlab planlab/main.cpp planlab/plan_record.cpp)
+    add_executable(bmoe-planlab planlab/main.cpp planlab/plan_record.cpp planlab/env_probe.cpp)
     target_link_libraries(bmoe-planlab PRIVATE bmoe_core)
 endif()

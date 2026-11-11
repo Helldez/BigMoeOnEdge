@@ -13,7 +13,11 @@ Semantic Versioning.
   one model on one machine as text (no weights, no prompt, no local path), with what the plan's run
   then measured; `bmoe-planlab replay` makes that machine's plan again anywhere, with no model and
   no device, with a knob pinned (`--sweep cache-mb=...` prints the cache, the memory held and the
-  predicted speed per value) or a fact changed (`--set hw.residency_budget=...`). Records kept in
+  predicted speed per value) or a fact changed (`--set hw.residency_budget=...`). A record also
+  carries where it ran (system, kernel, swap and its kind, a container's limit), the prediction in
+  parts, and the run as distributions per token with the process's and the system's memory through
+  it; `errors DIR` sets the prediction beside the measurement for every record and `table DIR`
+  writes them all as one CSV, the table a better predictor is to be built on. Records kept in
   `tests/plan-records` are replayed by the new `plan_records` test on every build: a rule change
   that moves the plan on a recorded machine fails with both plans printed, and each record made
   with a run prints the prediction beside the measurement. It says what the planner decides and

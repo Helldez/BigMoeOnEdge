@@ -175,9 +175,11 @@ int main(int argc, char ** argv) {
     const Plan plan = plan_run_placed(base, hw, mp, req, place);
     PlanRecord rec = make_plan_record(base, req, hw, mp, asked, plan);
     rec.note = "a synthetic machine";
-    rec.observed.generated_tokens = 128;
-    rec.observed.seconds_per_token = 0.2125;
-    rec.observed.cache_hit_decode_pct = 71.5;
+    set_fact(rec.observed, "generated_tokens", 128ll);
+    set_fact(rec.observed, "seconds_per_token", 0.2125);
+    set_fact(rec.observed, "cache_hit_decode_pct", 71.5);
+    rec.env["os"] = "an operating system";
+    rec.env["swap_kind"] = "zram";
 
     const std::string text = format_plan_record(rec);
     check(text.find("/somewhere/private") == std::string::npos, "a record carries no local path");
@@ -197,6 +199,10 @@ int main(int argc, char ** argv) {
           "an override pattern survives");
     check(back.model.knobs.threads == 6 && back.model.knobs.threads_tried.size() == 3 && back.model.knobs.overlap == 1,
           "what an earlier load measured is carried");
+    check(back.ran() && fact(back.observed, "seconds_per_token") == 0.2125 && back.env["swap_kind"] == "zram" &&
+              fact(back.predicted, "seconds_per_token") == plan.allocation.seconds_per_token &&
+              back.predicted.count("group.experts.seconds_per_token") == 1,
+          "the three tables come back: where it ran, the prediction in parts, what the run measured");
     check(back.hw.lockable_bytes == ~0ull, "the largest value there is reads back as itself");
 
     // ── replayed, it is the plan it was taken from ───────────────────────────────────────
@@ -284,10 +290,11 @@ int main(int argc, char ** argv) {
             check(now == r.resolved, name + ": still makes the plan it recorded",
                   "\n    recorded: " + r.resolved + "\n    now:      " + now +
                       "\n    if the change is meant: bmoe-planlab replay FILE -o FILE");
-            if (r.observed.any() && again.plan.allocation.seconds_per_token > 0.0)
-                std::printf("       %s: predicts %.3f s/token, its run measured %.3f (%+.0f%%)\n", name.c_str(),
-                            again.plan.allocation.seconds_per_token, r.observed.seconds_per_token,
-                            100.0 * (again.plan.allocation.seconds_per_token / r.observed.seconds_per_token - 1.0));
+            if (r.ran() && again.plan.allocation.seconds_per_token > 0.0)
+                std::printf(
+                    "       %s: predicts %.3f s/token, its run measured %.3f (%+.0f%%)\n", name.c_str(),
+                    again.plan.allocation.seconds_per_token, fact(r.observed, "seconds_per_token"),
+                    100.0 * (again.plan.allocation.seconds_per_token / fact(r.observed, "seconds_per_token") - 1.0));
         }
     }
 

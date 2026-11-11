@@ -69,14 +69,62 @@ One `key=value` per line:
   recorded routing and the measured knobs, when the front-end kept them.
 - `placement.N.*`: each answer of the capacity fitter, at the graph width it was asked at.
 - `config.*` and `request.*`: the parameters that were not at their default, and which were pinned.
-- `plan.*`: the plan as one line, and its predicted seconds per token.
-- `observed.*`: what the run measured, when there was one: the speed, its compute and read parts,
-  the hit rate, and the cache as it really was (budget, bytes resident, experts the system dropped),
-  which is where a missed prediction most often comes from.
+- `plan.resolved`: the plan as one line, which a replay is compared with.
+
+and three tables no rule reads, which is why they are free to grow (a figure worth keeping is a key
+added where it is measured, and an older record simply lacks the column):
+
+- `env.*`: where it ran, as a person would say it: the operating system and its version, the
+  kernel, the architecture, the processor's name, how much swap there is and of what kind (zram, a
+  disk, a page file, files made on demand), the swappiness, a container's memory limit, the model
+  file's name and content fingerprint, the day. The rules stay free of platform names because they
+  read the probed facts in `hw.*`; a table of runs is grouped and explained by these.
+- `predicted.*`: what the cost model predicted, in parts: the total, each weight group's lane, bytes
+  held and seconds per token, the cache and the hit rate it credited, every row of the memory
+  ledger. So the error of each part can be read, not only the total's.
+- `observed.*`: what the run measured, when there was one:
+  - the summary: seconds per token and its parts (compute, expert reads, cache management, stalls,
+    flash waits, loop overhead, CPU time), the prefill and the load, megabytes read;
+  - `token.*`: the same per decoded token as a distribution (mean, p10, p50, p90, max, and the
+    median of the second half, the decode once the cache has settled);
+  - the cache as it really was: budget (first, lowest, last), bytes resident, evictions, re-reads,
+    experts the system dropped; the hit rate over the decode and with the prompt;
+  - `memory.*`: the process through the run: resident memory at its peak, its own memory the system
+    compressed or swapped, memory available and swap free at the start and at their lowest, the
+    share of the dense weights still resident, major faults;
+  - `system.*.before` / `.after`: the system's counters around the run: swap in use, pages swapped
+    in and out, compressions, major faults, the page cache, a container's charged memory, pressure.
+
+With `--run` the per-token metrics are also written as `FILE.csv` beside the record, always: the
+record keeps their distribution, the CSV keeps every token.
 
 No weights, no prompt, no file contents. Paths are kept as file names only. The device names are
 the ones the backends report (a GPU model, a bus id), so read the file before publishing it, as with
 any bench evidence, and phrase `--note` generically.
+
+## What the records are for
+
+One record is a test and a what-if. Many records are a table: for each machine and model, the facts
+the plan was made from, what it predicted in parts, and what happened. That table is what a better
+predictor is built on, whether it stays the cost model with its terms corrected or becomes a fitted
+one, and it is why a record keeps more than today's rules read: what a predictor needs is found by
+using the table, and a fact not kept on the day of the run cannot be measured afterwards.
+
+```bash
+bmoe-planlab errors DIR            # this build's prediction against each recorded run
+bmoe-planlab table DIR -o all.csv  # every record a row, every key a column
+```
+
+`errors` replays each record that carries a run with the rules of the build at hand and prints the
+predicted and measured seconds per token (the settled half of the decode), the hit rate credited
+against the one measured, the cache priced against the cache the run had, and the swap and major
+faults the run saw. Run it before and after a change to the cost model: the change is good when
+the error falls across the machines, not on the one it was tuned on.
+
+Records are files, and nothing collects them for you: `record` writes where `-o` says, on the
+machine it ran on. Bring the `.planrec` and its `.csv` back from a phone or a rented box before it
+is gone. Working records live in the ignored `.bench/plan-records/`; the ones worth a test go to
+`tests/plan-records/` after a read for identifying data.
 
 ## Replaying one
 
