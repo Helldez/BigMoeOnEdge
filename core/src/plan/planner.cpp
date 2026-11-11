@@ -447,6 +447,35 @@ const ComputeDevice * device_tier_device(const Planning & s, std::string & why) 
     return worst;
 }
 
+// The fastest the capacity fitter's placement could decode on this machine, in tokens a second: the
+// experts it left on the host at the host's expert rate, the rest of the experts and every other byte
+// a token reads at the fastest device's rates, one after the other as a token computes them, and
+// nothing for the crossings, the misses or any overhead. Called where every dense part is on the
+// devices (choose_device_tier's precondition). 0 where a rate or the model's bytes per token is
+// unknown: a ceiling that cannot be computed decides nothing.
+double fitter_decode_ceiling(const Planning & s) {
+    const ModelProfile & m = s.model;
+    const double experts_tok = (double) m.group(WeightGroup::Experts).bytes_per_token;
+    if (experts_tok <= 0.0 || m.expert_bytes == 0) return 0.0;
+    double rest_tok = 0.0;
+    for (size_t g = 0; g < (size_t) WeightGroup::count; ++g)
+        if ((WeightGroup) g != WeightGroup::Experts) rest_tok += (double) m.group((WeightGroup) g).bytes_per_token;
+    double device_experts = 0.0, device_dense = 0.0;
+    for (const ComputeDevice & d : s.hw.devices) {
+        if (d.is_cpu || d.usable == Tri::No || !d.has_own_memory()) continue;
+        device_experts = std::max(device_experts, expert_rates(s.hw, d).device);
+        device_dense = std::max(device_dense, dense_rates(s.hw, d).device);
+    }
+    const double host_share = std::min(1.0, (double) s.host_expert_bytes / (double) m.expert_bytes);
+    const double host_experts = s.hw.host_expert_rate();
+    if (device_experts <= 0.0 || device_dense <= 0.0 || (host_share > 0.0 && host_experts <= 0.0)) return 0.0;
+    constexpr double gib = 1024.0 * 1024.0 * 1024.0;
+    const double seconds = (experts_tok * host_share / host_experts +
+                            experts_tok * (1.0 - host_share) / device_experts + rest_tok / device_dense) /
+                           gib;
+    return seconds > 0.0 ? 1.0 / seconds : 0.0;
+}
+
 void choose_device_tier(Planning & s) {
     Placement & pl = s.placement;
     const ModelProfile & m = s.model;
@@ -515,7 +544,7 @@ void choose_device_tier(Planning & s) {
     }
     bool share_measured = false;
     const double share = expert_share_at(m, budget, &share_measured);
-    char nums[400];
+    char nums[768];
     std::snprintf(nums, sizeof(nums),
                   "%s computes this model's experts at %.0f GiB/s against the host's %.0f%s; a cache of %s "
                   "serves %.0f%% of a token's routed bytes (%s)",
@@ -540,6 +569,13 @@ void choose_device_tier(Planning & s) {
     // run measures and a plan guesses. So a load with no measurement arms the cache and times it, the
     // next runs the fitter's placement and times that, and the plan after keeps the faster; the cache
     // holds where the two are within the margin a measured win needs.
+    //
+    // Timing the fitter's placement costs a whole load at its rate, so it is timed only where it
+    // could win. Its ceiling needs no price of a miss, since it has none to pay: what it reads where,
+    // at rates this machine measured (fitter_decode_ceiling). Where that ceiling, with the slack a
+    // probe needs, cannot beat the cache's measured rate by the margin, the second load keeps the
+    // cache. Measured on a 12 GB card with Qwen3.6-35B: the cache decoded at 73.5 tok/s, the fitter's
+    // placement could reach 55 at most and decoded at 37.8 when it was timed anyway.
     {
         const MeasuredKnobs & mk = s.model.knobs;
         char measured[200];
@@ -558,15 +594,33 @@ void choose_device_tier(Planning & s) {
             }
             std::snprintf(nums + std::strlen(nums), sizeof(nums) - std::strlen(nums), "; measured: %s", measured);
         } else if (mk.device_cache_tps > 0.0) {
-            s.p.config.trial.device_tier = 0;
-            char before[64];
-            std::snprintf(before, sizeof(before), "%.2f", mk.device_cache_tps);
-            s.note("device-cache-mb", "0", Source::Policy,
-                   "This load times the experts where the fitter put them, against the device cache timed before.",
-                   std::string(nums) + "; an earlier load of this model here decoded at " + before +
-                       " tok/s with a device cache, and this one measures the fitter's placement so the next "
-                       "plan can keep the faster");
-            return;
+            const double ceiling = fitter_decode_ceiling(s);
+            const double reach = ceiling * (1.0 + (double) s.pol.rate_ceiling_slack);
+            if (ceiling > 0.0 && reach <= mk.device_cache_tps * (1.0 + (double) s.pol.min_backend_win)) {
+                // Not timed: the cache is armed below as measured, and no load runs the slower side.
+                std::snprintf(nums + std::strlen(nums), sizeof(nums) - std::strlen(nums),
+                              "; measured: %.2f tok/s with a device cache, and the fitter's placement could reach "
+                              "%.2f at most (%.2f from this machine's probed rates, plus %.0f%% for a probe that "
+                              "reads low), short of the %s margin, so it is not timed",
+                              mk.device_cache_tps, reach, ceiling, 100.0 * (double) s.pol.rate_ceiling_slack,
+                              margin.c_str());
+            } else {
+                s.p.config.trial.device_tier = 0;
+                char before[160];
+                if (ceiling > 0.0)
+                    std::snprintf(before, sizeof(before),
+                                  "%.2f tok/s with a device cache, and the fitter's placement "
+                                  "could reach %.2f",
+                                  mk.device_cache_tps, reach);
+                else
+                    std::snprintf(before, sizeof(before), "%.2f tok/s with a device cache", mk.device_cache_tps);
+                s.note("device-cache-mb", "0", Source::Policy,
+                       "This load times the experts where the fitter put them, against the device cache timed "
+                       "before.",
+                       std::string(nums) + "; an earlier load of this model here decoded at " + before +
+                           ", and this one measures the fitter's placement so the next plan can keep the faster");
+                return;
+            }
         } else {
             s.p.config.trial.device_tier = 1;
         }

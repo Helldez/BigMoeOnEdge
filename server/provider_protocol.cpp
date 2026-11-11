@@ -117,6 +117,7 @@ void ProviderStream::chunk(const json & j) {
                 else if (f.contains("arguments") && f["arguments"].is_object())
                     call.arguments = f["arguments"].dump();
             }
+            changed_ = true;
         }
     }
 }
@@ -143,6 +144,15 @@ std::vector<ChatToolCall> ProviderStream::tool_calls() const {
     std::vector<ChatToolCall> out;
     for (const Call & c : calls_)
         if (!c.name.empty()) out.push_back({c.id, c.name, c.arguments.empty() ? "{}" : c.arguments});
+    return out;
+}
+
+std::vector<ChatToolCall> ProviderStream::partial_tool_calls() const {
+    std::vector<ChatToolCall> out;
+    for (const Call & c : calls_) {
+        if (c.name.empty()) break; // calls are listed in order, and one with no name yet holds the rest
+        out.push_back({c.id, c.name, c.arguments});
+    }
     return out;
 }
 

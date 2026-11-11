@@ -35,7 +35,8 @@ export interface ConversationSummary {
   task?: string | null;
 }
 
-export type ToolState = 'running' | 'waiting' | 'done' | 'denied' | 'error' | (string & {});
+/** `composing`: the model is still writing the call (docs/agent.md, "Items"); it runs once written. */
+export type ToolState = 'composing' | 'running' | 'waiting' | 'done' | 'denied' | 'error' | (string & {});
 export type NoticeLevel = 'info' | 'warn' | 'error' | (string & {});
 
 interface ItemBase {
@@ -64,6 +65,8 @@ export interface ToolItem extends ItemBase {
   file?: string;
   /** The MCP server whose tool this is (`tool` is then `<server>_<tool>`). */
   mcp?: string;
+  /** While composing: how much of the call's arguments the model has written so far, in bytes. */
+  bytes?: number;
 }
 export interface NoticeItem extends ItemBase {
   kind: 'notice';

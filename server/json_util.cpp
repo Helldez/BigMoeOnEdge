@@ -102,6 +102,64 @@ size_t complete_utf8_prefix_size(const std::string & text) {
     return i;
 }
 
+namespace {
+
+// The members of the outermost object whose values are whole scalars, as nlohmann's SAX parser
+// reports them before it stops at the end of a JSON still being written.
+class ScalarMembers : public nlohmann::json_sax<json> {
+public:
+    json out = json::object();
+
+    bool null() override { return put(nullptr); }
+    bool boolean(bool v) override { return put(v); }
+    bool number_integer(number_integer_t v) override { return put(v); }
+    bool number_unsigned(number_unsigned_t v) override { return put(v); }
+    bool number_float(number_float_t v, const string_t &) override { return put(v); }
+    bool string(string_t & v) override { return put(v); }
+    bool binary(binary_t &) override { return true; }
+    bool start_object(std::size_t) override {
+        if (depth_++ == 0) object_ = true;
+        return true;
+    }
+    bool end_object() override {
+        --depth_;
+        return true;
+    }
+    bool start_array(std::size_t) override {
+        ++depth_;
+        return true;
+    }
+    bool end_array() override {
+        --depth_;
+        return true;
+    }
+    bool key(string_t & k) override {
+        if (depth_ == 1) key_ = k;
+        return true;
+    }
+    bool parse_error(std::size_t, const std::string &, const nlohmann::detail::exception &) override { return false; }
+
+private:
+    template <class T> bool put(T && v) {
+        if (object_ && depth_ == 1) out[key_] = std::forward<T>(v);
+        return true;
+    }
+
+    int depth_ = 0;
+    bool object_ = false;
+    std::string key_;
+};
+
+} // namespace
+
+json json_object_prefix(const std::string & text) {
+    ScalarMembers members;
+    // A JSON still being written always ends in a parse error: the parser stops there, with every
+    // member before it already reported.
+    json::sax_parse(text, &members);
+    return members.out;
+}
+
 static double mib(uint64_t bytes) {
     return bytes / (1024.0 * 1024.0);
 }

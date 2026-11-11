@@ -1139,6 +1139,11 @@ Whether the cache then stays is measured, across loads, because a device faster 
 not enough: every miss crosses the link first. A load with nothing measured arms the cache and times
 its decode, the next runs the fitter's placement and times that, and the plan after keeps the faster,
 the cache holding within `min_backend_win` ([measured-planning.md](measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache)).
+The fitter's placement is timed only where it could win, since timing it costs a whole load at its
+rate: its ceiling (`fitter_decode_ceiling`: the bytes it computes on the host at the host's probed
+expert rate, the rest at the fastest device's, nothing for crossings or overheads), raised by
+`rate_ceiling_slack` for a probe that reads low, has to beat the cache's measured rate by
+`min_backend_win`. Where it cannot, the second load keeps the cache and the plan says why.
 
 The layers the fitter split (`price_layers_home`, [measured-planning.md](measured-planning.md#step-3-the-cost-of-a-device-measured-on-a-real-layer)):
 where the capacity fitter put the dense part of some layers on a device and left their experts on
