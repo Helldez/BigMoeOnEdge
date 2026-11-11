@@ -201,6 +201,9 @@ int record_main(const Args & a) {
     rec.observed.compute_s_per_token = s.moe_compute_s_per_token;
     rec.observed.io_s_per_token = s.moe_io_s_per_token;
     rec.observed.cache_hit_decode_pct = s.cache_hit_decode_pct;
+    rec.observed.cache_budget_mib = s.cache_budget_mib;
+    rec.observed.cache_resident_mib = s.cache_resident_mib;
+    rec.observed.cache_discarded = s.cache_discarded;
     rec.observed.prompt_tokens = s.n_prompt;
     rec.observed.prefill_seconds = s.prefill_seconds;
     if (!write_text_file(a.out, format_plan_record(rec))) return 1;
@@ -303,6 +306,12 @@ int replay_main(const Args & a) {
                     rec.observed.seconds_per_token > 0.0 ? 1.0 / rec.observed.seconds_per_token : 0.0,
                     rec.observed.generated_tokens, rec.observed.cache_hit_decode_pct, rec.predicted_s_per_token);
 
+    // The cache the run had beside the cache the prediction was priced at.
+    if (rec.observed.any() && rec.observed.cache_budget_mib > 0.0)
+        std::printf("replay: that run's cache: %.0f MiB resident of a %.0f MiB budget, %lld experts dropped by the "
+                    "system; this plan credits hits at %.0f MiB\n",
+                    rec.observed.cache_resident_mib, rec.observed.cache_budget_mib, rec.observed.cache_discarded,
+                    (double) r.plan.allocation.cache_bytes / (1024.0 * 1024.0));
     const std::string now = resolved_line(r.plan);
     int rc = 0;
     if (as_recorded) {

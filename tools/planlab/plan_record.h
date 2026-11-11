@@ -43,6 +43,12 @@ struct PlanObserved {
     double compute_s_per_token = 0.0;   // of which compute
     double io_s_per_token = 0.0;        // of which reading experts
     double cache_hit_decode_pct = -1.0; // the expert cache over decoded tokens; -1: no cache
+    // What the cache really was, against what the plan credited hits at: the budget the run ended
+    // with, the bytes resident in it, and the experts the system dropped from it under pressure. A
+    // cache the kernel keeps smaller than its budget is most of a missed prediction where it happens.
+    double cache_budget_mib = 0.0;
+    double cache_resident_mib = 0.0;
+    long long cache_discarded = 0;
     int prompt_tokens = 0;
     double prefill_seconds = 0.0;
 

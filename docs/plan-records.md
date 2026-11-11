@@ -47,6 +47,11 @@ bmoe-planlab record -m MODEL -o my-machine.planrec --run "..." -n 200
 the record is of the plan a second load gets rather than a first one. Every other argument is an
 engine parameter, spelled as `bmoe-cli` spells it.
 
+Make it on the first load after the machine was left alone. A second load back to back does not
+see the same machine: in a Linux container the model file's page cache is charged to the cgroup and
+the memory the plan reads as available falls with every load, and the record then describes a
+starved machine that does not exist.
+
 Make it with as few flags as the run needs: every parameter typed is recorded as pinned, and a
 record of a hand-tuned run only says what the rules do around those pins.
 
@@ -65,7 +70,9 @@ One `key=value` per line:
 - `placement.N.*`: each answer of the capacity fitter, at the graph width it was asked at.
 - `config.*` and `request.*`: the parameters that were not at their default, and which were pinned.
 - `plan.*`: the plan as one line, and its predicted seconds per token.
-- `observed.*`: what the run measured, when there was one.
+- `observed.*`: what the run measured, when there was one: the speed, its compute and read parts,
+  the hit rate, and the cache as it really was (budget, bytes resident, experts the system dropped),
+  which is where a missed prediction most often comes from.
 
 No weights, no prompt, no file contents. Paths are kept as file names only. The device names are
 the ones the backends report (a GPU model, a bus id), so read the file before publishing it, as with

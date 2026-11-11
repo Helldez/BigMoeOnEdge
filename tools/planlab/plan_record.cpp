@@ -36,6 +36,9 @@ std::string text(uint32_t v) {
 std::string text(int v) {
     return std::to_string(v);
 }
+std::string text(long long v) {
+    return std::to_string(v);
+}
 std::string text(bool v) {
     return v ? "true" : "false";
 }
@@ -102,6 +105,12 @@ bool read(const std::string & s, int & v) {
     char * end = nullptr;
     if (s.empty()) return false;
     v = (int) std::strtol(s.c_str(), &end, 10);
+    return !*end;
+}
+bool read(const std::string & s, long long & v) {
+    char * end = nullptr;
+    if (s.empty()) return false;
+    v = std::strtoll(s.c_str(), &end, 10);
     return !*end;
 }
 bool read(const std::string & s, bool & v) {
@@ -407,6 +416,9 @@ void fields(Io & io, PlanRecord & r) {
     io.f("observed.compute_s_per_token", r.observed.compute_s_per_token);
     io.f("observed.io_s_per_token", r.observed.io_s_per_token);
     io.f("observed.cache_hit_decode_pct", r.observed.cache_hit_decode_pct);
+    io.f("observed.cache_budget_mib", r.observed.cache_budget_mib);
+    io.f("observed.cache_resident_mib", r.observed.cache_resident_mib);
+    io.f("observed.cache_discarded", r.observed.cache_discarded);
     io.f("observed.prompt_tokens", r.observed.prompt_tokens);
     io.f("observed.prefill_seconds", r.observed.prefill_seconds);
 }
