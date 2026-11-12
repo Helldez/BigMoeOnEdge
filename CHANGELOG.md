@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **A model's second load serves the side already measured instead of halving its speed.** With a
+  device expert cache measured on the first load, the server is meant to serve the cache again and
+  leave the capacity fitter's placement to an idle calibration. The plan on the cache named the
+  graph width's wide side as the next thing to time, and that counted as a side not proven to open,
+  so the server served the unproven placement instead: on a rented 32 GB card with
+  Qwen3.8-Flash-Next Q2_0 the second load decoded at 42 tok/s against the cache's 103-111. The wide
+  graph is the one every load of the plan opened with, so it is served now and timed as it serves
+  (`servable`, [measured-planning.md](docs/measured-planning.md#decisions-across-loads-timed-at-load)):
+  the same card's second load decodes at 97-98 tok/s, and the calibration then times the fitter's
+  placement while the server is idle.
+
 ## [0.42.0] - 2026-11-12
 
 ### Added

@@ -64,6 +64,10 @@ bool side_pending(const Plan & p) {
     return p.config.trial.device_tier >= 0 || p.config.trial.width_side >= 0;
 }
 
+bool servable(const Plan & p) {
+    return p.config.trial.device_tier < 0 && p.config.trial.width_side != 0;
+}
+
 bool calibration_due(const Plan & p,
                      const MeasuredKnobs & knobs,
                      const Replan & replan,

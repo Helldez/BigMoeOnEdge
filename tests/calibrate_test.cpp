@@ -313,6 +313,23 @@ int main() {
         std::printf("\n%d check(s) FAILED\n", failures);
         return 1;
     }
+    // What a served load may open as the plan names it (servable): nothing pending, or the width's
+    // wide side, which is the graph the plan's other loads already ran with. An unproven placement
+    // (either side of the device tier) or the narrow graph is left to a calibration.
+    {
+        Plan p;
+        check(servable(p), "servable: nothing pending");
+        p.config.trial.width_side = 1;
+        check(servable(p), "servable: the graph at the plan's own width, timed as it serves");
+        p.config.trial.width_side = 0;
+        check(!servable(p), "servable: the narrow graph is not served before a calibration has run it");
+        p.config.trial.width_side = -1;
+        p.config.trial.device_tier = 0;
+        check(!servable(p), "servable: the fitter's placement unproven is not served");
+        p.config.trial.device_tier = 1;
+        check(!servable(p), "servable: a device cache unproven is not served either");
+    }
+
     std::printf("\nall calibration checks passed\n");
     return 0;
 }

@@ -190,8 +190,10 @@ PlanOutcome plan_other_side(const PlanOutcome & plan) {
     record_side_unviable(basis->facts.plan.config.trial, k);
     basis->facts.plan = replan(basis->facts, basis->cfg, basis->req, k);
     basis->facts.model.knobs = k;
-    // A side of the other decision pending is no side known to open: nothing to offer.
-    if (bmoe::side_pending(basis->facts.plan)) return {};
+    // A side of the other decision pending is no side known to open, unless it is the graph at the
+    // plan's own width, the one the measured side ran with (bmoe/calibrate.h, servable): its load times
+    // that width as it serves.
+    if (!bmoe::servable(basis->facts.plan)) return {};
     PlanOutcome o = outcome_of(*basis);
     o.hardware = plan.hardware;
     o.basis = std::move(basis);

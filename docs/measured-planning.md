@@ -568,7 +568,10 @@ served (`bmoe/calibrate.h`):
   says the first failure was the side's: then, with calibration on, it counts against the side; where
   both fail, the first open's reason is the error and nothing is counted. With calibration off nothing
   would try the side again, so nothing is counted and those loads stay as they were. An "other side"
-  that leaves a side of the other decision pending is no side known to open, and is not offered. A
+  that leaves a side of the other decision pending is no side known to open, and is not offered,
+  unless that side is the graph at the plan's own width (`servable`): every load of the plan opened
+  with that graph, so the load serves it and times the width as it does. Counting it as unproven made a
+  32 GB card's second load serve the fitter's placement at 42 tok/s beside a cache measured at 103. A
   calibration stopped with a side still pending and no proven side to serve applies nothing: the load
   opens the settings it was serving, which opened here.
 - **What is kept, and what is not.** The rates go in the model's `.knobs` record as a served load's

@@ -904,7 +904,7 @@ struct App {
             PlanOutcome p = c.plan;
             if (p.side_pending() && p.other_side_measured())
                 if (PlanOutcome other = plan_other_side(p); other.ok) p = std::move(other);
-            if (p.side_pending()) return;
+            if (p.side_pending() && !bmoe::servable(p.basis->facts.plan)) return;
             p.seq = ++plan_seq;
             if (!store.apply_plan_if(rev, true, p.values, p.decisions)) return;
             {

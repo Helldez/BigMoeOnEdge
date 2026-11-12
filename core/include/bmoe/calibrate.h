@@ -102,6 +102,14 @@ struct CalibrationResult {
 // Whether `p` has a side of a decision across loads still to time.
 bool side_pending(const Plan & p);
 
+// Whether a served load may open `p` as it is: nothing pending, or only the graph at the plan's own
+// width, which is the graph every other load of the plan opened with (the narrow side is a graph no
+// load has run yet). What a server serves instead of an unproven side once the other side has been
+// measured: on a 32 GB card the plan on the measured device cache named the width's wide side, which
+// counted as a side still to prove, so the load served the unproven placement and decoded at 42 tok/s
+// against the cache's 103.
+bool servable(const Plan & p);
+
 // The candidate a pending plan runs: its config with the knob trial's threads and overlap cleared
 // (they switch within a load and are measured on the served one) and no side named, since the
 // candidate times itself.
