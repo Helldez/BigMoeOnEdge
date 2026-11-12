@@ -242,9 +242,7 @@ Détails : [docs/platforms.md](docs/platforms.md).
 | Tout modèle MoE en GGUF | ✅ | peu de modèles | peu de modèles | son propre format | peu de modèles |
 | Se configure seul | ✅ `--auto` | choisit le modèle selon la mémoire | budget du cache d'experts | `coli tune` | ❌ |
 
-Quand un modèle tient dans un GPU grand public plus la RAM, Strata est deux à quatre fois plus rapide. Quand
-il est lu depuis la flash, tous les moteurs restent sous dix tokens par seconde et c'est le disque qui donne
-le rythme. Sur une même carte de 24 GB face à Lucebox, avec le même fichier et les mêmes prompts, ce moteur a décodé Qwen3.6-35B-A3B plus vite (154 contre 123 tok/s) et atteint le premier token d'un prompt de 28k tokens en 5 s contre 37 ; le drafter par modèle de Lucebox a décodé le code de Gemma 4 plus de deux fois plus vite. Vitesses et sources : [docs/comparison.md](docs/comparison.md).
+Vitesses et sources : [docs/comparison.md](docs/comparison.md).
 
 ## Compiler depuis les sources
 

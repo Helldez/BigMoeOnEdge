@@ -244,12 +244,7 @@ Details: [docs/platforms.md](docs/platforms.md).
 | Any MoE model in GGUF | ✅ | few models | few models | its own format | few models |
 | Configures itself | ✅ `--auto` | picks the model by memory | expert-cache budget | `coli tune` | ❌ |
 
-Where a model fits in a gaming GPU plus RAM, Strata is two to four times faster. Where it streams from
-flash, every engine is in single digits and the drive sets the pace. On one 24 GB card against
-Lucebox, with the same file and prompts, this engine decoded Qwen3.6-35B-A3B faster (154 against 123
-tok/s) and reached a 28k-token prompt's first token in 5 s against 37; Lucebox's per-model drafter
-decoded Gemma 4's code more than twice as fast. Speeds and sources:
-[docs/comparison.md](docs/comparison.md).
+Speeds and sources: [docs/comparison.md](docs/comparison.md).
 
 ## Build from source
 
