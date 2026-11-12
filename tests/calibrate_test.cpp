@@ -309,10 +309,6 @@ int main() {
         check(k.device_cache_tps == 9.0 && k.wide_decode_tps == 0.0, "record: one decision per run, the tier first");
     }
 
-    if (failures) {
-        std::printf("\n%d check(s) FAILED\n", failures);
-        return 1;
-    }
     // What a served load may open as the plan names it (servable): nothing pending, or the width's
     // wide side, which is the graph the plan's other loads already ran with. An unproven placement
     // (either side of the device tier) or the narrow graph is left to a calibration.
@@ -330,6 +326,10 @@ int main() {
         check(!servable(p), "servable: a device cache unproven is not served either");
     }
 
+    if (failures) {
+        std::printf("\n%d check(s) FAILED\n", failures);
+        return 1;
+    }
     std::printf("\nall calibration checks passed\n");
     return 0;
 }
