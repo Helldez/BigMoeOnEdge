@@ -10,7 +10,7 @@ The same facts cut by operating system, next to the rest of what each platform h
 
 ## What the pinned llama.cpp carries
 
-Read from `ggml/src/` and `ggml/CMakeLists.txt` of the pinned submodule (`7ac98f4a8`, read again at that bump: same backends, same columns). A bump can
+Read from `ggml/src/` and `ggml/CMakeLists.txt` of the pinned submodule (`ac30987`, read again at that bump: same backends, same columns). A bump can
 add or remove rows; redo the reading rather than trusting this table.
 
 The last three columns come from reading the sources, not from running them: the type each backend
@@ -99,7 +99,7 @@ any device llama.cpp's cache accepts can take it. The capture warm-up runs on a 
 cache, because with it on the expert matmuls read its slots instead of the host tensors the capture
 looks for; the context is then made again with it. It is refused with `--overlap` (whose wait sits
 inside the CPU's expert matmul, which no longer runs) and with a prefill device (which moves the
-layers); speculation works beside it, with the draft's own head served from the host. Gates G25a-c
+layers); speculation works beside it, with the draft's own head served from the host. Gates G25a-d
 (`tests/moe_gates.cpp`) prove the cached runs give the resident placement's bytes, the experts
 resident, streamed, and streamed under n-gram speculation, on a device with memory of its own (the
 loopback RPC device).
@@ -135,6 +135,25 @@ cache's order of computation), so that card cannot show the copy changes no outp
 does yet: the loopback RPC device the gates run on has no host buffer type of its own. The bytes
 are copied unchanged and the tensors' shapes and strides untouched, which is the argument until a
 gate runs on a device that has one.
+
+**Misses computed on the host.** With every expert on the device, the cores compute none of them,
+and each miss crosses the link before the device can compute it. `--device-cache-cpu-share F` hands
+a share `F` of the misses to the host, once the cache is full (`moe_cache_cpu_share` in
+`llama_context_params`): llama.cpp builds the layer's experts on the device from the cache and on
+the CPU from the host's copy, each half weighted only for the experts it computes, and adds the two;
+the CPU half does not wait for the device's. A miss computed on the host is not admitted, so below
+1 the cache keeps learning from the misses still uploaded. It needs the experts resident
+(`--moe-stream` off): over streamed experts the host half would read the streamer's slots, and no
+gate covers that yet. Gate G25d proves half the misses on the host give the resident placement's
+bytes. `--auto` prices it and lets the loads decide it ([how](hardware-planning.md#who-computes-the-device-caches-misses)). Measured on a
+12 GB card (RTX 3060 class) with Qwen3.8-Flash-Next IQ3_S, every expert resident, a 5.3 GB cache, 256
+greedy tokens: 18.5 tok/s uploading every miss, 19.9 with half of them on the host, 20.8 with seven
+in ten, and 17.5 with all of them on the host, where the cache stops learning; a price of it picked
+0.76-0.78 there and decoded at 21.1-21.2. On a 32 GB card (RTX 5090 class) with Q2_0 the same price
+picked 0.89 and lost 40% (114 to 68 tok/s over 2048 tokens) with no miss reaching the host: a share
+above 0 gives every MoE layer a CPU half, a fixed cost the card pays either way. That is why `--auto`
+times a share before it keeps one: on that card the calibration measured it at 70.9 tok/s against
+103 and left every miss uploaded.
 
 Measured on a 24 GB discrete card (PCIe at about 26 GB/s, 48 host cores, 85 GiB of host memory),
 Qwen3.8-Flash-Next 125B GSQ-RCO Q2_0, every layer on the card, greedy:

@@ -1192,6 +1192,32 @@ load-time calibration (on by default) the "loads" are short candidate loads time
 served, the tier first and the width then on its winner, and a side that cannot be opened loses
 ([measured-planning.md](measured-planning.md#decisions-across-loads-timed-at-load)).
 
+### Who computes the device cache's misses
+
+`--device-cache-cpu-share` hands part of a device cache's misses to the host instead of uploading
+them ([backends.md](backends.md)). `choose_device_cache_cpu_share` prices it and the loads decide it.
+The price: a token's experts take the longer of the device's half (the hits, and the misses still
+uploaded then computed) and the host's (its share of the misses at the host's expert rate), plus
+`host_hop_seconds` for each MoE layer whenever the share is above 0. That last term is the fixed
+cost a share adds whatever it computes, a device op, a host op at the decode's thread count and a
+device op again, measured through the scheduler on the device (`measure_host_hop`). The share is
+where the two halves meet, capped by `device_cache_upload_min` so the cache keeps learning, and it is
+only nominated where it beats uploading every miss by `min_backend_win`.
+
+The price cannot see whether the cache fills, and a cache that never fills computes no miss on the
+host and pays the hops anyway. So a nominated share is decided across loads like the device tier and
+the width (`KnobTrialConfig::cpu_share_side`, `MeasuredKnobs::cpu_share_tps`): it is weighed only once
+the tier and the width are decided, a calibration times it as a candidate, the cache's rate with
+every miss uploaded is the tier's own measurement, and the faster stays. A served load never opens a
+share that has not been measured (`servable`). Measured on a rented 32 GB card (RTX 5090 class, PCIe
+4, 48 cores) with Qwen3.8-Flash-Next Q2_0: a hop of 18 us a layer; the price, at an 82% hit share
+read off the expert set the cache holds, nominated 0.89; the calibration timed it at 70.9 tok/s
+against the cache's 103 and every miss stayed uploaded (102.5 served). The same card held down to
+12 GiB free: the share timed 79.9 against 74.9, inside the margin, and stayed off. On a 12 GB card
+with a 6-core host (RTX 3060 class, Flash-Next IQ3_S), a share of 0.76-0.78 took the decode from
+18.5 to 21.1-21.2 tok/s (#519), which is the case it is for. On a shared pool there is no device
+cache and nothing is weighed.
+
 The layers the fitter split (`price_layers_home`, [measured-planning.md](measured-planning.md#step-3-the-cost-of-a-device-measured-on-a-real-layer)):
 where the capacity fitter put the dense part of some layers on a device and left their experts on
 the host, each crosses twice a token. Those layers' dense matmuls on the device plus their crossings
@@ -1327,6 +1353,7 @@ Each row is a gap here paired with the public facility that closes it. None need
 | gap | facility | what it would allow |
 |---|---|---|
 | hot experts of host-resident layers kept and computed in device memory | `llama_context_params.moe_cache_size` (experimental upstream) | a device-memory tier under the RAM cache; see [measured-planning.md](measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache) for what it needs before the plan arms it |
+| part of a device cache's misses computed on the host rather than uploaded | `llama_context_params.moe_cache_cpu_share` (experimental upstream) | a knob only, resident experts only: the plan does not set it yet (see above) |
 | streamed experts computed on a device rather than on the CPU cores | **not** a buffer-type override — that route is closed, see below. The open one is `ggml_backend_dev_buffer_from_host_ptr` | on a backend that can wrap memory the caller already owns, the streamer's reservations could be handed over and the device could execute out of them. Who implements it is **not** what `caps.buffer_from_host_ptr` says — see "A capability that lies by omission" below |
 | prefill on the device over streamed experts (built as `--prefill-device`, see [npu-prefill.md](npu-prefill.md); the planner does not arm it yet) | `cparams.op_offload`, `offload_kqv`, the scheduler's batch threshold (`ggml_backend_dev_offload_op`) | per-op copy of host weights to the device above a batch size: the "batch amortises bytes over link bandwidth" rule |
 | ~~no thread rule~~ — **in**, from core classes rather than a core count | `n_threads_batch` distinct from `n_threads`, `llama_numa_init` | still open: different counts for decode and prefill, and NUMA on workstations |

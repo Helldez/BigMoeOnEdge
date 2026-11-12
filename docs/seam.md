@@ -339,10 +339,13 @@ If a future release moves the two hooks (a stable expert-residency API, say) ups
 this seam shrinks further or disappears — `core/` does not change.
 
 Pinned submodule at the time of writing: `Helldez/llama.cpp` branch
-`bmoe/expert-ready-hook-0411`, commit `7ac98f4`: the single expert-ready-hook commit
+`bmoe/expert-ready-hook-0911`, commit `ac30987`: the single expert-ready-hook commit
 (section 3), in the variant that also answers the CPU registry's `get_proc_address` so a build that
 loads the CPU backend as a module reaches it, on top of upstream `ggml-org/llama.cpp` tag
-`v0.9.0` (`cd959ba` of 2026-11-04, 164 commits past the previous base, `8ca4060` of 2026-10-28).
+`b12214` (`6590d25` of 2026-11-09, 104 commits past the previous base, `v0.9.0`, `cd959ba` of
+2026-11-04). This base brings the device expert cache's frequency-aware eviction (ClassLRU) and
+`moe_cache_cpu_share`, both through the public `llama_context_params`; `common_get_device_memory_data`
+gained an out-parameter for skipped NextN layers, which the placement probe passes and does not read.
 The hook still fires ahead of upstream's tiled `mul_mat_id` path, which G4 proves. Each bump gets
 its own fork branch and the
 previous ones stay, so every commit an old pin names remains reachable (see `.gitmodules` /

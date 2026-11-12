@@ -54,6 +54,15 @@ struct MeasuredKnobs {
     double device_cache_tps = 0.0;
     double no_device_cache_tps = 0.0;
 
+    // The device cache's CPU share, decided across loads as the tier is (planner.cpp,
+    // choose_device_cache_cpu_share): the decode rate with the share the plan priced, and with every
+    // miss uploaded, in tokens per second, 0 when that side was not measured. A price proposes the
+    // share and these decide it, because the price cannot see what a share costs on a machine whose
+    // cache never fills: on a 32 GB card a share priced at 0.89 took the decode from 114 to 68 tok/s
+    // with no miss computed on the host at all, and on a 12 GB card 0.77 took it from 18.5 to 21.2.
+    double cpu_share_tps = 0.0;
+    double no_cpu_share_tps = 0.0;
+
     // The graph width, decided across loads where a wide graph's compute buffers take device memory
     // the experts would use (planner.cpp, choose_graph_width). A wide graph prefills a long prompt in
     // one pass; a narrow one leaves the experts more of the card. Which wins is a property of this
@@ -117,6 +126,7 @@ struct MeasuredKnobs {
     // hiccup). A rate measured for the side clears it. The width's two are for `width_narrow` only,
     // as its rates are.
     int device_cache_unviable = 0, no_device_cache_unviable = 0;
+    int cpu_share_unviable = 0, no_cpu_share_unviable = 0;
     int wide_unviable = 0, narrow_unviable = 0;
 
     bool empty() const { return verdicts() == 0; }
@@ -125,10 +135,11 @@ struct MeasuredKnobs {
     // grows rather than as the first request left it; so do the requests of the mix.
     int verdicts() const {
         return (threads > 0) + (overlap >= 0) + (device_cache_tps > 0.0) + (no_device_cache_tps > 0.0) +
-               (wide_decode_tps > 0.0) + (narrow_decode_tps > 0.0) + (wide_prefill_tps > 0.0) +
-               (narrow_prefill_tps > 0.0) + usage_requests + (decode_compute_s > 0.0) + (decode_hit >= 0.0) +
-               mix_requests + (host_prefill_tps > 0.0) + (device_cache_unviable > 0) + (no_device_cache_unviable > 0) +
-               (wide_unviable > 0) + (narrow_unviable > 0);
+               (cpu_share_tps > 0.0) + (no_cpu_share_tps > 0.0) + (wide_decode_tps > 0.0) + (narrow_decode_tps > 0.0) +
+               (wide_prefill_tps > 0.0) + (narrow_prefill_tps > 0.0) + usage_requests + (decode_compute_s > 0.0) +
+               (decode_hit >= 0.0) + mix_requests + (host_prefill_tps > 0.0) + (device_cache_unviable > 0) +
+               (no_device_cache_unviable > 0) + (wide_unviable > 0) + (narrow_unviable > 0) + (cpu_share_unviable > 0) +
+               (no_cpu_share_unviable > 0);
     }
 };
 

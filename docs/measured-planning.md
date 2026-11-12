@@ -519,9 +519,11 @@ served (`bmoe/calibrate.h`):
   (`replan`: `probe_and_plan`'s planning half on the same facts, the fitter's re-fits at a narrower
   width included, no probe). Every rule above holds as it is: the fitter's placement is still timed
   only where its ceiling could win, and a side wins only past `min_backend_win`. The tier is decided
-  first, the width then on the winner, as the planner already orders them; a configuration already
-  timed is not opened again (the cache side at the plan's width answers the width's wide side too).
-  At most four candidates, every side of both decisions once; a plan that asks past that, or asks
+  first, the width then on the winner, and on a device cache the share of its misses computed on the
+  host last ([hardware-planning.md](hardware-planning.md#who-computes-the-device-caches-misses)), as
+  the planner orders them; a configuration already timed is not opened again (the cache side at the
+  plan's width answers the width's wide side too, and the cache's rate with every miss uploaded is
+  the tier's own). At most six candidates, every side of the three decisions once; a plan that asks past that, or asks
   for something a short decode cannot measure (the prefill of long prompts a machine has been
   sending), is served as it stands and its load times the rest as before.
 - **A candidate** is a `Session` of its own (`run_calibration_candidate`), opened, given one fixed

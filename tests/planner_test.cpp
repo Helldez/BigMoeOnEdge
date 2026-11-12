@@ -3024,6 +3024,86 @@ int main() {
                       e->reason.find("measured: 17.50 tok/s with a device cache") != std::string::npos,
                   "device tier, the cache measured faster: armed, nothing timed again", e ? e->reason : "no decision");
 
+            // The device cache's CPU share, once the tier is decided: the price nominates a share where the
+            // link is slow against the host's cores, and the loads decide it as the tier's are.
+            {
+                HardwareProfile slow_link = card; // a host at 66 GiB/s, the card's link at 3
+                slow_link.devices[0].upload_gibs = 3.0;
+                slow_link.devices[0].host_hop_seconds = 58e-6;
+                ModelProfile decided = won; // the cache measured faster than the fitter's placement
+                const auto share_plan = [&](const HardwareProfile & h, const ModelProfile & m) {
+                    return plan_run(base_cfg(), h, m, half, PlanRequest{}, PlannerPolicy::defaults());
+                };
+                const Plan nominate = share_plan(slow_link, decided);
+                const Decision * sd = find(nominate, "device-cache-cpu-share");
+                check(nominate.config.moe.device_cache_mb > 0 && nominate.config.moe.device_cache_cpu_share > 0.0f &&
+                          nominate.config.trial.cpu_share_side == 1 && sd && sd->source == Source::Policy &&
+                          sd->reason.find("this one times the share") != std::string::npos,
+                      "cpu share: priced past the margin, the share is timed on its own load against the cache's rate",
+                      sd ? sd->reason : "no decision");
+                check(validate(nominate.config).ok, "cpu share: the timed load is a valid config",
+                      validate(nominate.config).error);
+                ModelProfile faster = decided;
+                faster.knobs.cpu_share_tps = 21.2;
+                faster.knobs.no_cpu_share_tps = 18.5;
+                const Plan kept_share = share_plan(slow_link, faster);
+                sd = find(kept_share, "device-cache-cpu-share");
+                check(kept_share.config.moe.device_cache_cpu_share > 0.0f &&
+                          kept_share.config.trial.cpu_share_side == -1 && sd && sd->source == Source::Measured,
+                      "cpu share: measured faster, kept with nothing timed", sd ? sd->reason : "no decision");
+                ModelProfile even_share = decided;
+                even_share.knobs.cpu_share_tps = 18.6;
+                even_share.knobs.no_cpu_share_tps = 18.5;
+                const Plan dropped = share_plan(slow_link, even_share);
+                check(dropped.config.moe.device_cache_cpu_share == 0.0f && dropped.config.trial.cpu_share_side == -1,
+                      "cpu share: measured inside the margin, every miss is uploaded");
+                ModelProfile failed = decided;
+                failed.knobs.cpu_share_unviable = 1;
+                check(share_plan(slow_link, failed).config.moe.device_cache_cpu_share == 0.0f,
+                      "cpu share: a load with the share that failed leaves every miss uploaded");
+                // The hop is a cost of every MoE layer whatever the share computes: past what the share
+                // saves, the price nominates nothing and no load is spent on it.
+                HardwareProfile costly_hop = slow_link;
+                costly_hop.devices[0].host_hop_seconds = 50e-3;
+                const Plan no_share = share_plan(costly_hop, decided);
+                sd = find(no_share, "device-cache-cpu-share");
+                check(no_share.config.moe.device_cache_cpu_share == 0.0f &&
+                          no_share.config.trial.cpu_share_side == -1 && sd &&
+                          sd->reason.find("of hops over") != std::string::npos,
+                      "cpu share: hops past the saving, nothing nominated", sd ? sd->reason : "no decision");
+                // Unmeasured hop: no price, no share.
+                HardwareProfile no_hop = slow_link;
+                no_hop.devices[0].host_hop_seconds = 0.0;
+                const Plan unpriced_share = share_plan(no_hop, decided);
+                sd = find(unpriced_share, "device-cache-cpu-share");
+                check(unpriced_share.config.moe.device_cache_cpu_share == 0.0f && sd && sd->source == Source::Unprobed,
+                      "cpu share: the hop unmeasured, every miss uploaded and the plan says why");
+                // Cores slower at the experts than the link brings them: nothing to gain, nothing timed.
+                HardwareProfile slow_host = slow_link;
+                slow_host.host_bandwidth_gibs = 4.0;
+                slow_host.devices[0].upload_gibs = 24.0;
+                const Plan host_slow = share_plan(slow_host, decided);
+                check(host_slow.config.moe.device_cache_cpu_share == 0.0f &&
+                          host_slow.config.trial.cpu_share_side == -1,
+                      "cpu share: cores slower than the link, every miss uploaded and nothing timed");
+                // A fast link with faster cores is still only a nomination: the loads decide. (A 32 GB card's
+                // cache that never filled lost 40% to a share: a measured loss keeps every miss uploaded.)
+                HardwareProfile fast_link = slow_link;
+                fast_link.devices[0].upload_gibs = 24.0;
+                ModelProfile lost_share = decided;
+                lost_share.knobs.cpu_share_tps = 68.0;
+                lost_share.knobs.no_cpu_share_tps = 114.0;
+                check(
+                    share_plan(fast_link, decided).config.trial.cpu_share_side == 1 &&
+                        share_plan(fast_link, lost_share).config.moe.device_cache_cpu_share == 0.0f &&
+                        share_plan(fast_link, lost_share).config.trial.cpu_share_side == -1,
+                    "cpu share: a fast link with faster cores is timed, and a measured loss keeps every miss uploaded");
+                // While the tier is still being timed, the share waits for it.
+                check(share_plan(slow_link, model).config.trial.cpu_share_side == -1 &&
+                          share_plan(slow_link, model).config.moe.device_cache_cpu_share == 0.0f,
+                      "cpu share: the tier still timed, one decision at a time");
+            }
+
             ModelProfile tie = once;
             tie.knobs.device_cache_tps = 10.0;
             tie.knobs.no_device_cache_tps = 10.5; // inside the margin: the rule's choice holds

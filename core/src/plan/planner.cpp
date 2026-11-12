@@ -740,6 +740,155 @@ void choose_expert_staging(Planning & s) {
                " MiB the host may hold with the " + mib_s(s.host_all) + " MiB it already does");
 }
 
+// Who computes the device cache's misses. With every expert on the device the cores compute none, and
+// a miss crosses the link before the device computes it; the host can instead compute part of the
+// misses from its own copy while the device computes the hits and the rest, and llama.cpp adds the
+// two halves of the layer (llama_context_params::moe_cache_cpu_share). A token's experts then take
+// the longer of the two halves, plus what giving every MoE layer a host half costs:
+//
+//   device(s) = hits / device rate + (1 - s) * misses * (1 / upload rate + 1 / device rate)
+//   host(s)   = s * misses / host rate
+//   t(s)      = max(device(s), host(s)) + (s > 0 ? MoE layers * the device's host hop : 0)
+//
+// `hits` and `misses` are the bytes of a token's routed experts the cache serves and does not (from
+// this model's own routing where a record was replayed), and every rate was measured here: the
+// device's and the host's on the model's own expert block, the upload from where the misses come
+// from, and the hop, a device op, a host op at the decode's thread count and a device op again,
+// through the scheduler (ComputeDevice::host_hop_seconds). The share is where the two halves meet,
+// capped so the cache keeps learning (PlannerPolicy::device_cache_upload_min).
+//
+// The price only nominates. Where the cache never fills, llama.cpp computes no miss on the host at
+// all and the hops are pure cost, and whether it fills is not something a plan can know: on a 32 GB
+// card a price without the hop picked 0.89 and the decode went from 114 to 68 tok/s with no miss on
+// the host, where on a 12 GB card 0.77 took it from 18.5 to 21.2. So a share the price says wins by
+// the margin is decided across loads, as the device tier is: a load times it, its rate is held
+// against the cache's with every miss uploaded, and the plan after keeps the faster. A served load
+// opens it only once it has been measured (the server serves the other side and calibrates).
+//
+// Over streamed experts the host half would read experts the streamer has not been asked to hold
+// until the layer runs; that pair is not gated, so the share stays 0 there and the plan says so.
+void choose_device_cache_cpu_share(Planning & s) {
+    MoeStreamConfig & moe = s.p.config.moe;
+    KnobTrialConfig & trial = s.p.config.trial;
+    if (moe.device_cache_mb <= 0 || s.req.is_pinned("device-cache-cpu-share")) return;
+    const char * knob = "device-cache-cpu-share";
+    const char * off = "Every miss of the device cache is uploaded to the device.";
+    if (s.p.regime != Regime::Fits || moe.enabled) {
+        s.note(knob, "0", Source::Derived, off,
+               "the experts are streamed, and computing part of the misses on the host over streamed experts is not "
+               "gated");
+        return;
+    }
+    // One decision is timed at a time: the device tier and the width come first, since the share is
+    // a property of the cache they settle.
+    if (trial.device_tier >= 0 || trial.width_side >= 0) {
+        s.note(knob, "0", Source::Policy, off,
+               "the device cache itself is still being measured on this machine; whether part of its misses go to "
+               "the host is weighed once it is decided");
+        return;
+    }
+    std::string why;
+    const ComputeDevice * dev = device_tier_device(s, why);
+    if (!dev) {
+        s.note(knob, "0", Source::Derived, off, why);
+        return;
+    }
+    const RatePair rates = expert_rates(s.hw, *dev);
+    const double upload = moe.expert_host_buffer.empty() ? dev->upload_gibs : dev->upload_host_buffer_gibs;
+    const uint64_t routed = s.model.group(WeightGroup::Experts).bytes_per_token;
+    const uint32_t layers = s.n_moe_layer;
+    if (rates.host <= 0.0 || rates.device <= 0.0 || upload <= 0.0 || routed == 0 || layers == 0 ||
+        dev->host_hop_seconds <= 0.0) {
+        s.note(knob, "0", Source::Unprobed, off,
+               "pricing it needs the host's and " + dev->name +
+                   "'s expert rates, the upload rate, the cost of a host hop in the device's graph and a token's "
+                   "routed bytes, and one of them is unmeasured");
+        return;
+    }
+    bool measured_share = false;
+    const double hit = expert_share_at(s.model, (uint64_t) moe.device_cache_mb << 20, &measured_share);
+    const double gib = (double) routed / (double) (1ull << 30);
+    const double miss = (1.0 - hit) * gib;
+    if (miss <= 0.0) {
+        s.note(knob, "0", Source::Derived, off, "the cache serves every routed expert: there is no miss to share");
+        return;
+    }
+    const double hits_s = hit * gib / rates.device;              // the hits, on the device
+    const double upload_s = miss / upload + miss / rates.device; // every miss uploaded, then computed
+    const double host_s = miss / rates.host;                     // every miss on the host
+    const double hops_s = (double) layers * dev->host_hop_seconds;
+    const double cap = std::max(0.0, 1.0 - (double) s.pol.device_cache_upload_min);
+    const double share = std::clamp((hits_s + upload_s) / (upload_s + host_s), 0.0, cap);
+    const double t_all = hits_s + upload_s;
+    const double t_share = std::max(hits_s + (1.0 - share) * upload_s, share * host_s) + hops_s;
+    const std::string margin = u64s((uint64_t) (s.pol.min_backend_win * 100.0f + 0.5f)) + "%";
+    char nums[640];
+    std::snprintf(nums, sizeof(nums),
+                  "a cache of %s MiB serves %.0f%% of a token's %.0f MiB of routed experts (%s); %s computes them at "
+                  "%.0f GiB/s, the host at %.0f%s, a miss reaches %s at %.1f GiB/s, and a host half costs %.0f us a "
+                  "layer: %.1f ms of experts a token uploading every miss, %.1f ms with %.0f%% of the misses on the "
+                  "host beside the device and %.1f ms of hops over %u layers",
+                  u64s((uint64_t) moe.device_cache_mb).c_str(), 100.0 * hit, (double) routed / (1 << 20),
+                  measured_share ? "from this model's own routing" : "the fraction of the expert set it holds",
+                  dev->name.c_str(), rates.device, rates.host,
+                  rates.real_layer ? ", both on this model's own expert block" : "", dev->name.c_str(), upload,
+                  1e6 * dev->host_hop_seconds, 1e3 * t_all, 1e3 * t_share, 100.0 * share, 1e3 * hops_s, layers);
+    if (t_all - t_share <= t_all * (double) s.pol.min_backend_win) {
+        s.note(knob, "0", Source::Measured, off,
+               std::string(nums) + ", inside the " + margin + " margin, so the cores stay out of the experts");
+        return;
+    }
+    // Two decimals: the share is a price, and a finer figure would claim a precision the rates lack.
+    const float priced = (float) (std::floor(share * 100.0) / 100.0);
+    char value[16];
+    std::snprintf(value, sizeof(value), "%.2f", (double) priced);
+    // Decided across loads. The cache's rate with every miss uploaded is the tier's own measurement
+    // where this decision has not timed it yet: that load ran no share.
+    const MeasuredKnobs & mk = s.model.knobs;
+    const double with = mk.cpu_share_tps;
+    const double without = mk.no_cpu_share_tps > 0.0 ? mk.no_cpu_share_tps : mk.device_cache_tps;
+    char measured[160];
+    std::snprintf(measured, sizeof(measured), "%.2f tok/s with the share against %.2f with every miss uploaded", with,
+                  without);
+    const std::string share_brief = u64s((uint64_t) std::lround(100.0 * priced)) +
+                                    "% of the device cache's misses are computed on the CPU instead of uploaded.";
+    const auto armed = [&](Source src, const std::string & brief, const std::string & reason) {
+        moe.device_cache_cpu_share = priced;
+        s.note(knob, value, src, brief, reason);
+    };
+    if (mk.cpu_share_unviable > 0 || (mk.no_cpu_share_unviable == 0 && with > 0.0 && without > 0.0 &&
+                                      with <= without * (1.0 + (double) s.pol.min_backend_win))) {
+        s.note(knob, "0", Source::Measured, off,
+               std::string(nums) + (mk.cpu_share_unviable > 0
+                                        ? "; a load with the share failed on this machine, so every miss is uploaded"
+                                        : "; measured on earlier loads of this model here: " + std::string(measured) +
+                                              ", inside the " + margin + " margin, so every miss is uploaded"));
+        return;
+    }
+    if (with > 0.0 && (without > 0.0 || mk.no_cpu_share_unviable > 0)) {
+        armed(Source::Measured, share_brief,
+              std::string(nums) + "; measured on earlier loads of this model here: " +
+                  (without > 0.0 ? std::string(measured) + ", past the " + margin + " margin"
+                                 : std::string("a load with every miss uploaded failed")));
+        return;
+    }
+    if (without <= 0.0) {
+        // Nothing measured yet: the cache as the tier left it is timed first, with every miss uploaded.
+        trial.cpu_share_side = 0;
+        s.note(knob, "0", Source::Policy, off,
+               std::string(nums) + "; this load times the cache with every miss uploaded, and a later one with " +
+                   value + " of them on the host, so the plan after keeps the faster");
+        return;
+    }
+    trial.cpu_share_side = 1;
+    char before[160];
+    std::snprintf(before, sizeof(before),
+                  "; an earlier load of this model here decoded at %.2f tok/s with every miss uploaded, and this one "
+                  "times the share so the next plan can keep the faster",
+                  without);
+    armed(Source::Policy, share_brief, std::string(nums) + before);
+}
+
 // ── the device crossing: layers on a device for decode, or fewer (measured-planning.md, Step 3) ──
 // Where not every dense part fits beside the experts, the capacity fitter puts the dense part of
 // some layers on a device and leaves their experts on the host: each such layer then crosses the
@@ -3270,6 +3419,7 @@ Plan plan_from(const RunConfig & base,
         s.p.decisions.push_back(s.home.decision);
     note_regime(s);
     choose_expert_staging(s);
+    choose_device_cache_cpu_share(s);
     if (declines_residency(s)) {
         // Nothing is streamed and nothing ranked: the layers stay as the fitter put them.
         if (s.home.priced) {

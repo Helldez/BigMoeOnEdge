@@ -6,6 +6,29 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+- **A device expert cache computes part of its misses on the CPU where that was measured faster**
+  (`--device-cache-cpu-share`, experimental). With a device cache over resident experts, every miss
+  used to cross the link before the device computed it, while the cores computed no expert. A share
+  of the misses can now be computed on the CPU from the host's copy, beside the device, the rest
+  still uploaded so the cache keeps learning. `--auto` prices the share from measured rates,
+  including a new probe of what a host half costs each layer of the device's graph
+  (`host_hop_seconds`), and then times it across loads like the device tier and the graph width:
+  a calibration opens it as a candidate, and it is kept only past the 10% margin over uploading
+  every miss. A served load never opens an unmeasured share. Measured on a rented 32 GB card
+  (Qwen3.8-Flash-Next Q2_0): the price nominated 0.89, the calibration timed it at 70.9 tok/s against
+  103, and every miss stayed uploaded, where the opt-in at 0.89 had cost 40%. On a 12 GB card with a
+  6-core host the share took the decode from 18.5 to 21.1-21.2 tok/s. Never over streamed experts,
+  which no gate covers (validation refuses the pair). Gate G25d: half the misses on the host give
+  the resident placement's bytes. ([hardware-planning.md](docs/hardware-planning.md#who-computes-the-device-caches-misses))
+
+### Changed
+- **llama.cpp bumped to upstream `b12214`** (2026-11-09) plus the expert-ready hook, on fork branch
+  `bmoe/expert-ready-hook-0911`. It brings the device expert cache's frequency-aware eviction
+  (ClassLRU: an expert's uses, decayed with a half-life, decide which slot is freed), which takes a
+  12 GB card from 17.9 to 18.5 tok/s with nothing else changed, and `moe_cache_cpu_share`. The
+  placement probe passes the new out-parameter of `common_get_device_memory_data`.
+
 ### Fixed
 - **A model's second load serves the side already measured instead of halving its speed.** With a
   device expert cache measured on the first load, the server is meant to serve the cache again and
@@ -546,7 +569,6 @@ Semantic Versioning.
   and the installer now carry the app's icon, made from the same picture as the macOS and Linux
   apps by `packaging/windows/make-icon.py`; the notification area takes the small size this
   screen's scale asks for.
-
 
 ## [0.40.1] - 2026-11-07
 

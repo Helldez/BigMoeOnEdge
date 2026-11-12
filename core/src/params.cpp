@@ -482,6 +482,20 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("device-cache-cpu-share", "Device cache misses on the CPU", G::Cache, L::Experimental,
+                          "EXPERIMENTAL: With a device expert cache, the share of its misses the CPU computes from the "
+                          "host's copy instead of uploading them to the device, once the cache is full. 0 uploads "
+                          "every miss; below 1 the cache keeps learning which experts are hot.");
+        d.type = ParamType::Float;
+        d.value_hint = "F";
+        bounds(d, 0.0, MoeStreamConfig::device_cache_cpu_share_max);
+        special(d, "0", "off");
+        bind_float(d, [](RunConfig & c) -> float & { return c.moe.device_cache_cpu_share; });
+        d.details = "Experimental: with a graphics card's expert cache, lets the processor compute part of the "
+                    "experts the card does not hold, instead of sending them over. 0 is off.";
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("io-threads", "Read lanes", G::Streaming, L::Advanced,
                           "Parallel expert-read lanes, including the calling thread. 1 is the serial baseline.");
         d.value_hint = "N";
@@ -544,6 +558,18 @@ std::vector<ParamDesc> build() {
         bounds(d, -1, 1, "side");
         special(d, "-1", "off");
         bind_int(d, [](RunConfig & c) -> int & { return c.trial.device_tier; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("trial-cpu-share", "Measure the device cache's CPU share", G::Cache, L::Experimental,
+                          "Time the decode of this load's side of the device cache's CPU share, to be compared "
+                          "across loads: 1 with --device-cache-cpu-share as set, 0 with every miss uploaded. -1 "
+                          "times neither. Changes no output; the plan sets it while the two sides have not both "
+                          "been measured on this machine.");
+        d.value_hint = "N";
+        bounds(d, -1, 1, "side");
+        special(d, "-1", "off");
+        bind_int(d, [](RunConfig & c) -> int & { return c.trial.cpu_share_side; });
         t.push_back(d);
     }
     {

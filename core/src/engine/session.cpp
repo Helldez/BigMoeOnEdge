@@ -1245,6 +1245,10 @@ bool Session::Impl::create_contexts(Opening & o) {
     // the expert matmuls read its slots rather than the host tensors, so the capture warm-up, which
     // finds those tensors by the nodes that read them, runs on a context without it.
     if (device_cache_armed) cparams.moe_cache_size = (size_t) cfg.moe.device_cache_mb << 20;
+    // Part of the misses computed on the host from the expert's host copy rather than uploaded: the
+    // same tensors the streamer serves, so the CPU half reads what the slots would have been filled
+    // from (docs/seam.md).
+    if (device_cache_armed) cparams.moe_cache_cpu_share = cfg.moe.device_cache_cpu_share;
 
     llama_context * c = llama_init_from_model(model.get(), cparams);
     // The device cache is sized from what the capacity fitter left free, and the fitter measured a
@@ -2085,7 +2089,7 @@ void Session::Impl::arm_trials() {
         else
             trials.overlap = {cfg.moe.overlap ? 1 : 0, cfg.moe.overlap ? 0 : 1};
     }
-    trials.rate = t.device_tier >= 0 || t.width_side >= 0;
+    trials.rate = t.device_tier >= 0 || t.width_side >= 0 || t.cpu_share_side >= 0;
     trials.stage = stage_done;
     next_trial_stage(/*settled*/ false);
 }
@@ -2191,6 +2195,10 @@ void Session::Impl::rate_step(double seconds, int tokens, uint64_t lookups, uint
     char what[96];
     if (tier)
         std::snprintf(what, sizeof(what), "%s a device expert cache", cfg.trial.device_tier == 1 ? "with" : "without");
+    else if (cfg.trial.cpu_share_side >= 0)
+        std::snprintf(what, sizeof(what), "%s",
+                      cfg.trial.cpu_share_side == 1 ? "with part of the device cache's misses on the CPU"
+                                                    : "with every device cache miss uploaded");
     else
         std::snprintf(what, sizeof(what), "with the graph %s (%d tokens wide)",
                       cfg.trial.width_side == 1 ? "at the plan's width" : "narrowed",
