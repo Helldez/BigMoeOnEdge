@@ -42,6 +42,12 @@ sul portatile scrive una risposta in tempo reale; sull'iPhone, l'app con il mode
 
 https://github.com/user-attachments/assets/16371803-b96b-42a4-b147-cb1b7d515c73
 
+**L'agente su un portatile del 2021, senza GPU** (1:33): il prompt virale della pagoda in voxel dato all'agente integrato su un ThinkPad con 15 GB di RAM, solo CPU, e Qwen3.6-35B-A3B Q4_K_M (20,8 GB). 988 righe a 2,3 tok/s, poi la pagina nell'anteprima dell'app; le parti accelerate sono indicate a schermo.
+
+<p align="center"><img src="https://github.com/user-attachments/assets/4941d8db-a673-42f0-895f-f31b1b308719" width="640" alt="L'agente integrato scrive un giardino con una pagoda in voxel in un solo file HTML su un ThinkPad del 2021 con 15 GB di RAM e senza GPU dedicata, poi la pagina ruota nell'anteprima dell'app."></p>
+
+https://github.com/user-attachments/assets/a93fc61c-99ff-4ca6-894a-1c29cd27ef53
+
 ## Cosa fa
 
 - **Esegue modelli che non entrano in memoria.** Un modello MoE usa pochi esperti per token. Il motore tiene

@@ -69,6 +69,10 @@ Semantic Versioning.
   with Q4_K_M (21 tok/s, was 20), and the iPhone recording walks through the app with the 35B loaded:
   a chat about a picture, the plan, the models and the settings. The iPhone footage is an unedited
   recording on a 12 GB iPhone. By @gjjkbssg (#495). The six READMEs say what each recording shows.
+- **The README shows the built-in agent on a 2021 laptop with no dedicated GPU.** The viral voxel-pagoda
+  prompt on a ThinkPad with 15 GB of RAM, CPU only, Qwen3.6-35B-A3B Q4_K_M: 11,787 tokens at 2.3 tok/s
+  wrote 988 lines, shown as they were written, then the page in the app's preview. A GIF and a 1:33
+  video, with every speed-up marked on screen, in the six READMEs.
   The recordings and the Plan screenshot are GitHub attachments now, as the tour video already was,
   so `docs/assets/screens/` is gone and a clone no longer carries 3 MB of pictures.
 - **The README's speed table catches up with 0.41.2 and 0.42.0.** The iPhone row is 6 tok/s, the

@@ -40,6 +40,12 @@ Qwen3.6-35B-A3B（21-22 GB）在各设备上运行，大于每台设备的内存
 
 https://github.com/user-attachments/assets/16371803-b96b-42a4-b147-cb1b7d515c73
 
+**2021 年的笔记本，没有 GPU 的智能体**（1:33）：把流行的体素宝塔提示词交给内置智能体，运行在 15 GB 内存、仅用 CPU 的 ThinkPad 上，模型为 Qwen3.6-35B-A3B Q4_K_M（20.8 GB）。以 2.3 tok/s 写出 988 行，然后在应用的预览中打开页面；加速的部分已在画面上标出。
+
+<p align="center"><img src="https://github.com/user-attachments/assets/4941d8db-a673-42f0-895f-f31b1b308719" width="640" alt="内置智能体在一台 15 GB 内存、没有独立显卡的 2021 年 ThinkPad 上，把体素宝塔花园写成一个 HTML 文件，然后页面在应用的预览中旋转。"></p>
+
+https://github.com/user-attachments/assets/a93fc61c-99ff-4ca6-894a-1c29cd27ef53
+
 ## 功能
 
 - **运行装不下的模型。** MoE 模型每个 token 只使用少数几个专家。引擎将每个 token 都需要的权重和最常用的专家保留在内存中，其余从闪存读取。输出与将整个模型放在内存中时相同；测试会对此进行验证。

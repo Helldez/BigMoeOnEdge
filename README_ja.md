@@ -40,6 +40,12 @@ Android、iOS、macOS、Windows、Linux に対応し、llama.cpp の上に構築
 
 https://github.com/user-attachments/assets/16371803-b96b-42a4-b147-cb1b7d515c73
 
+**2021 年のノート PC、GPU なしでのエージェント**（1:33）：話題のボクセル五重塔プロンプトを、15 GB の RAM を積んだ ThinkPad（CPU のみ）上の内蔵エージェントに、Qwen3.6-35B-A3B Q4_K_M（20.8 GB）で渡しました。2.3 tok/s で 988 行を書き、その後アプリのプレビューでページを表示します。早送りの箇所は画面に表示しています。
+
+<p align="center"><img src="https://github.com/user-attachments/assets/4941d8db-a673-42f0-895f-f31b1b308719" width="640" alt="内蔵エージェントが、15 GB の RAM を積み専用 GPU のない 2021 年の ThinkPad で、ボクセルの五重塔の庭を 1 つの HTML ファイルとして書き、そのページがアプリのプレビューで回転します。"></p>
+
+https://github.com/user-attachments/assets/a93fc61c-99ff-4ca6-894a-1c29cd27ef53
+
 ## できること
 
 - **メモリに収まらないモデルを実行します。** MoE モデルは、トークンごとに少数のエキスパートしか使いません。エンジンは、すべてのトークンで必要な重みと、よく使われるエキスパートをメモリに保持し、残りはフラッシュから読み込みます。出力はモデル全体をメモリに置いた場合と同じで、テストでそれを確認しています。

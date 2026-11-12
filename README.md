@@ -40,6 +40,12 @@ the laptop it writes an answer in real time; on the iPhone, the app with the mod
 
 https://github.com/user-attachments/assets/16371803-b96b-42a4-b147-cb1b7d515c73
 
+**The agent on a 2021 laptop, no GPU** (1:33): the viral voxel-pagoda prompt to the built-in agent on a ThinkPad with 15 GB of RAM, CPU only, and Qwen3.6-35B-A3B Q4_K_M (20.8 GB). 988 lines at 2.3 tok/s, then the page in the app's preview; the speed-ups are marked on screen.
+
+<p align="center"><img src="https://github.com/user-attachments/assets/4941d8db-a673-42f0-895f-f31b1b308719" width="640" alt="The built-in agent writing a voxel pagoda garden as one HTML file on a 2021 ThinkPad with 15 GB of RAM and no dedicated GPU, then the page in the app's preview, turning."></p>
+
+https://github.com/user-attachments/assets/a93fc61c-99ff-4ca6-894a-1c29cd27ef53
+
 ## What it does
 
 - **Runs models that do not fit.** A MoE model uses a few experts per token. The engine keeps the
