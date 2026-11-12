@@ -42,9 +42,7 @@ réel ; sur l'iPhone, l'application avec le modèle chargé.
 
 **L'agent sur un portable de 2021, sans GPU** (1:33) : le prompt viral de la pagode en voxels donné à l'agent intégré, sur un ThinkPad avec 15 GB de RAM, CPU seulement, et Qwen3.6-35B-A3B Q4_K_M (20,8 GB). 988 lignes à 2,3 tok/s, puis la page dans l'aperçu de l'app ; les passages accélérés sont indiqués à l'écran.
 
-<p align="center"><img src="https://github.com/user-attachments/assets/4941d8db-a673-42f0-895f-f31b1b308719" width="640" alt="L'agent intégré écrit un jardin avec une pagode en voxels dans un seul fichier HTML sur un ThinkPad de 2021 avec 15 GB de RAM et sans GPU dédié, puis la page tourne dans l'aperçu de l'app."></p>
-
-https://github.com/user-attachments/assets/a93fc61c-99ff-4ca6-894a-1c29cd27ef53
+<p align="center"><img src="https://github.com/user-attachments/assets/1da744d4-dd98-4d14-a76e-50bdf0d9aec4" width="640" alt="L'agent intégré écrit un jardin avec une pagode en voxels dans un seul fichier HTML sur un ThinkPad de 2021 avec 15 GB de RAM et sans GPU dédié, puis la page tourne dans l'aperçu de l'app."></p>
 
 ## Ce qu'il fait
 
