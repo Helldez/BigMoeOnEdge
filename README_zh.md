@@ -222,8 +222,7 @@ RAM，因此只有两个层级。能装进显卡的模型会完整地在显卡�
 | 任意 GGUF 格式的 MoE 模型 | ✅ | 少数模型 | 少数模型 | 自有格式 | 少数模型 |
 | 自动配置 | ✅ `--auto` | 按内存选择模型 | 专家缓存预算 | `coli tune` | ❌ |
 
-当模型能放进游戏 GPU 加 RAM 时，Strata 快二到四倍。当模型需要从闪存流式读取时，所有引擎都低于每秒十个 token，
-速度由硬盘决定。在同一张 24 GB 显卡上与 Lucebox 对比，使用相同的文件和提示：本引擎解码 Qwen3.6-35B-A3B 更快（154 对 123 tok/s），28k token 提示的首个 token 用时 5 秒（Lucebox 为 37 秒）；Lucebox 的专用草稿模型解码 Gemma 4 的代码快两倍以上。速度及出处：[docs/comparison.md](docs/comparison.md)。
+速度及出处：[docs/comparison.md](docs/comparison.md)。
 
 ## 从源码构建
 

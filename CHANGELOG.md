@@ -81,9 +81,11 @@ Semantic Versioning.
   `--auto` harness row on 0.42.0 (5.56; was 3). By @gjjkbssg (#574). The Android phone's 35B row
   is 5-6, the three `--auto` loads on 0.42.0 (4.67, 4.77, 5.21 with `--overlap`). The 24 GB card rows are the
   2026-11-11 run on 0.41.2: Qwen3.6-35B-A3B 154, 59-67 with 12 GB of the card free, Gemma 4
-  26B-A4B 114, Laguna XS 2.1 33B 93-94, and the comparison with Lucebox reads 154 against 123. A new
+  26B-A4B 114, Laguna XS 2.1 33B 93-94. A new
   row: an 8 GB card (RTX 4060 class) with 125 GB of RAM decodes Qwen3.6-35B-A3B at 32-33 after the
   load-time calibration. The table rounds up to whole tokens per second.
+  Under the engine comparison table the README keeps only the link to
+  [comparison.md](docs/comparison.md), where every speed and its source are.
 
 ## [0.41.3] - 2026-11-11
 
