@@ -20,23 +20,23 @@ dalla flash quando il modello ne ha bisogno. Android, iOS, macOS, Windows e Linu
 
 <table align="center">
 <tr>
-<td align="center" width="50%"><img src="docs/assets/screens/android.gif" width="220" alt="Qwen3.6-35B-A3B che genera una risposta su un telefono Android da 12 GB, in tempo reale."></td>
-<td align="center" width="50%"><img src="docs/assets/screens/iphone.gif" width="220" alt="Qwen3.6-35B-A3B che genera una risposta su un iPhone da 12 GB, in tempo reale."></td>
+<td align="center" width="50%"><img src="https://github.com/user-attachments/assets/7967bed2-6094-489f-bd60-05b0b1980102" width="220" alt="Qwen3.6-35B-A3B che genera una risposta su un telefono Android da 12 GB, in tempo reale."></td>
+<td align="center" width="50%"><img src="https://github.com/user-attachments/assets/26760326-2ef5-4b4a-950d-581c99e58206" width="220" alt="L'app per iPhone su un iPhone da 12 GB con Qwen3.6-35B-A3B caricato: una chat su un'immagine, il piano, i modelli e le impostazioni, in tempo reale."></td>
 </tr>
 <tr>
 <td align="center">Telefono Android da 12 GB</td>
 <td align="center">iPhone da 12 GB</td>
 </tr>
 <tr>
-<td align="center" colspan="2"><img src="docs/assets/screens/desktop.gif" width="620" alt="Qwen3.6-35B-A3B che genera una risposta nell'app desktop su un portatile Apple silicon da 16 GB, in tempo reale, a 20 tok/s."></td>
+<td align="center" colspan="2"><img src="https://github.com/user-attachments/assets/0e1fd1d2-4976-4ecf-a56f-fee60f5dff74" width="620" alt="Qwen3.6-35B-A3B che genera una risposta nell'app desktop su un portatile Apple silicon da 16 GB, in tempo reale, a 21 tok/s."></td>
 </tr>
 <tr>
 <td align="center" colspan="2">Portatile Apple silicon da 16 GB</td>
 </tr>
 </table>
 
-Qwen3.6-35B-A3B (21 GB) in tempo reale su ciascun dispositivo. Il modello è più grande della memoria di
-ciascun dispositivo.
+Qwen3.6-35B-A3B (21-22 GB) su ciascun dispositivo, più grande della sua memoria. Sul telefono Android e
+sul portatile scrive una risposta in tempo reale; sull'iPhone, l'app con il modello caricato.
 
 **Il tour** (2:38): modelli, il pianificatore, la chat, l'agente su una cartella, i task e le app collegate su un Mac da 16 GB.
 
@@ -65,8 +65,8 @@ https://github.com/user-attachments/assets/16371803-b96b-42a4-b147-cb1b7d515c73
 |---|---|---|---:|---|---:|
 | **Telefono Android** | 12 GB | DeepSeek V4 Flash 284B | 91 GB | flash | 1 |
 |  |  | Qwen3.8-Flash-Next 125B | 80 GB | flash | 2-4 |
-|  |  | Qwen3.6-35B-A3B | 21 GB | flash | 5 |
-| **iPhone** | 12 GB | Qwen3.6-35B-A3B | 21 GB | flash | 3 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | flash | 5-6 |
+| **iPhone** | 12 GB | Qwen3.6-35B-A3B | 21 GB | flash | 6 |
 | **Portatile Apple silicon** | 16 GB | Qwen3.8-Flash-Next 125B | 76 GB | flash | 7-9 |
 |  |  | Qwen3.6-35B-A3B | 21 GB | flash | 18-24 |
 | **Portatile Windows** | 16 GB | Qwen3.6-35B-A3B | 21 GB | flash | 5 |
@@ -74,11 +74,11 @@ https://github.com/user-attachments/assets/16371803-b96b-42a4-b147-cb1b7d515c73
 | **GPU desktop** (NVIDIA) | 16 GB + 32 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | flash, cache GPU | 19-21 |
 | **GPU desktop** (NVIDIA) | 24 GB + 96 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM, cache GPU | 70 |
 |  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
-| **GPU desktop** (NVIDIA) | 24 GB + 94 GB RAM | Qwen3.6-35B-A3B | 21 GB | GPU | 135 |
-|  | di cui 12 GB liberi | Qwen3.6-35B-A3B | 21 GB | RAM, cache GPU | 75-81 |
-|  | 24 GB + 94 GB RAM | Gemma 4 26B-A4B | 17 GB | GPU | 107-115 |
 | **GPU desktop** (NVIDIA) | 24 GB + 62 GB RAM | Qwen3.6-35B-A3B | 21 GB | GPU | 154 |
-|  |  | Laguna XS 2.1 33B | 20 GB | GPU | 93 |
+|  | di cui 12 GB liberi | Qwen3.6-35B-A3B | 21 GB | RAM, cache GPU | 59-67 |
+|  |  | Gemma 4 26B-A4B | 17 GB | GPU | 114 |
+|  |  | Laguna XS 2.1 33B | 20 GB | GPU | 93-94 |
+| **GPU desktop** (NVIDIA) | 8 GB + 125 GB RAM | Qwen3.6-35B-A3B | 21 GB | RAM, GPU | 32-33 |
 | **GPU datacenter** (AMD, ROCm) | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
 
 Un intervallo è la variazione tra i run. Metodo e tutti i run:
@@ -201,7 +201,7 @@ letto dal file ([docs/which-models-stream.md](docs/which-models-stream.md)). Des
 ## Il planner
 
 <p align="center">
-  <img src="docs/assets/screens/plan-mac.png" width="820" alt="La schermata Plan su un portatile Apple silicon da 16 GB con Qwen3.6-35B-A3B Q4_K_M: gli esperti arrivano dalla flash con una cache da 6.6 GiB, il prompt gira sulla GPU e i token sulla CPU, 23.9 tok/s e 94% di hit misurati, e dove va la memoria.">
+  <img src="https://github.com/user-attachments/assets/98e6de3e-e27d-482d-bff1-26fc66074af4" width="820" alt="La schermata Plan su un portatile Apple silicon da 16 GB con Qwen3.6-35B-A3B Q4_K_M: gli esperti arrivano dalla flash con una cache da 6.6 GiB, il prompt gira sulla GPU e i token sulla CPU, 23.9 tok/s e 94% di hit misurati, e dove va la memoria.">
 </p>
 
 Il planner legge l'header del modello e misura la macchina: memoria, velocità dello storage, ogni CPU, GPU
@@ -239,7 +239,7 @@ Dettagli: [docs/platforms.md](docs/platforms.md).
 
 Dove un modello sta in una GPU da gaming più la RAM, Strata è da due a quattro volte più veloce. Dove viene
 letto dalla flash, tutti i motori stanno sotto i dieci token al secondo e a dettare il ritmo è il disco.
-Su una stessa scheda da 24 GB contro Lucebox, con lo stesso file e gli stessi prompt, questo motore ha decodificato Qwen3.6-35B-A3B più in fretta (135 contro 108 tok/s) e ha dato il primo token di un prompt da 28k token in 5 s contro 37; il drafter per modello di Lucebox ha decodificato il codice di Gemma 4 più del doppio più in fretta. Velocità e fonti: [docs/comparison.md](docs/comparison.md).
+Su una stessa scheda da 24 GB contro Lucebox, con lo stesso file e gli stessi prompt, questo motore ha decodificato Qwen3.6-35B-A3B più in fretta (154 contro 123 tok/s) e ha dato il primo token di un prompt da 28k token in 5 s contro 37; il drafter per modello di Lucebox ha decodificato il codice di Gemma 4 più del doppio più in fretta. Velocità e fonti: [docs/comparison.md](docs/comparison.md).
 
 ## Compilare dai sorgenti
 

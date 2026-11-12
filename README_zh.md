@@ -19,22 +19,22 @@
 
 <table align="center">
 <tr>
-<td align="center" width="50%"><img src="docs/assets/screens/android.gif" width="220" alt="Qwen3.6-35B-A3B 在 12 GB Android 手机上实时生成回答。"></td>
-<td align="center" width="50%"><img src="docs/assets/screens/iphone.gif" width="220" alt="Qwen3.6-35B-A3B 在 12 GB iPhone 上实时生成回答。"></td>
+<td align="center" width="50%"><img src="https://github.com/user-attachments/assets/7967bed2-6094-489f-bd60-05b0b1980102" width="220" alt="Qwen3.6-35B-A3B 在 12 GB Android 手机上实时生成回答。"></td>
+<td align="center" width="50%"><img src="https://github.com/user-attachments/assets/26760326-2ef5-4b4a-950d-581c99e58206" width="220" alt="12 GB iPhone 上已加载 Qwen3.6-35B-A3B 的 iPhone 应用：关于一张图片的对话、规划、模型和设置，实时录制。"></td>
 </tr>
 <tr>
 <td align="center">12 GB Android 手机</td>
 <td align="center">12 GB iPhone</td>
 </tr>
 <tr>
-<td align="center" colspan="2"><img src="docs/assets/screens/desktop.gif" width="620" alt="Qwen3.6-35B-A3B 在 16 GB Apple silicon 笔记本的桌面应用中实时生成回答，速度为 20 tok/s。"></td>
+<td align="center" colspan="2"><img src="https://github.com/user-attachments/assets/0e1fd1d2-4976-4ecf-a56f-fee60f5dff74" width="620" alt="Qwen3.6-35B-A3B 在 16 GB Apple silicon 笔记本的桌面应用中实时生成回答，速度为 21 tok/s。"></td>
 </tr>
 <tr>
 <td align="center" colspan="2">16 GB Apple silicon 笔记本</td>
 </tr>
 </table>
 
-Qwen3.6-35B-A3B（21 GB）在各设备上实时运行。该模型大于每台设备的内存。
+Qwen3.6-35B-A3B（21-22 GB）在各设备上运行，大于每台设备的内存。在 Android 手机和笔记本上实时写出回答；在 iPhone 上展示已加载模型的应用。
 
 **功能导览**（2:38）：在 16 GB 的 Mac 上演示模型、规划器、聊天、在文件夹中工作的智能体、任务和已连接的应用。
 
@@ -55,8 +55,8 @@ https://github.com/user-attachments/assets/16371803-b96b-42a4-b147-cb1b7d515c73
 |---|---|---|---:|---|---:|
 | **Android 手机** | 12 GB | DeepSeek V4 Flash 284B | 91 GB | 闪存 | 1 |
 |  |  | Qwen3.8-Flash-Next 125B | 80 GB | 闪存 | 2-4 |
-|  |  | Qwen3.6-35B-A3B | 21 GB | 闪存 | 5 |
-| **iPhone** | 12 GB | Qwen3.6-35B-A3B | 21 GB | 闪存 | 3 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | 闪存 | 5-6 |
+| **iPhone** | 12 GB | Qwen3.6-35B-A3B | 21 GB | 闪存 | 6 |
 | **Apple silicon 笔记本** | 16 GB | Qwen3.8-Flash-Next 125B | 76 GB | 闪存 | 7-9 |
 |  |  | Qwen3.6-35B-A3B | 21 GB | 闪存 | 18-24 |
 | **Windows 笔记本** | 16 GB | Qwen3.6-35B-A3B | 21 GB | 闪存 | 5 |
@@ -64,11 +64,11 @@ https://github.com/user-attachments/assets/16371803-b96b-42a4-b147-cb1b7d515c73
 | **桌面 GPU**（NVIDIA） | 16 GB + 32 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | 闪存，GPU 缓存 | 19-21 |
 | **桌面 GPU**（NVIDIA） | 24 GB + 96 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM，GPU 缓存 | 70 |
 |  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
-| **桌面 GPU**（NVIDIA） | 24 GB + 94 GB RAM | Qwen3.6-35B-A3B | 21 GB | GPU | 135 |
-|  | 其中 12 GB 空闲 | Qwen3.6-35B-A3B | 21 GB | RAM，GPU 缓存 | 75-81 |
-|  | 24 GB + 94 GB RAM | Gemma 4 26B-A4B | 17 GB | GPU | 107-115 |
 | **桌面 GPU**（NVIDIA） | 24 GB + 62 GB RAM | Qwen3.6-35B-A3B | 21 GB | GPU | 154 |
-|  |  | Laguna XS 2.1 33B | 20 GB | GPU | 93 |
+|  | 其中 12 GB 空闲 | Qwen3.6-35B-A3B | 21 GB | RAM，GPU 缓存 | 59-67 |
+|  |  | Gemma 4 26B-A4B | 17 GB | GPU | 114 |
+|  |  | Laguna XS 2.1 33B | 20 GB | GPU | 93-94 |
+| **桌面 GPU**（NVIDIA） | 8 GB + 125 GB RAM | Qwen3.6-35B-A3B | 21 GB | RAM，GPU | 32-33 |
 | **数据中心 GPU**（AMD，ROCm） | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
 
 范围表示多次运行之间的差异。方法与每次运行：
@@ -185,7 +185,7 @@ RAM，因此只有两个层级。能装进显卡的模型会完整地在显卡�
 ## 规划器
 
 <p align="center">
-  <img src="docs/assets/screens/plan-mac.png" width="820" alt="16 GB Apple silicon 笔记本上运行 Qwen3.6-35B-A3B Q4_K_M 的 Plan 界面：专家从闪存读取，配有 6.6 GiB 缓存，提示词在 GPU 上处理，token 在 CPU 上生成，实测 23.9 tok/s，缓存命中率 94%，以及内存的去向。">
+  <img src="https://github.com/user-attachments/assets/98e6de3e-e27d-482d-bff1-26fc66074af4" width="820" alt="16 GB Apple silicon 笔记本上运行 Qwen3.6-35B-A3B Q4_K_M 的 Plan 界面：专家从闪存读取，配有 6.6 GiB 缓存，提示词在 GPU 上处理，token 在 CPU 上生成，实测 23.9 tok/s，缓存命中率 94%，以及内存的去向。">
 </p>
 
 规划器读取模型的文件头并测量机器：内存、存储速度、每个 CPU、GPU 和 NPU。其规则不指定任何设备或平台，
@@ -221,7 +221,7 @@ RAM，因此只有两个层级。能装进显卡的模型会完整地在显卡�
 | 自动配置 | ✅ `--auto` | 按内存选择模型 | 专家缓存预算 | `coli tune` | ❌ |
 
 当模型能放进游戏 GPU 加 RAM 时，Strata 快二到四倍。当模型需要从闪存流式读取时，所有引擎都低于每秒十个 token，
-速度由硬盘决定。在同一张 24 GB 显卡上与 Lucebox 对比，使用相同的文件和提示：本引擎解码 Qwen3.6-35B-A3B 更快（135 对 108 tok/s），28k token 提示的首个 token 用时 5 秒（Lucebox 为 37 秒）；Lucebox 的专用草稿模型解码 Gemma 4 的代码快两倍以上。速度及出处：[docs/comparison.md](docs/comparison.md)。
+速度由硬盘决定。在同一张 24 GB 显卡上与 Lucebox 对比，使用相同的文件和提示：本引擎解码 Qwen3.6-35B-A3B 更快（154 对 123 tok/s），28k token 提示的首个 token 用时 5 秒（Lucebox 为 37 秒）；Lucebox 的专用草稿模型解码 Gemma 4 的代码快两倍以上。速度及出处：[docs/comparison.md](docs/comparison.md)。
 
 ## 从源码构建
 
