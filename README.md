@@ -38,7 +38,7 @@ Automated resource scheduling tailor made to optimize tok/s.
 Qwen3.6-35B-A3B, larger than each device's memory; any MoE model in GGUF runs, at any
 quantization. Decode speeds are the [Performance](#performance) table's.
 
-**The agent on a 2021 laptop, no GPU**: the viral voxel-pagoda prompt to the built-in agent on a ThinkPad with 16 GB of RAM, CPU only, and Qwen3.6-35B-A3B Q4_K_M. 988 lines at 2.3 tok/s, then the page in the app's preview; the speed-ups are marked on screen.
+**The agent on a 2021 laptop, no GPU** (1:33): the viral voxel-pagoda prompt to the built-in agent on a ThinkPad with 16 GB of RAM, CPU only, and Qwen3.6-35B-A3B Q4_K_M. 988 lines at 2.3 tok/s, then the page in the app's preview; the speed-ups are marked on screen.
 
 <p align="center"><img src="https://github.com/user-attachments/assets/1da744d4-dd98-4d14-a76e-50bdf0d9aec4" width="640" alt="The built-in agent writing a voxel pagoda garden as one HTML file on a 2021 ThinkPad with 15 GB of RAM and no dedicated GPU, then the page in the app's preview, turning."></p>
 

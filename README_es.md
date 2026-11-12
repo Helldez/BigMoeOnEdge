@@ -40,7 +40,7 @@ GGUF, con cualquier cuantización. Las velocidades de decodificación son las de
 [Rendimiento](#rendimiento). En el teléfono Android y en el portátil escribe una respuesta en tiempo
 real; en el iPhone, la app con el modelo cargado.
 
-**El agente en un portátil de 2021, sin GPU**: el prompt viral de la pagoda de vóxeles al agente integrado en un ThinkPad con 15 GB de RAM, solo CPU, y Qwen3.6-35B-A3B Q4_K_M (20,8 GB). 988 líneas a 2,3 tok/s y luego la página en la vista previa de la app; las partes aceleradas se indican en pantalla.
+**El agente en un portátil de 2021, sin GPU** (1:33): el prompt viral de la pagoda de vóxeles al agente integrado en un ThinkPad con 15 GB de RAM, solo CPU, y Qwen3.6-35B-A3B Q4_K_M (20,8 GB). 988 líneas a 2,3 tok/s y luego la página en la vista previa de la app; las partes aceleradas se indican en pantalla.
 
 <p align="center"><img src="https://github.com/user-attachments/assets/1da744d4-dd98-4d14-a76e-50bdf0d9aec4" width="640" alt="El agente integrado escribe un jardín con una pagoda de vóxeles en un solo archivo HTML en un ThinkPad de 2021 con 15 GB de RAM y sin GPU dedicada; después, la página gira en la vista previa de la app."></p>
 
