@@ -64,6 +64,26 @@ Semantic Versioning.
   leads on Gemma 4 26B-A4B (131 against 114, 288 on code with its drafter) and on decode after a long
   prompt with 12 GiB of the card free. In [comparison.md](docs/comparison.md#same-machine-same-file),
   the README's speed table and its translations, and [benchmarks.md](docs/benchmarks.md).
+- **The README's recordings show the 0.42.0 apps.** The Android phone writes an answer with
+  Qwen3.6-35B-A3B Q4_0 in real time (4.5 tok/s), the desktop app on a 16 GB Apple-silicon laptop
+  with Q4_K_M (21 tok/s, was 20), and the iPhone recording walks through the app with the 35B loaded:
+  a chat about a picture, the plan, the models and the settings. The iPhone footage is an unedited
+  recording on a 12 GB iPhone. By @gjjkbssg (#495). The six READMEs say what each recording shows.
+- **The README shows the built-in agent on a 2021 laptop with no dedicated GPU.** The viral voxel-pagoda
+  prompt on a ThinkPad with 15 GB of RAM, CPU only, Qwen3.6-35B-A3B Q4_K_M: 11,787 tokens at 2.3 tok/s
+  wrote 988 lines, shown as they were written, then the page in the app's preview. A GIF and a 1:33
+  video, with every speed-up marked on screen, in the six READMEs.
+  The recordings and the Plan screenshot are GitHub attachments now, as the tour video already was,
+  so `docs/assets/screens/` is gone and a clone no longer carries 3 MB of pictures. Each recording
+  names its model and decode speed from the speed table, the text below says any MoE model in GGUF
+  runs at any quantization, and the tour video is gone from the top of the README.
+- **The README's speed table catches up with 0.41.2 and 0.42.0.** The iPhone row is 6 tok/s, the
+  `--auto` harness row on 0.42.0 (5.56; was 3). By @gjjkbssg (#574). The Android phone's 35B row
+  is 5-6, the three `--auto` loads on 0.42.0 (4.67, 4.77, 5.21 with `--overlap`). The 24 GB card rows are the
+  2026-11-11 run on 0.41.2: Qwen3.6-35B-A3B 154, 59-67 with 12 GB of the card free, Gemma 4
+  26B-A4B 114, Laguna XS 2.1 33B 93-94, and the comparison with Lucebox reads 154 against 123. A new
+  row: an 8 GB card (RTX 4060 class) with 125 GB of RAM decodes Qwen3.6-35B-A3B at 32-33 after the
+  load-time calibration. The table rounds up to whole tokens per second.
 
 ## [0.41.3] - 2026-11-11
 
