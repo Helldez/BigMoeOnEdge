@@ -74,7 +74,9 @@ Semantic Versioning.
   wrote 988 lines, shown as they were written, then the page in the app's preview. A GIF and a 1:33
   video, with every speed-up marked on screen, in the six READMEs.
   The recordings and the Plan screenshot are GitHub attachments now, as the tour video already was,
-  so `docs/assets/screens/` is gone and a clone no longer carries 3 MB of pictures.
+  so `docs/assets/screens/` is gone and a clone no longer carries 3 MB of pictures. Each recording
+  names its model and decode speed from the speed table, the text below says any MoE model in GGUF
+  runs at any quantization, and the tour video is gone from the top of the README.
 - **The README's speed table catches up with 0.41.2 and 0.42.0.** The iPhone row is 6 tok/s, the
   `--auto` harness row on 0.42.0 (5.56; was 3). By @gjjkbssg (#574). The Android phone's 35B row
   is 5-6, the three `--auto` loads on 0.42.0 (4.67, 4.77, 5.21 with `--overlap`). The 24 GB card rows are the

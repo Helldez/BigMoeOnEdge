@@ -24,23 +24,21 @@ depuis la flash quand le modèle en a besoin. Android, iOS, macOS, Windows et Li
 <td align="center" width="50%"><img src="https://github.com/user-attachments/assets/26760326-2ef5-4b4a-950d-581c99e58206" width="220" alt="L'application iPhone sur un iPhone de 12 GB avec Qwen3.6-35B-A3B chargé : une conversation sur une image, le plan, les modèles et les réglages, en temps réel."></td>
 </tr>
 <tr>
-<td align="center">Téléphone Android de 12 GB</td>
-<td align="center">iPhone de 12 GB</td>
+<td align="center">Téléphone Android de 12 GB<br>Qwen3.6-35B-A3B · 5-6 tok/s</td>
+<td align="center">iPhone de 12 GB<br>Qwen3.6-35B-A3B · 6 tok/s</td>
 </tr>
 <tr>
 <td align="center" colspan="2"><img src="https://github.com/user-attachments/assets/0e1fd1d2-4976-4ecf-a56f-fee60f5dff74" width="620" alt="Qwen3.6-35B-A3B générant une réponse dans l'application de bureau sur un portable Apple silicon de 16 GB, en temps réel, à 21 tok/s."></td>
 </tr>
 <tr>
-<td align="center" colspan="2">Portable Apple silicon de 16 GB</td>
+<td align="center" colspan="2">Portable Apple silicon de 16 GB<br>Qwen3.6-35B-A3B · 18-24 tok/s</td>
 </tr>
 </table>
 
-Qwen3.6-35B-A3B (21-22 GB) sur chaque appareil, plus grand que sa mémoire. Sur le téléphone Android et le
-portable, il écrit une réponse en temps réel ; sur l'iPhone, l'application avec le modèle chargé.
-
-**La visite** (2:38) : les modèles, le planificateur, le chat, l'agent sur un dossier, les tâches et les apps connectées sur un Mac de 16 GB.
-
-https://github.com/user-attachments/assets/16371803-b96b-42a4-b147-cb1b7d515c73
+Qwen3.6-35B-A3B (22 GB), plus grand que la mémoire de chaque appareil ; tout modèle MoE en GGUF
+fonctionne, quelle que soit sa quantification. Les vitesses de décodage sont celles du tableau
+[Performances](#performances). Sur le téléphone Android et le portable, il écrit une réponse en temps
+réel ; sur l'iPhone, l'application avec le modèle chargé.
 
 **L'agent sur un portable de 2021, sans GPU** (1:33) : le prompt viral de la pagode en voxels donné à l'agent intégré, sur un ThinkPad avec 15 GB de RAM, CPU seulement, et Qwen3.6-35B-A3B Q4_K_M (20,8 GB). 988 lignes à 2,3 tok/s, puis la page dans l'aperçu de l'app ; les passages accélérés sont indiqués à l'écran.
 

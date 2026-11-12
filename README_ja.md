@@ -23,22 +23,18 @@ Android、iOS、macOS、Windows、Linux に対応し、llama.cpp の上に構築
 <td align="center" width="50%"><img src="https://github.com/user-attachments/assets/26760326-2ef5-4b4a-950d-581c99e58206" width="220" alt="Qwen3.6-35B-A3B を読み込んだ 12 GB の iPhone の iPhone アプリ：画像についてのチャット、プラン、モデル、設定をリアルタイムで。"></td>
 </tr>
 <tr>
-<td align="center">12 GB Android スマートフォン</td>
-<td align="center">12 GB iPhone</td>
+<td align="center">12 GB Android スマートフォン<br>Qwen3.6-35B-A3B · 5-6 tok/s</td>
+<td align="center">12 GB iPhone<br>Qwen3.6-35B-A3B · 6 tok/s</td>
 </tr>
 <tr>
 <td align="center" colspan="2"><img src="https://github.com/user-attachments/assets/0e1fd1d2-4976-4ecf-a56f-fee60f5dff74" width="620" alt="16 GB の Apple silicon ノート PC 上のデスクトップアプリで、Qwen3.6-35B-A3B が 21 tok/s でリアルタイムに回答を生成している様子。"></td>
 </tr>
 <tr>
-<td align="center" colspan="2">16 GB Apple silicon ノート PC</td>
+<td align="center" colspan="2">16 GB Apple silicon ノート PC<br>Qwen3.6-35B-A3B · 18-24 tok/s</td>
 </tr>
 </table>
 
-各デバイス上の Qwen3.6-35B-A3B（21〜22 GB）で、いずれのデバイスのメモリよりも大きいモデルです。Android スマートフォンとノート PC ではリアルタイムに回答を書き、iPhone ではモデルを読み込んだアプリを示しています。
-
-**ツアー**（2:38）：16 GB の Mac で、モデル、プランナー、チャット、フォルダー上のエージェント、タスク、連携アプリを紹介します。
-
-https://github.com/user-attachments/assets/16371803-b96b-42a4-b147-cb1b7d515c73
+Qwen3.6-35B-A3B（22 GB）は、いずれのデバイスのメモリよりも大きいモデルです。GGUF 形式の MoE モデルであれば、どの量子化でも動作します。デコード速度は[パフォーマンス](#パフォーマンス)の表の値です。Android スマートフォンとノート PC ではリアルタイムに回答を書き、iPhone ではモデルを読み込んだアプリを示しています。
 
 **2021 年のノート PC、GPU なしでのエージェント**（1:33）：話題のボクセル五重塔プロンプトを、15 GB の RAM を積んだ ThinkPad（CPU のみ）上の内蔵エージェントに、Qwen3.6-35B-A3B Q4_K_M（20.8 GB）で渡しました。2.3 tok/s で 988 行を書き、その後アプリのプレビューでページを表示します。早送りの箇所は画面に表示しています。
 

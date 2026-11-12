@@ -22,23 +22,20 @@ the model needs them. Android, iOS, macOS, Windows and Linux, built on llama.cpp
 <td align="center" width="50%"><img src="https://github.com/user-attachments/assets/26760326-2ef5-4b4a-950d-581c99e58206" width="220" alt="The iPhone app on a 12 GB iPhone with Qwen3.6-35B-A3B loaded: a chat about a picture, the plan, the models and the settings, in real time."></td>
 </tr>
 <tr>
-<td align="center">12 GB Android phone</td>
-<td align="center">12 GB iPhone</td>
+<td align="center">12 GB Android phone<br>Qwen3.6-35B-A3B · 5-6 tok/s</td>
+<td align="center">12 GB iPhone<br>Qwen3.6-35B-A3B · 6 tok/s</td>
 </tr>
 <tr>
 <td align="center" colspan="2"><img src="https://github.com/user-attachments/assets/0e1fd1d2-4976-4ecf-a56f-fee60f5dff74" width="620" alt="Qwen3.6-35B-A3B generating an answer in the desktop app on a 16 GB Apple-silicon laptop, in real time, at 21 tok/s."></td>
 </tr>
 <tr>
-<td align="center" colspan="2">16 GB Apple-silicon laptop</td>
+<td align="center" colspan="2">16 GB Apple-silicon laptop<br>Qwen3.6-35B-A3B · 18-24 tok/s</td>
 </tr>
 </table>
 
-Qwen3.6-35B-A3B (21-22 GB) on each device, larger than each device's memory. On the Android phone and
-the laptop it writes an answer in real time; on the iPhone, the app with the model loaded.
-
-**The tour** (2:38): models, the planner, chat, the agent on a folder, tasks and connected apps on a 16 GB Mac.
-
-https://github.com/user-attachments/assets/16371803-b96b-42a4-b147-cb1b7d515c73
+Qwen3.6-35B-A3B (22 GB), larger than each device's memory; any MoE model in GGUF runs, at any
+quantization. Decode speeds are the [Performance](#performance) table's. On the Android phone and the
+laptop it writes an answer in real time; on the iPhone, the app with the model loaded.
 
 **The agent on a 2021 laptop, no GPU** (1:33): the viral voxel-pagoda prompt to the built-in agent on a ThinkPad with 15 GB of RAM, CPU only, and Qwen3.6-35B-A3B Q4_K_M (20.8 GB). 988 lines at 2.3 tok/s, then the page in the app's preview; the speed-ups are marked on screen.
 

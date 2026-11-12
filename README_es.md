@@ -24,23 +24,21 @@ flash cuando el modelo los necesita. Android, iOS, macOS, Windows y Linux, const
 <td align="center" width="50%"><img src="https://github.com/user-attachments/assets/26760326-2ef5-4b4a-950d-581c99e58206" width="220" alt="La app de iPhone en un iPhone de 12 GB con Qwen3.6-35B-A3B cargado: un chat sobre una imagen, el plan, los modelos y los ajustes, en tiempo real."></td>
 </tr>
 <tr>
-<td align="center">Teléfono Android de 12 GB</td>
-<td align="center">iPhone de 12 GB</td>
+<td align="center">Teléfono Android de 12 GB<br>Qwen3.6-35B-A3B · 5-6 tok/s</td>
+<td align="center">iPhone de 12 GB<br>Qwen3.6-35B-A3B · 6 tok/s</td>
 </tr>
 <tr>
 <td align="center" colspan="2"><img src="https://github.com/user-attachments/assets/0e1fd1d2-4976-4ecf-a56f-fee60f5dff74" width="620" alt="Qwen3.6-35B-A3B generando una respuesta en la app de escritorio en un portátil Apple silicon de 16 GB, en tiempo real, a 21 tok/s."></td>
 </tr>
 <tr>
-<td align="center" colspan="2">Portátil Apple silicon de 16 GB</td>
+<td align="center" colspan="2">Portátil Apple silicon de 16 GB<br>Qwen3.6-35B-A3B · 18-24 tok/s</td>
 </tr>
 </table>
 
-Qwen3.6-35B-A3B (21-22 GB) en cada dispositivo, más grande que su memoria. En el teléfono Android y en el
-portátil escribe una respuesta en tiempo real; en el iPhone, la app con el modelo cargado.
-
-**El recorrido** (2:38): modelos, el planificador, el chat, el agente en una carpeta, las tareas y las apps conectadas en un Mac de 16 GB.
-
-https://github.com/user-attachments/assets/16371803-b96b-42a4-b147-cb1b7d515c73
+Qwen3.6-35B-A3B (22 GB), más grande que la memoria de cada dispositivo; funciona cualquier modelo MoE en
+GGUF, con cualquier cuantización. Las velocidades de decodificación son las de la tabla de
+[Rendimiento](#rendimiento). En el teléfono Android y en el portátil escribe una respuesta en tiempo
+real; en el iPhone, la app con el modelo cargado.
 
 **El agente en un portátil de 2021, sin GPU** (1:33): el prompt viral de la pagoda de vóxeles al agente integrado en un ThinkPad con 15 GB de RAM, solo CPU, y Qwen3.6-35B-A3B Q4_K_M (20,8 GB). 988 líneas a 2,3 tok/s y luego la página en la vista previa de la app; las partes aceleradas se indican en pantalla.
 

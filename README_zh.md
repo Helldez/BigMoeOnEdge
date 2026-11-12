@@ -23,22 +23,18 @@
 <td align="center" width="50%"><img src="https://github.com/user-attachments/assets/26760326-2ef5-4b4a-950d-581c99e58206" width="220" alt="12 GB iPhone 上已加载 Qwen3.6-35B-A3B 的 iPhone 应用：关于一张图片的对话、规划、模型和设置，实时录制。"></td>
 </tr>
 <tr>
-<td align="center">12 GB Android 手机</td>
-<td align="center">12 GB iPhone</td>
+<td align="center">12 GB Android 手机<br>Qwen3.6-35B-A3B · 5-6 tok/s</td>
+<td align="center">12 GB iPhone<br>Qwen3.6-35B-A3B · 6 tok/s</td>
 </tr>
 <tr>
 <td align="center" colspan="2"><img src="https://github.com/user-attachments/assets/0e1fd1d2-4976-4ecf-a56f-fee60f5dff74" width="620" alt="Qwen3.6-35B-A3B 在 16 GB Apple silicon 笔记本的桌面应用中实时生成回答，速度为 21 tok/s。"></td>
 </tr>
 <tr>
-<td align="center" colspan="2">16 GB Apple silicon 笔记本</td>
+<td align="center" colspan="2">16 GB Apple silicon 笔记本<br>Qwen3.6-35B-A3B · 18-24 tok/s</td>
 </tr>
 </table>
 
-Qwen3.6-35B-A3B（21-22 GB）在各设备上运行，大于每台设备的内存。在 Android 手机和笔记本上实时写出回答；在 iPhone 上展示已加载模型的应用。
-
-**功能导览**（2:38）：在 16 GB 的 Mac 上演示模型、规划器、聊天、在文件夹中工作的智能体、任务和已连接的应用。
-
-https://github.com/user-attachments/assets/16371803-b96b-42a4-b147-cb1b7d515c73
+Qwen3.6-35B-A3B（22 GB）大于每台设备的内存；任何 GGUF 格式的 MoE 模型、任何量化都可以运行。解码速度取自[性能](#性能)表。在 Android 手机和笔记本上实时写出回答；在 iPhone 上展示已加载模型的应用。
 
 **2021 年的笔记本，没有 GPU 的智能体**（1:33）：把流行的体素宝塔提示词交给内置智能体，运行在 15 GB 内存、仅用 CPU 的 ThinkPad 上，模型为 Qwen3.6-35B-A3B Q4_K_M（20.8 GB）。以 2.3 tok/s 写出 988 行，然后在应用的预览中打开页面；加速的部分已在画面上标出。
 
