@@ -61,7 +61,11 @@ training context, so our context is always the pin. Where the context checkpoint
 leave the expert cache under a token cycle and the person set neither, they give way, in that order:
 the checkpoints halve down to one (the end of the last prompt, where a follow-up most often
 diverges), then the context halves, the fitter placing again at each length, down to
-`PlannerPolicy::ctx_min_auto` (4096, the fitter's own `--fit-ctx` default). The first plan whose cache
+`PlannerPolicy::ctx_min_auto` (4096, the fitter's own `--fit-ctx` default) and never under
+`RunConfig::ctx_for_clients` (16384), what the server offers the clients it serves: a coding agent's
+first request alone can be 10k tokens, so the server's own context stays and only a longer one
+nobody set gives way. The rules-only replan a calibration is judged by (`replan_rules`) takes the
+checkpoint step too, and not the context step, which places the model again. The first plan whose cache
 clears its floor is kept; where none does, nothing changes. A value the person set is never moved,
 only named as the lever. The probe opens its
 context as the session does, with sliding-window layers holding their window rather than the whole

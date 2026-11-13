@@ -81,6 +81,10 @@ llama_pos ContextCheckpoints::useful_below(llama_pos pos_eval) const {
 
 bool ContextCheckpoints::memory_covers(const CheckpointContexts & c, int64_t n) const {
     if (n_swa_ <= 0 || !c.tgt || n <= 0) return true;
+    // A cut past everything the memory holds removes nothing: what is there still reads as it did.
+    // Asked first, because a memory with a recurrent part reports the recurrent cell's position as its
+    // minimum, the last one, and would read as a window that no longer covers the prefix.
+    if (pos_of(n) > llama_memory_seq_pos_max(llama_get_memory(c.tgt), k_seq)) return true;
     const llama_pos pos_min = llama_memory_seq_pos_min(llama_get_memory(c.tgt), k_seq);
     return pos_min <= 0 || pos_min < useful_below(pos_of(n));
 }

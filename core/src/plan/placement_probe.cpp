@@ -384,9 +384,15 @@ Placement probe_placement(const char * model_path,
         // A windowed cache holds the window and one ubatch of cells, where a checkpoint copies the window
         // alone: measured on Gemma 4 26B-A4B, a checkpoint of 106 MiB, 1024 cells, where twice the half
         // less the whole at an 8192-wide graph was 744 (and nothing at a context too short to halve).
-        // So where a window is measured, a checkpoint is the window at what a cell costs.
+        // So where a window is measured, a checkpoint is the window at what a cell costs, plus what the
+        // fixed part holds beyond the window and its ubatch of cells (a recurrent state, on a model with
+        // both), never less than the window alone.
         const uint64_t per_cell = pl.host_window_cell_bytes + pl.device_window_cell_bytes;
-        if (per_cell > 0) pl.context_fixed_bytes = per_cell * std::min<uint64_t>(pl.n_swa, cparams.n_ctx);
+        if (per_cell > 0) {
+            const uint64_t window = per_cell * std::min<uint64_t>(pl.n_swa, cparams.n_ctx);
+            const uint64_t held = per_cell * ((uint64_t) pl.n_swa + cparams.n_ubatch);
+            pl.context_fixed_bytes = window + (pl.context_fixed_bytes > held ? pl.context_fixed_bytes - held : 0);
+        }
     }
 
     // Set aside last, with its numbers kept. Everything above ran, so the plan can quote what the

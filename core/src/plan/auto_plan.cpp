@@ -136,8 +136,18 @@ void restate(
 // PlannerPolicy::ctx_min_auto. The first plan whose cache clears the floor is the run's; where none
 // does, the plan stays as it was, since giving them up bought nothing. A value the person set is
 // theirs and never moves (the plan still names the lever).
-Plan give_way(
-    const AutoPlan & facts, const RunConfig & cfg, const PlanRequest & req, const ModelProfile & model, Plan plan) {
+// The context step places the model again at each length, which reads the machine as it is now:
+// `refit` false (replan_rules, which may run with a model loaded) stops at the checkpoints. The
+// context is never shortened under RunConfig::ctx_for_clients, what the server offers the clients it
+// serves (a coding agent's first request alone can be 10k tokens): on a server that is the context it
+// was given, so there the step stops at the checkpoints too, and only a longer context nobody set
+// gives way.
+Plan give_way(const AutoPlan & facts,
+              const RunConfig & cfg,
+              const PlanRequest & req,
+              const ModelProfile & model,
+              Plan plan,
+              bool refit) {
     const uint64_t cycle = plan.token_cycle_bytes;
     if (plan.streaming_declined || !plan.config.moe.enabled || cycle == 0 || plan.cache_budget_bytes >= cycle)
         return plan;
@@ -148,7 +158,8 @@ Plan give_way(
     if (!req.is_pinned("ctx-checkpoints") && cfg.chatml && kept > 1) {
         for (int n = kept / 2; n >= 1; n /= 2) {
             base.ctx_checkpoints = n;
-            Plan q = plan_layout(facts, base, req, model);
+            Plan q =
+                refit ? plan_layout(facts, base, req, model) : plan_run(base, facts.hw, model, facts.placement, req);
             if (!clears(q)) continue;
             restate(q, "ctx-checkpoints", std::to_string(n),
                     std::to_string(n) + " context checkpoints, not " + std::to_string(kept) +
@@ -163,9 +174,10 @@ Plan give_way(
         }
         base.ctx_checkpoints = 1;
     }
-    const uint32_t floor = PlannerPolicy::defaults().ctx_min_auto;
+    const uint32_t floor =
+        std::max<uint32_t>(PlannerPolicy::defaults().ctx_min_auto, (uint32_t) RunConfig::ctx_for_clients);
     const int given = cfg.n_ctx;
-    if (req.is_pinned("ctx-size") || given <= (int) floor) return plan;
+    if (!refit || req.is_pinned("ctx-size") || given / 2 < (int) floor) return plan;
     for (uint32_t n_ctx = (uint32_t) given / 2; n_ctx >= floor; n_ctx /= 2) {
         RunConfig shorter = base;
         shorter.n_ctx = (int) n_ctx;
@@ -195,7 +207,7 @@ Plan give_way(
 }
 
 Plan plan_on_facts(const AutoPlan & facts, const RunConfig & cfg, const PlanRequest & req, const ModelProfile & model) {
-    return give_way(facts, cfg, req, model, plan_layout(facts, cfg, req, model));
+    return give_way(facts, cfg, req, model, plan_layout(facts, cfg, req, model), /*refit*/ true);
 }
 
 } // namespace
@@ -288,7 +300,9 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
 Plan replan_rules(const AutoPlan & facts, const RunConfig & cfg, const PlanRequest & req, const MeasuredKnobs & knobs) {
     ModelProfile model = facts.model;
     model.knobs = knobs;
-    return plan_run(cfg, facts.hw, model, facts.placement, req);
+    // The checkpoints give way here as in the plan, so a calibration is judged on the plan it would
+    // serve; the context step, which places the model again, does not run.
+    return give_way(facts, cfg, req, model, plan_run(cfg, facts.hw, model, facts.placement, req), /*refit*/ false);
 }
 
 Plan replan(const AutoPlan & facts, const RunConfig & cfg, const PlanRequest & req, const MeasuredKnobs & knobs) {

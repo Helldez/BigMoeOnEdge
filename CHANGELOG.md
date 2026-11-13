@@ -35,9 +35,10 @@ Semantic Versioning.
 ### Changed
 - **Checkpoints, then the context, give way to the expert cache where nobody set them.** Where the
   checkpoints and the context leave the expert cache under one token cycle (a cache that returns no
-  hits), the plan halves the checkpoints down to one, then the context down to 4096 tokens, placing
-  the model again at each length, and keeps the first plan whose cache clears its floor; where none
-  does, nothing changes. A value set by hand (`--ctx-checkpoints`, `--ctx-size`, the settings) is never
+  hits), the plan halves the checkpoints down to one, then a context longer than the server's 16384
+  down to that, placing the model again at each length, and keeps the first plan whose cache clears
+  its floor; where none does, nothing changes. The server's own context is never shortened, since a
+  coding agent's first request alone can be 10k tokens. A value set by hand (`--ctx-checkpoints`, `--ctx-size`, the settings) is never
   moved ([hardware-planning.md](docs/hardware-planning.md#the-flow)).
 
 ## [0.42.0] - 2026-11-12
