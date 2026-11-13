@@ -280,7 +280,8 @@ void EngineHost::start_loader(const RunConfig & effective_in,
                 std::lock_guard<std::mutex> lk(m_);
                 requested = requested_;
             }
-            before_open(effective, requested, BeforeOpenSignals{before_open_stop_, before_open_cancel_});
+            engine_.run(
+                [&] { before_open(effective, requested, BeforeOpenSignals{before_open_stop_, before_open_cancel_}); });
             {
                 std::lock_guard<std::mutex> lk(m_);
                 requested_ = requested;
@@ -299,13 +300,14 @@ void EngineHost::start_loader(const RunConfig & effective_in,
         }
         if (calibrating_.exchange(false)) publish_state(); // a load now, no longer a calibration
         std::string error;
-        std::shared_ptr<HostedSession> s = open_(session_config_from(effective), error);
+        std::shared_ptr<HostedSession> s = engine_.run([&] { return open_(session_config_from(effective), error); });
         // The pending side would not open: the other side, which a plan may serve instead. Not for a
         // load an unload has cancelled. Only an open of the other side says the first failure was the
         // side's: where both fail, the first error is the one reported, and nothing is told.
         if (!s && fallback && !before_open_cancel_.load()) {
             std::string second;
-            std::shared_ptr<HostedSession> other = open_(session_config_from(fallback->effective), second);
+            std::shared_ptr<HostedSession> other =
+                engine_.run([&] { return open_(session_config_from(fallback->effective), second); });
             if (other) {
                 s = std::move(other);
                 effective = fallback->effective;
@@ -564,21 +566,24 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
     // and a half, the last reading riding on the tokens between.
     double temp_c = -1.0;
     std::chrono::steady_clock::time_point temp_at{};
-    RunResult r = s->generate(gr, [&](const TokenMetrics & tm) {
-        json ev = token_json(tm);
-        if (cpu_temp_) {
-            const auto now = std::chrono::steady_clock::now();
-            if (temp_at == std::chrono::steady_clock::time_point{} || now - temp_at > std::chrono::milliseconds(1500)) {
-                temp_at = now;
-                temp_c = cpu_temp_();
+    RunResult r = engine_.run([&] {
+        return s->generate(gr, [&](const TokenMetrics & tm) {
+            json ev = token_json(tm);
+            if (cpu_temp_) {
+                const auto now = std::chrono::steady_clock::now();
+                if (temp_at == std::chrono::steady_clock::time_point{} ||
+                    now - temp_at > std::chrono::milliseconds(1500)) {
+                    temp_at = now;
+                    temp_c = cpu_temp_();
+                }
+                if (temp_c > 0) ev["cpu_temp_c"] = temp_c;
             }
-            if (temp_c > 0) ev["cpu_temp_c"] = temp_c;
-        }
-        bus_.publish("token", ev);
-        if (on_token && !client_gone && !on_token(tm)) {
-            client_gone = true;
-            s->cancel();
-        }
+            bus_.publish("token", ev);
+            if (on_token && !client_gone && !on_token(tm)) {
+                client_gone = true;
+                s->cancel();
+            }
+        });
     });
     generating_ = false;
 
@@ -689,7 +694,7 @@ DecideOutcome EngineHost::decide(const DecideRequest & req, const std::function<
 
     generating_ = true;
     publish_state();
-    DecideResult r = s->decide(req);
+    DecideResult r = engine_.run([&] { return s->decide(req); });
     generating_ = false;
 
     if (!r.ok && !r.cancelled) {

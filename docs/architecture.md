@@ -43,6 +43,8 @@ server/         bmoe-server: the application framework every UI speaks to (docs/
                 unpacked), update_service (packs and updates downloaded, checked, put in place):
                 pure policy (bmoe_server_core), with curl_fetch beside it, the system curl behind the
                 HttpFetch port: the library's one adapter, there so its no-curl answer is tested
+                engine_thread: the one thread every computation of the engine runs on (a backend
+                may keep a worker team per calling thread, as ggml's OpenMP CPU backend does);
                 engine_host: the one Session, loads, the turn line, over the HostedSession seam
                 (hosted_session.h) its test drives with a scripted session; model_library: files, catalog,
                 downloads; planner_adapter: /api/plan when the planner is built in;

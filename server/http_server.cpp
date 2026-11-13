@@ -645,13 +645,16 @@ struct App {
             p.seq = ++plan_seq;
             return p;
         }
-        PlanOutcome p = make_plan(
-            cfg, store.operator_keys(), opt.isolated_probes,
-            [this](const std::string & step, const std::string & label, int index, int count) {
-                bus.publish("plan_progress",
-                            json{{"step", step}, {"label", label}, {"index", index}, {"count", count}});
-            },
-            have ? &kept : nullptr, have_knobs ? &knobs : nullptr, /*measure_knobs*/ true);
+        // The probes compute: on the engine's thread, as everything that computes (engine_thread.h).
+        PlanOutcome p = host.on_engine([&] {
+            return make_plan(
+                cfg, store.operator_keys(), opt.isolated_probes,
+                [this](const std::string & step, const std::string & label, int index, int count) {
+                    bus.publish("plan_progress",
+                                json{{"step", step}, {"label", label}, {"index", index}, {"count", count}});
+                },
+                have ? &kept : nullptr, have_knobs ? &knobs : nullptr, /*measure_knobs*/ true);
+        });
         bus.publish("plan_progress", json{{"step", "done"}});
         p.seq = ++plan_seq;
         return p;
@@ -887,7 +890,13 @@ struct App {
             // Unloaded, shutting down, or anything a person set meanwhile (another model, auto planning
             // off, a setting): the plan was not made for those settings and is not laid over them, and
             // the load opens what it was going to. The check and the write are one (apply_plan_if).
-            if (!c.plan.ok || sig.cancelled.load() || stopping || !planner_available()) return;
+            if (!c.plan.ok || sig.cancelled.load() || stopping || !planner_available()) {
+                log_printf(LogLevel::Info, "calibration: its plan is not applied (%s)",
+                           !c.plan.ok             ? "no plan"
+                           : sig.cancelled.load() ? "the load was cancelled"
+                                                  : "shutting down");
+                return;
+            }
             // A calibration stopped before it decided leaves a side pending: the side known to open is
             // served where there is one, as at a load. Where there is none, the plan is not applied:
             // the load opens the settings it was serving, which opened here, rather than a side no
@@ -902,9 +911,18 @@ struct App {
                 // What it left pending is the idle point's to try again.
                 calibration_armed = at_load && c.plan.side_pending();
             }
-            if (pending) return;
+            if (pending) {
+                log_printf(LogLevel::Info, "calibration: a side is still pending and none is proven to open; the load "
+                                           "opens the plan it was serving");
+                return;
+            }
             p.seq = ++plan_seq;
-            if (!store.apply_plan_if(rev, true, p.values, p.decisions)) return;
+            if (!store.apply_plan_if(rev, true, p.values, p.decisions)) {
+                log_printf(LogLevel::Info,
+                           "calibration: the settings changed meanwhile; its plan is not laid over them");
+                return;
+            }
+            log_printf(LogLevel::Info, "calibration: the decided plan is applied");
             {
                 std::lock_guard<std::mutex> lk(plan_m);
                 load_plan = p;

@@ -49,6 +49,19 @@ Semantic Versioning.
   placement probe passes the new out-parameter of `common_get_device_memory_data`.
 
 ### Fixed
+- **The server decodes as fast as the CLI.** On the same plan of GLM-4.7 on two 24 GB cards
+  `bmoe-server` decoded at 9.2 tok/s and `bmoe-cli` at 16.4, with every setting the same: ggml's CPU
+  backend, built with OpenMP on Linux and Windows, keeps a team of worker threads per calling thread,
+  and the server computed from every thread a request, a load, a plan or a calibration ran on (122 more
+  threads a request). With more workers than cores the OpenMP runtime parks them between ops, and every
+  op waited for them to wake: 20 cores busy against the CLI's 60. Every computation the server runs now
+  goes through one thread (`server/engine_thread.h`), as the CLI runs it, and the threads no longer grow
+  with the requests.
+- **A cache that lost to the fitter's placement is never served for a CPU share that cannot run.** The
+  device tier arms the cache to time its share before keeping the fitter's placement; where the rest of
+  the plan then ruled the share out (the cache's experts streamed), the cache was served alone: 3.6 tok/s
+  on GLM-4.7 against the fitter's measured 16.2. The plan is now made again with the share counted as
+  not runnable, and the fitter's placement stands.
 - **A model's second load serves the side already measured instead of halving its speed.** With a
   device expert cache measured on the first load, the server is meant to serve the cache again and
   leave the capacity fitter's placement to an idle calibration. The plan on the cache named the

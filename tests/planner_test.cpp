@@ -3127,6 +3127,18 @@ int main() {
                           validate(try_share.config).ok,
                       "cpu share: the cache that lost to the fitter is timed with a share before it is set aside",
                       sd ? sd->reason : "no decision");
+                // Where the rest of the plan rules the share out (the cache's experts would be streamed, which
+                // no gate covers with a share), the cache it was armed for is never served: it lost to the
+                // fitter's placement with every miss uploaded (a server on GLM-4.7 served 3.6 tok/s so,
+                // against the fitter's measured 16.2).
+                HardwareProfile tight = slow_link;
+                tight.residency_budget = 2 * GiB;
+                const Plan no_room = share_plan(tight, lost_tier);
+                check(!(no_room.config.moe.device_cache_mb > 0 && no_room.config.moe.device_cache_cpu_share == 0.0f &&
+                        no_room.config.trial.cpu_share_side == -1),
+                      "cpu share: ruled out by the rest of the plan, the cache that lost is not served without it",
+                      std::to_string(no_room.config.moe.device_cache_mb) + " MiB cache, share " +
+                          std::to_string(no_room.config.moe.device_cache_cpu_share));
                 ModelProfile share_won = lost_tier;
                 share_won.knobs.cpu_share_tps = 19.0;
                 const Plan cache_back = share_plan(slow_link, share_won);

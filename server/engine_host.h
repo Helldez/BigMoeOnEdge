@@ -8,6 +8,7 @@
 #pragma once
 
 #include "chat_turn.h"
+#include "engine_thread.h"
 #include "hosted_session.h"
 #include "turn_queue.h"
 #include "event_bus.h"
@@ -198,6 +199,10 @@ public:
     // n_ctx) is a 400 and leaves the session usable; a failed prefill closes it, as a failed turn does.
     DecideOutcome decide(const DecideRequest & req, const std::function<bool()> & still_wanted = nullptr);
 
+    // Run `f` on the thread every computation of the engine runs on (engine_thread.h), and return its
+    // result: what a front-end computes beside the session (a plan's probes) goes through here too.
+    template <class F> auto on_engine(F && f) { return engine_.run(std::forward<F>(f)); }
+
 private:
     enum class State { Empty, Loading, Ready, Error };
 
@@ -243,6 +248,8 @@ private:
     std::function<void(const std::string &, const RoutingTrace &)> routing_sink_;
     uint32_t routing_kept_ = 0; // decoded tokens of the record last handed on; under gen_m_
 
+    // Declared before the loader and the sessions, so it outlives everything that hands it work.
+    EngineThread engine_;
     EventBus & bus_;
     const SessionOpener open_;
     std::function<json()> host_info_;

@@ -3466,6 +3466,14 @@ Plan plan_from(const RunConfig & base,
                const Placement & projected,
                const PlanRequest & req,
                const PlannerPolicy & pol,
+               const Planning::LayersHome * home_from);
+
+Plan plan_once(const RunConfig & base,
+               const HardwareProfile & hw,
+               const ModelProfile & model,
+               const Placement & projected,
+               const PlanRequest & req,
+               const PlannerPolicy & pol,
                const Planning::LayersHome * home_from) {
     Plan p;
     Planning s(base, hw, model, projected, req, pol, p);
@@ -3563,6 +3571,33 @@ Plan plan_from(const RunConfig & base,
     note_overlap(s);
     choose_threads(s);
     return p;
+}
+
+// A plan never serves a device cache its own measurements put behind the fitter's placement. The tier
+// arms such a cache only for its CPU share to be timed (choose_device_tier); where the rest of the plan
+// then rules the share out (the experts end up streamed, which no gate covers with a share), the cache
+// would be left armed with nothing to time, and served. Measured on two 24 GB cards with GLM-4.7: the
+// server's plan streamed the cache's experts, dropped the share, and served 3.6 tok/s against the
+// fitter's measured 16.2. So the plan is made again with the share counted as not runnable here, and
+// the fitter's placement stands.
+Plan plan_from(const RunConfig & base,
+               const HardwareProfile & hw,
+               const ModelProfile & model,
+               const Placement & projected,
+               const PlanRequest & req,
+               const PlannerPolicy & pol,
+               const Planning::LayersHome * home_from) {
+    Plan p = plan_once(base, hw, model, projected, req, pol, home_from);
+    const MeasuredKnobs & mk = model.knobs;
+    const double cache_best = std::max(mk.device_cache_tps, mk.cpu_share_unviable ? 0.0 : mk.cpu_share_tps);
+    const bool cache_lost =
+        mk.device_cache_tps > 0.0 && mk.no_device_cache_tps > cache_best * (1.0 + (double) pol.min_backend_win);
+    if (!cache_lost || mk.cpu_share_unviable > 0 || p.config.moe.device_cache_mb <= 0 ||
+        p.config.trial.cpu_share_side == 1 || req.is_pinned("device-cache-mb"))
+        return p;
+    ModelProfile no_share = model;
+    no_share.knobs.cpu_share_unviable = 1;
+    return plan_once(base, hw, no_share, projected, req, pol, home_from);
 }
 
 } // namespace
