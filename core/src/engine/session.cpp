@@ -1857,7 +1857,7 @@ bool Session::Impl::confirm_prefill_device(Opening & o) {
     const int want = std::min({std::max(PrefillDeviceConfig::verify_tokens, cfg.prefill.min_tokens),
                                PrefillDeviceConfig::max_outputs, prefill_piece(this->cfg), cfg.n_ctx - 1});
     const int rows = std::min(want, PrefillDeviceConfig::verify_rows);
-    double host_s = 0.0, dev_s = 0.0, agree = 0.0, nmse = 0.0;
+    double host_s = 0.0, dev_s = 0.0, agree = 0.0, nmse = 0.0, kld = 0.0, kld_max = 0.0;
     // A check that cannot run is not a verdict: the device stays as the plan or the caller set it,
     // and the line below says it was not confirmed.
     std::string unchecked;
@@ -1922,6 +1922,25 @@ bool Session::Impl::confirm_prefill_device(Opening & o) {
         } else {
             int same = 0;
             double num = 0.0, den = 0.0;
+            // The KL divergence of the device's next-token distribution from the host's, per row: how far
+            // the whole distribution moved, where agreeing on the top token only says whether a near tie
+            // flipped. Measured on a 12 GB phone's NPU: Qwen3.6-35B-A3B Q4_K_M a mean of 0.004 (rounding,
+            // its two differing rows near ties), Gemma 4 26B-A4B Q4_K_M 0.60 with one row at 13.5 where the
+            // host was 0.999 sure (the backend's expert matmul past the fp16 range, ggml-org/llama.cpp#32198).
+            // Logged beside the verdict, which is still the top-token agreement.
+            const int nv = n_vocab;
+            std::vector<double> lh((size_t) nv), ld((size_t) nv);
+            const auto log_softmax = [nv](const float * x, std::vector<double> & out) {
+                double mx = -INFINITY;
+                for (int v = 0; v < nv; ++v)
+                    mx = std::max(mx, (double) x[v]);
+                double z = 0.0;
+                for (int v = 0; v < nv; ++v)
+                    z += std::exp((double) x[v] - mx);
+                const double lz = mx + std::log(z);
+                for (int v = 0; v < nv; ++v)
+                    out[(size_t) v] = (double) x[v] - lz;
+            };
             for (int r = 0; r < rows; ++r) {
                 const float * h = host_logits.data() + (size_t) r * n_vocab;
                 const float * d = llama_get_logits_ith(c, at[(size_t) r]);
@@ -1931,6 +1950,13 @@ bool Session::Impl::confirm_prefill_device(Opening & o) {
                     num += e * e;
                     den += (double) h[v] * (double) h[v];
                 }
+                log_softmax(h, lh);
+                log_softmax(d, ld);
+                double kl = 0.0;
+                for (int v = 0; v < nv; ++v)
+                    kl += std::exp(lh[(size_t) v]) * (lh[(size_t) v] - ld[(size_t) v]);
+                kld += kl / rows;
+                kld_max = std::max(kld_max, kl);
             }
             agree = (double) same / rows;
             nmse = den > 0.0 ? num / den : 0.0;
@@ -1948,9 +1974,9 @@ bool Session::Impl::confirm_prefill_device(Opening & o) {
     }
     log_printf(LogLevel::Info,
                "prefill-device %s confirmation: %d tokens, %d compared, top token agrees %.0f%%, logit NMSE %.2e, "
-               "host %.2f s, device %.2f s%s%s",
-               cfg.prefill.device.c_str(), want, rows, agree * 100.0, nmse, host_s, dev_s, why.empty() ? "" : " - ",
-               why.c_str());
+               "KL mean %.4f max %.4f, host %.2f s, device %.2f s%s%s",
+               cfg.prefill.device.c_str(), want, rows, agree * 100.0, nmse, kld, kld_max, host_s, dev_s,
+               why.empty() ? "" : " - ", why.c_str());
     if (!why.empty()) {
         const std::string perr = cfg.prefill.device + " is not kept as the prefill device: " + why;
         if (!cfg.prefill.best_effort) return o.fail(perr);

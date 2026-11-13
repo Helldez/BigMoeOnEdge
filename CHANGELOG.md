@@ -18,6 +18,9 @@ Semantic Versioning.
   armed and never finished opening (a front-end writes that before the session opens). Another device,
   and every other model, are unaffected; a new engine version tries the device again
   ([measured-planning.md](docs/measured-planning.md#a-prefill-device-that-did-not-hold-up-for-a-model)).
+  The check's log line now gives the KL divergence of the device's next-token distributions from the
+  host's beside the top-token agreement: 0.004 on that NPU for Qwen3.6-35B-A3B, 0.60 for Gemma, whose
+  expert matmuls go past the fp16 range the NPU computes in (ggml-org/llama.cpp#32198).
 
 ## [0.42.0] - 2026-11-12
 

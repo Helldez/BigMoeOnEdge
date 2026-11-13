@@ -636,7 +636,11 @@ on the device, compared row by row) and hands it back where the two disagree. Me
 phone: an NPU that passed the probe picked the host's next token in only 25 of 31 positions on
 Gemma 4 26B-A4B, and, with that backend's host buffer on, never returned from the model's first
 layer, so the load never finished; on Qwen3.6 the same NPU agreed in every position and prefilled
-1906 tokens at 139 tok/s against the cores' 12. So what came of the device is kept in the model's
+1906 tokens at 139 tok/s against the cores' 12. The cause is the backend's: its expert matmul is exact
+until a value passes the fp16 range and returns infinities past it, and Gemma's activations are known
+to reach that far in a few channels (ggml-org/llama.cpp#32198). The check's line gives the KL divergence
+of the device's next-token distributions from the host's beside the agreement: 0.004 mean for Qwen3.6,
+rounding, against 0.60 for Gemma with one row at 13.5. So what came of the device is kept in the model's
 record, scoped like every other measurement to this machine and engine (`prefill=<device>:<word>`):
 
 - `kept`: the session opened with it. The next plan arms it as before.
