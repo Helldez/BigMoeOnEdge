@@ -3,12 +3,16 @@
 
 #include "bmoe/session.h"
 
+#include "bmoe/log.h"
+
 #include "../io/platform_io.h"
 #include "../moe/gguf_offsets.h"
 #include "knob_trial.h"
 
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <utility>
@@ -35,20 +39,72 @@ constexpr const char * k_calibration_prompt =
 constexpr float k_calibration_temp = 0.7f;
 constexpr uint32_t k_calibration_seed = 1234;
 
-// Every candidate starts from the same system cache of the model's files. Whatever the previous
-// candidate read through the model's mapping stays in the system's cache after it closes, and the
-// next would load and decode from memory what the first read from the drive: the later side measured
-// on a warmer machine. So before each open the cache of every shard (and the files beside the model)
-// is handed back where the system takes the advice (pio::drop_file_cache), and then the dense part,
-// the tensors every token reads whatever the placement, is read in on every system alike: each
-// candidate opens with exactly the dense part cached, where pio::drop_file_cache is a no-op as where
-// it is not. What stays uneven where the cache cannot be dropped is the experts a placement
-// loads through the mapping: the later candidate may find some of the earlier one's still cached.
-// They are not read in, since a model larger than the memory is what this engine exists for.
-void even_model_file_cache(const RunConfig & cfg, const std::atomic<bool> * stop) {
+// The most of the memory the system can still give that the model's files may take for every
+// candidate to start with all of them cached: half. The other half is for what a candidate allocates
+// itself, a copy of the experts in a device's host memory or of the dense part, which can be as large
+// as the files; past it the system drops cached pages to make room, and the candidates no longer start
+// alike.
+constexpr double k_cached_model_share = 0.5;
+
+// Whether the system can keep every one of `paths` cached through a calibration: their bytes against
+// the memory it can still give (and a container still lets this process take), at k_cached_model_share.
+bool files_fit_cache(const std::vector<std::string> & paths, uint64_t & bytes) {
+    bytes = 0;
+    for (const std::string & p : paths) {
+        std::error_code ec;
+        const uintmax_t n = std::filesystem::file_size(p, ec);
+        if (ec) return false;
+        bytes += (uint64_t) n;
+    }
+    uint64_t room = pio::mem_available_bytes();
+    const uint64_t contained = pio::cgroup_memory_left();
+    if (contained > 0 && (room == 0 || contained < room)) room = contained;
+    return room > 0 && (double) bytes <= (double) room * k_cached_model_share;
+}
+
+// Every candidate starts from the same system cache of the model's files, so the later side is not
+// measured on a warmer machine than the earlier one.
+//
+// Where the system can keep the whole model cached (files_fit_cache), every candidate starts with all
+// of it cached: the first reads the files through once, and the ones after find them as it left them.
+// That is also how the served load finds them, the same model in the same memory. Dropping the cache
+// instead made every candidate read the whole model from the drive again: a load reads all of a model
+// that is not streamed, so on a rented card with GLM-4.7 (130 GB, 500 GB of memory) each candidate paid
+// the drive's pass over the files before its first token.
+//
+// Where it cannot, the cache of every shard (and the files beside the model) is handed back where the
+// system takes the advice (pio::drop_file_cache), and then the dense part, the tensors every token reads
+// whatever the placement, is read in on every system alike: each candidate opens with exactly the dense
+// part cached, where pio::drop_file_cache is a no-op as where it is not. What stays uneven where the
+// cache cannot be dropped is the experts a placement loads through the mapping: the later candidate may
+// find some of the earlier one's still cached. They are not read in, since a model larger than the
+// memory is what this engine exists for.
+void even_model_file_cache(const RunConfig & cfg, int candidate, const std::atomic<bool> * stop) {
     const GgufOffsets offs = read_gguf_offsets(cfg.model_path.c_str());
+    std::vector<std::string> beside;
     for (const std::string * p : {&cfg.mmproj, &cfg.spec.mtp_head})
-        if (!p->empty()) pio::drop_file_cache(p->c_str());
+        if (!p->empty()) beside.push_back(*p);
+    if (offs.ok) {
+        std::vector<std::string> all = offs.shard_paths;
+        all.insert(all.end(), beside.begin(), beside.end());
+        uint64_t bytes = 0;
+        if (files_fit_cache(all, bytes)) {
+            if (candidate > 0) return; // the first one cached them
+            log_printf(LogLevel::Info,
+                       "calibration: the model's files (%.1f GiB) fit the system's cache: every candidate starts "
+                       "with them cached",
+                       (double) bytes / (1024.0 * 1024.0 * 1024.0));
+            for (const std::string & p : all) {
+                if (stop && stop->load(std::memory_order_relaxed)) return;
+                std::error_code ec;
+                const uintmax_t n = std::filesystem::file_size(p, ec);
+                if (!ec) pio::read_through_cache(p.c_str(), {{0, (uint64_t) n}}, stop);
+            }
+            return;
+        }
+    }
+    for (const std::string & p : beside)
+        pio::drop_file_cache(p.c_str());
     if (!offs.ok) {
         pio::drop_file_cache(cfg.model_path.c_str());
         return;
@@ -97,7 +153,7 @@ run_calibration_candidate(const RunConfig & cfg, const CalibrationRun & run, con
     if (!(sc.sampling.temp > 0.0f)) sc.sampling.temp = k_calibration_temp;
     sc.sampling.seed = k_calibration_seed;
 
-    even_model_file_cache(cfg, stop);
+    even_model_file_cache(cfg, run.index, stop);
     std::string error;
     std::unique_ptr<Session> s = Session::open(sc, error);
     // A load takes seconds to minutes and cannot be stopped inside: a stop raised meanwhile is honoured

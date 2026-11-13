@@ -532,16 +532,20 @@ served (`bmoe/calibrate.h`):
   one, every token through the same hook, streamer and caches. The first candidate samples with a
   fixed seed (greedy prose falls into loops that replay a few experts) and returns its token ids; a
   later one replays them teacher-forced, so both sides route the same tokens and differ only in where
-  the experts run. Speculation is off: a draft's acceptance would time the drafter. Before each
-  candidate opens, the system's cache of the model's files is evened out, so the later side does not
-  load and decode from memory what the first read from the drive: the cache of every shard, the
-  projector and an MTP head is handed back where the system takes the advice
-  (`pio::drop_file_cache`), and the dense part, which every token reads whatever the placement, is
-  then read in on every system alike. Each candidate so opens with exactly the dense part cached,
-  where a drop is a no-op (Darwin, Windows) as where it is not. What stays uneven there is the experts
-  a placement loads through the mapping, which the later side may find partly cached; they are not
-  read in, since a model larger than the memory is what this engine exists for. A stop is honoured
-  before each open and as soon as a load returns, as well as at every decoded token.
+  the experts run. Speculation is off: a draft's acceptance would time the drafter. Every candidate
+  starts from the same system cache of the model's files, so the later side does not load and decode
+  from memory what the first read from the drive. Where the system can keep the whole model cached
+  (its files, the projector and an MTP head take at most half of the memory the system can still
+  give, and a container still lets the process take), the first candidate reads them through once
+  and the ones after find them as it left them: every side starts with all of it cached, as the
+  served load then does. Otherwise the cache of every shard, the projector and an MTP head is handed
+  back where the system takes the advice (`pio::drop_file_cache`), and the dense part, which every
+  token reads whatever the placement, is then read in on every system alike. Each candidate so opens
+  with exactly the dense part cached, where a drop is a no-op (Darwin, Windows) as where it is not.
+  What stays uneven there is the experts a placement loads through the mapping, which the later side
+  may find partly cached; they are not read in, since a model larger than the memory is what this
+  engine exists for. A stop is honoured before each open and as soon as a load returns, as well as at
+  every decoded token.
 - **Bounded by measurement.** The windows are the knob trial's (`KnobTrialPolicy`), and the turn ends
   once the rate is known. A cache whose hits the session sees settles as the trial does; a device
   expert cache, filled inside llama.cpp, settles once two windows in a row agree within the margin
