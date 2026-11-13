@@ -16,6 +16,8 @@
 
 运行比设备内存更大的混合专家（Mixture-of-Experts）模型。模型需要专家时，从闪存读取。
 支持 Android、iOS、macOS、Windows 和 Linux，基于 llama.cpp 构建。
+统一的流式加载框架：从手机、笔记本到消费级和数据中心 GPU，支持任何硬件、任何操作系统、任何模型、任何量化。
+自动资源调度，为优化 tok/s 量身定制。
 
 <table align="center">
 <tr>
@@ -34,9 +36,9 @@
 </tr>
 </table>
 
-Qwen3.6-35B-A3B（22 GB）大于每台设备的内存；任何 GGUF 格式的 MoE 模型、任何量化都可以运行。解码速度取自[性能](#性能)表。在 Android 手机和笔记本上实时写出回答；在 iPhone 上展示已加载模型的应用。
+Qwen3.6-35B-A3B 大于每台设备的内存；任何 GGUF 格式的 MoE 模型、任何量化都可以运行。解码速度取自[性能](#性能)表。
 
-**2021 年的笔记本，没有 GPU 的智能体**（1:33）：把流行的体素宝塔提示词交给内置智能体，运行在 15 GB 内存、仅用 CPU 的 ThinkPad 上，模型为 Qwen3.6-35B-A3B Q4_K_M（20.8 GB）。以 2.3 tok/s 写出 988 行，然后在应用的预览中打开页面；加速的部分已在画面上标出。
+**2021 年的笔记本，没有 GPU 的智能体**：把流行的体素宝塔提示词交给内置智能体，运行在 16 GB 内存、仅用 CPU 的 ThinkPad 上，模型为 Qwen3.6-35B-A3B Q4_K_M。以 2.3 tok/s 写出 988 行，然后在应用的预览中打开页面；加速的部分已在画面上标出。
 
 <p align="center"><img src="https://github.com/user-attachments/assets/1da744d4-dd98-4d14-a76e-50bdf0d9aec4" width="640" alt="内置智能体在一台 15 GB 内存、没有独立显卡的 2021 年 ThinkPad 上，把体素宝塔花园写成一个 HTML 文件，然后页面在应用的预览中旋转。"></p>
 

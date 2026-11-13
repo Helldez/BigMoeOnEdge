@@ -17,6 +17,8 @@ Questa è una traduzione; il README in inglese è il riferimento e potrebbe esse
 
 Esegui modelli Mixture-of-Experts più grandi della memoria del tuo dispositivo. Gli esperti vengono letti
 dalla flash quando il modello ne ha bisogno. Android, iOS, macOS, Windows e Linux, costruito su llama.cpp.
+Framework di streaming unificato: da telefoni e portatili fino alle GPU consumer e da data center. Supporta qualsiasi hardware, qualsiasi sistema operativo, qualsiasi modello, qualsiasi quantizzazione.
+Pianificazione automatica delle risorse, su misura per ottimizzare i tok/s.
 
 <table align="center">
 <tr>
@@ -35,12 +37,11 @@ dalla flash quando il modello ne ha bisogno. Android, iOS, macOS, Windows e Linu
 </tr>
 </table>
 
-Qwen3.6-35B-A3B (22 GB), più grande della memoria di ciascun dispositivo; funziona qualsiasi modello MoE
+Qwen3.6-35B-A3B, più grande della memoria di ciascun dispositivo; funziona qualsiasi modello MoE
 in GGUF, in qualsiasi quantizzazione. Le velocità di decode sono quelle della tabella
-[Prestazioni](#prestazioni). Sul telefono Android e sul portatile scrive una risposta in tempo reale;
-sull'iPhone, l'app con il modello caricato.
+[Prestazioni](#prestazioni).
 
-**L'agente su un portatile del 2021, senza GPU** (1:33): il prompt virale della pagoda in voxel dato all'agente integrato su un ThinkPad con 15 GB di RAM, solo CPU, e Qwen3.6-35B-A3B Q4_K_M (20,8 GB). 988 righe a 2,3 tok/s, poi la pagina nell'anteprima dell'app; le parti accelerate sono indicate a schermo.
+**L'agente su un portatile del 2021, senza GPU**: il prompt virale della pagoda in voxel dato all'agente integrato su un ThinkPad con 16 GB di RAM, solo CPU, e Qwen3.6-35B-A3B Q4_K_M. 988 righe a 2,3 tok/s, poi la pagina nell'anteprima dell'app; le parti accelerate sono indicate a schermo.
 
 <p align="center"><img src="https://github.com/user-attachments/assets/1da744d4-dd98-4d14-a76e-50bdf0d9aec4" width="640" alt="L'agente integrato scrive un giardino con una pagoda in voxel in un solo file HTML su un ThinkPad del 2021 con 15 GB di RAM e senza GPU dedicata, poi la pagina ruota nell'anteprima dell'app."></p>
 
