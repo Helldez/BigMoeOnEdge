@@ -47,8 +47,8 @@ std::string user_config_dir();
 std::string default_data_dir();
 
 // What this platform's compute backends are told before any of them is loaded, each only where
-// the environment has not said otherwise. On Android: the Hexagon NPU backend waits for the DSP by
-// polling and offers its host buffer type, which the prefill device moves the KV cache into. Called
+// the environment has not said otherwise: where a backend may keep compiled programs between runs.
+// The Hexagon NPU backend's tuning entries are left at its defaults (platform.cpp says why). Called
 // first thing, so a device-probe child inherits it.
 void prepare_compute_backends(const std::string & data_dir);
 
