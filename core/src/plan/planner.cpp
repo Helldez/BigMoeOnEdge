@@ -850,12 +850,7 @@ void choose_device_cache_cpu_share(Planning & s) {
     // narrow graph read as a 22% win against the first and was a 2% one.
     const MeasuredKnobs & mk = s.model.knobs;
     const double with = mk.cpu_share_tps;
-    double without = mk.no_cpu_share_tps;
-    if (!(without > 0.0)) {
-        const bool narrowed = mk.width_narrow > 0 && s.p.config.n_ubatch == mk.width_narrow;
-        const double at_width = mk.width_narrow > 0 ? (narrowed ? mk.narrow_decode_tps : mk.wide_decode_tps) : 0.0;
-        without = at_width > 0.0 ? at_width : mk.device_cache_tps;
-    }
+    const double without = mk.cpu_share_baseline_tps(s.p.config.n_ubatch);
     char measured[160];
     std::snprintf(measured, sizeof(measured), "%.2f tok/s with the share against %.2f with every miss uploaded", with,
                   without);

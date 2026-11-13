@@ -62,6 +62,17 @@ struct MeasuredKnobs {
     // with no miss computed on the host at all, and on a 12 GB card 0.77 took it from 18.5 to 21.2.
     double cpu_share_tps = 0.0;
     double no_cpu_share_tps = 0.0;
+    // The rate the share is held against at graph width `n_ubatch`: its own timing of every miss
+    // uploaded, else the width's timing of the cache at that width (the width is decided on the cache
+    // before the share is weighed), else the tier's. One answer for the plan that arms a share and for
+    // the front-end that asks whether a load may serve it, so neither takes a share as measured that
+    // the other does not. 0 where no side of the cache was timed.
+    double cpu_share_baseline_tps(int n_ubatch) const {
+        if (no_cpu_share_tps > 0.0) return no_cpu_share_tps;
+        const double at_width =
+            width_narrow > 0 ? (n_ubatch == width_narrow ? narrow_decode_tps : wide_decode_tps) : 0.0;
+        return at_width > 0.0 ? at_width : device_cache_tps;
+    }
 
     // The graph width, decided across loads where a wide graph's compute buffers take device memory
     // the experts would use (planner.cpp, choose_graph_width). A wide graph prefills a long prompt in

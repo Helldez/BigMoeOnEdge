@@ -176,7 +176,11 @@ bool PlanOutcome::other_side_measured() const {
     const KnobTrialConfig & t = basis->facts.plan.config.trial;
     const MeasuredKnobs & k = basis->facts.model.knobs;
     if (t.device_tier >= 0) return (t.device_tier == 1 ? k.no_device_cache_tps : k.device_cache_tps) > 0.0;
-    if (t.cpu_share_side >= 0) return (t.cpu_share_side == 1 ? k.no_cpu_share_tps : k.cpu_share_tps) > 0.0;
+    // The uploaded side as the planner read it, so a share it armed on a borrowed rate is not served
+    // untimed (the plan's side 1 is then the share itself).
+    if (t.cpu_share_side >= 0)
+        return (t.cpu_share_side == 1 ? k.cpu_share_baseline_tps(basis->facts.plan.config.n_ubatch) : k.cpu_share_tps) >
+               0.0;
     return k.width_narrow == t.width_narrow && (t.width_side == 1 ? k.narrow_decode_tps : k.wide_decode_tps) > 0.0;
 }
 

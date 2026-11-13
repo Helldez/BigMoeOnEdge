@@ -319,6 +319,19 @@ int main() {
             check(parse_measured_knobs(format_measured_knobs(v), vb, err) && vb.size() == 1 &&
                       std::fabs(vb[0].cpu_share_tps - 21.2) < 1e-3 && std::fabs(vb[0].no_cpu_share_tps - 18.5) < 1e-3,
                   "record: the CPU share's two rates are merged and read back");
+            // The rate the share is held against: its own, else the width's at the plan's width, else
+            // the tier's; the plan and the server's "other side measured" both read this one.
+            MeasuredKnobs base;
+            base.device_cache_tps = 30.0;
+            check(base.cpu_share_baseline_tps(2048) == 30.0, "record: the share's baseline falls back to the tier");
+            base.width_narrow = 2048;
+            base.narrow_decode_tps = 31.6;
+            base.wide_decode_tps = 26.3;
+            check(base.cpu_share_baseline_tps(2048) == 31.6 && base.cpu_share_baseline_tps(8192) == 26.3,
+                  "record: the share's baseline is the cache timed at the plan's own width");
+            base.no_cpu_share_tps = 32.9;
+            check(base.cpu_share_baseline_tps(2048) == 32.9, "record: the share's own uploaded timing wins");
+            check(MeasuredKnobs{}.cpu_share_baseline_tps(2048) == 0.0, "record: no cache timed, no baseline");
             KnobTrialConfig side;
             side.cpu_share_side = 1;
             MeasuredKnobs rec;
