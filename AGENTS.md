@@ -42,9 +42,8 @@ we do not fork llama.cpp. See `docs/architecture.md` and `docs/seam.md`.
 - `server/`: `bmoe-server`, the engine behind the desktop web UI (`docs/server-api.md`). A
   front-end like the CLI: HTTP, files and the platform live here, never in `core/`. Its only env
   reads are the per-user data, config and home folders and `PATH` (to find the coding agents it may
-  start, and the init system's tool) on POSIX, and its only env writes are the tuning entries the
-  compute backends document they read (the OpenCL kernel cache's folder, the Hexagon host buffer),
-  set before the backends load (`server/platform.cpp`).
+  start, and the init system's tool) on POSIX, and its only env write is the OpenCL backend's kernel
+  cache folder, set before the backends load (`server/platform.cpp`).
   The init systems are the one other adapter (`service_manager.cpp`): which one answers is asked of
   the machine, and what it is handed is rendered by a pure function (`service_spec.cpp`). The agent (`docs/agent.md`) is the server's too: `agent*.{h,cpp}`,
   `provider_protocol`, `connect`; its bundled skills are `skills/`.

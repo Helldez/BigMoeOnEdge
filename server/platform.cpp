@@ -229,17 +229,14 @@ void prepare_compute_backends(const std::string & data_dir) {
     const fs::path cache = fs::u8path(data_dir) / "backend-cache";
     fs::create_directories(cache, ec);
     if (!ec) set_env_default("GGML_OPENCL_KERNEL_CACHE_DIR", cache.u8string());
-#if defined(__ANDROID__)
-    // The host buffer lets the prefill arena hand the DSP its slots without a copy. Not read where the
-    // Hexagon backend is not built in; setenv with overwrite 0 leaves a value someone set alone.
-    //
-    // Polling for the DSP (GGML_HEXAGON_OPPOLL) is left to its default, off. On this platform the
-    // backend's zero-timeout poll goes to the blocking queue read, which logs an error for every empty
-    // poll (#512): measured on a 12 GB phone, 1.1 to 3.4 million log rows per load with polling,
-    // a dozen to a thousand without, and a 1525-token prefill on the NPU in 16.7 s polled against
-    // 15.9 s waiting on the interrupt. It no longer buys the crossing time it did when it was set.
-    set_env_default("GGML_HEXAGON_HOSTBUF", "1");
-#endif
+    // The Hexagon backend's two tuning entries are left at their defaults, off; a value someone sets
+    // is still read. Polling for the DSP (GGML_HEXAGON_OPPOLL): on Android the backend's zero-timeout
+    // poll goes to the blocking queue read, which logs an error for every empty poll (#512), 1.1 to 3.4
+    // million rows per load on a 12 GB phone, for a 1525-token NPU prefill in 16.7 s polled against
+    // 15.9 s not. The host buffer (GGML_HEXAGON_HOSTBUF), which moves the model state where the NPU
+    // reads it: on the same phone it bought no prefill (Qwen3.6-35B-A3B, 1906 tokens at 137-138 tok/s
+    // with it, 137-140 without), cost decode 7-13% (an op of every token went to the DSP, #544), and
+    // with Gemma 4 26B-A4B the load never finished, the first layer's work on the DSP never returning.
 }
 
 std::string thermal_zone_root() {
