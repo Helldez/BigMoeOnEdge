@@ -17,6 +17,7 @@ set_source_files_properties(main.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
 
 target_link_libraries(bmoe-harness PRIVATE
     bmoe_core
+    bmoe_user_dirs # the CLI's records folder, the one every front-end keeps a model's measurements in
     "-framework UIKit"
     "-framework Foundation"
 )
