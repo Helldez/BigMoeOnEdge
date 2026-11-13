@@ -94,6 +94,9 @@ void RoutingStore::keep_knobs(const std::string & model_path, const MeasuredKnob
     if (rec.empty() || rec.hardware.empty() || rec.engine.empty()) return;
     const std::string path = path_for(model_path, ".knobs");
     if (path.empty()) return;
+    // One read-modify-write at a time: a load's mark before it opens and a finishing turn's verdicts
+    // can reach the same model's file from two threads, through the same temporary name.
+    std::lock_guard<std::mutex> lk(knobs_m_);
     std::vector<MeasuredKnobs> all;
     load_knobs(model_path, all);
     keep_measured_knobs(all, rec);

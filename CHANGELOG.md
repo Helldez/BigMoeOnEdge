@@ -13,9 +13,10 @@ Semantic Versioning.
   check again and sized the memory around it; and a load that never returned left nothing to learn
   from. On a 12 GB phone, Gemma 4 26B-A4B's NPU prefill agreed with the cores in 25 of 31 positions,
   and with that backend's host buffer on the load never finished. What came of the device is now
-  kept in the model's record (`prefill=<device>:kept|refused|unconfirmed`): a refused device is not
-  armed again for that model on that machine and engine, and neither is one that two loads in a row
-  armed and never finished opening (a front-end writes that before the session opens). Another device,
+  kept in the model's record, one word per device (`prefill=<device>:kept|refused|unconfirmed`): a
+  device its check on the model refused is not armed again for that model on that machine and engine,
+  and neither is one that two loads in a row armed and never kept (a load that never finished opening,
+  or a device that would not open; a front-end writes the word before the session opens). Another device,
   and every other model, are unaffected; a new engine version tries the device again
   ([measured-planning.md](docs/measured-planning.md#a-prefill-device-that-did-not-hold-up-for-a-model)).
   The check's log line now gives the KL divergence of the device's next-token distributions from the

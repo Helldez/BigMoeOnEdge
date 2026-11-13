@@ -1970,9 +1970,7 @@ int main() {
         // or the load never said - is not armed again; one it kept is.
         for (const int verdict : {-1, 0, 1}) {
             ModelProfile seen = mm;
-            seen.knobs.prefill_device = "accel";
-            seen.knobs.prefill_verdict = verdict;
-            seen.knobs.prefill_unconfirmed = verdict == 0 ? MeasuredKnobs::prefill_unconfirmed_max : 0;
+            seen.knobs.set_prefill_word({"accel", verdict, verdict == 0 ? MeasuredKnobs::prefill_unconfirmed_max : 0});
             const Plan q = plan_run(base_cfg(), machine(1500.0, Tri::Yes), seen, PlanRequest{});
             const std::string why = reason(q);
             if (verdict > 0)
@@ -1984,8 +1982,7 @@ int main() {
                       why);
         }
         ModelProfile elsewhere = mm;
-        elsewhere.knobs.prefill_device = "another";
-        elsewhere.knobs.prefill_verdict = -1;
+        elsewhere.knobs.set_prefill_word({"another", -1, 0});
         check(plan_run(base_cfg(), machine(1500.0, Tri::Yes), elsewhere, PlanRequest{}).config.prefill.device ==
                   "accel",
               "prefill: a verdict about another device leaves this one alone");

@@ -1347,6 +1347,9 @@ int main(int argc, char ** argv) {
     outs.route_trace = route_trace.get();
     outs.compute_trace = compute_trace.get();
     outs.io_trace = io_trace.get();
+    outs.on_open = [&](const MeasuredKnobs & mk) {
+        if (mk.verdicts() > 0) routing.keep_knobs(mk);
+    };
     RunResult r = run(cfg, outs);
     if (!r) {
         std::fprintf(stderr, "\nerror: %s\n", flags_named(r.error).c_str());

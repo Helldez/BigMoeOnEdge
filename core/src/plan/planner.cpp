@@ -1995,16 +1995,16 @@ PrefillSurvey survey_prefill(const HardwareProfile & hw, const MeasuredKnobs & k
             continue;
         }
         // An earlier load of this model here armed it and the session did not keep it: its check on
-        // this model refused it, or the load never said (MeasuredKnobs::prefill_verdict). The probe
+        // this model refused it, or the load never said (MeasuredKnobs::prefill). The probe
         // graph is not this model, and the session's check is; a load that never returned is the one
         // thing worse than a slow prompt.
         if (knobs.prefill_refused(d.name)) {
             v.refused = &d;
             v.unweighed += "; " + d.name + " was not armed: " +
-                           (knobs.prefill_verdict < 0
+                           (knobs.prefill_word(d.name)->verdict < 0
                                 ? "an earlier load of this model here handed it back, its check on this model "
                                   "refused it"
-                                : "an earlier load of this model here armed it and never finished opening");
+                                : "earlier loads of this model here armed it and never kept it");
             continue;
         }
         if (d.wide_matmul_gibs <= 0.0) {

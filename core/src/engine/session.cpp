@@ -352,6 +352,7 @@ struct Session::Impl {
     // Prefill on an accelerator (SessionConfig::prefill); null when off. Created before the model
     // load, whose device list it holds, and opened after it.
     std::unique_ptr<detail::PrefillPath> prefill;
+    bool prefill_check_refused = false; // its check on this model refused it (confirm_prefill_device)
 
     // Where the next graph actually goes: a device with no room right now leaves it on the host.
     bool place_prefill(bool on_device, bool hold_slots = false) {
@@ -1978,6 +1979,7 @@ bool Session::Impl::confirm_prefill_device(Opening & o) {
                cfg.prefill.device.c_str(), want, rows, agree * 100.0, nmse, kld, kld_max, host_s, dev_s,
                why.empty() ? "" : " - ", why.c_str());
     if (!why.empty()) {
+        prefill_check_refused = true;
         const std::string perr = cfg.prefill.device + " is not kept as the prefill device: " + why;
         if (!cfg.prefill.best_effort) return o.fail(perr);
         hand_back_prefill(perr);
@@ -2477,12 +2479,12 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     if (im.prefill && cfg.prefill.verify && !im.confirm_prefill_device(o)) return nullptr;
     im.arm_decode_traces(o);
     im.arm_trials();
-    // What came of the prefill device asked for, for the record of this model (MeasuredKnobs::prefill_*):
-    // kept, or handed back because it would not open or its check on this model refused it.
-    if (!cfg.prefill.device.empty()) {
-        im.trials.result.prefill_device = cfg.prefill.device;
-        im.trials.result.prefill_verdict = im.prefill ? 1 : -1;
-    }
+    // What came of the prefill device asked for, for the record of this model (MeasuredKnobs::prefill):
+    // kept; refused where its check on this model refused it; or not kept, without a verdict on the
+    // device, where it would not open (an allocation another program's memory can fail for a moment):
+    // that counts as one more load that did not keep it, not as a refusal.
+    if (!cfg.prefill.device.empty())
+        im.trials.result.set_prefill_word({cfg.prefill.device, im.prefill ? 1 : im.prefill_check_refused ? -1 : 0, 0});
     im.describe_run(o);
     im.warn_about_load(cfg);
 

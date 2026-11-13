@@ -641,18 +641,21 @@ until a value passes the fp16 range and returns infinities past it, and Gemma's 
 to reach that far in a few channels (ggml-org/llama.cpp#32198). The check's line gives the KL divergence
 of the device's next-token distributions from the host's beside the agreement: 0.004 mean for Qwen3.6,
 rounding, against 0.60 for Gemma with one row at 13.5. So what came of the device is kept in the model's
-record, scoped like every other measurement to this machine and engine (`prefill=<device>:<word>`):
+record, one word per device, scoped like every other measurement to this machine and engine
+(`prefill=<device>:<word>[,...]`), so a second device's word never clears the first's:
 
 - `kept`: the session opened with it. The next plan arms it as before.
-- `refused`: it would not open, or its check on this model refused it. No plan arms it again for the
-  model; another device that measures faster than the host still can.
-- `unconfirmed` (`prefill_unconfirmed=<n>`): a front-end writes it before opening a session that arms
-  the device, and the session's word replaces it once open, so only a load that never got that far
-  leaves it. One may be a person closing the app mid-load, so the device is tried again; after
+- `refused`: its check on this model refused it. No plan arms it again for the model; another
+  device that measures faster than the host still can.
+- `unconfirmed` (`unconfirmed-<n>` past one): a front-end writes it before opening a session that
+  arms the device, and the session's word replaces it once open, so only a load that never got that
+  far leaves it; a session that could not open the device (an allocation, which another program
+  holding the card's memory for a moment can fail) counts as one more such load, not as a refusal.
+  One may be a person closing the app mid-load, so the device is tried again; after
   `MeasuredKnobs::prefill_unconfirmed_max` (two) in a row it is kept out like a refused one.
 
-The server and the CLI write the word as soon as the session has opened, not after the first
-answer. A new engine version starts a new record, and tries the device again. Tested by
+The server and the CLI (a one-shot run too, through `RunOutputs::on_open`) write the word as soon as
+the session has opened, not after the first answer. A new engine version starts a new record, and tries the device again. Tested by
 `knob_trial_test` (the record) and `planner_test` (a device not kept is not armed; one kept is; a word
 about another device leaves this one alone); on a 16 GB Apple-silicon laptop, two loads killed while
 opening left `MTL0:unconfirmed` 1 then 2, the plan armed Metal after the first and not after the

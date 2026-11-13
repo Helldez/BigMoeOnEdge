@@ -48,6 +48,7 @@ private:
     };
     std::string dir_;
     std::mutex m_;
+    std::mutex knobs_m_; // keep_knobs' read-modify-write
     std::map<std::string, Key> fingerprints_;
 };
 
