@@ -1,10 +1,11 @@
-// Where the server keeps each model's recorded routing between loads.
-//
-// The engine records what a model routed during its first tokens (Session::routing_record) and the
-// planner prices the cache on it (bmoe/routing.h, AutoPlanOptions::routing); where the record lives
-// is the front-end's decision, as the plan's own settings are. Here it is one file per model in the
-// data folder, named by the model file's content fingerprint (model_fingerprint in bmoe/probe.h): a
-// file copied or renamed finds its record, another model never does. The fingerprint is a few MiB of
+// What a model measured about itself on this machine, kept between loads: its recorded routing, which
+// the planner prices the cache on (bmoe/routing.h, AutoPlanOptions::routing), and the verdicts of the
+// decisions --auto measures (bmoe/measured_knobs.h). Every front-end keeps them the same way, so an
+// --auto plan is the same whichever one runs it, and a calibration one of them ran is the others' too.
+// Where the folder is is the front-end's decision (bmoe-cli and bmoe-server default to the per-user data
+// folder); inside it, one file per model named by the model file's content fingerprint
+// (model_fingerprint in bmoe/probe.h): a file copied or renamed finds its record, another model never
+// does. The fingerprint is a few MiB of
 // reads, so it is computed once per file and remembered by path, size and modification time, the key
 // the model library already uses for what it reads from a file.
 #pragma once
@@ -18,11 +19,12 @@
 #include <string>
 #include <vector>
 
-namespace bmoe::server {
+namespace bmoe {
 
-class RoutingStore {
+class ModelRecords {
 public:
-    explicit RoutingStore(std::string dir) : dir_(std::move(dir)) {}
+    // `dir` empty: nothing is kept or read.
+    explicit ModelRecords(std::string dir) : dir_(std::move(dir)) {}
 
     // The record kept for the model at `model_path`, if there is one that reads.
     bool load(const std::string & model_path, RoutingTrace & out);
@@ -51,4 +53,4 @@ private:
     std::map<std::string, Key> fingerprints_;
 };
 
-} // namespace bmoe::server
+} // namespace bmoe

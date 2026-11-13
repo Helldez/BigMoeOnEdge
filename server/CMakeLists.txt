@@ -49,6 +49,7 @@ set(BMOE_FEED_PUBLIC_KEY "" CACHE STRING "Base64 Ed25519 public key the release 
 # What the server and the desktop app ask the operating system (platform.h): no engine in it, so
 # the app links it without the engine.
 add_library(bmoe_server_platform STATIC platform.cpp)
+target_link_libraries(bmoe_server_platform PUBLIC bmoe_user_dirs)
 target_include_directories(bmoe_server_platform PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(bmoe_server_platform SYSTEM PUBLIC ${CMAKE_SOURCE_DIR}/third_party/llama.cpp/vendor)
 target_compile_definitions(bmoe_server_platform PRIVATE BMOE_BUILD_TARGET="${BMOE_BUILD_TARGET}")
@@ -126,7 +127,6 @@ add_library(bmoe_server STATIC
     model_library.cpp
     model_inspect.cpp
     planner_adapter.cpp
-    routing_store.cpp
     service_manager.cpp
     agent.cpp
     agent_external.cpp

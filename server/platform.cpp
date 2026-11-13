@@ -1,4 +1,5 @@
 #include "platform.h"
+#include "user_dirs.h"
 
 #if !defined(_WIN32)
 // See model_library.cpp for why the subprocess header's chdir support is off. Windows opens a URL
@@ -193,21 +194,7 @@ std::string user_config_dir() {
 }
 
 std::string default_data_dir() {
-#if defined(_WIN32)
-    PWSTR w = nullptr;
-    std::string base;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &w))) base = narrow(w);
-    CoTaskMemFree(w);
-    return (fs::u8path(base) / "BigMoeOnEdge").u8string();
-#elif defined(__APPLE__)
-    const char * home = std::getenv("HOME");
-    return (fs::path(home ? home : ".") / "Library" / "Application Support" / "BigMoeOnEdge").u8string();
-#else
-    const char * xdg = std::getenv("XDG_DATA_HOME");
-    if (xdg && *xdg) return (fs::path(xdg) / "bigmoeonedge").u8string();
-    const char * home = std::getenv("HOME");
-    return (fs::path(home ? home : ".") / ".local" / "share" / "bigmoeonedge").u8string();
-#endif
+    return frontend::default_data_dir();
 }
 
 namespace {

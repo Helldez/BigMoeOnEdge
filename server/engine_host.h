@@ -140,6 +140,14 @@ public:
     // loaded: the server is busy and still takes requests, each waiting for the load as for any and
     // stopping the step first.
     bool load_when_idle(const RunConfig & effective, const RunConfig & requested, BeforeOpen before_open);
+    // load() with `before_open` run first, for a load a person or a request asked for: where a model's
+    // first load on this machine is calibrated before its first answer, as bmoe-cli --auto calibrates
+    // (docs/measured-planning.md). A turn does not stop the step: it waits for the model, as for any
+    // load, and info() reads "loading" meanwhile. An unload cancels it, and a load supersedes it.
+    std::string load_calibrated(const RunConfig & effective,
+                                const RunConfig & requested,
+                                BeforeOpen before_open,
+                                std::optional<OpenFallback> fallback = std::nullopt);
     // Ready, with no turn running or waiting for the model.
     bool idle() const;
     // Called on the thread of a turn or a decision once it has left the line, whatever its outcome:
@@ -214,6 +222,11 @@ private:
     // Start the loader thread for `effective`, after any before-open step. The caller holds life_m_
     // and has set the state to Loading.
     void start_loader(const RunConfig & effective, BeforeOpen before_open, std::optional<OpenFallback> fallback);
+    // What load() and load_calibrated() share: a person's or a request's load, optionally with a step first.
+    std::string start_load(const RunConfig & effective,
+                           const RunConfig & requested,
+                           std::optional<OpenFallback> fallback,
+                           BeforeOpen before_open);
     // A turn or a decision arrived: a step before an open stops for it (BeforeOpen).
     void note_request();
 

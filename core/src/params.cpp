@@ -605,9 +605,8 @@ std::vector<ParamDesc> build() {
         d.switches = {{"--calibrate", "true"}, {"--no-calibrate", "false"}};
         bind_bool(d, [](RunConfig & c) -> bool & { return c.calibrate; });
         d.details = "Only machines with a graphics card that has memory of its own have such a choice: a phone or a "
-                    "computer whose graphics share its memory never calibrates. The command line does it before "
-                    "the first answer; the app serves first and calibrates once it is idle, giving way to any "
-                    "request.";
+                    "computer whose graphics share its memory never calibrates. Every front-end does it before "
+                    "a model's first answer on this machine and keeps the result, so later loads start decided.";
         t.push_back(d);
     }
     {

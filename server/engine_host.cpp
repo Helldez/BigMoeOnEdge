@@ -172,8 +172,22 @@ std::string EngineHost::load(const RunConfig & effective, const RunConfig & requ
     return load(effective, requested, std::nullopt);
 }
 
+std::string EngineHost::load_calibrated(const RunConfig & effective,
+                                        const RunConfig & requested,
+                                        BeforeOpen before_open,
+                                        std::optional<OpenFallback> fallback) {
+    return start_load(effective, requested, std::move(fallback), std::move(before_open));
+}
+
 std::string
 EngineHost::load(const RunConfig & effective, const RunConfig & requested, std::optional<OpenFallback> fallback) {
+    return start_load(effective, requested, std::move(fallback), nullptr);
+}
+
+std::string EngineHost::start_load(const RunConfig & effective,
+                                   const RunConfig & requested,
+                                   std::optional<OpenFallback> fallback,
+                                   BeforeOpen before_open) {
     const ValidationResult v = validate(effective);
     if (!v) return engine_message(v.error);
     std::lock_guard<std::mutex> life(life_m_);
@@ -203,7 +217,9 @@ EngineHost::load(const RunConfig & effective, const RunConfig & requested, std::
     if (loader_.joinable()) loader_.join(); // the previous load finished: its state was not Loading
     publish_state();
     cancel();
-    start_loader(effective, nullptr, std::move(fallback));
+    // cancel() stops a step too; this load's own step runs until an unload, a load after it, or the end.
+    before_open_stop_ = false;
+    start_loader(effective, std::move(before_open), std::move(fallback));
     return "";
 }
 

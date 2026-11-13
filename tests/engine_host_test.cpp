@@ -21,7 +21,7 @@
 // Checks are explicit (not <cassert>): the Release build defines NDEBUG, which compiles assert out.
 
 #include "engine_host.h"
-#include "routing_store.h"
+#include "bmoe/model_records.h"
 
 #include "bmoe/log.h"
 #include "bmoe/params.h"
@@ -930,7 +930,7 @@ static void routing_store_tests() {
         t.batches.push_back({0, true, {3}});
         return t;
     };
-    RoutingStore store((root / "routing").u8string());
+    ModelRecords store((root / "routing").u8string());
     RoutingTrace got;
     check(!store.load(model.u8string(), got), "no record before one is kept");
     store.keep(model.u8string(), record(40));

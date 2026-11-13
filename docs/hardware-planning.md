@@ -203,8 +203,9 @@ one ([measured-planning.md](measured-planning.md#step-1-the-cache-sized-from-the
   first tokens (`--routing-record`, default 256 decoded tokens and the last 256 of the prompt). It
   asks the graph for nothing and stops by itself. `Session::routing_record()` returns it as a value
   (`bmoe/routing.h`).
-- **Where it lives** is the front-end's decision: `bmoe-cli --routing-dir DIR`, and `bmoe-server` in
-  its data folder under `routing/`, one file per model named by `model_fingerprint()` (a hash of the
+- **Where it lives** is the same for every front-end (`ModelRecords`): the per-user data folder under
+  `routing/` (`bmoe-cli --routing-dir DIR` names another, `""` none), one file per model named by
+  `model_fingerprint()` (a hash of the
   file's size and of bytes sampled across its content, so a copied or renamed file keeps its record
   and two models of one shape do not share one).
 - **The curve.** The next `--auto` hands the record back (`AutoPlanOptions::routing`); `attach_routing`
@@ -275,7 +276,7 @@ measurement instead of a guess ([measured-planning.md](measured-planning.md#step
   resident one.
 - **The verdict** stays for the rest of the session and is returned as a value
   (`Session::measured_knobs()`, `bmoe/measured_knobs.h`). The front-end keeps it beside the model's
-  routing (`bmoe-cli --routing-dir DIR`, `bmoe-server` under `routing/`): one file per model, a line
+  routing (`ModelRecords`, the per-user data folder under `routing/` for every front-end): one file per model, a line
   per machine and engine, keyed by `hardware_fingerprint()` (core count and classes, total memory,
   each device's name and own memory; never a rate or a free-memory figure) and the engine version.
 - **The next plan** of that model on that machine and engine (`AutoPlanOptions::knobs`) starts from

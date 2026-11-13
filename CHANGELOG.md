@@ -6,6 +6,20 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Changed
+- **One `--auto` on every front-end.** The CLI, the server and the apps now plan, calibrate and keep
+  what they measured the same way. Before, `bmoe-cli --auto` calibrated only with `--routing-dir` and
+  kept nothing without it, and the server served the plan's own side at once and calibrated a minute
+  after an answer: on two 24 GB cards with GLM-4.7 that was 3.7 tok/s on the device cache until the
+  server went idle, where the fitter's placement decoded at 16. Now a model's first load on a machine
+  calibrates before its first answer everywhere (the server on the load's own thread:
+  `/api/info` reads `loading`, a request meanwhile waits and is answered on the decided plan), and
+  every front-end keeps the result in the per-user data folder under `routing/`, so a calibration the
+  app ran is the CLI's too and later loads start decided. `--routing-dir` only moves that folder, or
+  with `""` keeps nothing. The record store is one class in `core` (`ModelRecords`) and the folder one
+  function every front-end links (`frontend/user_dirs`). What a load's calibration leaves pending is
+  still tried again at the server's idle point.
+
 ### Added
 - **A device expert cache computes part of its misses on the CPU where that was measured faster**
   (`--device-cache-cpu-share`, experimental). With a device cache over resident experts, every miss
@@ -22,7 +36,10 @@ Semantic Versioning.
   (32.5 served, the fitter's placement 21.1); on a 12 GB card with a 6-core host, on another model, a
   share of 0.77 had taken the decode from 18.5 to 21.1-21.2 tok/s. Never over streamed experts,
   which no gate covers (validation refuses the pair). Gate G25d: half the misses on the host give
-  the resident placement's bytes. ([hardware-planning.md](docs/hardware-planning.md#who-computes-the-device-caches-misses))
+  the resident placement's bytes. A cache that loses to the capacity fitter's placement with every
+  miss uploaded is timed with its share before it is set aside, where the price says the share could
+  win: the case it is for (GLM-4.7 on two 24 GB cards: cache 4.0 tok/s at 56% hits, fitter 16.2).
+  ([hardware-planning.md](docs/hardware-planning.md#who-computes-the-device-caches-misses))
 
 ### Changed
 - **llama.cpp bumped to upstream `b12214`** (2026-11-09) plus the expert-ready hook, on fork branch
