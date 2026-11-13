@@ -5,6 +5,7 @@
 #include "bmoe/auto_plan.h"
 #include "bmoe/backend_choice.h"
 
+#include "bmoe/log.h"
 #include "bmoe/planner.h"
 #include "bmoe/params.h"
 #include "bmoe/probe.h"
@@ -18,17 +19,33 @@
 #include "llama.h"
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 
 namespace bmoe {
 
 namespace {
 
+// The capacity fitter's placement of the facts' model at `width` tokens wide, asked of the fitter the
+// first time and kept with the facts (AutoPlan::placement_at_width). `snapshot` names the memory
+// snapshot taken after a fit that ran.
+const Placement & fitted_at(
+    const AutoPlan & facts, const RunConfig & cfg, const ModelProfile & model, uint32_t width, const char * snapshot) {
+    auto at = facts.placement_at_width.find(width);
+    if (at == facts.placement_at_width.end()) {
+        at = facts.placement_at_width
+                 .emplace(width, probe_placement(cfg.model_path.c_str(), model, facts.hw, (uint32_t) cfg.n_ctx, width,
+                                                 cfg.cache_type_k, cfg.cache_type_v, facts.backends, &cfg.spec))
+                 .first;
+        detail::log_memory_snapshot(snapshot);
+    }
+    return at->second;
+}
+
 // The rules on the facts a probe gathered (probe_and_plan's planning half): plan_run on the first
 // stage's placement, and the capacity fitter asked again where the plan narrows the graph. `model`
 // is the facts' own, or the same with another record of measurements (replan).
 Plan plan_on_facts(const AutoPlan & facts, const RunConfig & cfg, const PlanRequest & req, const ModelProfile & model) {
-    const char * path = cfg.model_path.c_str();
     const HardwareProfile & hw = facts.hw;
     const Placement & placement = facts.placement;
     Plan plan = plan_run(cfg, hw, model, placement, req);
@@ -48,9 +65,7 @@ Plan plan_on_facts(const AutoPlan & facts, const RunConfig & cfg, const PlanRequ
         width < placement.compute_width) {
         RunConfig narrow = cfg;
         narrow.n_ubatch = (int) width;
-        const Placement at_width = probe_placement(path, model, hw, (uint32_t) cfg.n_ctx, width, cfg.cache_type_k,
-                                                   cfg.cache_type_v, facts.backends, &cfg.spec);
-        detail::log_memory_snapshot("auto-probe-narrow");
+        const Placement & at_width = fitted_at(facts, cfg, model, width, "auto-probe-narrow");
         if (at_width.fitted) {
             const Decision * first = nullptr;
             for (const Decision & d : plan.decisions)
@@ -85,9 +100,7 @@ Plan plan_on_facts(const AutoPlan & facts, const RunConfig & cfg, const PlanRequ
         const uint32_t candidate =
             device_share_width(placement, hw, PlannerPolicy::defaults(), (uint32_t) cfg.graph_width_floor());
         if (candidate > 0 && candidate < placement.compute_width) {
-            const Placement at_width = probe_placement(path, model, hw, (uint32_t) cfg.n_ctx, candidate,
-                                                       cfg.cache_type_k, cfg.cache_type_v, facts.backends, &cfg.spec);
-            detail::log_memory_snapshot("auto-probe-whole");
+            const Placement & at_width = fitted_at(facts, cfg, model, candidate, "auto-probe-whole");
             if (at_width.fitted && at_width.host_expert_layers.empty() && at_width.n_gpu_layers != 0) {
                 RunConfig narrow = cfg;
                 narrow.n_ubatch = (int) candidate;
@@ -222,8 +235,16 @@ const CalibrationResult & calibrate_plan(AutoPlan & ap,
         if (on_step) on_step(k_calibrate_step, cr.index, cr.runs_max);
         return run(c, cr);
     };
-    ap.calibration =
-        calibrate(ap.plan, ap.model.knobs, [&](const MeasuredKnobs & k) { return replan(ap, cfg, req, k); }, reported);
+    // Each plan between candidates says what it took, so a calibration's time can be told apart: the
+    // plans, the candidates' loads, their timed decodes (run_calibration_candidate).
+    const Replan timed_replan = [&](const MeasuredKnobs & k) {
+        const auto t0 = std::chrono::steady_clock::now();
+        Plan p = replan(ap, cfg, req, k);
+        log_printf(LogLevel::Info, "calibration: planned again in %.1f s",
+                   std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+        return p;
+    };
+    ap.calibration = calibrate(ap.plan, ap.model.knobs, timed_replan, reported);
     ap.calibrated = true;
     ap.plan = ap.calibration.plan;
     ap.model.knobs = ap.calibration.knobs;

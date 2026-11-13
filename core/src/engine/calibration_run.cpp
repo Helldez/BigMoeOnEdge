@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -153,9 +154,16 @@ run_calibration_candidate(const RunConfig & cfg, const CalibrationRun & run, con
     if (!(sc.sampling.temp > 0.0f)) sc.sampling.temp = k_calibration_temp;
     sc.sampling.seed = k_calibration_seed;
 
+    using clock = std::chrono::steady_clock;
+    const auto secs = [](clock::time_point a, clock::time_point b) {
+        return std::chrono::duration<double>(b - a).count();
+    };
+    const auto t_even = clock::now();
     even_model_file_cache(cfg, run.index, stop);
+    const auto t_open = clock::now();
     std::string error;
     std::unique_ptr<Session> s = Session::open(sc, error);
+    const auto t_opened = clock::now();
     // A load takes seconds to minutes and cannot be stopped inside: a stop raised meanwhile is honoured
     // as soon as it returns, before anything is decoded.
     if (stop && stop->load(std::memory_order_relaxed)) {
@@ -183,6 +191,10 @@ run_calibration_candidate(const RunConfig & cfg, const CalibrationRun & run, con
     req.stop = stop;
     req.calibration = &turn;
     const RunResult r = s->generate(req);
+    // What the candidate's time went to: a calibration is mostly loads, and this says how much.
+    log_printf(LogLevel::Info,
+               "calibration: the candidate took %.1f s: %.1f s evening the file cache, %.1f s opening, %.1f s timing",
+               secs(t_even, clock::now()), secs(t_even, t_open), secs(t_open, t_opened), secs(t_opened, clock::now()));
     if (r.cancelled || (stop && stop->load(std::memory_order_relaxed))) {
         t.aborted = true;
         return t;

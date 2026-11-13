@@ -7,6 +7,16 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Changed
+- **A load-time calibration spends less of its time outside the candidates.** Where the system can
+  keep the model's files cached (at most half of the memory it can still give), every candidate now
+  starts with them cached instead of reading the whole model from the drive again: the first reads it
+  through once. Otherwise the cache is still dropped and the dense part read in, as before. The
+  capacity fitter's re-fits at a narrower graph are asked once per width and kept with the plan's
+  facts, instead of being run again before every candidate: on a 24 GB card with GLM-4.7 each re-fit
+  reloaded the model's metadata for a dozen dry runs, and read the card's free memory after a
+  candidate had used it. A server's plan for the other side of a decision, made with the model
+  loaded, reads the kept fit too. Each candidate logs what its time went to (the file cache, the load,
+  the timing) and each plan between candidates its own.
 - **One `--auto` on every front-end.** The CLI, the server and the apps now plan, calibrate and keep
   what they measured the same way. Before, `bmoe-cli --auto` calibrated only with `--routing-dir` and
   kept nothing without it, and the server served the plan's own side at once and calibrated a minute

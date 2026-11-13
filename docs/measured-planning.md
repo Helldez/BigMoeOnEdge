@@ -518,7 +518,10 @@ served (`bmoe/calibrate.h`):
   in the record with the mapping a session's own timing uses (`record_side_rate`, one decision per
   load: the tier where the plan names one, else the width), and asks the planner again
   (`replan`: `probe_and_plan`'s planning half on the same facts, the fitter's re-fits at a narrower
-  width included, no probe). Every rule above holds as it is: the fitter's placement is still timed
+  width included, no probe). A re-fit is asked of the fitter once per width and kept with the facts
+  (`AutoPlan::placement_at_width`): it answers from the same file, devices and context whatever the
+  record says, and asked again between candidates it reloaded GLM-4.7's metadata for a dozen dry runs
+  each time, on a card whose free memory was no longer the one the plan was made on. Every rule above holds as it is: the fitter's placement is still timed
   only where its ceiling could win, and a side wins only past `min_backend_win`. The tier is decided
   first, the width then on the winner, and on a device cache the share of its misses computed on the
   host last ([hardware-planning.md](hardware-planning.md#who-computes-the-device-caches-misses)), as
@@ -532,7 +535,9 @@ served (`bmoe/calibrate.h`):
   one, every token through the same hook, streamer and caches. The first candidate samples with a
   fixed seed (greedy prose falls into loops that replay a few experts) and returns its token ids; a
   later one replays them teacher-forced, so both sides route the same tokens and differ only in where
-  the experts run. Speculation is off: a draft's acceptance would time the drafter. Every candidate
+  the experts run. Speculation is off: a draft's acceptance would time the drafter. Each candidate logs
+  what its time went to (evening the file cache, opening, timing), and each plan between candidates
+  its own, so a calibration's minutes can be told apart. Every candidate
   starts from the same system cache of the model's files, so the later side does not load and decode
   from memory what the first read from the drive. Where the system can keep the whole model cached
   (its files, the projector and an MTP head take at most half of the memory the system can still
