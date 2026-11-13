@@ -27,6 +27,8 @@
     <p class="banner info">
       <span class="skeleton spin"></span>{info.state === 'planning' ? t('status.planning.long') : t('status.loading.long')}
     </p>
+  {:else if info?.calibrating}
+    <p class="banner info"><span class="skeleton spin"></span>{t('status.calibrating.long')}</p>
   {:else if info?.state === 'error'}
     <p class="banner error">
       <Icon name="alert" size={16} /><span>{t('status.error.long')}{info.error ? `: ${info.error}` : ''}</span>

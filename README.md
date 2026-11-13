@@ -15,29 +15,32 @@
 
 Run Mixture-of-Experts models larger than your device's memory. The experts are read from flash as
 the model needs them. Android, iOS, macOS, Windows and Linux, built on llama.cpp.
+Unified Streaming Framework - from phones, laptops, consumer and data-center GPUs - Supports any hardware, any OS, any model, any quant.
+Automated resource scheduling tailor made to optimize tok/s.
 
 <table align="center">
 <tr>
-<td align="center" width="50%"><img src="docs/assets/screens/android.gif" width="220" alt="Qwen3.6-35B-A3B generating an answer on a 12 GB Android phone, in real time."></td>
-<td align="center" width="50%"><img src="docs/assets/screens/iphone.gif" width="220" alt="Qwen3.6-35B-A3B generating an answer on a 12 GB iPhone, in real time."></td>
+<td align="center" width="50%"><img src="https://github.com/user-attachments/assets/7967bed2-6094-489f-bd60-05b0b1980102" width="220" alt="Qwen3.6-35B-A3B generating an answer on a 12 GB Android phone, in real time."></td>
+<td align="center" width="50%"><img src="https://github.com/user-attachments/assets/26760326-2ef5-4b4a-950d-581c99e58206" width="220" alt="The iPhone app on a 12 GB iPhone with Qwen3.6-35B-A3B loaded: a chat about a picture, the plan, the models and the settings, in real time."></td>
 </tr>
 <tr>
-<td align="center">12 GB Android phone</td>
-<td align="center">12 GB iPhone</td>
+<td align="center">12 GB Android phone<br>Qwen3.6-35B-A3B · 5-6 tok/s</td>
+<td align="center">12 GB iPhone<br>Qwen3.6-35B-A3B · 6 tok/s</td>
 </tr>
 <tr>
-<td align="center" colspan="2"><img src="docs/assets/screens/desktop.gif" width="620" alt="Qwen3.6-35B-A3B generating an answer in the desktop app on a 16 GB Apple-silicon laptop, in real time, at 20 tok/s."></td>
+<td align="center" colspan="2"><img src="https://github.com/user-attachments/assets/0e1fd1d2-4976-4ecf-a56f-fee60f5dff74" width="620" alt="Qwen3.6-35B-A3B generating an answer in the desktop app on a 16 GB Apple-silicon laptop, in real time, at 21 tok/s."></td>
 </tr>
 <tr>
-<td align="center" colspan="2">16 GB Apple-silicon laptop</td>
+<td align="center" colspan="2">16 GB Apple-silicon laptop<br>Qwen3.6-35B-A3B · 18-24 tok/s</td>
 </tr>
 </table>
 
-Qwen3.6-35B-A3B (21 GB) in real time on each device. The model is larger than each device's memory.
+Qwen3.6-35B-A3B, larger than each device's memory; any MoE model in GGUF runs, at any
+quantization. Decode speeds are the [Performance](#performance) table's.
 
-**The tour** (2:38): models, the planner, chat, the agent on a folder, tasks and connected apps on a 16 GB Mac.
+**The agent on a 2021 laptop, no GPU**: the viral voxel-pagoda prompt to the built-in agent on a ThinkPad with 16 GB of RAM, CPU only, and Qwen3.6-35B-A3B Q4_K_M. 988 lines at 2.3 tok/s, then the page in the app's preview; the speed-ups are marked on screen.
 
-https://github.com/user-attachments/assets/16371803-b96b-42a4-b147-cb1b7d515c73
+<p align="center"><img src="https://github.com/user-attachments/assets/1da744d4-dd98-4d14-a76e-50bdf0d9aec4" width="640" alt="The built-in agent writing a voxel pagoda garden as one HTML file on a 2021 ThinkPad with 15 GB of RAM and no dedicated GPU, then the page in the app's preview, turning."></p>
 
 ## What it does
 
@@ -61,8 +64,8 @@ https://github.com/user-attachments/assets/16371803-b96b-42a4-b147-cb1b7d515c73
 |---|---|---|---:|---|---:|
 | **Android phone** | 12 GB | DeepSeek V4 Flash 284B | 91 GB | flash | 1 |
 |  |  | Qwen3.8-Flash-Next 125B | 80 GB | flash | 2-4 |
-|  |  | Qwen3.6-35B-A3B | 21 GB | flash | 5 |
-| **iPhone** | 12 GB | Qwen3.6-35B-A3B | 21 GB | flash | 3 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | flash | 5-6 |
+| **iPhone** | 12 GB | Qwen3.6-35B-A3B | 21 GB | flash | 6 |
 | **Apple-silicon laptop** | 16 GB | Qwen3.8-Flash-Next 125B | 76 GB | flash | 7-9 |
 |  |  | Qwen3.6-35B-A3B | 21 GB | flash | 18-24 |
 | **Windows laptop** | 16 GB | Qwen3.6-35B-A3B | 21 GB | flash | 5 |
@@ -70,9 +73,11 @@ https://github.com/user-attachments/assets/16371803-b96b-42a4-b147-cb1b7d515c73
 | **Desktop GPU** (NVIDIA) | 16 GB + 32 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | flash, GPU cache | 19-21 |
 | **Desktop GPU** (NVIDIA) | 24 GB + 96 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM, GPU cache | 70 |
 |  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
-| **Desktop GPU** (NVIDIA) | 24 GB + 94 GB RAM | Qwen3.6-35B-A3B | 21 GB | GPU | 135 |
-|  | 12 GB of it free | Qwen3.6-35B-A3B | 21 GB | RAM, GPU cache | 75-81 |
-|  | 24 GB + 94 GB RAM | Gemma 4 26B-A4B | 17 GB | GPU | 107-115 |
+| **Desktop GPU** (NVIDIA) | 24 GB + 62 GB RAM | Qwen3.6-35B-A3B | 21 GB | GPU | 154 |
+|  | 12 GB of it free | Qwen3.6-35B-A3B | 21 GB | RAM, GPU cache | 59-67 |
+|  |  | Gemma 4 26B-A4B | 17 GB | GPU | 114 |
+|  |  | Laguna XS 2.1 33B | 20 GB | GPU | 93-94 |
+| **Desktop GPU** (NVIDIA) | 8 GB + 125 GB RAM | Qwen3.6-35B-A3B | 21 GB | RAM, GPU | 32-33 |
 | **Datacenter GPU** (AMD, ROCm) | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
 
 A range is the spread across runs. Method and every run:
@@ -203,7 +208,7 @@ unchanged, and an upgrade is a submodule bump. Which tensors are experts is read
 ## The planner
 
 <p align="center">
-  <img src="docs/assets/screens/plan-mac.png" width="820" alt="The Plan screen on a 16 GB Apple-silicon laptop with Qwen3.6-35B-A3B Q4_K_M: experts stream from flash with a 6.6 GiB cache, the prompt runs on the GPU and the tokens on the CPU, 23.9 tok/s and 94% cache hits measured, and where the memory goes.">
+  <img src="https://github.com/user-attachments/assets/98e6de3e-e27d-482d-bff1-26fc66074af4" width="820" alt="The Plan screen on a 16 GB Apple-silicon laptop with Qwen3.6-35B-A3B Q4_K_M: experts stream from flash with a 6.6 GiB cache, the prompt runs on the GPU and the tokens on the CPU, 23.9 tok/s and 94% cache hits measured, and where the memory goes.">
 </p>
 
 The planner reads the model's header and measures the machine: memory, storage speed, each CPU, GPU
@@ -238,12 +243,7 @@ Details: [docs/platforms.md](docs/platforms.md).
 | Any MoE model in GGUF | ✅ | few models | few models | its own format | few models |
 | Configures itself | ✅ `--auto` | picks the model by memory | expert-cache budget | `coli tune` | ❌ |
 
-Where a model fits in a gaming GPU plus RAM, Strata is two to four times faster. Where it streams from
-flash, every engine is in single digits and the drive sets the pace. On one 24 GB card against
-Lucebox, with the same file and prompts, this engine decoded Qwen3.6-35B-A3B faster (135 against 108
-tok/s) and reached a 28k-token prompt's first token in 5 s against 37; Lucebox's per-model drafter
-decoded Gemma 4's code more than twice as fast. Speeds and sources:
-[docs/comparison.md](docs/comparison.md).
+Speeds and sources: [docs/comparison.md](docs/comparison.md).
 
 ## Build from source
 

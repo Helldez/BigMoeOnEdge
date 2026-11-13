@@ -16,29 +16,31 @@
 
 デバイスのメモリより大きな Mixture-of-Experts モデルを実行します。エキスパートは、モデルが必要とするときにフラッシュから読み込まれます。
 Android、iOS、macOS、Windows、Linux に対応し、llama.cpp の上に構築されています。
+統合ストリーミングフレームワーク：スマートフォン、ノート PC から、コンシューマー向け GPU、データセンター向け GPU まで。あらゆるハードウェア、OS、モデル、量子化に対応します。
+リソースの割り当ては自動で、tok/s を最大化するようその構成に合わせて調整されます。
 
 <table align="center">
 <tr>
-<td align="center" width="50%"><img src="docs/assets/screens/android.gif" width="220" alt="12 GB の Android スマートフォンで Qwen3.6-35B-A3B がリアルタイムに回答を生成している様子。"></td>
-<td align="center" width="50%"><img src="docs/assets/screens/iphone.gif" width="220" alt="12 GB の iPhone で Qwen3.6-35B-A3B がリアルタイムに回答を生成している様子。"></td>
+<td align="center" width="50%"><img src="https://github.com/user-attachments/assets/7967bed2-6094-489f-bd60-05b0b1980102" width="220" alt="12 GB の Android スマートフォンで Qwen3.6-35B-A3B がリアルタイムに回答を生成している様子。"></td>
+<td align="center" width="50%"><img src="https://github.com/user-attachments/assets/26760326-2ef5-4b4a-950d-581c99e58206" width="220" alt="Qwen3.6-35B-A3B を読み込んだ 12 GB の iPhone の iPhone アプリ：画像についてのチャット、プラン、モデル、設定をリアルタイムで。"></td>
 </tr>
 <tr>
-<td align="center">12 GB Android スマートフォン</td>
-<td align="center">12 GB iPhone</td>
+<td align="center">12 GB Android スマートフォン<br>Qwen3.6-35B-A3B · 5-6 tok/s</td>
+<td align="center">12 GB iPhone<br>Qwen3.6-35B-A3B · 6 tok/s</td>
 </tr>
 <tr>
-<td align="center" colspan="2"><img src="docs/assets/screens/desktop.gif" width="620" alt="16 GB の Apple silicon ノート PC 上のデスクトップアプリで、Qwen3.6-35B-A3B が 20 tok/s でリアルタイムに回答を生成している様子。"></td>
+<td align="center" colspan="2"><img src="https://github.com/user-attachments/assets/0e1fd1d2-4976-4ecf-a56f-fee60f5dff74" width="620" alt="16 GB の Apple silicon ノート PC 上のデスクトップアプリで、Qwen3.6-35B-A3B が 21 tok/s でリアルタイムに回答を生成している様子。"></td>
 </tr>
 <tr>
-<td align="center" colspan="2">16 GB Apple silicon ノート PC</td>
+<td align="center" colspan="2">16 GB Apple silicon ノート PC<br>Qwen3.6-35B-A3B · 18-24 tok/s</td>
 </tr>
 </table>
 
-各デバイスでリアルタイムに動作する Qwen3.6-35B-A3B（21 GB）です。モデルはいずれのデバイスのメモリよりも大きいサイズです。
+Qwen3.6-35B-A3B は、いずれのデバイスのメモリよりも大きいモデルです。GGUF 形式の MoE モデルであれば、どの量子化でも動作します。デコード速度は[パフォーマンス](#パフォーマンス)の表の値です。
 
-**ツアー**（2:38）：16 GB の Mac で、モデル、プランナー、チャット、フォルダー上のエージェント、タスク、連携アプリを紹介します。
+**2021 年のノート PC、GPU なしでのエージェント**：話題のボクセル五重塔プロンプトを、16 GB の RAM を積んだ ThinkPad（CPU のみ）上の内蔵エージェントに、Qwen3.6-35B-A3B Q4_K_M で渡しました。2.3 tok/s で 988 行を書き、その後アプリのプレビューでページを表示します。早送りの箇所は画面に表示しています。
 
-https://github.com/user-attachments/assets/16371803-b96b-42a4-b147-cb1b7d515c73
+<p align="center"><img src="https://github.com/user-attachments/assets/1da744d4-dd98-4d14-a76e-50bdf0d9aec4" width="640" alt="内蔵エージェントが、15 GB の RAM を積み専用 GPU のない 2021 年の ThinkPad で、ボクセルの五重塔の庭を 1 つの HTML ファイルとして書き、そのページがアプリのプレビューで回転します。"></p>
 
 ## できること
 
@@ -55,8 +57,8 @@ https://github.com/user-attachments/assets/16371803-b96b-42a4-b147-cb1b7d515c73
 |---|---|---|---:|---|---:|
 | **Android スマートフォン** | 12 GB | DeepSeek V4 Flash 284B | 91 GB | フラッシュ | 1 |
 |  |  | Qwen3.8-Flash-Next 125B | 80 GB | フラッシュ | 2-4 |
-|  |  | Qwen3.6-35B-A3B | 21 GB | フラッシュ | 5 |
-| **iPhone** | 12 GB | Qwen3.6-35B-A3B | 21 GB | フラッシュ | 3 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | フラッシュ | 5-6 |
+| **iPhone** | 12 GB | Qwen3.6-35B-A3B | 21 GB | フラッシュ | 6 |
 | **Apple silicon ノート PC** | 16 GB | Qwen3.8-Flash-Next 125B | 76 GB | フラッシュ | 7-9 |
 |  |  | Qwen3.6-35B-A3B | 21 GB | フラッシュ | 18-24 |
 | **Windows ノート PC** | 16 GB | Qwen3.6-35B-A3B | 21 GB | フラッシュ | 5 |
@@ -64,9 +66,11 @@ https://github.com/user-attachments/assets/16371803-b96b-42a4-b147-cb1b7d515c73
 | **デスクトップ GPU**（NVIDIA） | 16 GB + 32 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | フラッシュ、GPU キャッシュ | 19-21 |
 | **デスクトップ GPU**（NVIDIA） | 24 GB + 96 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM、GPU キャッシュ | 70 |
 |  |  | Qwen3.6-35B-A3B | 21 GB | GPU | 217 |
-| **デスクトップ GPU**（NVIDIA） | 24 GB + 94 GB RAM | Qwen3.6-35B-A3B | 21 GB | GPU | 135 |
-|  | うち 12 GB が空き | Qwen3.6-35B-A3B | 21 GB | RAM、GPU キャッシュ | 75-81 |
-|  | 24 GB + 94 GB RAM | Gemma 4 26B-A4B | 17 GB | GPU | 107-115 |
+| **デスクトップ GPU**（NVIDIA） | 24 GB + 62 GB RAM | Qwen3.6-35B-A3B | 21 GB | GPU | 154 |
+|  | うち 12 GB が空き | Qwen3.6-35B-A3B | 21 GB | RAM、GPU キャッシュ | 59-67 |
+|  |  | Gemma 4 26B-A4B | 17 GB | GPU | 114 |
+|  |  | Laguna XS 2.1 33B | 20 GB | GPU | 93-94 |
+| **デスクトップ GPU**（NVIDIA） | 8 GB + 125 GB RAM | Qwen3.6-35B-A3B | 21 GB | RAM、GPU | 32-33 |
 | **データセンター GPU**（AMD、ROCm） | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
 
 範囲は複数回の実行でのばらつきです。計測方法とすべての実行結果：
@@ -187,7 +191,7 @@ Apple silicon の Mac では GPU が CPU と同じ RAM を使うため、階層�
 ## プランナー
 
 <p align="center">
-  <img src="docs/assets/screens/plan-mac.png" width="820" alt="16 GB Apple silicon ノート PC で Qwen3.6-35B-A3B Q4_K_M を動かした Plan 画面：エキスパートは 6.6 GiB のキャッシュ付きでフラッシュから読み込まれ、プロンプトは GPU、トークンは CPU で処理。実測 23.9 tok/s、キャッシュヒット率 94%、メモリの内訳。">
+  <img src="https://github.com/user-attachments/assets/98e6de3e-e27d-482d-bff1-26fc66074af4" width="820" alt="16 GB Apple silicon ノート PC で Qwen3.6-35B-A3B Q4_K_M を動かした Plan 画面：エキスパートは 6.6 GiB のキャッシュ付きでフラッシュから読み込まれ、プロンプトは GPU、トークンは CPU で処理。実測 23.9 tok/s、キャッシュヒット率 94%、メモリの内訳。">
 </p>
 
 プランナーはモデルのヘッダーを読み、マシンを計測します：メモリ、ストレージ速度、各 CPU・GPU・NPU。そのルールは
@@ -222,9 +226,7 @@ Apple silicon の Mac では GPU が CPU と同じ RAM を使うため、階層�
 | GGUF の任意の MoE モデル | ✅ | 少数のモデル | 少数のモデル | 独自形式 | 少数のモデル |
 | 自動設定 | ✅ `--auto` | メモリに応じてモデルを選択 | エキスパートキャッシュの予算 | `coli tune` | ❌ |
 
-モデルがゲーミング GPU と RAM の合計に収まる場合、Strata は 2〜4 倍速くなります。フラッシュからストリーミングする場合は、
-どのエンジンも毎秒 10 トークン未満で、速度を決めるのはドライブです。同じ 24 GB カードで Lucebox と同じファイル・同じプロンプトで比べると、このエンジンは Qwen3.6-35B-A3B をより速くデコードし（135 対 108 tok/s）、28k トークンのプロンプトの最初のトークンまで 5 秒（Lucebox は 37 秒）でした。Lucebox のモデル専用ドラフターは Gemma 4 のコードを 2 倍以上速くデコードしました。速度と出典：
-[docs/comparison.md](docs/comparison.md)。
+速度と出典：[docs/comparison.md](docs/comparison.md)。
 
 ## ソースからのビルド
 

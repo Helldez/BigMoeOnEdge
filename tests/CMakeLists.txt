@@ -122,6 +122,12 @@ if(TARGET bmoe_server)
     add_executable(bmoe_agent_test agent_test.cpp)
     target_link_libraries(bmoe_agent_test PRIVATE bmoe_server)
     add_test(NAME agent COMMAND bmoe_agent_test)
+
+    # The server end to end over HTTP with the engine and the planner scripted (server.h, Embedding):
+    # a load-time calibration started when idle, and a request during it answered, not refused.
+    add_executable(bmoe_server_app_test server_app_test.cpp)
+    target_link_libraries(bmoe_server_app_test PRIVATE bmoe_server cpp-httplib)
+    add_test(NAME server_app COMMAND bmoe_server_app_test)
 endif()
 
 # release_file_mappings: on Windows it must find and drop this process's own view + section of a
@@ -317,3 +323,10 @@ add_test(NAME cache_brake COMMAND bmoe_cache_brake_test)
 add_executable(bmoe_knob_trial_test knob_trial_test.cpp)
 target_link_libraries(bmoe_knob_trial_test PRIVATE bmoe_core)
 add_test(NAME knob_trial COMMAND bmoe_knob_trial_test)
+
+# Load-time calibration's loop (bmoe/calibrate.h) with fake ports: it ends, runs the sides in the
+# planner's order, opens nothing it is not asked for, treats a candidate that cannot open as the
+# losing side, and replays the first run's tokens. Pure policy, no model.
+add_executable(bmoe_calibrate_test calibrate_test.cpp)
+target_link_libraries(bmoe_calibrate_test PRIVATE bmoe_core)
+add_test(NAME calibrate COMMAND bmoe_calibrate_test)

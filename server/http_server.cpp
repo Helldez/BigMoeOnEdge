@@ -23,6 +23,8 @@
 #include "feed_key.h"
 #include "hf_repo.h"
 #include "http_fetch.h"
+#include "idle_timer.h"
+#include "server_seams.h"
 #include "json_util.h"
 #include "model_inspect.h"
 #include "model_library.h"
@@ -40,8 +42,10 @@
 #include "service_manager.h"
 
 #include "bmoe/config.h"
+#include "bmoe/measured_knobs.h"
 #include "bmoe/params.h"
 #include "bmoe/probe.h"
+#include "bmoe/session.h"
 #include "bmoe/version.h"
 
 #include <cpp-httplib/httplib.h>
@@ -94,6 +98,12 @@ constexpr std::chrono::seconds kEventPingInterval{15};
 // that reloads takes a new one at once: a client that closed its connection must not hold the old
 // one until the next ping. The same second a waiting chat turn looks with (TurnQueue::enter).
 constexpr std::chrono::seconds kEventLivenessPoll{1};
+// How long the server stays idle after an answer before a load-time calibration starts
+// (docs/measured-planning.md): the model is unloaded for it, and a request that arrives then waits
+// for a reload, so it waits out the gaps a conversation has. A person reads an answer before typing
+// the next message, and an agent runs its tools between turns; a minute covers both commonly enough
+// that the next turn arrives first, and is still short beside a session a calibration saves.
+constexpr std::chrono::seconds kCalibrationIdleDelay{60};
 // How often a server started by an app (--parent-pid) looks for it.
 constexpr std::chrono::seconds kParentPollInterval{1};
 // A client that vanishes without closing (a phone that drops off Wi-Fi) is invisible to the checks
@@ -144,10 +154,12 @@ struct Options {
     std::vector<std::string> scan_dirs; // more directories whose models are listed, never written
     std::vector<std::string> allow_origins;
     std::string api_key;
-    std::string api_key_file; // --api-key-file: the key, read at start, never on the command line
-    bool no_api_key = false;  // listen beyond loopback with no key, on purpose
-    bool models_only = false; // every client, local ones too, names models in the models folder only
-    bool chat_only = false;   // conversations are plain chat: no agent tools, workspaces or tasks
+    std::string api_key_file;             // --api-key-file: the key, read at start, never on the command line
+    bool no_api_key = false;              // listen beyond loopback with no key, on purpose
+    bool models_only = false;             // every client, local ones too, names models in the models folder only
+    bool chat_only = false;               // conversations are plain chat: no agent tools, workspaces or tasks
+    std::string preview_network = "auto"; // whether a workspace preview reaches the internet (preview_network_for)
+    int auto_plan = -1;                   // --auto 1, --no-auto 0, -1 unsaid: the saved choice holds
     bool open_browser = false;
     bool autoload = false;       // load the model the settings name at start and whenever a request finds none
     std::string log_file;        // --log-file: the console's output goes here instead, rotated at start
@@ -181,7 +193,7 @@ void print_usage(const char * argv0) {
     std::printf("usage: %s [options] [engine parameters]\n"
                 "\n"
                 "  --host ADDR          address to bind (default %s; anything else exposes the engine)\n"
-                "  --port N             port (default %d)\n"
+                "  --port N             port (default %d; 0 takes any free port and prints it)\n"
                 "  --open               open the UI in the default browser once listening\n"
                 "  --models-dir PATH    where models are listed and downloaded (default: <data dir>/models)\n"
                 "  --scan-dir PATH      also list the models in PATH and in the folders directly inside it,\n"
@@ -203,6 +215,12 @@ void print_usage(const char * argv0) {
                 "  --models-only        local clients too may only open models from the folders models\n"
                 "                       are listed from (clients on the network always are)\n"
                 "  --chat-only          conversations are plain chat: no agent tools, workspaces or tasks\n"
+                "  --preview-network auto|on|off\n"
+                "                       whether a page the agent wrote, previewed in the UI, may reach the\n"
+                "                       internet (https) as any page you open can; it never reaches this\n"
+                "                       server. auto (default): on when listening on loopback only\n"
+                "  --auto | --no-auto   whether each load measures the machine and plans first, for this run\n"
+                "                       (default: the choice saved from the UI, on until someone turns it off)\n"
                 "  --no-isolated-probes the planner probes compute devices in this process instead of a child each\n"
                 "  --hf-endpoint URL    where Hugging Face repositories are read from (default %s; a mirror)\n"
                 "  --feed-url URL       the signed release feed backend packs and updates are read from\n"
@@ -215,8 +233,9 @@ void print_usage(const char * argv0) {
                 "  -h, --help           this text\n"
                 "      --version        print the engine version\n"
                 "\n"
-                "Engine parameters are the bmoe-cli flags (bmoe-cli --help lists them). Given here, they\n"
-                "hold for this run and outrank saved settings; -m loads that model at start.\n"
+                "Engine parameters are the flags of the engine's parameter table (bmoe-cli --describe-params\n"
+                "lists them; bmoe-cli's own run options, such as --plan-explain, are not among them). Given\n"
+                "here, they hold for this run and outrank saved settings; -m loads that model at start.\n"
                 "\n"
                 "%s service install|uninstall|start|stop|status: the server as a service of your init\n"
                 "system, started at login (%s service --help).\n",
@@ -240,7 +259,7 @@ int parse_args(int argc, char ** argv, Options & o) {
         else if (a == "--port") {
             long long port = 0;
             std::string err;
-            if (!parse_int_strict(next(), 1, kPortMax, port, err)) {
+            if (!parse_int_strict(next(), 0, kPortMax, port, err)) {
                 std::fprintf(stderr, "bmoe-server: --port %s\n", err.c_str());
                 return 2;
             }
@@ -273,6 +292,16 @@ int parse_args(int argc, char ** argv, Options & o) {
             o.models_only = true;
         else if (a == "--chat-only")
             o.chat_only = true;
+        else if (a == "--preview-network") {
+            o.preview_network = next();
+            if (o.preview_network != "auto" && o.preview_network != "on" && o.preview_network != "off") {
+                std::fprintf(stderr, "bmoe-server: --preview-network takes auto, on or off\n");
+                return 2;
+            }
+        } else if (a == "--auto")
+            o.auto_plan = 1;
+        else if (a == "--no-auto")
+            o.auto_plan = 0;
         else if (a == flag::autoload)
             o.autoload = true;
         else if (a == flag::log_file)
@@ -426,6 +455,12 @@ struct App {
     // measurement and must not replace it.
     PlanOutcome load_plan;
     std::atomic<uint64_t> plan_seq{0};
+    // The load plan left a decision across loads to time, and its calibration has not run: it runs at
+    // the first idle point after an answer (maybe_calibrate). Under plan_m.
+    bool calibration_armed = false;
+    // The plan a calibration starts from: the load's plan as made, its side pending. The plan served
+    // (load_plan) may be the other side, where the pending one has not been proven to open. Under plan_m.
+    PlanOutcome calibration_plan;
 
     // The network, for reading a repository (http_fetch.h), and where its bytes in flight go.
     std::unique_ptr<HttpFetch> net;
@@ -441,11 +476,14 @@ struct App {
         std::string added,
         std::string scratch,
         std::string routing_dir,
-        const std::function<std::unique_ptr<HttpFetch>(const std::string &)> & fetch)
-        : opt(std::move(o)), store(server_defaults(), std::move(settings_path)), host(bus),
+        const Embedding & embedding)
+        : opt(std::move(o)), store(server_defaults(), std::move(settings_path)),
+          host(bus,
+               embedding.seams && embedding.seams->open_session ? embedding.seams->open_session
+                                                                : SessionOpener(open_real_session)),
           lib(std::move(models_dir), opt.scan_dirs, std::move(catalog), std::move(added), opt.hf_endpoint, bus),
-          net(fetch ? fetch(scratch) : curl_fetch(scratch, opt.hf_endpoint)), scratch_dir(std::move(scratch)),
-          routing(std::move(routing_dir)) {
+          net(embedding.fetch ? embedding.fetch(scratch) : curl_fetch(scratch, opt.hf_endpoint)),
+          scratch_dir(std::move(scratch)), routing(std::move(routing_dir)) {
         host.set_routing_sink(
             [this](const std::string & model, const RoutingTrace & rec) { routing.keep(model, rec); });
         // A verdict is kept against the machine the plan of that model measured; with no plan of it
@@ -464,7 +502,54 @@ struct App {
             rec.engine = version();
             routing.keep_knobs(model, rec);
         });
+        static const ServerSeams none;
+        const ServerSeams & seams = embedding.seams ? *embedding.seams : none;
+        plan_fn = seams.plan;
+        calibrate_fn = seams.calibrate;
+        turn_ended = seams.turn_ended;
+        if (!calibrate_fn)
+            calibrate_fn = [](const PlanOutcome & p, const MeasuredKnobs & start, const std::atomic<bool> & stop,
+                              const PlanStepFn & on_step) {
+                return calibrate_plan_outcome(
+                    p, start,
+                    [&stop](const RunConfig & cfg, const CalibrationRun & run) {
+                        return run_calibration_candidate(cfg, run, &stop);
+                    },
+                    on_step);
+            };
+        if (seams.calibration_idle_delay.count() > 0) calibration_idle_delay = seams.calibration_idle_delay;
+        // An answer's end starts the wait for the idle point; the next answer starts it again.
+        host.set_turn_end_hook([this] {
+            if (stopping) return;
+            bool armed = false;
+            {
+                std::lock_guard<std::mutex> lk(plan_m);
+                armed = calibration_armed;
+            }
+            if (armed) idle.touch(calibration_idle_delay);
+            if (turn_ended) turn_ended(armed);
+        });
     }
+
+    // The planner and the calibration, the engine's own unless a test put others in (Embedding).
+    std::function<PlanOutcome(const RunConfig &)> plan_fn;
+    std::function<CalibrationOutcome(
+        const PlanOutcome &, const MeasuredKnobs &, const std::atomic<bool> &, const PlanStepFn &)>
+        calibrate_fn;
+    std::chrono::milliseconds calibration_idle_delay{kCalibrationIdleDelay};
+    std::function<void(bool)> turn_ended; // a test's (ServerSeams::turn_ended)
+    // Waits out the quiet period after an answer, then looks for the idle point (maybe_calibrate).
+    IdleTimer idle{[this] { maybe_calibrate(); }};
+
+    // A calibration step runs on the host's loader thread and reaches into the members declared after
+    // the host (the routing store): the loader is joined while they are all alive, and no turn ending
+    // during the shutdown starts another.
+    ~App() {
+        stopping = true;
+        idle.stop();
+        host.unload();
+    }
+    std::atomic<bool> stopping{false};
 
     // Each model's recorded routing, kept for the next plan of that file (routing_store.h).
     RoutingStore routing;
@@ -553,6 +638,12 @@ struct App {
         // what they do not cover, since the verdict has a place to be kept.
         std::vector<MeasuredKnobs> knobs;
         const bool have_knobs = routing.load_knobs(cfg.model_path, knobs);
+        if (plan_fn) {
+            PlanOutcome p = plan_fn(cfg);
+            bus.publish("plan_progress", json{{"step", "done"}});
+            p.seq = ++plan_seq;
+            return p;
+        }
         PlanOutcome p = make_plan(
             cfg, store.operator_keys(), opt.isolated_probes,
             [this](const std::string & step, const std::string & label, int index, int count) {
@@ -614,30 +705,66 @@ struct App {
     // load of the model the settings name has just been asked for. Otherwise why the request is
     // refused (503 `no_model`). The load is asked for under load_m, so the requests that arrive
     // together ask once and the others find it loading.
+    // A load under way, whoever started it (a person, --autoload, or a calibration the server runs
+    // when idle), is a model coming: the turn waits for it in the host's line, and a calibration stops
+    // for it (EngineHost::load_when_idle). Refusing it would answer 503 for a model seconds from ready.
     std::string model_for_request() {
-        if (host.ready()) return "";
+        if (host.model_coming()) return "";
         if (!opt.autoload) return "no model is loaded: load one from the Models page";
-        if (host.loaded_or_loading()) return "";
         if (store.config().model_path.empty()) return "no model is selected: choose one from the Models page";
         std::lock_guard<std::mutex> load(load_m);
-        if (host.loaded_or_loading()) return "";
+        if (host.model_coming()) return "";
         return load_current_locked();
     }
 
     // The caller holds load_m.
     std::string load_current_locked() {
         if (store.config().model_path.empty()) return "no model selected";
+        // The planning flag is cleared after the load has been asked for, so the state goes from
+        // planning straight to loading (or to the error) with no empty in between; made with the flag,
+        // so whatever ends this early clears it too and no turn waits on it for ever.
+        struct EndPlanning {
+            EngineHost & h;
+            bool on = false;
+            ~EndPlanning() {
+                if (on) h.end_planning();
+            }
+        } end_planning{host};
+        {
+            // Nothing of an earlier load's plan outlives this one, whatever the new plan gives.
+            std::lock_guard<std::mutex> lk(plan_m);
+            calibration_plan = PlanOutcome{};
+            calibration_armed = false;
+        }
+        served_fallback = PlanOutcome{};
         if (auto_plan()) {
             host.unload();
             host.begin_planning();
+            end_planning.on = true;
             std::unique_lock<std::mutex> measuring(measure_m);
             PlanOutcome p = measure_plan();
             measuring.unlock();
             if (p.ok) {
-                store.apply_plan(p.values, p.decisions);
+                // A plan that leaves a side of a decision across loads pending names a side that has
+                // not been proven to open here. With calibration on, such a side is opened only as a
+                // calibration's candidate: the load serves the other side where that one has opened
+                // and decoded here before. Otherwise it serves the plan as made, timing its side as
+                // before, with the other side to open instead if this one fails (served_fallback).
+                PlanOutcome served = p;
+                if (p.side_pending()) {
+                    PlanOutcome other = plan_other_side(p);
+                    if (other.ok && store.config().calibrate && p.other_side_measured())
+                        served = std::move(other);
+                    else if (other.ok)
+                        served_fallback = std::move(other);
+                }
+                store.apply_plan(served.values, served.decisions);
                 std::lock_guard<std::mutex> lk(plan_m);
-                load_plan = p;
-                last_plan = std::move(p);
+                calibration_armed =
+                    store.config().calibrate && p.basis && p.calibration_due(p.basis->facts.model.knobs);
+                calibration_plan = p;
+                load_plan = served;
+                last_plan = std::move(served);
             }
             publish_config();
         } else {
@@ -645,14 +772,59 @@ struct App {
             // answered as the one this session runs with.
             std::lock_guard<std::mutex> lk(plan_m);
             load_plan = PlanOutcome{};
+            calibration_plan = PlanOutcome{};
+            served_fallback = PlanOutcome{};
+            calibration_armed = false;
         }
-        // The planning flag is cleared after the load has been asked for, so the state goes from
-        // planning straight to loading (or to the error) with no empty in between.
-        struct EndPlanning {
-            EngineHost & h;
-            ~EndPlanning() { h.end_planning(); }
-        } end_planning{host};
         const RunConfig requested = store.config();
+        if (!served_fallback.ok) return host.load(effective_config(requested), requested);
+        return host.load(effective_config(requested), requested, fallback_for(served_fallback));
+    }
+
+    // The plan's other side, for a load whose pending side would not open (EngineHost::OpenFallback):
+    // once the other side has opened, its plan becomes the load's, and with calibration on the failure
+    // is kept against the side (MeasuredKnobs::*_unviable), so no later load opens it before a
+    // calibration has tried it again. With calibration off nothing would ever try it again, so nothing
+    // is kept: that load is as it was, the other side opened in its place.
+    PlanOutcome served_fallback; // under load_m
+    EngineHost::OpenFallback fallback_for(const PlanOutcome & other) {
+        EngineHost::OpenFallback fb;
+        fb.requested = store.config_with_plan(other.values);
+        fb.effective = effective_config(fb.requested);
+        PlanOutcome pending;
+        {
+            std::lock_guard<std::mutex> lk(plan_m);
+            pending = calibration_plan;
+        }
+        fb.taken = [this, other, pending](const std::string & error) {
+            log_printf(LogLevel::Warn, "the plan's side could not be opened (%s); its other side was loaded instead",
+                       error.c_str());
+            const std::string model = pending.body.value("model", "");
+            if (store.config().calibrate && pending.side_pending() && !model.empty() && !pending.hardware.empty()) {
+                std::vector<MeasuredKnobs> kept;
+                MeasuredKnobs rec;
+                if (routing.load_knobs(model, kept))
+                    if (const MeasuredKnobs * k = find_measured_knobs(kept, pending.hardware, version())) rec = *k;
+                record_side_unviable(pending.basis->facts.plan.config.trial, rec);
+                rec.hardware = pending.hardware;
+                rec.engine = version();
+                routing.keep_knobs(model, rec);
+            }
+            PlanOutcome p = other;
+            p.seq = ++plan_seq;
+            store.apply_plan(p.values, p.decisions);
+            {
+                std::lock_guard<std::mutex> lk(plan_m);
+                load_plan = p;
+                last_plan = std::move(p);
+            }
+            publish_config();
+        };
+        return fb;
+    }
+
+    // The config a load opens for the settings `requested`.
+    RunConfig effective_config(const RunConfig & requested) {
         RunConfig effective = requested;
         const std::vector<std::string> ops = store.operator_keys();
         const bool pinned = std::find(ops.begin(), ops.end(), "moe-stream") != ops.end();
@@ -664,7 +836,92 @@ struct App {
         // The projector beside the model, unless one was named: a model whose folder holds its
         // mmproj file reads images with nothing set.
         if (effective.mmproj.empty()) effective.mmproj = lib.projector_for(requested.model_path);
-        return host.load(effective, requested);
+        return effective;
+    }
+
+    // Load-time calibration, as a server does it (bmoe/calibrate.h, docs/measured-planning.md). The
+    // first answer is never held for it: the model loads on the plan's own side and serves at once.
+    // Once it is idle after an answer - nothing running, nothing waiting - the model is unloaded, each
+    // side opened as a short candidate and timed, the record kept, and the decided plan loaded, all as
+    // one load the host runs (EngineHost::load_when_idle). A request that arrives meanwhile stops the
+    // candidate in flight and waits for that load, as it waits for any; what was measured until then is
+    // kept, and the served load times the rest as before. One attempt per load of a plan.
+    void maybe_calibrate() {
+        if (stopping || !auto_plan()) return; // a person who turned planning off plans by hand
+        std::unique_lock<std::mutex> load(load_m, std::try_to_lock);
+        if (!load) return; // a load is under way: its own plan decides
+        PlanOutcome lp;
+        {
+            std::lock_guard<std::mutex> lk(plan_m);
+            if (!calibration_armed) return;
+            lp = calibration_plan;
+        }
+        // The settings as the calibration starts: the plan it decides is applied only over these.
+        const uint64_t rev = store.revision();
+        const RunConfig requested = store.config();
+        const std::string model = lp.body.value("model", "");
+        if (!requested.calibrate || model.empty() || host.model_path() != model) return;
+        // The record as this machine keeps it now: the answers served since the plan may have timed a
+        // side. Where a calibration from it would open nothing, the model is not unloaded for it.
+        MeasuredKnobs start;
+        {
+            std::vector<MeasuredKnobs> kept;
+            if (routing.load_knobs(model, kept))
+                if (const MeasuredKnobs * k = find_measured_knobs(kept, lp.hardware, version())) start = *k;
+        }
+        if (!lp.calibration_due(start)) {
+            std::lock_guard<std::mutex> lk(plan_m);
+            calibration_armed = false;
+            return;
+        }
+        if (!host.idle()) return; // a turn's end will touch the timer again
+        {
+            std::lock_guard<std::mutex> lk(plan_m);
+            calibration_armed = false;
+        }
+        auto calibrate_step = [this, lp, model, rev, start](RunConfig & effective, RunConfig & req,
+                                                            const EngineHost::BeforeOpenSignals & sig) {
+            const CalibrationOutcome c = calibrate_fn(
+                lp, start, sig.stop, [this](const std::string & step, const std::string & label, int index, int count) {
+                    bus.publish("plan_progress",
+                                json{{"step", step}, {"label", label}, {"index", index}, {"count", count}});
+                });
+            bus.publish("plan_progress", json{{"step", "done"}});
+            if (!c.ran) return;
+            // What was measured is this model's on this machine, whatever happens to the load: kept.
+            MeasuredKnobs rec = c.knobs;
+            rec.hardware = lp.hardware;
+            rec.engine = version();
+            if (!rec.empty()) routing.keep_knobs(model, rec);
+            // Unloaded, shutting down, or anything a person set meanwhile (another model, auto planning
+            // off, a setting): the plan was not made for those settings and is not laid over them, and
+            // the load opens what it was going to. The check and the write are one (apply_plan_if).
+            if (!c.plan.ok || sig.cancelled.load() || stopping || !planner_available()) return;
+            // A calibration stopped before it decided leaves a side pending: the side known to open is
+            // served where there is one, as at a load. Where there is none, the plan is not applied:
+            // the load opens the settings it was serving, which opened here, rather than a side no
+            // load has proven, with nothing to fall back to.
+            PlanOutcome p = c.plan;
+            if (p.side_pending() && p.other_side_measured())
+                if (PlanOutcome other = plan_other_side(p); other.ok) p = std::move(other);
+            if (p.side_pending()) return;
+            p.seq = ++plan_seq;
+            if (!store.apply_plan_if(rev, true, p.values, p.decisions)) return;
+            {
+                std::lock_guard<std::mutex> lk(plan_m);
+                calibration_plan = c.plan;
+                load_plan = p;
+                last_plan = std::move(p);
+            }
+            publish_config();
+            req = store.config();
+            effective = effective_config(req);
+        };
+        // A turn that slipped in between the look and the start wins: the next idle point tries again.
+        if (!host.load_when_idle(effective_config(requested), requested, calibrate_step)) {
+            std::lock_guard<std::mutex> lk(plan_m);
+            calibration_armed = true;
+        }
     }
 
     // Everything that only means something on a running stream, turned off with it. A default the
@@ -793,7 +1050,7 @@ void agent_turn(App & app,
             ChatOutcome out = app.host.chat(
                 turn,
                 [&](const TokenMetrics & m) {
-                    return out_stream.alive() && out_stream.write(s.on_token(m.text, m.reasoning));
+                    return out_stream.alive() && out_stream.write(s.on_token(m.text, m.reasoning, m.tool_calls));
                 },
                 [&] { return out_stream.write(keepalive); });
             if (out.status != 200) {
@@ -945,6 +1202,8 @@ void register_routes(httplib::Server & svr, App & app) {
                 return cr.turn.json_schema.empty() ? text : text.substr(0, complete_utf8_prefix_size(text));
             };
             bool first = true;
+            // Calls travel as the model writes them, argument by argument (ToolCallStream).
+            ToolCallStream calls([id = meta.id](size_t i) { return tool_call_id(id, i); });
             ChatOutcome out = app.host.chat(
                 cr.turn,
                 [&](const TokenMetrics & m) {
@@ -953,10 +1212,11 @@ void register_routes(httplib::Server & svr, App & app) {
                     json extra = nullptr;
                     const std::string text = stream_text(m.text), reasoning = stream_text(m.reasoning);
                     if (first) delta["role"] = "assistant";
+                    bool text_moved = true;
                     if (starts_with(text, sent_text) && starts_with(reasoning, sent_reasoning)) {
                         const std::string dt = text.substr(sent_text.size());
                         const std::string dr = reasoning.substr(sent_reasoning.size());
-                        if (dt.empty() && dr.empty() && !first) return true;
+                        text_moved = !dt.empty() || !dr.empty();
                         if (!dt.empty()) delta["content"] = dt;
                         if (!dr.empty()) delta["reasoning_content"] = dr;
                     } else {
@@ -964,10 +1224,12 @@ void register_routes(httplib::Server & svr, App & app) {
                         delta["reasoning_content"] = reasoning;
                         extra = json{{"reset", true}};
                     }
+                    if (text_moved || first) chunk(delta, nullptr, extra);
                     first = false;
                     sent_text = text;
                     sent_reasoning = reasoning;
-                    chunk(delta, nullptr, extra);
+                    const json call_delta = tool_call_events_delta(calls.update(m.tool_calls));
+                    if (!call_delta.is_null()) chunk(call_delta, nullptr, nullptr);
                     return out_stream.alive();
                 },
                 // Waiting for a turn: an SSE comment keeps the connection open through proxies
@@ -998,11 +1260,15 @@ void register_routes(httplib::Server & svr, App & app) {
                     }
                     chunk(delta, nullptr, extra);
                 }
-                // A call is only known whole, once the turn has been parsed, so it travels in one
-                // delta rather than argument by argument.
-                if (!out.result.tool_calls.empty()) {
-                    ensure_tool_call_ids(out.result.tool_calls, meta.id);
-                    chunk(tool_calls_delta(out.result.tool_calls), nullptr, nullptr);
+                // What the parsed calls add to the streamed ones, and any call no token showed, whole.
+                if (calls.opened() == 0) {
+                    if (!out.result.tool_calls.empty()) {
+                        ensure_tool_call_ids(out.result.tool_calls, meta.id);
+                        chunk(tool_calls_delta(out.result.tool_calls), nullptr, nullptr);
+                    }
+                } else {
+                    const json rest = tool_call_events_delta(calls.finish(out.result.tool_calls));
+                    if (!rest.is_null()) chunk(rest, nullptr, nullptr);
                 }
                 chunk(json::object(), finish_reason(out.result, out.n_predict),
                       json{{"summary", summary_json(out.result.summary, out.result.cancelled)}});
@@ -1429,9 +1695,10 @@ void register_guards(httplib::Server & svr, const Options & o) {
         return httplib::Server::HandlerResponse::Handled;
     });
     // On every response, the refusals above and the UI's files alike.
-    svr.set_post_routing_handler([](const httplib::Request & req, httplib::Response & res) {
+    const bool preview_network = preview_network_for(o.preview_network, policy.loopback);
+    svr.set_post_routing_handler([preview_network](const httplib::Request & req, httplib::Response & res) {
         const bool preview = is_preview_path(req.path) && res.status == 200;
-        for (const auto & h : preview ? preview_headers() : security_headers())
+        for (const auto & h : preview ? preview_headers(preview_network) : security_headers())
             if (!res.has_header(h.first)) res.set_header(h.first, h.second);
     });
     // A handler that reads a field of the wrong type out of a request throws; that is the client's
@@ -1484,16 +1751,48 @@ int run(int argc, char ** argv, const Embedding & embedding) {
         }
     }
     const std::string data_dir = o.data_dir.empty() ? platform::default_data_dir() : o.data_dir;
+    // The socket is bound before any slow start-up work (loading the compute backends, which on some
+    // machines compiles a GPU library for tens of seconds): the port is the server's from here, a
+    // client that connects meanwhile waits in the listen queue until the server serves, and --port 0
+    // reports the port it took at once. A device probe's child serves nothing and binds nothing.
+    httplib::Server svr;
+    if (o.probe_device.empty()) {
+        // A worker is held for a request's whole life, and a connection past the queue is closed at
+        // once instead of waiting with no bound behind workers that may not come free.
+        svr.new_task_queue = [] { return new httplib::ThreadPool(kWorkerThreads, 0, kMaxQueuedRequests); };
+        svr.set_socket_options(set_listener_options);
+        // A request body here is a chat history, with its images inline as base64, or a handful of
+        // settings. The library's default would let every worker buffer far more than that.
+        svr.set_payload_max_length(kMaxRequestBytes);
+        // --port 0 takes any free port, which is then the one printed, served and allowed as an
+        // origin: bound before the guards are made from it.
+        if (o.port == 0) {
+            o.port = svr.bind_to_any_port(o.host);
+            if (o.port <= 0) {
+                std::fprintf(stderr, "bmoe-server: cannot listen on %s\n", o.host.c_str());
+                return 1;
+            }
+        } else if (!svr.bind_to_port(o.host, o.port)) {
+            std::fprintf(stderr, "bmoe-server: cannot listen on %s:%d (in use?)\n", o.host.c_str(), o.port);
+            return 1;
+        }
+        if (embedding.seams && embedding.seams->bound) embedding.seams->bound(o.port);
+    }
+    // A test with the engine scripted (ServerSeams::load_backends) loads no compute backend: nothing
+    // it runs computes, and its timing would hang on the machine's driver.
+    const bool load_backends = !embedding.seams || embedding.seams->load_backends;
     // What a backend reads from its environment, set before any backend is loaded.
-    platform::prepare_compute_backends(data_dir);
+    if (load_backends) platform::prepare_compute_backends(data_dir);
     // Every backend beside the executable, then the packs installed into the data folder (a pack
     // replaced while in use is moved into place first), before anything asks ggml about devices.
     const std::string backends_root = (fs::u8path(data_dir) / "backends").u8string();
     for (const std::string & w : finish_pending_packs(backends_root))
         std::fprintf(stderr, "warning: %s\n", w.c_str());
     const std::vector<std::string> pack_dirs = backend_pack_dirs(backends_root);
-    platform::prepare_backend_modules(extra_backend_modules(platform::executable_dir(), pack_dirs));
-    register_backends(pack_dirs);
+    if (load_backends) {
+        platform::prepare_backend_modules(extra_backend_modules(platform::executable_dir(), pack_dirs));
+        register_backends(pack_dirs);
+    }
     // The child of an isolated device probe: one device, its facts on one line, nothing else. If
     // the driver ends this process, or it never returns, that is the parent's answer about the device.
     if (!o.probe_device.empty()) {
@@ -1532,7 +1831,7 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     const std::string scratch = (fs::u8path(data_dir) / "tmp").u8string();
 
     const std::string routing_dir = (fs::u8path(data_dir) / "routing").u8string();
-    App app(o, settings, models_dir, catalog, added, scratch, routing_dir, embedding.fetch);
+    App app(o, settings, models_dir, catalog, added, scratch, routing_dir, embedding);
     app.default_models_dir = absolute((fs::u8path(data_dir) / "models").u8string());
     for (const std::string & w : app.store.load())
         std::fprintf(stderr, "warning: %s\n", w.c_str());
@@ -1550,6 +1849,7 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     for (const std::string & w : app.lib.warnings())
         std::fprintf(stderr, "warning: %s\n", w.c_str());
     app.store.set_launch_values(o.launch);
+    if (o.auto_plan >= 0) app.store.set_launch_auto_plan(o.auto_plan == 1);
     if (app.forget_missing_model())
         std::fprintf(stderr, "note: the saved model's file is gone; no model is selected until one is chosen\n");
     app.host.set_host_info(platform::host_info);
@@ -1564,7 +1864,7 @@ int run(int argc, char ** argv, const Embedding & embedding) {
         uc.public_key = kFeedPublicKey;
         uc.target = platform::build_target();
         uc.version = version();
-        uc.registered = backend_inventory().names;
+        if (load_backends) uc.registered = backend_inventory().names;
         uc.library_loads = platform::library_loads;
         app.updates = std::make_unique<UpdateService>(app.bus, *app.net, uc);
     }
@@ -1639,14 +1939,6 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     app.agent_routes.has_key = !o.api_key.empty();
     app.agent_routes.home = platform::home_dir();
 
-    httplib::Server svr;
-    // A worker is held for a request's whole life, and a connection past the queue is closed at
-    // once instead of waiting with no bound behind workers that may not come free.
-    svr.new_task_queue = [] { return new httplib::ThreadPool(kWorkerThreads, 0, kMaxQueuedRequests); };
-    svr.set_socket_options(set_listener_options);
-    // A request body here is a chat history, with its images inline as base64, or a handful of
-    // settings. The library's default would let every worker buffer far more than that.
-    svr.set_payload_max_length(kMaxRequestBytes);
     register_guards(svr, o);
     register_routes(svr, app);
     register_agent_routes(svr, app.agent_routes);
@@ -1664,10 +1956,6 @@ int run(int argc, char ** argv, const Embedding & embedding) {
         });
     }
 
-    if (!svr.bind_to_port(o.host, o.port)) {
-        std::fprintf(stderr, "bmoe-server: cannot listen on %s:%d (in use?)\n", o.host.c_str(), o.port);
-        return 1;
-    }
     const std::string url = browse_url(o.host, o.port);
     {
         std::string origin = url;
@@ -1696,6 +1984,7 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     // A stop ends what keeps a worker busy first (a generation, every event stream), since the
     // server's stop waits for its workers.
     const auto stop = [&svr, &app] {
+        app.stopping = true;
         app.host.cancel();
         app.agent->shutdown();
         app.updates->cancel();

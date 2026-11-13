@@ -10,6 +10,7 @@
 namespace bmoe::server {
 
 class HttpFetch;
+struct ServerSeams; // server_seams.h: what a test puts in place of the engine and the planner
 
 // Where the server listens unless told otherwise: this machine only, on one fixed port, so a client
 // that starts the server (an app, a browser bookmark) knows where to find it.
@@ -34,6 +35,9 @@ struct Embedding {
     // Called again with an empty function once it no longer listens, before what the stop reaches
     // is gone: from then on the stop it was given must not be called.
     std::function<void(std::function<void()> stop)> listening;
+    // For a test of the server's own policy only (server_seams.h); null in every real use. Not owned:
+    // it outlives run().
+    const ServerSeams * seams = nullptr;
 };
 
 // Parses `argv` like the executable (`--help` lists the options), serves, and returns the exit

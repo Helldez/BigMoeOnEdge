@@ -319,6 +319,11 @@ struct Session::Impl {
         // than the narrow width (tokens prefilled after reuse, and their seconds).
         int width_requests = 0;
         double width_gen = 0.0, width_long_tokens = 0.0, width_long_seconds = 0.0;
+        // The request mix (MeasuredKnobs::mix_*), over every turn of this load whether a trial runs or
+        // not: requests, tokens decoded, tokens of the prompts a device would take, and of those the
+        // ones the host prefilled, with their seconds.
+        int mix_requests = 0;
+        double mix_gen = 0.0, mix_wide = 0.0, host_wide_tokens = 0.0, host_wide_seconds = 0.0;
         int stage = stage_done;
         std::unique_ptr<KnobTrial> cur;
         std::unique_ptr<RateProbe> rate_probe;
@@ -334,6 +339,7 @@ struct Session::Impl {
     void next_trial_stage(bool settled);
     void rate_step(double seconds, int tokens, uint64_t lookups, uint64_t hits);
     void note_width_turn(int n_prompt, double prefill_seconds, int n_generated);
+    void note_request_mix(const RunSummary & sum);
     void finish_trial_stage();
     bool apply_trial_arm(int arm);
     void set_decode_threads(int n);
@@ -1990,7 +1996,8 @@ void Session::Impl::describe_run(Opening & o) {
         ri.engine_version = version();
         ri.n_threads = cfg.n_threads;
         ri.n_ctx = cfg.n_ctx;
-        ri.n_ubatch = cfg.n_ubatch;
+        // The width the context was opened with, never the 0 that left it to the default.
+        ri.n_ubatch = ctx ? (int) llama_n_ubatch(ctx.get()) : cfg.n_ubatch;
         ri.cache_type_k = kv_cache_type_name(this->cfg.cache_type_k); // what was allocated, after any fallback
         ri.cache_type_v = kv_cache_type_name(this->cfg.cache_type_v);
         ri.chatml = cfg.chatml;
@@ -2061,6 +2068,9 @@ void Session::Impl::arm_trials() {
         trials.cost_probe =
             std::make_unique<RateProbe>(!t.enabled() || device_cache, /*hits_visible*/ !device_cache, pol);
     }
+    // The requests are recorded against the narrow width on every load whose plan has the width's
+    // trade, a side timed or not (note_width_turn).
+    if (t.width_narrow > 0) trials.result.width_narrow = t.width_narrow;
     if (!t.enabled()) return;
     if (!t.threads.empty()) {
         trials.threads.push_back(cfg.n_threads);
@@ -2076,7 +2086,6 @@ void Session::Impl::arm_trials() {
             trials.overlap = {cfg.moe.overlap ? 1 : 0, cfg.moe.overlap ? 0 : 1};
     }
     trials.rate = t.device_tier >= 0 || t.width_side >= 0;
-    if (t.width_side >= 0) trials.result.width_narrow = t.width_narrow;
     trials.stage = stage_done;
     next_trial_stage(/*settled*/ false);
 }
@@ -2185,24 +2194,23 @@ void Session::Impl::rate_step(double seconds, int tokens, uint64_t lookups, uint
     else
         std::snprintf(what, sizeof(what), "with the graph %s (%d tokens wide)",
                       cfg.trial.width_side == 1 ? "at the plan's width" : "narrowed",
-                      cfg.trial.width_side == 1 ? (cfg.n_ubatch > 0 ? cfg.n_ubatch : cfg.n_ctx)
-                                                : cfg.trial.width_narrow);
+                      cfg.trial.width_side == 1 ? (int) llama_n_ubatch(ctx.get()) : cfg.trial.width_narrow);
     if (settling && !r.settling()) log_printf(LogLevel::Info, "knob trial: timing the decode %s", what);
     if (!r.done()) return;
     const double tps = r.tokens_per_second();
-    if (tier)
-        (cfg.trial.device_tier == 1 ? trials.result.device_cache_tps : trials.result.no_device_cache_tps) = tps;
-    else
-        (cfg.trial.width_side == 1 ? trials.result.wide_decode_tps : trials.result.narrow_decode_tps) = tps;
+    record_side_rate(cfg.trial, tps, trials.result); // the mapping a load-time calibration reads by too
     log_printf(LogLevel::Info, "knob trial: %.2f tok/s %s, the median of %d windows", tps, what, r.windows());
     next_trial_stage(/*settled*/ true);
 }
 
-// A turn of a width trial: what it asked of the model, for the plan that weighs the two widths, and
-// the prefill of a prompt the width changes, timed on this load's side.
+// A turn of a load whose plan has the width's trade (KnobTrialConfig::width_narrow): what it asked of
+// the model, for the plan that weighs the two widths, and, where the load times a side, the prefill of
+// a prompt the width changes on that side. Recorded with no side timed too: a width decided on the
+// decode alone, before any request was seen, is weighed again on the requests (planner.cpp,
+// width_across_loads).
 void Session::Impl::note_width_turn(int n_prompt, double prefill_seconds, int n_generated) {
     const KnobTrialConfig & t = cfg.trial;
-    if (t.width_side < 0) return;
+    if (t.width_narrow <= 0) return;
     ++trials.width_requests;
     trials.width_gen += n_generated;
     if (n_prompt > t.width_narrow && prefill_seconds > 0.0) {
@@ -2214,9 +2222,30 @@ void Session::Impl::note_width_turn(int n_prompt, double prefill_seconds, int n_
     r.usage_requests = trials.width_requests;
     r.usage_gen_tokens = trials.width_gen / trials.width_requests;
     r.usage_long_prompt_tokens = trials.width_long_tokens / trials.width_requests;
-    if (trials.width_long_seconds > 0.0)
+    if (t.width_side >= 0 && trials.width_long_seconds > 0.0)
         (t.width_side == 1 ? r.wide_prefill_tps : r.narrow_prefill_tps) =
             trials.width_long_tokens / trials.width_long_seconds;
+}
+
+// A turn, as this machine's use: what a later plan prices a trade between the prompt and the answer
+// by (MeasuredKnobs::mix_*). Recorded on every load, since the trade is decided before one is made.
+void Session::Impl::note_request_mix(const RunSummary & sum) {
+    ++trials.mix_requests;
+    trials.mix_gen += sum.n_generated;
+    // A prompt narrower than the narrowest graph a device is handed runs on the host either way, so
+    // it is no part of the trade.
+    if (sum.n_prompt >= cfg.prefill.min_tokens) {
+        trials.mix_wide += sum.n_prompt;
+        if (sum.prefill_device_tokens == 0 && sum.prefill_seconds > 0.0) {
+            trials.host_wide_tokens += sum.n_prompt;
+            trials.host_wide_seconds += sum.prefill_seconds;
+        }
+    }
+    MeasuredKnobs & r = trials.result;
+    r.mix_requests = trials.mix_requests;
+    r.mix_gen_tokens = trials.mix_gen / trials.mix_requests;
+    r.mix_wide_prompt_tokens = trials.mix_wide / trials.mix_requests;
+    if (trials.host_wide_seconds > 0.0) r.host_prefill_tps = trials.host_wide_tokens / trials.host_wide_seconds;
 }
 
 void Session::Impl::trial_step(double seconds, int tokens) {
@@ -2241,18 +2270,24 @@ void Session::Impl::trial_step(double seconds, int tokens) {
     if (const int dead = k.last_abandoned()) {
         const std::vector<double> & w = k.window_seconds_per_token();
         const size_t n = w.size();
-        const int r = k.rounds(dead);
-        // Apart: every token of its window past the incumbent's whole range, so one round decided it.
-        const char * why = k.last_abandoned_apart() ? ", every token past the incumbent's range" : "";
-        if (trials.stage == stage_threads)
+        const std::string what = trials.stage == stage_threads
+                                     ? std::to_string(trials.threads[(size_t) dead]) + " decode threads"
+                                     : std::string("overlap ") + (trials.overlap[(size_t) dead] ? "on" : "off");
+        if (k.last_abandoned_cut()) {
+            // Cut inside its window: the candidate's window is the last one closed, and the bar it
+            // passed is the incumbent's, measured in this trial.
             log_printf(LogLevel::Info,
-                       "knob trial: %d decode threads settled as no win after %d round%s%s: %.0f ms/token against %.0f",
-                       trials.threads[(size_t) dead], r, r == 1 ? "" : "s", why, 1e3 * w[n - 2], 1e3 * w[n - 1]);
-        else
+                       "knob trial: %s settled as no win inside its first window: %.0f ms/token, where the "
+                       "window could spend %.0f a token and still stand inside the incumbent's range",
+                       what.c_str(), 1e3 * w[n - 1], 1e3 * k.apart_bar());
+        } else {
+            const int r = k.rounds(dead);
+            // Apart: every token of its window past the incumbent's whole range, so one round decided it.
+            const char * why = k.last_abandoned_apart() ? ", every token past the incumbent's range" : "";
             log_printf(LogLevel::Info,
-                       "knob trial: overlap %s settled as no win after %d round%s%s: %.0f ms/token against %.0f",
-                       trials.overlap[(size_t) dead] ? "on" : "off", r, r == 1 ? "" : "s", why, 1e3 * w[n - 2],
-                       1e3 * w[n - 1]);
+                       "knob trial: %s settled as no win after %d round%s%s: %.0f ms/token against %.0f", what.c_str(),
+                       r, r == 1 ? "" : "s", why, 1e3 * w[n - 2], 1e3 * w[n - 1]);
+        }
     }
     if (k.done()) {
         finish_trial_stage();
@@ -2532,6 +2567,11 @@ struct Session::Impl::Turn {
     common_chat_msg final_msg;
     bool final_parsed = false;
 
+    // ── a calibration candidate's turn (GenerateRequest::calibration) ──
+    CalibrationTurn * calib = nullptr;
+    std::unique_ptr<RateProbe> calib_probe;
+    uint64_t calib_lookups = 0, calib_hits = 0; // the cache's counters at the last step
+
     // One decode of the loop: the confirmed token and whatever was drafted after it, verified in
     // one batch, and what that decode cost.
     struct Step {
@@ -2548,7 +2588,7 @@ struct Session::Impl::Turn {
 
     Turn(Impl & im_, const GenerateRequest & req_, RunResult & res_)
         : im(im_), req(req_), res(res_), moe(im_.cfg.moe), ctx(im_.ctx.get()), prompt(req_.prompt),
-          chat_on(im_.chat_on) {}
+          chat_on(im_.chat_on), calib(req_.calibration) {}
 
     bool fail(RunError kind, std::string msg) {
         res.ok = false;
@@ -2560,8 +2600,16 @@ struct Session::Impl::Turn {
     bool structured() const { return !req.json_schema.empty(); }
 
     bool sample_next(int32_t row) {
+        // A calibration replay takes the first candidate's tokens as long as they last: not sampled, so
+        // the sampling chain's state is not advanced by them either.
+        if (calib && calib->tokens.size() < calib->replay.size()) {
+            tok = (llama_token) calib->replay[calib->tokens.size()];
+            calib->tokens.push_back((int32_t) tok);
+            return true;
+        }
         try {
             tok = sample(row);
+            if (calib) calib->tokens.push_back((int32_t) tok);
             if (tok == LLAMA_TOKEN_NULL || (structured() && !grammar.active())) {
                 rollback_turn();
                 return fail(structured() ? RunError::InvalidOutput : RunError::Failed,
@@ -2674,6 +2722,13 @@ struct Session::Impl::Turn {
                 // projector cannot read or one too large) leaves the session usable.
                 return fail(invalid ? RunError::InvalidRequest : RunError::Failed, err);
             }
+            // An image that must go in one pass and is wider than the graph: refused here, with the
+            // context untouched, rather than failing half way through the prefill.
+            const std::string too_wide = im.media->width_refusal(tk, (int) llama_n_ubatch(im.ctx.get()));
+            if (!too_wide.empty()) {
+                undo_history();
+                return fail(RunError::InvalidRequest, too_wide);
+            }
             n_prompt = (int) tokens.size();
         } else {
             tokens.resize(prompt.size() + k_tokenize_slack);
@@ -2714,6 +2769,9 @@ struct Session::Impl::Turn {
     struct ShownView {
         std::string content;   // the answer, reasoning stripped
         std::string reasoning; // the thinking span, empty unless the parser split one out
+        // The calls written so far, read by the same parse: whichever tool and whatever format the
+        // template uses, a call that is still being written is visible (TokenMetrics::tool_calls).
+        std::vector<ChatToolCall> tool_calls{};
     };
     ShownView shown_view(const std::string & raw, bool partial) const {
         if (!chat_on) return {raw, ""};
@@ -2725,7 +2783,7 @@ struct Session::Impl::Turn {
         if (prefilled_answer && !structured()) return {raw, ""};
         try {
             common_chat_msg msg = common_chat_parse(common_chat_input(raw), partial, parse_params);
-            return {msg.content, msg.reasoning_content};
+            return {msg.content, msg.reasoning_content, detail::from_common_tool_calls(msg.tool_calls)};
         } catch (const std::exception & e) {
             if (structured()) return {}; // never leak an unparsed reasoning/tool envelope as JSON
             detail::warn_parse_failed_once(e.what());
@@ -3262,6 +3320,7 @@ struct Session::Impl::Turn {
                 ShownView sv = shown_view(gen, /*partial*/ true);
                 m.text = std::move(sv.content);
                 m.reasoning = std::move(sv.reasoning);
+                m.tool_calls = std::move(sv.tool_calls);
             }
             if (e == 0) {
                 tally.record(m, wall, s.f1 - s.f0, s.c1 - s.c0, im.turn, moe.enabled ? &st : nullptr);
@@ -3291,7 +3350,7 @@ struct Session::Impl::Turn {
         const size_t budget = im.source.cache_budget();
         const size_t next = CacheBrake::braked(budget, im.source.cache_floor());
         if (next >= budget) return;
-        im.source.set_cache_budget(next);
+        im.source.brake_cache_budget(next);
         log_printf(LogLevel::Info,
                    "cache brake: a token took %.0f ms of compute against %.0f, and %.0f%% of the cache's sampled "
                    "pages were no longer in RAM; cache %zu -> %zu MiB",
@@ -3314,6 +3373,49 @@ struct Session::Impl::Turn {
         tally.prev_io_s = im.source.stats().read_seconds;
     }
 
+    // A calibration candidate's timing: the knob trial's windows (KnobTrialPolicy), settled on the
+    // cache's hits where they are in view and on the rate where they are not (a device expert cache
+    // fills inside llama.cpp), and set against the other side's run where there was one.
+    void begin_calibration() {
+        KnobTrialPolicy pol;
+        pol.window_tokens = im.cfg.trial.window_tokens;
+        const bool device_cache = im.cfg.moe.device_cache_mb > 0;
+        calib_probe = std::make_unique<RateProbe>(/*settle*/ true, /*hits_visible*/ !device_cache, pol);
+        if (device_cache) calib_probe->settle_on_rate();
+        calib_probe->set_reference(calib->reference_lo, calib->reference_hi);
+        if (moe.enabled) {
+            const IExpertSource::Stats st = im.source.stats();
+            calib_lookups = (uint64_t) st.cache_lookups;
+            calib_hits = (uint64_t) st.cache_hits;
+        }
+    }
+
+    // One decode step of a candidate; true once its rate is known.
+    bool calibration_step(double seconds, int tokens) {
+        uint64_t lookups = 0, hits = 0;
+        if (moe.enabled) {
+            const IExpertSource::Stats st = im.source.stats();
+            lookups = (uint64_t) st.cache_lookups - calib_lookups;
+            hits = (uint64_t) st.cache_hits - calib_hits;
+            calib_lookups = (uint64_t) st.cache_lookups;
+            calib_hits = (uint64_t) st.cache_hits;
+        }
+        calib_probe->record(seconds, tokens, lookups, hits);
+        return calib_probe->done();
+    }
+
+    // What the candidate measured, however its decode ended: a rate from the windows it timed even
+    // where the answer ended before the last of them.
+    void end_calibration() {
+        if (!calib || !calib_probe) return;
+        const RateProbe & r = *calib_probe;
+        calib->tokens_per_second = r.done() ? r.tokens_per_second() : r.rate_so_far();
+        calib->step_lo = r.step_lo();
+        calib->step_hi = r.step_hi();
+        calib->windows = r.windows();
+        calib->cut = r.cut();
+    }
+
     // ── greedy generation ──
     // Returns false only on a failure; a cancel ends the loop with res.cancelled set.
     bool decode(const std::function<void(const TokenMetrics &)> & on_token, IMetricsSink * sink) {
@@ -3321,6 +3423,7 @@ struct Session::Impl::Turn {
         if (!begin_decode()) return false;
         // A knob trial in progress takes up where the last turn left it.
         trial_guarded([&] { im.resume_trial(); });
+        if (calib) begin_calibration();
         while (n_gen < n_predict) {
             if (llama_vocab_is_eog(im.vocab, tok)) break;
             Step s;
@@ -3339,7 +3442,10 @@ struct Session::Impl::Turn {
             if (!accept(s)) return false;
             emit(s, on_token, sink);
             brake_cache();
-            if (im.trials.stage != im.stage_done) {
+            if (calib) {
+                // A candidate's turn times the candidate and nothing else, and ends with its verdict.
+                if (calibration_step(secs(s.s0, s.s1) + s.draft_s, (int) confirmed.size())) break;
+            } else if (im.trials.stage != im.stage_done) {
                 // The decode as the knob changes it: the target's and the draft's passes, not the
                 // emission around them, which a person's own client paces.
                 const double step_s = secs(s.s0, s.s1) + s.draft_s;
@@ -3611,12 +3717,15 @@ RunResult Session::generate(const GenerateRequest & req,
         ~TrialPause() { im.pause_trial(); }
     } trial_pause{im};
     if (!turn.prefill()) return res; // a failure, or a cancel already rolled back
-    if (!turn.decode(on_token, sink)) return res;
+    const bool decoded = turn.decode(on_token, sink);
+    turn.end_calibration();
+    if (!decoded) return res;
     if (!turn.parse_result()) return res;
     turn.trim_speculative_kv();
     ++im.turn; // this turn is written; label the next one apart
     turn.summarize(sink);
     im.note_width_turn(res.summary.n_prompt, res.summary.prefill_seconds, res.summary.n_generated);
+    im.note_request_mix(res.summary);
     turn.finish();
     return res;
 }

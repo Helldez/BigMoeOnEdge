@@ -5,7 +5,8 @@ serves the UI's static files, and exposes a small JSON API plus an OpenAI-compat
 endpoint, so any OpenAI client can use it too, and the Anthropic Messages and OpenAI Responses
 APIs that Claude Code and Codex CLI speak.
 
-It binds to `127.0.0.1` on port 8765 by default and, unless started with a key (`--api-key-file` or
+It binds to `127.0.0.1` on port 8765 by default (`--port N` to change it; `--port 0` takes any free
+port and prints the one it took) and, unless started with a key (`--api-key-file` or
 `--api-key`), has no authentication:
 it is a local program, like the CLI. See [Security model](#security-model) for exactly what that
 does and does not protect. On a machine that stays on it runs as a service of the person's init
@@ -84,14 +85,28 @@ other software, or other people, on that machine or on a network it was told to 
   responses and a `blob:` the page made from bytes it fetched.
 - A workspace file served for that preview (`GET /api/conversations/<id>/file`, answered `200`) is
   the agent's work, not the UI, and may be a page with script of its own. It carries a policy of
-  its own instead: `Content-Security-Policy: sandbox allow-scripts; default-src 'none'; script-src
-  'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data:
-  blob:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none';
-  frame-ancestors 'self'` and `X-Frame-Options: SAMEORIGIN`, with the same `nosniff` and referrer
-  rules. The `sandbox` directive gives the document an opaque origin however it is opened (framed
-  by the UI with `sandbox="allow-scripts"` and no `allow-same-origin`, or opened directly), so its
-  script runs but cannot read the UI, its storage or the key, cannot reach this server's API or any
-  other host, cannot submit a form, and only the UI's own page may frame it. With a key set, the
+  its own instead, with `X-Frame-Options: SAMEORIGIN` and the same `nosniff` and referrer rules. The
+  `sandbox` directive gives the document an opaque origin however it is opened (framed by the UI
+  with `sandbox="allow-scripts"` and no `allow-same-origin`, or opened directly), so its script runs
+  but cannot read the UI, its storage or the key, cannot reach this server's API (an `http` origin
+  on this machine, which no source in either policy names), cannot submit a form or frame a page,
+  and only the UI's own page may frame it. Whether it may also reach the internet is
+  `--preview-network`:
+  - **off**: `sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src
+    'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none';
+    object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'`. The page loads
+    nothing from anywhere: anything it takes from the network (a library, a font, data it fetches)
+    is missing. It is not a seal on what leaves: a policy does not govern navigation, so a script
+    that sets `location`, or a link a person follows, can still carry what the page holds to another
+    site. What a preview holds is the agent's own work, so read a page the agent wrote before you
+    preview it when the conversation handled anything private.
+  - **on**: the same, with `https:` added to every kind of load (`script-src 'unsafe-inline'
+    'unsafe-eval' blob: https:`, `style-src`, `img-src`, `font-src`, `media-src`, `connect-src
+    https: wss:`, `worker-src blob: https:`). The page reaches https hosts as any page a person opens
+    does, whatever it loads them for; what it can send there is what the page holds, which is the
+    agent's own work.
+  - **auto** (the default): on when the server listens on loopback only, where the person
+    previewing is the one at this machine; off beyond loopback. With a key set, the
   frame's own request could not carry it: the UI then fetches the bytes with the key and frames a
   `blob:` of them, where the UI's own policy holds and the page's inline script does not run.
 - `max_tokens` on a chat request is clamped to the `n-predict` parameter's upper bound, and one
@@ -279,6 +294,7 @@ key, under the same security statement.
             "ctx_advice": {"recommended": 16384, "short": true, "param": "ctx-size", "refused": false,
                            "warn": false}},
   "generating": false,
+  "calibrating": false,
   "load_elapsed_s": 12.4
 }
 ```
@@ -289,7 +305,15 @@ it, so the count is the server's, the same on every screen and after a screen ch
 
 `state` is one of `empty` (no model), `planning` (a load in auto mode is measuring the machine
 before it loads: tens of seconds on a phone, nothing loaded meanwhile), `loading`, `ready`, `error`
-(the last load failed; `error` says why). `model` is `null` unless `state` is `ready`. `streaming` is whether expert streaming is
+(the last load failed; `error` says why). A request that needs the model while one is loading or a
+load in auto mode is measuring first, whoever started it, waits for it rather than being refused,
+and is answered with the loaded model's name. A load asked for during a calibration supersedes it. `calibrating` is true while a
+load-time calibration runs ([measured-planning.md](measured-planning.md#decisions-across-loads-timed-at-load)):
+the plan the model was loaded with left a decision to time, and once the server had been idle for a
+minute after an answer it unloaded the model to time each side. `state` reads `ready` and `model`
+names the model meanwhile, since the server still takes requests: one that arrives stops the
+calibration and waits for the model to load again. `plan_progress` events name each candidate.
+`model` is `null` unless `state` is `ready`. `streaming` is whether expert streaming is
 on for the loaded session: with it off the engine is plain llama.cpp on mmap, and the UI must say so.
 Whether a model will stream is only known once it has loaded (a dense model, a plan that declines),
 so a UI says nothing about it before. `compute_threads` and `busy_threads` are what a CPU figure is
@@ -391,7 +415,9 @@ runs replaces the flag's. `args` is the equivalent `bmoe-cli` command line (for 
 command"). `reload_required` is true when a session-scoped value differs from the loaded
 session's, and `reload_keys` names those parameters in table order (empty with no session). `plan` is the last applied plan's decisions (see below), or `null`. `auto_plan` is
 whether every load plans first: on by default in a build with the planner, always false without
-one; `PUT /api/config` with `{"auto_plan": false}` turns it off, and the choice is saved.
+one; `PUT /api/config` with `{"auto_plan": false}` turns it off, and the choice is saved. The
+server's `--auto` and `--no-auto` set it for one run, over the saved choice and without saving it,
+as engine parameters given at launch do; a choice made through `PUT /api/config` replaces theirs.
 
 ### `PUT /api/config`
 
@@ -542,8 +568,8 @@ other.
 
 **One generation at a time, in order.** A request that arrives while another runs waits its turn;
 while it waits, a streaming response receives SSE comment lines (`: waiting for a turn`) so the
-connection stays open. Once its turn runs, any 15 s with nothing to send (a long prefill, a tool
-call, which is sent only once parsed) gets a keep-alive on every streaming endpoint (a `: ping`
+connection stays open. Once its turn runs, any 15 s with nothing to send (a long prefill, a
+stretch the parser holds back) gets a keep-alive on every streaming endpoint (a `: ping`
 comment; `event: ping` on `/v1/messages`): a client or proxy that drops a silent stream never sees
 one, however slow the machine or long the call. A client that disconnects while it waits gives its place up and stops
 nothing else; a streaming client that disconnects during its own answer stops that answer. A
@@ -554,9 +580,14 @@ Chunks are OpenAI `chat.completion.chunk` objects; the delta carries `content` a
 reasoning models, `reasoning_content`. When the chat parser reclassifies already-sent text (a
 closing reasoning tag), a chunk carries `"bmoe": {"reset": true}` and its delta holds the FULL
 `content` / `reasoning_content` so far, which the client must use to replace, not append; a client
-that does not know the extension appends it. Tool calls arrive in one delta after the text, each
-whole (`index`, `id`, `type`, `function.name`, `function.arguments`), because a call is only known
-once the turn has been parsed. The last choice chunk has `finish_reason` (`stop`, `length`,
+that does not know the extension appends it. Tool calls stream while the model writes them, as
+the protocol has it: a call's first delta carries its `index`, `id`, `type` and `function.name`,
+and the following ones pieces of `function.arguments` by `index`, which a client appends. The
+same per-token parse that separates the reasoning reads the calls, with the model's own template,
+so this holds for every tool, model and call format; a call opens once its arguments begin (its
+name is whole by then), keeps the id it opened with, and its arguments are only ever appended to,
+held back to the last whole UTF-8 character. A call no token showed (a template the partial parse
+cannot read) arrives whole after the text, as before. The last choice chunk has `finish_reason` (`stop`, `length`,
 `tool_calls`, or `cancelled`) and `"bmoe": {"summary": {...}}` with the run summary (same keys as
 the `done` event). With `stream_options.include_usage`, one more chunk follows with empty `choices`
 and `usage`.
@@ -622,7 +653,13 @@ each agent at the server. What they share:
   snapshot that reclassifies earlier text is not sent until a later one extends it again. The
   parser holds back markup it cannot classify yet, so in practice the stream carries the whole
   answer; if a final answer does not extend what was sent, the client keeps what it holds. Tool
-  calls are known whole once the turn is parsed, and arrive after the text, each in one piece.
+  calls stream the same way while the model writes them: a call opens as a `tool_use` block
+  (Messages) or a `function_call` item (Responses) once its arguments begin, its input arriving as
+  `input_json_delta` / `function_call_arguments.delta` pieces under the id the final answer uses.
+  Blocks and items are sequential, so the open text block closes first, and text the model writes
+  while a call is open waits for it. The pieces are what the model wrote; a call whose arguments do
+  not end as a JSON object reaches the client as written (sent before the turn ended, it cannot be
+  replaced by `{}`). A call no token showed arrives whole after the text, as before.
   A reasoning model's thinking is sent as thinking (Messages) or reasoning items (Responses)
   whether or not the client asked to see it, so that the client returns it in the next request
   and the prompt still matches the KV.
@@ -699,8 +736,8 @@ Streaming response: each event named in `event:` and in its data's `type`, numbe
 `sequence_number`. `response.created` and `response.in_progress`; then per item
 `response.output_item.added`, its deltas (`response.reasoning_text.delta` for reasoning;
 `response.content_part.added`, `response.output_text.delta`, `.done` and
-`response.content_part.done` for a message; `response.function_call_arguments.delta` and `.done`,
-the whole arguments in one delta, for a call) and `response.output_item.done` with the item whole;
+`response.content_part.done` for a message; `response.function_call_arguments.delta` and `.done`
+for a call, the arguments in pieces while the model writes them) and `response.output_item.done` with the item whole;
 and last `response.completed` (or `response.incomplete`) with the response object, its `output`
 and `usage`. While the request waits its place in line, and after any 15 s of its turn with
 nothing else to send, an SSE comment.
@@ -830,10 +867,10 @@ limit.
 | `backend` | a backend pack's install: `id` (the pack), `kind` (`backend`), `file`, `received`, `total`, `state` (`running`, `done`, `error`, `cancelled`), `error` (with `running`: the step, such as `unpacking`); with `done`, `restart_required` and `in_place` (false when the pack replaces one in use and takes its place at the next start) |
 | `update` | the installer's download: the same fields with `id` `update`, and with `done` its `path` and `version` |
 | `config` | the `GET /api/config` object, after any change |
-| `plan_progress` | a measurement (`GET /api/plan?measure=1`, or an auto load) entering a stage: `step` (`devices`, `model`, `compute`, `storage`, `memory`, `placement`, `rules`), its words `label`, `index` from 0 and `count`; then `{"step": "done"}` when it ends. A UI shows `label`; `step` is the protocol |
+| `plan_progress` | a measurement (`GET /api/plan?measure=1`, or an auto load) entering a stage: `step` (`devices`, `model`, `compute`, `storage`, `memory`, `placement`, `rules`), its words `label`, `index` from 0 and `count`; then `{"step": "done"}` when it ends. A load-time calibration reports `step` `calibrate` once per candidate it opens, `index` its place and `count` the most it opens, then `done`. A UI shows `label`; `step` is the protocol |
 | `conversation` | an agent conversation's `{id, title, state, updated}`, whenever one of those changes ([agent.md](agent.md#events)) |
 | `item` | `{conversation, item}`: an agent item added or changed, whole |
-| `delta` | `{conversation, item, text?, reasoning?}`: what a streaming assistant item adds |
+| `delta` | `{conversation, item, text?, reasoning?, arguments?}`: what a streaming assistant item adds, or (`arguments`) what a `composing` tool call adds to its arguments |
 | `task` | an agent task, after it is saved and after a run of it starts or ends |
 | `log` | one engine diagnostic (`bmoe/log.h`): `level` (`info`, `warn`, `error`) and `message`, the line the server also writes to stderr after `bmoe: `. For a person to read; a client decides nothing on its wording |
 

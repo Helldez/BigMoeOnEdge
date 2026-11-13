@@ -41,6 +41,33 @@ describe('the item reducer', () => {
     expect(items[1]).toMatchObject({ text: 'Hello!', streaming: false });
   });
 
+  it('turns a card the model is still writing into the call that runs, in place', () => {
+    let items: Item[] = [{ id: 'a1', kind: 'assistant', text: '', streaming: true }];
+    items = upsertItem(items, tool('t1', 'write_file', { state: 'composing', title: 'write_file', bytes: 0 }));
+    items = upsertItem(items, tool('t1', 'write_file', { state: 'composing', title: 'Write page.html', bytes: 12000 }));
+    expect(items[1]).toMatchObject({ state: 'composing', title: 'Write page.html', bytes: 12000 });
+    expect(runSummary(items)).toMatchObject({ pending: 1, created: 0 });
+    items = upsertItem(items, tool('t1', 'write_file', { state: 'done', title: 'Write page.html', args: { path: 'page.html' } }));
+    expect(items.map((i) => i.id)).toEqual(['a1', 't1']);
+    expect(runSummary(items)).toMatchObject({ pending: 0, created: 1 });
+  });
+
+  it("grows a card's arguments from its deltas, through the item that refreshes it, until it runs", () => {
+    let items: Item[] = [tool('t1', 'write_file', { state: 'composing', title: 'write_file', bytes: 0 })];
+    items = applyDelta(items, { conversation: 'c', item: 't1', arguments: '{"path":"p.html","content":"<p' });
+    items = upsertItem(items, tool('t1', 'write_file', { state: 'composing', title: 'Write p.html', bytes: 31 }));
+    items = applyDelta(items, { conversation: 'c', item: 't1', arguments: '>hi' });
+    expect(items[0]).toMatchObject({ title: 'Write p.html', draft: '{"path":"p.html","content":"<p>hi' });
+    items = upsertItem(items, tool('t1', 'write_file', { state: 'done', title: 'Write p.html' }));
+    expect((items[0] as ToolItem).draft).toBeUndefined();
+  });
+
+  it('makes no card from an arguments piece alone, and none on a card that runs', () => {
+    expect(applyDelta([], { conversation: 'c', item: 't1', arguments: '{' })).toEqual([]);
+    const running: Item[] = [tool('t1', 'write_file', { state: 'running' })];
+    expect(applyDelta(running, { conversation: 'c', item: 't1', arguments: 'x' })).toEqual(running);
+  });
+
   it('ignores a delta for an item that is not an answer', () => {
     const items: Item[] = [{ id: 'u1', kind: 'user', text: 'hi' }];
     expect(applyDelta(items, { conversation: 'c', item: 'u1', text: 'x' })).toEqual(items);

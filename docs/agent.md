@@ -65,7 +65,7 @@ prompt and a project's `AGENTS.md`. A model used to one works with the other.
   |---|---|
   | `user` | `text` |
   | `assistant` | `text`, `reasoning`, `streaming`, `tool_calls` (`[{id, name, arguments}]`, when the round called tools) |
-  | `tool` | `tool`, `title` (plain words: "Read src/main.cpp"), `args` (object), `state` (`running`, `waiting`, `done`, `denied`, `error`), `result` (text, capped), `diff` (unified, for edits), `file` (workspace-relative path the tool produced or changed, for the preview), `call_id`, `shortened` (true once the context ran short: the model then reads a few lines of `result`, the person still the whole), `mcp` (the server, for an MCP server's tool) |
+  | `tool` | `tool`, `title` (plain words: "Read src/main.cpp"), `args` (object), `state` (`composing`, `running`, `waiting`, `done`, `denied`, `error`), `bytes` (while composing: how much of the call's arguments the model has written), `result` (text, capped), `diff` (unified, for edits), `file` (workspace-relative path the tool produced or changed, for the preview), `call_id`, `shortened` (true once the context ran short: the model then reads a few lines of `result`, the person still the whole), `mcp` (the server, for an MCP server's tool) |
   | `notice` | `text`, `level` (`info`, `warn`, `error`): why something did not happen, in plain words |
 
 ## The run
@@ -78,8 +78,18 @@ then the items as messages, and only the tools the conversation may use. The pro
 (under 4,000 characters, about 1,000 tokens, the tool definitions apart; `tests/agent_test.cpp`
 prints its size): every token of it is prefilled for every new conversation. When the workspace has
 an `AGENTS.md` at its root, the convention coding agents share for a project's own instructions,
-its first 8 KiB are appended to it. What the model writes streams as `delta` events; its
-tool calls run under the mode, their results are appended, and the next round asks again, until an
+its first 8 KiB are appended to it. What the model writes streams as `delta` events; a call
+it is writing is its tool's card from the first piece of its arguments, in state `composing`,
+its title following the arguments as far as they go ("Write page.html") and `bytes` the size
+written so far, updated with the tokens that grow it as the answer's text is: a call can take a
+local model minutes to write, and the person sees what it is. The arguments themselves stream on
+the card as `delta` events (`arguments`, what each token adds), and the UI shows the newest lines
+of the value being written: a page appears line by line instead of as a growing size. A client
+that joins mid-call sees the arguments from where it joined. The card is the same whatever the
+tool (built-in or MCP) or the route (local model or provider), since it reads only the call. When
+the round ends the same card, by its `id`, runs the call; a card whose call will not run (the run
+stopped, the answer ended first) ends `denied` or `error` with why, live only, since the stored
+conversation keeps what a round decided. Its tool calls run under the mode, their results are appended, and the next round asks again, until an
 answer that calls no tool or the round limit (30 rounds per message; a notice says so, and another
 message lets it go on). The same call failing the same way three times in a row also stops the run,
 with a notice: a small model that repeats a refused call would otherwise spend every round on it.
@@ -121,8 +131,8 @@ with every path the workspace's:
 | `file_glob_search` | `path`, `include`, `exclude`, `type` (`file`, `dir`, `all`), `max_depth`, `limit` | the entries under a folder that match a glob, relative to it, with the total (at most 100) | workspace |
 | `grep_search` | `path`, `pattern`, `include`, `exclude`, `return_line_numbers`, `literal`, `ignore_case`, `context_lines` | the lines matching a regular expression (or a literal) in a file or under a folder, as `path:line:text` (at most 100; files over 2 MiB are not searched) | workspace |
 | `get_info` | none | `{os, cwd}`: the platform and the workspace as the working directory | workspace |
-| `write_file` | `path`, `content` | create or replace a file, its folders created | workspace, a change |
-| `edit_file` | `path`, `edits: [{old_text, new_text}]` | exact replacements, each `old_text` found once in the original, none overlapping, applied at once | workspace, a change |
+| `write_file` | `path`, `content` | create or replace a file, its folders created; answers with the effect (created or replaced, lines, bytes, and for a replaced file how many lines the changed span had and has), not the content, which the model wrote itself | workspace, a change |
+| `edit_file` | `path`, `edits: [{old_text, new_text}]` | exact replacements, each `old_text` found once in the original, none overlapping, applied at once; answers with the diff, whose surrounding lines show where each edit landed | workspace, a change |
 | `exec_shell_command` | `command`, `timeout` (default 10 s, at most 120), `max_output_size` (at most 12 KiB) | a command in the workspace (`/bin/sh -c`, `cmd /c` on Windows), stdout and stderr together, then `[exit code: N]` | workspace, a change, a platform that may start a process |
 | `use_skill` | `name` | a skill's instructions | a skill that is switched on |
 | `<server>_<tool>` | the server's own | an MCP server's tool ("MCP servers") | workspace, a change |
@@ -327,7 +337,7 @@ On `/api/events`, beside the existing ones:
 |---|---|
 | `conversation` | `{id, title, state, updated}`, whenever one of those changes |
 | `item` | `{conversation, item}`: an item was added or changed, whole |
-| `delta` | `{conversation, item, text?, reasoning?}`: what a streaming assistant item adds. When the model's parser takes back text it showed (a closing reasoning tag), an `item` event carries the item whole instead |
+| `delta` | `{conversation, item, text?, reasoning?, arguments?}`: what a streaming assistant item adds, or (`arguments`) what a tool call in state `composing` adds to its arguments, a JSON object cut anywhere. When the model's parser takes back text it showed (a closing reasoning tag), an `item` event carries the item whole instead |
 | `task` | the task, after it is saved and after a run starts or ends |
 
 An assistant item appears with its first token: a round that fails before one leaves no empty item.

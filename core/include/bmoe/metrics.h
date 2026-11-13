@@ -6,6 +6,7 @@
 // as CSV for benchmarking. The engine itself makes no formatting decisions.
 #pragma once
 
+#include "bmoe/chat.h"
 #include "bmoe/predict_stats.h"
 
 #include <cstdint>
@@ -107,6 +108,13 @@ struct TokenMetrics {
     // Display-only, and kept apart from `text` on purpose: the UI shows it as a distinct thinking
     // block rather than letting it leak into the answer. See docs/telemetry.md.
     std::string reasoning;
+    // The calls the answer holds so far, as the same per-token parse reads them: the model's own
+    // template recognises them, so no format, model or tool is named here. A call's name is known
+    // once its arguments begin; its id may stay empty until the turn ends; the last call's
+    // arguments are the JSON written so far, and grow by appending (the parser's contract, which a
+    // client that concatenates fragments relies on). Display-only: what the turn decided is
+    // RunResult::tool_calls. Empty with chat off or when the answer has no call.
+    std::vector<ChatToolCall> tool_calls;
 };
 
 struct RunSummary {
@@ -329,8 +337,8 @@ struct RunInfo {
     int n_expert_used = 0; // effective top-k, after any override
     int n_threads = 0;
     int n_ctx = 0;
-    int n_ubatch = 0;                 // widest graph computed at once; 0 = follow n_batch. Sets the compute-buffer
-                                      // reservation, so it moves the very memory columns these rows record.
+    int n_ubatch = 0; // widest graph computed at once, as the context opened it. Sets the compute-buffer
+                      // reservation, so it moves the very memory columns these rows record.
     std::string cache_type_k = "f16"; // the K and V caches' element types: a quantized one is lossy
     std::string cache_type_v = "f16";
     bool chatml = false; // a chat-templated prompt is not the prompt that was typed

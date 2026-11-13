@@ -33,6 +33,13 @@ bool is_json_content_type(const std::string & content_type);
 // hold those bytes until later tokens complete it instead of replacing them during JSON dump.
 size_t complete_utf8_prefix_size(const std::string & text);
 
+// The members of a JSON object still being written whose values are whole scalars (strings,
+// numbers, booleans, null), read by the JSON library's own parser up to where the text stops;
+// nested values and the member being written are left out. Never throws. For text that will become
+// an object - a call's arguments while the model writes them - so whatever reads an object (a
+// tool's title) can follow it as it grows.
+json json_object_prefix(const std::string & text);
+
 json token_json(const TokenMetrics & m);
 json summary_json(const RunSummary & s, bool cancelled);
 

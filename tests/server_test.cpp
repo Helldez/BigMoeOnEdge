@@ -46,11 +46,13 @@
 #include "stream_keepalive.h"
 #include "sha256.h"
 #include "turn_queue.h"
+#include "idle_timer.h"
 #include "url_entry.h"
 
 #include "bmoe/planner.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <chrono>
 #include <limits>
 #include <cstdio>
@@ -484,6 +486,108 @@ static void block_stream_tests() {
     check(estimate_prompt_tokens(est) > 900 && estimate_prompt_tokens(est) < 1100, "the estimate grows with the text");
 }
 
+// Calls streamed while the model writes them: the rules every protocol shares, then each framing.
+static void tool_call_stream_tests() {
+    using T = ToolCallEvent::Type;
+    const auto id_for = [](size_t i) { return "call_r_" + std::to_string(i); };
+    ToolCallStream s(id_for);
+    std::vector<ToolCallEvent> e = s.update({{"", "write", ""}});
+    check(e.empty() && s.opened() == 0, "a call whose arguments have not begun is not opened: its name may still grow");
+    e = s.update({{"", "write_file", "{\"path\":\"a"}});
+    check(e.size() == 2 && e[0].type == T::Open && e[0].id == "call_r_0" && e[0].name == "write_file" &&
+              e[1].type == T::Delta && e[1].arguments == "{\"path\":\"a",
+          "a call opens once its arguments begin, with the id it keeps, and sends what it has");
+    e = s.update({{"", "write_file", "{\"path\":\"a.html\",\"content\":\"\xC3"}});
+    check(e.size() == 1 && e[0].arguments == ".html\",\"content\":\"",
+          "arguments that grow send the rest, held to whole characters");
+    e = s.update({{"", "write_file", "{\"path\":\"b"}});
+    check(e.empty() && !s.diverged(), "a snapshot that takes arguments back sends nothing, and waits");
+    e = s.update({{"", "write_file", "{\"path\":\"a.html\",\"content\":\"\xC3\xA9\"}"}, {"", "run", "{\"c"}});
+    check(e.size() == 4 && e[0].arguments == "\xC3\xA9\"}" && e[1].type == T::Close && e[1].index == 0 &&
+              e[2].type == T::Open && e[2].index == 1 && e[3].arguments == "{\"c",
+          "a second call opening closes the first, whose arguments are whole");
+    std::vector<ChatToolCall> final_calls = {{"", "write_file", "{\"path\":\"a.html\",\"content\":\"\xC3\xA9\"}"},
+                                             {"", "run", "{\"cmd\":\"ls\"}"},
+                                             {"model_id", "get_info", "{}"}};
+    e = s.finish(final_calls);
+    check(e.size() == 5 && e[0].index == 1 && e[0].arguments == "md\":\"ls\"}" && e[1].type == T::Close &&
+              e[2].type == T::Open && e[2].id == "model_id" && e[3].arguments == "{}" && e[4].type == T::Close &&
+              !s.diverged(),
+          "finish sends what the parsed calls add, and a call no token showed opens whole");
+    check(final_calls[0].id == "call_r_0" && final_calls[1].id == "call_r_1" && final_calls[2].id == "model_id",
+          "every final call carries the id its stream announced");
+    ToolCallStream d(id_for);
+    d.update({{"", "f", "{\"a\":1"}});
+    std::vector<ChatToolCall> other = {{"", "f", "{\"b\":2}"}};
+    d.finish(other);
+    check(d.diverged(), "final arguments that contradict the stream are reported, never sent over it");
+
+    // What a call's card reads while the model writes: the whole scalar members, never an exception.
+    check(json_object_prefix("").empty() && json_object_prefix("[1,").empty() && json_object_prefix("{\"pa").empty() &&
+              json_object_prefix("{\"path\":\"src/ma").empty(),
+          "nothing whole yet is an empty object");
+    check(json_object_prefix("{\"path\":\"a.html\",\"content\":\"<html>") == json{{"path", "a.html"}},
+          "a whole member is read while the next is still being written");
+    check(json_object_prefix("{\"cmd\":\"ls \\\"x\\\"\", \"n\": true, \"o\": {\"k\": [1, \"}\"]}, \"t\": 2,") ==
+              json{{"cmd", "ls \"x\""}, {"n", true}, {"t", 2}},
+          "escapes are decoded, nested values left out, scalars after them still read");
+
+    // OpenAI chat: a call opens with its index, id and name, then its arguments by index.
+    ToolCallStream o(id_for);
+    const json opened = tool_call_events_delta(o.update({{"", "run", "{\"c"}}));
+    check(opened["tool_calls"].size() == 2 && opened["tool_calls"][0]["index"] == 0 &&
+              opened["tool_calls"][0]["id"] == "call_r_0" && opened["tool_calls"][0]["function"]["name"] == "run" &&
+              opened["tool_calls"][0]["function"]["arguments"] == "" &&
+              opened["tool_calls"][1]["function"]["arguments"] == "{\"c" && !opened["tool_calls"][1].contains("id"),
+          "the chat delta names a call once, then streams its arguments");
+    check(tool_call_events_delta(o.update({{"", "run", "{\"c"}})).is_null(), "nothing new is no chunk");
+
+    // Anthropic: the text block closes before the call's block, the input arrives in pieces.
+    RunResult r;
+    r.generated_text = "On it.";
+    r.tool_calls = {{"", "write_file", "{\"path\":\"h.txt\"}"}};
+    const ChatResponseMeta meta{"msg_9", 5, "m.gguf"};
+    AnthropicStream a(meta);
+    std::string wire = a.start();
+    wire += a.on_token("On it.", "");
+    wire += a.on_token("On it.", "", {{"", "write_file", "{\"pa"}});
+    wire += a.on_token("On it.", "", {{"", "write_file", "{\"path\":\"h."}});
+    wire += a.finish(r, "tool_calls");
+    const auto af = sse_frames(wire);
+    check(names_of(af) == "message_start content_block_start content_block_delta content_block_stop "
+                          "content_block_start content_block_delta content_block_delta content_block_delta "
+                          "content_block_stop message_delta message_stop",
+          "the call becomes a tool_use block while it is written, after the text block closes");
+    std::string input;
+    for (size_t i = 5; i <= 7; ++i)
+        input += af[i].second["delta"]["partial_json"].get<std::string>();
+    check(af[4].second["content_block"]["id"] == "call_msg_9_0" && af[4].second["index"] == 1 &&
+              json::parse(input)["path"] == "h.txt",
+          "the pieces join into the call's input, under the id the final answer uses");
+
+    // Responses: the call is a function_call item from its first piece.
+    ResponsesStream rs(meta);
+    wire = rs.start();
+    wire += rs.on_token("On it.", "");
+    wire += rs.on_token("On it.", "", {{"", "write_file", "{\"pa"}});
+    wire += rs.finish(r, "tool_calls");
+    const auto rf = sse_frames(wire);
+    std::string args;
+    for (const auto & fr : rf)
+        if (fr.first == "response.function_call_arguments.delta") args += fr.second["delta"].get<std::string>();
+    const json & done = rf.back().second["response"];
+    check(json::parse(args)["path"] == "h.txt" && done["output"].size() == 2 &&
+              done["output"][0]["type"] == "message" && done["output"][1]["call_id"] == "call_msg_9_0" &&
+              done["output"][1]["arguments"] == "{\"path\":\"h.txt\"}",
+          "a Responses stream sends the arguments in pieces, and completes with the message then the call");
+    bool same_index = true;
+    for (const auto & fr : rf)
+        if (fr.first.rfind("response.function_call_arguments", 0) == 0 ||
+            (fr.first.rfind("response.output_item", 0) == 0 && fr.second["item"]["type"] == "function_call"))
+            same_index = same_index && fr.second["output_index"] == 1;
+    check(same_index, "every event of a call after text names the call's own output_index, the added one too");
+}
+
 static AnthropicRequest
 anthropic(const std::string & body, bool * ok = nullptr, std::string * err = nullptr, bool think = false) {
     AnthropicRequest r;
@@ -819,6 +923,55 @@ static void responses_tests() {
           "a failed turn ends the stream with response.failed");
 }
 
+// The idle timer behind a server's calibration, on a clock the test moves (no thread, no sleep): it
+// fires once the quiet period has passed, a touch meanwhile starts the wait again, a cancel forgets
+// it, and a stop ends it for good. Then the same with its own thread on the real clock, where only
+// what is eventually true is checked.
+static void idle_timer_tests() {
+    using namespace std::chrono_literals;
+    using Clock = std::chrono::steady_clock;
+    Clock::time_point now{};
+    int fired = 0;
+    IdleTimer t([&] { ++fired; }, [&] { return now; }, /*threaded*/ false);
+    t.touch(30ms);
+    now += 29ms;
+    check(!t.poll() && fired == 0, "idle timer: not before the quiet period");
+    now += 1ms;
+    check(t.poll() && fired == 1, "idle timer: fires once it has passed");
+    check(!t.poll() && fired == 1, "idle timer: and only once");
+    t.touch(60ms);
+    for (int i = 0; i < 4; ++i) {
+        now += 40ms;
+        check(!t.poll(), "idle timer: an answer each time, before the period ends");
+        t.touch(60ms);
+    }
+    check(fired == 1, "idle timer: each touch starts the wait again");
+    now += 60ms;
+    check(t.poll() && fired == 2, "idle timer: and it fires once touches stop");
+    t.touch(30ms);
+    t.cancel();
+    now += 1s;
+    check(!t.poll() && fired == 2, "idle timer: a cancel forgets the pending fire");
+    t.stop();
+    t.touch(1ms);
+    now += 1s;
+    check(!t.poll() && fired == 2, "idle timer: stopped, a touch does nothing");
+
+    std::mutex m;
+    std::condition_variable cv;
+    int real_fired = 0;
+    IdleTimer real([&] {
+        std::lock_guard<std::mutex> lk(m);
+        ++real_fired;
+        cv.notify_all();
+    });
+    real.touch(1ms);
+    std::unique_lock<std::mutex> lk(m);
+    check(cv.wait_for(lk, 10s, [&] { return real_fired == 1; }), "idle timer: its thread fires on the real clock");
+    lk.unlock();
+    real.stop();
+}
+
 static void queue_tests() {
     using Admit = TurnQueue::Admit;
     const auto fast = std::chrono::milliseconds(5);
@@ -927,6 +1080,13 @@ static void settings_tests() {
     SettingsStore third(defaults, path.u8string());
     third.load();
     check(!third.auto_plan(true), "auto_plan, once turned off, stays off across a restart");
+    third.set_launch_auto_plan(true);
+    check(third.auto_plan(false), "--auto at launch holds for this run over the saved choice");
+    SettingsStore fresh(defaults, path.u8string());
+    fresh.load();
+    check(!fresh.auto_plan(true), "and is never saved");
+    third.set_auto_plan(false);
+    check(!third.auto_plan(true), "a person's choice replaces what the server was launched with");
 
     // A value saved by an earlier run is under the flags of this one: -m / -c at start win.
     third.set_launch_values({{"temp", "0.2"}});
@@ -1204,15 +1364,29 @@ static void access_tests() {
               !is_preview_path("/api/conversations/a/b/file") && !is_preview_path("/api/conversations/abc") &&
               !is_preview_path("/api/conversations/abc/files"),
           "a preview is one conversation's file route");
-    const auto pcsp = [] {
-        for (const auto & h : preview_headers())
+    const auto preview_csp = [](bool network) {
+        for (const auto & h : preview_headers(network))
             if (h.first == "Content-Security-Policy") return h.second;
         return std::string();
-    }();
-    check(pcsp.rfind("sandbox allow-scripts;", 0) == 0 && pcsp.find("allow-same-origin") == std::string::npos &&
-              pcsp.find("connect-src 'none'") != std::string::npos &&
-              pcsp.find("frame-ancestors 'self'") != std::string::npos && pcsp.find("'self';") == std::string::npos,
-          "a preview runs sandboxed in an opaque origin, reaches nothing, and only the UI frames it");
+    };
+    const std::string pcsp = preview_csp(false), ncsp = preview_csp(true);
+    // Either way: sandboxed in an opaque origin, never this server (an http origin, and no 'self'),
+    // no form, no frame of its own, and only the UI frames it.
+    for (const std::string & c : {pcsp, ncsp})
+        check(c.rfind("sandbox allow-scripts;", 0) == 0 && c.find("allow-same-origin") == std::string::npos &&
+                  c.find("'self';") == std::string::npos && c.find("http:") == std::string::npos &&
+                  c.find("frame-src") == std::string::npos && c.find("form-action 'none'") != std::string::npos &&
+                  c.find("frame-ancestors 'self'") != std::string::npos,
+              "a preview runs sandboxed, apart from this server, and only the UI frames it");
+    check(pcsp.find("connect-src 'none'") != std::string::npos && pcsp.find("https:") == std::string::npos,
+          "without the network a preview loads nothing from anywhere");
+    check(ncsp.find("script-src 'unsafe-inline' 'unsafe-eval' blob: https:") != std::string::npos &&
+              ncsp.find("connect-src https: wss:") != std::string::npos &&
+              ncsp.find("img-src data: blob: https:") != std::string::npos,
+          "with it a preview reaches https hosts for every kind of load, as any page does");
+    check(preview_network_for("auto", true) && !preview_network_for("auto", false) &&
+              preview_network_for("on", false) && !preview_network_for("off", true),
+          "auto follows where the server listens; on and off are the operator's");
 }
 
 static void file_tests() {
@@ -1840,7 +2014,8 @@ static void plan_view_tests() {
               value_text(Decision{"memory-ledger", "7265 MiB", Source::Derived, "r", "b"}) == "7.1 GiB" &&
               value_text(Decision{"regime", "experts-stream", Source::Derived, "r", "b"}) == "experts stream" &&
               value_text(Decision{"shared-memory", "-", Source::Derived, "r", "b"}).empty() &&
-              value_text(Decision{"ubatch", "0", Source::Derived, "r", "b"}) == "as wide as the context",
+              value_text(Decision{"ubatch", "0", Source::Derived, "r", "b"}) ==
+                  "as wide as the context, up to " + std::to_string(RunConfig::ubatch_auto_max),
           "plan view: a value as a person reads it");
     check(decision_json(Decision{"storage-rate", "6.3 GiB/s", Source::Derived, "r", "b"})["group"] == "notes",
           "plan view: a cost model's note is a note");
@@ -2525,10 +2700,12 @@ static void keepalive_tests() {
 }
 
 int main() {
+    idle_timer_tests();
     thermal_tests();
     service_tests();
     protocol_tests();
     block_stream_tests();
+    tool_call_stream_tests();
     anthropic_tests();
     responses_tests();
     queue_tests();

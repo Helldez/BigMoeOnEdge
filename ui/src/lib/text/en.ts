@@ -52,6 +52,8 @@ export const en = {
   'status.planning.long': 'Measuring this computer, then loading the model. This can take a minute.',
   'status.loading.long': 'Loading the model. This can take a minute on a large model.',
   'status.ready': 'Ready',
+  'status.calibrating': 'Timing the placements',
+  'status.calibrating.long': 'Timing where this model runs fastest on the graphics card. A message sent now stops it and waits for the model.',
   'status.generating': 'Writing an answer',
   'status.error': 'Engine error',
   'status.error.long': 'The last model could not be loaded',
@@ -164,6 +166,8 @@ export const en = {
   'choose.needTwo': 'Give at least two options, one per line.',
 
   // Tool calls and approvals.
+  'tool.state.composing': 'Writing',
+  'tool.composing.size': 'Writing · {size}',
   'tool.state.running': 'Running',
   'tool.state.waiting': 'Waiting for you',
   'tool.state.done': 'Done',

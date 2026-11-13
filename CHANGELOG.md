@@ -4,7 +4,206 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.42.0] - 2026-11-12
+
+### Added
+- **A tool call shows what it writes while the model writes it.** Since 0.41.2 a call being written
+  was a card with its size growing ("Writing · 28.0 KiB"), and the text appeared only once the call
+  ran: on a local model a 30 KiB page is half an hour of tokens with nothing to read. The server now
+  streams the arguments on the card as `delta` events (`arguments`, what each token adds, so the
+  traffic stays linear), and the card shows the newest lines of the value being written, decoded
+  from the JSON as it is cut: the page appears line by line. Any tool, built-in or MCP
+  ([agent.md](docs/agent.md)).
+- **The decisions timed across loads are timed at load instead** (`--calibrate`, on by default). Two
+  plan decisions are fixed when a model is loaded, so each side used to be timed over a whole session
+  of use: whether a graphics card with memory of its own holds a cache of experts or the capacity
+  fitter's whole layers, and how wide the graph is where even a graph held to the device bound takes
+  more of the card's memory than its share. On rented cards a model's second load decoded at 37
+  tok/s instead of 68 (12 GB card) and 35 instead of 84 (32 GB card). Now, where the plan leaves such a side pending, each side is opened as a short load of
+  its own, timed on one fixed instruction through the model's chat template (the first sampled, the
+  others replaying its tokens so both route alike), and the faster served, opened fresh. The planner
+  names every side as before (the fitter's placement is still timed only where it could win), a side
+  that cannot be opened loses, and the rates are kept in the model's `.knobs` record, so the next
+  load starts decided. `bmoe-cli --auto` does it before the first answer and says so (with
+  `--routing-dir`, where the result is kept); the server answers first and calibrates after a minute
+  idle, giving way to any request, which waits for the model instead of being refused (`/api/info`
+  reads `ready` with `calibrating`, `plan_progress` step `calibrate`, a label in the UI). Before each
+  candidate the system's cache of the model's files is evened out, so every side starts from the same
+  cache. A side that cannot be opened is counted in the record and loses every plan; a calibration
+  tries it again once, where the plan would still ask for it, and a served load never opens it, nor a
+  pending side not yet proven to open where the other side is: a load whose side fails opens the
+  other side instead (with calibration off, nothing is counted). Only machines with a graphics
+  card that has memory of its own have such a decision: phones and shared-memory computers never
+  calibrate. `--no-calibrate` keeps the timing across loads
+  ([measured-planning.md](docs/measured-planning.md#decisions-across-loads-timed-at-load)).
+
+### Changed
+- **The graph width's decision weighs the decode alone until a request is seen.** A record with both
+  widths' decode timed and no request served (what a calibration leaves) kept the full width
+  whatever the rates said, since a request of no tokens weighs nothing; the faster decode now
+  decides there.
+  It is provisional: the loads of a width decided so record their requests, and long prompts that show
+  up later bring each side's prefill into the verdict. A width decided on requests, as the timing
+  across loads always decides it, records nothing more and stays as it was.
+- **A kept `.knobs` record whose narrow width has moved starts its width figures afresh.** The device
+  bound above changes the narrow width many plans compare, and a rate measured against another
+  narrow width answers another comparison: such a record's width rates are reset, as a new width
+  always reset them, and timed again.
+
+### Fixed
+- **A request that needs the model waits for a load the server is running**, or for one still
+  measuring the machine, instead of a 503 when the server was started without `--autoload`, and is
+  answered with the loaded model's name. `--port 0` takes any free port. The port is bound before
+  the compute backends load, so it is the server's at once and a client that connects early waits
+  for the server to serve.
+
+### Documentation
+- **The same-card comparison with Lucebox, measured again on 0.41.2.** On a rented 24 GB card
+  (RTX 3090 class), Qwen3.6-35B-A3B decodes at 154 tok/s against Lucebox's 123, Laguna XS 2.1 33B
+  at 93 against 84-86, and a 28.6k-token prompt reaches its first token 4-8 times sooner. Lucebox
+  leads on Gemma 4 26B-A4B (131 against 114, 288 on code with its drafter) and on decode after a long
+  prompt with 12 GiB of the card free. In [comparison.md](docs/comparison.md#same-machine-same-file),
+  the README's speed table and its translations, and [benchmarks.md](docs/benchmarks.md).
+- **The README's recordings show the 0.42.0 apps.** The Android phone writes an answer with
+  Qwen3.6-35B-A3B Q4_0 in real time (4.5 tok/s), the desktop app on a 16 GB Apple-silicon laptop
+  with Q4_K_M (21 tok/s, was 20), and the iPhone recording walks through the app with the 35B loaded:
+  a chat about a picture, the plan, the models and the settings. The iPhone footage is an unedited
+  recording on a 12 GB iPhone. By @gjjkbssg (#495). The six READMEs say what each recording shows.
+- **The README shows the built-in agent on a 2021 laptop with no dedicated GPU.** The viral voxel-pagoda
+  prompt on a ThinkPad with 15 GB of RAM, CPU only, Qwen3.6-35B-A3B Q4_K_M: 11,787 tokens at 2.3 tok/s
+  wrote 988 lines, shown as they were written, then the page in the app's preview. A GIF and a 1:33
+  video, with every speed-up marked on screen, in the six READMEs.
+  The recordings and the Plan screenshot are GitHub attachments now, as the tour video already was,
+  so `docs/assets/screens/` is gone and a clone no longer carries 3 MB of pictures. Each recording
+  names its model and decode speed from the speed table, the text below says any MoE model in GGUF
+  runs at any quantization, and the tour video is gone from the top of the README.
+- **The README's speed table catches up with 0.41.2 and 0.42.0.** The iPhone row is 6 tok/s, the
+  `--auto` harness row on 0.42.0 (5.56; was 3). By @gjjkbssg (#574). The Android phone's 35B row
+  is 5-6, the three `--auto` loads on 0.42.0 (4.67, 4.77, 5.21 with `--overlap`). The 24 GB card rows are the
+  2026-11-11 run on 0.41.2: Qwen3.6-35B-A3B 154, 59-67 with 12 GB of the card free, Gemma 4
+  26B-A4B 114, Laguna XS 2.1 33B 93-94. A new
+  row: an 8 GB card (RTX 4060 class) with 125 GB of RAM decodes Qwen3.6-35B-A3B at 32-33 after the
+  load-time calibration. The table rounds up to whole tokens per second.
+  Under the engine comparison table the README keeps only the link to
+  [comparison.md](docs/comparison.md), where every speed and its source are.
+
+## [0.41.3] - 2026-11-11
+
+### Fixed
+- **A long prompt no longer aborts the server on a large NVIDIA or AMD card (#533).** Where a card
+  had room for the compute buffers of a graph as wide as the context, the plan kept it that wide. A
+  prompt past ~25k tokens (~16k on AMD) then went into one pass, and the card's expert matmul aborted
+  the process (`mmid.cu: GGML_ASSERT(nbytes_shared <= smpbo)`). Reproduced on 0.41.2 on a 32 GB card
+  with a 28.6k-token prompt at a 32768 context. A device that computes the graph (layers on it, a
+  device expert cache, or a prefill device) is now planned at most `ubatch_max_device` (8192) tokens
+  per pass, half of the smallest limit seen, and an `--image-max-tokens` cap past it does not lift
+  it. A longer prompt takes more passes ([hardware-planning.md](docs/hardware-planning.md)).
+- **A long context no longer aborts the load on a CPU host (#566).** With `--ubatch` left at 0 the
+  graph was as wide as the context, and the host's compute buffers grow with width x context (the
+  attention mask). On a 15 GB Windows host with Qwen3.6-35B-A3B: 2945 MiB at a 16384 context, the
+  load refused at 24576, and at 32768 the process aborted inside llama.cpp
+  (`GGML_ASSERT(ctx->mem_buffer != NULL)`), with or without `--auto`, since the planner's probe
+  asked for the same width. 0 now means as wide as the context up to 8192 tokens
+  (`RunConfig::ubatch_auto_max`), decided in one place the session, the probe and the planner
+  share, and the probe measures at that width. `--auto` still plans from the whole context: the
+  probe's per-token cost is measured at the run's context, so a wider graph is priced by extending
+  it, and the plan keeps the one-pass prefill of a long prompt where the memory takes it, narrows
+  where it does not (at 32768 that host's buffers would be about 6.9 GB), and holds a device's graph
+  at `ubatch_max_device`. The width the plan picks is the one the session opens with, and the run's
+  CSV header records that width rather than `0` ([telemetry.md](docs/telemetry.md)). At 32768 the
+  same model loads.
+- **An image a projector reads both ways no longer fails half way through the prefill.** Some
+  projectors' image tokens attend to each other both ways, and llama.cpp takes such an image in one
+  pass of the graph, so one wider than the graph could not be decoded. With a projector and
+  `--image-max-tokens` set, neither the default width nor the plan now goes narrower than that cap
+  (where a device computes the graph, its 8192-token bound wins);
+  a width set by hand that an image does not fit is refused before the image is encoded, naming
+  both numbers and the setting to change ([hardware-planning.md](docs/hardware-planning.md)).
+
+## [0.41.2] - 2026-11-11
+
+### Added
+- **A page the agent wrote can reach the internet in the preview** (`--preview-network`). The
+  workspace preview loaded nothing from anywhere, so a page that takes anything from the network,
+  a library from a CDN, a font, data it fetches, showed its HTML around an empty or black canvas
+  while the same file worked opened directly. On a server listening on loopback only (the desktop)
+  the preview now reaches https hosts as any page a person opens does, for every kind of load;
+  beyond loopback it stays shut. Either way it stays sandboxed in an opaque origin, apart from the
+  UI, the key and this server's API. `--preview-network on|off` overrides the default (`auto`)
+  ([server-api.md](docs/server-api.md), "Security model").
+- **Tool calls stream while the model writes them, to every client.** A call was sent once the turn
+  had been parsed, so a local model writing a 21 KB file at 4 tok/s showed nothing for 34 minutes:
+  the desktop UI an answer frozen on its first sentence, and an external agent a silent stream. The
+  per-token parse that already separated the reasoning now also reads the calls being written, with
+  the model's own template, so no tool, model or call format is named anywhere, and each endpoint
+  sends them in its protocol's own form: `tool_calls` deltas on `/v1/chat/completions`,
+  `input_json_delta` on `/v1/messages`, `function_call_arguments.delta` on `/v1/responses`
+  ([server-api.md](docs/server-api.md)). The agent shows a call as its tool's card from the first
+  piece, `composing`, with its title as far as the arguments go and the size written so far, and the
+  same card then runs it ([agent.md](docs/agent.md)); a conversation routed to a provider gets the
+  same card from the provider's stream. A call opens once its arguments begin, keeps the id it
+  opened with, and its arguments are only ever appended to (the parser's own contract, which
+  llama.cpp's server streams by too); a template the partial parse cannot read sends its calls
+  whole, as before.
+
+### Fixed
+- **A page's own script runs in the preview, as the security model says.** The preview route set a
+  second policy of its own, without `allow-scripts`, over the one the security model describes, so
+  no script ran at all, inline or not: a page built in JavaScript showed only its static HTML. The
+  route now leaves the policy to the one place that sets it for every preview response.
+- **`bmoe-server --auto` starts instead of exiting with `unknown arg`.** The help offered "the
+  bmoe-cli flags", and `--auto` is how `bmoe-cli` plans a run, but the server took only the engine's
+  parameter table. It now takes `--auto` and `--no-auto`, for one run over the saved choice (on by
+  default, as before), the way engine parameters given at launch hold; a choice made from the UI
+  replaces it. The help now says which flags it takes: the parameter table's, not `bmoe-cli`'s own
+  run options ([server-api.md](docs/server-api.md)).
+- **`write_file` no longer reads the model back the file it just wrote.** Its result was the whole
+  diff, which for a new file is the content the call carried, up to the 12 KiB result cap. A local
+  model writing a 677-line page read 12 KiB of it back, ran out of context, and its next call was cut
+  off after 131 characters. The result now states the effect: created or replaced, lines, bytes, and
+  for a replaced file how many lines the changed span had and has. The card still shows the whole diff;
+  `edit_file` still answers with its diff, which tells the model where each edit landed.
+- **A second load no longer decodes a whole session at half speed to time a placement that cannot
+  win.** Since #524 the device expert cache is kept across loads by measurement: the first load times
+  the cache, the second the capacity fitter's placement. On a 12 GB card with Qwen3.6-35B the second
+  load decoded at 37 tok/s against 68 in v0.40.3, timing a placement whose ceiling was 55 against
+  the cache's measured 73.5. That ceiling is now computed before the second load, from the rates this
+  machine probed and the bytes the model reads. It covers the experts the fitter left on the host at
+  the host's rate and the rest at the device's, and leaves out crossings and overheads. The fitter's
+  placement is timed only where that ceiling, plus a quarter for a probe that reads low
+  (`rate_ceiling_slack`), beats the cache by the 10% margin. Elsewhere the cache stays, and the plan
+  says why ([measured-planning.md](docs/measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache)).
+- **A discardable cache no longer loses its budget for good** ([#550](https://github.com/Helldez/BigMoeOnEdge/issues/550)).
+  On a 16 GB Mac, 10-turn chats with Qwen3.6-35B-A3B Q4_K_M decoded 17.0 and 18.2 tok/s against 15.5 and 16.0 on 0.41.1,
+  with 4.6-5.6 GB of cache against 2.5. With Gemma-4-26B-A4B Q4_0, 0.41.1's second session fell to 10.9 tok/s at 0.8 GB
+  after three brakes, and the fix held 20.9 at 5.3 GB. Swap stayed at 0. None of the three rules names a platform, a model
+  or a quant:
+  - **A device prefill's slots borrow from the cache and give it back.** The prompt's end used to set the budget the kernel
+    had left as the cache's new one, so every turn of a chat lowered it.
+  - **The brake lowers a discardable cache and keeps the owner's budget as its ceiling.** The cache climbs back once the
+    kernel has been quiet, and each brake doubles the wait. An ordinary cache is braked as before.
+  - **The offer window follows the kernel.** It doubles while nothing is dropped and narrows at the first drop or brake,
+    never past the younger half of the cache's ages, so a hot expert stops paying an offer and a reclaim on every reuse
+    when nothing is taken ([cache-sizing.md](docs/cache-sizing.md)).
+
+## [0.41.1] - 2026-11-11
+
+### Fixed
+- **A collapsing thread count no longer stutters a phone's first answer for 20 s.** On a 12 GB
+  phone with Qwen3.6-35B, the knob trial still ran eight decode threads against four for a whole
+  window, nine tokens at 2.4-3.0 s each against 0.11 s. Two changes, neither with a constant of its
+  own:
+  - **Counts the sweep already answered are not tried.** A count above the incumbent that the plan's
+    thread sweep measured short of the 10% margin over it, with every core to itself, cannot win
+    beside the expert reads, which take cores of their own; the plan's `trial-threads` note names
+    the counts it skips. A count below the incumbent is still tried. On the Mac the sweep picked 8
+    and measured 10 short; decoding confirmed it (10 threads 19.7-20.2 tok/s, 8 threads 20.7).
+  - **A candidate's window is cut once it is decided:** more than half of its tokens past the
+    incumbent's whole range and its seconds past what the window may spend inside it. On the phone's
+    figures the collapse costs six tokens instead of nine; a stall over half a window is still
+    measured through ([hardware-planning.md](docs/hardware-planning.md)).
+
+## [0.41.0] - 2026-11-11
 
 ### Added
 - **The graph width decided across loads, by this machine's own requests.** Where every layer is on
@@ -91,6 +290,18 @@ Semantic Versioning.
   device: a cache that streamed keeps streaming, the dense set and the cache keep their protection,
   and what decode holds still fits what the process may hold (or, where a forced pin left the ledger
   open, no more than it did). The reason names the check that failed.
+- **A prefill device that takes the expert cache away is priced, not refused.** On a 12 GB phone with
+  Qwen3.8-Flash-Next Q2_K (125B, streamed) the plan refused an NPU it measured at 3.0x the cores
+  because with it the 988 MiB cache fell under the 914 MiB token cycle ("a prefill is paid once"),
+  and the run then prefilled a 1054-token prompt on the cores in 122 s and decoded at 1.39 tok/s;
+  the same phone prefilled Qwen3.6-35B's 1525-token prompt in 120-132 s on the cores and 16 s on the
+  NPU. Whether the cache or the device is worth more is how the machine is used, so every load now
+  records its request mix in the measured-knobs record (`mix_requests`, `mix_gen_tokens`,
+  `mix_wide_prompt_tokens`, `host_prefill_tps`; older records still parse), and the plan prices a
+  request both ways: its long prompts at the host's measured prefill rate or at that rate times the
+  device's measured ratio, plus its answer at the decode each allocation predicts. The device is
+  armed where it is cheaper by the 10% margin, and the decision gives both costs; with nothing
+  recorded the cache is kept, as before, and the decision says the trade is unpriced. Gate G24e.
 - **The Plan page no longer reads "+8314% against the 0.0 expected"** (#509). A prediction under
   0.05 tok/s was printed with one decimal as 0.0. Rates now get two significant digits where one
   decimal would read 0.0, and once measured and predicted are 2x apart the comparison reads as a

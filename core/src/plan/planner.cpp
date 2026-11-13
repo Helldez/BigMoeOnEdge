@@ -447,6 +447,35 @@ const ComputeDevice * device_tier_device(const Planning & s, std::string & why) 
     return worst;
 }
 
+// The fastest the capacity fitter's placement could decode on this machine, in tokens a second: the
+// experts it left on the host at the host's expert rate, the rest of the experts and every other byte
+// a token reads at the fastest device's rates, one after the other as a token computes them, and
+// nothing for the crossings, the misses or any overhead. Called where every dense part is on the
+// devices (choose_device_tier's precondition). 0 where a rate or the model's bytes per token is
+// unknown: a ceiling that cannot be computed decides nothing.
+double fitter_decode_ceiling(const Planning & s) {
+    const ModelProfile & m = s.model;
+    const double experts_tok = (double) m.group(WeightGroup::Experts).bytes_per_token;
+    if (experts_tok <= 0.0 || m.expert_bytes == 0) return 0.0;
+    double rest_tok = 0.0;
+    for (size_t g = 0; g < (size_t) WeightGroup::count; ++g)
+        if ((WeightGroup) g != WeightGroup::Experts) rest_tok += (double) m.group((WeightGroup) g).bytes_per_token;
+    double device_experts = 0.0, device_dense = 0.0;
+    for (const ComputeDevice & d : s.hw.devices) {
+        if (d.is_cpu || d.usable == Tri::No || !d.has_own_memory()) continue;
+        device_experts = std::max(device_experts, expert_rates(s.hw, d).device);
+        device_dense = std::max(device_dense, dense_rates(s.hw, d).device);
+    }
+    const double host_share = std::min(1.0, (double) s.host_expert_bytes / (double) m.expert_bytes);
+    const double host_experts = s.hw.host_expert_rate();
+    if (device_experts <= 0.0 || device_dense <= 0.0 || (host_share > 0.0 && host_experts <= 0.0)) return 0.0;
+    constexpr double gib = 1024.0 * 1024.0 * 1024.0;
+    const double seconds = (experts_tok * host_share / host_experts +
+                            experts_tok * (1.0 - host_share) / device_experts + rest_tok / device_dense) /
+                           gib;
+    return seconds > 0.0 ? 1.0 / seconds : 0.0;
+}
+
 void choose_device_tier(Planning & s) {
     Placement & pl = s.placement;
     const ModelProfile & m = s.model;
@@ -515,7 +544,7 @@ void choose_device_tier(Planning & s) {
     }
     bool share_measured = false;
     const double share = expert_share_at(m, budget, &share_measured);
-    char nums[400];
+    char nums[768];
     std::snprintf(nums, sizeof(nums),
                   "%s computes this model's experts at %.0f GiB/s against the host's %.0f%s; a cache of %s "
                   "serves %.0f%% of a token's routed bytes (%s)",
@@ -540,6 +569,13 @@ void choose_device_tier(Planning & s) {
     // run measures and a plan guesses. So a load with no measurement arms the cache and times it, the
     // next runs the fitter's placement and times that, and the plan after keeps the faster; the cache
     // holds where the two are within the margin a measured win needs.
+    //
+    // Timing the fitter's placement costs a whole load at its rate, so it is timed only where it
+    // could win. Its ceiling needs no price of a miss, since it has none to pay: what it reads where,
+    // at rates this machine measured (fitter_decode_ceiling). Where that ceiling, with the slack a
+    // probe needs, cannot beat the cache's measured rate by the margin, the second load keeps the
+    // cache. Measured on a 12 GB card with Qwen3.6-35B: the cache decoded at 73.5 tok/s, the fitter's
+    // placement could reach 55 at most and decoded at 37.8 when it was timed anyway.
     {
         const MeasuredKnobs & mk = s.model.knobs;
         char measured[200];
@@ -547,7 +583,20 @@ void choose_device_tier(Planning & s) {
                       "%.2f tok/s with a device cache against %.2f with the fitter's placement", mk.device_cache_tps,
                       mk.no_device_cache_tps);
         const std::string margin = u64s((uint64_t) (s.pol.min_backend_win * 100.0f + 0.5f)) + "%";
-        if (mk.device_cache_tps > 0.0 && mk.no_device_cache_tps > 0.0) {
+        // A side a load-time calibration could not open loses, whatever the other measured: a cache
+        // that cannot be created leaves the fitter's placement, and a placement that cannot be loaded
+        // leaves the cache (bmoe/calibrate.h).
+        if (mk.device_cache_unviable) {
+            s.note("device-cache-mb", "0", Source::Measured,
+                   "The experts stay where the fitter put them: a device cache could not be opened here.",
+                   std::string(nums) + "; a load with a device cache failed on this machine, so the fitter's "
+                                       "placement stands");
+            return;
+        }
+        if (mk.no_device_cache_unviable) {
+            std::snprintf(nums + std::strlen(nums), sizeof(nums) - std::strlen(nums),
+                          "; a load with the fitter's placement failed on this machine, so the cache stands");
+        } else if (mk.device_cache_tps > 0.0 && mk.no_device_cache_tps > 0.0) {
             if (mk.no_device_cache_tps > mk.device_cache_tps * (1.0 + (double) s.pol.min_backend_win)) {
                 s.note("device-cache-mb", "0", Source::Measured,
                        "The experts stay where the fitter put them: on this machine that decoded faster than a "
@@ -558,15 +607,33 @@ void choose_device_tier(Planning & s) {
             }
             std::snprintf(nums + std::strlen(nums), sizeof(nums) - std::strlen(nums), "; measured: %s", measured);
         } else if (mk.device_cache_tps > 0.0) {
-            s.p.config.trial.device_tier = 0;
-            char before[64];
-            std::snprintf(before, sizeof(before), "%.2f", mk.device_cache_tps);
-            s.note("device-cache-mb", "0", Source::Policy,
-                   "This load times the experts where the fitter put them, against the device cache timed before.",
-                   std::string(nums) + "; an earlier load of this model here decoded at " + before +
-                       " tok/s with a device cache, and this one measures the fitter's placement so the next "
-                       "plan can keep the faster");
-            return;
+            const double ceiling = fitter_decode_ceiling(s);
+            const double reach = ceiling * (1.0 + (double) s.pol.rate_ceiling_slack);
+            if (ceiling > 0.0 && reach <= mk.device_cache_tps * (1.0 + (double) s.pol.min_backend_win)) {
+                // Not timed: the cache is armed below as measured, and no load runs the slower side.
+                std::snprintf(nums + std::strlen(nums), sizeof(nums) - std::strlen(nums),
+                              "; measured: %.2f tok/s with a device cache, and the fitter's placement could reach "
+                              "%.2f at most (%.2f from this machine's probed rates, plus %.0f%% for a probe that "
+                              "reads low), short of the %s margin, so it is not timed",
+                              mk.device_cache_tps, reach, ceiling, 100.0 * (double) s.pol.rate_ceiling_slack,
+                              margin.c_str());
+            } else {
+                s.p.config.trial.device_tier = 0;
+                char before[160];
+                if (ceiling > 0.0)
+                    std::snprintf(before, sizeof(before),
+                                  "%.2f tok/s with a device cache, and the fitter's placement "
+                                  "could reach %.2f",
+                                  mk.device_cache_tps, reach);
+                else
+                    std::snprintf(before, sizeof(before), "%.2f tok/s with a device cache", mk.device_cache_tps);
+                s.note("device-cache-mb", "0", Source::Policy,
+                       "This load times the experts where the fitter put them, against the device cache timed "
+                       "before.",
+                       std::string(nums) + "; an earlier load of this model here decoded at " + before +
+                           ", and this one measures the fitter's placement so the next plan can keep the faster");
+                return;
+            }
         } else {
             s.p.config.trial.device_tier = 1;
         }
@@ -895,7 +962,10 @@ void size_budget(Planning & s) {
 // the widest graph, since its buffers take nothing from anything there.
 } // namespace
 
-uint32_t device_share_width(const Placement & placement, const HardwareProfile & hw, const PlannerPolicy & policy) {
+uint32_t device_share_width(const Placement & placement,
+                            const HardwareProfile & hw,
+                            const PlannerPolicy & policy,
+                            uint32_t min_width) {
     const uint32_t full = placement.compute_width;
     if (full == 0 || placement.device_compute_per_token == 0) return 0;
     const uint64_t device_memory = hw.device_local_memory();
@@ -915,8 +985,9 @@ uint32_t device_share_width(const Placement & placement, const HardwareProfile &
         }
         return !per_card && (double) q.device_compute_bytes > (double) device_memory * policy.compute_share_max;
     };
+    const uint32_t lo = std::max(policy.ubatch_min, min_width);
     uint32_t w = full;
-    while (w / 2 >= policy.ubatch_min && over(w))
+    while (w / 2 >= lo && over(w))
         w /= 2;
     return w;
 }
@@ -933,19 +1004,32 @@ namespace {
 // cards with GLM-4.5-Air: 14.2 tok/s decoded at 16384 tokens wide against 19.4 at 512, where the wide
 // graph prefilled a 9.5k-token prompt at 610 tok/s and a 512-wide one, in llama.cpp, at 104. True when
 // it decided the width and said so.
+// What a request is weighed as while none has been seen: one decoded token and no long prompt. Any
+// positive figure makes the two widths' seconds a request proportional to their decode rates, which is
+// all there is to weigh then; one token is the plain unit of that ratio, not a guess at a request.
+constexpr double k_unserved_request_tokens = 1.0;
+
 bool width_across_loads(Planning & s, uint32_t full) {
     Plan & p = s.p;
     const Placement & pl = s.placement;
     if (s.req.is_pinned("ubatch") || devices_share_host_memory(s.hw) || !pl.fitted || pl.n_gpu_layers == 0 ||
         pl.host_expert_layers.empty() || p.config.trial.device_tier >= 0)
         return false;
-    const uint32_t narrow = device_share_width(pl, s.hw, s.pol);
+    const uint32_t narrow = device_share_width(pl, s.hw, s.pol, (uint32_t) p.config.graph_width_floor());
     if (narrow == 0 || narrow >= full) return false;
     const MeasuredKnobs & mk = s.model.knobs;
     const bool same = mk.width_narrow == (int) narrow;
     const double wd = same ? mk.wide_decode_tps : 0.0, nd = same ? mk.narrow_decode_tps : 0.0;
     const double wp = same ? mk.wide_prefill_tps : 0.0, np = same ? mk.narrow_prefill_tps : 0.0;
-    const double gen = mk.usage_gen_tokens, longp = mk.usage_long_prompt_tokens;
+    // With no request seen yet (a load-time calibration times the decode before any is served), a
+    // request is weighed as a token decoded: the decode rates alone decide, where a weight of nothing
+    // would hold the wide graph whatever they measured. Provisional: a width decided so names the
+    // narrow width on its loads with no side to time (KnobTrialConfig::width_narrow), and they record
+    // the requests they serve, which the plan after weighs. Only then: a width decided on requests
+    // already seen stays as it was decided, and its loads carry no measurement.
+    const bool served = mk.usage_requests > 0;
+    const double gen = served ? mk.usage_gen_tokens : k_unserved_request_tokens;
+    const double longp = served ? mk.usage_long_prompt_tokens : 0.0;
     const std::string n = u64s(narrow);
     const auto run_side = [&](int side, const std::string & why) {
         p.config.trial.width_side = side;
@@ -955,13 +1039,28 @@ bool width_across_loads(Planning & s, uint32_t full) {
             p.placement = s.placement;
             p.config.n_ubatch = (int) narrow;
         }
-        s.note("ubatch", side ? u64s((uint64_t) p.config.n_ubatch) : n, Source::Policy,
+        s.note("ubatch", side ? u64s((uint64_t) p.config.graph_width()) : n, Source::Policy,
                side ? "This load times the graph at its own width, against " + n + " tokens on another load."
                     : "This load times the graph " + n + " tokens wide, against its own width timed before.",
                why);
     };
     const std::string room = "the devices' compute buffers at the full width are past their share of the cards' "
                              "memory, which a narrower graph gives the experts";
+    // A side a load-time calibration could not open loses (bmoe/calibrate.h).
+    if (same && (mk.narrow_unviable || mk.wide_unviable)) {
+        const bool narrow_wins = mk.wide_unviable && !mk.narrow_unviable;
+        if (narrow_wins) {
+            s.placement = s.placement.at_width(narrow);
+            p.placement = s.placement;
+            p.config.n_ubatch = (int) narrow;
+        }
+        s.note("ubatch", narrow_wins ? n : u64s((uint64_t) p.config.graph_width()), Source::Measured,
+               narrow_wins ? n + " tokens per pass: the full width could not be opened here."
+                           : "A prompt runs in one pass: a graph " + n + " tokens wide could not be opened here.",
+               room + "; a load " + (narrow_wins ? std::string("at the full width") : n + " tokens wide") +
+                   " failed on this machine, so the other width stands");
+        return true;
+    }
     if (wd <= 0.0) {
         run_side(1, room + "; nothing is measured yet, so this load times the full width and a later one " + n +
                         " tokens");
@@ -983,12 +1082,19 @@ bool width_across_loads(Planning & s, uint32_t full) {
     const double t_wide = gen / wd + (longp > 0.0 ? longp / wp : 0.0);
     const double t_narrow = gen / nd + (longp > 0.0 ? longp / np : 0.0);
     char nums[320];
-    std::snprintf(nums, sizeof(nums),
-                  "measured on earlier loads: decode %.2f tok/s at the full width against %.2f at %u, prefill of the "
-                  "prompts past %u at %.0f against %.0f; a request here decodes %.0f tokens and prefills %.0f past "
-                  "%u, so %.2f s against %.2f",
-                  wd, nd, narrow, narrow, wp, np, gen, longp, narrow, t_wide, t_narrow);
+    if (served)
+        std::snprintf(nums, sizeof(nums),
+                      "measured on earlier loads: decode %.2f tok/s at the full width against %.2f at %u, prefill of "
+                      "the prompts past %u at %.0f against %.0f; a request here decodes %.0f tokens and prefills %.0f "
+                      "past %u, so %.2f s against %.2f",
+                      wd, nd, narrow, narrow, wp, np, gen, longp, narrow, t_wide, t_narrow);
+    else
+        std::snprintf(nums, sizeof(nums),
+                      "measured: decode %.2f tok/s at the full width against %.2f at %u; no request served yet, so the "
+                      "decode alone weighs them until the requests this machine serves are recorded",
+                      wd, nd, narrow);
     const std::string margin = u64s((uint64_t) (s.pol.min_backend_win * 100.0f + 0.5f)) + "%";
+    if (!served) p.config.trial.width_narrow = (int) narrow;
     if (t_wide > t_narrow * (1.0 + (double) s.pol.min_backend_win)) {
         s.placement = s.placement.at_width(narrow);
         p.placement = s.placement;
@@ -997,10 +1103,38 @@ bool width_across_loads(Planning & s, uint32_t full) {
                std::string(nums) + ", past the " + margin + " margin");
         return true;
     }
-    s.note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Measured,
+    s.note("ubatch", u64s((uint64_t) p.config.graph_width()), Source::Measured,
            "A prompt runs in one pass: on this machine's own requests the full width is as fast or faster.",
            std::string(nums) + "; the narrow graph is not faster by the " + margin + " margin");
     return true;
+}
+
+// Whether a device computes this graph's matmuls, from what the plan already holds: layers on a device
+// of its own (where llama.cpp's op offload also hands that device the wide host-weight matmuls), a device
+// expert cache (the experts computed on the device), or a prefill device the caller named. A device the
+// plan itself arms for the prefill is decided later, and bound_prefill_width holds the graph then.
+bool device_computes_graph(const Planning & s) {
+    const bool own = !devices_share_host_memory(s.hw) && s.hw.device_local_memory() > 0;
+    const bool layers = own && s.placement.fitted && s.placement.n_gpu_layers > 0;
+    const bool cache = s.p.config.moe.device_cache_mb > 0 || s.p.config.trial.device_tier == 1;
+    return layers || cache || s.p.config.prefill.enabled();
+}
+
+// The widest pass a device is planned at (PlannerPolicy::ubatch_max_device), never under ubatch_min.
+// The image floor does not lift it: a cap on an image's tokens would otherwise widen every prompt's
+// pass on the device past what its expert matmul is known to run (#533).
+uint32_t device_pass_bound(const PlannerPolicy & pol) {
+    return pol.ubatch_max_device > 0 ? std::max(pol.ubatch_max_device, pol.ubatch_min) : 0;
+}
+
+// What a device's bound does to images, said where it is narrower than their cap: an image wider than
+// the pass is refused with the error that names the settings, rather than every prompt going wider.
+std::string image_past_bound(const RunConfig & c, uint32_t bound) {
+    const uint32_t floor_w = (uint32_t) c.graph_width_floor();
+    if (bound == 0 || floor_w <= bound) return std::string();
+    return " An image may take up to " + u64s(floor_w) + " tokens (" + flag_spelling("image-max-tokens") +
+           "), past this bound: such an image, if its tokens attend both ways, is refused with a message naming "
+           "the settings, since the bound holds every prompt and an image is the rarer case.";
 }
 
 void choose_graph_width(Planning & s) {
@@ -1025,40 +1159,101 @@ void choose_graph_width(Planning & s) {
     // the decode ran on the host at 12.5 tok/s; at 10240 tokens it placed all 41 and decoded at 75-81.
     const bool device_short = device_memory > 0 && s.placement.fitted && s.placement.device_compute_per_token > 0 &&
                               (uint32_t) s.placement.n_gpu_layers <= s.model.n_layer;
-    const uint32_t device_width = device_short ? device_share_width(s.placement, s.hw, s.pol) : 0;
+    // The narrowest graph: llama.cpp's own physical batch, or the most tokens one image takes where
+    // its tokens must go in one pass (RunConfig::graph_width_floor).
+    // Where a device computes the graph, the image floor is held to the device's bound: the bound wins.
+    const uint32_t bound = device_computes_graph(s) ? device_pass_bound(s.pol) : 0;
+    const uint32_t image_w = (uint32_t) p.config.graph_width_floor();
+    const uint32_t narrowest = std::max(s.pol.ubatch_min, bound > 0 ? std::min(image_w, bound) : image_w);
+    const uint32_t device_width = device_short ? device_share_width(s.placement, s.hw, s.pol, narrowest) : 0;
     auto device_buffers = [&](uint32_t w) { return s.placement.at_width(w).device_compute_bytes; };
     auto device_over = [&](uint32_t w) { return device_width > 0 && w > device_width; };
     auto over = [&](uint32_t w) {
         return buffers(w) > s.holdable * (double) s.pol.compute_share_max || (device_short && device_over(w));
     };
-    const uint32_t full = s.placement.compute_width;
+    const uint32_t probed = s.placement.compute_width;
     if (s.req.is_pinned("ubatch")) {
         s.note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Operator,
                u64s((uint64_t) p.config.n_ubatch) + " tokens per pass, as you set it.",
                "set by the caller; the planner leaves it alone" +
-                   (full ? ", and the compute buffers are counted at that width: " + u64s(mib(buffers(full))) + " MiB"
-                         : std::string()));
+                   (probed
+                        ? ", and the compute buffers are counted at that width: " + u64s(mib(buffers(probed))) + " MiB"
+                        : std::string()));
         return;
     }
-    if (full == 0 || s.placement.host_compute_per_token == 0) {
-        s.note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Unprobed,
-               u64s((uint64_t) p.config.n_ubatch) + " tokens per pass, the default: its memory cost was not measured.",
+    if (probed == 0 || s.placement.host_compute_per_token == 0) {
+        s.note("ubatch", u64s((uint64_t) p.config.graph_width()), Source::Unprobed,
+               u64s((uint64_t) p.config.graph_width()) +
+                   " tokens per pass, the default: its memory cost was not measured.",
                "what a token of graph width costs in compute buffers was not measured here, so the "
                "width is not this plan's to choose; keeping the default");
         return;
     }
-    uint32_t w = full;
-    while (w / 2 >= s.pol.ubatch_min && over(w))
+    // The widest candidate is the whole context where the width was left to the default. The probe
+    // measured the buffers at the default width (RunConfig::graph_width), which a long context caps,
+    // and at half of it, both at this context, so the per-token slope already carries what the
+    // attention mask costs a token of width here: a wider graph at the same context is priced by
+    // extending that line (Placement::at_width). Where a device's part of the buffers was not
+    // measured, a wider graph is not priced, and the candidate stays the probed width.
+    uint32_t n_ctx = (uint32_t) p.config.n_ctx;
+    if (s.placement.n_ctx > 0 && s.placement.n_ctx < n_ctx) n_ctx = s.placement.n_ctx;
+    const bool device_priced = s.placement.device_compute_bytes == 0 || s.placement.device_compute_per_token > 0;
+    const bool extend = p.config.n_ubatch == 0 && device_priced && probed < n_ctx;
+    const uint32_t full = extend ? n_ctx : probed;
+    // A device that computes the graph is bounded by the widest pass its expert matmul is known to
+    // run (PlannerPolicy::ubatch_max_device, `bound` above), whatever its memory allows.
+    const std::string images = image_past_bound(p.config, bound);
+    const uint32_t top = bound > 0 && full > bound ? bound : full;
+    uint32_t w = top;
+    while (w / 2 >= narrowest && over(w))
         w /= 2;
+    // The width taken: its buffers charged, and the session told it whenever it is not the width the
+    // config opens with anyway (at the context the placement settles, which apply_placement adopts).
+    RunConfig opened = p.config;
+    opened.n_ctx = (int) n_ctx;
+    const uint32_t default_width = (uint32_t) opened.graph_width();
+    auto take = [&](uint32_t width) {
+        s.placement = s.placement.at_width(width);
+        p.placement = s.placement;
+        if (width != default_width) p.config.n_ubatch = (int) width;
+    };
     const std::string pct = u64s((uint64_t) (s.pol.compute_share_max * 100.0f + 0.5f)) + "%";
     const std::string share = pct + " of the " + u64s(mib(s.holdable)) + " MiB this process may hold";
     const bool device_bound = device_short && device_over(full);
-    if (w == full && width_across_loads(s, full)) return;
+    // What the widest graph is, said as it is, and how its buffers were priced when it is wider than
+    // the probe measured.
+    const std::string widest =
+        full >= n_ctx ? "a graph as wide as the context (" + u64s(full) + " tokens" +
+                            (full > probed ? ", its buffers priced by extending the " + u64s(mib(buffers(probed))) +
+                                                 " MiB measured " + u64s(probed) +
+                                                 " tokens wide at this context along the cost of a token of width "
+                                                 "measured there)"
+                                           : std::string(")"))
+                      : "a graph " + u64s(full) +
+                            " tokens wide (the width the placement was measured at; a wider one is not priced here)";
+    if (bound > 0 && w == top && top < full) {
+        // Narrowed by the bound: inside it, the memory takes the graph.
+        const bool full_fits = !over(full);
+        take(w);
+        if (width_across_loads(s, w)) return;
+        s.note("ubatch", u64s(w), Source::Policy,
+               u64s(w) + " tokens per pass: the widest a device's expert matmul is known to run.",
+               widest + (full_fits ? " would fit in memory" : " would not fit in memory either") +
+                   ", but a device computes it, and past " + u64s(bound) +
+                   " tokens a pass can abort in the backend's expert matmul (#533); a longer prompt takes more "
+                   "passes." +
+                   images + " " + flag_spelling("ubatch") + " sets it by hand");
+        return;
+    }
     if (w == full) {
-        s.note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Derived,
-               "A prompt runs in one pass: that takes only " + size_brief(buffers(full)) + ".",
-               "a graph as wide as the context reserves " + u64s(mib(buffers(full))) +
-                   " MiB of compute buffers, inside " + share + ": a prompt is computed in one pass");
+        take(full);
+        if (width_across_loads(s, full)) return;
+        s.note("ubatch", u64s(full), Source::Derived,
+               (full < n_ctx ? "A prompt up to " + u64s(full) + " tokens runs in one pass: that takes only "
+                             : std::string("A prompt runs in one pass: that takes only ")) +
+                   size_brief(buffers(full)) + ".",
+               widest + " reserves " + u64s(mib(buffers(full))) + " MiB of compute buffers, inside " + share +
+                   ": a prompt that wide is computed in one pass." + images);
         return;
     }
     const uint64_t before = device_bound ? device_buffers(full) : buffers(full);
@@ -1066,18 +1261,43 @@ void choose_graph_width(Planning & s) {
     const std::string where = device_bound ? pct + " of the " + u64s(mib(device_memory)) +
                                                  " MiB of device memory, where the fitter left layers on the host"
                                            : share;
-    s.placement = s.placement.at_width(w);
-    p.placement = s.placement;
-    p.config.n_ubatch = (int) w;
+    // Held at the floor an image sets, past the share: said, since the share alone would go narrower.
+    const std::string image_floor =
+        narrowest > s.pol.ubatch_min && w / 2 < narrowest && over(w)
+            ? " It stays at least " + u64s(narrowest) + " tokens wide: an image takes up to that many, in one pass."
+            : std::string();
+    take(w);
     s.note("ubatch", u64s(w), Source::Policy,
            u64s(w) + " tokens per pass; wider would take " + size_brief(before) +
                (device_bound ? " of the device's memory." : " from the cache."),
-           "a graph as wide as the context would reserve " + u64s(mib(before)) + " MiB of compute buffers" +
+           widest + " would reserve " + u64s(mib(before)) + " MiB of compute buffers" +
                (device_bound ? " on the devices" : "") + ", more than " + where + "; at " + u64s(w) + " tokens it is " +
                u64s(mib(after)) +
                " MiB. A prompt takes more passes and the expert cache keeps the rest: a prompt is paid once and a "
-               "token every time. " +
-               flag_spelling("ubatch") + " sets it by hand");
+               "token every time." +
+               image_floor + images + " " + flag_spelling("ubatch") + " sets it by hand");
+}
+
+// A prefill device the plan armed computes every prompt's pass, as wide as the graph: held to the
+// device's bound like any device that computes the graph (#533). The width rule ran before the device
+// was chosen, so a graph it left wider is narrowed here; narrower only gives memory back.
+void bound_prefill_width(Planning & s) {
+    Plan & p = s.p;
+    const uint32_t bound = device_pass_bound(s.pol);
+    if (s.req.is_pinned("ubatch") || bound == 0 || (uint32_t) p.config.graph_width() <= bound) return;
+    const uint32_t was = (uint32_t) p.config.graph_width();
+    s.placement = s.placement.at_width(bound);
+    p.placement = s.placement;
+    p.config.n_ubatch = (int) bound;
+    for (auto it = p.decisions.begin(); it != p.decisions.end();)
+        it = it->knob == "ubatch" ? p.decisions.erase(it) : it + 1;
+    s.note("ubatch", u64s(bound), Source::Policy,
+           u64s(bound) + " tokens per pass: the widest a device's expert matmul is known to run.",
+           "the plan chose " + u64s(was) + " tokens wide, and then armed " + p.config.prefill.device +
+               " for the prefill, which computes every pass; past " + u64s(bound) +
+               " tokens a pass can abort in the backend's expert matmul (#533), so a longer prompt takes more "
+               "passes." +
+               image_past_bound(p.config, bound) + " " + flag_spelling("ubatch") + " sets it by hand");
 }
 
 // The bytes that would have to be resident on the host if nothing were streamed, and the regime
@@ -1812,17 +2032,81 @@ std::string prefill_conflict(const RunConfig & c) {
     return "";
 }
 
+// Whether an allocation's expert stream has a price to set against the mapping: what lets a cache
+// under the floor be turned off rather than the stream declined (size_cache).
+bool stream_priced(const Allocation & a) {
+    const GroupPlacement & experts = a.at(WeightGroup::Experts);
+    return experts.lane == Lane::ExpertStream && experts.seconds_per_token > 0.0 &&
+           experts.seconds_per_token < experts.seconds_worst_case;
+}
+
+// A device whose room takes the expert cache away - under one token cycle with it, where without it
+// the cache streamed - is a trade, not a refusal: every long prompt runs faster, every decoded token
+// slower, and which is worth more is how this machine is used. A chat with long prompts and short
+// answers wants the device, a long answer from a short prompt the cache. Measured on a 12 GB phone with
+// a 125B model streamed: a 1054-token prompt prefilled on the cores in 122 s and decoded at 1.39
+// tok/s, the plan having kept a 988 MiB cache over an NPU it measured at 3.0x the cores, where another
+// model's prompts ran 8x faster on that NPU.
+//
+// So a request of this machine's own (MeasuredKnobs::mix_*) is priced both ways: its long prompts at
+// the host's measured prefill rate, or at that rate times the device's measured wide ratio, and its
+// answer at the decode each allocation predicts. The device is armed where the request is cheaper with
+// it by the margin every device decision uses. Unpriced - nothing recorded of the requests, or of the
+// host's prefill, or a decode either allocation cannot price - the cache is kept, as it always was.
+struct PrefillTrade {
+    bool priced = false;
+    bool device_wins = false;
+    std::string account; // the figures, or what pricing them is owed
+};
+
+PrefillTrade
+price_prefill_trade(const Planning & s, double wide_ratio, const Allocation & without, const Allocation & with) {
+    PrefillTrade t;
+    const MeasuredKnobs & mk = s.model.knobs;
+    if (mk.mix_requests <= 0 || mk.host_prefill_tps <= 0.0) {
+        t.account = "unpriced: " +
+                    std::string(mk.mix_requests <= 0 ? "no request of this machine is recorded yet"
+                                                     : "the host's prefill of a long prompt is not measured here yet") +
+                    ", and a load records it; the next plan weighs the prompts' prefill against the answers' decode, "
+                    "and arms the device where long prompts and short answers make it the cheaper";
+        return t;
+    }
+    if (!stream_priced(with) || !(with.seconds_per_token > 0.0) || !(without.seconds_per_token > 0.0) ||
+        !(wide_ratio > 0.0)) {
+        t.account = "unpriced: the decode with the device or without it has no price here";
+        return t;
+    }
+    const double host_tps = mk.host_prefill_tps, dev_tps = host_tps * wide_ratio;
+    const double prompt = mk.mix_wide_prompt_tokens, gen = mk.mix_gen_tokens;
+    const double cost_with = prompt / dev_tps + gen * with.seconds_per_token;
+    const double cost_without = prompt / host_tps + gen * without.seconds_per_token;
+    t.priced = true;
+    t.device_wins = cost_with * (1.0 + (double) s.pol.min_backend_win) < cost_without;
+    char b[480];
+    std::snprintf(b, sizeof(b),
+                  "priced on this machine's requests (%d recorded): %.0f prompt tokens and %.0f decoded per request; "
+                  "with the device %.1f s (prefill at %.1f tok/s, %.1fx the host's measured %.1f, decode %.3f s/token "
+                  "with no cache), without it %.1f s (decode %.3f s/token with the cache)",
+                  mk.mix_requests, prompt, gen, cost_with, dev_tps, wide_ratio, host_tps, with.seconds_per_token,
+                  cost_without, without.seconds_per_token);
+    t.account = b;
+    return t;
+}
+
 // A device that pays for itself, and whether it FITS - which is the ledger's to say, with the device
 // as a row: the run must not lose what decode had without it - a cache of at least one token cycle,
 // and the protection of the dense set and of the cache - since those are paid on every decoded token
 // and a prefill is paid once. Each is measured against the allocation WITHOUT the device: a cache
 // that was already under a token cycle (and so off) is not something the device takes away, and
-// refusing a faster prefill for it costs the prompt and saves decode nothing. Two slots first, then one: the wider
+// refusing a faster prefill for it costs the prompt and saves decode nothing. A device that fails on the cache
+// alone is the exception: it is a trade, priced on this machine's requests where they are recorded
+// (price_prefill_trade), and refused as above where they are not. Two slots first, then one: the wider
 // scheme where it fits, the narrower where only it does. A caller who set the count has chosen, and only that count is
 // tried. Returns the allocation the run gets, armed or not.
 Allocation fit_prefill_device(Planning & s,
                               const ComputeDevice & best,
                               const std::string & ratio,
+                              double wide_ratio,
                               const std::string & width,
                               AllocationInputs & ai,
                               const Allocation & alloc,
@@ -1840,6 +2124,10 @@ Allocation fit_prefill_device(Planning & s,
     const auto cache_streams = [cycle](const Allocation & a) { return a.cache_bytes > 0 && a.cache_bytes >= cycle; };
     const bool streamed = cache_streams(alloc);
     bool keeps_cache = false, keeps_dense = false, fits_held = false, own_short = false;
+    // The widest scheme that fails on the cache alone: the trade price_prefill_trade weighs.
+    AllocationInputs traded_in;
+    Allocation traded;
+    int traded_slots = 0;
     for (int n = slots_by_caller ? p.config.prefill.slots : PrefillDeviceConfig::slots_max;
          n >= PrefillDeviceConfig::slots_min; --n) {
         with = ai;
@@ -1850,8 +2138,8 @@ Allocation fit_prefill_device(Planning & s,
         // "Protection" is the dense set's pin and the cache's lock alike: a device that leaves the
         // cache as ordinary memory where it was locked has taken from decode the very thing the
         // ledger exists to keep.
-        keeps_dense = armed.dense_pinned == alloc.dense_pinned &&
-                      (armed.cache_locked_bytes > 0) == (alloc.cache_locked_bytes > 0) &&
+        const bool keeps_pin = armed.dense_pinned == alloc.dense_pinned;
+        keeps_dense = keeps_pin && (armed.cache_locked_bytes > 0) == (alloc.cache_locked_bytes > 0) &&
                       armed.cache_lock_unverified == alloc.cache_lock_unverified;
         // What decode holds with the device must still fit what the process may hold - or, where the
         // ledger did not close without it (a pin the caller forced), hold no more than it did. Where a
@@ -1861,6 +2149,12 @@ Allocation fit_prefill_device(Planning & s,
         if (!own_short && keeps_cache && keeps_dense && fits_held && armed.turn_fits) {
             slots = n;
             break;
+        }
+        // The cache's lock goes with the cache: a trade that gives up the one gives up the other.
+        if (!own_short && !keeps_cache && keeps_pin && fits_held && armed.turn_fits && traded_slots == 0) {
+            traded_in = with;
+            traded = armed;
+            traded_slots = n;
         }
         if (slots_by_caller) break;
     }
@@ -1873,6 +2167,33 @@ Allocation fit_prefill_device(Planning & s,
                best.name + " computes a wide prefill at " + ratio + " the host's rate and has " +
                    u64s(mib(best.memory_free)) + " MiB free of the " + u64s(mib(least)) +
                    " MiB even one layer of this model takes there: refused on memory" + unweighed);
+        return alloc;
+    }
+    // The cache is the only thing the device takes: a trade, settled by the price where there is one.
+    PrefillTrade trade;
+    if (slots == 0 && traded_slots > 0) {
+        trade = price_prefill_trade(s, wide_ratio, alloc, traded);
+        // Priced, what is reported - armed or refused - is the scheme that was weighed; unpriced, the
+        // refusal reads as it always did.
+        if (trade.priced) {
+            with = traded_in;
+            armed = traded;
+            keeps_cache = false;
+        }
+        if (trade.device_wins) slots = traded_slots;
+    }
+    if (slots == 0 && trade.priced) {
+        s.note("prefill-device", "off", Source::Measured,
+               "Prompts run on the CPU: on this machine's requests the expert cache is worth more than " + best.name +
+                   " (" + ratio + " faster).",
+               best.name + " computes a wide prefill at " + ratio + " the host's rate, and with " +
+                   (traded_slots == 1 ? "a single expert slot" : "two expert slots") + " it would hold " +
+                   u64s(mib(with.device_bytes + with.device_turn_bytes)) +
+                   " MiB of this pool, which leaves the expert cache " + u64s(mib(armed.cache_bytes)) +
+                   " MiB against a token cycle of " + u64s(mib(cycle)) + " MiB, where it had " +
+                   u64s(mib(alloc.cache_bytes)) + " MiB without the device; " + trade.account +
+                   ", so the cache is kept: the device is not cheaper by the " +
+                   u64s((uint64_t) (s.pol.min_backend_win * 100.0f + 0.5f)) + "% margin" + unweighed);
         return alloc;
     }
     if (slots == 0) {
@@ -1890,7 +2211,8 @@ Allocation fit_prefill_device(Planning & s,
                                        " MiB against a token cycle of " + u64s(mib(cycle)) + ", where it had " +
                                        u64s(mib(alloc.cache_bytes)) +
                                        " MiB without the device. That is paid on every decoded token, and a "
-                                       "prefill is paid once"
+                                       "prefill is paid once" +
+                                       (trade.account.empty() ? std::string() : "; " + trade.account)
                     : !keeps_dense ? "which leaves the dense set or the cache without the protection it has. That "
                                      "is paid on every decoded token, and a prefill is paid once"
                     : !fits_held   ? "which does not fit what the process may hold while it decodes"
@@ -1900,11 +2222,14 @@ Allocation fit_prefill_device(Planning & s,
     }
     ai = with;
     p.config.prefill.device = best.name;
+    bound_prefill_width(s);
     p.config.prefill.best_effort = true;
     p.config.prefill.slots = slots;
     p.config.prefill.slots_on_demand = turns;
+    const bool cache_traded = trade.device_wins;
     s.note("prefill-device", best.name, Source::Measured,
-           "Prompts run on " + best.name + ", " + ratio + " faster than the CPU, same results.",
+           "Prompts run on " + best.name + ", " + ratio + " faster than the CPU, same results" +
+               (cache_traded ? ": on this machine's requests that is worth more than the expert cache." : "."),
            "computes this model's matmul " + width + " at " + ratio + " the host's rate with the same result; its " +
                u64s(mib(with.device_bytes)) + " MiB" +
                (with.device_turn_bytes ? ", plus " + u64s(mib(with.device_turn_bytes)) +
@@ -1916,7 +2241,12 @@ Allocation fit_prefill_device(Planning & s,
                     : "one expert slot - two did not fit - so the device waits for each layer's read") +
                ", and the expert cache gives up " +
                u64s(mib(alloc.cache_bytes > armed.cache_bytes ? alloc.cache_bytes - armed.cache_bytes : 0)) +
-               " MiB for it. Decode stays on the host, and so does the prefill if the device cannot be set up at "
+               " MiB for it" +
+               (cache_traded ? ", which leaves it under the token cycle of " + u64s(mib(cycle)) +
+                                   " MiB, so it is off: " + trade.account + ", cheaper with the device by the " +
+                                   u64s((uint64_t) (s.pol.min_backend_win * 100.0f + 0.5f)) + "% margin"
+                             : std::string()) +
+               ". Decode stays on the host, and so does the prefill if the device cannot be set up at "
                "load. A device's arithmetic is not the host's to the last bit, so the text can differ from a host "
                "prefill's: pass an empty " +
                flag_spelling("prefill-device") + " to keep the prefill on the host" + unweighed);
@@ -2007,7 +2337,8 @@ Allocation plan_prefill(Planning & s, AllocationInputs & ai) {
                      v.best->name + " computes a wide prefill at " + ratio(*v.best) +
                          " the host's rate and is not armed, because " + conflict);
     } else {
-        return fit_prefill_device(s, *v.best, ratio(*v.best), width, ai, alloc, v.unweighed);
+        return fit_prefill_device(s, *v.best, ratio(*v.best), v.best->wide_matmul_gibs / host_wide, width, ai, alloc,
+                                  v.unweighed);
     }
     return alloc;
 }
@@ -2250,8 +2581,6 @@ bool size_cache(Planning & s, const Allocation & alloc) {
     // rule of this file: where the read rate was never measured there is no such price, and the plan
     // declines as before.
     const GroupPlacement & experts = alloc.at(WeightGroup::Experts);
-    const bool stream_priced = experts.lane == Lane::ExpertStream && experts.seconds_per_token > 0.0 &&
-                               experts.seconds_per_token < experts.seconds_worst_case;
     bool cache_off = false;
     std::string cache_off_why;
 
@@ -2268,7 +2597,7 @@ bool size_cache(Planning & s, const Allocation & alloc) {
                           " MiB: under that floor the cache evicts what the same token still needs, "
                           "so it costs its memory and returns no hits at all";
         why += context_suggestion(s.placement, cycle, alloc.cache_available_bytes);
-        if (!stream_priced) {
+        if (!stream_priced(alloc)) {
             s.decline(why + ". This storage's read rate was not measured, so a stream with no cache has no price "
                             "to set against the mapping and is not chosen on faith");
             price_unstreamed(p.allocation);
@@ -2725,11 +3054,27 @@ void note_overlap(Planning & s) {
                flag_spelling("overlap", "true"));
 }
 
+// The rate the thread sweep measured at `n` threads, 0 when it did not ask that count.
+double swept_rate(const HardwareProfile & hw, int n) {
+    for (const HardwareProfile::ThreadRate & r : hw.thread_rates)
+        if ((int) r.threads == n) return r.gibs;
+    return 0.0;
+}
+
 // The thread counts a trial tries against the incumbent: where a barrier would start or stop
 // waiting on a slower class (the running sums of the core classes), every core, and half of them
 // where all are alike (a machine with two hardware threads a core reports both). The ones nearest
 // the incumbent first, as many as the trial takes.
-std::vector<int> thread_candidates(const HardwareProfile & hw, int incumbent) {
+//
+// Less a count the sweep already answered: one above the incumbent that the sweep measured short of
+// the trial's margin over it (`min_win`). The sweep ran it with every core to itself; a decode runs
+// it beside the expert reads, which take cores of their own, so more threads only meet more
+// contention there, and a count that could not win alone cannot win under load. Measured on a
+// phone: eight threads against four, every core, ran each decoded token about twenty times slower.
+// A count below the incumbent stays: what the reads take from the cores is what the sweep cannot see,
+// and leaving them cores is what such a count tries. `skipped` gets the counts left out.
+std::vector<int>
+thread_candidates(const HardwareProfile & hw, int incumbent, double min_win, std::vector<int> & skipped) {
     std::vector<int> pool;
     uint32_t sum = 0;
     for (uint32_t k : hw.core_classes) {
@@ -2746,6 +3091,16 @@ std::vector<int> thread_candidates(const HardwareProfile & hw, int incumbent) {
                                   // quota or the affinity mask would only time-slice.
                                   return n < 1 || n > RunConfig::threads_max || n == incumbent ||
                                          (hw.n_cores > 0 && n > (int) hw.n_cores);
+                              }),
+               pool.end());
+    const double at_incumbent = swept_rate(hw, incumbent);
+    pool.erase(std::remove_if(pool.begin(), pool.end(),
+                              [&](int n) {
+                                  const double rate = swept_rate(hw, n);
+                                  const bool answered = n > incumbent && at_incumbent > 0.0 && rate > 0.0 &&
+                                                        rate < at_incumbent * (1.0 + min_win);
+                                  if (answered) skipped.push_back(n);
+                                  return answered;
                               }),
                pool.end());
     std::stable_sort(pool.begin(), pool.end(),
@@ -2795,8 +3150,22 @@ void apply_measured_threads(Planning & s, int would_have) {
 void arm_thread_trial(Planning & s) {
     RunConfig & c = s.p.config;
     if (!s.req.measure_knobs || s.req.is_pinned("trial-threads") || !c.trial.threads.empty()) return;
-    const std::vector<int> cand = thread_candidates(s.hw, c.n_threads);
-    if (cand.empty()) return;
+    std::vector<int> skipped;
+    const std::vector<int> cand = thread_candidates(s.hw, c.n_threads, s.pol.min_backend_win, skipped);
+    // What the sweep already answered, said in the note that follows or, with nothing left to try, alone.
+    std::string answered;
+    if (!skipped.empty())
+        answered = "; " + thread_list(skipped, " and ") + (skipped.size() == 1 ? " is" : " are") +
+                   " not tried: the sweep measured " + (skipped.size() == 1 ? "it" : "them") + " short of " +
+                   margin_pct(s) + " over " + u64s((uint64_t) c.n_threads) +
+                   " with every core to itself, and a decode's expert reads only take cores away";
+    if (cand.empty()) {
+        if (!skipped.empty())
+            s.note("trial-threads", "none", Source::Measured,
+                   "The first answer measures no other thread count: the sweep already answered.",
+                   "the counts a trial would try against " + u64s((uint64_t) c.n_threads) + " are answered" + answered);
+        return;
+    }
     c.trial.threads = cand;
     std::string value;
     for (size_t i = 0; i < cand.size(); ++i)
@@ -2809,7 +3178,7 @@ void arm_thread_trial(Planning & s) {
                u64s((uint64_t) c.n_threads) + " and " + thread_list(cand, " and ") +
                " (where a slower class of core starts, every core, or half of them where all are alike), and "
                "switches only to a count " +
-               margin_pct(s) + " faster in the median of its rounds; the next load starts from the verdict");
+               margin_pct(s) + " faster in the median of its rounds; the next load starts from the verdict" + answered);
 }
 
 // ── threads: the classes are a fact, the rule that read them was wrong ─────────

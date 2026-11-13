@@ -537,6 +537,13 @@ of the experts used most, once #531 narrows the graph there (before it: 0 layers
 tok/s). Gemma 4 26B-A4B decoded at **107-115**. The same runs put Lucebox on the same card and files:
 see [comparison.md](comparison.md#same-machine-same-file).
 
+On another rented 24 GB card of that generation (an 8-core desktop CPU, 62 GB of RAM), on
+2026-11-11, the 0.41.2 release with `--auto` and `--ctx-size 40960`, second load
+([bench-data/2026-11-11-same-card-lucebox](bench-data/2026-11-11-same-card-lucebox/README.md)):
+- Qwen3.6-35B-A3B decoded at **154** tok/s with the whole model on the card, and a 28.6k-token
+  prompt reached its first token in 4.7 s (6,025 tok/s);
+- Laguna XS 2.1 33B Q4_K_M decoded at **93**.
+
 And on a rented 12 GB card (RTX 3060 class, 7.7 usable cores, a 42.6 GiB control group), the class
 most people own, Qwen3.8-Flash-Next Q2_0: `--auto` armed a 6 GB device cache and the run was killed
 by the control group at 43 GB (the tier's host-side memory is not in the ledger, #424); with the

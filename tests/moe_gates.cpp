@@ -73,10 +73,15 @@
 //       answer it decodes: == resident over one long answer (a) and over four turns that each end
 //       inside a window (b), and the trial must have reached its verdicts. The graph width's side
 //       timed for a decision across loads (c) == resident, with its rates and request in the record.
+//       A load with the width's trade and no side timed records its requests, no rate (g).
+//       A load-time calibration of the width (f): each side opened as a candidate and timed, the
+//       second replaying the first's tokens, no side left pending, both rates in the record, and the
+//       winner, opened fresh, == resident.
 //   G25 the device tier: llama.cpp's device-side expert cache over resident experts (a), over
 //       streamed experts (b) and streamed under n-gram speculation (c), each == the resident
 //       placement; and each side of the device tier timed for a decision across loads (e), with its
-//       rate in the record.
+//       rate in the record. A load-time calibration of the tier (f): both sides timed as candidates,
+//       and the winner, opened fresh, == the resident placement.
 //   G26 the real-layer probe fills every device's facts and agrees with the host on the layer's
 //       matmuls; it is timed, not gated, on the tiny models.
 //
@@ -104,6 +109,7 @@
 
 #include "ggml-backend.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -1885,6 +1891,48 @@ int main(int argc, char ** argv) {
                                 std::printf("[PASS] %s: %.1f tok/s in the record\n", what.c_str(), tps);
                             }
                         }
+                        // f) the same decision by a load-time calibration (bmoe/calibrate.h): each side
+                        // opened as a candidate of its own and timed, the faster served, opened fresh.
+                        const auto tier_plan = [&](int side) {
+                            Plan p;
+                            p.config = side ? cached : placed;
+                            p.config.n_ctx = 1024; // the calibration's instruction and its answer
+                            p.config.trial.window_tokens = 2;
+                            p.config.trial.device_tier = side;
+                            return p;
+                        };
+                        const auto replan = [&](const MeasuredKnobs & k) {
+                            if (k.device_cache_tps <= 0.0) return tier_plan(1);
+                            if (k.no_device_cache_tps <= 0.0) return tier_plan(0);
+                            Plan p = tier_plan(k.device_cache_tps >= k.no_device_cache_tps ? 1 : 0);
+                            p.config.trial.device_tier = -1;
+                            return p;
+                        };
+                        const RunCandidate candidate = [](const RunConfig & c, const CalibrationRun & run) {
+                            return run_calibration_candidate(c, run);
+                        };
+                        const CalibrationResult cal = calibrate(tier_plan(1), MeasuredKnobs{}, replan, candidate);
+                        if (!cal.complete || cal.runs != 2 || !(cal.knobs.device_cache_tps > 0.0) ||
+                            !(cal.knobs.no_device_cache_tps > 0.0)) {
+                            std::printf("[FAIL] G25f calibration did not decide the device tier: %d runs, %s\n",
+                                        cal.runs, cal.complete ? "complete" : "a side pending");
+                            ++fails;
+                        } else {
+                            std::printf("[PASS] G25f calibration timed both sides of the device tier: %.1f tok/s "
+                                        "with the cache, %.1f without\n",
+                                        cal.knobs.device_cache_tps, cal.knobs.no_device_cache_tps);
+                        }
+                        RunConfig served = cal.plan.config;
+                        served.n_ctx = ref_t.n_ctx;
+                        served.n_predict = ref_t.n_predict;
+                        std::string s_served;
+                        if (!gen(served, s_served, err)) {
+                            std::printf("[FAIL] G25f the winner failed to open: %s\n", err.c_str());
+                            ++fails;
+                        } else {
+                            fails += check("G25f the calibrated device tier, opened fresh == resident experts", s_ref_t,
+                                           s_served);
+                        }
                     }
                 }
             }
@@ -2022,6 +2070,99 @@ int main(int argc, char ** argv) {
                         mw.wide_decode_tps, mw.wide_prefill_tps, mw.usage_gen_tokens);
         }
 
+        // G24g: a load whose plan has the width's trade and times no side (a width already decided)
+        // records its requests against the narrow width all the same, and no rate: a width decided on
+        // the decode alone is weighed again once the requests are seen.
+        {
+            RunConfig wu = wref;
+            wu.trial.width_narrow = 2;
+            const RunResult ru = run(wu);
+            if (!ru) {
+                std::fprintf(stderr, "G24g run failed: %s\n", ru.error.c_str());
+                return 2;
+            }
+            fails += check("G24g width recorded, no side timed == resident", s_wref, ru.generated_text);
+            const MeasuredKnobs & mu = ru.knobs;
+            if (mu.usage_requests != 1 || mu.width_narrow != 2 || mu.wide_decode_tps > 0.0 ||
+                mu.wide_prefill_tps > 0.0 || mu.narrow_prefill_tps > 0.0) {
+                std::printf("[FAIL] G24g the record lacks the requests, or times a side: %d requests, narrow %d\n",
+                            mu.usage_requests, mu.width_narrow);
+                ++fails;
+            } else {
+                std::printf("[PASS] G24g the requests recorded with no side timed: %.0f tokens a request\n",
+                            mu.usage_gen_tokens);
+            }
+        }
+
+        // G24f: a load-time calibration (bmoe/calibrate.h) of the graph width, through the engine's own
+        // candidate (run_calibration_candidate): each side a load of its own, streamed with a cache,
+        // timed on a short answer. The planner names no side on a machine without a device, so a fake
+        // one names them as it would. The winner is then opened as a plain load: its answer is the
+        // resident one, whatever the calibration decoded.
+        {
+            const int narrow = 32;
+            RunConfig wide_side = streamc;
+            wide_side.trial.window_tokens = 2;
+            wide_side.n_ctx = 1024; // the calibration's instruction, in this tiny vocabulary, and its answer
+            const auto side_plan = [&](int side) {
+                Plan p;
+                p.config = wide_side;
+                p.config.trial.width_side = side;
+                p.config.trial.width_narrow = narrow;
+                if (side == 0) p.config.n_ubatch = narrow;
+                return p;
+            };
+            const auto replan = [&](const MeasuredKnobs & k) {
+                if (k.wide_decode_tps <= 0.0) return side_plan(1);
+                if (k.narrow_decode_tps <= 0.0) return side_plan(0);
+                Plan p;
+                p.config = wide_side;
+                if (k.narrow_decode_tps > k.wide_decode_tps) p.config.n_ubatch = narrow;
+                return p;
+            };
+            std::vector<CalibrationRun> asked;
+            std::vector<std::vector<int32_t>> decoded;
+            const RunCandidate candidate = [&](const RunConfig & c, const CalibrationRun & run) {
+                asked.push_back(run);
+                CandidateTiming t = run_calibration_candidate(c, run);
+                decoded.push_back(t.tokens);
+                return t;
+            };
+            const CalibrationResult cal = calibrate(side_plan(1), MeasuredKnobs{}, replan, candidate);
+            const MeasuredKnobs & mk = cal.knobs;
+            if (!cal.complete || cal.runs != 2 || !(mk.wide_decode_tps > 0.0) || !(mk.narrow_decode_tps > 0.0) ||
+                mk.width_narrow != narrow) {
+                std::printf("[FAIL] G24f calibration did not decide the width: %d runs, %s, wide %.1f, narrow %.1f "
+                            "tok/s\n",
+                            cal.runs, cal.complete ? "complete" : "a side pending", mk.wide_decode_tps,
+                            mk.narrow_decode_tps);
+                ++fails;
+            } else {
+                std::printf("[PASS] G24f calibration timed both widths in one go: %.1f tok/s wide, %.1f narrow\n",
+                            mk.wide_decode_tps, mk.narrow_decode_tps);
+            }
+            if (asked.size() != 2 || decoded.size() != 2 || decoded[0].empty() || !asked[0].replay.empty() ||
+                asked[1].replay != decoded[0] ||
+                !std::equal(decoded[0].begin(),
+                            decoded[0].begin() + (long) (std::min)(decoded[0].size(), decoded[1].size()),
+                            decoded[1].begin())) {
+                std::printf("[FAIL] G24f the second candidate did not replay the first one's tokens\n");
+                ++fails;
+            } else {
+                std::printf("[PASS] G24f the second candidate replayed the first one's %zu tokens\n",
+                            decoded[0].size());
+            }
+            RunConfig served = cal.plan.config;
+            served.prompt = wref.prompt;
+            served.n_predict = wref.n_predict;
+            const RunResult rs = run(served);
+            if (!rs) {
+                std::fprintf(stderr, "G24f the winner failed to open: %s\n", rs.error.c_str());
+                return 2;
+            }
+            fails += check("G24f the calibrated winner, opened fresh == resident", s_wref, rs.generated_text);
+        }
+
         // G24d: the decode's own cost (MeasuredKnobs::decode_*), timed on a load that arms no trial at
         // all. It switches nothing, so the answer is the resident one; the record must carry the
         // compute, the thread count, and the cache's hits at the budget they were measured at.
@@ -2043,7 +2184,8 @@ int main(int argc, char ** argv) {
         fails += check("G24d decode cost timed == resident", s_cref, rc.generated_text);
         const MeasuredKnobs & mc = rc.knobs;
         if (!(mc.decode_compute_s > 0.0) || mc.decode_threads != ct.n_threads || !(mc.decode_hit >= 0.0) ||
-            mc.decode_hit > 1.0 || !(mc.decode_cache_mib > 0.0) || mc.decode_gpu_layers != 0 || mc.verdicts() != 2) {
+            mc.decode_hit > 1.0 || !(mc.decode_cache_mib > 0.0) || mc.decode_gpu_layers != 0 ||
+            mc.verdicts() != 2 + mc.mix_requests + (mc.host_prefill_tps > 0.0)) {
             std::printf("[FAIL] G24d the record lacks the decode's cost: %.3f ms/token at %d threads, hits %.2f at "
                         "%.0f MiB\n",
                         1e3 * mc.decode_compute_s, mc.decode_threads, mc.decode_hit, mc.decode_cache_mib);
@@ -2052,6 +2194,25 @@ int main(int argc, char ** argv) {
             std::printf("[PASS] G24d the record holds the decode's cost: %.3f ms/token at %d threads, %.0f%% hits "
                         "at %.0f MiB\n",
                         1e3 * mc.decode_compute_s, mc.decode_threads, 100.0 * mc.decode_hit, mc.decode_cache_mib);
+        }
+
+        // G24e: the request mix (MeasuredKnobs::mix_*), recorded on the same load, which arms no trial:
+        // the one request, its tokens decoded, its prompt as the part a device would take (or none, under
+        // the narrowest graph a device is handed), and the host's prefill rate over it.
+        const RunSummary & sc = rc.summary;
+        const bool wide_prompt = sc.n_prompt >= ct.prefill.min_tokens;
+        if (mc.mix_requests != 1 || mc.mix_gen_tokens != (double) sc.n_generated ||
+            mc.mix_wide_prompt_tokens != (wide_prompt ? (double) sc.n_prompt : 0.0) ||
+            (mc.host_prefill_tps > 0.0) != wide_prompt) {
+            std::printf("[FAIL] G24e the record lacks the request mix: %d requests, %.0f decoded, %.0f prompt tokens, "
+                        "host prefill %.1f tok/s (the run: %d decoded, %d prompt tokens)\n",
+                        mc.mix_requests, mc.mix_gen_tokens, mc.mix_wide_prompt_tokens, mc.host_prefill_tps,
+                        sc.n_generated, sc.n_prompt);
+            ++fails;
+        } else {
+            std::printf("[PASS] G24e the record holds the request mix: %d request, %.0f decoded, %.0f prompt tokens, "
+                        "host prefill %.1f tok/s\n",
+                        mc.mix_requests, mc.mix_gen_tokens, mc.mix_wide_prompt_tokens, mc.host_prefill_tps);
         }
     }
 

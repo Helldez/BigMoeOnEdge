@@ -100,6 +100,9 @@ struct Turn {
     std::vector<ChatToolCall> calls;
     bool context_full = false;
     bool hold_before_token = false;
+    // The calls also travel with the tokens, half written on the first: what a model writing a
+    // long call looks like to the agent (TokenMetrics::tool_calls).
+    bool stream_calls = false;
 };
 
 struct Script {
@@ -158,9 +161,15 @@ public:
         // The answer arrives as two tokens, as a stream would show it.
         TokenMetrics m;
         m.text = t.text.substr(0, t.text.size() / 2);
+        if (t.stream_calls && !t.calls.empty()) {
+            ChatToolCall half = t.calls[0];
+            half.arguments.resize(half.arguments.size() / 2);
+            m.tool_calls = {half};
+        }
         ++s_.tokens;
         if (on_token) on_token(m);
         m.text = t.text;
+        if (t.stream_calls) m.tool_calls = t.calls;
         ++s_.tokens;
         if (on_token) on_token(m);
         r.ok = true;
@@ -401,8 +410,10 @@ static void loop_tests() {
         check(slurp(rig->ws.path / "notes" / "hello.txt") == "hi\n", "the approved write happened");
         const json done = rig->items_of(c, "tool")[0];
         check(done.value("state", "") == "done", "the tool item reads done");
-        check(last_tool_message(rig->last_request()).find("File written successfully.") == 0,
-              "the model reads the result in the next round");
+        check(last_tool_message(rig->last_request()) ==
+                  "File written successfully: created notes/hello.txt, 1 line (3 bytes).",
+              "the model reads the effect in the next round, not the content it wrote");
+        check(done.value("diff", "").find("+hi") != std::string::npos, "the card still shows the whole diff");
         const json answers = rig->items_of(c, "assistant");
         check(answers.size() == 2 && answers[1].value("text", "") == "Written." && !answers[1].value("streaming", true),
               "the final answer is the last assistant item, no longer streaming");
@@ -505,6 +516,19 @@ static void loop_tests() {
         check(rig->items_of(c, "assistant").back().value("text", "") == "Read it.",
               "and the run goes on to its answer");
         check(rig->items_of(c, "notice").size() == 1, "a notice says the results were shortened");
+    }
+    {
+        // A file written over another: the model is told what it replaced, in counts.
+        auto rig = std::make_unique<Rig>();
+        spit(rig->ws.path / "a.txt", "one\ntwo\nthree\n");
+        const std::string c = rig->conversation("full");
+        rig->say({{"", {call("write_file", {{"path", "a.txt"}, {"content", "one\n2\n"}})}}, {"Done.", {}}});
+        json item;
+        rig->agent->send(c, "rewrite", json::array(), false, false, item);
+        check(rig->wait_done(c), "the run ends");
+        check(last_tool_message(rig->last_request()) ==
+                  "File written successfully: replaced a.txt, 2 lines (6 bytes). The changed span: 2 lines became 1.",
+              "a replaced file is reported with how much of it changed");
     }
     {
         auto rig = std::make_unique<Rig>(false);
@@ -1143,6 +1167,52 @@ static void access_tests() {
 }
 
 // An event for local clients only never reaches a stream from the network.
+// A call the model is still writing is its tool's card from the first piece, and the same card runs it.
+static void composing_tests() {
+    auto rig = std::make_unique<Rig>();
+    auto q = rig->bus->subscribe(true);
+    const std::string c = rig->conversation("full");
+    Turn writes{"", {call("write_file", {{"path", "page.html"}, {"content", "<p>hi</p>\n"}})}};
+    writes.stream_calls = true;
+    rig->say({writes, {"Written.", {}}});
+    json item;
+    check(rig->agent->send(c, "write a page", json::array(), false, false, item).ok(), "a message starts a run");
+    check(rig->wait_done(c), "the run ends");
+    std::string all, f;
+    while (EventBus::next(*q, f, 20ms) && !f.empty())
+        all += f;
+    rig->bus->unsubscribe(q);
+    std::vector<json> composing;
+    const std::string head = "event: item\ndata: ";
+    for (size_t at = all.find(head); at != std::string::npos; at = all.find(head, at + 1)) {
+        const size_t from = at + head.size();
+        const json ev = json::parse(all.substr(from, all.find('\n', from) - from));
+        if (ev["item"].value("state", "") == "composing") composing.push_back(ev["item"]);
+    }
+    const json tool = rig->items_of(c, "tool")[0];
+    check(!composing.empty() && composing.front().value("tool", "") == "write_file" &&
+              composing.front().value("id", "") == tool.value("id", ""),
+          "the card appears while the call is written, and the call runs on the same card");
+    check(composing.back().value("title", "") == "Write page.html" && composing.back().value("bytes", 0) > 0,
+          "the card's title follows the arguments as far as they go, with the size written so far");
+    // The arguments stream as `delta` events on the card: joined, they are the call the card ran.
+    std::string arguments;
+    const std::string dhead = "event: delta\ndata: ";
+    for (size_t at = all.find(dhead); at != std::string::npos; at = all.find(dhead, at + 1)) {
+        const size_t from = at + dhead.size();
+        const json ev = json::parse(all.substr(from, all.find('\n', from) - from));
+        if (ev.value("item", "") == tool.value("id", "")) arguments += ev.value("arguments", "");
+    }
+    check(json::parse(arguments, nullptr, false) == tool["args"],
+          "the call's arguments stream to the card as they are written, each piece once");
+    check(tool.value("state", "") == "done" && tool.value("title", "") == "Write page.html" &&
+              slurp(rig->ws.path / "page.html") == "<p>hi</p>\n",
+          "the stored card is the call that ran");
+    const json answers = rig->items_of(c, "assistant");
+    check(answers[0]["tool_calls"][0].value("id", "") == tool.value("call_id", ""),
+          "the round's call and its card share the id the card announced");
+}
+
 static void audience_tests() {
     EventBus bus;
     auto here = bus.subscribe(true);
@@ -1681,6 +1751,7 @@ int main() {
     store_tests();
     access_tests();
     audience_tests();
+    composing_tests();
     external_agent_tests();
     command_tests();
     loop_tests();

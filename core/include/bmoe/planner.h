@@ -88,6 +88,23 @@ struct PlannerPolicy {
     // The narrowest graph the width is brought down to. llama.cpp's own physical batch: nothing
     // here has been measured below it, and under it a prefill is mostly passes over the experts.
     uint32_t ubatch_min = 512;
+    // The widest graph a device with memory of its own is planned at: an evidence boundary, not a
+    // measurement of this machine. A device's expert matmul can hold a whole pass's tokens in a
+    // per-block scratch whose size the backend fixes, and past it the pass aborts the process (#533:
+    // `GGML_ASSERT(nbytes_shared <= smpbo)`, ~25k tokens on 24-32 GB cards, ~16k where the scratch is
+    // 64 KB). Measured on a 32 GB card at a 32768-token graph: a 28.6k-token prompt aborted the
+    // server. Half of the smallest of those limits, so no shipped backend has been shown to fail at
+    // it; a prompt past it takes more passes, which cost little once a pass is this wide.
+    //
+    // Two bounds hold the width, and this is the planned one. A run nothing planned opens at most
+    // RunConfig::ubatch_auto_max wide, whatever computes it; a plan starts from the whole context,
+    // priced from the probe's measurement, and narrows for memory, so on a device this bound is what
+    // stops it short of the context. It is no wider than that default, so a device's graph is never
+    // planned past the width the fitter placed its layers against (planner_test checks the order).
+    // "A device computes the graph" is any of: layers on a device of its own, a device expert cache, or
+    // a prefill device (one the plan arms is held to it once armed). The image floor
+    // (RunConfig::graph_width_floor) does not lift it: an image past it is refused instead.
+    uint32_t ubatch_max_device = 8192;
 
     // Whether THIS ENGINE can hand a device the memory a streamed expert is made of. It is a fact
     // about our own streamer rather than about any machine, which is why it lives here and not in
@@ -123,15 +140,27 @@ struct PlannerPolicy {
     // noise. Measured 19 against 19 on a phone, which is not a finding.
     float min_backend_win = 0.10f;
 
+    // How far a decode may run past a ceiling the plan computes from probed rates, as a fraction. A
+    // ceiling adds what a token reads at each processor's probed rate and leaves out the crossings,
+    // the misses and every overhead, so it is above what decodes; but a probe's rate can read below
+    // the decode's own. Measured on two 16 GB cards with GLM-4.5-Air: the host's expert rate probed
+    // 23.8 GiB/s, the fitter's placement then decoded at 9.34 tok/s against a ceiling of 8.5 (+10%).
+    // A quarter is the plan's own accuracy bound (a prediction within 25% of the measurement).
+    float rate_ceiling_slack = 0.25f;
+
     static PlannerPolicy defaults() { return PlannerPolicy(); }
 };
 
 // The widest graph, halving from the width `placement` was projected at and never below
-// `policy.ubatch_min`, whose compute buffers on every device with memory of its own stay inside
-// `policy.compute_share_max` of that device's memory (each card against its own). The projected width
-// where they already do; 0 where the device side's slope was not measured or no device has memory of
-// its own. Read by the width rule and by probe_and_plan, which asks the fitter what that width buys.
-uint32_t device_share_width(const Placement & placement, const HardwareProfile & hw, const PlannerPolicy & policy);
+// `policy.ubatch_min` (nor `floor`, the narrowest an image allows: RunConfig::graph_width_floor), whose
+// compute buffers on every device with memory of its own stay inside `policy.compute_share_max` of
+// that device's memory (each card against its own). The projected width where they already do; 0
+// where the device side's slope was not measured or no device has memory of its own. Read by the
+// width rule and by probe_and_plan, which asks the fitter what that width buys.
+uint32_t device_share_width(const Placement & placement,
+                            const HardwareProfile & hw,
+                            const PlannerPolicy & policy,
+                            uint32_t floor = 0);
 
 // As above, with the margins overridden. The four-argument form calls this with the defaults.
 Plan plan_run(const RunConfig & base,

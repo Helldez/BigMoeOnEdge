@@ -42,6 +42,19 @@ public:
     // Replace the plan layer and remember the decisions behind it.
     void apply_plan(std::map<std::string, std::string> values, json decisions);
 
+    // What config() would build with `values` as the plan layer: the settings a load of another plan
+    // runs, before that plan is applied.
+    RunConfig config_with_plan(const std::map<std::string, std::string> & values) const;
+
+    // Every write that changes what config() builds or whether loads plan (the layers, auto_plan)
+    // moves this on. A plan made while the server works on its own (a load-time calibration) is
+    // applied with apply_plan_if, only when nothing a person set has moved since it began.
+    uint64_t revision() const;
+    // apply_plan, if the revision is still `rev` and loads still plan (`auto_fallback` as for
+    // auto_plan): the check and the write under one lock, so a person's change meanwhile wins and the
+    // plan is not laid over settings it was not made for. False, and nothing written, otherwise.
+    bool apply_plan_if(uint64_t rev, bool auto_fallback, std::map<std::string, std::string> values, json decisions);
+
     // The model the user layer names is what a load opens and what a Plan page measures for while
     // nothing is loaded. One whose file is gone - deleted through the server, or removed from
     // outside it - names neither, and a page offering to measure the machine "for" it describes a
@@ -69,9 +82,12 @@ public:
     json plan_decisions() const;
 
     // Whether every load plans first. A server setting, not an engine parameter, so it lives beside
-    // the values rather than in the table. `fallback` is the answer until someone sets it.
+    // the values rather than in the table. `fallback` is the answer until someone sets it. Layered as
+    // the values are: what the server was launched with (--auto, --no-auto) holds for this run over
+    // the saved choice and is never saved; a person's choice is saved and replaces it.
     bool auto_plan(bool fallback) const;
-    void set_auto_plan(bool on); // persists
+    void set_auto_plan(bool on); // persists, and drops the launch layer's
+    void set_launch_auto_plan(bool on);
 
     // The folders a person chose for models: where downloads land ("" for the server's default,
     // <data dir>/models) and the other folders listed beside it. Server settings like auto_plan;
@@ -91,9 +107,12 @@ private:
     const RunConfig defaults_;
     const std::string path_;
     std::map<std::string, std::string> plan_, launch_, user_;
+    uint64_t revision_ = 0;
     json decisions_ = nullptr;
     bool auto_plan_set_ = false;
     bool auto_plan_ = false;
+    bool launch_auto_plan_set_ = false;
+    bool launch_auto_plan_ = false;
     ModelFolders folders_;
 };
 

@@ -8,13 +8,28 @@ export function upsertItem(items: readonly Item[], item: Item): Item[] {
   const i = items.findIndex((x) => x.id === item.id);
   if (i < 0) return [...items, item];
   const out = items.slice();
-  out[i] = item;
+  const cur = items[i];
+  // A card still being written keeps the arguments its `delta`s brought: the item the server sends
+  // with each piece carries the size and the title, not the text.
+  out[i] =
+    item.kind === 'tool' && item.state === 'composing' && cur.kind === 'tool' && cur.draft && item.draft === undefined
+      ? { ...item, draft: cur.draft }
+      : item;
   return out;
 }
 
 /** A `delta` event: what a streaming answer adds. An answer the page has not seen starts here. */
 export function applyDelta(items: readonly Item[], d: DeltaEvent): Item[] {
   const i = items.findIndex((x) => x.id === d.item);
+  // A call the model is writing: its arguments grow. A card the page has not seen yet is not made
+  // up from a piece; its `item` event comes first.
+  if (d.arguments !== undefined) {
+    const cur = i < 0 ? undefined : items[i];
+    if (!cur || cur.kind !== 'tool' || cur.state !== 'composing') return items as Item[];
+    const out = items.slice();
+    out[i] = { ...cur, draft: (cur.draft ?? '') + d.arguments };
+    return out;
+  }
   if (i < 0) {
     const fresh: AssistantItem = { id: d.item, kind: 'assistant', text: d.text ?? '', reasoning: d.reasoning ?? '', streaming: true };
     return [...items, fresh];
@@ -168,7 +183,9 @@ export function runSummary(items: readonly Item[]): RunSummary {
   const created = new Set<string>();
   for (const it of items) {
     if (it.kind !== 'tool') continue;
-    if (it.state === 'running' || it.state === 'waiting') s.pending++;
+    if (it.state === 'running' || it.state === 'waiting' || it.state === 'composing') s.pending++;
+    // A call still being written has done nothing yet: it counts once it runs.
+    if (it.state === 'composing') continue;
     if (it.state === 'error') s.failed++;
     const ok = it.state !== 'denied' && it.state !== 'error';
     const path = toolPath(it) || it.id;
