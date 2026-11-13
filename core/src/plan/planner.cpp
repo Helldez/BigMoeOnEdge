@@ -842,11 +842,20 @@ void choose_device_cache_cpu_share(Planning & s) {
     const float priced = (float) (std::floor(share * 100.0) / 100.0);
     char value[16];
     std::snprintf(value, sizeof(value), "%.2f", (double) priced);
-    // Decided across loads. The cache's rate with every miss uploaded is the tier's own measurement
-    // where this decision has not timed it yet: that load ran no share.
+    // Decided across loads, against the cache with every miss uploaded on the graph this plan runs.
+    // Where this decision has not timed that side itself, the width's timing of the cache is it (the
+    // width is decided on the cache before the share is weighed), and the tier's where the width was
+    // never in question. The tier's rate is the plan's own width only: on a 12 GB card the cache
+    // decoded at 26.3 tok/s at 8192 tokens wide and 31.6 at 2048, and a share that timed 32.2 on the
+    // narrow graph read as a 22% win against the first and was a 2% one.
     const MeasuredKnobs & mk = s.model.knobs;
     const double with = mk.cpu_share_tps;
-    const double without = mk.no_cpu_share_tps > 0.0 ? mk.no_cpu_share_tps : mk.device_cache_tps;
+    double without = mk.no_cpu_share_tps;
+    if (!(without > 0.0)) {
+        const bool narrowed = mk.width_narrow > 0 && s.p.config.n_ubatch == mk.width_narrow;
+        const double at_width = mk.width_narrow > 0 ? (narrowed ? mk.narrow_decode_tps : mk.wide_decode_tps) : 0.0;
+        without = at_width > 0.0 ? at_width : mk.device_cache_tps;
+    }
     char measured[160];
     std::snprintf(measured, sizeof(measured), "%.2f tok/s with the share against %.2f with every miss uploaded", with,
                   without);

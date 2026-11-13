@@ -1213,7 +1213,11 @@ share that has not been measured (`servable`). Measured on a rented 32 GB card (
 4, 48 cores) with Qwen3.8-Flash-Next Q2_0: a hop of 18 us a layer; the price, at an 82% hit share
 read off the expert set the cache holds, nominated 0.89; the calibration timed it at 70.9 tok/s
 against the cache's 103 and every miss stayed uploaded (102.5 served). The same card held down to
-12 GiB free: the share timed 79.9 against 74.9, inside the margin, and stayed off. On a 12 GB card
+12 GiB free: the share timed 79.9 against 74.9, inside the margin, and stayed off. The share is held
+against the cache on the graph the plan runs, which the width's timing gives where the width was
+decided after the tier: on a 12 GB card on PCIe 3 with 8 cores, the cache decoded at 26.3 tok/s at its
+first width and 31.6 at the 2048-wide graph the width then chose, the share timed 32.2 there, and it
+stayed off (32.5 served; the fitter's placement 21.1). On a 12 GB card
 with a 6-core host (RTX 3060 class, Flash-Next IQ3_S), a share of 0.76-0.78 took the decode from
 18.5 to 21.1-21.2 tok/s (#519), which is the case it is for. On a shared pool there is no device
 cache and nothing is weighed.

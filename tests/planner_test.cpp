@@ -3051,6 +3051,21 @@ int main() {
                 check(kept_share.config.moe.device_cache_cpu_share > 0.0f &&
                           kept_share.config.trial.cpu_share_side == -1 && sd && sd->source == Source::Measured,
                       "cpu share: measured faster, kept with nothing timed", sd ? sd->reason : "no decision");
+                // The share is held against the cache on the graph this plan runs: the width's timing of the
+                // cache where the width was timed after the tier (a 12 GB card: 26.3 tok/s wide, 31.6 narrow,
+                // the share 32.2 on the narrow graph, a 2% win and not 22%).
+                ModelProfile at_width = decided;
+                at_width.knobs.width_narrow = 777; // not this plan's width: the wide side is the plan's graph
+                at_width.knobs.wide_decode_tps = 30.0;
+                at_width.knobs.narrow_decode_tps = 25.0;
+                at_width.knobs.cpu_share_tps = 21.2; // past the tier's 17.5, short of the graph's own 30
+                const Plan width_base = share_plan(slow_link, at_width);
+                sd = find(width_base, "device-cache-cpu-share");
+                check(width_base.config.moe.device_cache_cpu_share == 0.0f &&
+                          width_base.config.trial.cpu_share_side == -1 && sd &&
+                          sd->reason.find("against 30.00") != std::string::npos,
+                      "cpu share: held against the cache at the plan's own width, not the tier's older rate",
+                      sd ? sd->reason : "no decision");
                 ModelProfile even_share = decided;
                 even_share.knobs.cpu_share_tps = 18.6;
                 even_share.knobs.no_cpu_share_tps = 18.5;

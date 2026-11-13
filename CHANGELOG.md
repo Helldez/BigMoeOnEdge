@@ -17,8 +17,10 @@ Semantic Versioning.
   a calibration opens it as a candidate, and it is kept only past the 10% margin over uploading
   every miss. A served load never opens an unmeasured share. Measured on a rented 32 GB card
   (Qwen3.8-Flash-Next Q2_0): the price nominated 0.89, the calibration timed it at 70.9 tok/s against
-  103, and every miss stayed uploaded, where the opt-in at 0.89 had cost 40%. On a 12 GB card with a
-  6-core host the share took the decode from 18.5 to 21.1-21.2 tok/s. Never over streamed experts,
+  103, and every miss stayed uploaded, where the opt-in at 0.89 had cost 40%. On a 12 GB card on PCIe
+  3 with 8 cores the share timed 32.2 tok/s against the cache's 31.6 on the same graph and stayed off
+  (32.5 served, the fitter's placement 21.1); on a 12 GB card with a 6-core host, on another model, a
+  share of 0.77 had taken the decode from 18.5 to 21.1-21.2 tok/s. Never over streamed experts,
   which no gate covers (validation refuses the pair). Gate G25d: half the misses on the host give
   the resident placement's bytes. ([hardware-planning.md](docs/hardware-planning.md#who-computes-the-device-caches-misses))
 
