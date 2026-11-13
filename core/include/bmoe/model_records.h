@@ -50,6 +50,8 @@ private:
     };
     std::string dir_;
     std::mutex m_;
+    // A verdict is read, merged and written as one: more than one session may keep verdicts at once.
+    std::mutex knobs_m_;
     std::map<std::string, Key> fingerprints_;
 };
 

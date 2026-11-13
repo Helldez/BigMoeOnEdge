@@ -94,6 +94,7 @@ void ModelRecords::keep_knobs(const std::string & model_path, const MeasuredKnob
     if (rec.empty() || rec.hardware.empty() || rec.engine.empty()) return;
     const std::string path = path_for(model_path, ".knobs");
     if (path.empty()) return;
+    std::lock_guard<std::mutex> lk(knobs_m_);
     std::vector<MeasuredKnobs> all;
     load_knobs(model_path, all);
     keep_measured_knobs(all, rec);
