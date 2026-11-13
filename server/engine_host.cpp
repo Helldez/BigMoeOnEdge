@@ -223,6 +223,11 @@ std::string EngineHost::start_load(const RunConfig & effective,
     return "";
 }
 
+bool EngineHost::loading() const {
+    std::lock_guard<std::mutex> lk(m_);
+    return state_ == State::Loading;
+}
+
 bool EngineHost::idle() const {
     std::lock_guard<std::mutex> lk(m_);
     return state_ == State::Ready && !generating_.load() && turns_.empty();

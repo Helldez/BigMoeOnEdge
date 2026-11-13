@@ -160,6 +160,8 @@ public:
     json info() const;
     bool ready() const;
     bool loaded_or_loading() const;
+    // A load under way (its calibration included): the engine's thread is taken until it ends.
+    bool loading() const;
     // A model is or will soon be there: loaded, loading, or a load in auto mode measuring first. What
     // a request waits for rather than being refused.
     bool model_coming() const;

@@ -1662,6 +1662,8 @@ void register_routes(httplib::Server & svr, App & app) {
         }
         if (app.host.generating())
             return send_error(res, 409, "busy: a plan measures the machine, and a running generation would skew it");
+        // A load, and the calibration it may run, hold the engine's thread the probes run on.
+        if (app.host.loading()) return send_error(res, 409, "busy: a model is loading; plan once it is ready");
         std::unique_lock<std::mutex> measuring(app.measure_m, std::try_to_lock);
         if (!measuring) return send_error(res, 409, "busy: a plan is already being measured");
         PlanOutcome p = app.measure_plan();
