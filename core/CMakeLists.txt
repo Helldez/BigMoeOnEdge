@@ -43,6 +43,7 @@ if(BMOE_HAVE_LLAMA)
         src/io/platform_io.cpp
         src/io/file_reader.cpp
         src/io/mapping_release.cpp
+        src/io/parallel_copy.cpp
         src/moe/dense_weights.cpp
         src/moe/row_stream.cpp
         src/moe/gguf_offsets.cpp

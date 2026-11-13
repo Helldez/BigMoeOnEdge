@@ -29,6 +29,7 @@
 #include "knob_trial.h"
 #include "../io/platform_io.h"
 #include "../io/mapping_release.h"
+#include "../io/parallel_copy.h"
 #include "../metrics/memory_snapshot.h"
 
 #include "ggml-backend.h"
@@ -1726,7 +1727,9 @@ bool Session::Impl::stage_experts_in_host_buffer(Opening & o) {
     size_t total = 0;
     for (ggml_tensor * t : experts)
         total += GGML_PAD(ggml_nbytes(t), align);
+    const auto t_alloc = clock_t_::now();
     ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(buft, total);
+    const auto t_copy = clock_t_::now();
     if (!buf) {
         log_printf(LogLevel::Warn,
                    "expert host buffer: %s could not allocate %.0f MiB; the cache uploads from the "
@@ -1736,15 +1739,22 @@ bool Session::Impl::stage_experts_in_host_buffer(Opening & o) {
         return true;
     }
     uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(buf);
+    std::vector<pio::CopySpan> spans;
     size_t off = 0;
     for (ggml_tensor * t : experts) {
-        std::memcpy(base + off, t->data, ggml_nbytes(t));
-        t->data = base + off;
+        spans.push_back({base + off, t->data, ggml_nbytes(t)});
         off += GGML_PAD(ggml_nbytes(t), align);
     }
+    // On every core the plan computes a prompt on: one thread copying out of the mapping is bound by
+    // its own page faults (pio::copy_spans).
+    pio::copy_spans(spans, std::max(o.cfg.n_threads, o.cfg.n_threads_batch));
+    for (size_t i = 0; i < experts.size(); ++i)
+        experts[i]->data = spans[i].dst;
     expert_host_buf.reset(buf);
-    log_printf(LogLevel::Info, "expert host buffer: %zu expert tensors, %.0f MiB, copied into %s", experts.size(),
-               (double) total / (1024.0 * 1024.0), ggml_backend_buft_name(buft));
+    log_printf(LogLevel::Info,
+               "expert host buffer: %zu expert tensors, %.0f MiB, copied into %s (%.1f s allocating, %.1f s copying)",
+               experts.size(), (double) total / (1024.0 * 1024.0), ggml_backend_buft_name(buft), secs(t_alloc, t_copy),
+               secs(t_copy, clock_t_::now()));
     if (captured_here) clear_memory(ctx.get()); // discard the capture's KV
     return true;
 }
