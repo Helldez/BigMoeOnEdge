@@ -569,6 +569,61 @@ void spend_ranking(Pricing & c, std::vector<Candidate> & candidates) {
     c.unspent = remaining;
 }
 
+// What the dense policy holds whatever the ranking concluded. The run's dense mode copies every dense
+// tensor it is handed (AllocationInputs::reserved_bytes), so a group read whole every token that the
+// ranking found no room for is not left mapped in the run: it is held, beyond the budget, and the
+// ledger already charges it there. Priced as mapped it stood in the plan at its refault price while
+// the run computed it from RAM: measured on a 12 GB phone, Gemma 4 26B-A4B with a 16384 context
+// predicted 10-44 s a token (attention and the dense FFN at a 40 MiB/s refault) and decoded at
+// 0.45-0.55. So such a group takes the lane the run gives it, up to the reservation's bytes. A table
+// the graph only gathers rows from is the exception the run makes too (settle_mapped_tables): it stays
+// where the ranking put it.
+void hold_reserved(Pricing & c) {
+    const AllocationInputs & in = c.in;
+    Allocation & a = c.a;
+    if (in.reserved_bytes == 0) return;
+    uint64_t held = 0;
+    std::vector<int> left;
+    for (int i = 0; i < (int) WeightGroup::count; ++i) {
+        const WeightGroup g = (WeightGroup) i;
+        if (g == WeightGroup::Experts || c.model.group(g).bytes == 0) continue;
+        const GroupPlacement & p = a.at(g);
+        if (p.lane == Lane::Resident || p.lane == Lane::Pinned)
+            held += p.resident_bytes;
+        else if (p.lane == Lane::Mmap && p.device < 0 && !c.model.group(g).row_gatherable)
+            left.push_back(i);
+    }
+    std::sort(left.begin(), left.end(), [&](int x, int y) {
+        return c.model.group((WeightGroup) x).bytes > c.model.group((WeightGroup) y).bytes;
+    });
+    uint64_t room = in.reserved_bytes > held ? in.reserved_bytes - held : 0;
+    std::string names;
+    uint64_t over = 0;
+    for (int i : left) {
+        const WeightGroup g = (WeightGroup) i;
+        const GroupDemand & d = c.model.group(g);
+        if (d.bytes > room) continue;
+        const double compute = seconds_at_gibs(d.bytes_per_token, c.host_dense_gibs);
+        if (!std::isfinite(compute)) continue;
+        GroupPlacement & p = a.at(g);
+        room -= d.bytes;
+        over += d.bytes;
+        p.lane = a.dense_pinned ? Lane::Pinned : Lane::Resident;
+        p.resident_bytes = d.bytes;
+        p.seconds_per_token = compute;
+        p.reason = std::string(a.dense_pinned ? "pinned" : "resident") +
+                   ": the dense policy copies it whole, though the budget had no room for it";
+        names += (names.empty() ? "" : ", ") + std::string(group_name(g));
+    }
+    if (over == 0) return;
+    note(a, "dense-held", size_brief(over),
+         "The dense weights are held whole: " + size_brief(over) + " of them past the budget.",
+         "the dense policy copies every dense tensor, so " + names + " (" + mibs(over) +
+             ") are held in RAM although the ranking found no room for them within the budget: they are priced "
+             "as held, at their compute, which is what the run does, and the memory they take is charged to the "
+             "ledger past its ceiling, where the machine has to find it");
+}
+
 // The cache, sized against what the loader will actually leave. Two paths, and which one ran is the
 // difference between a number that was chosen and one that was merely available.
 //
@@ -933,6 +988,7 @@ Allocation allocate(const HardwareProfile & hw,
     charge_fixed(c);
     std::vector<Candidate> candidates = price_lanes(c);
     spend_ranking(c, candidates);
+    hold_reserved(c);
     bound_cache(c);
     offer_devices(c);
     write_ledger(c);

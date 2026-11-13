@@ -106,6 +106,12 @@ struct PlannerPolicy {
     // (RunConfig::graph_width_floor) does not lift it: an image past it is refused instead.
     uint32_t ubatch_max_device = 8192;
 
+    // The shortest context a plan shortens one to, where the person set none and the one given leaves
+    // the expert cache under a token cycle (plan_on_facts). llama.cpp's own: the shortest context its
+    // capacity fitter shrinks to before it moves weights instead (common's --fit-ctx default). A
+    // context the person set is never touched.
+    uint32_t ctx_min_auto = 4096;
+
     // Whether THIS ENGINE can hand a device the memory a streamed expert is made of. It is a fact
     // about our own streamer rather than about any machine, which is why it lives here and not in
     // the hardware profile - and it is false, because the streamer reserves address space and

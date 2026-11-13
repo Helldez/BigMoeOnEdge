@@ -70,6 +70,20 @@ struct Placement {
     // is all attention, or when not measured.
     uint64_t context_fixed_bytes = 0;
 
+    // A sliding-window cache holds its window and one ubatch of cells, up to the context's length
+    // (window_cells), so a narrower graph holds less of it. What one of those cells costs, on the host
+    // and on the devices, read off the same two widths as the compute buffers' slope, and the window
+    // from the file; zero where the model has none.
+    uint32_t n_swa = 0;
+    uint64_t host_window_cell_bytes = 0;
+    uint64_t device_window_cell_bytes = 0;
+    // The cells a windowed cache holds at graph width `width`.
+    uint64_t window_cells(uint32_t width) const {
+        if (n_swa == 0) return 0;
+        const uint64_t want = (uint64_t) n_swa + width;
+        return n_ctx && want > n_ctx ? n_ctx : want;
+    }
+
     // Which devices those compute buffers were projected for, and each one's part, at the width
     // they were projected at. A device the fitter did not project for (one it never places layers
     // on) has no part: the sum above describes other devices' graphs, not its own.

@@ -27,7 +27,7 @@ namespace {
 // The rules on the facts a probe gathered (probe_and_plan's planning half): plan_run on the first
 // stage's placement, and the capacity fitter asked again where the plan narrows the graph. `model`
 // is the facts' own, or the same with another record of measurements (replan).
-Plan plan_on_facts(const AutoPlan & facts, const RunConfig & cfg, const PlanRequest & req, const ModelProfile & model) {
+Plan plan_layout(const AutoPlan & facts, const RunConfig & cfg, const PlanRequest & req, const ModelProfile & model) {
     const char * path = cfg.model_path.c_str();
     const HardwareProfile & hw = facts.hw;
     const Placement & placement = facts.placement;
@@ -110,6 +110,92 @@ Plan plan_on_facts(const AutoPlan & facts, const RunConfig & cfg, const PlanRequ
         }
     }
     return plan;
+}
+
+// Restate a decision the give-way pass below made, in the plan it made it in.
+void restate(
+    Plan & q, const char * knob, const std::string & value, const std::string & brief, const std::string & why) {
+    for (Decision & d : q.decisions)
+        if (d.knob == knob) {
+            d.value = value;
+            d.source = Source::Derived;
+            d.brief = brief;
+            d.reason = why;
+            return;
+        }
+    q.decisions.push_back(Decision{knob, value, Source::Derived, why, brief});
+}
+
+// What gives way to the expert cache. The context checkpoints and the context's KV are held for the
+// whole run beside the cache, and where the person set neither, an amount that leaves the cache under
+// one token cycle (an eviction per read, no hits) has bought insurance and history with every decoded
+// token's speed. Measured on a 12 GB phone: Gemma 4 26B-A4B at the server's 16384 context kept no
+// expert cache and no NPU prefill, and decoded at 0.5 s a token. So, in this order, while the cache is
+// under its floor: the checkpoints halve, down to one (the end of the last prompt, where a follow-up
+// most often diverges), then the context halves, the fitter placing again at each length, down to
+// PlannerPolicy::ctx_min_auto. The first plan whose cache clears the floor is the run's; where none
+// does, the plan stays as it was, since giving them up bought nothing. A value the person set is
+// theirs and never moves (the plan still names the lever).
+Plan give_way(
+    const AutoPlan & facts, const RunConfig & cfg, const PlanRequest & req, const ModelProfile & model, Plan plan) {
+    const uint64_t cycle = plan.token_cycle_bytes;
+    if (plan.streaming_declined || !plan.config.moe.enabled || cycle == 0 || plan.cache_budget_bytes >= cycle)
+        return plan;
+    const auto clears = [&](const Plan & q) { return !q.streaming_declined && q.cache_budget_bytes >= cycle; };
+    const auto mib = [](uint64_t b) { return std::to_string(b >> 20); };
+    RunConfig base = cfg;
+    const int kept = cfg.ctx_checkpoints;
+    if (!req.is_pinned("ctx-checkpoints") && cfg.chatml && kept > 1) {
+        for (int n = kept / 2; n >= 1; n /= 2) {
+            base.ctx_checkpoints = n;
+            Plan q = plan_layout(facts, base, req, model);
+            if (!clears(q)) continue;
+            restate(q, "ctx-checkpoints", std::to_string(n),
+                    std::to_string(n) + " context checkpoints, not " + std::to_string(kept) +
+                        ": the cache needed the room.",
+                    "no count was set, and " + std::to_string(kept) +
+                        " checkpoints left the expert cache under one token cycle (" + mib(cycle) +
+                        " MiB), which returns no hits; with " + std::to_string(n) + " the cache is " +
+                        mib(q.cache_budget_bytes) +
+                        " MiB. A follow-up that diverges before the oldest one kept is prefilled from there. " +
+                        flag_spelling("ctx-checkpoints") + " sets it by hand");
+            return q;
+        }
+        base.ctx_checkpoints = 1;
+    }
+    const uint32_t floor = PlannerPolicy::defaults().ctx_min_auto;
+    const int given = cfg.n_ctx;
+    if (req.is_pinned("ctx-size") || given <= (int) floor) return plan;
+    for (uint32_t n_ctx = (uint32_t) given / 2; n_ctx >= floor; n_ctx /= 2) {
+        RunConfig shorter = base;
+        shorter.n_ctx = (int) n_ctx;
+        AutoPlan at = facts;
+        at.placement = probe_placement(cfg.model_path.c_str(), model, facts.hw, n_ctx, (uint32_t) shorter.graph_width(),
+                                       cfg.cache_type_k, cfg.cache_type_v, facts.backends, &cfg.spec);
+        detail::log_memory_snapshot("auto-probe-context");
+        if (!at.placement.fitted && facts.placement.fitted) break;
+        Plan q = plan_layout(at, shorter, req, model);
+        if (!clears(q)) continue;
+        const std::string n = std::to_string(n_ctx);
+        restate(q, "ctx-size", n, n + " tokens of context: at " + std::to_string(given) + " no expert cache fit.",
+                "no context was set, and at " + std::to_string(given) +
+                    " tokens its memory left the expert cache under one token cycle (" + mib(cycle) +
+                    " MiB), which returns no hits; at " + n + " tokens the cache is " + mib(q.cache_budget_bytes) +
+                    " MiB. A longer conversation does not fit. " + flag_spelling("ctx-size") +
+                    " sets it by hand, and a context set is never shortened");
+        if (shorter.ctx_checkpoints != kept)
+            restate(q, "ctx-checkpoints", std::to_string(shorter.ctx_checkpoints),
+                    "1 context checkpoint, not " + std::to_string(kept) + ": the cache needed the room.",
+                    "no count was set, and fewer checkpoints alone did not leave the expert cache a token cycle, so "
+                    "they went down to one before the context was shortened. " +
+                        flag_spelling("ctx-checkpoints") + " sets it by hand");
+        return q;
+    }
+    return plan;
+}
+
+Plan plan_on_facts(const AutoPlan & facts, const RunConfig & cfg, const PlanRequest & req, const ModelProfile & model) {
+    return give_way(facts, cfg, req, model, plan_layout(facts, cfg, req, model));
 }
 
 } // namespace

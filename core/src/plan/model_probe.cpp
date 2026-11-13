@@ -73,6 +73,7 @@ ModelProfile probe_model(const char * model_path) {
     m.n_expert = (uint32_t) std::max(0, meta.info.n_expert);
     m.n_expert_used = (uint32_t) std::max(0, meta.info.n_expert_used);
     m.n_embd = (uint32_t) std::max(0, meta.info.n_embd);
+    m.n_swa = (uint32_t) std::max(0, meta.info.n_swa);
 
     // Which tensors are the routed experts, read off the file's shapes, and the same refusal the
     // streamer makes: a file whose experts cannot be told apart gets no plan, since a plan that

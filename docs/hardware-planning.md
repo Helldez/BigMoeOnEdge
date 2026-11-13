@@ -57,7 +57,16 @@ session then loads with the fitter's `n_gpu_layers` and override patterns rather
 zero.
 
 Three of the fitter's answers are read rather than trusted. Left at 0 it picks the model's full
-training context, so our context is always the pin. On a machine with no GPU it leaves
+training context, so our context is always the pin. Where the context checkpoints and the context
+leave the expert cache under a token cycle and the person set neither, they give way, in that order:
+the checkpoints halve down to one (the end of the last prompt, where a follow-up most often
+diverges), then the context halves, the fitter placing again at each length, down to
+`PlannerPolicy::ctx_min_auto` (4096, the fitter's own `--fit-ctx` default). The first plan whose cache
+clears its floor is kept; where none does, nothing changes. A value the person set is never moved,
+only named as the lever. The probe opens its
+context as the session does, with sliding-window layers holding their window rather than the whole
+context (llama.cpp's own default is the whole context; its server and CLI turn that off too). On a
+machine with no GPU it leaves
 `n_gpu_layers` at its default, which means "all", so devices are counted instead: the placement is
 applied only when every device the fitter gave bytes to was measured to have memory of its own and
 states its size. Where one reads the host's memory, the fitter has counted one pool twice, and the
@@ -361,6 +370,11 @@ and `BMOE_*` env overrides both count as the caller speaking.
    gathered table competes for residency against the cache at the cache's linear credit, not at the
    tail of a short routing record's curve, which is flat past the experts the record touched:
    measured why on DeepSeek V4.1, where a 194 GB Engram table outranked the cache for 0.1 ms a token.
+   A group read whole every token is priced as the run holds it: the `anon`/`pinned` policy copies
+   every dense tensor but the tables handed back above, so a group the ranking found no room for is
+   held all the same, past the budget, and priced at its compute (`dense-held`), not at the refault
+   of a mapping the run does not keep. Priced as mapped, a 12 GB phone's plan for Gemma 4 26B-A4B
+   predicted 10-44 s a token where the run decoded at 0.45-0.55.
 5. **The memory ledger**: one account for everything the run holds — context and compute buffers,
    a chat run's context checkpoints, an armed device, the dense set, the expert cache — against two ceilings, what can be held and
    what can be held reclaim-exempt. The cache is what is left under both, capped at the experts'
@@ -532,8 +546,8 @@ alone is how a plan comes to ask for locks the machine stops granting part way.
 |---|---|---|
 | context and compute buffers | llama.cpp's own projection for this model and context | holdable |
 | projector (a run with an `mmproj` file) | the file's size: llama.cpp's library holds it whole to read images, on a device where the run uses one and on the host otherwise. On a device with memory of its own the capacity fitter is told to leave that room before it places a layer, so the layer count and the spare it reports already account for it (a placement with no such reservation charges it off the device cache instead); on a device whose memory is the host's it is the host's row | holdable |
-| context checkpoints (a chat run) | `--ctx-checkpoints` copies of the context's fixed part: llama.cpp's projection at the context and at half of it, twice the half less the whole (a recurrent state, a sliding window; nothing for a context that is all attention) | holdable |
-| a device armed for prefill | two of the model's largest expert layer, plus the compute buffer llama.cpp projects for that device (none for one it never places layers on, such as an NPU) | holdable; lockable too where its buffers are |
+| context checkpoints (a chat run) | `--ctx-checkpoints` copies of the context's fixed part: llama.cpp's projection at the context and at half of it, twice the half less the whole (a recurrent state; nothing for a context that is all attention). A sliding window is the window's cells, from the file, at what a cell costs, read off the projections at two graph widths: the fixed part would also count the ubatch of cells the window's cache holds beyond itself, which a checkpoint does not copy (106 MiB measured on Gemma 4 26B-A4B, where the fixed part at an 8192-wide graph was 744) | holdable |
+| a device armed for prefill | two of the model's largest expert layer, plus the compute buffer llama.cpp projects for that device, or, for one it never places layers on (such as an NPU), the host's own at the same width, since the session hands it the same graph (charged nothing, a phone's NPU reserved 450 MiB the plan never saw and the load did not finish) | holdable; lockable too where its buffers are |
 | dense set | the gguf | holdable; lockable if it is pinned |
 | expert cache | what is left | holdable; lockable for the part that can be locked in place |
 

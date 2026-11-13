@@ -4,6 +4,42 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **A sliding-window model keeps its window, not the whole context, in its KV cache.** llama.cpp's
+  default gives a sliding-window layer a cache as long as the context (its own server and CLI turn
+  that off), and the engine kept the default, so on a model whose layers are mostly windowed most of
+  the context's memory held cells no token reads. Gemma 4 26B-A4B at a 16384 context: the plan's
+  context and compute went from 2273 to 394 MiB on a 16 GB Mac, and the process held 4.4 GB at the
+  start of a chat where it held 7.3, with the same text; on a 12 GB phone the room it took was what the
+  expert cache and the NPU prefill had been refused for. The session and the plan's placement probe
+  both open the context with the window only. A follow-up that diverges further back than the window
+  starts again from a context checkpoint, or from nothing, instead of reusing a window that no longer
+  holds what the next token reads (gate G22c; the tiny gemma4 fixture now has a 16-token window).
+- **A context checkpoint of a windowed model is charged what it holds.** A checkpoint copies the
+  window's cells: 106 MiB each on Gemma 4 26B-A4B, measured, where the plan charged 11 (and nothing at
+  a context under 16384). The plan now prices it as the window, read from the file, at the cost of a
+  cell, measured at two graph widths; the KV it charges follows the graph width too, since a windowed
+  cache holds one ubatch of cells beyond its window.
+- **A plan prices the dense weights as the run holds them.** The dense policy copies every dense
+  tensor, but a group the plan's ranking found no room for was priced as left mapped, at the refault
+  rate of the storage: a 12 GB phone's plan for Gemma 4 predicted 10-44 s a token, and the Plan page
+  showed "18x the expected", where the run decoded at 0.45-0.55. Such a group is now priced at its
+  compute, and the plan says it is held past the budget (`dense-held`).
+- **An NPU armed for the prefill is charged its compute buffer.** The plan charged a prefill device the
+  compute buffer llama.cpp's fitter projected for it, which is none for a device it never places layers
+  on, and the session then reserved one for the same graph: 221-450 MiB on a phone's NPU that the
+  expert cache had been sized into. Such a device is now charged the host's own buffer at that width.
+
+### Changed
+- **Checkpoints, then the context, give way to the expert cache where nobody set them.** Where the
+  checkpoints and the context leave the expert cache under one token cycle (a cache that returns no
+  hits), the plan halves the checkpoints down to one, then the context down to 4096 tokens, placing
+  the model again at each length, and keeps the first plan whose cache clears its floor; where none
+  does, nothing changes. A value set by hand (`--ctx-checkpoints`, `--ctx-size`, the settings) is never
+  moved ([hardware-planning.md](docs/hardware-planning.md#the-flow)).
+
 ## [0.42.0] - 2026-11-12
 
 ### Added

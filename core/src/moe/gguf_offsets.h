@@ -63,6 +63,9 @@ struct GgufModelInfo {
     int n_expert = 0;
     int n_expert_used = 0;
     int n_embd = 0; // hidden state width: what a tensor crossing a backend boundary carries
+    // `<arch>.attention.sliding_window`: how many positions a windowed layer attends to, 0 for a
+    // model without one. A context checkpoint of such a layer copies that many cells.
+    int n_swa = 0;
     // What kind of file this is, by the format's own keys rather than its name: `general.type`
     // ("model", "mmproj", "adapter"; "" when absent), the transformer blocks it declares
     // (`<arch>.block_count`), how many of them are next-token prediction heads

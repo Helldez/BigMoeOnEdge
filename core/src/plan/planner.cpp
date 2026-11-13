@@ -170,10 +170,24 @@ Placement Placement::at_width(uint32_t width) const {
     };
     const uint64_t host = move(raw_host_compute_bytes, host_compute_per_token);
     const uint64_t dev = move(device_compute_bytes, device_compute_per_token);
+    // A windowed cache holds one ubatch of cells beyond its window, so the context moves with the
+    // width too: by the cells the two widths hold apart (none without a window).
+    const uint64_t had = window_cells(compute_width), has = window_cells(width);
+    auto move_ctx = [&](uint64_t bytes, uint64_t per_cell) {
+        if (has >= had) return bytes + (has - had) * per_cell;
+        const uint64_t less = (had - has) * per_cell;
+        return bytes > less ? bytes - less : 0;
+    };
+    const uint64_t host_ctx = move_ctx(raw_host_context_bytes, host_window_cell_bytes);
+    const uint64_t dev_ctx = move_ctx(device_context_bytes, device_window_cell_bytes);
     q.host_resident_bytes = host_resident_bytes - std::min(host_resident_bytes, raw_host_compute_bytes) + host;
+    q.host_resident_bytes = q.host_resident_bytes - std::min(q.host_resident_bytes, raw_host_context_bytes) + host_ctx;
     q.device_bytes = device_bytes - std::min(device_bytes, device_compute_bytes) + dev;
+    q.device_bytes = q.device_bytes - std::min(q.device_bytes, device_context_bytes) + dev_ctx;
     q.raw_host_compute_bytes = host;
     q.device_compute_bytes = dev;
+    q.raw_host_context_bytes = host_ctx;
+    q.device_context_bytes = dev_ctx;
     q.compute_width = width;
     return q;
 }
@@ -1960,7 +1974,13 @@ void charge_prefill(const Planning & s, const ComputeDevice * dev, AllocationInp
     // layers on has none in the projection, and charging it the others' - a GPU's 467 MiB charged to
     // an NPU beside it on a phone - is memory the expert cache never gets. One the profile does not
     // know is charged the whole sum, the reading that cannot overcommit.
-    const uint64_t compute = dev ? s.placement.device_compute_of(dev->name) : s.placement.device_compute_bytes;
+    uint64_t compute = dev ? s.placement.device_compute_of(dev->name) : s.placement.device_compute_bytes;
+    // But a device the fitter never placed layers on is still handed a compute buffer when the session
+    // arms it, for the same graph the host computes, as wide: the host's own projection at this width
+    // is its size. Charged nothing, it was memory the plan never saw: on a 12 GB phone an NPU armed for
+    // a 4096 context reserved 450 MiB of compute buffer beside a cache sized as if it had none, the
+    // process was reclaimed down to a few MiB, and the load never finished.
+    if (dev && compute == 0) compute = s.placement.raw_host_compute_bytes;
     const uint64_t rest = 2 * s.model.largest_layer_dense_bytes + compute;
     in.device_bytes = on_demand ? rest : rest + experts;
     in.device_turn_bytes = on_demand ? experts : 0;
@@ -2701,10 +2721,14 @@ void note_checkpoint_budget(Planning & s) {
     s.note("checkpoint-budget", u64s(mib(s.checkpoint_bytes)) + " MiB", Source::Measured,
            "Context checkpoints may take " + size_brief(s.checkpoint_bytes) + "; that is kept out of the cache.",
            std::to_string(c.ctx_checkpoints) + " checkpoints ({ctx-checkpoints}) of " +
-               u64s(mib(s.placement.context_fixed_bytes)) +
-               " MiB each, the part of the context that does not grow with its length (measured at two "
-               "lengths), charged before the cache is sized: a chat run fills them as it goes, and memory "
-               "the cache had already taken would have to come out of something else");
+               u64s(mib(s.placement.context_fixed_bytes)) + " MiB each, " +
+               (s.placement.n_swa && (s.placement.host_window_cell_bytes || s.placement.device_window_cell_bytes)
+                    ? "the model's sliding window of " + u64s(s.placement.n_swa) +
+                          " positions at what a cell of it costs (measured at two graph widths)"
+                    : std::string("the part of the context that does not grow with its length (measured at two "
+                                  "lengths)")) +
+               ", charged before the cache is sized: a chat run fills them as it goes, and memory the cache had "
+               "already taken would have to come out of something else");
 }
 
 // ── the I/O policy: from the machine's own rate curve, never from a class name ──
