@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **A prefill device that did not hold up for a model is not armed for it again.** The plan arms an
+  NPU or GPU for the prompt on a probe graph and a matmul of the model's format, and the session then
+  checks it on the model itself. Where that check refused it, the next load armed it again, paid the
+  check again and sized the memory around it; and a load that never returned left nothing to learn
+  from. On a 12 GB phone, Gemma 4 26B-A4B's NPU prefill agreed with the cores in 25 of 31 positions,
+  and with that backend's host buffer on the load never finished. What came of the device is now
+  kept in the model's record (`prefill=<device>:kept|refused|unconfirmed`): a refused device is not
+  armed again for that model on that machine and engine, and neither is one that two loads in a row
+  armed and never finished opening (a front-end writes that before the session opens). Another device,
+  and every other model, are unaffected; a new engine version tries the device again
+  ([measured-planning.md](docs/measured-planning.md#a-prefill-device-that-did-not-hold-up-for-a-model)).
+
 ## [0.42.0] - 2026-11-12
 
 ### Added

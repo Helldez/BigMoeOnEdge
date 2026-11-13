@@ -119,6 +119,36 @@ struct MeasuredKnobs {
     int device_cache_unviable = 0, no_device_cache_unviable = 0;
     int wide_unviable = 0, narrow_unviable = 0;
 
+    // The prefill device a load armed for this model, and what came of it on this machine and engine:
+    // `prefill_verdict` 1 where the session kept it, -1 where its check on this model refused it (or it
+    // would not open), 0 where a load armed it and never said - a front-end writes that before the
+    // session opens, so a load that never returns leaves it, and counts the loads in a row that did
+    // (`prefill_unconfirmed`). A plan does not arm a device refused here, nor one that many loads in a
+    // row never finished opening (planner.cpp, survey_prefill): one may be a person closing the app
+    // mid-load, two in a row are the device. Measured on a 12 GB phone: an NPU that gives one model
+    // wrong results (its top token in 25 of 31 positions) and, with that backend's host buffer on,
+    // never returns from that model's first layer, so the load never finishes. A new engine starts a
+    // new record, and tries the device again.
+    static constexpr int prefill_unconfirmed_max = 2;
+    std::string prefill_device;
+    int prefill_verdict = 0;
+    int prefill_unconfirmed = 0;
+    bool prefill_refused(const std::string & device) const {
+        return !device.empty() && device == prefill_device &&
+               (prefill_verdict < 0 || (prefill_verdict == 0 && prefill_unconfirmed >= prefill_unconfirmed_max));
+    }
+    // The record a front-end keeps before opening a session that arms `device`: this one's count of
+    // loads that armed it and never said, one more.
+    MeasuredKnobs armed_unconfirmed(const std::string & device) const {
+        MeasuredKnobs r;
+        r.hardware = hardware;
+        r.engine = engine;
+        r.prefill_device = device;
+        r.prefill_verdict = 0;
+        r.prefill_unconfirmed = (prefill_device == device && prefill_verdict == 0 ? prefill_unconfirmed : 0) + 1;
+        return r;
+    }
+
     bool empty() const { return verdicts() == 0; }
     // How many measurements this record carries: a front-end keeps a record again when it grows. The
     // requests a width trial has seen count too, so the usage it weighs the two widths by is kept as it
@@ -128,7 +158,7 @@ struct MeasuredKnobs {
                (wide_decode_tps > 0.0) + (narrow_decode_tps > 0.0) + (wide_prefill_tps > 0.0) +
                (narrow_prefill_tps > 0.0) + usage_requests + (decode_compute_s > 0.0) + (decode_hit >= 0.0) +
                mix_requests + (host_prefill_tps > 0.0) + (device_cache_unviable > 0) + (no_device_cache_unviable > 0) +
-               (wide_unviable > 0) + (narrow_unviable > 0);
+               (wide_unviable > 0) + (narrow_unviable > 0) + !prefill_device.empty();
     }
 };
 

@@ -628,6 +628,32 @@ instead of a pending one not proven.
 Owed: a run on a card of each class, the second load's decode against the first's, with the
 candidates' wall time, and the server's idle path against a client that sends turns back to back.
 
+### A prefill device that did not hold up for a model
+
+The plan arms a prefill device on a probe graph and a matmul of the model's own format; the session
+then checks it on the model itself (`PrefillDeviceConfig::verify`, a short prefill on the host and
+on the device, compared row by row) and hands it back where the two disagree. Measured on a 12 GB
+phone: an NPU that passed the probe picked the host's next token in only 25 of 31 positions on
+Gemma 4 26B-A4B, and, with that backend's host buffer on, never returned from the model's first
+layer, so the load never finished; on Qwen3.6 the same NPU agreed in every position and prefilled
+1906 tokens at 139 tok/s against the cores' 12. So what came of the device is kept in the model's
+record, scoped like every other measurement to this machine and engine (`prefill=<device>:<word>`):
+
+- `kept`: the session opened with it. The next plan arms it as before.
+- `refused`: it would not open, or its check on this model refused it. No plan arms it again for the
+  model; another device that measures faster than the host still can.
+- `unconfirmed` (`prefill_unconfirmed=<n>`): a front-end writes it before opening a session that arms
+  the device, and the session's word replaces it once open, so only a load that never got that far
+  leaves it. One may be a person closing the app mid-load, so the device is tried again; after
+  `MeasuredKnobs::prefill_unconfirmed_max` (two) in a row it is kept out like a refused one.
+
+The server and the CLI write the word as soon as the session has opened, not after the first
+answer. A new engine version starts a new record, and tries the device again. Tested by
+`knob_trial_test` (the record) and `planner_test` (a device not kept is not armed; one kept is; a word
+about another device leaves this one alone); on a 16 GB Apple-silicon laptop, two loads killed while
+opening left `MTL0:unconfirmed` 1 then 2, the plan armed Metal after the first and not after the
+second, and a load that finished wrote `MTL0:kept`.
+
 ## What the planner looks like afterwards
 
 - **Memory:** the ledger, unchanged, still the only thing that decides what is held.

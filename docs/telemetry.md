@@ -603,10 +603,12 @@ hardware=<16 hex> engine=<version> threads=<n> threads_tried=<incumbent,candidat
   overlap=<-1|0|1> overlap_incumbent=<-1|0|1> overlap_gain=<f> rounds=<n>
   device_cache_tps=<f> no_device_cache_tps=<f> width_narrow=<n> wide_decode_tps=<f>
   narrow_decode_tps=<f> wide_prefill_tps=<f> narrow_prefill_tps=<f> usage_gen_tokens=<f>
-  usage_long_prompt_tokens=<f> usage_requests=<n> ... [unviable=<side:n,...>]  (one line)
+  usage_long_prompt_tokens=<f> usage_requests=<n> ... [unviable=<side:n,...>]
+  [prefill=<device>:<kept|refused|unconfirmed> [prefill_unconfirmed=<n>]]  (one line)
 ```
 
-`threads=0` and `overlap=-1` mean not measured, and so does a rate of 0. The two rates are the device
+`threads=0` and `overlap=-1` mean not measured, and so does a rate of 0. `prefill=` is what came of
+the prefill device the last load armed for this model ([measured-planning.md](measured-planning.md#a-prefill-device-that-did-not-hold-up-for-a-model)). The two rates are the device
 tier's sides, each timed on a different load (`--trial-device-cache`), with these lines:
 
 ```

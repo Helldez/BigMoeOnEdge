@@ -88,6 +88,19 @@ bool parse_unviable(const std::string & s, MeasuredKnobs & r) {
 
 // A rate measured against another narrow width answers another comparison: a new narrow width
 // starts the width's record afresh.
+// `prefill=<device>:kept|refused|unconfirmed`, the device being the part before the last colon. A word
+// it cannot read (a later engine's) is read past, as an unknown key is, and the record still holds.
+bool parse_prefill(const std::string & s, MeasuredKnobs & r) {
+    const size_t c = s.rfind(':');
+    if (c == std::string::npos || c == 0) return true;
+    const std::string word = s.substr(c + 1);
+    const int verdict = word == "kept" ? 1 : word == "refused" ? -1 : word == "unconfirmed" ? 0 : 2;
+    if (verdict == 2) return true;
+    r.prefill_device = s.substr(0, c);
+    r.prefill_verdict = verdict;
+    return true;
+}
+
 void set_width_narrow(MeasuredKnobs & r, int narrow) {
     if (narrow <= 0 || narrow == r.width_narrow) return;
     r.width_narrow = narrow;
@@ -151,6 +164,13 @@ std::string format_measured_knobs(const std::vector<MeasuredKnobs> & records) {
             if (r.*u.count > 0)
                 unviable += (unviable.empty() ? "" : ",") + std::string(u.name) + ":" + std::to_string(r.*u.count);
         if (!unviable.empty()) out += " unviable=" + unviable;
+        // The prefill device's last word, likewise only when there is one.
+        if (!r.prefill_device.empty()) {
+            const char * word = r.prefill_verdict > 0 ? "kept" : r.prefill_verdict < 0 ? "refused" : "unconfirmed";
+            out += " prefill=" + r.prefill_device + ":" + word;
+            if (r.prefill_verdict == 0 && r.prefill_unconfirmed > 0)
+                out += " prefill_unconfirmed=" + std::to_string(r.prefill_unconfirmed);
+        }
         out += "\n";
     }
     return out;
@@ -249,6 +269,10 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
                 ok = as_double(r.host_prefill_tps);
             else if (k == "unviable")
                 ok = parse_unviable(v, r);
+            else if (k == "prefill")
+                ok = parse_prefill(v, r);
+            else if (k == "prefill_unconfirmed")
+                ok = as_int(r.prefill_unconfirmed) && r.prefill_unconfirmed >= 0;
             // An unknown key is a later engine's addition: read past it, the record still holds.
             if (!ok) {
                 error = "line " + std::to_string(n) + ": bad value for " + k;
@@ -335,6 +359,13 @@ void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKno
                 r.mix_wide_prompt_tokens = rec.mix_wide_prompt_tokens;
             }
             if (rec.host_prefill_tps > 0.0) r.host_prefill_tps = rec.host_prefill_tps;
+            // The prefill device's word is the latest load's: an armed load says unconfirmed, and the
+            // session that opened says what came of it.
+            if (!rec.prefill_device.empty()) {
+                r.prefill_device = rec.prefill_device;
+                r.prefill_verdict = rec.prefill_verdict;
+                r.prefill_unconfirmed = rec.prefill_verdict == 0 ? rec.prefill_unconfirmed : 0;
+            }
             return;
         }
     records.push_back(rec);

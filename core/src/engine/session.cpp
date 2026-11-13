@@ -2451,6 +2451,12 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     if (im.prefill && cfg.prefill.verify && !im.confirm_prefill_device(o)) return nullptr;
     im.arm_decode_traces(o);
     im.arm_trials();
+    // What came of the prefill device asked for, for the record of this model (MeasuredKnobs::prefill_*):
+    // kept, or handed back because it would not open or its check on this model refused it.
+    if (!cfg.prefill.device.empty()) {
+        im.trials.result.prefill_device = cfg.prefill.device;
+        im.trials.result.prefill_verdict = im.prefill ? 1 : -1;
+    }
     im.describe_run(o);
     im.warn_about_load(cfg);
 
