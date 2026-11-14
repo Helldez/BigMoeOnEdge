@@ -481,36 +481,48 @@ TierSplit device_tier_split(const Placement & pl, const ModelProfile & m, uint64
         out.budget = on_devices + spare_sum;
         return out;
     }
-    const double dense_per_layer =
-        (double) (m.group(WeightGroup::Attention).bytes + m.group(WeightGroup::DenseFfn).bytes +
-                  m.group(WeightGroup::Other).bytes + pl.device_context_bytes) /
-        (double) m.n_layer;
+    // A layer's dense part and context: the model's average, and a bound for the layers a card takes
+    // on (the file's largest dense layer, where the file states it). A card that takes more layers
+    // than the fitter gave it is charged the bound for each, since llama.cpp loads them before any
+    // cache is made and a load past the card's memory has nothing to fall back on; a card that gives
+    // layers up is credited the average, since a cache past a card's memory is made smaller by the
+    // session (create_contexts) rather than failing the load.
+    const double kv_per_layer = (double) pl.device_context_bytes / (double) m.n_layer;
+    const double dense_per_layer = (double) (m.group(WeightGroup::Attention).bytes +
+                                             m.group(WeightGroup::DenseFfn).bytes + m.group(WeightGroup::Other).bytes) /
+                                       (double) m.n_layer +
+                                   kv_per_layer;
+    const double dense_bound = std::max(dense_per_layer, (double) m.largest_layer_dense_bytes + kv_per_layer);
+    // What each card holds for the cache today, beside the layers the fitter gave it.
     for (Card & c : cards)
-        c.room =
-            (double) c.spare + (n_whole ? (double) on_devices * c.whole / n_whole : 0.0) + dense_per_layer * c.layers;
+        c.room = (double) c.spare + (n_whole ? (double) on_devices * c.whole / n_whole : 0.0);
     // The budget a split of the layers lets every card take its share of; 0 where a card cannot hold
-    // even its layers' dense part.
+    // the layers it takes on.
     const auto budget_of = [&](const std::vector<uint32_t> & n) {
         double b = -1.0;
         for (size_t i = 0; i < cards.size(); ++i) {
             if (n[i] == 0) continue;
-            const double left = cards[i].room - dense_per_layer * n[i];
+            const double moved = (double) n[i] - (double) cards[i].layers;
+            const double left = cards[i].room - (moved > 0 ? moved * dense_bound : moved * dense_per_layer);
             const double share = left <= 0.0 ? 0.0 : left * (double) n_layers / (double) n[i];
             b = b < 0.0 ? share : std::min(b, share);
         }
         return b < 0.0 ? 0.0 : b;
     };
     std::vector<uint32_t> kept(cards.size()), even(cards.size(), 0);
+    // Layers in proportion to each card's whole room under the cache (what it holds for the cache and
+    // its layers' dense part), the remainder to the largest fractions.
     double room_sum = 0.0;
+    std::vector<double> whole_room(cards.size());
     for (size_t i = 0; i < cards.size(); ++i) {
         kept[i] = cards[i].layers;
-        room_sum += cards[i].room;
+        whole_room[i] = cards[i].room + dense_per_layer * cards[i].layers;
+        room_sum += whole_room[i];
     }
-    // Layers in proportion to each card's room, the remainder to the largest fractions.
     std::vector<std::pair<double, size_t>> frac;
     uint32_t given = 0;
     for (size_t i = 0; i < cards.size(); ++i) {
-        const double want = room_sum > 0.0 ? (double) n_layers * cards[i].room / room_sum : 0.0;
+        const double want = room_sum > 0.0 ? (double) n_layers * whole_room[i] / room_sum : 0.0;
         even[i] = (uint32_t) std::floor(want);
         given += even[i];
         frac.push_back({want - (double) even[i], i});
@@ -518,7 +530,30 @@ TierSplit device_tier_split(const Placement & pl, const ModelProfile & m, uint64
     std::sort(frac.begin(), frac.end(), [](const auto & a, const auto & b) { return a.first > b.first; });
     for (size_t k = 0; given < n_layers && k < frac.size(); ++k, ++given)
         ++even[frac[k].second];
-    const double b_kept = budget_of(kept), b_even = budget_of(even);
+    // From the better of the two, one layer at a time between any two cards while the budget grows:
+    // the charges are not symmetric, so the proportional split is a start, not the answer.
+    const double b_kept = budget_of(kept);
+    double b_even = budget_of(even);
+    if (b_kept > b_even) {
+        even = kept;
+        b_even = b_kept;
+    }
+    for (bool moved = true; moved;) {
+        moved = false;
+        for (size_t from = 0; from < cards.size() && !moved; ++from)
+            for (size_t to = 0; to < cards.size() && !moved; ++to) {
+                if (from == to || even[from] == 0) continue;
+                std::vector<uint32_t> n = even;
+                --n[from];
+                ++n[to];
+                const double b = budget_of(n);
+                if (b > b_even) {
+                    even = n;
+                    b_even = b;
+                    moved = true;
+                }
+            }
+    }
     // Rounded down to a MiB, and never more than the cards had: free beyond the fitter's projection
     // and the experts it gave them.
     const auto cap = [&](double b) {
@@ -859,7 +894,9 @@ void choose_device_tier(Planning & s) {
                "card's room under the cache (what it had free, the experts the fitter put on it, and its layers' "
                "dense part and context): " +
                    list(tier.split) + " in place of the fitter's " + list(pl.device_split) +
-                   ", so every card can take its share of " + mib_s(budget) + " MiB");
+                   ", so every card can take its share of " + mib_s(budget) +
+                   " MiB; each layer a card takes on is charged the file's largest dense layer and its "
+                   "context, since it is loaded before the cache and a card it overfills cannot fall back");
         pl.device_split = tier.split;
     }
     pl.device_bytes = pl.device_bytes > on_devices ? pl.device_bytes - on_devices : 0;

@@ -392,8 +392,12 @@ without a device of their own, an unchanged plan.
   split and the budget are one decision (`device_tier_split`): llama.cpp hands each card a share of
   the budget by the layers the split gives it, so the plan gives each card layers in proportion to its
   room under the cache (what it had free, the experts the fitter put on it, its layers' dense part and
-  context), and the budget is what the tightest card takes its share of. The fitter's split is kept
-  where it gives the larger budget. Left as the fitter made it, the split followed whole layers: on two
+  context), and the budget is what the tightest card takes its share of; from there one layer at a
+  time moves between cards while the budget grows. The fitter's split is kept where it gives the
+  larger budget. A layer a card takes on is charged the file's largest dense layer and its context,
+  not the average: it is loaded before any cache is made, and a load past a card's memory has nothing
+  to fall back on, where a cache past it is made smaller by the session. A layer a card gives up is
+  credited the average. Left as the fitter made it, the split followed whole layers: on two
   rented 16 GB cards with DeepSeek-V4-Flash, 6 layers on the first card (all its whole layers) and 38
   on the second, the first card was handed 6/44 of the budget and 10 GB of it stayed empty. Its floor is one token cycle,
   the RAM cache's floor for the same reason; under it, the fitter's placement stands. llama.cpp's

@@ -3472,6 +3472,35 @@ int main() {
                   "device tier, whole layers on one card: the split follows the room the cache leaves",
                   std::to_string(even.config.moe.device_cache_mb) + " MiB against " +
                       std::to_string((int) (kept2 / MiB)));
+
+            // The layers a card takes on are loaded before any cache is made, with nothing to fall back
+            // on: each is charged the file's largest dense layer, so a file whose layers differ cannot
+            // push the card that takes them past its memory. A card's room for its share is what it
+            // holds for the cache (free beyond the fitter's projection and the experts it held), less
+            // the bound for each layer it takes on.
+            {
+                ModelProfile uneven = model;
+                uneven.largest_layer_dense_bytes = (uint64_t) (3.0 * dense_layer);
+                const Plan safe =
+                    plan_run(base_cfg(), slow_cores, uneven, lopsided, PlanRequest{}, PlannerPolicy::defaults());
+                const double layers = (double) model.n_layer;
+                const double budget = (double) safe.config.moe.device_cache_mb * (double) MiB;
+                const double hold[2] = {256.0 * MiB + (double) six, 4.0 * GiB};
+                const uint32_t had[2] = {6, model.n_layer - 6};
+                bool fits = safe.config.device_split.size() == 2;
+                for (size_t i = 0; fits && i < 2; ++i) {
+                    const double n = (double) safe.config.device_split[i].second - (i == 1 ? 1 : 0);
+                    const double moved = n - (double) had[i];
+                    const double charged =
+                        moved > 0 ? moved * (double) uneven.largest_layer_dense_bytes : moved * dense_layer;
+                    fits = budget * n / layers + charged <= hold[i] + (double) MiB;
+                }
+                check(fits && safe.config.moe.device_cache_mb > 0,
+                      "device tier, layers of different sizes: a card takes on layers at the largest one's size",
+                      std::to_string(safe.config.device_split[0].second) + "/" +
+                          std::to_string(safe.config.device_split[1].second) + ", " +
+                          std::to_string(safe.config.moe.device_cache_mb) + " MiB");
+            }
         }
 
         // The caller's placement is the caller's.
