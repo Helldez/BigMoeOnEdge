@@ -1196,8 +1196,9 @@ int main() {
                 held.width_held = 0;
                 held.narrow_decode_tps = 14.2;
                 held.wide_decode_tps = 15.0; // the full width 6% ahead
-                dw = find(plan_with(held), "ubatch");
-                check(plan_with(held).config.n_ubatch == (int) narrow && dw &&
+                const Plan held_plan = plan_with(held);
+                dw = find(held_plan, "ubatch");
+                check(held_plan.config.n_ubatch == (int) narrow && dw &&
                           dw->reason.find("in force") != std::string::npos,
                       "width, the narrow graph in force, the full width inside the margin: it holds",
                       dw ? dw->reason : "none");
