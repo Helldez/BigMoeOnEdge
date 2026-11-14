@@ -3421,6 +3421,28 @@ int main() {
         pinned.pinned = {"devices"};
         check(plan_run(base_cfg(), two, model, pinned).config.device_list.empty(),
               "backends: the caller's devices are the caller's");
+
+        // An integrated GPU beside the card: the choice keeps it (it is a card of its own), and the
+        // fitter must not be asked of it, or one layer there sets the card's placement aside too.
+        HardwareProfile igpu = two;
+        ComputeDevice shared;
+        shared.name = "Vulkan1";
+        shared.physical_id = "0000:7a:00.0";
+        shared.memory_total = 16 * GiB;
+        shared.memory_free = 15 * GiB;
+        shared.shares_host_memory = Tri::Yes;
+        shared.expert_gibs = 40.0;
+        igpu.devices.push_back(shared);
+        const BackendChoice with_igpu = choose_backends(igpu, 0.10);
+        check(with_igpu.keep == std::vector<std::string>{"Vulkan0", "Vulkan1"},
+              "backends: an integrated GPU is a card of its own and stays in the choice");
+        check(capacity_devices(igpu, with_igpu.keep) == std::vector<std::string>{"Vulkan0"},
+              "capacity: the fitter is asked of the card with memory of its own, not of the integrated GPU");
+        HardwareProfile only_shared;
+        only_shared.devices.push_back(shared);
+        check(capacity_devices(only_shared, {"Vulkan1"}) == std::vector<std::string>{"Vulkan1"},
+              "capacity: with no device of its own memory the list is left as it is");
+        check(capacity_devices(igpu, {}).empty(), "capacity: an empty list stays empty (llama.cpp's default)");
     }
 
     // ── no device of its own: the new facts change nothing they do not measure ──────────────────

@@ -8,6 +8,7 @@
 // is this file and the planner keeps working with `fitted = false` — declining the device axis
 // rather than failing to build.
 
+#include "bmoe/backend_choice.h"
 #include "bmoe/config.h"
 #include "bmoe/probe.h"
 
@@ -110,8 +111,10 @@ Placement probe_placement(const char * model_path,
         if (d.has_own_memory() && d.memory_total > 0) ++n_dev_local;
     const uint64_t projector_reserved = n_dev_local ? model.projector_bytes : 0;
     margins[0] += (size_t) projector_reserved;
+    // Only the devices that add capacity: one layer on an integrated GPU beside a discrete card would
+    // set the whole placement aside below (capacity_devices).
     std::vector<ggml_backend_dev_t> listed;
-    for (const std::string & n : devices)
+    for (const std::string & n : capacity_devices(hw, devices))
         if (ggml_backend_dev_t dev = ggml_backend_dev_by_name(n.c_str())) listed.push_back(dev);
     if (!listed.empty()) {
         listed.push_back(nullptr);
