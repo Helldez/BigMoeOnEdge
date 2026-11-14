@@ -179,6 +179,21 @@ Semantic Versioning.
   finished: the plan armed the NPU wherever there was room (a 4096 context, for one), and the DSP
   never returned from the first layer.
 
+### Fixed
+- **A graphics card beside the processor's integrated GPU is used again.** With a second backend for
+  the card (the CUDA pack beside Vulkan), the plan handed llama.cpp's capacity fitter the integrated
+  GPU too. The fitter put part of the model there, and since that memory is the host's own the plan
+  set the whole placement aside, the card's share with it: a model that fit a 32 GB card decoded on
+  the CPU, streamed, at a fifth of the speed the plan expected. The fitter is now asked only of the
+  devices with memory of their own where there is one, as llama.cpp's own default list does, and a
+  device list set by hand is the one it places on.
+
+### Added
+- **[docs/field-reports.md](docs/field-reports.md)**: the problems people report from their own
+  machines, each with how to recognise it, its cause, the version that fixes it and a workaround for
+  the versions before: 26 cases, the open ones first, from the issues people opened since July and
+  the reports that came in elsewhere, the case above and a dense model left on the CPU (#585) among
+  them.
 
 ## [0.42.0] - 2026-11-12
 
