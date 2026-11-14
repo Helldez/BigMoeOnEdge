@@ -127,6 +127,7 @@ CalibrationResult calibrate(const Plan & first,
     std::vector<KnobTrialConfig> tried; // sides opened (or found unopenable) by this calibration
     std::vector<Timed> timed;
     std::vector<int32_t> reference; // the first run's tokens, which every later run replays
+    bool files_cached = false;      // the first run left the model's files cached for the others
     // A run's rate answers its own side, and at most one side of the other decision when a later plan
     // asks for the same configuration again: past that, the plan is asking in a circle.
     const int steps_max = k_calibration_decisions * pol.runs_max;
@@ -157,6 +158,7 @@ CalibrationResult calibrate(const Plan & first,
             cr.index = r.runs;
             cr.runs_max = pol.runs_max;
             cr.replay = reference;
+            cr.files_cached = files_cached;
             // The other side of this decision, where it ran: past its range by the margin, this one has lost.
             for (const Timed & t : timed)
                 if (t.timing.created && decision_of(t.trial) == decision_of(side) &&
@@ -168,6 +170,7 @@ CalibrationResult calibrate(const Plan & first,
             log_printf(LogLevel::Info, "calibration: timing the decode %s (candidate %d of at most %d)", words.c_str(),
                        cr.index + 1, cr.runs_max);
             timing = run(cand, cr);
+            if (cr.index == 0) files_cached = timing.files_cached;
             ++r.runs;
             if (timing.aborted) {
                 r.aborted = true;

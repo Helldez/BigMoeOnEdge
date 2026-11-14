@@ -29,6 +29,7 @@
 #include "knob_trial.h"
 #include "../io/platform_io.h"
 #include "../io/mapping_release.h"
+#include "../io/parallel_copy.h"
 #include "../metrics/memory_snapshot.h"
 
 #include "ggml-backend.h"
@@ -300,6 +301,23 @@ struct Session::Impl {
     // the expert tensors point into it, so it outlives the contexts and the model.
     std::unique_ptr<ggml_backend_buffer, void (*)(ggml_backend_buffer_t)> expert_host_buf{nullptr,
                                                                                           ggml_backend_buffer_free};
+    // The same copy where the device's backend pinned memory this session allocated (a registered
+    // host buffer, stage_experts_in_host_buffer) instead of allocating its own: unpinned and freed
+    // with it, after the model.
+    struct RegisteredHostMemory {
+        void * p = nullptr;
+        size_t size = 0;
+        void (*unregister)(void *) = nullptr;
+        RegisteredHostMemory() = default;
+        RegisteredHostMemory(const RegisteredHostMemory &) = delete;
+        RegisteredHostMemory & operator=(const RegisteredHostMemory &) = delete;
+        ~RegisteredHostMemory() {
+            if (!p) return;
+            if (unregister) unregister(p);
+            pio::vm_release(p, size);
+        }
+    };
+    std::unique_ptr<RegisteredHostMemory> expert_host_registered;
     ExpertStreamSource source;
     // Kept per session, not per turn: the reference it measures stalls against is this machine's,
     // and a later turn of a chat is compared with what the earlier ones settled to.
@@ -584,6 +602,7 @@ struct Session::Impl {
         hook.reset();
         model.reset();
         expert_host_buf.reset();
+        expert_host_registered.reset();
         mapping_placeholders.release();
         if (backend_inited) llama_backend_free();
     }
@@ -1726,25 +1745,118 @@ bool Session::Impl::stage_experts_in_host_buffer(Opening & o) {
     size_t total = 0;
     for (ggml_tensor * t : experts)
         total += GGML_PAD(ggml_nbytes(t), align);
+    // The copy goes onto every core the plan computes a prompt on: one thread copying out of the
+    // mapping is bound by its own page faults (pio::copy_spans).
+    const int copy_threads = std::max(o.cfg.n_threads, o.cfg.n_threads_batch);
+    const auto spans_at = [&](uint8_t * base) {
+        std::vector<pio::CopySpan> spans;
+        size_t off = 0;
+        for (ggml_tensor * t : experts) {
+            spans.push_back({base + off, t->data, ggml_nbytes(t)});
+            off += GGML_PAD(ggml_nbytes(t), align);
+        }
+        return spans;
+    };
+    const auto point_at = [&](const std::vector<pio::CopySpan> & spans) {
+        for (size_t i = 0; i < experts.size(); ++i)
+            experts[i]->data = spans[i].dst;
+    };
+    const auto mib = [](size_t b) { return (double) b / (1024.0 * 1024.0); };
+
+    // Memory the session allocates itself, copied into on every core and then pinned by the device's
+    // backend, where the backend offers that (ggml's generic "ggml_backend_register_host_buffer"
+    // entry point; the front-ends enable it, frontend/backend_env.h). A backend allocating pinned
+    // memory of its own does it a page at a time on one thread: on a rented 3090, 117 GB of
+    // GLM-4.7's experts took 97 s to allocate and 2 s to copy, where touching ordinary memory on 16
+    // threads and pinning it took 6 s every 32 GB. Where the backend has no such entry point, or
+    // declines, the backend's own host memory below, as before.
+    ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+    using RegisterFn = bool (*)(void *, size_t);
+    using UnregisterFn = void (*)(void *);
+    const auto do_register =
+        reg ? (RegisterFn) ggml_backend_reg_get_proc_address(reg, "ggml_backend_register_host_buffer") : nullptr;
+    const auto do_unregister =
+        reg ? (UnregisterFn) ggml_backend_reg_get_proc_address(reg, "ggml_backend_unregister_host_buffer") : nullptr;
+    // Asked first on one page, so a backend that declines (its entry point off, as ggml's CUDA backend
+    // is unless its environment enables it) costs no copy of the experts made for nothing.
+    const auto pins = [&] {
+        const size_t page = pio::vm_page();
+        void * p = pio::vm_reserve(page);
+        const bool ok = p && pio::vm_commit(p, page) && do_register(p, page);
+        if (ok) do_unregister(p);
+        if (p) pio::vm_release(p, page);
+        return ok;
+    };
+    // Memory allocated here is committed only as the copy writes it (pio::vm_reserve), so a copy larger
+    // than the system can still give would end in the out-of-memory killer, where a backend's own
+    // allocation fails and leaves the mapping in place. So it is taken only where it fits what the
+    // system can give and a container still lets this process take; otherwise the backend's own
+    // allocation answers, as before.
+    const auto room = [] {
+        uint64_t r = pio::mem_available_bytes();
+        const uint64_t contained = pio::cgroup_memory_left();
+        if (contained > 0 && (r == 0 || contained < r)) r = contained;
+        return r;
+    }();
+    const bool fits = room > 0 && (uint64_t) total <= room;
+    if (!fits && do_register)
+        log_printf(
+            LogLevel::Info,
+            "expert host buffer: %.0f MiB is more than the %.0f MiB the system can give; the backend allocates it",
+            mib(total), mib((size_t) room));
+    // Both entry points or neither: memory pinned that could not be unpinned would stay pinned once freed.
+    if (fits && do_register && do_unregister && pins()) {
+        const size_t page = pio::vm_page();
+        const size_t size = (total + page - 1) / page * page;
+        const auto t0 = clock_t_::now();
+        void * p = pio::vm_reserve(size);
+        if (p && pio::vm_commit(p, size)) {
+            const std::vector<pio::CopySpan> spans = spans_at((uint8_t *) p);
+            pio::copy_spans(spans, copy_threads);
+            const auto t_copied = clock_t_::now();
+            if (do_register(p, size)) {
+                auto held = std::make_unique<RegisteredHostMemory>();
+                held->p = p;
+                held->size = size;
+                held->unregister = do_unregister;
+                expert_host_registered = std::move(held);
+                point_at(spans);
+                log_printf(LogLevel::Info,
+                           "expert host buffer: %zu expert tensors, %.0f MiB, copied and pinned for %s (%.1f s "
+                           "copying, %.1f s pinning)",
+                           experts.size(), mib(total), ggml_backend_dev_name(dev), secs(t0, t_copied),
+                           secs(t_copied, clock_t_::now()));
+                if (captured_here) clear_memory(ctx.get()); // discard the capture's KV
+                return true;
+            }
+        }
+        // Pinning a page and not the whole copy is a driver's limit met only now; the copy is made again
+        // into the backend's own memory, a few seconds against the minutes that allocation takes.
+        if (p) pio::vm_release(p, size);
+        log_printf(LogLevel::Warn,
+                   "expert host buffer: %s did not pin the %.0f MiB allocated here; it allocates its own",
+                   ggml_backend_dev_name(dev), mib(total));
+    }
+
+    const auto t_alloc = clock_t_::now();
     ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(buft, total);
+    const auto t_copy = clock_t_::now();
     if (!buf) {
         log_printf(LogLevel::Warn,
                    "expert host buffer: %s could not allocate %.0f MiB; the cache uploads from the "
                    "file's mapping",
-                   ggml_backend_buft_name(buft), (double) total / (1024.0 * 1024.0));
+                   ggml_backend_buft_name(buft), mib(total));
         if (captured_here) clear_memory(ctx.get());
         return true;
     }
-    uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(buf);
-    size_t off = 0;
-    for (ggml_tensor * t : experts) {
-        std::memcpy(base + off, t->data, ggml_nbytes(t));
-        t->data = base + off;
-        off += GGML_PAD(ggml_nbytes(t), align);
-    }
+    const std::vector<pio::CopySpan> spans = spans_at((uint8_t *) ggml_backend_buffer_get_base(buf));
+    pio::copy_spans(spans, copy_threads);
+    point_at(spans);
     expert_host_buf.reset(buf);
-    log_printf(LogLevel::Info, "expert host buffer: %zu expert tensors, %.0f MiB, copied into %s", experts.size(),
-               (double) total / (1024.0 * 1024.0), ggml_backend_buft_name(buft));
+    log_printf(LogLevel::Info,
+               "expert host buffer: %zu expert tensors, %.0f MiB, copied into %s (%.1f s allocating, %.1f s copying)",
+               experts.size(), mib(total), ggml_backend_buft_name(buft), secs(t_alloc, t_copy),
+               secs(t_copy, clock_t_::now()));
     if (captured_here) clear_memory(ctx.get()); // discard the capture's KV
     return true;
 }

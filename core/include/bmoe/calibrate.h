@@ -48,6 +48,9 @@ struct CalibrationRun {
     // seconds per token (RateProbe::set_reference). 0 when that side has not run: this one is timed
     // to its end.
     double reference_lo = 0.0, reference_hi = 0.0;
+    // Whether the first run left every model file cached for the others (CandidateTiming::files_cached):
+    // decided once, by the first run, so every run of a calibration starts from the same cache.
+    bool files_cached = false;
 };
 
 // What a candidate run measured.
@@ -60,6 +63,7 @@ struct CandidateTiming {
     int windows = 0;                     // timed windows behind the rate
     bool cut = false;                    // stopped early, past the reference's range by the margin
     std::vector<int32_t> tokens;         // the ids it decoded, sampled or replayed
+    bool files_cached = false;           // it read every model file into the system's cache for the others
 };
 
 // Plan again on the same facts with this record of measurements.

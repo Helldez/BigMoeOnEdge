@@ -198,6 +198,47 @@ So on unified memory it does not pay, and the plan never arms it there: a shared
 tier to fill. On the discrete card above the same synchronization is cheap and the cache is the
 fastest placement measured.
 
+## What the front-ends tell a backend before it loads
+
+Some of a ggml backend's behaviour can be chosen only through its environment, which it reads when it
+loads. `core/` reads no environment (AGENTS.md, rule 3); the front-ends do it, from one table every one
+of them applies before any backend loads (`frontend/backend_env.h`): bmoe-cli, bmoe-server and the apps
+that run it start the backends alike. An entry only fills a variable the environment left unset, so a
+value a person set stays, and ggml's own default stands unless a measurement said otherwise. A
+variable is read only by its own backend, so an entry costs nothing where that backend is not loaded,
+and no entry is tied to a platform: wherever the backend runs, it reads the same value.
+
+| Backend | Variable | Value | Why |
+|---|---|---|---|
+| OpenCL | `GGML_OPENCL_KERNEL_CACHE_DIR` | `<data>/backend-cache` | compiled kernels kept between runs, in a folder an app can write (the default is a temporary folder) |
+| CUDA, ROCm | `GGML_CUDA_REGISTER_HOST` | `1` | enables the backend's generic entry point for pinning memory a process allocated (`ggml_backend_register_host_buffer`), which the engine asks for by name for the experts' host copy behind a device cache ([measured-planning.md](measured-planning.md)): on a rented 3090, 117 GB of GLM-4.7's experts took 97 s to allocate as the backend's own pinned memory, where touching ordinary memory on 16 threads and pinning it took 6 s every 32 GB |
+
+ROCm is ggml's CUDA backend built with HIP, so it reads the same variable and gets the same entry.
+**Only CUDA has been measured**: pinning on ROCm goes through `hipHostRegister`, whose speed on an AMD
+card is not known here. A backend without the entry point, or one that declines, gets its own host memory as
+before, at the speed it allocates it. Metal has no host buffer type of its own, so there is no copy
+to make on a Mac, whether its GPU shares the memory or not.
+
+**Still at ggml's default, and touching this engine's paths.** Each needs a measurement on the
+hardware it is for before it gets an entry:
+
+- CUDA, ROCm: CUDA graphs on the decode (`GGML_CUDA_DISABLE_GRAPHS`, `GGML_CUDA_GRAPH_OPT`), with the
+  router hook between a layer's nodes.
+- Vulkan: where the experts' host copy and the uploads live (`GGML_VK_PREFER_HOST_MEMORY`,
+  `GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM`) and whether uploads go through the transfer queue
+  (`GGML_VK_ASYNC_USE_TRANSFER_QUEUE`). Vulkan has no pinning entry point, and how fast it allocates
+  its host buffer is not measured.
+- Metal: how long a model's buffers stay resident after a load ends (`GGML_METAL_RESIDENCY_KEEP_ALIVE_S`,
+  `GGML_METAL_NO_RESIDENCY`), which back-to-back loads on a Mac depend on.
+- Hexagon: none. Polling (`GGML_HEXAGON_OPPOLL`) logged over a million error rows a load on a phone
+  for under 1 s of a 16 s prefill, and the host buffer (`GGML_HEXAGON_HOSTBUF`, documented upstream as a
+  debugging aid) cost 7-13% of the decode and hung Gemma 4's load on the NPU (#512, #544).
+- CPU: KleidiAI's SME kernels on Arm (`GGML_KLEIDIAI_SME`).
+
+The rest of the backends' variables (around three hundred in the pinned llama.cpp, most of them
+OpenCL's kernel choices per quantization) select kernels, debug, or turn a feature off around a
+driver's fault; they stay ggml's to decide.
+
 ## How a backend reaches the planner
 
 No rule names a backend. A device that registers is enumerated, asked for its memory, and

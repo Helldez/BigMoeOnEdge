@@ -518,7 +518,10 @@ served (`bmoe/calibrate.h`):
   in the record with the mapping a session's own timing uses (`record_side_rate`, one decision per
   load: the tier where the plan names one, else the width), and asks the planner again
   (`replan`: `probe_and_plan`'s planning half on the same facts, the fitter's re-fits at a narrower
-  width included, no probe). Every rule above holds as it is: the fitter's placement is still timed
+  width included, no probe). A re-fit is asked of the fitter once per width and kept with the facts
+  (`AutoPlan::placement_at_width`): it answers from the same file, devices and context whatever the
+  record says, and asked again between candidates it reloaded GLM-4.7's metadata for a dozen dry runs
+  each time, on a card whose free memory was no longer the one the plan was made on. Every rule above holds as it is: the fitter's placement is still timed
   only where its ceiling could win, and a side wins only past `min_backend_win`. The tier is decided
   first, the width then on the winner, and on a device cache the share of its misses computed on the
   host last ([hardware-planning.md](hardware-planning.md#who-computes-the-device-caches-misses)), as
@@ -532,16 +535,24 @@ served (`bmoe/calibrate.h`):
   one, every token through the same hook, streamer and caches. The first candidate samples with a
   fixed seed (greedy prose falls into loops that replay a few experts) and returns its token ids; a
   later one replays them teacher-forced, so both sides route the same tokens and differ only in where
-  the experts run. Speculation is off: a draft's acceptance would time the drafter. Before each
-  candidate opens, the system's cache of the model's files is evened out, so the later side does not
-  load and decode from memory what the first read from the drive: the cache of every shard, the
-  projector and an MTP head is handed back where the system takes the advice
-  (`pio::drop_file_cache`), and the dense part, which every token reads whatever the placement, is
-  then read in on every system alike. Each candidate so opens with exactly the dense part cached,
-  where a drop is a no-op (Darwin, Windows) as where it is not. What stays uneven there is the experts
-  a placement loads through the mapping, which the later side may find partly cached; they are not
-  read in, since a model larger than the memory is what this engine exists for. A stop is honoured
-  before each open and as soon as a load returns, as well as at every decoded token.
+  the experts run. Speculation is off: a draft's acceptance would time the drafter. Each candidate logs
+  what its time went to (evening the file cache, opening, timing), and each plan between candidates
+  its own, so a calibration's minutes can be told apart. Every candidate
+  starts from the same system cache of the model's files, so the later side does not load and decode
+  from memory what the first read from the drive. Where the system can keep the whole model cached
+  (its files, the projector and an MTP head take at most half of the memory the system can still
+  give, and a container still lets the process take), the first candidate reads them through once
+  and the ones after find them as it left them: every side starts with all of it cached, as the
+  served load then does. The first candidate decides which of the two holds, for all of them: asked
+  again, a later one would count the model pages the first one's load left as memory the system can
+  give, and start warm where the first started cold. Otherwise the cache of every shard, the projector and an MTP head is handed
+  back where the system takes the advice (`pio::drop_file_cache`), and the dense part, which every
+  token reads whatever the placement, is then read in on every system alike. Each candidate so opens
+  with exactly the dense part cached, where a drop is a no-op (Darwin, Windows) as where it is not.
+  What stays uneven there is the experts a placement loads through the mapping, which the later side
+  may find partly cached; they are not read in, since a model larger than the memory is what this
+  engine exists for. A stop is honoured before each open and as soon as a load returns, as well as at
+  every decoded token.
 - **Bounded by measurement.** The windows are the knob trial's (`KnobTrialPolicy`), and the turn ends
   once the rate is known. A cache whose hits the session sees settles as the trial does; a device
   expert cache, filled inside llama.cpp, settles once two windows in a row agree within the margin

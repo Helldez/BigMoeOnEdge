@@ -44,12 +44,6 @@ std::string user_config_dir();
 // Per-user data directory: the one every front-end uses (frontend/user_dirs.h).
 std::string default_data_dir();
 
-// What this platform's compute backends are told before any of them is loaded, each only where
-// the environment has not said otherwise. On Android: the Hexagon NPU backend waits for the DSP by
-// polling and offers its host buffer type, which the prefill device moves the KV cache into. Called
-// first thing, so a device-probe child inherits it.
-void prepare_compute_backends(const std::string & data_dir);
-
 // The build's target as the release feed names it ("macos-arm64", "linux-x86_64",
 // "windows-arm64", ...), or "" for a platform the releases do not ship (a phone).
 const char * build_target();
