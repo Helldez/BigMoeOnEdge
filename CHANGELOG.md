@@ -18,7 +18,8 @@ Semantic Versioning.
 ### Added
 - **[docs/field-reports.md](docs/field-reports.md)**: the problems people report from their own
   machines, each with how to recognise it, its cause, the version that fixes it and a workaround for
-  the versions before. It starts with the case above and the CUDA pack extracted beside `bmoe-cli`.
+  the versions before. It starts with the case above, a dense model left on the CPU (#585) and the CUDA pack extracted
+  beside `bmoe-cli`.
 
 ## [0.42.0] - 2026-11-12
 

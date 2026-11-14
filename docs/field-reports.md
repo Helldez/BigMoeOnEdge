@@ -35,6 +35,26 @@ own, where there is one (`capacity_devices`, [backends.md](backends.md)).
 **On 0.42.0 and earlier**, disable the integrated graphics (on Windows: Device Manager, Display
 adapters, the integrated GPU, Disable device), restart the app and load the model again.
 
+## A dense model runs on the CPU, not on the card
+
+**Seen on** 0.42.0, Windows: a 6 GB laptop card, 32 GB of RAM, a 4B dense model in Q4_K_M. 12 tok/s
+in the app, 65 with llama.cpp `-ngl all` on the same machine.
+
+**How to recognise it.** The model has no experts (the Plan screen reads "Nothing to stream" and
+streaming off), it fits the card, and "Tokens" says CPU. Every dense model loaded through a UI is
+affected, on any machine with a graphics card.
+
+**Cause.** The plan stopped as soon as it saw a model with no experts, before it applied the capacity
+fitter's placement. No layer was placed, and with the devices left to the plan a run with no layer
+placed opens on the CPU alone ([hardware-planning.md](hardware-planning.md)).
+
+**Fixed in** the release after 0.42.0 (#585): the fitter's placement is applied to a dense model too.
+
+**On 0.42.0 and earlier**, set Settings, advanced, "Layers on a device" to 99 and load the model
+again: a value set by hand is kept, and the plan never reaches the step that would change it (read
+from the code, not run on a card). This engine adds nothing to a dense model that fits the card:
+llama.cpp runs it as fast.
+
 ## The CUDA pack extracted beside `bmoe-cli`: the card is never used
 
 **Seen on** 0.40.2, Linux, the release archives used by hand: a 12 GB card, 128 GB of RAM, a model
