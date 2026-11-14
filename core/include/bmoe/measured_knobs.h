@@ -140,6 +140,54 @@ struct MeasuredKnobs {
     int cpu_share_unviable = 0, no_cpu_share_unviable = 0;
     int wide_unviable = 0, narrow_unviable = 0;
 
+    // What came of each prefill device a load armed for this model, on this machine and engine, one
+    // word per device: `verdict` 1 where the session kept it, -1 where its check on this model refused
+    // it, 0 where a load armed it and never said or could not open it - a front-end writes that before
+    // the session opens, so a load that never returns leaves it - with `unconfirmed` counting such loads
+    // in a row. A plan does not arm a device refused here, nor one that many loads in a row never kept
+    // (planner.cpp, survey_prefill): one may be a person closing the app mid-load or another program
+    // holding the card's memory for a moment, two in a row are the device. One word per device, so a
+    // second device's word never clears the first's: a machine with two that qualify would otherwise
+    // arm the refused one again every other load. Measured on a 12 GB phone: an NPU that gives one
+    // model wrong results (its top token in 25 of 31 positions) and, with that backend's host buffer
+    // on, never returns from that model's first layer. A new engine starts a new record, and tries the
+    // device again.
+    struct PrefillWord {
+        std::string device;
+        int verdict = 0;
+        int unconfirmed = 0;
+    };
+    static constexpr int prefill_unconfirmed_max = 2;
+    std::vector<PrefillWord> prefill;
+    const PrefillWord * prefill_word(const std::string & device) const {
+        for (const PrefillWord & w : prefill)
+            if (w.device == device) return &w;
+        return nullptr;
+    }
+    // Replaces `device`'s word, or adds one.
+    void set_prefill_word(const PrefillWord & w) {
+        for (PrefillWord & x : prefill)
+            if (x.device == w.device) {
+                x = w;
+                return;
+            }
+        prefill.push_back(w);
+    }
+    bool prefill_refused(const std::string & device) const {
+        const PrefillWord * w = device.empty() ? nullptr : prefill_word(device);
+        return w && (w->verdict < 0 || (w->verdict == 0 && w->unconfirmed >= prefill_unconfirmed_max));
+    }
+    // The record a front-end keeps before opening a session that arms `device`: this device's count of
+    // loads that armed it and never kept it, one more.
+    MeasuredKnobs armed_unconfirmed(const std::string & device) const {
+        MeasuredKnobs r;
+        r.hardware = hardware;
+        r.engine = engine;
+        const PrefillWord * w = prefill_word(device);
+        r.prefill.push_back({device, 0, (w && w->verdict == 0 ? w->unconfirmed : 0) + 1});
+        return r;
+    }
+
     bool empty() const { return verdicts() == 0; }
     // How many measurements this record carries: a front-end keeps a record again when it grows. The
     // requests a width trial has seen count too, so the usage it weighs the two widths by is kept as it
@@ -150,7 +198,7 @@ struct MeasuredKnobs {
                (wide_prefill_tps > 0.0) + (narrow_prefill_tps > 0.0) + usage_requests + (decode_compute_s > 0.0) +
                (decode_hit >= 0.0) + mix_requests + (host_prefill_tps > 0.0) + (device_cache_unviable > 0) +
                (no_device_cache_unviable > 0) + (wide_unviable > 0) + (narrow_unviable > 0) + (cpu_share_unviable > 0) +
-               (no_cpu_share_unviable > 0);
+               (no_cpu_share_unviable > 0) + (int) prefill.size();
     }
 };
 

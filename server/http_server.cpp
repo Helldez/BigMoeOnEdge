@@ -786,6 +786,8 @@ struct App {
             calibration_armed = false;
         }
         const RunConfig requested = store.config();
+        const RunConfig effective = effective_config(requested);
+        mark_prefill_unconfirmed(effective);
         if (calibrate_first) {
             PlanOutcome lp;
             {
@@ -796,11 +798,30 @@ struct App {
             // side as before, with the other side to open if it fails.
             EngineHost::BeforeOpen step = calibration_step(lp, lp.body.value("model", ""), store.revision(),
                                                            lp.basis->facts.model.knobs, /*at_load*/ true);
-            if (!served_fallback.ok) return host.load_calibrated(effective_config(requested), requested, step);
-            return host.load_calibrated(effective_config(requested), requested, step, fallback_for(served_fallback));
+            if (!served_fallback.ok) return host.load_calibrated(effective, requested, step);
+            return host.load_calibrated(effective, requested, step, fallback_for(served_fallback));
         }
-        if (!served_fallback.ok) return host.load(effective_config(requested), requested);
-        return host.load(effective_config(requested), requested, fallback_for(served_fallback));
+        if (!served_fallback.ok) return host.load(effective, requested);
+        return host.load(effective, requested, fallback_for(served_fallback));
+    }
+
+    // A load that arms a prefill device says so in the model's record before it opens. The session
+    // replaces the word once it has opened (MeasuredKnobs::prefill_verdict), and a load that never
+    // returns leaves it, so the next plan of the model does not arm that device again. Only where a
+    // plan of this model names the machine: a record is kept against it.
+    void mark_prefill_unconfirmed(const RunConfig & c) {
+        if (c.prefill.device.empty()) return;
+        MeasuredKnobs here;
+        {
+            std::lock_guard<std::mutex> lk(plan_m);
+            if (!load_plan.ok || load_plan.body.value("model", "") != c.model_path) return;
+            here.hardware = load_plan.hardware;
+        }
+        here.engine = version();
+        std::vector<MeasuredKnobs> kept;
+        if (routing.load_knobs(c.model_path, kept))
+            if (const MeasuredKnobs * k = find_measured_knobs(kept, here.hardware, here.engine)) here = *k;
+        routing.keep_knobs(c.model_path, here.armed_unconfirmed(c.prefill.device));
     }
 
     // The plan's other side, for a load whose pending side would not open (EngineHost::OpenFallback):

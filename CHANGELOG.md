@@ -125,6 +125,21 @@ Semantic Versioning.
   compute buffer llama.cpp's fitter projected for it, which is none for a device it never places layers
   on, and the session then reserved one for the same graph: 221-450 MiB on a phone's NPU that the
   expert cache had been sized into. Such a device is now charged the host's own buffer at that width.
+- **A prefill device that did not hold up for a model is not armed for it again.** The plan arms an
+  NPU or GPU for the prompt on a probe graph and a matmul of the model's format, and the session then
+  checks it on the model itself. Where that check refused it, the next load armed it again, paid the
+  check again and sized the memory around it; and a load that never returned left nothing to learn
+  from. On a 12 GB phone, Gemma 4 26B-A4B's NPU prefill agreed with the cores in 25 of 31 positions,
+  and with that backend's host buffer on the load never finished. What came of the device is now
+  kept in the model's record, one word per device (`prefill=<device>:kept|refused|unconfirmed`): a
+  device its check on the model refused is not armed again for that model on that machine and engine,
+  and neither is one that two loads in a row armed and never kept (a load that never finished opening,
+  or a device that would not open; a front-end writes the word before the session opens). Another device,
+  and every other model, are unaffected; a new engine version tries the device again
+  ([measured-planning.md](docs/measured-planning.md#a-prefill-device-that-did-not-hold-up-for-a-model)).
+  The check's log line now gives the KL divergence of the device's next-token distributions from the
+  host's beside the top-token agreement: 0.004 on that NPU for Qwen3.6-35B-A3B, 0.60 for Gemma, whose
+  expert matmuls go past the fp16 range the NPU computes in (ggml-org/llama.cpp#32198).
 
 
 ## [0.42.0] - 2026-11-12

@@ -1992,6 +1992,27 @@ int main() {
                   on.to_flags().find("--prefill-slots-on-demand") != std::string::npos,
               "prefill: the reproduce line carries it");
 
+        // A device an earlier load of this model here did not keep - its check on the model refused it,
+        // or the load never said - is not armed again; one it kept is.
+        for (const int verdict : {-1, 0, 1}) {
+            ModelProfile seen = mm;
+            seen.knobs.set_prefill_word({"accel", verdict, verdict == 0 ? MeasuredKnobs::prefill_unconfirmed_max : 0});
+            const Plan q = plan_run(base_cfg(), machine(1500.0, Tri::Yes), seen, PlanRequest{});
+            const std::string why = reason(q);
+            if (verdict > 0)
+                check(q.config.prefill.device == "accel", "prefill: a device an earlier load kept is armed again");
+            else
+                check(!q.config.prefill.enabled() && why.find("not kept by an earlier load") != std::string::npos,
+                      verdict < 0 ? "prefill: a device an earlier load handed back is not armed again"
+                                  : "prefill: a device a load armed and never finished opening is not armed again",
+                      why);
+        }
+        ModelProfile elsewhere = mm;
+        elsewhere.knobs.set_prefill_word({"another", -1, 0});
+        check(plan_run(base_cfg(), machine(1500.0, Tri::Yes), elsewhere, PlanRequest{}).config.prefill.device ==
+                  "accel",
+              "prefill: a verdict about another device leaves this one alone");
+
         const Plan wrong = plan_run(base_cfg(), machine(1500.0, Tri::No), mm, PlanRequest{});
         check(!wrong.config.prefill.enabled() && reason(wrong).find("did not reproduce") != std::string::npos,
               "prefill: a faster device with a different answer is refused on correctness");

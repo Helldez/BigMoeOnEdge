@@ -353,6 +353,15 @@ static int run_session_loop(const RunConfig & cfg,
         std::fflush(stdout);
         return 1;
     }
+    // What came of the prefill device is known once the session is open: kept now, so a session no
+    // request reaches does not leave the record saying it never finished opening.
+    {
+        const MeasuredKnobs mk = session->measured_knobs();
+        if (mk.verdicts() > 0) {
+            routing.keep_knobs(mk);
+            knobs_kept = mk.verdicts();
+        }
+    }
     // think_ctl states, once, whether this model can honour a think=false request at all, so a UI
     // can disable its Thinking control instead of leaving one that silently does nothing (#82).
     // n_expert_used is the EFFECTIVE routing width, after any override. A UI needs it to say
@@ -1019,6 +1028,14 @@ int main(int argc, char ** argv) {
         // What the calibration measured, kept as a served load's verdicts are: the next plan of the file
         // on this machine starts decided.
         if (planned.calibrated) routing.keep_knobs(planned.calibration.knobs);
+        // A prefill device this run arms is marked unconfirmed for this model before the session opens;
+        // what the session makes of it replaces the word (MeasuredKnobs::prefill_verdict), and a run
+        // that never gets that far leaves it, so the next plan does not arm the device again.
+        if (!plan_only && !cfg.prefill.device.empty()) {
+            MeasuredKnobs here;
+            if (const MeasuredKnobs * k = find_measured_knobs(knobs_kept, routing.hardware, version())) here = *k;
+            routing.keep_knobs(here.armed_unconfirmed(cfg.prefill.device));
+        }
         if (calibrate_unkept && side_pending(plan))
             std::fprintf(stderr, "bmoe: not calibrating at load: --routing-dir \"\" keeps nothing, so this run "
                                  "times the plan's own side\n");
@@ -1274,6 +1291,9 @@ int main(int argc, char ** argv) {
     outs.route_trace = route_trace.get();
     outs.compute_trace = compute_trace.get();
     outs.io_trace = io_trace.get();
+    outs.on_open = [&](const MeasuredKnobs & mk) {
+        if (mk.verdicts() > 0) routing.keep_knobs(mk);
+    };
     RunResult r = run(cfg, outs);
     if (!r) {
         std::fprintf(stderr, "\nerror: %s\n", flags_named(r.error).c_str());

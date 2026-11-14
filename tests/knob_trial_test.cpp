@@ -458,6 +458,69 @@ int main() {
                   uback.size() == 1 && uback[0].threads == 4 && uback[0].wide_unviable == 0 &&
                   uback[0].narrow_unviable == 0 && uback[0].device_cache_unviable == 2,
               "record: a part it cannot read is read past, and the rest of the record holds");
+        // The prefill devices' words: written only when there is one, one per device, read back, merged.
+        check(format_measured_knobs({uv}).find("prefill=") == std::string::npos, "record: no prefill device, no key");
+        MeasuredKnobs pv = uv;
+        pv.set_prefill_word({"HTP0", -1, 0});
+        std::vector<MeasuredKnobs> pback;
+        check(format_measured_knobs({pv}).find("prefill=HTP0:refused") != std::string::npos &&
+                  parse_measured_knobs(format_measured_knobs({pv}), pback, err) && pback.size() == 1 &&
+                  pback[0].prefill.size() == 1 && pback[0].prefill_refused("HTP0") && !pback[0].prefill_refused("GPU0"),
+              "record: a refused prefill device reads back, for that device only");
+        MeasuredKnobs armed;
+        armed.hardware = uv.hardware;
+        armed.engine = uv.engine;
+        armed.set_prefill_word({"HTP0", 0, 1});
+        check(armed.verdicts() == 1 && !armed.prefill_refused("HTP0"),
+              "record: one load that armed a device and never said counts, and the device is tried again");
+        const MeasuredKnobs twice = armed.armed_unconfirmed("HTP0");
+        std::vector<MeasuredKnobs> tback;
+        check(twice.prefill_word("HTP0")->unconfirmed == 2 && twice.prefill_refused("HTP0") &&
+                  format_measured_knobs({twice}).find("prefill=HTP0:unconfirmed-2") != std::string::npos &&
+                  parse_measured_knobs(format_measured_knobs({twice}), tback, err) && tback.size() == 1 &&
+                  tback[0].prefill_word("HTP0")->unconfirmed == 2 && tback[0].prefill_refused("HTP0"),
+              "record: two loads in a row that never said keep the device out, and read back so");
+        check(armed.armed_unconfirmed("GPU0").prefill_word("GPU0")->unconfirmed == 1,
+              "record: another device's count starts afresh");
+        std::vector<MeasuredKnobs> pkept = {armed};
+        MeasuredKnobs opened = armed;
+        opened.set_prefill_word({"HTP0", 1, 0});
+        keep_measured_knobs(pkept, opened);
+        check(pkept[0].prefill_word("HTP0")->verdict == 1 && pkept[0].prefill_word("HTP0")->unconfirmed == 0 &&
+                  !pkept[0].prefill_refused("HTP0"),
+              "record: the session's word replaces the unconfirmed one");
+        // A second device's word leaves the first's: a refused NPU stays refused when the GPU is kept.
+        {
+            std::vector<MeasuredKnobs> two = {pv};
+            MeasuredKnobs gpu = uv;
+            gpu.prefill.clear();
+            gpu.set_prefill_word({"GPU0", 1, 0});
+            keep_measured_knobs(two, gpu);
+            std::vector<MeasuredKnobs> twoback;
+            check(two[0].prefill.size() == 2 && two[0].prefill_refused("HTP0") && !two[0].prefill_refused("GPU0") &&
+                      parse_measured_knobs(format_measured_knobs(two), twoback, err) &&
+                      twoback[0].prefill_refused("HTP0") && twoback[0].prefill_word("GPU0")->verdict == 1,
+                  "record: one word per device, a second device's word does not clear the first's");
+        }
+        // A session that could not open the device is one more load that did not keep it, not a refusal.
+        {
+            std::vector<MeasuredKnobs> v = {armed}; // HTP0 unconfirmed once, written before the open
+            MeasuredKnobs failed_open = armed;
+            failed_open.prefill.clear();
+            failed_open.set_prefill_word({"HTP0", 0, 0});
+            keep_measured_knobs(v, failed_open);
+            check(v[0].prefill_word("HTP0")->verdict == 0 && v[0].prefill_word("HTP0")->unconfirmed == 1 &&
+                      !v[0].prefill_refused("HTP0"),
+                  "record: a device that would not open once is tried again");
+            std::vector<MeasuredKnobs> fresh = {uv};
+            keep_measured_knobs(fresh, failed_open);
+            check(fresh[0].prefill_word("HTP0")->unconfirmed == 1,
+                  "record: an open failure with no earlier mark counts as one");
+        }
+        check(parse_measured_knobs("bmoe-measured-knobs 1\nhardware=a engine=b prefill=HTP0:maybe,GPU0:kept\n", pback,
+                                   err) &&
+                  pback.size() == 1 && !pback[0].prefill_word("HTP0") && pback[0].prefill_word("GPU0"),
+              "record: a prefill word it cannot read is read past, the others hold");
         std::vector<MeasuredKnobs> ukept = {uv};
         MeasuredKnobs again_failed = uv;
         again_failed.no_device_cache_unviable = 2;

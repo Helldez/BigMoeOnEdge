@@ -2213,6 +2213,7 @@ void charge_prefill(const Planning & s, const ComputeDevice * dev, AllocationInp
 struct PrefillSurvey {
     const ComputeDevice * best = nullptr;
     const ComputeDevice * wrong = nullptr;
+    const ComputeDevice * refused = nullptr; // what an earlier load of this model here did not keep
     uint32_t n_accel = 0;
     uint32_t n_measured = 0;
     uint32_t n_broken = 0;
@@ -2222,13 +2223,26 @@ struct PrefillSurvey {
     std::string unweighed;
 };
 
-PrefillSurvey survey_prefill(const HardwareProfile & hw) {
+PrefillSurvey survey_prefill(const HardwareProfile & hw, const MeasuredKnobs & knobs) {
     PrefillSurvey v;
     for (const ComputeDevice & d : hw.devices) {
         if (d.is_cpu) continue;
         ++v.n_accel;
         if (d.usable == Tri::No) { // it did not survive being probed: nothing to weigh
             ++v.n_broken;
+            continue;
+        }
+        // An earlier load of this model here armed it and the session did not keep it: its check on
+        // this model refused it, or the load never said (MeasuredKnobs::prefill). The probe
+        // graph is not this model, and the session's check is; a load that never returned is the one
+        // thing worse than a slow prompt.
+        if (knobs.prefill_refused(d.name)) {
+            v.refused = &d;
+            v.unweighed += "; " + d.name + " was not armed: " +
+                           (knobs.prefill_word(d.name)->verdict < 0
+                                ? "an earlier load of this model here handed it back, its check on this model "
+                                  "refused it"
+                                : "earlier loads of this model here armed it and never kept it");
             continue;
         }
         if (d.wide_matmul_gibs <= 0.0) {
@@ -2529,7 +2543,7 @@ Allocation plan_prefill(Planning & s, AllocationInputs & ai) {
         return alloc;
     }
 
-    const PrefillSurvey v = survey_prefill(hw);
+    const PrefillSurvey v = survey_prefill(hw, s.model.knobs);
     const auto prefill_note = [&](std::string value, Source src, std::string brief, std::string reason) {
         s.note("prefill-device", std::move(value), src, std::move(brief), std::move(reason) + v.unweighed);
     };
@@ -2556,6 +2570,12 @@ Allocation plan_prefill(Planning & s, AllocationInputs & ai) {
         prefill_note("off", Source::Measured, "Prompts run on the CPU: every other device failed its check.",
                      "every device here failed its own probe, so the prefill runs where the decode does; see the "
                      "devices line for what each one did");
+    } else if (!v.best && !v.wrong && v.refused) {
+        prefill_note("off", Source::Measured,
+                     "Prompts run on the CPU: " + v.refused->name +
+                         " did not hold up for this model on an earlier load.",
+                     "the device that could compute a wide prefill here was not kept by an earlier load of this model "
+                     "on this machine and engine; a new engine version tries it again");
     } else if (host_wide <= 0.0 || v.n_measured == 0) {
         prefill_note("off", Source::Unprobed, "Prompts run on the CPU: no device was measured on a prompt.",
                      "a prefill is many tokens wide and bound by compute, not by the bandwidth a one-token graph "

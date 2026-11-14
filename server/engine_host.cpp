@@ -358,6 +358,9 @@ void EngineHost::start_loader(const RunConfig & effective_in,
                               {"ctx_advice", context_advice(s->n_ctx(), serves_network_.load())}};
             }
         }
+        // What came of the prefill device is known now, not after the first answer: kept at once, so a
+        // load nobody asks anything of does not leave the record saying it never finished opening.
+        if (s) keep_knobs(*s);
         publish_state();
         // Said at load, where a person starting the server reads it, and not first by a client that
         // shows the refusal as an unknown error after its first request.
