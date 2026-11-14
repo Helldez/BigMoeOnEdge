@@ -256,15 +256,14 @@ struct PlanView: View {
             Text("Tokens").font(.ui(12)).foregroundStyle(Palette.muted)
             if let m = f.measuredTokS {
                 Figure(value: Self.number(m), label: "tok/s measured")
-                if let d = f.deltaPct, let e = f.expectedTokS {
-                    if p.fromLastLoad {
-                        HStack(spacing: 4) {
-                            Badge(text: String(format: "%+.0f%%", d), color: d >= 0 ? Palette.ok : Palette.warn)
-                            Text("against the \(Self.number(e)) expected").font(.ui(12)).foregroundStyle(Palette.muted)
-                        }
-                    } else {
-                        Text("\(Self.number(e)) tok/s expected under this plan").font(.ui(12)).foregroundStyle(Palette.muted)
+                if let c = f.speedCheck {
+                    // The server's words: a percentage while close, a ratio once far apart.
+                    HStack(spacing: 4) {
+                        Badge(text: c.badge, color: c.ok ? Palette.ok : Palette.warn)
+                        Text(c.against).font(.ui(12)).foregroundStyle(Palette.muted)
                     }
+                } else if let e = f.expectedTokS {
+                    Text("\(Self.number(e)) tok/s expected under this plan").font(.ui(12)).foregroundStyle(Palette.muted)
                 }
             } else if let e = f.expectedTokS {
                 Figure(value: Self.number(e), label: "tok/s expected")

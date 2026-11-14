@@ -6,6 +6,7 @@
 -->
 <script lang="ts">
   import { api } from '../../lib/api';
+  import { t } from '../../lib/text';
 
   let { onAdded }: { onAdded: (id: string) => Promise<void> | void } = $props();
 
@@ -30,10 +31,10 @@
 </script>
 
 <form class="row" onsubmit={add}>
-  <input type="url" bind:value={url} placeholder="https://.../model.gguf" aria-label="Direct link to a gguf file" autocomplete="off" />
-  <button type="submit" class="primary" disabled={!url.trim() || busy}>{busy ? 'Checking the link...' : 'Download'}</button>
+  <input type="url" bind:value={url} placeholder={t('url.placeholder')} aria-label={t('url.label')} autocomplete="off" />
+  <button type="submit" class="primary" disabled={!url.trim() || busy}>{busy ? t('url.checking') : t('hf.download')}</button>
 </form>
-<p class="muted hint">A link to one file, or to any shard of a split set (the other shards are fetched beside it). It is added to Your models and downloads like any other.</p>
+<p class="muted hint">{t('url.help')}</p>
 {#if error}<p class="banner error" role="alert">{error}</p>{/if}
 
 <style>

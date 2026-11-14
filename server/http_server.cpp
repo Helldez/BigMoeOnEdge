@@ -1665,7 +1665,15 @@ void register_routes(httplib::Server & svr, App & app) {
                 // What the loaded model has done since, beside the plan (compared to it by a UI only
                 // when the model runs that plan).
                 const json measured = app.host.last_turn();
-                if (!measured.is_null()) body["measured"] = measured;
+                if (!measured.is_null()) {
+                    body["measured"] = measured;
+                    // The comparison in words, so every UI says it the same way.
+                    if (held == HeldPlan::Runs) {
+                        const json pred = body.value("predicted", json::object());
+                        const json c = speed_check(pred.value("s_per_token", 0.0), measured.value("s_per_token", 0.0));
+                        if (!c.is_null()) body["speed_check"] = c;
+                    }
+                }
                 return send_json(res, body);
             }
         }

@@ -8,7 +8,7 @@ import io.bigmoeonedge.app.engine.contextWarning
 import io.bigmoeonedge.app.engine.diagnosticText
 import io.bigmoeonedge.app.engine.planFigures
 import io.bigmoeonedge.app.engine.rateText
-import io.bigmoeonedge.app.engine.SpeedDelta
+import io.bigmoeonedge.app.engine.SpeedCheck
 import io.bigmoeonedge.app.engine.planModelName
 import io.bigmoeonedge.app.engine.ConfigState
 import io.bigmoeonedge.app.engine.text
@@ -40,6 +40,7 @@ class PlanAndContextTest {
             JSONObject(
                 """{"available":true,"predicted":{"s_per_token":0.5,"cache_hit_pct":40.0,"s_per_token_worst":2.0},
                     "measured":{"s_per_token":0.4,"cache_hit_pct":45.0,"tokens":20},
+                    "speed_check":{"badge":"+25%","against":"against the 2.0 expected","tone":"ok"},
                     "memory":{"pools":[{"name":"gpu","cap_bytes":10,"held_bytes":1,"rows":[]},
                                        {"name":"host","label":"This process","cap_bytes":1000,"held_bytes":600,"rows":[]}]}}""",
             ),
@@ -47,8 +48,7 @@ class PlanAndContextTest {
         val f = planFigures(p)
         assertEquals(2.0, f.predictedTokS!!, 1e-9)
         assertEquals(2.5, f.measuredTokS!!, 1e-9)
-        assertEquals(25.0, f.deltaPct!!, 1e-9)
-        assertEquals(SpeedDelta("+25%", "against the 2.0 expected"), f.delta)
+        assertEquals(SpeedCheck("+25%", "against the 2.0 expected", true), f.speedCheck)
         assertEquals(40.0, f.creditedHitPct!!, 1e-9)
         assertEquals(45.0, f.measuredHitPct!!, 1e-9)
         assertEquals(600L, f.heldBytes)
@@ -56,8 +56,7 @@ class PlanAndContextTest {
 
         val bare = planFigures(PlanResult.of(JSONObject("""{"available":true,"measured":{"s_per_token":0.4,"cache_hit_pct":-1}}""")))
         assertNull(bare.predictedTokS)
-        assertNull(bare.deltaPct)
-        assertNull(bare.delta)
+        assertNull(bare.speedCheck)
         assertNull(bare.measuredHitPct)
         assertNull(bare.capBytes)
     }
@@ -126,14 +125,18 @@ class PlanAndContextTest {
     }
 
     @Test
-    fun farApartReadsAsARatioAndNeverRoundsTheExpectedRateToZero() {
-        // Measured on a phone: 1.7 tok/s against a prediction of ~0.02, which "+8314% against the
-        // 0.0 expected" said badly.
-        fun figures(predicted: Double, measured: Double) = planFigures(
-            PlanResult.of(JSONObject("""{"available":true,"predicted":{"s_per_token":$predicted},"measured":{"s_per_token":$measured,"cache_hit_pct":-1}}""")),
+    fun theComparisonIsTheServersWordsAndTheExpectedRateNeverReadsZero() {
+        // The server words measured against expected (`speed_check`), a ratio once far apart; the
+        // app shows it as sent and never works it out from the two numbers.
+        val far = planFigures(
+            PlanResult.of(JSONObject("""{"available":true,"predicted":{"s_per_token":49.5},"measured":{"s_per_token":0.588,"cache_hit_pct":-1},
+                "speed_check":{"badge":"84x","against":"the 0.020 expected","tone":"ok"}}""")),
         )
-        assertEquals(SpeedDelta("84x", "the 0.020 expected"), figures(49.5, 0.588).delta)
-        assertEquals(SpeedDelta("0.31x", "the 4.0 expected"), figures(0.25, 0.8).delta)
+        assertEquals(SpeedCheck("84x", "the 0.020 expected", true), far.speedCheck)
+        val slow = PlanResult.of(JSONObject("""{"available":true,"speed_check":{"badge":"0.31x","against":"the 4.0 expected","tone":"warn"}}"""))
+        assertEquals(SpeedCheck("0.31x", "the 4.0 expected", false), slow.speedCheck)
+        // Without the server's words there is no comparison, whatever the numbers say.
+        assertNull(planFigures(PlanResult.of(JSONObject("""{"available":true,"predicted":{"s_per_token":49.5},"measured":{"s_per_token":0.588}}"""))).speedCheck)
         assertEquals("1.7", rateText(1.7))
         assertEquals("0.020", rateText(0.0202))
         assertEquals("0.0049", rateText(0.0049))

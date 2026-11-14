@@ -5,6 +5,7 @@
   import { formatBytes } from '../../lib/format';
   import { memorySegments } from '../../lib/plan';
   import type { PlanMemoryPool } from '../../lib/types';
+  import { t } from '../../lib/text';
 
   let { pools }: { pools: PlanMemoryPool[] } = $props();
 
@@ -17,8 +18,8 @@
   {@const turn = pool.rows.filter((r) => r.in_turn)}
   <div class="pool">
     <div class="head">
-      <span>{pool.label ?? pool.name}{#if pool.estimated}<span class="muted"> (an even share of the devices' sum)</span>{/if}</span>
-      {#if pool.cap_bytes > 0}<span class="muted"><span class="figure cap">{formatBytes(pool.cap_bytes)}</span> it may hold</span>{/if}
+      <span>{pool.label ?? pool.name}{#if pool.estimated}<span class="muted"> {t('plan.memory.estimated')}</span>{/if}</span>
+      {#if pool.cap_bytes > 0}<span class="muted"><span class="figure cap">{formatBytes(pool.cap_bytes)}</span> {t('plan.memory.mayHold')}</span>{/if}
     </div>
     <div class="bar" role="img" aria-label={segs.map((s) => `${s.label} ${formatBytes(s.bytes)}`).join(', ')}>
       {#each segs as s, i (i)}
@@ -31,17 +32,17 @@
           <span class="swatch" style="background: {colour(s.slot)}"></span>
           <span class="figure">{formatBytes(s.bytes)}</span>
           <span class="muted">{s.label}</span>
-          {#if s.locked}<span class="badge">locked</span>{/if}
+          {#if s.locked}<span class="badge">{t('plan.memory.locked')}</span>{/if}
         </li>
       {/each}
     </ul>
-    {#each turn as t, i (i)}
-      <p class="muted note">{t.label ?? t.name}: {formatBytes(t.bytes)} borrowed from the expert cache while a prompt runs, given back after.</p>
+    {#each turn as row, i (i)}
+      <p class="muted note">{t('plan.memory.inTurn', { name: row.label ?? row.name, size: formatBytes(row.bytes) })}</p>
     {/each}
     {#if pi === 0 && pool.cache_lock_unverified}
-      <p class="muted note">The system's lock limit is unmeasured. The expert cache will try to lock its pages when the run starts.</p>
+      <p class="muted note">{t('plan.memory.lockUnverified')}</p>
     {:else if pi === 0 && pool.locked_bytes === 0}
-      <p class="muted note">Nothing is locked in memory for this run: the system may take any of it back under pressure.</p>
+      <p class="muted note">{t('plan.memory.nothingLocked')}</p>
     {/if}
   </div>
 {/each}

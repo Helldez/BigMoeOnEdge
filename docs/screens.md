@@ -245,8 +245,9 @@ the same thing and a stage or role added later reaches them all unchanged.
 - **Summary.** The plan's verdict (`summary.sentence`: "Experts stream from flash, with a
   7.1 GiB cache"), the machine line, the lanes (which device computes the prompt and which the
   tokens) in one line, and three figures: decode speed, expected from `predicted` and, once the
-  loaded model has answered, measured from `measured`, with the difference (`+26%`) when the model
-  runs this plan (`from_last_load`) and the expected figure as a plain line otherwise (the last plan
+  loaded model has answered, measured from `measured`, with the server's comparison
+  (`speed_check`: `+26%` against the expected rate while close, `84x` once more than 2x apart) when
+  the model runs this plan (`from_last_load`) and the expected figure as a plain line otherwise (the last plan
   measured by hand is not the one running); the cache hit rate the plan credited
   (`predicted.cache_hit_pct`, the cost model's own), measured with a mark at the credited one; and
   the memory held against what the process may hold (the host pool of `memory.pools`). The API's

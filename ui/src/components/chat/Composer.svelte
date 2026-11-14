@@ -313,7 +313,7 @@
   <form id="path-form" onsubmit={submitPath}>
     <p class="muted">{t('workspace.path.help')}</p>
     <label for="ws-path">{t('workspace.path')}</label>
-    <input id="ws-path" type="text" class="wide" placeholder="/home/me/project" bind:value={pathText} autocomplete="off" spellcheck="false" />
+    <input id="ws-path" type="text" class="wide" placeholder={t('workspace.path.example')} bind:value={pathText} autocomplete="off" spellcheck="false" />
     {#if pathError}<p class="err small" role="alert">{pathError}</p>{/if}
   </form>
   {#snippet actions()}

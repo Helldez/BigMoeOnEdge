@@ -53,7 +53,10 @@ so routes are hash based (`#/chat/<conversation>`, `#/models`, `#/plan`, `#/skil
 
 Every word is a key of `src/lib/text/en.ts`, the UI's one English dictionary; components call
 `t('key')` (or `tp` for a count) from `src/lib/text`, never write the text. Dates and times are
-written in `LOCALE`, beside them. A test fails when the code names a key the dictionary lacks.
+written in `LOCALE`, beside them. A test fails when the code names a key the dictionary lacks, and
+another (`templates.test.ts`) when a `.svelte` template writes a word itself: in a text node, in a
+title, label or placeholder, or as a string an expression shows. Only punctuation, numbers and unit
+symbols pass; the engine's own words arrive through expressions.
 
 ## Settings are schema driven
 

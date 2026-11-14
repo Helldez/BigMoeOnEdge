@@ -5,6 +5,7 @@
 import { displayValue } from './coerce';
 import { commandLine } from './format';
 import { sameValue, specialLabel } from './schema';
+import { t } from './text';
 import type { Config, ParamSpec, ParamValue, PlanDecision, PlanDevice, PlanMeasured, PlanMemoryPool } from './types';
 
 /**
@@ -67,7 +68,7 @@ export function memorySegments(pool: PlanMemoryPool): MemorySegment[] {
   if (whole <= 0) return [];
   const out: MemorySegment[] = held.map((r, i) => ({ label: r.label ?? r.name, bytes: r.bytes, frac: r.bytes / whole, locked: r.locked, slot: i }));
   const free = whole - sum;
-  if (free > 0) out.push({ label: 'Free', bytes: free, frac: free / whole, locked: false, slot: -1 });
+  if (free > 0) out.push({ label: t('plan.memory.free'), bytes: free, frac: free / whole, locked: false, slot: -1 });
   return out;
 }
 
@@ -82,54 +83,27 @@ export function rateScale(devices: readonly PlanDevice[]): number {
   return devices.reduce((m, d) => Math.max(m, d.prompt_ratio), 1);
 }
 
-/**
- * Past this factor either way, measured against predicted reads as a ratio ("84x the 0.02 expected")
- * instead of a percentage: +8314% and -97% say less than how many times apart the two are.
- */
-export const RATIO_FROM = 2;
-
 /** A decode rate as a person reads it: one decimal, or two significant digits where one decimal would read 0.0. */
 export function rateText(tokS: number): string {
   if (!Number.isFinite(tokS) || tokS <= 0) return '-';
   return tokS >= 0.1 ? tokS.toFixed(1) : tokS.toPrecision(2);
 }
 
-/** A factor between two rates: whole above 10, one decimal above 1, two significant digits below. */
-function factorText(f: number): string {
-  return f >= 10 ? f.toFixed(0) : f >= 1 ? f.toFixed(1) : f.toPrecision(2);
-}
-
 export interface SpeedCheck {
   predictedTokS: number | null;
   measuredTokS: number | null;
-  /** Measured against predicted, as bmoe-cli prints it: positive when the run beat the plan. */
-  deltaPct: number | null;
-  /**
-   * The same comparison as read: a percentage while the two are close, a ratio once they are
-   * RATIO_FROM apart (`badge`), and the expected rate it is set against (`against`).
-   */
-  delta: { badge: string; against: string } | null;
   predictedHitPct: number | null;
   measuredHitPct: number | null;
 }
 
+/** The figures the Plan page's tiles draw. Measured against predicted in words is the server's
+ *  (`speed_check`, server/plan_view.h), never worked out here. */
 export function speedCheck(predicted: { s_per_token?: number; cache_hit_pct?: number } | undefined, measured: PlanMeasured | undefined): SpeedCheck {
   const ps = predicted?.s_per_token ?? 0;
   const ms = measured?.s_per_token ?? 0;
-  const both = ps > 0 && ms > 0;
-  const factor = both ? ps / ms : 0; // measured rate over predicted rate
-  const deltaPct = both ? 100 * (factor - 1) : null;
-  const apart = factor >= RATIO_FROM || factor <= 1 / RATIO_FROM;
   return {
     predictedTokS: ps > 0 ? 1 / ps : null,
     measuredTokS: ms > 0 ? 1 / ms : null,
-    deltaPct,
-    delta:
-      deltaPct === null
-        ? null
-        : apart
-          ? { badge: `${factorText(factor)}x`, against: `the ${rateText(1 / ps)} expected` }
-          : { badge: `${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(0)}%`, against: `against the ${rateText(1 / ps)} expected` },
     predictedHitPct: predicted?.cache_hit_pct ?? null,
     measuredHitPct: measured && measured.cache_hit_pct >= 0 ? measured.cache_hit_pct : null,
   };
