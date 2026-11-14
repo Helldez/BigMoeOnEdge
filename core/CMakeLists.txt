@@ -21,6 +21,7 @@ add_library(bmoe_core STATIC
     src/engine/cache_brake.cpp
     src/engine/knob_trial.cpp
     src/plan/measured_knobs.cpp
+    src/plan/model_records.cpp
     src/plan/calibrate.cpp
     src/engine/decide/prompt_split.cpp
     src/engine/decide/choice_scorer.cpp

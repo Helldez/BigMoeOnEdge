@@ -21,7 +21,7 @@
 // Checks are explicit (not <cassert>): the Release build defines NDEBUG, which compiles assert out.
 
 #include "engine_host.h"
-#include "routing_store.h"
+#include "bmoe/model_records.h"
 
 #include "bmoe/log.h"
 #include "bmoe/params.h"
@@ -84,6 +84,13 @@ struct Script {
     std::atomic<int> opened{0};
     std::atomic<int> alive{0};
     std::atomic<int> turns{0};
+    // The threads the engine's work ran on: opens and generations (engine_thread.h).
+    std::mutex threads_m;
+    std::vector<std::thread::id> engine_threads;
+    void ran_here() {
+        std::lock_guard<std::mutex> lk(threads_m);
+        engine_threads.push_back(std::this_thread::get_id());
+    }
     GenerateRequest last_request;
     std::atomic<int> tokens{0};
     std::atomic<int> cancels{0};
@@ -115,6 +122,7 @@ public:
     RunResult generate(const GenerateRequest & req,
                        const std::function<void(const TokenMetrics &)> & on_token) override {
         ++s_.turns;
+        s_.ran_here();
         const auto stopped = [&] { return cancelled_.load() || (req.stop && req.stop->load()); };
         if (s_.hold_before_reset) {
             s_.before_reset.release();
@@ -244,6 +252,7 @@ static SessionOpener opener(Script & script, Gate * hold = nullptr, std::string 
     return [&script, hold, fail](const SessionConfig &, std::string & error) -> std::unique_ptr<HostedSession> {
         if (hold) hold->wait();
         ++script.opened;
+        script.ran_here();
         if (!fail.empty()) {
             error = fail;
             return nullptr;
@@ -930,7 +939,7 @@ static void routing_store_tests() {
         t.batches.push_back({0, true, {3}});
         return t;
     };
-    RoutingStore store((root / "routing").u8string());
+    ModelRecords store((root / "routing").u8string());
     RoutingTrace got;
     check(!store.load(model.u8string(), got), "no record before one is kept");
     store.keep(model.u8string(), record(40));
@@ -1185,7 +1194,55 @@ static void supersede_and_fallback_tests() {
     }
 }
 
+// Every computation runs on one thread, whichever thread asked for it (engine_thread.h).
+static void engine_thread_tests() {
+    {
+        EngineThread engine;
+        check(engine.run([] { return 42; }) == 42, "engine thread: a job's result comes back");
+        std::thread::id a, b;
+        std::thread t1([&] { a = engine.run([] { return std::this_thread::get_id(); }); });
+        std::thread t2([&] { b = engine.run([] { return std::this_thread::get_id(); }); });
+        t1.join();
+        t2.join();
+        check(a == b && a != std::thread::id() && a != std::this_thread::get_id(),
+              "engine thread: jobs from two callers run on the same thread, which is neither");
+        check(engine.run([&] { return engine.run([] { return 7; }); }) == 7,
+              "engine thread: a job that asks for another runs it at once instead of waiting on itself");
+        bool thrown = false;
+        try {
+            engine.run([]() -> int { throw std::runtime_error("x"); });
+        } catch (const std::runtime_error &) {
+            thrown = true;
+        }
+        check(thrown, "engine thread: what a job throws reaches its caller");
+        int n = 0;
+        engine.run([&] { ++n; });
+        check(n == 1, "engine thread: a job with no result runs");
+    }
+    {
+        auto bus_owner = std::make_unique<EventBus>();
+        Script script;
+        auto host_owner = std::make_unique<EngineHost>(*bus_owner, opener(script));
+        EngineHost & host = *host_owner;
+        host.load(config(), config());
+        check(wait_state(host, "ready"), "engine thread: the session is ready");
+        std::thread other([&] { host.chat(turn(), nullptr); });
+        other.join();
+        host.chat(turn(), nullptr);
+        const std::thread::id engine = host.on_engine([] { return std::this_thread::get_id(); });
+        bool one = true;
+        {
+            std::lock_guard<std::mutex> lk(script.threads_m);
+            for (const std::thread::id & id : script.engine_threads)
+                one = one && id == engine;
+            one = one && script.engine_threads.size() == 3;
+        }
+        check(one, "engine thread: the open and two turns from two threads all ran on the engine's thread");
+    }
+}
+
 int main() {
+    engine_thread_tests();
     routing_store_tests();
     supersede_and_fallback_tests();
     calibration_tests();

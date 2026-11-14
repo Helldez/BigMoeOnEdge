@@ -306,6 +306,48 @@ int main() {
               "record: the device tier's rates read back as written");
         check(!parse_measured_knobs("bmoe-measured-knobs 1\nhardware=a engine=b device_cache_tps=-1\n", bad, err),
               "record: a negative rate is refused");
+        // The device cache's CPU share: each side's rate and failed opens, merged and read back.
+        {
+            MeasuredKnobs sh = on;
+            sh.cpu_share_tps = 21.2;
+            std::vector<MeasuredKnobs> v{sh}, vb;
+            MeasuredKnobs other = on;
+            other.device_cache_tps = 0.0;
+            other.no_cpu_share_tps = 18.5;
+            other.cpu_share_unviable = 0;
+            keep_measured_knobs(v, other);
+            check(parse_measured_knobs(format_measured_knobs(v), vb, err) && vb.size() == 1 &&
+                      std::fabs(vb[0].cpu_share_tps - 21.2) < 1e-3 && std::fabs(vb[0].no_cpu_share_tps - 18.5) < 1e-3,
+                  "record: the CPU share's two rates are merged and read back");
+            // The rate the share is held against: its own, else the width's at the plan's width, else
+            // the tier's; the plan and the server's "other side measured" both read this one.
+            MeasuredKnobs base;
+            base.device_cache_tps = 30.0;
+            check(base.cpu_share_baseline_tps(2048) == 30.0, "record: the share's baseline falls back to the tier");
+            base.width_narrow = 2048;
+            base.narrow_decode_tps = 31.6;
+            base.wide_decode_tps = 26.3;
+            check(base.cpu_share_baseline_tps(2048) == 31.6 && base.cpu_share_baseline_tps(8192) == 26.3,
+                  "record: the share's baseline is the cache timed at the plan's own width");
+            base.no_cpu_share_tps = 32.9;
+            check(base.cpu_share_baseline_tps(2048) == 32.9, "record: the share's own uploaded timing wins");
+            check(MeasuredKnobs{}.cpu_share_baseline_tps(2048) == 0.0, "record: no cache timed, no baseline");
+            KnobTrialConfig side;
+            side.cpu_share_side = 1;
+            MeasuredKnobs rec;
+            rec.hardware = a.hardware;
+            rec.engine = a.engine;
+            rec.cpu_share_unviable = 1;
+            record_side_rate(side, 20.0, rec);
+            check(rec.cpu_share_tps == 20.0 && rec.cpu_share_unviable == 0,
+                  "record: a rate measured for the share clears its failed opens");
+            record_side_unviable(side, rec);
+            check(rec.cpu_share_unviable == 1, "record: a failed open of the share is counted against it");
+            std::vector<MeasuredKnobs> u{rec}, ub;
+            check(parse_measured_knobs(format_measured_knobs(u), ub, err) && ub.size() == 1 &&
+                      ub[0].cpu_share_unviable == 1,
+                  "record: the share's failed opens read back");
+        }
         // The graph width: each side's rates and the usage they are weighed by, merged across loads; a
         // different narrow width starts the comparison afresh.
         MeasuredKnobs w1;

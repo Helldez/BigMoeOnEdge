@@ -192,9 +192,9 @@ Placement probe_placement(const char * model_path,
     // "Its own" also needs a size, for the reason the prefill rule gives: a pool with no stated
     // size is not one the fitter can have budgeted against.
     std::vector<ggml_backend_dev_t> devs;
-    uint32_t hp_ngl = 0, hp_nct = 0, hp_nex = 0;
+    uint32_t hp_ngl = 0, hp_nsk = 0, hp_nct = 0, hp_nex = 0;
     const common_device_memory_data_vec dm = common_get_device_memory_data(model_path, &mparams, &cparams, devs, hp_ngl,
-                                                                           hp_nct, hp_nex, GGML_LOG_LEVEL_WARN);
+                                                                           hp_nsk, hp_nct, hp_nex, GGML_LOG_LEVEL_WARN);
     const ComputeDevice * placed_on_shared = nullptr;
     bool placed_unknown = false;
     for (size_t i = 0; i + 1 < dm.size() && i < devs.size(); ++i) {
@@ -327,9 +327,9 @@ Placement probe_placement(const char * model_path,
             llama_context_params half = cparams;
             half.n_ubatch = cparams.n_ubatch / 2;
             std::vector<ggml_backend_dev_t> devs_half;
-            uint32_t a = 0, b = 0, c = 0;
+            uint32_t a = 0, sk = 0, b = 0, c = 0;
             const common_device_memory_data_vec hm =
-                common_get_device_memory_data(model_path, &mparams, &half, devs_half, a, b, c, GGML_LOG_LEVEL_WARN);
+                common_get_device_memory_data(model_path, &mparams, &half, devs_half, a, sk, b, c, GGML_LOG_LEVEL_WARN);
             if (hm.size() == dm.size()) {
                 const uint64_t span = cparams.n_ubatch - half.n_ubatch;
                 uint64_t dev_half = 0;
@@ -353,9 +353,9 @@ Placement probe_placement(const char * model_path,
             half.n_batch = half.n_ctx;
             half.n_ubatch = std::min(cparams.n_ubatch, half.n_ctx);
             std::vector<ggml_backend_dev_t> devs_half;
-            uint32_t a = 0, b = 0, c = 0;
+            uint32_t a = 0, sk = 0, b = 0, c = 0;
             const common_device_memory_data_vec hm =
-                common_get_device_memory_data(model_path, &mparams, &half, devs_half, a, b, c, GGML_LOG_LEVEL_WARN);
+                common_get_device_memory_data(model_path, &mparams, &half, devs_half, a, sk, b, c, GGML_LOG_LEVEL_WARN);
             if (hm.size() == dm.size()) {
                 uint64_t whole = 0, halved = 0;
                 for (size_t i = 0; i < dm.size(); ++i) {

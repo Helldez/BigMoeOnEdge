@@ -209,6 +209,15 @@ struct ComputeDevice {
     // each leg waited for, half of the round trip per crossing. See core/src/plan/device_probe.cpp.
     double split_seconds = 0.0;
 
+    // What a host half costs a layer of this device's graph, in seconds, 0 when unmeasured: a device
+    // op, a host op at the decode's thread count, and a device op again, run through the scheduler as
+    // a decode runs them, less the same ops all on the device. It is what a device cache's CPU share
+    // adds to every MoE layer whatever the share computes (planner.cpp, choose_device_cache_cpu_share),
+    // and `split_seconds` does not see it: a copy timed on its own misses the host's thread pool waking
+    // and the device's graph being cut. Measured on a 32 GB card: a share took a 48-layer decode graph
+    // from 50 to 146 splits, about 58 us each, where the copy alone read 11 us.
+    double host_hop_seconds = 0.0;
+
     // Boundary crossings this device adds to ONE token's graph, 0 when unmeasured (no probe fills
     // it today; it is kept for the record and the facts line). It is the term
     // that decides an offload in practice and the one a bandwidth figure cannot see. Two measured

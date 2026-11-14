@@ -34,7 +34,7 @@
 namespace bmoe {
 
 // The decisions a calibration times, each with two sides: the device tier, then the graph width.
-inline constexpr int k_calibration_decisions = 2;
+inline constexpr int k_calibration_decisions = 3;
 inline constexpr int k_calibration_sides = 2;
 
 // What one candidate run is asked to do.
@@ -101,6 +101,14 @@ struct CalibrationResult {
 
 // Whether `p` has a side of a decision across loads still to time.
 bool side_pending(const Plan & p);
+
+// Whether a served load may open `p` as it is: nothing pending, or only a side that every other load
+// of the plan already opened with: the graph at the plan's own width, or the device cache with every
+// miss uploaded (the narrow graph and a CPU share are configurations no load has run yet). What a
+// server serves instead of an unproven side once the other side has been measured: on a 32 GB card the plan on the
+// measured device cache named the width's wide side, which counted as a side still to prove, so the load served the
+// unproven placement and decoded at 42 tok/s against the cache's 103.
+bool servable(const Plan & p);
 
 // The candidate a pending plan runs: its config with the knob trial's threads and overlap cleared
 // (they switch within a load and are measured on the served one) and no side named, since the

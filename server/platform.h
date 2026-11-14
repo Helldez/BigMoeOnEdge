@@ -41,9 +41,7 @@ bool redirect_output(const std::string & path, std::string & err);
 // none: where an init system reads a per-user service from.
 std::string user_config_dir();
 
-// Per-user data directory for settings and downloaded models (created on first use):
-// %LOCALAPPDATA%\BigMoeOnEdge, ~/Library/Application Support/BigMoeOnEdge,
-// or $XDG_DATA_HOME/bigmoeonedge (~/.local/share/bigmoeonedge).
+// Per-user data directory: the one every front-end uses (frontend/user_dirs.h).
 std::string default_data_dir();
 
 // What this platform's compute backends are told before any of them is loaded, each only where

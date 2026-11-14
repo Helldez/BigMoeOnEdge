@@ -16,14 +16,18 @@ namespace {
 // Which decision a plan's trial names (0 the device tier, 1 the graph width, -1 none) and its side,
 // in the order record_side_rate reads them: one decision per run.
 int decision_of(const KnobTrialConfig & t) {
-    return t.device_tier >= 0 ? 0 : t.width_side >= 0 ? 1 : -1;
+    return t.device_tier >= 0 ? 0 : t.width_side >= 0 ? 1 : t.cpu_share_side >= 0 ? 2 : -1;
 }
 int side_of(const KnobTrialConfig & t) {
-    return t.device_tier >= 0 ? t.device_tier : t.width_side;
+    return t.device_tier >= 0 ? t.device_tier : t.width_side >= 0 ? t.width_side : t.cpu_share_side;
 }
 
 std::string side_words(const KnobTrialConfig & t, const RunConfig & c) {
     if (t.device_tier >= 0) return t.device_tier ? "with a device expert cache" : "with the fitter's placement";
+    if (t.cpu_share_side >= 0)
+        return t.cpu_share_side ? "with part of the device cache's misses on the CPU"
+                                : "with every device cache miss "
+                                  "uploaded";
     const int width = t.width_side ? c.graph_width() : t.width_narrow;
     return std::string("with the graph ") + (t.width_side ? "at the plan's width" : "narrowed") + " (" +
            std::to_string(width) + " tokens wide)";
@@ -48,6 +52,11 @@ std::vector<KnobTrialConfig> counted_sides(const MeasuredKnobs & k) {
         t.width_narrow = k.width_narrow;
         v.push_back(t);
     }
+    for (int s : {1, 0}) {
+        KnobTrialConfig t;
+        t.cpu_share_side = s;
+        v.push_back(t);
+    }
     return v;
 }
 
@@ -61,7 +70,11 @@ struct Timed {
 } // namespace
 
 bool side_pending(const Plan & p) {
-    return p.config.trial.device_tier >= 0 || p.config.trial.width_side >= 0;
+    return p.config.trial.device_tier >= 0 || p.config.trial.width_side >= 0 || p.config.trial.cpu_share_side >= 0;
+}
+
+bool servable(const Plan & p) {
+    return p.config.trial.device_tier < 0 && p.config.trial.width_side != 0 && p.config.trial.cpu_share_side != 1;
 }
 
 bool calibration_due(const Plan & p,
