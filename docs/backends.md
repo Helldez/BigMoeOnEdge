@@ -10,7 +10,7 @@ The same facts cut by operating system, next to the rest of what each platform h
 
 ## What the pinned llama.cpp carries
 
-Read from `ggml/src/` and `ggml/CMakeLists.txt` of the pinned submodule (`7ac98f4a8`, read again at that bump: same backends, same columns). A bump can
+Read from `ggml/src/` and `ggml/CMakeLists.txt` of the pinned submodule (`ac30987`, read again at that bump: same backends, same columns). A bump can
 add or remove rows; redo the reading rather than trusting this table.
 
 The last three columns come from reading the sources, not from running them: the type each backend
@@ -99,7 +99,7 @@ any device llama.cpp's cache accepts can take it. The capture warm-up runs on a 
 cache, because with it on the expert matmuls read its slots instead of the host tensors the capture
 looks for; the context is then made again with it. It is refused with `--overlap` (whose wait sits
 inside the CPU's expert matmul, which no longer runs) and with a prefill device (which moves the
-layers); speculation works beside it, with the draft's own head served from the host. Gates G25a-c
+layers); speculation works beside it, with the draft's own head served from the host. Gates G25a-d
 (`tests/moe_gates.cpp`) prove the cached runs give the resident placement's bytes, the experts
 resident, streamed, and streamed under n-gram speculation, on a device with memory of its own (the
 loopback RPC device).
@@ -135,6 +135,25 @@ cache's order of computation), so that card cannot show the copy changes no outp
 does yet: the loopback RPC device the gates run on has no host buffer type of its own. The bytes
 are copied unchanged and the tensors' shapes and strides untouched, which is the argument until a
 gate runs on a device that has one.
+
+**Misses computed on the host.** With every expert on the device, the cores compute none of them,
+and each miss crosses the link before the device can compute it. `--device-cache-cpu-share F` hands
+a share `F` of the misses to the host, once the cache is full (`moe_cache_cpu_share` in
+`llama_context_params`): llama.cpp builds the layer's experts on the device from the cache and on
+the CPU from the host's copy, each half weighted only for the experts it computes, and adds the two;
+the CPU half does not wait for the device's. A miss computed on the host is not admitted, so below
+1 the cache keeps learning from the misses still uploaded. It needs the experts resident
+(`--moe-stream` off): over streamed experts the host half would read the streamer's slots, and no
+gate covers that yet. Gate G25d proves half the misses on the host give the resident placement's
+bytes. `--auto` prices it and lets the loads decide it ([how](hardware-planning.md#who-computes-the-device-caches-misses)). Measured on a
+12 GB card (RTX 3060 class) with Qwen3.8-Flash-Next IQ3_S, every expert resident, a 5.3 GB cache, 256
+greedy tokens: 18.5 tok/s uploading every miss, 19.9 with half of them on the host, 20.8 with seven
+in ten, and 17.5 with all of them on the host, where the cache stops learning; a price of it picked
+0.76-0.78 there and decoded at 21.1-21.2. On a 32 GB card (RTX 5090 class) with Q2_0 the same price
+picked 0.89 and lost 40% (114 to 68 tok/s over 2048 tokens) with no miss reaching the host: a share
+above 0 gives every MoE layer a CPU half, a fixed cost the card pays either way. That is why `--auto`
+times a share before it keeps one: on that card the calibration measured it at 70.9 tok/s against
+103 and left every miss uploaded.
 
 Measured on a 24 GB discrete card (PCIe at about 26 GB/s, 48 host cores, 85 GiB of host memory),
 Qwen3.8-Flash-Next 125B GSQ-RCO Q2_0, every layer on the card, greedy:
@@ -178,6 +197,47 @@ to each other the way the host's streamed and resident runs are.
 So on unified memory it does not pay, and the plan never arms it there: a shared pool has no second
 tier to fill. On the discrete card above the same synchronization is cheap and the cache is the
 fastest placement measured.
+
+## What the front-ends tell a backend before it loads
+
+Some of a ggml backend's behaviour can be chosen only through its environment, which it reads when it
+loads. `core/` reads no environment (AGENTS.md, rule 3); the front-ends do it, from one table every one
+of them applies before any backend loads (`frontend/backend_env.h`): bmoe-cli, bmoe-server and the apps
+that run it start the backends alike. An entry only fills a variable the environment left unset, so a
+value a person set stays, and ggml's own default stands unless a measurement said otherwise. A
+variable is read only by its own backend, so an entry costs nothing where that backend is not loaded,
+and no entry is tied to a platform: wherever the backend runs, it reads the same value.
+
+| Backend | Variable | Value | Why |
+|---|---|---|---|
+| OpenCL | `GGML_OPENCL_KERNEL_CACHE_DIR` | `<data>/backend-cache` | compiled kernels kept between runs, in a folder an app can write (the default is a temporary folder) |
+| CUDA, ROCm | `GGML_CUDA_REGISTER_HOST` | `1` | enables the backend's generic entry point for pinning memory a process allocated (`ggml_backend_register_host_buffer`), which the engine asks for by name for the experts' host copy behind a device cache ([measured-planning.md](measured-planning.md)): on a rented 3090, 117 GB of GLM-4.7's experts took 97 s to allocate as the backend's own pinned memory, where touching ordinary memory on 16 threads and pinning it took 6 s every 32 GB |
+
+ROCm is ggml's CUDA backend built with HIP, so it reads the same variable and gets the same entry.
+**Only CUDA has been measured**: pinning on ROCm goes through `hipHostRegister`, whose speed on an AMD
+card is not known here. A backend without the entry point, or one that declines, gets its own host memory as
+before, at the speed it allocates it. Metal has no host buffer type of its own, so there is no copy
+to make on a Mac, whether its GPU shares the memory or not.
+
+**Still at ggml's default, and touching this engine's paths.** Each needs a measurement on the
+hardware it is for before it gets an entry:
+
+- CUDA, ROCm: CUDA graphs on the decode (`GGML_CUDA_DISABLE_GRAPHS`, `GGML_CUDA_GRAPH_OPT`), with the
+  router hook between a layer's nodes.
+- Vulkan: where the experts' host copy and the uploads live (`GGML_VK_PREFER_HOST_MEMORY`,
+  `GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM`) and whether uploads go through the transfer queue
+  (`GGML_VK_ASYNC_USE_TRANSFER_QUEUE`). Vulkan has no pinning entry point, and how fast it allocates
+  its host buffer is not measured.
+- Metal: how long a model's buffers stay resident after a load ends (`GGML_METAL_RESIDENCY_KEEP_ALIVE_S`,
+  `GGML_METAL_NO_RESIDENCY`), which back-to-back loads on a Mac depend on.
+- Hexagon: none. Polling (`GGML_HEXAGON_OPPOLL`) logged over a million error rows a load on a phone
+  for under 1 s of a 16 s prefill, and the host buffer (`GGML_HEXAGON_HOSTBUF`, documented upstream as a
+  debugging aid) cost 7-13% of the decode and hung Gemma 4's load on the NPU (#512, #544).
+- CPU: KleidiAI's SME kernels on Arm (`GGML_KLEIDIAI_SME`).
+
+The rest of the backends' variables (around three hundred in the pinned llama.cpp, most of them
+OpenCL's kernel choices per quantization) select kernels, debug, or turn a feature off around a
+driver's fault; they stay ggml's to decide.
 
 ## How a backend reaches the planner
 

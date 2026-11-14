@@ -101,6 +101,7 @@ RunResult run(const RunConfig & cfg, const RunOutputs & out) {
         r.error_kind = RunError::Failed;
         return r;
     }
+    if (out.on_open) out.on_open(session->measured_knobs());
 
     GenerateRequest req;
     req.prompt = cfg.prompt;

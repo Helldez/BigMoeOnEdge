@@ -6,7 +6,140 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+- **A device expert cache computes part of its misses on the CPU where that was measured faster**
+  (`--device-cache-cpu-share`, experimental). With a device cache over resident experts, every miss
+  used to cross the link before the device computed it, while the cores computed no expert. A share
+  of the misses can now be computed on the CPU from the host's copy, beside the device, the rest
+  still uploaded so the cache keeps learning. `--auto` prices the share from measured rates,
+  including a new probe of what a host half costs each layer of the device's graph
+  (`host_hop_seconds`), and then times it across loads like the device tier and the graph width:
+  a calibration opens it as a candidate, and it is kept only past the 10% margin over uploading
+  every miss. A served load never opens an unmeasured share. Measured on a rented 32 GB card
+  (Qwen3.8-Flash-Next Q2_0): the price nominated 0.89, the calibration timed it at 70.9 tok/s against
+  103, and every miss stayed uploaded, where the opt-in at 0.89 had cost 40%. On a 12 GB card on PCIe
+  3 with 8 cores the share timed 32.2 tok/s against the cache's 31.6 on the same graph and stayed off
+  (32.5 served, the fitter's placement 21.1); on a 12 GB card with a 6-core host, on another model, a
+  share of 0.77 had taken the decode from 18.5 to 21.1-21.2 tok/s. Never over streamed experts,
+  which no gate covers (validation refuses the pair). Gate G25d: half the misses on the host give
+  the resident placement's bytes. A cache that loses to the capacity fitter's placement with every
+  miss uploaded is timed with its share before it is set aside, where the price says the share could
+  win: the case it is for (GLM-4.7 on two 24 GB cards: cache 4.0 tok/s at 56% hits, fitter 16.2).
+  ([hardware-planning.md](docs/hardware-planning.md#who-computes-the-device-caches-misses))
+
+### Changed
+- **A load-time calibration takes a third less time.** Measured on a rented 3090 with 1 TB of memory and
+  GLM-4.7 (126 GB), from a cold start to the first answer: 514 s before, 344 s now, the served decode
+  unchanged (11.3-11.7 tok/s). Where the system can keep the model's files cached (at most half of the
+  memory it can still give), every candidate starts with them cached instead of reading the whole
+  model from the drive again; otherwise the cache is dropped and the dense part read in, as before. The
+  capacity fitter's re-fits at a narrower graph are asked once per width and kept with the plan's
+  facts, instead of again before every candidate (each reloaded the model's metadata for a dozen dry
+  runs, and read the card's free memory after a candidate had used it); a server's plan made with the
+  model loaded reads the kept fit too. Each plan stage, each candidate (the file cache, the load, the
+  timing) and each plan between candidates now logs its seconds.
+- **The experts' host copy behind a device cache is pinned in place.** A device cache's candidate spent
+  97 of its 114 s opening in the CUDA backend allocating 117 GB of pinned memory a page at a time. The
+  engine now copies the experts into memory it allocates, on every core the plan computes on, and asks
+  the device's backend to pin it through ggml's generic entry point
+  (`ggml_backend_register_host_buffer`); a backend without it, or one that declines, allocates its own
+  as before. Pinning ordinary memory measured 6 s every 32 GB against 27 s allocating it pinned; the
+  calibration with it is not measured yet.
+- **Every front-end starts the compute backends alike.** What a backend reads from its environment is
+  one table in `frontend/backend_env` (`docs/backends.md`), which bmoe-cli applies as bmoe-server does:
+  the CLI used to start the backends without the OpenCL kernel cache folder. It adds `GGML_CUDA_REGISTER_HOST=1` for the pinning above (CUDA and ROCm), and lists per backend the
+  variables that touch this engine's paths and are still to be measured. No entry is tied to a
+  platform: wherever a backend runs, it reads the same value. The front-ends' shared library is `bmoe_frontend` (it was
+  `bmoe_user_dirs`).
+- **One `--auto` on every front-end.** The CLI, the server and the apps now plan, calibrate and keep
+  what they measured the same way. Before, `bmoe-cli --auto` calibrated only with `--routing-dir` and
+  kept nothing without it, and the server served the plan's own side at once and calibrated a minute
+  after an answer: on two 24 GB cards with GLM-4.7 that was 3.7 tok/s on the device cache until the
+  server went idle, where the fitter's placement decoded at 16. Now a model's first load on a machine
+  calibrates before its first answer everywhere (the server on the load's own thread:
+  `/api/info` reads `loading`, a request meanwhile waits and is answered on the decided plan), and
+  every front-end keeps the result in the per-user data folder under `routing/`, so a calibration the
+  app ran is the CLI's too and later loads start decided. `--routing-dir` only moves that folder, or
+  with `""` keeps nothing. The record store is one class in `core` (`ModelRecords`) and the folder one
+  function every front-end links (`frontend/user_dirs`). What a load's calibration leaves pending is
+  still tried again at the server's idle point.
+
+- **llama.cpp bumped to upstream `b12214`** (2026-11-09) plus the expert-ready hook, on fork branch
+  `bmoe/expert-ready-hook-0911`. It brings the device expert cache's frequency-aware eviction
+  (ClassLRU: an expert's uses, decayed with a half-life, decide which slot is freed), which takes a
+  12 GB card from 17.9 to 18.5 tok/s with nothing else changed, and `moe_cache_cpu_share`. The
+  placement probe passes the new out-parameter of `common_get_device_memory_data`.
+- **Checkpoints, then the context, give way to the expert cache where nobody set them.** Where the
+  checkpoints and the context leave the expert cache under one token cycle (a cache that returns no
+  hits), the plan halves the checkpoints down to one, then a context longer than the server's 16384
+  down to that, placing the model again at each length, and keeps the first plan whose cache clears
+  its floor; where none does, nothing changes. The server's own context is never shortened, since a
+  coding agent's first request alone can be 10k tokens. A value set by hand (`--ctx-checkpoints`, `--ctx-size`, the settings) is never
+  moved ([hardware-planning.md](docs/hardware-planning.md#the-flow)).
+
 ### Fixed
+- **The server decodes as fast as the CLI.** On the same plan of GLM-4.7 on two 24 GB cards
+  `bmoe-server` decoded at 9.2 tok/s and `bmoe-cli` at 16.4, with every setting the same: ggml's CPU
+  backend, built with OpenMP on Linux and Windows, keeps a team of worker threads per calling thread,
+  and the server computed from every thread a request, a load, a plan or a calibration ran on (122 more
+  threads a request). With more workers than cores the OpenMP runtime parks them between ops, and every
+  op waited for them to wake: 20 cores busy against the CLI's 60. Every computation the server runs now
+  goes through one thread (`server/engine_thread.h`), as the CLI runs it, and the threads no longer grow
+  with the requests.
+- **A cache that lost to the fitter's placement is never served for a CPU share that cannot run.** The
+  device tier arms the cache to time its share before keeping the fitter's placement; where the rest of
+  the plan then ruled the share out (the cache's experts streamed), the cache was served alone: 3.6 tok/s
+  on GLM-4.7 against the fitter's measured 16.2. The plan is now made again with the share counted as
+  not runnable, and the fitter's placement stands.
+- **A model's second load serves the side already measured instead of halving its speed.** With a
+  device expert cache measured on the first load, the server is meant to serve the cache again and
+  leave the capacity fitter's placement to an idle calibration. The plan on the cache named the
+  graph width's wide side as the next thing to time, and that counted as a side not proven to open,
+  so the server served the unproven placement instead: on a rented 32 GB card with
+  Qwen3.8-Flash-Next Q2_0 the second load decoded at 42 tok/s against the cache's 103-111. The wide
+  graph is the one every load of the plan opened with, so it is served now and timed as it serves
+  (`servable`, [measured-planning.md](docs/measured-planning.md#decisions-across-loads-timed-at-load)):
+  the same card's second load decodes at 97-98 tok/s, and the calibration then times the fitter's
+  placement while the server is idle.
+- **A sliding-window model keeps its window, not the whole context, in its KV cache.** llama.cpp's
+  default gives a sliding-window layer a cache as long as the context (its own server and CLI turn
+  that off), and the engine kept the default, so on a model whose layers are mostly windowed most of
+  the context's memory held cells no token reads. Gemma 4 26B-A4B at a 16384 context: the plan's
+  context and compute went from 2273 to 394 MiB on a 16 GB Mac, and the process held 4.4 GB at the
+  start of a chat where it held 7.3, with the same text; on a 12 GB phone the room it took was what the
+  expert cache and the NPU prefill had been refused for. The session and the plan's placement probe
+  both open the context with the window only. A follow-up that diverges further back than the window
+  starts again from a context checkpoint, or from nothing, instead of reusing a window that no longer
+  holds what the next token reads (gate G22c; the tiny gemma4 fixture now has a 16-token window).
+- **A context checkpoint of a windowed model is charged what it holds.** A checkpoint copies the
+  window's cells: 106 MiB each on Gemma 4 26B-A4B, measured, where the plan charged 11 (and nothing at
+  a context under 16384). The plan now prices it as the window, read from the file, at the cost of a
+  cell, measured at two graph widths; the KV it charges follows the graph width too, since a windowed
+  cache holds one ubatch of cells beyond its window.
+- **A plan prices the dense weights as the run holds them.** The dense policy copies every dense
+  tensor, but a group the plan's ranking found no room for was priced as left mapped, at the refault
+  rate of the storage: a 12 GB phone's plan for Gemma 4 predicted 10-44 s a token, and the Plan page
+  showed "18x the expected", where the run decoded at 0.45-0.55. Such a group is now priced at its
+  compute, and the plan says it is held past the budget (`dense-held`).
+- **An NPU armed for the prefill is charged its compute buffer.** The plan charged a prefill device the
+  compute buffer llama.cpp's fitter projected for it, which is none for a device it never places layers
+  on, and the session then reserved one for the same graph: 221-450 MiB on a phone's NPU that the
+  expert cache had been sized into. Such a device is now charged the host's own buffer at that width.
+- **A prefill device that did not hold up for a model is not armed for it again.** The plan arms an
+  NPU or GPU for the prompt on a probe graph and a matmul of the model's format, and the session then
+  checks it on the model itself. Where that check refused it, the next load armed it again, paid the
+  check again and sized the memory around it; and a load that never returned left nothing to learn
+  from. On a 12 GB phone, Gemma 4 26B-A4B's NPU prefill agreed with the cores in 25 of 31 positions,
+  and with that backend's host buffer on the load never finished. What came of the device is now
+  kept in the model's record, one word per device (`prefill=<device>:kept|refused|unconfirmed`): a
+  device its check on the model refused is not armed again for that model on that machine and engine,
+  and neither is one that two loads in a row armed and never kept (a load that never finished opening,
+  or a device that would not open; a front-end writes the word before the session opens). Another device,
+  and every other model, are unaffected; a new engine version tries the device again
+  ([measured-planning.md](docs/measured-planning.md#a-prefill-device-that-did-not-hold-up-for-a-model)).
+  The check's log line now gives the KL divergence of the device's next-token distributions from the
+  host's beside the top-token agreement: 0.004 on that NPU for Qwen3.6-35B-A3B, 0.60 for Gemma, whose
+  expert matmuls go past the fp16 range the NPU computes in (ggml-org/llama.cpp#32198).
 - **A phone's NPU prefill no longer stops a load, floods the log or slows decode** (#512, #544). The
   app's server set the Hexagon backend's two tuning variables, and both now stay at the backend's
   defaults. Polling for the DSP logged an error for every empty poll on Android, 1.1 to 3.4 million log
@@ -16,6 +149,7 @@ Semantic Versioning.
   7-13% because an op of every decoded token went to the DSP, and with Gemma 4 26B-A4B the load never
   finished: the plan armed the NPU wherever there was room (a 4096 context, for one), and the DSP
   never returned from the first layer.
+
 
 ## [0.42.0] - 2026-11-12
 
@@ -71,6 +205,13 @@ Semantic Versioning.
   for the server to serve.
 
 ### Documentation
+- **The same-card comparison with Strata, on a 12 GB card.** On a rented RTX 3060 class card, the
+  0.42.0 release with `--auto` decodes Qwen3.6-35B-A3B UD-Q4_K_XL at 40-44 tok/s and 57-65 with
+  `--mtp`, against Strata's 28-36 on the same box, file and client; Strata reaches the first token of
+  a short prompt sooner (0.33-0.56 s against 0.6-0.9). Strata's own figure for this card is 59, on a
+  20-thread machine: the box's 15-core Zen 2 quota holds back its CPU-side experts, which both pages
+  say. In [comparison.md](docs/comparison.md#same-machine-same-file), [benchmarks.md](docs/benchmarks.md)
+  and the bench-data.
 - **The same-card comparison with Lucebox, measured again on 0.41.2.** On a rented 24 GB card
   (RTX 3090 class), Qwen3.6-35B-A3B decodes at 154 tok/s against Lucebox's 123, Laguna XS 2.1 33B
   at 93 against 84-86, and a 28.6k-token prompt reaches its first token 4-8 times sooner. Lucebox
@@ -545,7 +686,6 @@ Semantic Versioning.
   and the installer now carry the app's icon, made from the same picture as the macOS and Linux
   apps by `packaging/windows/make-icon.py`; the notification area takes the small size this
   screen's scale asks for.
-
 
 ## [0.40.1] - 2026-11-07
 

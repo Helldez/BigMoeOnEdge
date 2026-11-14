@@ -5,6 +5,7 @@
 #include "bmoe/auto_plan.h"
 #include "bmoe/backend_choice.h"
 
+#include "bmoe/log.h"
 #include "bmoe/planner.h"
 #include "bmoe/params.h"
 #include "bmoe/probe.h"
@@ -18,17 +19,41 @@
 #include "llama.h"
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 
 namespace bmoe {
 
 namespace {
 
+// The capacity fitter's placement of the facts' model at `width` tokens wide, asked of the fitter the
+// first time and kept with the facts (AutoPlan::placement_at_width). `snapshot` names the memory
+// snapshot taken after a fit that ran.
+const Placement & fitted_at(
+    const AutoPlan & facts, const RunConfig & cfg, const ModelProfile & model, uint32_t width, const char * snapshot) {
+    AutoPlan::FitKey key;
+    key.width = width;
+    key.n_ctx = (uint32_t) cfg.n_ctx;
+    key.type_k = cfg.cache_type_k;
+    key.type_v = cfg.cache_type_v;
+    if (cfg.spec.enabled())
+        key.draft = std::to_string((int) cfg.spec.source) + "|" + std::to_string(cfg.spec.draft_max) + "|" +
+                    cfg.spec.mtp_head + "|" + std::to_string(cfg.spec.mtp_head_on_devices);
+    auto at = facts.placement_at_width.find(key);
+    if (at == facts.placement_at_width.end()) {
+        at = facts.placement_at_width
+                 .emplace(key, probe_placement(cfg.model_path.c_str(), model, facts.hw, (uint32_t) cfg.n_ctx, width,
+                                               cfg.cache_type_k, cfg.cache_type_v, facts.backends, &cfg.spec))
+                 .first;
+        detail::log_memory_snapshot(snapshot);
+    }
+    return at->second;
+}
+
 // The rules on the facts a probe gathered (probe_and_plan's planning half): plan_run on the first
 // stage's placement, and the capacity fitter asked again where the plan narrows the graph. `model`
 // is the facts' own, or the same with another record of measurements (replan).
-Plan plan_on_facts(const AutoPlan & facts, const RunConfig & cfg, const PlanRequest & req, const ModelProfile & model) {
-    const char * path = cfg.model_path.c_str();
+Plan plan_layout(const AutoPlan & facts, const RunConfig & cfg, const PlanRequest & req, const ModelProfile & model) {
     const HardwareProfile & hw = facts.hw;
     const Placement & placement = facts.placement;
     Plan plan = plan_run(cfg, hw, model, placement, req);
@@ -48,9 +73,7 @@ Plan plan_on_facts(const AutoPlan & facts, const RunConfig & cfg, const PlanRequ
         width < placement.compute_width) {
         RunConfig narrow = cfg;
         narrow.n_ubatch = (int) width;
-        const Placement at_width = probe_placement(path, model, hw, (uint32_t) cfg.n_ctx, width, cfg.cache_type_k,
-                                                   cfg.cache_type_v, facts.backends, &cfg.spec);
-        detail::log_memory_snapshot("auto-probe-narrow");
+        const Placement & at_width = fitted_at(facts, cfg, model, width, "auto-probe-narrow");
         if (at_width.fitted) {
             const Decision * first = nullptr;
             for (const Decision & d : plan.decisions)
@@ -85,9 +108,7 @@ Plan plan_on_facts(const AutoPlan & facts, const RunConfig & cfg, const PlanRequ
         const uint32_t candidate =
             device_share_width(placement, hw, PlannerPolicy::defaults(), (uint32_t) cfg.graph_width_floor());
         if (candidate > 0 && candidate < placement.compute_width) {
-            const Placement at_width = probe_placement(path, model, hw, (uint32_t) cfg.n_ctx, candidate,
-                                                       cfg.cache_type_k, cfg.cache_type_v, facts.backends, &cfg.spec);
-            detail::log_memory_snapshot("auto-probe-whole");
+            const Placement & at_width = fitted_at(facts, cfg, model, candidate, "auto-probe-whole");
             if (at_width.fitted && at_width.host_expert_layers.empty() && at_width.n_gpu_layers != 0) {
                 RunConfig narrow = cfg;
                 narrow.n_ubatch = (int) candidate;
@@ -112,13 +133,121 @@ Plan plan_on_facts(const AutoPlan & facts, const RunConfig & cfg, const PlanRequ
     return plan;
 }
 
+// Restate a decision the give-way pass below made, in the plan it made it in.
+void restate(
+    Plan & q, const char * knob, const std::string & value, const std::string & brief, const std::string & why) {
+    for (Decision & d : q.decisions)
+        if (d.knob == knob) {
+            d.value = value;
+            d.source = Source::Derived;
+            d.brief = brief;
+            d.reason = why;
+            return;
+        }
+    q.decisions.push_back(Decision{knob, value, Source::Derived, why, brief});
+}
+
+// What gives way to the expert cache. The context checkpoints and the context's KV are held for the
+// whole run beside the cache, and where the person set neither, an amount that leaves the cache under
+// one token cycle (an eviction per read, no hits) has bought insurance and history with every decoded
+// token's speed. Measured on a 12 GB phone: Gemma 4 26B-A4B at the server's 16384 context kept no
+// expert cache and no NPU prefill, and decoded at 0.5 s a token. So, in this order, while the cache is
+// under its floor: the checkpoints halve, down to one (the end of the last prompt, where a follow-up
+// most often diverges), then the context halves, the fitter placing again at each length, down to
+// PlannerPolicy::ctx_min_auto. The first plan whose cache clears the floor is the run's; where none
+// does, the plan stays as it was, since giving them up bought nothing. A value the person set is
+// theirs and never moves (the plan still names the lever).
+// The context step places the model again at each length, which reads the machine as it is now:
+// `refit` false (replan_rules, which may run with a model loaded) stops at the checkpoints. The
+// context is never shortened under RunConfig::ctx_for_clients, what the server offers the clients it
+// serves (a coding agent's first request alone can be 10k tokens): on a server that is the context it
+// was given, so there the step stops at the checkpoints too, and only a longer context nobody set
+// gives way.
+Plan give_way(const AutoPlan & facts,
+              const RunConfig & cfg,
+              const PlanRequest & req,
+              const ModelProfile & model,
+              Plan plan,
+              bool refit) {
+    const uint64_t cycle = plan.token_cycle_bytes;
+    if (plan.streaming_declined || !plan.config.moe.enabled || cycle == 0 || plan.cache_budget_bytes >= cycle)
+        return plan;
+    const auto clears = [&](const Plan & q) { return !q.streaming_declined && q.cache_budget_bytes >= cycle; };
+    const auto mib = [](uint64_t b) { return std::to_string(b >> 20); };
+    RunConfig base = cfg;
+    const int kept = cfg.ctx_checkpoints;
+    if (!req.is_pinned("ctx-checkpoints") && cfg.chatml && kept > 1) {
+        for (int n = kept / 2; n >= 1; n /= 2) {
+            base.ctx_checkpoints = n;
+            Plan q =
+                refit ? plan_layout(facts, base, req, model) : plan_run(base, facts.hw, model, facts.placement, req);
+            if (!clears(q)) continue;
+            restate(q, "ctx-checkpoints", std::to_string(n),
+                    std::to_string(n) + " context checkpoints, not " + std::to_string(kept) +
+                        ": the cache needed the room.",
+                    "no count was set, and " + std::to_string(kept) +
+                        " checkpoints left the expert cache under one token cycle (" + mib(cycle) +
+                        " MiB), which returns no hits; with " + std::to_string(n) + " the cache is " +
+                        mib(q.cache_budget_bytes) +
+                        " MiB. A follow-up that diverges before the oldest one kept is prefilled from there. " +
+                        flag_spelling("ctx-checkpoints") + " sets it by hand");
+            return q;
+        }
+        base.ctx_checkpoints = 1;
+    }
+    const uint32_t floor =
+        std::max<uint32_t>(PlannerPolicy::defaults().ctx_min_auto, (uint32_t) RunConfig::ctx_for_clients);
+    const int given = cfg.n_ctx;
+    if (!refit || req.is_pinned("ctx-size") || given / 2 < (int) floor) return plan;
+    for (uint32_t n_ctx = (uint32_t) given / 2; n_ctx >= floor; n_ctx /= 2) {
+        RunConfig shorter = base;
+        shorter.n_ctx = (int) n_ctx;
+        AutoPlan at = facts;
+        at.placement = probe_placement(cfg.model_path.c_str(), model, facts.hw, n_ctx, (uint32_t) shorter.graph_width(),
+                                       cfg.cache_type_k, cfg.cache_type_v, facts.backends, &cfg.spec);
+        detail::log_memory_snapshot("auto-probe-context");
+        if (!at.placement.fitted && facts.placement.fitted) break;
+        Plan q = plan_layout(at, shorter, req, model);
+        if (!clears(q)) continue;
+        const std::string n = std::to_string(n_ctx);
+        restate(q, "ctx-size", n, n + " tokens of context: at " + std::to_string(given) + " no expert cache fit.",
+                "no context was set, and at " + std::to_string(given) +
+                    " tokens its memory left the expert cache under one token cycle (" + mib(cycle) +
+                    " MiB), which returns no hits; at " + n + " tokens the cache is " + mib(q.cache_budget_bytes) +
+                    " MiB. A longer conversation does not fit. " + flag_spelling("ctx-size") +
+                    " sets it by hand, and a context set is never shortened");
+        if (shorter.ctx_checkpoints != kept)
+            restate(q, "ctx-checkpoints", std::to_string(shorter.ctx_checkpoints),
+                    "1 context checkpoint, not " + std::to_string(kept) + ": the cache needed the room.",
+                    "no count was set, and fewer checkpoints alone did not leave the expert cache a token cycle, so "
+                    "they went down to one before the context was shortened. " +
+                        flag_spelling("ctx-checkpoints") + " sets it by hand");
+        return q;
+    }
+    return plan;
+}
+
+Plan plan_on_facts(const AutoPlan & facts, const RunConfig & cfg, const PlanRequest & req, const ModelProfile & model) {
+    return give_way(facts, cfg, req, model, plan_layout(facts, cfg, req, model), /*refit*/ true);
+}
+
 } // namespace
 
 AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const AutoPlanOptions & opt) {
     AutoPlan r;
     const char * path = cfg.model_path.c_str();
     int step = 0;
+    // Each stage says what it took as the next starts, so a plan's time before a load can be told apart.
+    auto t_step = std::chrono::steady_clock::now();
+    const auto took = [&] {
+        const auto now = std::chrono::steady_clock::now();
+        if (step > 0 && step <= k_plan_step_count)
+            log_printf(LogLevel::Info, "plan: the %s stage took %.1f s", k_plan_steps[step - 1],
+                       std::chrono::duration<double>(now - t_step).count());
+        t_step = now;
+    };
     const auto starting = [&] {
+        took();
         if (opt.on_step && step < k_plan_step_count) opt.on_step(k_plan_steps[step], step, k_plan_step_count);
         ++step;
     };
@@ -195,6 +324,7 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     detail::log_memory_snapshot("auto-probe-end");
     starting(); // rules
     r.plan = plan_on_facts(r, cfg, req, r.model);
+    took();
     if (opt.calibrate) calibrate_plan(r, cfg, req, opt.calibrate, opt.on_step);
     return r;
 }
@@ -202,7 +332,9 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
 Plan replan_rules(const AutoPlan & facts, const RunConfig & cfg, const PlanRequest & req, const MeasuredKnobs & knobs) {
     ModelProfile model = facts.model;
     model.knobs = knobs;
-    return plan_run(cfg, facts.hw, model, facts.placement, req);
+    // The checkpoints give way here as in the plan, so a calibration is judged on the plan it would
+    // serve; the context step, which places the model again, does not run.
+    return give_way(facts, cfg, req, model, plan_run(cfg, facts.hw, model, facts.placement, req), /*refit*/ false);
 }
 
 Plan replan(const AutoPlan & facts, const RunConfig & cfg, const PlanRequest & req, const MeasuredKnobs & knobs) {
@@ -222,8 +354,16 @@ const CalibrationResult & calibrate_plan(AutoPlan & ap,
         if (on_step) on_step(k_calibrate_step, cr.index, cr.runs_max);
         return run(c, cr);
     };
-    ap.calibration =
-        calibrate(ap.plan, ap.model.knobs, [&](const MeasuredKnobs & k) { return replan(ap, cfg, req, k); }, reported);
+    // Each plan between candidates says what it took, so a calibration's time can be told apart: the
+    // plans, the candidates' loads, their timed decodes (run_calibration_candidate).
+    const Replan timed_replan = [&](const MeasuredKnobs & k) {
+        const auto t0 = std::chrono::steady_clock::now();
+        Plan p = replan(ap, cfg, req, k);
+        log_printf(LogLevel::Info, "calibration: planned again in %.1f s",
+                   std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+        return p;
+    };
+    ap.calibration = calibrate(ap.plan, ap.model.knobs, timed_replan, reported);
     ap.calibrated = true;
     ap.plan = ap.calibration.plan;
     ap.model.knobs = ap.calibration.knobs;

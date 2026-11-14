@@ -41,16 +41,8 @@ bool redirect_output(const std::string & path, std::string & err);
 // none: where an init system reads a per-user service from.
 std::string user_config_dir();
 
-// Per-user data directory for settings and downloaded models (created on first use):
-// %LOCALAPPDATA%\BigMoeOnEdge, ~/Library/Application Support/BigMoeOnEdge,
-// or $XDG_DATA_HOME/bigmoeonedge (~/.local/share/bigmoeonedge).
+// Per-user data directory: the one every front-end uses (frontend/user_dirs.h).
 std::string default_data_dir();
-
-// What this platform's compute backends are told before any of them is loaded, each only where
-// the environment has not said otherwise: where a backend may keep compiled programs between runs.
-// The Hexagon NPU backend's tuning entries are left at its defaults (platform.cpp says why). Called
-// first thing, so a device-probe child inherits it.
-void prepare_compute_backends(const std::string & data_dir);
 
 // The build's target as the release feed names it ("macos-arm64", "linux-x86_64",
 // "windows-arm64", ...), or "" for a platform the releases do not ship (a phone).

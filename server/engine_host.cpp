@@ -172,8 +172,22 @@ std::string EngineHost::load(const RunConfig & effective, const RunConfig & requ
     return load(effective, requested, std::nullopt);
 }
 
+std::string EngineHost::load_calibrated(const RunConfig & effective,
+                                        const RunConfig & requested,
+                                        BeforeOpen before_open,
+                                        std::optional<OpenFallback> fallback) {
+    return start_load(effective, requested, std::move(fallback), std::move(before_open));
+}
+
 std::string
 EngineHost::load(const RunConfig & effective, const RunConfig & requested, std::optional<OpenFallback> fallback) {
+    return start_load(effective, requested, std::move(fallback), nullptr);
+}
+
+std::string EngineHost::start_load(const RunConfig & effective,
+                                   const RunConfig & requested,
+                                   std::optional<OpenFallback> fallback,
+                                   BeforeOpen before_open) {
     const ValidationResult v = validate(effective);
     if (!v) return engine_message(v.error);
     std::lock_guard<std::mutex> life(life_m_);
@@ -203,8 +217,15 @@ EngineHost::load(const RunConfig & effective, const RunConfig & requested, std::
     if (loader_.joinable()) loader_.join(); // the previous load finished: its state was not Loading
     publish_state();
     cancel();
-    start_loader(effective, nullptr, std::move(fallback));
+    // cancel() stops a step too; this load's own step runs until an unload, a load after it, or the end.
+    before_open_stop_ = false;
+    start_loader(effective, std::move(before_open), std::move(fallback));
     return "";
+}
+
+bool EngineHost::loading() const {
+    std::lock_guard<std::mutex> lk(m_);
+    return state_ == State::Loading;
 }
 
 bool EngineHost::idle() const {
@@ -264,7 +285,8 @@ void EngineHost::start_loader(const RunConfig & effective_in,
                 std::lock_guard<std::mutex> lk(m_);
                 requested = requested_;
             }
-            before_open(effective, requested, BeforeOpenSignals{before_open_stop_, before_open_cancel_});
+            engine_.run(
+                [&] { before_open(effective, requested, BeforeOpenSignals{before_open_stop_, before_open_cancel_}); });
             {
                 std::lock_guard<std::mutex> lk(m_);
                 requested_ = requested;
@@ -283,13 +305,14 @@ void EngineHost::start_loader(const RunConfig & effective_in,
         }
         if (calibrating_.exchange(false)) publish_state(); // a load now, no longer a calibration
         std::string error;
-        std::shared_ptr<HostedSession> s = open_(session_config_from(effective), error);
+        std::shared_ptr<HostedSession> s = engine_.run([&] { return open_(session_config_from(effective), error); });
         // The pending side would not open: the other side, which a plan may serve instead. Not for a
         // load an unload has cancelled. Only an open of the other side says the first failure was the
         // side's: where both fail, the first error is the one reported, and nothing is told.
         if (!s && fallback && !before_open_cancel_.load()) {
             std::string second;
-            std::shared_ptr<HostedSession> other = open_(session_config_from(fallback->effective), second);
+            std::shared_ptr<HostedSession> other =
+                engine_.run([&] { return open_(session_config_from(fallback->effective), second); });
             if (other) {
                 s = std::move(other);
                 effective = fallback->effective;
@@ -335,6 +358,9 @@ void EngineHost::start_loader(const RunConfig & effective_in,
                               {"ctx_advice", context_advice(s->n_ctx(), serves_network_.load())}};
             }
         }
+        // What came of the prefill device is known now, not after the first answer: kept at once, so a
+        // load nobody asks anything of does not leave the record saying it never finished opening.
+        if (s) keep_knobs(*s);
         publish_state();
         // Said at load, where a person starting the server reads it, and not first by a client that
         // shows the refusal as an unknown error after its first request.
@@ -548,21 +574,24 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
     // and a half, the last reading riding on the tokens between.
     double temp_c = -1.0;
     std::chrono::steady_clock::time_point temp_at{};
-    RunResult r = s->generate(gr, [&](const TokenMetrics & tm) {
-        json ev = token_json(tm);
-        if (cpu_temp_) {
-            const auto now = std::chrono::steady_clock::now();
-            if (temp_at == std::chrono::steady_clock::time_point{} || now - temp_at > std::chrono::milliseconds(1500)) {
-                temp_at = now;
-                temp_c = cpu_temp_();
+    RunResult r = engine_.run([&] {
+        return s->generate(gr, [&](const TokenMetrics & tm) {
+            json ev = token_json(tm);
+            if (cpu_temp_) {
+                const auto now = std::chrono::steady_clock::now();
+                if (temp_at == std::chrono::steady_clock::time_point{} ||
+                    now - temp_at > std::chrono::milliseconds(1500)) {
+                    temp_at = now;
+                    temp_c = cpu_temp_();
+                }
+                if (temp_c > 0) ev["cpu_temp_c"] = temp_c;
             }
-            if (temp_c > 0) ev["cpu_temp_c"] = temp_c;
-        }
-        bus_.publish("token", ev);
-        if (on_token && !client_gone && !on_token(tm)) {
-            client_gone = true;
-            s->cancel();
-        }
+            bus_.publish("token", ev);
+            if (on_token && !client_gone && !on_token(tm)) {
+                client_gone = true;
+                s->cancel();
+            }
+        });
     });
     generating_ = false;
 
@@ -673,7 +702,7 @@ DecideOutcome EngineHost::decide(const DecideRequest & req, const std::function<
 
     generating_ = true;
     publish_state();
-    DecideResult r = s->decide(req);
+    DecideResult r = engine_.run([&] { return s->decide(req); });
     generating_ = false;
 
     if (!r.ok && !r.cancelled) {

@@ -1,4 +1,5 @@
 #include "platform.h"
+#include "user_dirs.h"
 
 #if !defined(_WIN32)
 // See model_library.cpp for why the subprocess header's chdir support is off. Windows opens a URL
@@ -193,50 +194,7 @@ std::string user_config_dir() {
 }
 
 std::string default_data_dir() {
-#if defined(_WIN32)
-    PWSTR w = nullptr;
-    std::string base;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &w))) base = narrow(w);
-    CoTaskMemFree(w);
-    return (fs::u8path(base) / "BigMoeOnEdge").u8string();
-#elif defined(__APPLE__)
-    const char * home = std::getenv("HOME");
-    return (fs::path(home ? home : ".") / "Library" / "Application Support" / "BigMoeOnEdge").u8string();
-#else
-    const char * xdg = std::getenv("XDG_DATA_HOME");
-    if (xdg && *xdg) return (fs::path(xdg) / "bigmoeonedge").u8string();
-    const char * home = std::getenv("HOME");
-    return (fs::path(home ? home : ".") / ".local" / "share" / "bigmoeonedge").u8string();
-#endif
-}
-
-namespace {
-// A value someone set stays; the engine's defaults only fill what is empty.
-void set_env_default(const char * name, const std::string & value) {
-#if defined(_WIN32)
-    if (!std::getenv(name)) _putenv_s(name, value.c_str());
-#else
-    setenv(name, value.c_str(), 0);
-#endif
-}
-} // namespace
-
-void prepare_compute_backends(const std::string & data_dir) {
-    // Where a backend may keep compiled programs between runs (the OpenCL kernels, for one). Its
-    // own default is a temporary directory, which an app's process may not be able to write, and
-    // the cache then disables itself. Read when the backend is loaded, so set before that.
-    std::error_code ec;
-    const fs::path cache = fs::u8path(data_dir) / "backend-cache";
-    fs::create_directories(cache, ec);
-    if (!ec) set_env_default("GGML_OPENCL_KERNEL_CACHE_DIR", cache.u8string());
-    // The Hexagon backend's two tuning entries are left at their defaults, off; a value someone sets
-    // is still read. Polling for the DSP (GGML_HEXAGON_OPPOLL): on Android the backend's zero-timeout
-    // poll goes to the blocking queue read, which logs an error for every empty poll (#512), 1.1 to 3.4
-    // million rows per load on a 12 GB phone, for a 1525-token NPU prefill in 16.7 s polled against
-    // 15.9 s not. The host buffer (GGML_HEXAGON_HOSTBUF), which moves the model state where the NPU
-    // reads it: on the same phone it bought no prefill (Qwen3.6-35B-A3B, 1906 tokens at 137-138 tok/s
-    // with it, 137-140 without), cost decode 7-13% (an op of every token went to the DSP, #544), and
-    // with Gemma 4 26B-A4B the load never finished, the first layer's work on the DSP never returning.
+    return frontend::default_data_dir();
 }
 
 std::string thermal_zone_root() {

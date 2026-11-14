@@ -41,10 +41,11 @@ cd build-asan && ASAN_OPTIONS=halt_on_error=1 \
 ```
 
 ThreadSanitizer: `-DBMOE_SANITIZE=thread -DGGML_OPENMP=OFF` into its own build directory, then
-`ctest -R '^(engine_host|server_logic|moe_gates_.*)$'` with `TSAN_OPTIONS=halt_on_error=1`. On a
+`ctest -R '^(engine_host|server_logic|moe_gates_.*)$'` with
+`TSAN_OPTIONS=halt_on_error=1:suppressions=$PWD/../tests/sanitizers/tsan.supp`. On a
 Linux kernel with wide address-space randomisation, `sudo sysctl vm.mmap_rnd_bits=28` first.
 
-`tests/sanitizers/ubsan.supp` and `lsan.supp` list only findings inside `third_party/llama.cpp`,
+`tests/sanitizers/ubsan.supp`, `lsan.supp` and `tsan.supp` list only findings inside `third_party/llama.cpp`,
 which this project does not patch; a report in our own code is a bug to fix, never a line to add
 there. Leak checking is Linux-only (macOS's ASan has none); on Linux add
 `LSAN_OPTIONS=suppressions=$PWD/../tests/sanitizers/lsan.supp`.
