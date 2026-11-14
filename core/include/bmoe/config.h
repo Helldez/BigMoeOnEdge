@@ -807,7 +807,10 @@ struct RunConfig {
     // falls back to F16 rather than failing the run.
     KvCacheType cache_type_k = k_default_kv_cache_type;
     KvCacheType cache_type_v = k_default_kv_cache_type;
-    bool chatml = false; // wrap the prompt in the model family's chat turn (arch-aware)
+    // Wrap the prompt in chat turns, rendered with the chat template the gguf carries (llama.cpp's
+    // common_chat_templates_init): the model's own template, not one picked by architecture. A file
+    // whose template cannot be read falls back to the raw prompt, with a warning.
+    bool chatml = false;
 
     // Render the chat template with reasoning enabled. Passed to the template as the
     // `enable_thinking` kwarg, so a reasoning model (Qwen3, thinking Gemma, …) only emits

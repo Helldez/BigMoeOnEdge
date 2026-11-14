@@ -1918,9 +1918,9 @@ static void plan_view_tests() {
     plan.allocation.seconds_worst_case = 1.2;
     plan.allocation.cache_hit_credited = 0.2;
     plan.allocation.ledger.holdable_cap = 5ull << 30;
-    plan.allocation.ledger.rows = {{"dense", 1ull << 30, true, false},
-                                   {"expert cache", 2ull << 30, true, false},
-                                   {"device slots", 1ull << 29, true, true}};
+    plan.allocation.ledger.rows = {{LedgerKind::Dense, "dense", 1ull << 30, true, false},
+                                   {LedgerKind::ExpertCache, "expert cache", 2ull << 30, true, false},
+                                   {LedgerKind::DeviceSlots, "device slots", 1ull << 29, true, true}};
     json v = plan_view(hw, plan);
     check(v["summary"]["sentence"] == "Experts stream from flash, with a 2.0 GiB cache.", "plan view: the sentence");
     check(v["summary"]["lanes"][0]["on"] == json::array({"NPU0"}) && v["summary"]["lanes"][0]["label"] == "Prompt",
@@ -2020,6 +2020,28 @@ static void plan_view_tests() {
     check(decision_json(dec)["group"] == "kept", "plan view: the person's value is kept");
     dec.source = Source::Unprobed;
     check(decision_json(dec)["group"] == "kept", "plan view: an unmeasured value is kept");
+    {
+        // Measured against predicted, worded once for every UI: a percentage while the two are
+        // within 2x, a ratio once they are further apart, and an expected rate never rounded to 0.0.
+        const json close = speed_check(0.302, 0.24);
+        check(close["badge"] == "+26%" && close["against"] == "against the 3.3 expected" && close["tone"] == "ok",
+              "speed check: close reads as a percentage");
+        const json behind = speed_check(0.25, 0.3);
+        check(behind["badge"] == "-17%" && behind["tone"] == "warn", "speed check: behind the plan warns");
+        // Measured on a phone: 1.7 tok/s against a prediction of ~0.02, once shown as "+8314%".
+        const json fast = speed_check(49.5, 0.588);
+        check(fast["badge"] == "84x" && fast["against"] == "the 0.020 expected" && fast["tone"] == "ok",
+              "speed check: far ahead reads as a ratio");
+        const json slow = speed_check(0.25, 0.8);
+        check(slow["badge"] == "0.31x" && slow["against"] == "the 4.0 expected" && slow["tone"] == "warn",
+              "speed check: far behind reads as a ratio");
+        check(speed_check(0.25, 0.5)["badge"] == "0.50x" && speed_check(1.0, 0.5)["badge"] == "2.0x",
+              "speed check: 2x apart is a ratio");
+        check(speed_check(0, 0.5).is_null() && speed_check(0.5, 0).is_null(), "speed check: none without both");
+        check(decode_rate_text(1.7) == "1.7" && decode_rate_text(0.0202) == "0.020" &&
+                  decode_rate_text(0.0049) == "0.0049" && decode_rate_text(0) == "-",
+              "speed check: a rate as a person reads it");
+    }
     check(value_text(Decision{"cache-mb", "4737", Source::Derived, "r", "b"}) == "4.6 GiB" &&
               value_text(Decision{"dense-weights", "pinned", Source::Derived, "r", "b"}) == "pinned in memory" &&
               value_text(Decision{"o-direct", "true", Source::Measured, "r", "b"}) == "on" &&

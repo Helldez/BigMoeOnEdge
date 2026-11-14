@@ -40,6 +40,19 @@ HeldPlan held_plan(const PlanRead & r);
 // memory, devices, devices_none and devices_none_text, as one object to merge into /api/plan.
 json plan_view(const HardwareProfile & hw, const Plan & plan);
 
+// Decode as a finished turn measured it against decode as the plan priced it (seconds per token
+// each), worded once for every UI: `badge` ("+26%", or "84x" once the two are more than
+// k_speed_ratio_from apart either way, where a percentage says less than how many times apart they
+// are), `against` ("against the 3.3 expected", "the 0.020 expected") and `tone` (`ok` when the run
+// met or beat the plan, `warn` when not), a code a UI reads only to pick a colour. Null when either
+// figure is missing.
+constexpr double k_speed_ratio_from = 2.0;
+json speed_check(double predicted_s_per_token, double measured_s_per_token);
+
+// A decode rate as a person reads it: one decimal, or two significant digits where one decimal
+// would read 0.0; "-" for none.
+std::string decode_rate_text(double tok_s);
+
 // A decision's value as a person reads it: a choice by its settings label, a size in GiB or MiB,
 // a number with its unit, a planner word ("experts-stream") as words. `value` stays the raw one.
 std::string value_text(const Decision & d);

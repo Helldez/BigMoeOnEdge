@@ -6,6 +6,33 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Changed
+- **The planner no longer reads its own prose or its ledger's labels to decide anything.** The
+  account of the layers a device keeps split was written as one sentence and later cut back at
+  "; bringing them home costs" to swap in how it came out; a rewording would have left both
+  outcomes in the text without an error. The measured half is now kept apart and each outcome
+  appended once. The memory ledger's rows carry a kind, and the stages that drop or replace the
+  dense row or the expert cache match on it rather than on "dense" and "expert cache", which stay
+  as the names `--explain` and the plan view show. The model, layer and decide probes now ask
+  `tensor_names` whether a tensor is the token table, the output head, an embedding table, part of
+  a multi-token-prediction block or a block's attention or feed-forward, instead of spelling those
+  names themselves, so the one place llama.cpp's names are read is the only one again. Plans,
+  `--explain` and the plan view's JSON are unchanged; `chatml`'s comment now says it renders the
+  gguf's own chat template rather than one chosen by architecture.
+
+### Fixed
+- **The Plan screen compares the measured speed with the expected one the same way on every app.**
+  The web UI and the Android app said it as a ratio once the two were more than 2x apart ("84x the
+  0.020 expected"), each with its own copy of the rule, while the iOS app always printed a
+  percentage, "+8314%" for the same run. The server now words the comparison once and sends it with
+  the plan (`speed_check`, [server-api.md](docs/server-api.md)); every app shows it as sent, and the
+  three local rules are gone.
+- **Every word the web UI shows comes from its dictionary.** The Plan and Models screens, the Hugging
+  Face search, the model folders, the plan's memory and progress, and the settings field wrote about
+  240 English strings straight into their markup. They are keys in `ui/src/lib/text/en.ts` now, and a
+  test reads every `.svelte` template and fails on a word written into it: a text node, a title,
+  label or placeholder, or a string shown from an expression.
+
 ### Fixed
 - **A second load of a model plans from the same facts as the first.** Two rented Linux CUDA boxes
   (an 8 GB card, and two 16 GB cards) ran each model twice on one data folder, the second load planned
@@ -185,6 +212,28 @@ Semantic Versioning.
   finished: the plan armed the NPU wherever there was room (a 4096 context, for one), and the DSP
   never returned from the first layer.
 
+### Fixed
+- **A graphics card beside the processor's integrated GPU is used again.** With a second backend for
+  the card (the CUDA pack beside Vulkan), the plan handed llama.cpp's capacity fitter the integrated
+  GPU too. The fitter put part of the model there, and since that memory is the host's own the plan
+  set the whole placement aside, the card's share with it: a model that fit a 32 GB card decoded on
+  the CPU, streamed, at a fifth of the speed the plan expected. The fitter is now asked only of the
+  devices with memory of their own where there is one, as llama.cpp's own default list does, and a
+  device list set by hand is the one it places on.
+
+### Added
+- **[docs/field-reports.md](docs/field-reports.md)**: the problems people report from their own
+  machines, each with how to recognise it, its cause, the version that fixes it and a workaround for
+  the versions before: 26 cases, the open ones first, from the issues people opened since July and
+  the reports that came in elsewhere, the case above and a dense model left on the CPU (#585) among
+  them.
+
+### Fixed
+- **A dense model runs on the graphics card again.** A model with no experts streams nothing, and the
+  plan stopped as soon as it saw that, before it applied the capacity fitter's placement. Every
+  layer then stayed on the CPU: a 4B model that fits a 6 GB laptop card decoded at 12 tok/s where
+  llama.cpp gives 65 on the card. The fitter's placement is now applied to a dense model too, as
+  llama.cpp's `--fit` would place it; nothing else in its plan changes.
 
 ## [0.42.0] - 2026-11-12
 

@@ -11,6 +11,7 @@
   import { fitTone } from '../../lib/library';
   import { isoDate, roleLabel, splitByRole } from '../../lib/roles';
   import type { HfFacts, HfModel, HfRepoHit } from '../../lib/types';
+  import { t, tp } from '../../lib/text';
 
   let { onAdded }: { onAdded: (id: string) => Promise<void> | void } = $props();
 
@@ -31,7 +32,7 @@
   // name is only a hint, so they can still be checked, and the header then says what they are.
   let groups = $derived(splitByRole(models ?? []));
 
-  const STEPS = ['Find', 'Pick', 'Check', 'Download'] as const;
+  const STEPS = ['find', 'pick', 'check', 'download'] as const;
   // Where the person is: what they have, not what they last pressed.
   let step = $derived(added || (facts && chosen) ? 3 : chosen ? 2 : models || hits ? 1 : 0);
 
@@ -105,13 +106,13 @@
 </script>
 
 <section class="card hf">
-  <h3>From Hugging Face</h3>
-  <ol class="steps" aria-label="Steps">
-    {#each STEPS as label, i (label)}
-      <li class:done={i < step} class:current={i === step} aria-current={i === step ? 'step' : undefined}>{i + 1} {label}</li>
+  <h3>{t('hf.title')}</h3>
+  <ol class="steps" aria-label={t('hf.steps')}>
+    {#each STEPS as s, i (s)}
+      <li class:done={i < step} class:current={i === step} aria-current={i === step ? 'step' : undefined}>{i + 1} {t(`hf.step.${s}`)}</li>
     {/each}
   </ol>
-  <p class="muted">A model's name to search for, or a repository id or URL. The server lists the repository's gguf files, reads the header of the one you pick before any download, and says whether it fits here.</p>
+  <p class="muted">{t('hf.lead')}</p>
   <form
     class="row"
     onsubmit={(e) => {
@@ -119,28 +120,28 @@
       list();
     }}
   >
-    <input type="text" bind:value={repo} placeholder="a name to search, owner/name, or a huggingface.co link" aria-label="Repository or search" autocomplete="off" />
-    <button type="submit" class="primary" disabled={!repo.trim() || busy !== ''}>{busy === 'list' ? 'Looking...' : 'Find'}</button>
-    <button type="button" onclick={() => (askToken = !askToken)}>{askToken ? 'Hide token' : 'Token'}</button>
+    <input type="text" bind:value={repo} placeholder={t('hf.repo.placeholder')} aria-label={t('hf.repo.label')} autocomplete="off" />
+    <button type="submit" class="primary" disabled={!repo.trim() || busy !== ''}>{busy === 'list' ? t('hf.looking') : t('hf.find')}</button>
+    <button type="button" onclick={() => (askToken = !askToken)}>{askToken ? t('hf.token.hide') : t('hf.token')}</button>
   </form>
   {#if askToken}
     <label class="row token">
-      <span class="muted">Access token for a gated or private repository. Used for these requests and kept nowhere.</span>
-      <input type="password" bind:value={token} autocomplete="off" aria-label="Hugging Face access token" />
+      <span class="muted">{t('hf.token.help')}</span>
+      <input type="password" bind:value={token} autocomplete="off" aria-label={t('hf.token.label')} />
     </label>
   {/if}
   {#if error}<p class="banner error" role="alert">{error}</p>{/if}
 
   {#if hits}
     {#if hits.length === 0}
-      <p class="muted">No repository with gguf files matches <code>{repo}</code>.</p>
+      <p class="muted">{t('hf.noMatch')} <code>{repo}</code></p>
     {:else}
-      <ul class="models" aria-label="Repositories found">
+      <ul class="models" aria-label={t('hf.found')}>
         {#each hits as h (h.id)}
           <li>
             <button type="button" class="link" onclick={() => pick(h)}>{h.id}</button>
-            <span class="muted">{formatNum(h.downloads, 0)} downloads · {formatNum(h.likes, 0)} likes{#if isoDate(h.modified)} · updated {isoDate(h.modified)}{/if}</span>
-            {#if h.gated}<span class="badge warn" title="Needs an access token">gated</span>{/if}
+            <span class="muted">{t('hf.hit.stats', { downloads: formatNum(h.downloads, 0), likes: formatNum(h.likes, 0) })}{#if isoDate(h.modified)} · {t('hf.hit.updated', { date: isoDate(h.modified) })}{/if}</span>
+            {#if h.gated}<span class="badge warn" title={t('hf.gated.title')}>{t('hf.gated')}</span>{/if}
           </li>
         {/each}
       </ul>
@@ -149,7 +150,7 @@
 
   {#if models}
     {#if models.length === 0}
-      <p class="muted">No gguf files in <code>{listed}</code>.</p>
+      <p class="muted">{t('hf.noFiles')} <code>{listed}</code></p>
     {:else}
       {#snippet row(m: HfModel)}
         <li class:chosen={m.name === selected}>
@@ -158,27 +159,27 @@
             <span class="name">{m.name}</span>
             {#if m.quant}<span class="badge">{m.quant}</span>{/if}
             <span class="muted">{formatBytes(m.bytes)}</span>
-            {#if m.count > 1}<span class="muted">{m.files.length} of {m.count} shards</span>{/if}
-            {#if !m.complete}<span class="badge err">incomplete</span>{/if}
+            {#if m.count > 1}<span class="muted">{t('hf.shards', { have: m.files.length, n: m.count })}</span>{/if}
+            {#if !m.complete}<span class="badge err">{t('hf.incomplete')}</span>{/if}
           </label>
         </li>
       {/snippet}
-      <ul class="models" aria-label="Models in {listed}">
+      <ul class="models" aria-label={t('hf.modelsIn', { repo: listed })}>
         {#each groups.models as m (m.name)}{@render row(m)}{/each}
       </ul>
       {#if groups.companions.length}
         <details class="companions">
-          <summary class="muted">{groups.companions.length} companion {groups.companions.length === 1 ? 'file' : 'files'} (projectors, draft heads, going by their names; Check reads the header)</summary>
-          <ul class="models" aria-label="Companion files in {listed}">
+          <summary class="muted">{tp('hf.companions', groups.companions.length)}</summary>
+          <ul class="models" aria-label={t('hf.companionsIn', { repo: listed })}>
             {#each groups.companions as m (m.name)}{@render row(m)}{/each}
           </ul>
         </details>
       {/if}
       <div class="actions">
         <button type="button" class="primary" disabled={!chosen || busy !== ''} onclick={inspect}>
-          {busy === 'inspect' ? 'Reading the header...' : 'Check it fits here'}<span class="visually-hidden"> {selected}</span>
+          {busy === 'inspect' ? t('hf.reading') : t('hf.check')}<span class="visually-hidden"> {selected}</span>
         </button>
-        {#if !chosen}<span class="muted">Pick a model above first.</span>{/if}
+        {#if !chosen}<span class="muted">{t('hf.pickFirst')}</span>{/if}
       </div>
     {/if}
   {/if}
@@ -194,33 +195,33 @@
       </header>
       {#if f.model.readable}
         <dl>
-          <dt>Architecture</dt>
+          <dt>{t('hf.fact.arch')}</dt>
           <dd>{f.model.arch || '?'}</dd>
-          <dt>Experts</dt>
-          <dd>{f.model.is_moe ? `${f.model.n_expert}, ${f.model.n_expert_used} per token` : 'none (dense)'}</dd>
+          <dt>{t('hf.fact.experts')}</dt>
+          <dd>{f.model.is_moe ? t('hf.fact.experts.value', { n: f.model.n_expert, used: f.model.n_expert_used }) : t('hf.fact.dense')}</dd>
           {#if f.model.streamable}
-            <dt>Layers</dt>
-            <dd>{f.model.n_layer} ({f.model.n_moe_layer} with experts)</dd>
-            <dt>Resident</dt>
+            <dt>{t('hf.fact.layers')}</dt>
+            <dd>{t('hf.fact.layers.value', { n: f.model.n_layer, moe: f.model.n_moe_layer })}</dd>
+            <dt>{t('hf.fact.resident')}</dt>
             <dd>{formatBytes(f.model.dense_bytes)}</dd>
-            <dt>Experts on flash</dt>
-            <dd>{formatBytes(f.model.expert_bytes)}, {formatBytes(f.model.token_cycle_bytes)} a token</dd>
+            <dt>{t('hf.fact.flash')}</dt>
+            <dd>{t('hf.fact.flash.value', { size: formatBytes(f.model.expert_bytes), token: formatBytes(f.model.token_cycle_bytes) })}</dd>
           {/if}
-          <dt>On disk</dt>
-          <dd>{formatBytes(f.bytes)}{f.files > 1 ? ` in ${f.files} files` : ''}</dd>
+          <dt>{t('hf.fact.disk')}</dt>
+          <dd>{f.files > 1 ? t('hf.fact.disk.files', { size: formatBytes(f.bytes), n: f.files }) : formatBytes(f.bytes)}</dd>
         </dl>
       {/if}
       <p class="muted">{f.verdict.memory}</p>
       <p class={f.verdict.downloadable ? 'muted' : 'err'}>{f.verdict.disk}</p>
       <div class="actions">
         {#if added}
-          <span class="badge ok">Downloading</span>
-          <span class="muted">Follow it in Your models; Load appears on its row when it is done.</span>
+          <span class="badge ok">{t('hf.downloading')}</span>
+          <span class="muted">{t('hf.downloading.help')}</span>
         {:else}
           <button type="button" class="primary" disabled={!f.verdict.downloadable || !chosen.complete || busy !== ''} onclick={add}>
-            {busy === 'add' ? 'Starting...' : 'Download'}<span class="visually-hidden"> {f.name}</span>
+            {busy === 'add' ? t('hf.starting') : t('hf.download')}<span class="visually-hidden"> {f.name}</span>
           </button>
-          {#if !chosen.complete}<span class="muted">Shards are missing from the repository: it cannot be downloaded whole.</span>{/if}
+          {#if !chosen.complete}<span class="muted">{t('hf.shardsMissing')}</span>{/if}
         {/if}
       </div>
     </div>
