@@ -54,8 +54,9 @@ bool DecideProbe::load_head(const std::string & model_path) {
         return false;
     }
     // Untied models carry output.weight; a tied one multiplies by the embedding table.
-    const char * head_name = offs.off_by_name.count("output.weight") ? "output.weight" : "token_embd.weight";
-    const char * norm_name = "output_norm.weight";
+    const char * head_name =
+        offs.off_by_name.count(tensor_names::k_output_head) ? tensor_names::k_output_head : tensor_names::k_token_table;
+    const char * norm_name = tensor_names::k_output_norm;
     bool have_head = false, have_norm = false;
     for (size_t s = 0; s < offs.shard_paths.size() && !(have_head && have_norm); ++s) {
         gguf_init_params gp{};

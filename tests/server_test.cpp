@@ -1918,9 +1918,9 @@ static void plan_view_tests() {
     plan.allocation.seconds_worst_case = 1.2;
     plan.allocation.cache_hit_credited = 0.2;
     plan.allocation.ledger.holdable_cap = 5ull << 30;
-    plan.allocation.ledger.rows = {{"dense", 1ull << 30, true, false},
-                                   {"expert cache", 2ull << 30, true, false},
-                                   {"device slots", 1ull << 29, true, true}};
+    plan.allocation.ledger.rows = {{LedgerKind::Dense, "dense", 1ull << 30, true, false},
+                                   {LedgerKind::ExpertCache, "expert cache", 2ull << 30, true, false},
+                                   {LedgerKind::DeviceSlots, "device slots", 1ull << 29, true, true}};
     json v = plan_view(hw, plan);
     check(v["summary"]["sentence"] == "Experts stream from flash, with a 2.0 GiB cache.", "plan view: the sentence");
     check(v["summary"]["lanes"][0]["on"] == json::array({"NPU0"}) && v["summary"]["lanes"][0]["label"] == "Prompt",

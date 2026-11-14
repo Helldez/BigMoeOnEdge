@@ -270,7 +270,9 @@ struct Planning {
 
     // The device's dense-only layers brought home (price_layers_home): the alternative placement,
     // what it costs the host and what it saves a token, and the account of it. `considered` is
-    // false in the plan made again from that alternative, so it is priced once.
+    // false in the plan made again from that alternative, so it is priced once. `measured` is the
+    // account's first half, what the split measured; the decision's reason is that and the outcome
+    // (home_reason), so a later stage that settles the outcome rewrites only its own half.
     struct LayersHome {
         bool considered = true;
         bool priced = false;
@@ -278,6 +280,7 @@ struct Planning {
         uint64_t bytes = 0;
         double saved = 0.0;
         Placement whole;
+        std::string measured;
         Decision decision;
     } home;
 
@@ -972,6 +975,12 @@ void choose_device_cache_cpu_share(Planning & s) {
     armed(Source::Policy, share_brief, std::string(nums) + before);
 }
 
+// The account of the layers home: what the split measured, then how it came out. Each stage that
+// settles the outcome passes only its own clause, so none of them has to find the other's in prose.
+std::string home_reason(const Planning::LayersHome & h, const std::string & outcome) {
+    return h.measured + "; " + outcome;
+}
+
 // ── the device crossing: layers on a device for decode, or fewer (measured-planning.md, Step 3) ──
 // Where not every dense part fits beside the experts, the capacity fitter puts the dense part of
 // some layers on a device and leaves their experts on the host: each such layer then crosses the
@@ -1136,9 +1145,10 @@ void price_layers_home(Planning & s) {
     s.home.whole = std::move(w);
     d.brief = u64s(dense_only) + " layers keep their dense part on the device: the RAM to bring them home buys more "
                                  "as cache.";
-    d.reason = std::string("measured, ") + nums + "; bringing them home costs the host " + mib_s(s.home.bytes) +
-               " MiB (their dense part and, bounded by all of it, the context), which the ranking weighed against "
-               "the cache and did not fund";
+    s.home.measured = std::string("measured, ") + nums;
+    d.reason = home_reason(s.home, "bringing them home costs the host " + mib_s(s.home.bytes) +
+                                       " MiB (their dense part and, bounded by all of it, the context), which the "
+                                       "ranking weighed against the cache and did not fund");
 }
 
 // ── the regime: a ratio of the two profiles, never a property of either ─────────
@@ -2714,10 +2724,10 @@ void charge_caller_cache(Planning & s) {
     if (!s.req.is_pinned("cache-mb")) return;
     Ledger & l = s.p.allocation.ledger;
     const uint64_t asked = (uint64_t) std::max(0, s.p.config.moe.cache_mb) << 20;
-    l.rows.erase(
-        std::remove_if(l.rows.begin(), l.rows.end(), [](const LedgerRow & r) { return r.name == "expert cache"; }),
-        l.rows.end());
-    if (asked) l.rows.push_back({"expert cache", asked, false});
+    l.rows.erase(std::remove_if(l.rows.begin(), l.rows.end(),
+                                [](const LedgerRow & r) { return r.kind == LedgerKind::ExpertCache; }),
+                 l.rows.end());
+    if (asked) l.rows.push_back({LedgerKind::ExpertCache, ledger_kind_name(LedgerKind::ExpertCache), asked, false});
     l.held = l.locked = 0;
     for (const LedgerRow & r : l.rows) {
         l.held += r.bytes;
@@ -3546,10 +3556,8 @@ Plan plan_once(const RunConfig & base,
         if (s.home.priced) {
             s.home.decision.brief = u64s(s.home.layers) + " layers keep their dense part on the device: not weighed, "
                                                           "nothing is streamed.";
-            const size_t cut = s.home.decision.reason.find("; bringing them home costs");
-            s.home.decision.reason = s.home.decision.reason.substr(0, cut) +
-                                     "; with nothing streamed there is no ranking to weigh bringing them home in, so "
-                                     "the fitter's placement stands";
+            s.home.decision.reason = home_reason(s.home, "with nothing streamed there is no ranking to weigh bringing "
+                                                         "them home in, so the fitter's placement stands");
             s.p.decisions.push_back(s.home.decision);
         }
         // Resident, the cores still compute whatever the devices do not: the layers the fitter left on
@@ -3584,10 +3592,9 @@ Plan plan_once(const RunConfig & base,
             home.decision.value = u64s(home.layers) + " home";
             home.decision.brief =
                 u64s(home.layers) + " layers come home whole: the hops to the device cost more than it saves.";
-            const size_t cut = home.decision.reason.find("; bringing them home costs");
-            home.decision.reason = home.decision.reason.substr(0, cut) + "; they come onto the host whole, for " +
-                                   u64s(mib(home.bytes)) +
-                                   " MiB the ranking funded, and the devices keep the layers they held whole";
+            home.decision.reason = home_reason(home, "they come onto the host whole, for " + u64s(mib(home.bytes)) +
+                                                         " MiB the ranking funded, and the devices keep the layers "
+                                                         "they held whole");
             return plan_from(base, hw, model, home.whole, req, pol, &home);
         }
         s.p.decisions.push_back(s.home.decision);

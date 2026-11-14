@@ -174,9 +174,9 @@ static HardwareProfile unified() {
     return h;
 }
 
-static const LedgerRow * ledger_row(const Plan & p, const char * name) {
+static const LedgerRow * ledger_row(const Plan & p, LedgerKind kind) {
     for (const LedgerRow & r : p.allocation.ledger.rows)
-        if (r.name == name) return &r;
+        if (r.kind == kind) return &r;
     return nullptr;
 }
 
@@ -219,12 +219,12 @@ int main() {
             ModelProfile seeing = model;
             seeing.projector_bytes = 600 * MiB;
             const Plan v = plan_run(base_cfg(), desktop(), seeing, PlanRequest{});
-            const LedgerRow * pr = ledger_row(v, "projector");
+            const LedgerRow * pr = ledger_row(v, LedgerKind::Projector);
             check(pr && pr->bytes == 600 * MiB && !pr->locked, "desktop, projector: a ledger row of its size");
             check(v.config.moe.cache_mb == p.config.moe.cache_mb - 600,
                   "desktop, projector: the cache gives up exactly the projector's bytes",
                   std::to_string(v.config.moe.cache_mb) + " vs " + std::to_string(p.config.moe.cache_mb));
-            check(!ledger_row(p, "projector"), "desktop, no projector: no row");
+            check(!ledger_row(p, LedgerKind::Projector), "desktop, no projector: no row");
         }
 
         const Decision * d = find(p, "release-mmap");
@@ -283,7 +283,7 @@ int main() {
         const Plan p = plan_run(base_cfg(), h, tabled, PlanRequest{});
         check(p.regime == Regime::ExpertsStream, "mapped table: experts stream");
         check(p.config.moe.dense_mapped == tabled.embedding_tensors, "mapped table: the run leaves the tables mapped");
-        const LedgerRow * dense = ledger_row(p, "dense");
+        const LedgerRow * dense = ledger_row(p, LedgerKind::Dense);
         check(dense && dense->bytes < tabled.group(WeightGroup::Embedding).bytes,
               "mapped table: the ledger's dense row does not carry the table",
               dense ? std::to_string(dense->bytes >> 20) + " MiB" : "no row");
@@ -454,7 +454,7 @@ int main() {
         check(e.seconds_per_token > 0.0 && e.seconds_per_token < e.seconds_worst_case,
               "tight machine: the stream is chosen on its price against the mapping",
               std::to_string(e.seconds_per_token) + " vs " + std::to_string(e.seconds_worst_case));
-        check(ledger_row(p, "dense") && !ledger_row(p, "expert cache"),
+        check(ledger_row(p, LedgerKind::Dense) && !ledger_row(p, LedgerKind::ExpertCache),
               "tight machine: the ledger keeps the dense set and carries no cache");
         check(p.to_flags().find("--cache-mb 0") != std::string::npos,
               "tight machine: the reproduce line states the cache is off, which a front-end would otherwise size",
@@ -484,7 +484,7 @@ int main() {
         }
         check(!any_held && all_mapped,
               "tight machine, unmeasured drive: a declined plan holds no weights and streams none");
-        check(!ledger_row(q, "dense") && !ledger_row(q, "expert cache"),
+        check(!ledger_row(q, LedgerKind::Dense) && !ledger_row(q, LedgerKind::ExpertCache),
               "tight machine, unmeasured drive: the ledger of a declined plan carries no weights");
     }
 
@@ -1704,11 +1704,16 @@ int main() {
         PlanRequest orq;
         orq.pinned = {"cache-mb"};
         const Plan o = plan_run(own, unified(), model, orq);
-        const LedgerRow * oc = ledger_row(o, "expert cache");
+        const LedgerRow * oc = ledger_row(o, LedgerKind::ExpertCache);
         check(!o.config.moe.cache_pin_fit && o.config.moe.cache_mb == 12000,
               "ledger: a caller's cache budget is not fitted");
         check(oc && oc->bytes == 12000 * MiB && o.allocation.ledger.held > o.allocation.ledger.holdable_cap,
               "ledger: a caller's cache is the row, even over the ceiling");
+        int n_cache_rows = 0;
+        for (const LedgerRow & r : o.allocation.ledger.rows)
+            if (r.kind == LedgerKind::ExpertCache) ++n_cache_rows;
+        check(n_cache_rows == 1 && oc->name == "expert cache",
+              "ledger: a caller's cache replaces the planned row, matched by kind, under its display name");
 
         // Two stores that are not one pool: no reclaim-exempt allocation, a generous lock in place.
         // The ceiling reported is the one the locked rows were charged to.
@@ -1724,9 +1729,13 @@ int main() {
         // A machine that offers a reclaim-exempt allocation and no lock in place: the dense set is
         // pinned and the cache is bounded only by what can be held, as it always was there.
         const Plan ph = plan_run(base_cfg(), phone(), model, PlanRequest{});
-        const LedgerRow * pc = ledger_row(ph, "expert cache");
-        const LedgerRow * pd = ledger_row(ph, "dense");
+        const LedgerRow * pc = ledger_row(ph, LedgerKind::ExpertCache);
+        const LedgerRow * pd = ledger_row(ph, LedgerKind::Dense);
         check(pd && pd->locked && pc && !pc->locked, "ledger: two stores, and only the dense set is in the locked one");
+        bool named = !ph.allocation.ledger.rows.empty();
+        for (const LedgerRow & r : ph.allocation.ledger.rows)
+            named = named && r.name == ledger_kind_name(r.kind);
+        check(named, "ledger: every row's display name is its kind's one spelling");
         check(!ph.config.moe.cache_pin, "ledger: and no lock is asked for the cache there");
         check(ph.cache_budget_bytes > 1 * GiB, "ledger: a cache that cannot be locked is not sized to the lock",
               mibs_of(ph.cache_budget_bytes));
@@ -1754,7 +1763,7 @@ int main() {
         check(unknown_plan.cache_budget_bytes == zero_plan.cache_budget_bytes &&
                   unknown_plan.allocation.ledger.holdable_cap == zero_plan.allocation.ledger.holdable_cap,
               "ledger: an unknown lock grants no process capacity and removes no margin");
-        const LedgerRow * unknown_cache = ledger_row(unknown_plan, "expert cache");
+        const LedgerRow * unknown_cache = ledger_row(unknown_plan, LedgerKind::ExpertCache);
         check(unknown_cache && !unknown_cache->locked && unknown_plan.allocation.cache_locked_bytes == 0 &&
                   !unknown_plan.allocation.ledger.lockable_cap_known,
               "ledger: the unknown runtime grant is not reported as a locked cache");
@@ -1848,10 +1857,10 @@ int main() {
         ar.pinned = {"prefill-device"};
         const Plan off = plan_run(base_cfg(), unified(), mm, PlanRequest{});
         const Plan on = plan_run(armed, unified(), mm, ar);
-        const LedgerRow * dev = ledger_row(on, "device");
+        const LedgerRow * dev = ledger_row(on, LedgerKind::Device);
         check(dev && dev->locked && dev->bytes == 768 * MiB,
               "ledger: an armed device is charged two expert layers, locked", dev ? mibs_of(dev->bytes) : "no row");
-        check(ledger_row(off, "device") == nullptr, "ledger: a device nobody armed is not a line");
+        check(ledger_row(off, LedgerKind::Device) == nullptr, "ledger: a device nobody armed is not a line");
         check(off.cache_budget_bytes - on.cache_budget_bytes == 768 * MiB,
               "ledger: the cache gives up what the device takes",
               mibs_of(off.cache_budget_bytes) + " against " + mibs_of(on.cache_budget_bytes));
@@ -1863,7 +1872,7 @@ int main() {
         pl.raw_host_context_bytes = 500 * MiB;
         pl.raw_host_compute_bytes = 100 * MiB;
         const Plan fx = plan_run(base_cfg(), phone(), model, pl, PlanRequest{});
-        const LedgerRow * fr_row = ledger_row(fx, "context and compute");
+        const LedgerRow * fr_row = ledger_row(fx, LedgerKind::ContextCompute);
         check(fr_row && fr_row->bytes == 600 * MiB,
               "ledger: context and compute are charged without a fitted placement");
         check(ph.cache_budget_bytes - fx.cache_budget_bytes == 600 * MiB, "ledger: and the cache is sized after them",
@@ -1877,12 +1886,12 @@ int main() {
         chat.chatml = true;
         chat.ctx_checkpoints = 4;
         const Plan cx = plan_run(chat, phone(), model, ck, PlanRequest{});
-        const LedgerRow * ck_row = ledger_row(cx, "context checkpoints");
+        const LedgerRow * ck_row = ledger_row(cx, LedgerKind::Checkpoints);
         check(ck_row && ck_row->bytes == 200 * MiB, "ledger: a chat run charges its checkpoints",
               ck_row ? mibs_of(ck_row->bytes) : "no row");
         check(fx.cache_budget_bytes - cx.cache_budget_bytes == 200 * MiB, "ledger: and the cache gives them up",
               mibs_of(fx.cache_budget_bytes) + " against " + mibs_of(cx.cache_budget_bytes));
-        check(ledger_row(plan_run(base_cfg(), phone(), model, ck, PlanRequest{}), "context checkpoints") == nullptr,
+        check(ledger_row(plan_run(base_cfg(), phone(), model, ck, PlanRequest{}), LedgerKind::Checkpoints) == nullptr,
               "ledger: a run that is not a chat keeps no checkpoints");
     }
 
@@ -1918,8 +1927,8 @@ int main() {
               "prefill: a device nobody measured at prefill width is not armed, and the plan says unprobed");
 
         const Plan on = plan_run(base_cfg(), machine(1500.0, Tri::Yes), mm, PlanRequest{});
-        const LedgerRow * row = ledger_row(on, "device");
-        const LedgerRow * turn = ledger_row(on, "device slots");
+        const LedgerRow * row = ledger_row(on, LedgerKind::Device);
+        const LedgerRow * turn = ledger_row(on, LedgerKind::DeviceSlots);
         const uint64_t stays = 2 * 64 * MiB;    // the layer's other weights, held for the session
         const uint64_t in_turn = 2 * 384 * MiB; // the expert slots, held only during a prefill
         check(on.config.prefill.device == "accel",
@@ -1981,7 +1990,7 @@ int main() {
         PlanRequest held_req;
         held_req.pinned = {"prefill-slots-on-demand"};
         const Plan held = plan_run(base_cfg(), machine(1500.0, Tri::Yes), mm, held_req);
-        check(!held.config.prefill.slots_on_demand && ledger_row(held, "device slots") == nullptr &&
+        check(!held.config.prefill.slots_on_demand && ledger_row(held, LedgerKind::DeviceSlots) == nullptr &&
                   off.cache_budget_bytes - held.cache_budget_bytes == two_layers,
               "prefill: slots held for the session are charged whole, beside the cache");
         check(on.allocation.ledger.locked <= on.allocation.ledger.lockable_cap, "prefill: the ledger still closes");
@@ -2044,7 +2053,7 @@ int main() {
         ModelProfile mid = mm;
         mid.largest_expert_layer_bytes = 4 * GiB; // the cache can yield one of these and not two
         const Plan one = plan_run(base_cfg(), machine(1500.0, Tri::Yes), mid, PlanRequest{});
-        const LedgerRow * one_row = ledger_row(one, "device slots");
+        const LedgerRow * one_row = ledger_row(one, LedgerKind::DeviceSlots);
         check(one.config.prefill.device == "accel" && one.config.prefill.slots == 1,
               "prefill: where two expert slots do not fit and one does, one is used",
               std::to_string(one.config.prefill.slots) + " slot(s)");
@@ -2072,7 +2081,7 @@ int main() {
         const Plan nodev = plan_run(base_cfg(), unified(), big, PlanRequest{});
         check(!nofit.config.prefill.enabled() && reason(nofit).find("refused on memory") != std::string::npos,
               "prefill: a device that does not fit is refused with the reason");
-        check(nofit.cache_budget_bytes == nodev.cache_budget_bytes && ledger_row(nofit, "device") == nullptr,
+        check(nofit.cache_budget_bytes == nodev.cache_budget_bytes && ledger_row(nofit, LedgerKind::Device) == nullptr,
               "prefill: and a refusal leaves the ledger as it was");
 
         // A cache that is off without the device - under one token cycle, so it would return no hits -
@@ -2197,7 +2206,7 @@ int main() {
         nolock.lock_in_place_bytes = 0;
         nolock.anon_overflow = Overflow::Kill;
         const Plan unlocked = plan_run(base_cfg(), nolock, mm, PlanRequest{});
-        const LedgerRow * ul_row = ledger_row(unlocked, "device");
+        const LedgerRow * ul_row = ledger_row(unlocked, LedgerKind::Device);
         check(unlocked.config.prefill.device == "accel",
               "prefill: where nothing can be locked, the device is not refused for the lock store", reason(unlocked));
         check(ul_row && !ul_row->locked && unlocked.allocation.ledger.locked == 0,
@@ -2225,15 +2234,16 @@ int main() {
         disc.devices[1].memory_total = 8 * GiB;
         disc.devices[1].memory_free = 8 * GiB;
         const Plan own = plan_run(base_cfg(), disc, mm, PlanRequest{});
-        check(own.config.prefill.device == "accel" && ledger_row(own, "device") == nullptr &&
+        check(own.config.prefill.device == "accel" && ledger_row(own, LedgerKind::Device) == nullptr &&
                   own.cache_budget_bytes == off.cache_budget_bytes,
               "prefill: a device with its own memory is armed and charged nothing here");
         // "Its own memory" with no size is not a pool to budget against: charged to this one.
         HardwareProfile sizeless = machine(1500.0, Tri::Yes);
         sizeless.devices[1].shares_host_memory = Tri::No;
         const Plan sz = plan_run(base_cfg(), sizeless, mm, PlanRequest{});
-        const LedgerRow * szr = ledger_row(sz, "device");
-        check(sz.config.prefill.device == "accel" && szr && szr->bytes == stays && ledger_row(sz, "device slots"),
+        const LedgerRow * szr = ledger_row(sz, LedgerKind::Device);
+        check(sz.config.prefill.device == "accel" && szr && szr->bytes == stays &&
+                  ledger_row(sz, LedgerKind::DeviceSlots),
               "prefill: a device that claims its own memory and states no size is charged to the host");
 
         // The fitter's compute buffers are per device: the prefill device pays its own part, and
@@ -2243,13 +2253,13 @@ int main() {
         projected.projected_devices = {"gpu"};
         projected.projected_compute_bytes = {256 * MiB};
         const Plan beside = plan_run(base_cfg(), machine(1500.0, Tri::Yes), mm, projected, PlanRequest{});
-        const LedgerRow * orow = ledger_row(beside, "device");
+        const LedgerRow * orow = ledger_row(beside, LedgerKind::Device);
         check(beside.config.prefill.device == "accel" && orow && orow->bytes == stays,
               "prefill: a compute buffer projected for another device is not charged to this one",
               orow ? std::to_string((unsigned long long) (orow->bytes >> 20)) + " MiB" : "no row");
         projected.projected_devices = {"accel"};
         const Plan mine = plan_run(base_cfg(), machine(1500.0, Tri::Yes), mm, projected, PlanRequest{});
-        const LedgerRow * mrow = ledger_row(mine, "device");
+        const LedgerRow * mrow = ledger_row(mine, LedgerKind::Device);
         check(mrow && mrow->bytes == stays + 256 * MiB, "prefill: and the one projected for it is",
               mrow ? std::to_string((unsigned long long) (mrow->bytes >> 20)) + " MiB" : "no row");
 
@@ -2919,7 +2929,7 @@ int main() {
             ModelProfile seeing = model;
             seeing.projector_bytes = 1 * GiB;
             const Plan v = plan_run(base_cfg(), card, seeing, half, PlanRequest{}, PlannerPolicy::defaults());
-            check(v.config.moe.device_cache_mb == (int) (8 * 1024) && !ledger_row(v, "projector"),
+            check(v.config.moe.device_cache_mb == (int) (8 * 1024) && !ledger_row(v, LedgerKind::Projector),
                   "device tier, projector: the device cache is smaller by it, and the host holds none",
                   std::to_string(v.config.moe.device_cache_mb) + " MiB");
 
@@ -2930,7 +2940,7 @@ int main() {
             reserved.device_bytes += 1 * GiB;
             const Plan r = plan_run(base_cfg(), card, seeing, reserved, PlanRequest{}, PlannerPolicy::defaults());
             const Decision * pn = find(r, "placement");
-            check(r.config.moe.device_cache_mb == (int) (9 * 1024) && !ledger_row(r, "projector"),
+            check(r.config.moe.device_cache_mb == (int) (9 * 1024) && !ledger_row(r, LedgerKind::Projector),
                   "device tier, projector reserved by the fitter: the cache is whole, charged once, no host row",
                   std::to_string(r.config.moe.device_cache_mb) + " MiB");
             // The experts' bytes became the cache: what the device still holds is the dense part and
@@ -2946,7 +2956,7 @@ int main() {
             part.n_gpu_layers = (int32_t) model.n_layer - 8;
             const Plan q = plan_run(base_cfg(), card, seeing, part, PlanRequest{}, PlannerPolicy::defaults());
             pn = find(q, "placement");
-            check(q.config.moe.device_cache_mb == 0 && !ledger_row(q, "projector") &&
+            check(q.config.moe.device_cache_mb == 0 && !ledger_row(q, LedgerKind::Projector) &&
                       q.config.n_gpu_layers == part.n_gpu_layers,
                   "device tier, partial placement with a projector: no tier, no host row, the fitter's layers stand",
                   std::to_string(q.config.moe.device_cache_mb) + " MiB, " + std::to_string(q.config.n_gpu_layers) +
@@ -2967,7 +2977,7 @@ int main() {
             aside.shared_memory_placement = true;
             aside.device_bytes = 3 * GiB;
             const Plan sh = plan_run(base_cfg(), phone(), seeing, aside, PlanRequest{}, PlannerPolicy::defaults());
-            const LedgerRow * pr = ledger_row(sh, "projector");
+            const LedgerRow * pr = ledger_row(sh, LedgerKind::Projector);
             check(pr && pr->bytes == 1 * GiB && sh.config.moe.device_cache_mb == 0,
                   "shared-memory device, projector: a host row of its size, no device cache");
         }
@@ -3455,6 +3465,12 @@ int main() {
         d = find(home, "device-layers");
         check(d && d->value == "40 home" && d->source == Source::Measured,
               "device crossing, slow link: the dense-only layers come home", d ? d->reason : "none");
+        // The account is what was measured, then the one outcome: the clause the ranking wrote before it
+        // funded the move is not carried along.
+        check(d && d->reason.rfind("measured, ", 0) == 0 &&
+                  d->reason.find("; they come onto the host whole, for ") != std::string::npos &&
+                  d->reason.find("did not fund") == std::string::npos,
+              "device crossing, slow link: the account carries one outcome", d ? d->reason : "none");
         check(home.config.n_gpu_layers == 9 && home.config.buft_overrides.empty() &&
                   home.config.device_split.size() == 1 && home.config.device_split[0].second == 9,
               "device crossing, slow link: the card keeps its whole layers at the top, nothing overridden",
@@ -3476,6 +3492,10 @@ int main() {
         d = find(kept, "device-layers");
         check(d && d->value == "40 split" && kept.config.n_gpu_layers == split.n_gpu_layers,
               "device crossing, no room: the layers stay split", d ? d->reason : "none");
+        check(d && d->reason.rfind("measured, ", 0) == 0 &&
+                  d->reason.find("; bringing them home costs the host ") != std::string::npos &&
+                  d->reason.find("did not fund") != std::string::npos,
+              "device crossing, no room: the account says what the ranking did not fund", d ? d->reason : "none");
 
         // Unmeasured, nothing moves, and the plan says what it was owed.
         HardwareProfile blind = slow;

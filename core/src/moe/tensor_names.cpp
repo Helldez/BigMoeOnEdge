@@ -6,6 +6,12 @@ namespace {
 
 constexpr std::string_view k_block_prefix = "blk.";
 constexpr std::string_view k_weight_tail = ".weight";
+// How a block's tensor names say which part of it they belong to, and the marks that place a tensor
+// in a multi-token-prediction block or an embedding table wherever they occur in its name.
+constexpr std::string_view k_attention_head = "attn";
+constexpr std::string_view k_ffn_head = "ffn";
+constexpr std::string_view k_mtp_mark = "nextn";
+constexpr std::string_view k_embedding_mark = "token_embd";
 
 // What the fitter's per-layer expert pattern looks like around its index, as common/fit.cpp spells
 // it. Both halves are regex source text: an escaped dot each, and the alternation that covers every
@@ -62,6 +68,27 @@ std::string_view weight_suffix(const char * name, int & il_out) {
     if (len <= k_weight_tail.size() || k_weight_tail != rest + (len - k_weight_tail.size())) return {};
     il_out = il;
     return std::string_view(rest, len - k_weight_tail.size());
+}
+
+bool is_weight(const char * name) {
+    const size_t len = std::strlen(name);
+    return len >= k_weight_tail.size() && k_weight_tail == name + (len - k_weight_tail.size());
+}
+
+BlockPart block_part(const char * name) {
+    const char * rest = nullptr;
+    if (block_layer(name, &rest) < 0) return BlockPart::Other;
+    if (starts_with(rest, k_attention_head)) return BlockPart::Attention;
+    if (starts_with(rest, k_ffn_head)) return BlockPart::Ffn;
+    return BlockPart::Other;
+}
+
+bool is_mtp_tensor(const char * name) {
+    return std::strstr(name, k_mtp_mark.data()) != nullptr;
+}
+
+bool is_embedding_table(const char * name) {
+    return std::strstr(name, k_embedding_mark.data()) != nullptr;
 }
 
 int node_layer(const char * name, std::string_view prefix) {

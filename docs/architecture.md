@@ -127,7 +127,8 @@ core/
                   timing of both that --gate-mirror auto reads
                 stall_union - the wall time at least one thread was stalled, not the sum of stalls
                 tensor_names - how llama.cpp's tensor and graph-node names, and the capacity
-                  fitter's override patterns, are read: the one place, no regex, unit-tested
+                  fitter's override patterns, are read: the one place (the planner's probes
+                  included: token table, output head, MTP blocks), no regex, unit-tested
                 dense_weights — non-expert weight policy + the residency sensor
                 row_stream - row-gathered tables served from flash (see row-gathered-tables.md)
                 device_arena - one or two layer slots on a prefill device, held for the session or

@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Changed
+- **The planner no longer reads its own prose or its ledger's labels to decide anything.** The
+  account of the layers a device keeps split was written as one sentence and later cut back at
+  "; bringing them home costs" to swap in how it came out; a rewording would have left both
+  outcomes in the text without an error. The measured half is now kept apart and each outcome
+  appended once. The memory ledger's rows carry a kind, and the stages that drop or replace the
+  dense row or the expert cache match on it rather than on "dense" and "expert cache", which stay
+  as the names `--explain` and the plan view show. The model, layer and decide probes now ask
+  `tensor_names` whether a tensor is the token table, the output head, an embedding table, part of
+  a multi-token-prediction block or a block's attention or feed-forward, instead of spelling those
+  names themselves, so the one place llama.cpp's names are read is the only one again. Plans,
+  `--explain` and the plan view's JSON are unchanged; `chatml`'s comment now says it renders the
+  gguf's own chat template rather than one chosen by architecture.
+
 ## [0.43.0] - 2026-11-14
 
 ### Added
