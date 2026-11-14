@@ -224,7 +224,11 @@ backends of one card on the same measured rate: this model's expert block where 
 probe ran on all of them, the GEMV otherwise, never one of each. Another backend replaces the first
 only where it is faster by the planner's margin; the plan then names the devices in
 `--device-list`, the capacity fitter places on that list, and every rule after the choice sees one
-device per card (`core/src/plan/backend_choice.cpp`). A device whose id the backend does not report
+device per card (`core/src/plan/backend_choice.cpp`). An integrated GPU is a card of its own and stays
+in the list, but the fitter is not asked of it where a listed device has memory of its own
+(`capacity_devices`): it adds no capacity, the fitter would still put layers on it, and a placement
+that touches the host's memory is set aside whole. llama.cpp's own default list leaves an integrated
+GPU out beside a discrete one for the same reason; the list the plan hands it has to as well. A device whose id the backend does not report
 is never taken for another one's card. Nothing here knows which backend is usually faster where:
 the release archives carry the modules, and the machine answers.
 

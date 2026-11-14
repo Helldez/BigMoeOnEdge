@@ -21,6 +21,7 @@ for the idea the project is built on.
 | Doc | What it answers |
 |---|---|
 | [application-framework.md](application-framework.md) | Why `bmoe-server` is the application framework every UI is a client of, and what a client may and may not do. |
+| [field-reports.md](field-reports.md) | Problems people reported from their own machines: how to recognise each, its cause, the version that fixes it, and what to do before it. |
 | [screens.md](screens.md) | The screens every UI shows (conversations, models, plan, skills, tasks, connected apps, settings, metrics, first run), specified once. |
 | [design.md](design.md) | The one visual language every UI uses. |
 | [which-models-stream.md](which-models-stream.md) | Which models stream: the rule read from the file, what is refused and why, what stays resident. |
