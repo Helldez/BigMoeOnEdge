@@ -10,6 +10,11 @@
 //       Every record under DIR together: the cost model's error on each, and all of them as one
 //       table for whatever is fitted on it.
 //
+//   bmoe-planlab simulate MACHINE -m MODEL -o FILE [flags]
+//       Anywhere: plan for a machine described by MACHINE (a host and cards taken from records,
+//       sized to the ones asked about), with llama.cpp's own fitter placing MODEL on simulated
+//       cards. Writes a record of it, which replay and the rest then read (docs/hardware-simulation.md).
+//
 //   bmoe-planlab replay FILE [--set KEY=VALUE]... [--sweep PARAM=V1,V2,...] [-o FILE] [flags]
 //       Anywhere: plan again from FILE, with no model, no device and no drive.
 //
@@ -18,6 +23,8 @@
 
 #include "env_probe.h"
 #include "plan_record.h"
+#include "sim_speed.h"
+#include "simulate.h"
 
 #include "bmoe/auto_plan.h"
 #include "bmoe/measured_knobs.h"
@@ -48,6 +55,8 @@ int usage() {
                "                      [--no-probe-io] [engine flags]\n"
                "  bmoe-planlab replay FILE [--set KEY=VALUE]... [--sweep PARAM=V1,V2,...] [-o FILE]\n"
                "                      [engine flags]\n"
+               "  bmoe-planlab simulate MACHINE -m MODEL -o FILE [engine flags]\n"
+               "  bmoe-planlab speed DIR           the tool's decode estimate against every measured run\n"
                "  bmoe-planlab errors DIR          predicted against measured, every record with a run\n"
                "  bmoe-planlab table DIR [-o CSV]  every record as one row, every key a column\n"
                "docs/plan-records.md\n",
@@ -496,6 +505,73 @@ int replay_main(const Args & a) {
     return rc;
 }
 
+// ── the decode estimate (sim_speed.h) ───────────────────────────────────────────────────────
+// The fitter's answer a plan was made on: the one at the plan's own width and context.
+const Placement & placement_for(const PlanRecord & rec, const Plan & plan) {
+    static const Placement none;
+    const PlacedAt * best = nullptr;
+    for (const PlacedAt & p : rec.placements) {
+        if (!best) best = &p;
+        if (p.n_ubatch == (uint32_t) plan.config.graph_width() &&
+            (p.n_ctx == 0 || p.n_ctx == (uint32_t) plan.config.n_ctx))
+            best = &p;
+    }
+    return best ? best->placement : none;
+}
+
+void print_estimate(const char * who, const DecodeEstimate & e) {
+    if (e.seconds <= 0.0) {
+        std::printf("%s: no decode estimate: %s\n", who, e.why.c_str());
+        return;
+    }
+    std::printf("%s: decode estimate %.1f ms/token (%.1f tok/s), a sum of measured rates:\n", who, 1e3 * e.seconds,
+                1.0 / e.seconds);
+    for (const auto & [name, s] : e.parts)
+        std::printf("  %-50s %8.2f ms\n", name.c_str(), 1e3 * s);
+    if (e.device_cache_hit >= 0.0)
+        std::printf("  device cache serves %.0f%% of the host's experts (%s)\n", 100.0 * e.device_cache_hit,
+                    e.hit_from_routing ? "the model's own routing" : "the fraction it holds: no routing given");
+}
+
+// ── simulate ────────────────────────────────────────────────────────────────────────────────
+int simulate_main(const Args & a) {
+    if (a.file.empty() || a.cfg.model_path.empty() || a.out.empty()) return usage();
+    std::string text, err;
+    if (!read_text_file(a.file, text)) {
+        std::fprintf(stderr, "bmoe-planlab: cannot read %s\n", a.file.c_str());
+        return 1;
+    }
+    MachineSpec spec;
+    const std::string dir = std::filesystem::u8path(a.file).parent_path().u8string();
+    if (!parse_machine_spec(text, dir, spec, err)) {
+        std::fprintf(stderr, "bmoe-planlab: %s: %s\n", a.file.c_str(), err.c_str());
+        return 1;
+    }
+    PlanRequest req;
+    for (const std::string & key : a.seen)
+        req.pinned.push_back(key);
+    const Simulation sim = simulate_machine(spec, a.cfg.model_path, a.cfg, req);
+    if (!sim.error.empty()) {
+        std::fprintf(stderr, "bmoe-planlab: %s\n", sim.error.c_str());
+        return 1;
+    }
+    std::printf("simulate: %s\n", sim.record.note.c_str());
+    std::fputs(sim.plan.explain().c_str(), stdout);
+    std::printf("plan: reproduce with\n  bmoe-cli -m MODEL %s\n", sim.plan.to_flags().c_str());
+    for (const std::string & c : sim.caveats)
+        std::printf("simulate: caveat: %s\n", c.c_str());
+    const double s = sim.plan.allocation.seconds_per_token;
+    if (s > 0.0) std::printf("simulate: the cost model predicts %.3f s/token (%.2f tok/s)\n", s, 1.0 / s);
+    print_estimate("simulate", estimate_decode(sim.plan, sim.record.hw, sim.record.model,
+                                               placement_for(sim.record, sim.plan)));
+    if (!write_text_file(a.out, format_plan_record(sim.record))) {
+        std::fprintf(stderr, "bmoe-planlab: cannot write %s\n", a.out.c_str());
+        return 1;
+    }
+    std::printf("simulate: record written to %s\n", a.out.c_str());
+    return 0;
+}
+
 // ── the records together ─────────────────────────────────────────────────────────────────────
 std::vector<std::string> records_in(const std::string & dir) {
     std::vector<std::string> files;
@@ -601,16 +677,55 @@ int errors_main(const Args & a) {
     return 0;
 }
 
+// ── speed: the decode estimate against every measured run ───────────────────────────────────
+int speed_main(const Args & a) {
+    if (a.file.empty()) return usage();
+    std::printf("%-56s %9s %9s %7s  %s\n", "record", "est ms", "meas ms", "meas/est", "parts (ms)");
+    std::vector<double> ratios;
+    for (const std::string & path : records_in(a.file)) {
+        std::string text, err;
+        PlanRecord rec;
+        if (!read_text_file(path, text) || !parse_plan_record(text, rec, err) || !rec.ran()) continue;
+        std::vector<std::string> problems;
+        const Replay r = replay_plan(rec, record_config(rec, problems), rec.request);
+        const DecodeEstimate e = estimate_decode(r.plan, rec.hw, rec.model, placement_for(rec, r.plan));
+        const Facts & o = rec.observed;
+        const double measured = fact(o, "token.wall_ms.settled_p50") > 0.0 ? fact(o, "token.wall_ms.settled_p50") / 1e3
+                                                                           : fact(o, "seconds_per_token");
+        if (e.seconds <= 0.0 || measured <= 0.0) continue;
+        ratios.push_back(measured / e.seconds);
+        std::string parts;
+        for (const auto & [name, sec] : e.parts) {
+            char buf[96];
+            std::snprintf(buf, sizeof(buf), "%s%s %.1f", parts.empty() ? "" : ", ", name.c_str(), 1e3 * sec);
+            parts += buf;
+        }
+        std::printf("%-56.56s %9.1f %9.1f %7.2f  %s\n", std::filesystem::u8path(path).filename().u8string().c_str(),
+                    1e3 * e.seconds, 1e3 * measured, measured / e.seconds, parts.c_str());
+    }
+    if (ratios.empty()) {
+        std::printf("no record with a run and an estimate under %s\n", a.file.c_str());
+        return 0;
+    }
+    std::sort(ratios.begin(), ratios.end());
+    const auto q = [&](double p) { return ratios[(size_t) std::lround(p * (double) (ratios.size() - 1))]; };
+    std::printf("%zu run(s): measured/estimated median %.2f, lowest %.2f, highest %.2f\n", ratios.size(), q(0.5),
+                ratios.front(), ratios.back());
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char ** argv) {
     if (argc < 2) return usage();
     const std::string cmd = argv[1];
-    if (cmd != "record" && cmd != "replay" && cmd != "table" && cmd != "errors") return usage();
+    if (cmd != "record" && cmd != "replay" && cmd != "simulate" && cmd != "speed" && cmd != "table" && cmd != "errors") return usage();
     const Args a = parse_args(argc, argv, 2, cmd != "record");
     if (!a.ok) return 2;
     return cmd == "record"   ? record_main(a)
-           : cmd == "replay" ? replay_main(a)
+           : cmd == "replay"   ? replay_main(a)
+           : cmd == "simulate" ? simulate_main(a)
+           : cmd == "speed"    ? speed_main(a)
            : cmd == "table"  ? table_main(a)
                              : errors_main(a);
 }
