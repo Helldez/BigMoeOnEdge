@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.43.0] - 2026-11-14
 
 ### Added
 - **A device expert cache computes part of its misses on the CPU where that was measured faster**
