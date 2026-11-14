@@ -38,6 +38,8 @@ show orders of magnitude rather than a ranking. BigMoeOnEdge's are the README's,
 | Strata | Strix Halo (AMD, ROCm) | Q2_0 | 55-65 | 371 | [review, 2026-10-27](https://akitaonrails.com/en/2026/10/27/llm-benchmark-best-open-source-llms-for-home-hardware/) |
 | BigMoeOnEdge | 24 GB desktop GPU, 96 GB RAM | Q2_0 | 70 | | [README](../README.md#performance) |
 | BigMoeOnEdge | 16 GB desktop GPU, 32 GB RAM | Q2_0 | 19-21 | | [README](../README.md#performance); Strata 50-66 and llama.cpp 17-19 on the same box ([bench-data](bench-data/2026-10-27-rented-16gb/README.md)) |
+| BigMoeOnEdge | two 16 GB desktop GPUs, 60 GB RAM | Q2_0 | 41-48 | | [README](../README.md#performance) |
+| BigMoeOnEdge | 8 GB desktop GPU, 31 GB RAM (streamed) | Q2_0 | 16 | | [README](../README.md#performance) |
 | BigMoeOnEdge | 16 GB Apple-silicon laptop | | 7-9 | | [README](../README.md#performance) |
 | BigMoeOnEdge | 12 GB Android phone | | 2-4 | | [README](../README.md#performance) |
 
@@ -54,6 +56,7 @@ show orders of magnitude rather than a ranking. BigMoeOnEdge's are the README's,
 | Strata | RTX 5090 32 GB | V4.1 Flash, 2-bit | ~17 | | [review, 2026-10-27](https://akitaonrails.com/en/2026/10/27/llm-benchmark-best-open-source-llms-for-home-hardware/) |
 | llama.cpp fork with expert streaming | RTX 5090 32 GB, 126 GB RAM | V4.1 Flash, MXFP4 experts | 5.1 new content, 21 cached | | [discussion #28766](https://github.com/ggml-org/llama.cpp/discussions/28766) |
 | colibri | RTX 5080 16 GB, 32 GB RAM, two NVMe | V4 Flash | 1.5-1.6 | | [colibri](https://github.com/JustVugg/colibri) |
+| BigMoeOnEdge | two 16 GB desktop GPUs, 60 GB RAM (streamed) | V4 Flash, UD-IQ2_M | 5 | | [README](../README.md#performance) |
 | BigMoeOnEdge | 12 GB Android phone | V4 Flash | 1 | | [README](../README.md#performance) |
 
 ### Larger still (GLM-5.2 744B and up)
@@ -96,6 +99,16 @@ release with `--auto`; Strata 0.2.13.1 through its own launcher, its default and
 
 Strata publishes 58.5-59.7 tok/s for this card and file, on a 20-thread machine; it computes most of
 these experts on the CPU, which this box's 15-core Zen 2 quota and DDR4 hold back.
+
+On an 8 GB card (RTX 3070 class, a 6-core desktop CPU, 31 GB of RAM), with Strata and colibri, a
+16384 context, the same client and prompts, 512 tokens
+([bench-data](bench-data/2026-11-14-rented-0.43/README.md)). BigMoeOnEdge is the 0.43.0 release with
+`--auto`; Strata 0.2.13.1, lossless, on its own file (UD-Q4_K_XL with its MTP layer); colibri with
+`--gpu auto` on the UD-Q4_K_M.
+
+| Model, card | BigMoeOnEdge | Strata | colibri |
+|---|---|---|---|
+| Qwen3.6-35B-A3B, 8 GB card | **33-37** at a 16k context; 4.7k-token prompt: first token in **5.3 s** (873 tok/s), then 33 | did not start at 16k (buffers past the card's free memory); at 8k 35, first token 14.5 s (319 tok/s), then 31 | 21-25; first token 113 s, then 28 |
 
 ## Reading the tables
 

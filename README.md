@@ -77,7 +77,10 @@ quantization. Decode speeds are the [Performance](#performance) table's.
 |  | 12 GB of it free | Qwen3.6-35B-A3B | 21 GB | RAM, GPU cache | 59-67 |
 |  |  | Gemma 4 26B-A4B | 17 GB | GPU | 114 |
 |  |  | Laguna XS 2.1 33B | 20 GB | GPU | 93-94 |
-| **Desktop GPU** (NVIDIA) | 8 GB + 125 GB RAM | Qwen3.6-35B-A3B | 21 GB | RAM, GPU | 32-33 |
+| **Desktop GPU** (NVIDIA) | 8 GB + 31 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | flash, GPU cache | 16 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | RAM, GPU cache | 37-44 |
+| **Two desktop GPUs** (NVIDIA) | 2 × 16 GB + 60 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM, GPU cache | 41-48 |
+|  |  | DeepSeek V4 Flash 284B | 91 GB | flash, GPU cache | 5 |
 | **Datacenter GPU** (AMD, ROCm) | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
 
 A range is the spread across runs. Method and every run:

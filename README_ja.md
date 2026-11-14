@@ -70,7 +70,10 @@ Qwen3.6-35B-A3B は、いずれのデバイスのメモリよりも大きいモ�
 |  | うち 12 GB が空き | Qwen3.6-35B-A3B | 21 GB | RAM、GPU キャッシュ | 59-67 |
 |  |  | Gemma 4 26B-A4B | 17 GB | GPU | 114 |
 |  |  | Laguna XS 2.1 33B | 20 GB | GPU | 93-94 |
-| **デスクトップ GPU**（NVIDIA） | 8 GB + 125 GB RAM | Qwen3.6-35B-A3B | 21 GB | RAM、GPU | 32-33 |
+| **デスクトップ GPU**（NVIDIA） | 8 GB + 31 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | フラッシュ、GPU キャッシュ | 16 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | RAM、GPU キャッシュ | 37-44 |
+| **デスクトップ GPU ×2**（NVIDIA） | 2 × 16 GB + 60 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM、GPU キャッシュ | 41-48 |
+|  |  | DeepSeek V4 Flash 284B | 91 GB | フラッシュ、GPU キャッシュ | 5 |
 | **データセンター GPU**（AMD、ROCm） | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
 
 範囲は複数回の実行でのばらつきです。計測方法とすべての実行結果：
