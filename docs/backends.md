@@ -21,7 +21,7 @@ the function is actually wired in). A backend naming an op is not proof it accep
 for it.
 
 | backend | build flag | hardware | registers as | names the expert op | wraps host memory (advertised / wired) |
-|---|---|---|---|---|
+|---|---|---|---|---|---|
 | CPU | `GGML_CPU` (on) | every machine | CPU | yes | yes / yes |
 | BLAS | `GGML_BLAS` | a host BLAS library (Accelerate, OpenBLAS, ...) | accelerator | no | yes / yes |
 | Metal | `GGML_METAL` | Apple GPUs | GPU | yes | yes / yes |
@@ -213,8 +213,9 @@ and no entry is tied to a platform: wherever the backend runs, it reads the same
 | OpenCL | `GGML_OPENCL_KERNEL_CACHE_DIR` | `<data>/backend-cache` | compiled kernels kept between runs, in a folder an app can write (the default is a temporary folder) |
 | CUDA, ROCm | `GGML_CUDA_REGISTER_HOST` | `1` | enables the backend's generic entry point for pinning memory a process allocated (`ggml_backend_register_host_buffer`), which the engine asks for by name for the experts' host copy behind a device cache ([measured-planning.md](measured-planning.md)): on a rented 3090, 117 GB of GLM-4.7's experts took 97 s to allocate as the backend's own pinned memory, where touching ordinary memory on 16 threads and pinning it took 6 s every 32 GB |
 
-ROCm is ggml's CUDA backend built with HIP, so it reads the same variable; the CUDA measurement is the
-one there is. A backend without the entry point, or one that declines, gets its own host memory as
+ROCm is ggml's CUDA backend built with HIP, so it reads the same variable and gets the same entry.
+**Only CUDA has been measured**: pinning on ROCm goes through `hipHostRegister`, whose speed on an AMD
+card is not known here. A backend without the entry point, or one that declines, gets its own host memory as
 before, at the speed it allocates it. Metal has no host buffer type of its own, so there is no copy
 to make on a Mac, whether its GPU shares the memory or not.
 

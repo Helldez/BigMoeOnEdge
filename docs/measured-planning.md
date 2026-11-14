@@ -543,7 +543,9 @@ served (`bmoe/calibrate.h`):
   (its files, the projector and an MTP head take at most half of the memory the system can still
   give, and a container still lets the process take), the first candidate reads them through once
   and the ones after find them as it left them: every side starts with all of it cached, as the
-  served load then does. Otherwise the cache of every shard, the projector and an MTP head is handed
+  served load then does. The first candidate decides which of the two holds, for all of them: asked
+  again, a later one would count the model pages the first one's load left as memory the system can
+  give, and start warm where the first started cold. Otherwise the cache of every shard, the projector and an MTP head is handed
   back where the system takes the advice (`pio::drop_file_cache`), and the dense part, which every
   token reads whatever the placement, is then read in on every system alike. Each candidate so opens
   with exactly the dense part cached, where a drop is a no-op (Darwin, Windows) as where it is not.

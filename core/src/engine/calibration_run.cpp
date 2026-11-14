@@ -80,42 +80,47 @@ bool files_fit_cache(const std::vector<std::string> & paths, uint64_t & bytes) {
 // cache cannot be dropped is the experts a placement loads through the mapping: the later candidate may
 // find some of the earlier one's still cached. They are not read in, since a model larger than the
 // memory is what this engine exists for.
-void even_model_file_cache(const RunConfig & cfg, int candidate, const std::atomic<bool> * stop) {
+//
+// Which of the two is decided once, by the first candidate, and kept for the others
+// (CalibrationRun::files_cached): asked again, a later candidate would find the memory the first one's
+// load filled with the model's pages, which the system counts as memory it can give, and start warm
+// where the first started cold. Returns whether this candidate read every file into the cache.
+bool even_model_file_cache(const RunConfig & cfg, const CalibrationRun & run, const std::atomic<bool> * stop) {
+    if (run.index > 0 && run.files_cached) return false; // the first one cached them, and they stay
     const GgufOffsets offs = read_gguf_offsets(cfg.model_path.c_str());
     std::vector<std::string> beside;
     for (const std::string * p : {&cfg.mmproj, &cfg.spec.mtp_head})
         if (!p->empty()) beside.push_back(*p);
-    if (offs.ok) {
+    if (offs.ok && run.index == 0) {
         std::vector<std::string> all = offs.shard_paths;
         all.insert(all.end(), beside.begin(), beside.end());
         uint64_t bytes = 0;
         if (files_fit_cache(all, bytes)) {
-            if (candidate > 0) return; // the first one cached them
             log_printf(LogLevel::Info,
                        "calibration: the model's files (%.1f GiB) fit the system's cache: every candidate starts "
                        "with them cached",
                        (double) bytes / (1024.0 * 1024.0 * 1024.0));
             for (const std::string & p : all) {
-                if (stop && stop->load(std::memory_order_relaxed)) return;
+                if (stop && stop->load(std::memory_order_relaxed)) return false;
                 std::error_code ec;
                 const uintmax_t n = std::filesystem::file_size(p, ec);
                 if (!ec) pio::read_through_cache(p.c_str(), {{0, (uint64_t) n}}, stop);
             }
-            return;
+            return true;
         }
     }
     for (const std::string & p : beside)
         pio::drop_file_cache(p.c_str());
     if (!offs.ok) {
         pio::drop_file_cache(cfg.model_path.c_str());
-        return;
+        return false;
     }
     for (const std::string & p : offs.shard_paths)
         pio::drop_file_cache(p.c_str());
     const GgufModelInfo info = read_gguf_model_info(cfg.model_path.c_str());
     const ExpertLayout layout = discover_expert_layout(offs.extents, info.n_expert);
     // Without the experts told apart, the dense part is the whole file: never read a model whole.
-    if (!layout.ok) return;
+    if (!layout.ok) return false;
     // The dense tensors' byte ranges, per shard, in file order.
     std::vector<std::vector<std::pair<uint64_t, uint64_t>>> ranges(offs.shard_paths.size());
     for (const TensorExtent & t : offs.extents) {
@@ -129,10 +134,11 @@ void even_model_file_cache(const RunConfig & cfg, int candidate, const std::atom
             ranges[(size_t) file->second].push_back({off->second, size->second});
     }
     for (size_t f = 0; f < ranges.size(); ++f) {
-        if (stop && stop->load(std::memory_order_relaxed)) return; // a waiting request does not wait through this
+        if (stop && stop->load(std::memory_order_relaxed)) return false; // a waiting request does not wait through this
         std::sort(ranges[f].begin(), ranges[f].end());
         pio::read_through_cache(offs.shard_paths[f].c_str(), ranges[f], stop);
     }
+    return false;
 }
 
 } // namespace
@@ -159,7 +165,7 @@ run_calibration_candidate(const RunConfig & cfg, const CalibrationRun & run, con
         return std::chrono::duration<double>(b - a).count();
     };
     const auto t_even = clock::now();
-    even_model_file_cache(cfg, run.index, stop);
+    t.files_cached = even_model_file_cache(cfg, run, stop);
     const auto t_open = clock::now();
     std::string error;
     std::unique_ptr<Session> s = Session::open(sc, error);

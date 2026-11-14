@@ -1787,8 +1787,25 @@ bool Session::Impl::stage_experts_in_host_buffer(Opening & o) {
         if (p) pio::vm_release(p, page);
         return ok;
     };
+    // Memory allocated here is committed only as the copy writes it (pio::vm_reserve), so a copy larger
+    // than the system can still give would end in the out-of-memory killer, where a backend's own
+    // allocation fails and leaves the mapping in place. So it is taken only where it fits what the
+    // system can give and a container still lets this process take; otherwise the backend's own
+    // allocation answers, as before.
+    const auto room = [] {
+        uint64_t r = pio::mem_available_bytes();
+        const uint64_t contained = pio::cgroup_memory_left();
+        if (contained > 0 && (r == 0 || contained < r)) r = contained;
+        return r;
+    }();
+    const bool fits = room > 0 && (uint64_t) total <= room;
+    if (!fits && do_register)
+        log_printf(
+            LogLevel::Info,
+            "expert host buffer: %.0f MiB is more than the %.0f MiB the system can give; the backend allocates it",
+            mib(total), mib((size_t) room));
     // Both entry points or neither: memory pinned that could not be unpinned would stay pinned once freed.
-    if (do_register && do_unregister && pins()) {
+    if (fits && do_register && do_unregister && pins()) {
         const size_t page = pio::vm_page();
         const size_t size = (total + page - 1) / page * page;
         const auto t0 = clock_t_::now();
@@ -1813,6 +1830,8 @@ bool Session::Impl::stage_experts_in_host_buffer(Opening & o) {
                 return true;
             }
         }
+        // Pinning a page and not the whole copy is a driver's limit met only now; the copy is made again
+        // into the backend's own memory, a few seconds against the minutes that allocation takes.
         if (p) pio::vm_release(p, size);
         log_printf(LogLevel::Warn,
                    "expert host buffer: %s did not pin the %.0f MiB allocated here; it allocates its own",

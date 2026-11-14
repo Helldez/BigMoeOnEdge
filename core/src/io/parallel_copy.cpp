@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <system_error>
 #include <thread>
 
 namespace bmoe::pio {
@@ -23,8 +24,12 @@ void copy_spans(const std::vector<CopySpan> & spans, int threads) {
     };
     const size_t n = std::min(pieces.size(), (size_t) std::max(1, threads));
     std::vector<std::thread> helpers;
-    for (size_t t = 1; t < n; ++t)
-        helpers.emplace_back(work);
+    // A thread the system will not start leaves its share to the others: the copy is the same.
+    try {
+        for (size_t t = 1; t < n; ++t)
+            helpers.emplace_back(work);
+    } catch (const std::system_error &) {
+    }
     work();
     for (std::thread & h : helpers)
         h.join();

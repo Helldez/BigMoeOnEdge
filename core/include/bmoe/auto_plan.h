@@ -25,6 +25,7 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace bmoe {
@@ -101,15 +102,28 @@ struct AutoPlan {
     Placement placement;
     std::vector<std::string> backends;
 
-    // The capacity fitter's placements at a narrower graph than `placement`'s, by width: the re-fits
-    // the rules ask for (replan), each asked of the fitter once and then read from here. A re-fit
-    // answers from the same file, devices, context and cache types whatever the record of
-    // measurements, so asking again only costs time: on a 24 GB card with GLM-4.7 every re-fit loaded
-    // the model's metadata for a dozen dry runs, between every two candidates of a calibration. It is
-    // also the right answer: the fitter reads the devices' free memory, which is the machine's as it
-    // was planned on only before a candidate or the served model holds any of it. Kept with the facts,
-    // so a copy of them (a server's plan basis) carries what was fitted.
-    mutable std::map<uint32_t, Placement> placement_at_width;
+    // What a re-fit answers from besides the facts' own file, devices and backends: the graph's width,
+    // the context, the KV cache's types and the draft context the fit makes room for.
+    struct FitKey {
+        uint32_t width = 0;
+        uint32_t n_ctx = 0;
+        KvCacheType type_k = KvCacheType::F16, type_v = KvCacheType::F16;
+        std::string draft; // the speculation's own context, as the fit sees it ("" without one)
+        bool operator<(const FitKey & o) const {
+            return std::tie(width, n_ctx, type_k, type_v, draft) <
+                   std::tie(o.width, o.n_ctx, o.type_k, o.type_v, o.draft);
+        }
+    };
+    // The capacity fitter's placements at a narrower graph than `placement`'s: the re-fits the rules
+    // ask for (replan), each asked of the fitter once and then read from here. A re-fit answers from
+    // the same file, devices, context and cache types whatever the record of measurements, so asking
+    // again only costs time: on a 24 GB card with GLM-4.7 every re-fit loaded the model's metadata for a
+    // dozen dry runs, between every two candidates of a calibration. It is also the right answer: the
+    // fitter reads the devices' free memory, which is the machine's as it was planned on only before a
+    // candidate or the served model holds any of it. Kept with the facts, so a copy of them (a server's
+    // plan basis) carries what was fitted; keyed by everything else a fit depends on, so a plan for
+    // another context or cache type asks the fitter again.
+    mutable std::map<FitKey, Placement> placement_at_width;
 
     // Whether a load-time calibration ran (AutoPlanOptions::calibrate, calibrate_plan), and what it
     // gave: `plan` is then its final plan, and `calibration.knobs` the record for the front-end to keep.

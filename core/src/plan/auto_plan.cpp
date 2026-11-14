@@ -31,11 +31,19 @@ namespace {
 // snapshot taken after a fit that ran.
 const Placement & fitted_at(
     const AutoPlan & facts, const RunConfig & cfg, const ModelProfile & model, uint32_t width, const char * snapshot) {
-    auto at = facts.placement_at_width.find(width);
+    AutoPlan::FitKey key;
+    key.width = width;
+    key.n_ctx = (uint32_t) cfg.n_ctx;
+    key.type_k = cfg.cache_type_k;
+    key.type_v = cfg.cache_type_v;
+    if (cfg.spec.enabled())
+        key.draft = std::to_string((int) cfg.spec.source) + "|" + std::to_string(cfg.spec.draft_max) + "|" +
+                    cfg.spec.mtp_head + "|" + std::to_string(cfg.spec.mtp_head_on_devices);
+    auto at = facts.placement_at_width.find(key);
     if (at == facts.placement_at_width.end()) {
         at = facts.placement_at_width
-                 .emplace(width, probe_placement(cfg.model_path.c_str(), model, facts.hw, (uint32_t) cfg.n_ctx, width,
-                                                 cfg.cache_type_k, cfg.cache_type_v, facts.backends, &cfg.spec))
+                 .emplace(key, probe_placement(cfg.model_path.c_str(), model, facts.hw, (uint32_t) cfg.n_ctx, width,
+                                               cfg.cache_type_k, cfg.cache_type_v, facts.backends, &cfg.spec))
                  .first;
         detail::log_memory_snapshot(snapshot);
     }
