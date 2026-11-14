@@ -35,4 +35,11 @@ BackendChoice choose_backends(const HardwareProfile & hw, double min_win);
 // `hw` without the devices `choice` left out.
 HardwareProfile without_left_out(const HardwareProfile & hw, const BackendChoice & choice);
 
+// The devices of `listed` the capacity fitter is asked of. A device whose memory is the host's adds
+// no capacity, yet the fitter counts its free memory as a pool of its own and puts layers there, and
+// a placement that touches one is set aside whole, the discrete card's layers with it. So where a
+// listed device has memory of its own, those are the list, as llama.cpp's own default list leaves an
+// integrated GPU out beside a discrete one. Where none has, `listed` is returned as it is.
+std::vector<std::string> capacity_devices(const HardwareProfile & hw, const std::vector<std::string> & listed);
+
 } // namespace bmoe

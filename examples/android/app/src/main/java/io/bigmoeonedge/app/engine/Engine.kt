@@ -268,6 +268,8 @@ data class PlanResult(
     val predictedHitPct: Double = -1.0,
     /** What the loaded model's last turn measured; compared to the prediction only under [fromLastLoad]. */
     val measured: PlanMeasured? = null,
+    /** [measured] against the prediction in the server's words; sent only when the loaded model runs this plan. */
+    val speedCheck: SpeedCheck? = null,
     val pools: List<PlanPool> = emptyList(),
     val devices: List<PlanDevice> = emptyList(),
     /** Why there is no device beyond the host, in words; empty when there is one. */
@@ -290,6 +292,9 @@ data class PlanResult(
             predictedHitPct = o.optJSONObject("predicted")?.optDouble("cache_hit_pct", -1.0) ?: -1.0,
             measured = o.optJSONObject("measured")?.let {
                 PlanMeasured(it.optDouble("s_per_token", 0.0), it.optDouble("cache_hit_pct", -1.0), it.optInt("tokens"))
+            },
+            speedCheck = o.optJSONObject("speed_check")?.let {
+                SpeedCheck(it.optString("badge"), it.optString("against"), it.optString("tone") == "ok")
             },
             pools = objects(o.optJSONObject("memory")?.optJSONArray("pools")).map { p ->
                 PlanPool(
@@ -346,6 +351,10 @@ data class PlanResult(
 data class PlanLane(val label: String, val on: List<String>)
 
 data class PlanMeasured(val sPerToken: Double, val cacheHitPct: Double, val tokens: Int)
+
+/** Measured decode against the plan's, as the server words it (`speed_check`): a badge ("+26%",
+ *  "84x"), what it is set against, and whether the run met the plan (`tone`), for the colour. */
+data class SpeedCheck(val badge: String, val against: String, val ok: Boolean)
 
 /** One line of the memory ledger. `inTurn`: lent by the expert cache while a prompt runs. */
 data class PlanRow(val label: String, val bytes: Long, val locked: Boolean, val inTurn: Boolean)

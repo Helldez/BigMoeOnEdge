@@ -2,6 +2,7 @@
 
 #include "tensor_names.h"
 
+#include <algorithm>
 #include <map>
 #include <set>
 
@@ -85,6 +86,21 @@ ExpertLayout discover_expert_layout(const std::vector<TensorExtent> & tensors, i
         out.suffix[p++] = s; // a set: sorted, so the order is the same in every layer
     out.ok = true;
     return out;
+}
+
+std::vector<uint64_t> expert_bytes_per_layer(const ExpertLayout & layout,
+                                             const std::vector<TensorExtent> & tensors,
+                                             const std::unordered_map<std::string, uint64_t> & size_by_name,
+                                             int n_layer) {
+    std::vector<uint64_t> bytes((size_t) std::max(0, n_layer), 0);
+    if (!layout.ok) return bytes;
+    for (const TensorExtent & t : tensors) {
+        int il = -1;
+        if (t.third == 0 || layout.slot_of(t.name.c_str(), il) < 0 || il < 0 || il >= n_layer) continue;
+        const auto size = size_by_name.find(t.name);
+        if (size != size_by_name.end()) bytes[(size_t) il] += size->second / t.third;
+    }
+    return bytes;
 }
 
 } // namespace bmoe

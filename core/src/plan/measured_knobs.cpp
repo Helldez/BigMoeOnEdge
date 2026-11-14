@@ -128,6 +128,7 @@ void set_width_narrow(MeasuredKnobs & r, int narrow) {
     r.width_narrow = narrow;
     r.wide_decode_tps = r.narrow_decode_tps = r.wide_prefill_tps = r.narrow_prefill_tps = 0.0;
     r.wide_unviable = r.narrow_unviable = 0;
+    r.width_held = -1;
 }
 
 } // namespace
@@ -164,6 +165,7 @@ std::string format_measured_knobs(const std::vector<MeasuredKnobs> & records) {
             out += std::string(" ") + kv.first + "=" + num;
         }
         out += " usage_requests=" + std::to_string(r.usage_requests);
+        out += " width_held=" + std::to_string(r.width_held);
         // The decode's own cost: later keys of the same format, which an older engine reads past.
         std::snprintf(num, sizeof(num), "%.6f", r.decode_compute_s);
         out += std::string(" decode_compute_s=") + num;
@@ -280,6 +282,8 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
                 ok = as_double(r.usage_long_prompt_tokens);
             else if (k == "usage_requests")
                 ok = as_int(r.usage_requests);
+            else if (k == "width_held")
+                ok = as_int(r.width_held);
             else if (k == "decode_compute_s")
                 ok = as_double(r.decode_compute_s);
             else if (k == "decode_threads")
@@ -319,10 +323,10 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
             !(r.no_cpu_share_tps >= 0.0) || r.width_narrow < 0 || !(r.wide_decode_tps >= 0.0) ||
             !(r.narrow_decode_tps >= 0.0) || !(r.wide_prefill_tps >= 0.0) || !(r.narrow_prefill_tps >= 0.0) ||
             !(r.usage_gen_tokens >= 0.0) || !(r.usage_long_prompt_tokens >= 0.0) || r.usage_requests < 0 ||
-            !(r.decode_compute_s >= 0.0) || r.decode_threads < 0 || !(r.decode_hit >= -1.0 && r.decode_hit <= 1.0) ||
-            !(r.decode_cache_mib >= 0.0) || r.decode_gpu_layers < 0 || r.decode_device_cache_mb < 0 ||
-            r.mix_requests < 0 || !(r.mix_gen_tokens >= 0.0) || !(r.mix_wide_prompt_tokens >= 0.0) ||
-            !(r.host_prefill_tps >= 0.0)) {
+            r.width_held < -1 || r.width_held > 1 || !(r.decode_compute_s >= 0.0) || r.decode_threads < 0 ||
+            !(r.decode_hit >= -1.0 && r.decode_hit <= 1.0) || !(r.decode_cache_mib >= 0.0) || r.decode_gpu_layers < 0 ||
+            r.decode_device_cache_mb < 0 || r.mix_requests < 0 || !(r.mix_gen_tokens >= 0.0) ||
+            !(r.mix_wide_prompt_tokens >= 0.0) || !(r.host_prefill_tps >= 0.0)) {
             error = "line " + std::to_string(n) + ": a value out of range";
             return false;
         }
@@ -371,6 +375,7 @@ void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKno
             if (rec.narrow_decode_tps > 0.0) r.narrow_decode_tps = rec.narrow_decode_tps;
             if (rec.wide_prefill_tps > 0.0) r.wide_prefill_tps = rec.wide_prefill_tps;
             if (rec.narrow_prefill_tps > 0.0) r.narrow_prefill_tps = rec.narrow_prefill_tps;
+            if (rec.width_held >= 0) r.width_held = rec.width_held;
             if (rec.usage_requests > 0) {
                 r.usage_requests = rec.usage_requests;
                 r.usage_gen_tokens = rec.usage_gen_tokens;

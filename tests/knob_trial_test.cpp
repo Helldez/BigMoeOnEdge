@@ -375,6 +375,19 @@ int main() {
                   find_measured_knobs(wback, a.hardware, "0.35.1")->width_narrow == 512 &&
                   std::fabs(find_measured_knobs(wback, a.hardware, "0.35.1")->usage_long_prompt_tokens - 9500.0) < 1e-3,
               "record: the width's rates and usage read back as written");
+        // The width in force: kept, read back, and dropped with the comparison it was decided in.
+        MeasuredKnobs wh;
+        wh.hardware = a.hardware;
+        wh.engine = a.engine;
+        wh.width_narrow = 512;
+        wh.width_held = 0;
+        keep_measured_knobs(back, wh);
+        std::vector<MeasuredKnobs> hback;
+        check(find_measured_knobs(back, a.hardware, "0.35.1")->width_held == 0 &&
+                  parse_measured_knobs(format_measured_knobs(back), hback, err) &&
+                  find_measured_knobs(hback, a.hardware, "0.35.1")->width_held == 0 &&
+                  std::fabs(find_measured_knobs(hback, a.hardware, "0.35.1")->wide_decode_tps - 14.2) < 1e-9,
+              "record: the width in force is kept beside the rates and reads back");
         MeasuredKnobs w3 = w1;
         w3.width_narrow = 1024;
         w3.wide_prefill_tps = 0.0;
@@ -382,7 +395,7 @@ int main() {
         keep_measured_knobs(back, w3);
         kw = find_measured_knobs(back, a.hardware, "0.35.1");
         check(kw && kw->width_narrow == 1024 && std::fabs(kw->wide_decode_tps - 15.0) < 1e-9 &&
-                  kw->narrow_decode_tps == 0.0 && kw->narrow_prefill_tps == 0.0,
+                  kw->narrow_decode_tps == 0.0 && kw->narrow_prefill_tps == 0.0 && kw->width_held == -1,
               "record: another narrow width drops what was measured against the old one");
         check(!parse_measured_knobs("bmoe-measured-knobs 1\nthreads=4\n", bad, err),
               "record: a line naming no machine is refused");

@@ -24,6 +24,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace bmoe {
@@ -59,5 +60,15 @@ struct ExpertLayout {
 // do not all name the same expert tensors, or name more than max_slots. The refusal carries its
 // reason, phrased for the person who passed the file.
 ExpertLayout discover_expert_layout(const std::vector<TensorExtent> & tensors, int n_expert);
+
+// What one expert of each layer costs a cache, in bytes, from the file alone: each expert tensor's
+// size over its expert count (its nb[2]), summed over the layer's slots. Indexed by layer, `n_layer`
+// long, 0 for a layer with no routed experts. Where the plan put a layer's experts does not change
+// it, so a record of the routing sizes every MoE layer the same way whichever of them streamed.
+// `size_by_name` is each tensor's data size, as the gguf reader states it.
+std::vector<uint64_t> expert_bytes_per_layer(const ExpertLayout & layout,
+                                             const std::vector<TensorExtent> & tensors,
+                                             const std::unordered_map<std::string, uint64_t> & size_by_name,
+                                             int n_layer);
 
 } // namespace bmoe

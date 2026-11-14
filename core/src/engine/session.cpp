@@ -1244,21 +1244,9 @@ bool Session::Impl::create_contexts(Opening & o) {
     }
     // Placement is decided here, by moving weights; a backend's own offload heuristic would move
     // ops of CPU-resident weights to the device on its own (GPU backends do for wide batches).
-    if (prefill) cparams.op_offload = false;
-    // Under overlap a streamed expert is waited for inside the CPU's expert matmul, as it is read.
-    // With layers on a device, a wide graph's host-weight matmuls are offered to that device, which
-    // copies the expert tensor before the reads land: a Metal run with 12 layers placed and a
-    // 548-token prompt printed blank lines where the serial run printed the resident text. Serial
-    // streaming has every routed expert in place before the matmul's split starts, so only overlap
-    // gives the offload up; the decode's one-token graphs are never offloaded either way.
-    if (cfg.moe.enabled && cfg.moe.overlap && cfg.n_gpu_layers != 0) cparams.op_offload = false;
-    // With no layer placed at all, a device is registered only because the caller asked for every
-    // one (`devices=all`); the streamer still rebinds the expert tensors at compute time, on the
-    // CPU, and a backend that takes those ops copies whatever the tensors pointed at before. So a
-    // streamed run with nothing placed gives the offload up as well. Measured on a phone with its
-    // GPU backends registered and nothing placed: a 15-token prompt that answers in 22 s on the
-    // CPU alone had not produced a token after eight minutes.
-    if (cfg.moe.enabled && cfg.n_gpu_layers == 0) cparams.op_offload = false;
+    // The rule, and the runs that showed why, is offloads_wide_matmuls (config.h): a front-end says
+    // where a prompt runs by the same function. The prefill device is this session's own, armed.
+    if (!offloads_wide_matmuls(cfg.moe, cfg.n_gpu_layers, prefill != nullptr)) cparams.op_offload = false;
     // Logit rows are reserved for as many outputs as a graph may return, and left at llama.cpp's
     // default that is the whole ubatch. A row is the whole vocabulary, and the reservation goes where
     // the output layer is: on a CPU-only run of a 35B-A3B at 2048 tokens it was 1.7 GiB of compute
@@ -1673,28 +1661,29 @@ void Session::Impl::arm_routing_record(Opening & o, int n_expert) {
         k = info.ok ? info.n_expert_used : 0;
     }
     shape.n_expert_used = (uint32_t) std::max(0, k);
-    shape.expert_bytes.resize((size_t) o.n_layer_streamed);
-    for (int il = 0; il < o.n_layer_streamed; ++il)
-        shape.expert_bytes[(size_t) il] = source.expert_bytes(il);
+    // Sized from the file, not the streamer: the hook records every MoE layer's routing, and the
+    // streamer knows only the layers it streams. A record sized by the streamer named no bytes for a
+    // layer the plan put on a device, the reader refused the whole record, and the next load planned
+    // with no hit curve.
+    const GgufOffsets & offs = o.meta().offsets;
+    shape.expert_bytes = expert_bytes_per_layer(o.layout, offs.extents, offs.size_by_name, o.n_layer_streamed);
     hook->set_routing_record(cfg.moe.routing_record_tokens, std::move(shape));
 }
 
-// The routing record of a run with no streamer: the same capture finds the expert tensors, whose
-// own strides give what one expert of each block costs a cache, and the hook then records the
-// routing nodes it sees until the record is full. Nothing is rebound and nothing is read.
+// The routing record of a run with no streamer: the hook records the routing nodes it sees until
+// the record is full, each layer sized from the file as a streamed run's record is. Nothing is
+// rebound and nothing is read.
 bool Session::Impl::arm_unstreamed_record(Opening & o) {
     if (!capture_warmup(o)) return false;
-    const std::vector<LayerExperts> layers = hook->captured();
     RoutingTrace shape;
     shape.n_layer = (uint32_t) o.n_layer_streamed;
     int k = o.cfg.n_expert_used;
     if (k <= 0) k = o.gguf().ok ? o.gguf().n_expert_used : 0;
     shape.n_expert_used = (uint32_t) std::max(0, k);
     shape.n_expert = o.gguf().ok ? (uint32_t) o.gguf().n_expert : 0;
-    shape.expert_bytes.assign((size_t) o.n_layer_streamed, 0);
-    for (size_t il = 0; il < layers.size() && il < shape.expert_bytes.size(); ++il)
-        for (const ExpertTensorRef & p : layers[il].proj)
-            if (p.tensor) shape.expert_bytes[il] += (uint64_t) p.tensor->nb[2];
+    const GgufOffsets & offs = o.meta().offsets;
+    const ExpertLayout layout = o.layout.ok ? o.layout : discover_expert_layout(offs.extents, o.gguf().n_expert);
+    shape.expert_bytes = expert_bytes_per_layer(layout, offs.extents, offs.size_by_name, o.n_layer_streamed);
     hook->set_routing_record(o.cfg.moe.routing_record_tokens, std::move(shape));
     clear_memory(ctx.get()); // discard the capture's KV
     return true;
@@ -2377,6 +2366,9 @@ void Session::Impl::note_width_turn(int n_prompt, double prefill_seconds, int n_
     }
     MeasuredKnobs & r = trials.result;
     r.width_narrow = t.width_narrow;
+    // A load that times no side runs the width its plan decided: the one a later decision's margin
+    // guards (MeasuredKnobs::width_held). A side timed is a trial, not a decision, and holds nothing.
+    if (t.width_side < 0) r.width_held = (int) llama_n_ubatch(ctx.get()) <= t.width_narrow ? 0 : 1;
     r.usage_requests = trials.width_requests;
     r.usage_gen_tokens = trials.width_gen / trials.width_requests;
     r.usage_long_prompt_tokens = trials.width_long_tokens / trials.width_requests;
