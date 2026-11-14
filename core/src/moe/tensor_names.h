@@ -31,6 +31,36 @@ int block_layer(const char * name, const char ** rest = nullptr);
 // "ffn_down_exps.scale" shares an expert's suffix and must stay a mapped, resident tensor.
 std::string_view weight_suffix(const char * name, int & il_out);
 
+// Whether `name` ends in ".weight": a weight rather than its scale, bias or probs companion.
+bool is_weight(const char * name);
+
+// Which part of its block a tensor belongs to, from the name after "blk.<il>.": the attention's
+// ("attn..."), the feed-forward's ("ffn...", experts included: telling those apart is the layout's),
+// or neither - a norm, a tensor outside any block.
+enum class BlockPart { Attention, Ffn, Other };
+BlockPart block_part(const char * name);
+
+// A tensor of a multi-token-prediction block ("nextn" anywhere in its name): llama.cpp loads such a
+// block only when asked to, experts and dense alike.
+bool is_mtp_tensor(const char * name);
+
+// An embedding table, gathered by row rather than read whole: "token_embd" anywhere in the name,
+// so the per-layer table some architectures add beside the token table matches too.
+bool is_embedding_table(const char * name);
+
+// The tensors outside any block that a reader looks up by their exact name: the output head (absent
+// from a model that ties it to the token table), the token table itself, and the final norm.
+inline constexpr const char * k_output_head = "output.weight";
+inline constexpr const char * k_token_table = "token_embd.weight";
+inline constexpr const char * k_output_norm = "output_norm.weight";
+
+inline bool is_output_head(const std::string & name) {
+    return name == k_output_head;
+}
+inline bool is_token_table(const std::string & name) {
+    return name == k_token_table;
+}
+
 // ── graph nodes ─────────────────────────────────────────────────────────────────────
 
 // The per-layer nodes the engine asks the graph for, as build_moe_ffn and the layer builders name

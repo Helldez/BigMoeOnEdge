@@ -119,11 +119,6 @@ struct Layer {
     }
 };
 
-bool ends_with(const std::string & s, const char * tail) {
-    const size_t n = std::strlen(tail);
-    return s.size() >= n && s.compare(s.size() - n, n, tail) == 0;
-}
-
 // Read the layer off the file: the MoE block with the most expert bytes in the file the experts live
 // in, its expert matrices and its other 2-D weights, and the bytes the probe will hold of them.
 bool read_layer(const ModelProfile & model, Layer & L) {
@@ -153,8 +148,8 @@ bool read_layer(const ModelProfile & model, Layer & L) {
         ggml_tensor * t = ggml_get_tensor(meta, name.c_str());
         const int il = tensor_names::block_layer(name.c_str());
         if (!t || il < 0) continue;
-        if (name.find("nextn") != std::string::npos) skip_blocks.push_back(il);
-        if (!ends_with(name, ".weight")) continue;
+        if (tensor_names::is_mtp_tensor(name.c_str())) skip_blocks.push_back(il);
+        if (!tensor_names::is_weight(name.c_str())) continue;
         if (ggml_blck_size(t->type) <= 0) continue;
         // A matmul reads a weight as floats: F32 itself, or a type ggml converts (its to_float). A
         // block can also hold an integer table named like a weight (a token-to-expert index map,

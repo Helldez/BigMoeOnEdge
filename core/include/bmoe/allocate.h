@@ -176,8 +176,26 @@ struct AllocationInputs {
 // One line of the memory ledger: something the run holds for its whole length, and whether it is
 // held reclaim-exempt. The rows are what a reader checks a run against - the two ceilings are only
 // meaningful next to what was charged to them.
+//
+// A row is told apart by its kind, never by its name: the name is what a reader sees (and what the
+// server's plan view and --explain print), so it may be reworded without a stage that drops or
+// replaces a row silently missing it.
+enum class LedgerKind {
+    ContextCompute, // the context and the compute buffers
+    Projector,      // a vision projector
+    Checkpoints,    // the context checkpoints
+    Device,         // an armed device's host-side share
+    Dense,          // the dense weights the dense policy keeps
+    ExpertCache,    // the expert cache
+    DeviceSlots,    // the prefill device's slots, held in turn with the cache
+};
+
+// The row's display name, the one spelling of each.
+const char * ledger_kind_name(LedgerKind k);
+
 struct LedgerRow {
-    std::string name;
+    LedgerKind kind = LedgerKind::ContextCompute;
+    std::string name; // for display only; see LedgerKind
     uint64_t bytes = 0;
     bool locked = false;
     // Held in turn with the expert cache rather than with it: not part of `held`, which is the
