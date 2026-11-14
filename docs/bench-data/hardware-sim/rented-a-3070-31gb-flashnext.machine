@@ -1,0 +1,8 @@
+# Blind prediction for the rented 0.43 validation box A (RTX 3070 8 GB, 31 GB, i5-12400F, NVMe 3.3 GB/s), made before its run.
+note=box A: 3070 8 GB, 31 GB RAM, i5-12400F
+parts=parts.txt
+ram=31G
+cpu=i5-12400f
+storage=3.3
+gpu=rtx3070 slot=pcie4x16
+hitcurve=2.2G:0.61,3.5G:0.68,3.9G:0.73,6G:0.80,7.8G:0.87,10G:0.90,15.6G:0.92,17.8G:0.94,25G:0.96

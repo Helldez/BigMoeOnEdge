@@ -2710,10 +2710,14 @@ void settle_cache_lock(Planning & s, const Allocation & alloc) {
 
 // A cache the caller sized is the row, whatever the ledger would have chosen: the account is of what
 // the run will hold, and a figure the run does not use would make it close on paper only.
-void charge_caller_cache(Planning & s) {
+void charge_caller_cache(Planning & s, const AllocationInputs & ai) {
     if (!s.req.is_pinned("cache-mb")) return;
     Ledger & l = s.p.allocation.ledger;
     const uint64_t asked = (uint64_t) std::max(0, s.p.config.moe.cache_mb) << 20;
+    // And the price: the prediction is of the run, and the run holds the caller's cache, not the one
+    // the ranking would have chosen. A cache the caller left to the run to size has no size to price.
+    if (s.p.config.moe.enabled && !s.p.config.moe.cache_auto)
+        price_caller_cache(s.p.allocation, s.hw, s.host_model, ai, s.pol, asked);
     l.rows.erase(
         std::remove_if(l.rows.begin(), l.rows.end(), [](const LedgerRow & r) { return r.name == "expert cache"; }),
         l.rows.end());
@@ -3596,7 +3600,7 @@ Plan plan_once(const RunConfig & base,
     settle_dense_pin(s, pin_candidate, alloc, ai);
     settle_mapped_tables(s, alloc);
     settle_cache_lock(s, alloc);
-    charge_caller_cache(s);
+    charge_caller_cache(s, ai);
     note_ledger(s, alloc);
     note_hit_curve(s, alloc);
     if (!size_cache(s, alloc)) return p;

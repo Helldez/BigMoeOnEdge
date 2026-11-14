@@ -1,0 +1,10 @@
+# 8 GB card (4060 class), 32 GB RAM, 8-core desktop
+# Described by its parts only: every rate comes from the model of parts fitted on the measured machines
+# in parts.txt (bmoe-planlab parts parts.txt shows the fit and how far it misses a machine left out of it).
+note=8 GB card (4060 class), 32 GB RAM, 8-core desktop
+parts=parts.txt
+ram=32G
+cpu=ryzen7-7700
+storage=3.5
+gpu=rtx4060
+routing=../plan-records/apple-silicon-16gb-qwen3.6-35b-a3b-q4_k_m-learned.planrec

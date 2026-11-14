@@ -124,6 +124,10 @@ struct AutoPlan {
     // plan basis) carries what was fitted; keyed by everything else a fit depends on, so a plan for
     // another context or cache type asks the fitter again.
     mutable std::map<FitKey, Placement> placement_at_width;
+    // Where a re-fit the table above lacks is answered from, when set: by a caller planning on facts it
+    // did not probe here (a plan record, tools/planlab), which has no model file or device to ask.
+    // Unset, the capacity fitter is asked.
+    std::function<Placement(const FitKey &)> refit;
 
     // Whether a load-time calibration ran (AutoPlanOptions::calibrate, calibrate_plan), and what it
     // gave: `plan` is then its final plan, and `calibration.knobs` the record for the front-end to keep.

@@ -4,6 +4,59 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **A machine as a file, for whoever works on the planner (`bmoe-planlab`, a developer tool; not in
+  any release).** The rules are pure functions over what the probes report, so a machine nobody has
+  at hand is, to them, those facts. `bmoe-planlab record` writes everything `--auto` measured for
+  one model on one machine as text (no weights, no prompt, no local path), with what the plan's run
+  then measured; `bmoe-planlab replay` makes that machine's plan again anywhere, with no model and
+  no device, with a knob pinned (`--sweep cache-mb=...` prints the cache, the memory held and the
+  predicted speed per value) or a fact changed (`--set hw.residency_budget=...`). A record also
+  carries where it ran (system, kernel, swap and its kind, a container's limit), the prediction in
+  parts, and the run as distributions per token with the process's and the system's memory through
+  it; `errors DIR` sets the prediction beside the measurement for every record and `table DIR`
+  writes them all as one CSV, the table a better predictor is to be built on. The project's own
+  test runs keep their records in `docs/bench-data/plan-records`; for anyone else it is off, and
+  `scripts/bench-report.sh` makes one only with `BENCH_PLAN_RECORD=1`. Records kept in
+  `tests/plan-records` are replayed by the new `plan_records` test on every build: a rule change
+  that moves the plan on a recorded machine fails with both plans printed, and each record made
+  with a run prints the prediction beside the measurement. It says what the planner decides and
+  predicts; whether a plan is fast is still the machine's to answer. `docs/plan-records.md`.
+- **A machine nobody has, planned for (`bmoe-planlab simulate`, a developer tool for the project; not
+  in any release, nothing in `--auto` or any front-end uses it).** A machine spec composes a host
+  from one record and cards from others, sized to the ones asked about; llama.cpp's own capacity
+  fitter places the real model, from a header-only shell of its file (`tools/planlab/gguf_shell.py`,
+  a few MB for a 125 GB model), on simulated ggml devices of those sizes, and the rules plan on the
+  result, which is a plan record like any other. Rebuilt from their own records, the rented 24 GB
+  and 32 GB cards get the plan they recorded, within 130 MiB of the real placement; DeepSeek V4 is
+  placed with fewer layers than a real card takes, which the tool detects and says. `bmoe-planlab
+  speed` adds a decode estimate for plans the cost model does not price (a card holding the dense
+  part, a device cache), within 11% of the rented runs where the card holds the experts it needs.
+  Any machine is described by its parts (`ram=`, `cpu=`, `storage=`, `gpu=` lines, public figures
+  in `docs/bench-data/hardware-sim/parts.txt`): every rate comes from a model of parts fitted, each
+  time, on the measured machines, so every record added moves every simulation. Against a machine
+  left out of the fit, a card's rates land within 0.72-1.22 and a host on 4 bits a weight or more
+  within 0.94-1.15; a host under 4 bits a weight is still a wide range, said with the plan
+  (`bmoe-planlab parts` prints the fit and the check). The rented records join
+  `docs/bench-data/plan-records`; the two machines of the 0.43 validation that were not rented are
+  in `docs/bench-data/hardware-sim`, with blind predictions for the two rented boxes made before
+  their runs and the results beside them: on both the plans came out as predicted (same regime, the
+  same layer counts, the split within one layer), the speeds 1.3-1.9x lower than estimated, mostly
+  from the hit rate the device cache was credited. Their records moved the model (an upload from the
+  file's mapping is bounded by the host's copy, 7-9 GiB/s on every box, not by the link; a card
+  reports about 3% less memory than its published size; a box recorded on several models counts
+  once); a shell now carries the bytes the model fingerprint samples, so it finds the model's routing
+  records; and `routing=` takes a `.routing` trace as bmoe-cli keeps it. `docs/hardware-simulation.md`.
+
+### Fixed
+- **A cache size set by hand is the one the plan's prediction is priced at.** With `--cache-mb`
+  pinned the plan charged that cache to its memory ledger and went on predicting the speed, and
+  crediting the hit rate, of the cache it would have chosen itself, so "predicted against measured"
+  compared the run with another configuration. The expert lane is now re-priced at the caller's
+  size by the arithmetic the ranking uses for its own (no hits under one token cycle).
+
 ## [0.43.0] - 2026-11-14
 
 ### Added
@@ -76,6 +129,8 @@ Semantic Versioning.
   its floor; where none does, nothing changes. The server's own context is never shortened, since a
   coding agent's first request alone can be 10k tokens. A value set by hand (`--ctx-checkpoints`, `--ctx-size`, the settings) is never
   moved ([hardware-planning.md](docs/hardware-planning.md#the-flow)).
+
+### Added
 
 ### Fixed
 - **The server decodes as fast as the CLI.** On the same plan of GLM-4.7 on two 24 GB cards

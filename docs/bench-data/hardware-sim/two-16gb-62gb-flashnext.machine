@@ -1,0 +1,12 @@
+# two 16 GB cards (A4000 class), 62 GB RAM, 16-core desktop
+# Described by its parts only: every rate comes from the model of parts fitted on the measured machines
+# in parts.txt (bmoe-planlab parts parts.txt shows the fit and how far it misses a machine left out of it).
+note=two 16 GB cards (A4000 class), 62 GB RAM, 16-core desktop
+parts=parts.txt
+ram=62G
+cpu=ryzen9-9950x3d
+storage=3.5
+gpu=rtx-a4000
+gpu=rtx-a4000
+# Flash-Next Q2_0 device-cache hit rates measured on rented cards (8-32 GB, llama.cpp moe_cache counters, decode).
+hitcurve=2.2G:0.61,3.5G:0.68,3.9G:0.73,6G:0.80,7.8G:0.87,10G:0.90,15.6G:0.92,17.8G:0.94,25G:0.96

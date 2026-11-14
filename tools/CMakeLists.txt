@@ -23,3 +23,16 @@ if(ANDROID)
     # AHardwareBuffer_* live in libandroid.so.
     target_link_libraries(bmoe-membench PRIVATE android)
 endif()
+
+# The planner's bench: record everything `--auto` measured on a machine as a text file, and plan
+# again from such a file anywhere, with no model and no device (docs/plan-records.md). A developer's
+# instrument: it is not installed and no release carries it. Unlike the two above it is the engine
+# itself that it drives, so it needs llama.cpp.
+if(BMOE_HAVE_LLAMA)
+    add_executable(bmoe-planlab planlab/main.cpp planlab/plan_record.cpp planlab/env_probe.cpp
+                                planlab/simulate.cpp planlab/sim_device.cpp planlab/sim_speed.cpp planlab/sim_parts.cpp)
+    target_link_libraries(bmoe-planlab PRIVATE bmoe_core llama ggml)
+    # The simulated device implements ggml's backend interface, which ggml keeps in its own sources
+    # (ggml-backend-impl.h): a developer tool's dependency, never the engine's (sim_device.h).
+    target_include_directories(bmoe-planlab PRIVATE ${CMAKE_SOURCE_DIR}/third_party/llama.cpp/ggml/src)
+endif()

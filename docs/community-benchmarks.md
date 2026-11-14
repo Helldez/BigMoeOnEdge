@@ -107,6 +107,7 @@ Override with an environment variable, and say so in the issue:
 |---|---|---|
 | `N_PREDICT` | 256 | never below 256, the cache is still warming |
 | `BENCH_RUNS` | 3 | 2 skips the `--overlap` row; 1 reports the first load alone (a model so large that one run is what the machine affords) |
+| `BENCH_PLAN_RECORD` | 0 | 1 adds one run that writes a plan record ([plan-records.md](plan-records.md)): what the plan was made from and what the run measured, as a text file you read and choose to attach. Off unless you ask; needs a source build |
 | `BENCH_SETTLE` | 30 | seconds between the runs; raise it when the note under the table says the second plan saw less memory than the first |
 
 Flags after the model path reach `bmoe-cli` verbatim: only the ones that change the model, not the
