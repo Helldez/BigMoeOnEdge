@@ -53,6 +53,8 @@ struct SessionConfig {
     int n_ubatch = 0;
     int ctx_checkpoints = 8;                            // See RunConfig::ctx_checkpoints.
     int checkpoint_min_step = 8192;                     // See RunConfig::checkpoint_min_step.
+    int preamble_checkpoints = 2;                       // See RunConfig::preamble_checkpoints.
+    int preamble_checkpoint_tokens = 16384;             // See RunConfig::preamble_checkpoint_tokens.
     KvCacheType cache_type_k = k_default_kv_cache_type; // See RunConfig::cache_type_k.
     KvCacheType cache_type_v = k_default_kv_cache_type;
     bool chatml = false;

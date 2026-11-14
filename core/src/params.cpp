@@ -215,6 +215,8 @@ constexpr int cache_floor_lo_mb = 1024, cache_floor_hi_mb = 3072;
 constexpr int ubatch_lo = 512, ubatch_hi = 2048;
 constexpr int ctx_checkpoints_lo = 4, ctx_checkpoints_hi = 32;
 constexpr int checkpoint_step_lo = 2048, checkpoint_step_hi = 8192;
+constexpr int preamble_checkpoints_lo = 1, preamble_checkpoints_hi = 4;
+constexpr int preamble_tokens_lo = 8192, preamble_tokens_hi = 32768;
 constexpr int row_stream_lo_mb = 32, row_stream_hi_mb = 256;
 constexpr int prefill_min_tokens_hi = 128;
 constexpr int prefill_loaders_lo = 4, prefill_loaders_hi = 8;
@@ -759,6 +761,32 @@ std::vector<ParamDesc> build() {
         typical(d, usual::checkpoint_step_lo, usual::checkpoint_step_hi);
         special(d, "0", "no minimum");
         bind_int(d, [](RunConfig & c) -> int & { return c.checkpoint_min_step; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("preamble-checkpoints", "Preamble checkpoints", G::Memory, L::Advanced,
+                          "The whole state at the end of a conversation's preamble (the system prompt and "
+                          "tools a client sends first), kept for the most recently used preambles. A new "
+                          "conversation that starts with one of them restores it instead of prefilling it "
+                          "again, also after a conversation with another preamble. Each takes the memory "
+                          "of its tokens' context; a model whose context cuts anywhere keeps none. 0 = off.");
+        d.value_hint = "N";
+        bounds(d, 0, RunConfig::preamble_checkpoints_max, "preambles");
+        typical(d, usual::preamble_checkpoints_lo, usual::preamble_checkpoints_hi);
+        special(d, "0", "off");
+        bind_int(d, [](RunConfig & c) -> int & { return c.preamble_checkpoints; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("preamble-checkpoint-tokens", "Preamble checkpoint size", G::Memory, L::Advanced,
+                          "What the preamble checkpoints may hold together, in tokens. A preamble longer "
+                          "than this is not kept, and the plan sets this much context memory aside for "
+                          "them. 0 = off.");
+        d.value_hint = "N";
+        bounds(d, 0, RunConfig::tokens_max, "tokens");
+        typical(d, usual::preamble_tokens_lo, usual::preamble_tokens_hi);
+        special(d, "0", "off");
+        bind_int(d, [](RunConfig & c) -> int & { return c.preamble_checkpoint_tokens; });
         t.push_back(d);
     }
     {

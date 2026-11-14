@@ -1767,9 +1767,22 @@ void bound_prefill_width(Planning & s) {
 // The memory the context checkpoints will take: one copy of the context's fixed part per checkpoint
 // kept. Only a chat run makes them (the session keeps them at the end of a templated prompt), and a
 // context that is all attention has no fixed part, so both cost nothing.
+//
+// The preamble checkpoints are charged with them, at their bound: each is the whole state of a prefix,
+// so a copy of the fixed part per preamble kept, and what the tokens they may hold together cost in
+// context. Nothing where the run keeps none: a context that is all attention, a prefill device set,
+// or an MTP draft context beside the target (session.cpp, preamble_checkpoints_on).
+uint64_t preamble_checkpoint_reserve(const RunConfig & c, const Placement & placement) {
+    if (!c.chatml || c.preamble_checkpoints <= 0 || c.preamble_checkpoint_tokens <= 0) return 0;
+    if (placement.context_fixed_bytes == 0 || c.prefill.enabled() || c.spec.is_mtp()) return 0;
+    return placement.context_fixed_bytes * (uint64_t) c.preamble_checkpoints +
+           placement.context_token_bytes * (uint64_t) c.preamble_checkpoint_tokens;
+}
+
 uint64_t checkpoint_reserve(const RunConfig & c, const Placement & placement) {
-    if (!c.chatml || c.ctx_checkpoints <= 0) return 0;
-    return placement.context_fixed_bytes * (uint64_t) c.ctx_checkpoints;
+    const uint64_t ring =
+        c.chatml && c.ctx_checkpoints > 0 ? placement.context_fixed_bytes * (uint64_t) c.ctx_checkpoints : 0;
+    return ring + preamble_checkpoint_reserve(c, placement);
 }
 
 void classify_regime(Planning & s) {
@@ -3185,9 +3198,17 @@ void note_kv_budget(Planning & s) {
 void note_checkpoint_budget(Planning & s) {
     if (s.checkpoint_bytes == 0) return;
     const RunConfig & c = s.p.config;
+    const uint64_t preamble = preamble_checkpoint_reserve(c, s.placement);
+    const std::string preamble_note =
+        preamble == 0
+            ? std::string()
+            : u64s(mib(preamble)) + " MiB of it for " + std::to_string(c.preamble_checkpoints) +
+                  " preamble checkpoints ({preamble-checkpoints}) of " + std::to_string(c.preamble_checkpoint_tokens) +
+                  " tokens together ({preamble-checkpoint-tokens}), each the whole state of its prefix; "
+                  "the rest for ";
     s.note("checkpoint-budget", u64s(mib(s.checkpoint_bytes)) + " MiB", Source::Measured,
            "Context checkpoints may take " + size_brief(s.checkpoint_bytes) + "; that is kept out of the cache.",
-           std::to_string(c.ctx_checkpoints) + " checkpoints ({ctx-checkpoints}) of " +
+           preamble_note + std::to_string(c.ctx_checkpoints) + " checkpoints ({ctx-checkpoints}) of " +
                u64s(mib(s.placement.context_fixed_bytes)) + " MiB each, " +
                (s.placement.n_swa && (s.placement.host_window_cell_bytes || s.placement.device_window_cell_bytes)
                     ? "the model's sliding window of " + u64s(s.placement.n_swa) +

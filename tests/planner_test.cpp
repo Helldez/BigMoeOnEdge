@@ -14,6 +14,7 @@
 
 #include "bmoe/config.h"
 #include "bmoe/allocate.h"
+#include "bmoe/auto_plan.h"
 #include "bmoe/backend_choice.h"
 #include "bmoe/calibrate.h"
 #include "bmoe/planner.h"
@@ -1940,6 +1941,7 @@ int main() {
         RunConfig chat = base_cfg();
         chat.chatml = true;
         chat.ctx_checkpoints = 4;
+        chat.preamble_checkpoints = 0;
         const Plan cx = plan_run(chat, phone(), model, ck, PlanRequest{});
         const LedgerRow * ck_row = ledger_row(cx, LedgerKind::Checkpoints);
         check(ck_row && ck_row->bytes == 200 * MiB, "ledger: a chat run charges its checkpoints",
@@ -1948,6 +1950,64 @@ int main() {
               mibs_of(fx.cache_budget_bytes) + " against " + mibs_of(cx.cache_budget_bytes));
         check(ledger_row(plan_run(base_cfg(), phone(), model, ck, PlanRequest{}), LedgerKind::Checkpoints) == nullptr,
               "ledger: a run that is not a chat keeps no checkpoints");
+
+        // The preamble checkpoints are charged in the same line at their bound: a copy of the fixed
+        // part for each, and the context their tokens take together. Nothing where the run keeps
+        // none: a context that is all attention, or a prefill device.
+        ck.context_token_bytes = 16 * 1024;
+        chat.preamble_checkpoints = 2;
+        chat.preamble_checkpoint_tokens = 6400;
+        const Plan px = plan_run(chat, phone(), model, ck, PlanRequest{});
+        const LedgerRow * px_row = ledger_row(px, LedgerKind::Checkpoints);
+        check(px_row && px_row->bytes == (200 + 2 * 50 + 100) * MiB,
+              "ledger: a chat run charges its preamble checkpoints at their bound",
+              px_row ? mibs_of(px_row->bytes) : "no row");
+        check(cx.cache_budget_bytes - px.cache_budget_bytes == 200 * MiB, "ledger: and the cache gives them up too",
+              mibs_of(cx.cache_budget_bytes) + " against " + mibs_of(px.cache_budget_bytes));
+        Placement attention = ck;
+        attention.context_fixed_bytes = 0;
+        check(ledger_row(plan_run(chat, phone(), model, attention, PlanRequest{}), LedgerKind::Checkpoints) == nullptr,
+              "ledger: a context that is all attention is charged no preamble checkpoint");
+
+        // Where their charge leaves the expert cache under one token cycle, the preamble checkpoints
+        // give way (replan_rules runs the same pass as the plan, without the context step). One
+        // context checkpoint, so only they can go; a model whose cycle lies between the cache with
+        // them and the cache without.
+        chat.ctx_checkpoints = 1;
+        chat.preamble_checkpoints = 2;
+        chat.preamble_checkpoint_tokens = 64000; // 2 x 50 MiB + 64000 x 16 KiB = 1100 MiB
+        RunConfig bare = chat;
+        bare.preamble_checkpoints = 0;
+        ModelProfile snug = model;
+        const uint64_t with_them = plan_run(chat, phone(), snug, ck, PlanRequest{}).cache_budget_bytes;
+        const uint64_t without = plan_run(bare, phone(), snug, ck, PlanRequest{}).cache_budget_bytes;
+        snug.token_cycle_bytes = (with_them + without) / 2;
+        AutoPlan facts;
+        facts.hw = phone();
+        facts.model = snug;
+        facts.placement = ck;
+        const Plan kept = plan_run(chat, phone(), snug, ck, PlanRequest{});
+        const Plan gone = replan_rules(facts, chat, PlanRequest{}, MeasuredKnobs{});
+        check(with_them < without && kept.token_cycle_bytes > kept.cache_budget_bytes,
+              "give way: the fixture's cache is under a token cycle with the preamble checkpoints",
+              mibs_of(kept.cache_budget_bytes) + " against a cycle of " + mibs_of(kept.token_cycle_bytes));
+        check(gone.config.preamble_checkpoints == 0 && gone.cache_budget_bytes >= gone.token_cycle_bytes,
+              "give way: the preamble checkpoints go where the cache needed their room",
+              std::to_string(gone.config.preamble_checkpoints) + " kept, cache " + mibs_of(gone.cache_budget_bytes));
+        bool said = false;
+        for (const Decision & d : gone.decisions)
+            said = said || (d.knob == "preamble-checkpoints" && d.value == "0" && d.source == Source::Derived);
+        check(said, "give way: and the plan says so");
+        check(gone.config.ctx_checkpoints == 1, "give way: the one context checkpoint stays");
+        PlanRequest set_by_hand;
+        set_by_hand.pinned = {"preamble-checkpoints"};
+        check(replan_rules(facts, chat, set_by_hand, MeasuredKnobs{}).config.preamble_checkpoints == 2,
+              "give way: a count the person set never moves");
+        Placement no_fixed = ck;
+        no_fixed.context_fixed_bytes = 0;
+        facts.placement = no_fixed;
+        check(replan_rules(facts, chat, PlanRequest{}, MeasuredKnobs{}).config.preamble_checkpoints == 2,
+              "give way: nothing goes where nothing was charged");
     }
 
     // ── the prefill plan: a second placement, decided at prefill width ─────────────

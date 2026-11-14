@@ -67,6 +67,7 @@ if(BMOE_HAVE_LLAMA)
         src/engine/session.cpp
         src/engine/calibration_run.cpp
         src/engine/context_checkpoints.cpp
+        src/engine/preamble_checkpoints.cpp
         src/engine/prompt_stream.cpp
         src/engine/media_input.cpp
         src/engine/image_probe.cpp

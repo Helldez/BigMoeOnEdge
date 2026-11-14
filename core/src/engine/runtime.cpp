@@ -43,6 +43,8 @@ SessionConfig session_config_from(const RunConfig & cfg) {
     sc.n_ubatch = cfg.graph_width(); // never 0 here: the default width is RunConfig's to decide
     sc.ctx_checkpoints = cfg.ctx_checkpoints;
     sc.checkpoint_min_step = cfg.checkpoint_min_step;
+    sc.preamble_checkpoints = cfg.preamble_checkpoints;
+    sc.preamble_checkpoint_tokens = cfg.preamble_checkpoint_tokens;
     sc.cache_type_k = cfg.cache_type_k;
     sc.cache_type_v = cfg.cache_type_v;
     sc.chatml = cfg.chatml;

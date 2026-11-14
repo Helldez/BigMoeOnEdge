@@ -800,6 +800,22 @@ struct RunConfig {
     int ctx_checkpoints = 8;
     int checkpoint_min_step = 8192;
 
+    // Preamble checkpoints: the whole state at the end of a conversation's preamble (the system
+    // prompt and the tools an agent client sends at the top of every conversation), kept by its
+    // tokens, so a new conversation with a preamble seen before restores it instead of prefilling it
+    // again, whatever the context held in between. Unlike a context checkpoint this is the whole
+    // state of the prefix, the attention cache included: it has to stand after another preamble
+    // replaced the context. `preamble_checkpoints` of them are kept, the least recently used dropped
+    // first, holding at most `preamble_checkpoint_tokens` tokens together; a longer preamble is not
+    // kept. Only a memory that cannot be cut anywhere keeps any, and the plan charges the bound.
+    // Lossless: a restored state is the state the same tokens computed.
+    //
+    // Two by default, so a client that alternates between two preambles (two agents, or one that
+    // sends another tool list now and then) keeps both, and 16384 tokens, which holds two coding-agent
+    // preambles of the 4-6k tokens measured or one of the 12-15k some clients send.
+    int preamble_checkpoints = 2;
+    int preamble_checkpoint_tokens = 16384;
+
     // The K and V caches' element type (llama.cpp's --cache-type-k / --cache-type-v). A quantized
     // cache holds a long context in a half or a quarter of the memory, which on this engine goes to
     // the expert cache, at a cost in output quality: see KvCacheType. A quantized V cache needs flash
@@ -895,6 +911,7 @@ struct RunConfig {
     static constexpr int n_expert_used_max = 256;
     static constexpr int n_gpu_layers_max = 1024;
     static constexpr int ctx_checkpoints_max = 256;
+    static constexpr int preamble_checkpoints_max = 16;
 
     // The context a client of a server needs, below which a front-end warns before the first
     // request fails rather than after. Measured: opencode's first request, its system prompt and

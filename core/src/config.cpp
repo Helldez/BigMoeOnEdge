@@ -100,6 +100,9 @@ ValidationResult validate(const RunConfig & cfg) {
     if (cfg.ctx_checkpoints < 0) return fail("{ctx-checkpoints} cannot be negative (0 keeps none)");
     if (cfg.checkpoint_min_step < 0)
         return fail("{checkpoint-min-step} cannot be negative (0 sets no minimum spacing)");
+    if (cfg.preamble_checkpoints < 0) return fail("{preamble-checkpoints} cannot be negative (0 keeps none)");
+    if (cfg.preamble_checkpoint_tokens < 0)
+        return fail("{preamble-checkpoint-tokens} cannot be negative (0 keeps none)");
     if (cfg.n_ubatch < 0) {
         return fail("{ubatch} cannot be negative (0 makes it as wide as the context, up to " +
                     std::to_string(RunConfig::ubatch_auto_max) + ")");

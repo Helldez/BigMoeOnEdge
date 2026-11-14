@@ -195,6 +195,42 @@ Plan give_way(const AutoPlan & facts,
         }
         base.ctx_checkpoints = 1;
     }
+    // Then the preamble checkpoints, after the ring and before the context: without them a new
+    // conversation prefills its preamble again, which is slower but loses nothing a client asked for,
+    // where a shorter context turns a long conversation away.
+    const bool preambles_may_go = !req.is_pinned("preamble-checkpoints") &&
+                                  !req.is_pinned("preamble-checkpoint-tokens") && cfg.chatml &&
+                                  cfg.preamble_checkpoints > 0 && cfg.preamble_checkpoint_tokens > 0;
+    bool preambles_gone = false;
+    const auto restate_given_up = [&](Plan & q) {
+        if (preambles_gone)
+            restate(q, "preamble-checkpoints", "0", "No preamble checkpoints: the cache needed the room.",
+                    "no count was set, and the room set aside for " + std::to_string(cfg.preamble_checkpoints) +
+                        " preamble checkpoints left the expert cache under one token cycle (" + mib(cycle) +
+                        " MiB), which returns no hits. A new conversation prefills its preamble again. " +
+                        flag_spelling("preamble-checkpoints") + " sets it by hand");
+        if (base.ctx_checkpoints != kept)
+            restate(q, "ctx-checkpoints", std::to_string(base.ctx_checkpoints),
+                    "1 context checkpoint, not " + std::to_string(kept) + ": the cache needed the room.",
+                    "no count was set, and fewer checkpoints alone did not leave the expert cache a token cycle, so "
+                    "they went down to one before anything else gave way. " +
+                        flag_spelling("ctx-checkpoints") + " sets it by hand");
+    };
+    if (preambles_may_go) {
+        const auto planned = [&](const RunConfig & c) {
+            return refit ? plan_layout(facts, c, req, model) : plan_run(c, facts.hw, model, facts.placement, req);
+        };
+        RunConfig without = base;
+        without.preamble_checkpoints = 0;
+        Plan q = planned(without);
+        // Only where they were charged at all: a context that keeps none has nothing to give.
+        preambles_gone = q.cache_budget_bytes > planned(base).cache_budget_bytes;
+        if (preambles_gone) base = without;
+        if (preambles_gone && clears(q)) {
+            restate_given_up(q);
+            return q;
+        }
+    }
     const uint32_t floor =
         std::max<uint32_t>(PlannerPolicy::defaults().ctx_min_auto, (uint32_t) RunConfig::ctx_for_clients);
     const int given = cfg.n_ctx;
@@ -216,12 +252,7 @@ Plan give_way(const AutoPlan & facts,
                     " MiB), which returns no hits; at " + n + " tokens the cache is " + mib(q.cache_budget_bytes) +
                     " MiB. A longer conversation does not fit. " + flag_spelling("ctx-size") +
                     " sets it by hand, and a context set is never shortened");
-        if (shorter.ctx_checkpoints != kept)
-            restate(q, "ctx-checkpoints", std::to_string(shorter.ctx_checkpoints),
-                    "1 context checkpoint, not " + std::to_string(kept) + ": the cache needed the room.",
-                    "no count was set, and fewer checkpoints alone did not leave the expert cache a token cycle, so "
-                    "they went down to one before the context was shortened. " +
-                        flag_spelling("ctx-checkpoints") + " sets it by hand");
+        restate_given_up(q);
         return q;
     }
     return plan;

@@ -157,6 +157,8 @@ core/
                 chat_parse — reasoning-parser wiring (llama.cpp `common`, see seam.md)
                 context_checkpoints — the cut-resistant part of the context state, copied at prompt
                   ends and restored when a chat turn diverges inside it (session.md)
+                preamble_checkpoints — the whole state at the end of a conversation's preamble, kept
+                  by its tokens and restored when a new conversation starts with it (session.md)
                 ngram_draft — the prompt-lookup draft source (see ngram_draft.h)
                 thinking_control — how "thinking off" is honoured, probed per model
                 logits, prefill_support — log-softmax, batch filling and prefill attribution,

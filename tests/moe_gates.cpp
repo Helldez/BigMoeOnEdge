@@ -66,6 +66,11 @@
 //       (c) a follow-up that diverges further back than a sliding window does not reuse the window's
 //       memory, which accepts the cut but no longer holds what the next token reads: it starts again
 //       and answers as a fresh session does.
+//   G27 preamble checkpoints: on a memory that refuses the cut, a new conversation whose preamble
+//       (a system message) was seen before restores the whole state at its end, also after a
+//       conversation with another preamble took the context, for two preambles in turn, and answers
+//       exactly as a fresh session given the same conversation; a memory that cuts anywhere keeps
+//       none and prefills no more than without them.
 //   G23 the KV cache at f16, llama.cpp's type: streaming == resident. q8_0 is the default, so every
 //       other gate runs on a quantized cache; this one keeps the lossless type covered. The cache
 //       type changes the output, never what streaming the experts produces.
@@ -2399,6 +2404,85 @@ int main(int argc, char ** argv) {
                             n_prompt2);
             }
             fails += check("G22c the follow-up past the window == a fresh session", out_ref, out_cut);
+        }
+    }
+
+    // G27 — preamble checkpoints (preamble_checkpoints.h). Two preambles, A and B, each opening two
+    // conversations in turn: A, B, A, B. The third and fourth requests share nothing with the
+    // context but the template's first tokens, so a memory that refuses the cut starts them again
+    // unless the preamble's whole state was kept. The reference is a fresh session given the same
+    // conversation: its prefill stops at the preamble's end too (it keeps that state for later), so
+    // both runs decode the same pieces, and the restored state is the one those pieces computed.
+    {
+        auto msgs = [](std::initializer_list<std::pair<const char *, std::string>> l) {
+            std::vector<ChatMessage> v;
+            for (const auto & m : l)
+                v.push_back(ChatMessage{m.first, m.second});
+            return v;
+        };
+        std::string sys_a, sys_b;
+        while (sys_a.size() < 2400)
+            sys_a += "You answer briefly and name the river, the hills and the old town by the sea. ";
+        while (sys_b.size() < 2400)
+            sys_b += "Every reply lists a colour, a fruit and one tool the gardener keeps in the shed. ";
+        const std::string u1 = "Name a colour.";
+        const std::string u2 = "And a fruit?";
+        auto config = [&](int preambles) {
+            RunConfig c = stream0;
+            c.chatml = true;
+            c.n_ctx = 4096;
+            c.preamble_checkpoints = preambles;
+            return c;
+        };
+        struct Turn {
+            std::string out;
+            int prefilled = 0, n_prompt = 0;
+        };
+        // One request per (system, user) pair, in order, in one session. False (with err) on failure.
+        auto converse = [&](int preambles, std::initializer_list<std::pair<const std::string *, const std::string *>> l,
+                            std::vector<Turn> & turns) {
+            std::unique_ptr<Session> s = Session::open(session_config_from(config(preambles)), err);
+            if (!s) return false;
+            for (const auto & m : l) {
+                GenerateRequest q;
+                q.messages = msgs({{"system", *m.first}, {"user", *m.second}});
+                q.n_predict = 8;
+                q.clear_kv = false;
+                RunResult r = s->generate(q);
+                if (!r) {
+                    err = r.error;
+                    return false;
+                }
+                turns.push_back(Turn{r.generated_text, r.summary.n_prompt, r.summary.n_past - r.summary.n_generated});
+            }
+            return true;
+        };
+        std::vector<Turn> off, on, ref_a, ref_b;
+        if (!converse(0, {{&sys_a, &u1}, {&sys_a, &u2}}, off) ||
+            !converse(2, {{&sys_a, &u1}, {&sys_b, &u1}, {&sys_a, &u2}, {&sys_b, &u2}}, on) ||
+            !converse(2, {{&sys_a, &u2}}, ref_a) || !converse(2, {{&sys_b, &u2}}, ref_b)) {
+            std::fprintf(stderr, "G27 run failed: %s\n", err.c_str());
+            return 2;
+        }
+        const int floor = 256; // the shortest preamble kept (k_preamble_checkpoint_min_tokens)
+        const bool restored_a = on[2].prefilled <= on[2].n_prompt - floor;
+        const bool restored_b = on[3].prefilled <= on[3].n_prompt - floor;
+        const bool refuses = off[1].prefilled >= off[1].n_prompt;
+        if (!refuses && !restored_a && !restored_b) {
+            // This memory cut back to the shared preamble by itself and has no state a cut would
+            // lose: the first preamble it is asked to keep says so, and none is kept.
+            std::printf("[PASS] G27 this model's context cuts anywhere (a new conversation prefilled %d of %d without "
+                        "preamble checkpoints): none kept\n",
+                        off[1].prefilled, off[1].n_prompt);
+        } else {
+            std::printf("[%s] G27a a new conversation after another preamble restored its own (prefilled %d of %d, "
+                        "and %d of %d for the second preamble; %d of %d for a new conversation without preamble "
+                        "checkpoints)\n",
+                        restored_a && restored_b ? "PASS" : "FAIL", on[2].prefilled, on[2].n_prompt, on[3].prefilled,
+                        on[3].n_prompt, off[1].prefilled, off[1].n_prompt);
+            fails += restored_a && restored_b ? 0 : 1;
+            fails += check("G27b a restored preamble == a fresh session, first preamble", ref_a[0].out, on[2].out);
+            fails += check("G27b a restored preamble == a fresh session, second preamble", ref_b[0].out, on[3].out);
         }
     }
 

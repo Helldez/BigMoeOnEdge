@@ -4,6 +4,27 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **A new conversation restores its preamble instead of prefilling it again**
+  (`--preamble-checkpoints`, `--preamble-checkpoint-tokens`). An agent client opens every conversation
+  with the same system prompt and tools, thousands of tokens, and opens conversations all the time.
+  On a memory that cannot be cut anywhere (a recurrent state, a sliding window) the cut back to that
+  shared prefix is refused, and no context checkpoint sits at its end for long: one is taken where each
+  prompt ends, and the oldest goes first. So the preamble was prefilled again, and again after every
+  conversation with another preamble. The session now keeps the whole state at the end of the
+  preamble, by its tokens, for the two most recently used preambles (16384 tokens together), and a
+  prompt that starts with one of them restores it, whatever the context held in between. The end of
+  the preamble is found from the template itself, by rendering the conversation up to its first user
+  message twice. The whole state, not the part a context checkpoint copies: that part cannot stand
+  once another preamble has replaced the context. The plan charges the bound in the checkpoint
+  budget, and where the expert cache needs the room they give way after the context checkpoints and
+  before the context. Not kept by a context that is all attention, which cuts back by itself, nor
+  with a prefill device or an MTP draft context. Lossless: gate G27 answers a restored conversation
+  exactly as a fresh session does, for two preambles in turn
+  ([session.md](docs/session.md#independent-prompts-vs-multi-turn-chat)).
+
 ## [0.43.1] - 2026-11-14
 
 ### Added

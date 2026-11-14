@@ -382,6 +382,7 @@ Placement probe_placement(const char * model_path,
                     halved += (uint64_t) hm[i].context;
                 }
                 pl.context_fixed_bytes = 2 * halved > whole ? 2 * halved - whole : 0;
+                pl.context_token_bytes = whole > halved ? (whole - halved) / (cparams.n_ctx - half.n_ctx) : 0;
             }
         }
         // A windowed cache holds the window and one ubatch of cells, where a checkpoint copies the window

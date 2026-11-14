@@ -69,6 +69,10 @@ struct Placement {
     // memory, read off two context lengths rather than off the architecture. Zero for a context that
     // is all attention, or when not measured.
     uint64_t context_fixed_bytes = 0;
+    // And what one more token of context costs, the other half of the same two measurements. With the
+    // fixed part it is what a copy of the whole state of a prefix takes (a preamble checkpoint). Zero
+    // when not measured.
+    uint64_t context_token_bytes = 0;
 
     // A sliding-window cache holds its window and one ubatch of cells, up to the context's length
     // (window_cells), so a narrower graph holds less of it. What one of those cells costs, on the host

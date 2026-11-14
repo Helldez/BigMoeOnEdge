@@ -81,6 +81,31 @@ fills its checkpoints does not take it from what the cache already holds. A rest
 is lossless; gate G22 checks it on the three memory kinds the tiny models cover, and G22c a cut past a
 window.
 
+**Preamble checkpoints.** A context checkpoint serves a follow-up in the same conversation. A new
+conversation diverges earlier, right after the preamble an agent client sends at the top of every
+conversation (its system prompt and tools, 4-6k tokens for one coding agent, 12-15k for others), and
+nothing is kept there: the checkpoints sit where prompts ended, and the oldest goes first. So the
+session also keeps the whole state at the end of the preamble
+(`core/src/engine/preamble_checkpoints.{h,cpp}`). Where it ends is read off the template, not known
+about it: the conversation up to its first user message is rendered twice, with contents that differ
+in their first character (`A` and `\nB`, so a message that starts with whitespace still shares the
+prefix), and the preamble is the longest token prefix both renders and the real prompt share. The
+prefill stops there once, the state is copied with its tokens, and a later prompt that starts with
+those tokens gets it back, whatever the context held in between. It is the whole state
+(`llama_state_seq_get_data_ext` without the partial flag), attention cache included, because the
+partial one cannot stand once another preamble has replaced the context: two agents taking turns, or
+one client that sends another tool list now and then, would otherwise prefill a preamble on every
+switch. `--preamble-checkpoints` of them are kept (2), the least recently used dropped first, holding
+at most `--preamble-checkpoint-tokens` together (16384); a longer preamble, or one under 256 tokens,
+is not kept. Only a memory that cannot be cut anywhere keeps any (a recurrent or hybrid model, a
+sliding window); a prefill device and an MTP draft context turn them off, the first because
+llama.cpp would save the state through views the device path has moved, the second because the draft
+context would have to be kept with the target. The plan charges their bound with the context
+checkpoints: a copy of the context's fixed part for each, and what their tokens cost in context.
+The first one of a session logs its size (`preamble checkpoints: X MiB for N tokens`), each restore
+its time. Gate G27 runs two preambles in turn and compares each restored conversation with a fresh
+session's.
+
 **Fallbacks and costs.** With no checkpoint to restore (none taken yet, or off), a memory that refuses
 the cut is cleared and the whole prompt is prefilled again for that turn (correct, just slower). With
 thinking **on**, the template strips the previous turn's reasoning on re-render, so the rendered

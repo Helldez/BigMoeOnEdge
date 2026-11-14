@@ -23,6 +23,7 @@
 #include "../moe/tensor_names.h"
 #include "cache_brake.h"
 #include "context_checkpoints.h"
+#include "preamble_checkpoints.h"
 #include "kv_cache_type.h"
 #include "media_input.h"
 #include "prompt_stream.h"
@@ -498,6 +499,48 @@ struct Session::Impl {
         kv.truncate(kept);
         checkpoints.drop_after((int64_t) kept);
         return kept;
+    }
+
+    // The whole state at the end of a conversation's preamble, by its tokens (preamble_checkpoints.h).
+    // They describe no prefix of kv and stand without it, so they stay when it goes.
+    detail::PreambleCheckpoints preambles;
+    bool preamble_size_logged = false; // per token the size is the model's, so said once per session
+    // Not with a prefill device: llama.cpp would save and restore the state through KV views that
+    // still point where it was before PrefillPath moved it (as for decide()'s prefix state). Not with
+    // a draft context either, which mirrors the target's positions and would have to be kept with it.
+    bool preamble_checkpoints_on() const { return chat_on && preambles.enabled() && !prefill && !ctx_dft; }
+    // The prompt starts with a kept preamble the context holds less of than `held` says: its state
+    // replaces the context, and the record follows. Returns how many tokens are held afterwards. The
+    // context checkpoints go with the context they described; a preamble is text, so no image is
+    // left in it either.
+    size_t restore_preamble(const std::vector<llama_token> & toks, size_t held) {
+        if (!preamble_checkpoints_on() || toks.empty()) return held;
+        // At least one token stays to decode, as for a reused prefix.
+        const size_t n = preambles.match(toks.data(), toks.size() - 1, held);
+        if (n == 0) return held;
+        const auto t0 = clock_t_::now();
+        clear_memory(ctx.get());
+        forget_kv_tokens();
+        if (!preambles.restore(checkpoint_contexts(), toks.data(), n)) {
+            clear_memory(ctx.get());
+            log_printf(LogLevel::Warn,
+                       "preamble checkpoint: the %zu-token state did not load and was dropped; "
+                       "prefilling instead",
+                       n);
+            return 0;
+        }
+        kv.tokens.assign(toks.begin(), toks.begin() + (std::ptrdiff_t) n);
+        log_printf(LogLevel::Info, "preamble checkpoint: restored the %zu-token state in %.2f s", n,
+                   secs(t0, clock_t_::now()));
+        return n;
+    }
+    // The context holds exactly the first n tokens of toks, a preamble's: keep its state.
+    void keep_preamble(const std::vector<llama_token> & toks, size_t n) {
+        if (!preambles.create(checkpoint_contexts(), toks.data(), n) || preamble_size_logged) return;
+        preamble_size_logged = true;
+        log_printf(LogLevel::Info, "preamble checkpoints: %.1f MiB for %zu tokens, up to %d kept (%d tokens together)",
+                   (double) preambles.bytes() / (1024.0 * 1024.0), n, cfg.preamble_checkpoints,
+                   cfg.preamble_checkpoint_tokens);
     }
 
     // decide()'s kept prefix state. Chosen at the first decide() (the policy needs the backend's
@@ -1424,6 +1467,12 @@ bool Session::Impl::init_speculation(Opening & o) {
     }
     checkpoints.configure(cfg.ctx_checkpoints, cfg.checkpoint_min_step, llama_model_n_swa(model.get()));
     checkpoints.set_position_map([this](int64_t n) { return kv.pos_at((size_t) n); });
+    // Preamble checkpoints only where a cut back to a shared preamble can be refused or come too
+    // late: a recurrent state holds only its latest step, a sliding window only its window. A
+    // context that is all attention cuts there by itself (preamble_checkpoints.h).
+    const bool cut_can_fail = llama_model_is_recurrent(model.get()) || llama_model_is_hybrid(model.get()) ||
+                              llama_model_n_swa(model.get()) > 0;
+    preambles.configure(cut_can_fail ? cfg.preamble_checkpoints : 0, cfg.preamble_checkpoint_tokens);
     if (media) {
         media_batch = llama_batch_init(cfg.n_batch, /*embd*/ 0, /*n_seq_max*/ 1);
         media_batch_owned = true;
@@ -2679,6 +2728,9 @@ struct Session::Impl::Turn {
     int n_prompt = 0;
     int n_predict = 0;
     size_t n_common = 0; // leading prompt tokens the KV already held
+    // Where this prompt's preamble ends, 0 = none worth a checkpoint (preamble_checkpoints.h).
+    detail::PreambleProbe preamble_probe;
+    size_t preamble_n = 0;
 
     // The frame the I/O rows are stamped with at flush; the other traces carry their own.
     int trace_phase = 0, trace_step = 0;
@@ -2837,6 +2889,8 @@ struct Session::Impl::Turn {
             common_chat_params cp = common_chat_templates_apply(im.chat_tmpls.get(), inputs);
             prompt = cp.prompt.str();
             parse_params = detail::build_parse_params(cp);
+            if (im.preamble_checkpoints_on())
+                preamble_probe = detail::probe_preamble(im.chat_tmpls.get(), inputs, im.vocab);
             // An explicit response format also constrains a prefilled answer: the template
             // owns the grammar and its generation prefix, including any reasoning envelope.
             std::string grammar_err;
@@ -2915,6 +2969,7 @@ struct Session::Impl::Turn {
         }
         // No ceiling at all (0) is the context's room: the budget then grows with the context.
         n_predict = req.n_predict > 0 ? std::min(req.n_predict, ctx_room) : ctx_room;
+        if (chat_on) preamble_n = detail::preamble_end(preamble_probe, tokens);
         return true;
     }
 
@@ -2953,12 +3008,20 @@ struct Session::Impl::Turn {
     // kv_tokens empty, so n_common = 0 and this reduces to a full prefill — the one-shot path the
     // byte-identity gates exercise stays unchanged.
     void reuse_kv_prefix() {
-        if (!chat_on || im.kv.empty()) return;
+        if (!chat_on) return;
+        // A context that holds nothing of this prompt may still have its preamble kept.
+        if (im.kv.empty()) {
+            n_common = im.restore_preamble(tokens, 0);
+            return;
+        }
         const size_t max_common = tokens.size() > 0 ? tokens.size() - 1 : 0;
         n_common = im.kv.common_prefix(tk.stream, max_common);
         // A memory that cannot be cut here (a recurrent state, a sliding window) goes back to the
         // newest checkpoint before the divergence, and only a context with none starts again.
         if (n_common < im.kv.size()) n_common = im.keep_kv_prefix(n_common);
+        // A new conversation diverges right after the preamble, or inside it when another preamble
+        // came between: where that left less than a kept preamble, its whole state comes back.
+        n_common = im.restore_preamble(tokens, n_common);
         // The draft context mirrors the target's positions, so it has to be rewound to the SAME
         // point — including when n_common did not move, since the previous turn left it holding
         // everything it generated. Miss this and the first prefill batch of the turn starts at a
@@ -3069,6 +3132,9 @@ struct Session::Impl::Turn {
         arena_cache0 = im.prefill ? im.prefill->arena_cache_bytes() : 0;
         arena_stall0 = im.prefill ? im.prefill->arena_stall_seconds() : 0.0;
         const long long device_nodes0 = im.hook->device_nodes();
+        // The prefill is about to compute this prompt's preamble: its state is kept where it ends.
+        const bool keep_preamble = chat_on && preamble_n > n_common && im.preamble_checkpoints_on() &&
+                                   im.preambles.wanted(tokens.data(), preamble_n);
         size_t next_media = 0; // the first span at or after i
         for (int i = (int) n_common; i < n_prompt;) {
             while (next_media < tk.stream.media.size() && tk.stream.media[next_media].begin < (size_t) i)
@@ -3080,7 +3146,12 @@ struct Session::Impl::Turn {
             // A text run ends where the next image begins; an image goes in whole, as its own graphs.
             const int run_end =
                 next_media < tk.stream.media.size() ? (int) tk.stream.media[next_media].begin : n_prompt;
-            const int chunk = span ? (int) span->n_tokens : std::min(pf_step, run_end - i);
+            int chunk = span ? (int) span->n_tokens : std::min(pf_step, run_end - i);
+            // A piece that would run past the preamble's end stops AT it, and the rest is the next
+            // piece: every token is still decoded once, at its own position. A preamble is text, so
+            // no image lies before its end.
+            const bool to_preamble_end = keep_preamble && i < (int) preamble_n && i + chunk >= (int) preamble_n;
+            if (to_preamble_end) chunk = (int) preamble_n - i;
             // A long prompt prefilled in pieces leaves checkpoints inside it too, min_step apart.
             if (chat_on && i > (int) n_common && im.checkpoints.wanted(i, /*prompt_end*/ false))
                 im.checkpoints.create(im.checkpoint_contexts(), i);
@@ -3138,6 +3209,7 @@ struct Session::Impl::Turn {
             if (mtp_on && im.prefill) im.place_prefill(false, /*hold_slots*/ true);
             if (mtp_on && !common_speculative_process(im.mtp.get(), to_common_batch(pf)))
                 return fail(RunError::Failed, "MTP draft context failed to process the prefill batch");
+            if (to_preamble_end) im.keep_preamble(tokens, preamble_n);
         }
         im.place_prefill(false); // decode reads the host bindings
         prefill_device_nodes = im.hook->device_nodes() - device_nodes0;
