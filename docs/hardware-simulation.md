@@ -16,9 +16,9 @@ nothing a release carries.
 | The rules (`core/src/plan`) | the build at hand | exactly the plan `--auto` would make on those facts |
 | The placement (layers per card, experts left on the host, KV, compute buffers) | llama.cpp's own capacity fitter, run on simulated cards that report the memory the spec gives them | see [the check against real fits](#the-check-against-real-fits) |
 | The model's shapes | the real gguf's header: a *shell* of the file (its header at its own offsets, the rest a hole) | exact |
-| The host: memory, cores, thread sweep, matmul rates, storage | its parts' specifications through the model of parts fitted on every measured machine ([any machine from its parts](#any-machine-from-its-parts)); or, composed, a record measured on a real machine | memory-bound quantizations within 0.82-1.11 of a host left out of the fit; under 4 bits a weight, 0.5-3.8 (see below) |
-| A card's rates: memory bandwidth, expert and dense matmul, uploads, a crossing | the same model of parts from its published bandwidth, FP32 and link; or a record of a real card | within 0.75-1.28 of a card left out of the fit |
-| The cache's hit rate | the model's own routing from a record of it (`routing=`), or hit rates real runs measured at given cache sizes (`hitcurve=`) | a replay of the model's routing is the planner's own source; measured points are a second best; with neither the plan credits the share of the experts the cache holds, which is far below what a cache of a skewed router serves |
+| The host: memory, cores, thread sweep, matmul rates, storage | its parts' specifications through the model of parts fitted on every measured machine ([any machine from its parts](#any-machine-from-its-parts)); or, composed, a record measured on a real machine | memory-bound quantizations: plateau within 0.94-1.15 of a host left out of the fit, its expert rate 0.69-1.32; under 4 bits a weight, 0.34-2.35 (see below) |
+| A card's rates: memory bandwidth, expert and dense matmul, uploads, a crossing | the same model of parts from its published bandwidth, FP32 and link; or a record of a real card | within 0.72-1.22 of a card left out of the fit (pinned uploads 0.52-1.13) |
+| The cache's hit rate | the model's own routing from a record of it or a `.routing` trace bmoe-cli kept (`routing=`), or hit rates real runs measured at given cache sizes (`hitcurve=`) | a replay of the model's routing is the planner's own source; measured points are a second best; with neither the plan credits the share of the experts the cache holds, which is far below what a cache of a skewed router serves |
 | The decode speed | a sum of the measured rates over the parts a token goes through ([sim_speed.h](../tools/planlab/sim_speed.h)) | see [the speed estimate against measured runs](#the-speed-estimate-against-measured-runs) |
 
 What it cannot tell: whether the driver crashes, whether the kernel kills the process, whether the
@@ -46,8 +46,8 @@ to the data set, with its rig line, moves every simulation with no code changed.
 
 | Rate | Model | Fit on the measured machines |
 | --- | --- | --- |
-| A card's expert and dense matmul | time a layer = its bytes / (efficiency x published bandwidth) + a latency, at the simulated model's own layer size | experts 0.61 of the bandwidth and 2 us; dense 0.94 and 55 us |
-| A card's uploads | efficiency x the link (the slower of the card's and the slot's); from the file's mapping, the lower of that and the host's copy rate (where a box measured it under half its pinned rate) | 0.73 from the backend's host memory; 0.46 from the file's mapping, at most 7.4 GiB/s |
+| A card's expert and dense matmul | time a layer = its bytes / (efficiency x published bandwidth) + a latency, at the simulated model's own layer size | experts 0.60 of the bandwidth and 1 us; dense 0.93 and 52 us |
+| A card's uploads | from the backend's host memory: efficiency x the link (the slower of the card's and the slot's); from the file's mapping: a share of that, at most the host's copy rate (where a box measured it under half its pinned rate) | 0.73 of the link; 0.62 of that, at most 8.0 GiB/s |
 | A card's memory | the published size x what cards report of it | 0.967 |
 | A crossing, a host hop | the measured median | 9 us a split |
 | The host on 4 bits a weight or more | 0.80 x the memory's published bandwidth: every host measured on Q4 and Q8 sat at 0.73-0.88 of it | |
@@ -60,26 +60,29 @@ machine, `bmoe-planlab parts`):
 
 | Left out | Host plateau | Host experts | Card experts | Card dense | Upload pinned / pageable | Card memory |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 8 GB card, 14-core Xeon (Q2_0) | 0.94 | 0.95 | 1.14 | 0.90 | 0.97 / 0.99 | 0.98 |
-| 24 GB card, 8-core desktop (Q4_K) | 1.15 | 1.11 | 0.81 | 1.28 | 1.04 / 1.01 | 1.01 |
-| 12 GB card, 28-core Xeon (IQ2) | 0.66 | 0.88 | 0.92 | 1.00 | 1.09 / 1.14 | 1.00 |
-| 32 GB card, Zen 2 EPYC (Q2_0) | 4.13 | 3.53 | 0.75 | 1.21 | 1.00 / 1.16 | 1.01 |
-| 32 GB card, Zen 5 EPYC (Q2_0) | 1.71 | 1.86 | 0.79 | 1.24 | 1.13 / 1.60 | 1.01 |
-| Two 16 GB cards, 8-core Zen 5 desktop (IQ2, Q2_0) | 0.44-0.91 | 0.34-0.64 | 1.03-1.11 | 0.91-1.09 | 0.77-1.08 / 0.81-1.08 | 0.99 |
-| Apple silicon laptop, Q4_0 / Q8_0 / Q4_K | 1.01-1.18 | 1.06-1.40 | | | | |
-| Apple silicon laptop, Q2_K | 2.43 | 2.52 | | | | |
+| 8 GB card, 14-core Xeon (Q2_0) | 0.54 | 0.55 | 1.13 | 0.91 | 0.97 / 1.02 | 0.98 |
+| 24 GB card, 8-core desktop (Q4_K) | 1.15 | 1.12 | 0.80 | 1.22 | 1.04 / 1.04 | 1.02 |
+| 12 GB card, 28-core Xeon (IQ2) | 0.39 | 0.53 | 0.92 | 1.01 | 1.10 / 1.19 | 0.99 |
+| 32 GB card, Zen 2 EPYC (Q2_0) | 1.54 | 1.34 | 0.72 | 1.15 | 1.00 / 1.16 | 1.01 |
+| 32 GB card, Zen 5 EPYC (Q2_0) | 1.63 | 1.82 | 0.75 | 1.18 | 1.13 / 1.49 | 1.02 |
+| Two 16 GB cards, 8-core Zen 5 desktop (IQ2, Q2_0) | 0.44-0.91 | 0.34-0.64 | 1.01-1.06 | 0.92-1.11 | 0.78-1.10 / 0.81-1.08 | 0.99 |
+| 8 GB card, 6-core Alder Lake (Q4_K) | 0.97-1.00 | 0.69-0.74 | 1.11 | 1.13-1.15 | 0.52-0.53 / 0.85-0.87 | 0.99 |
+| 8 GB card, 6-core Alder Lake (Q2_0) | 2.32-2.35 | 2.06-2.07 | 0.95-0.98 | 0.92-0.93 | 0.52 / 0.82-0.83 | 0.99 |
+| Apple silicon laptop, Q4_0 / Q8_0 / Q4_K | 0.94-1.11 | 1.00-1.32 | | | | |
+| Apple silicon laptop, Q2_K | 1.82-1.84 | 1.89 | | | | |
 
-The two 16 GB cards were added after a blind prediction of that box
-([blind-0.43-rented.md](bench-data/hardware-sim/blind-0.43-rented.md)); its records moved two terms
-of the model. An upload from the file's mapping ran at 7-9 GiB/s on every box whatever its link (the
-host's copy through the driver's staging buffer), so it is the lower of a share of the link and that
-rate; and a card reports about 3% less memory than its published size, which the model now fits.
+The two 16 GB cards and the 8 GB Alder Lake box were added after blind predictions of them
+([blind-0.43-rented.md](bench-data/hardware-sim/blind-0.43-rented.md)); their records moved the
+model. An upload from the file's mapping is a share of the same link's pinned upload, at most the
+host's copy through the driver's staging buffer (7-9 GiB/s on every box whatever its link); a card
+reports about 3% less memory than its published size; and each term is the median over machines of
+each machine's own median, so a box recorded on six models counts once.
 
 The cards and a memory-bound host carry over to parts nobody measured. A host on a quantization
 under 4 bits does not yet: how fast one core dequantizes 2 bits differs by generation (0.7 GiB/s a
-GHz on a 2016 Xeon, 1.4 on Zen 2, 2.7 on Zen 5, 3.5 on Apple silicon), and six processors are too
-few to predict a seventh. Until more are measured, a simulated host on a 2-bit model is a range of
--50%..+100% (the plan says so), or one thread's measured rate can be given (`cpu=... thread=GiB/s`).
+GHz on a 2016 Xeon, 1.4 on Zen 2, 1.8 on Alder Lake, 2.1 on Zen 5, 3.5 on Apple silicon), and eight
+processors are too few to predict a ninth. Until more are measured, a simulated host on a 2-bit model
+is a range of -65%..+135% (the plan says so), or one thread's measured rate can be given (`cpu=... thread=GiB/s`).
 
 The other way to describe a machine, `host=RECORD` and `device=RECORD memory=... bandwidth=...`,
 composes it from measured machines directly; the machines rebuilt from their own records

@@ -715,7 +715,7 @@ int parts_main(const Args & a) {
     line("card dense: latency per layer", pm.gpu_dense_lat_s, 1e6, "us");
     line("card probe bandwidth / spec", pm.gpu_probe_bw, 1, "");
     line("upload from host memory / link", pm.gpu_pinned, 1, "");
-    line("upload from the mapping / link", pm.gpu_pageable, 1, "");
+    line("upload from the mapping / from host memory", pm.gpu_pageable, 1, "");
     line("upload from the mapping, host-copy bound", pm.gpu_pageable_cap_gibs, 1, "GiB/s");
     line("card memory reported / published", pm.gpu_reported_memory, 1, "");
     line("graph split", pm.gpu_split_s, 1e6, "us");

@@ -77,6 +77,14 @@ double num(const std::map<std::string, std::string> & kv, const char * k, double
     return it == kv.end() ? dv : std::atof(it->second.c_str());
 }
 
+// Samples of one term, one list per measured machine: a machine recorded on six models is still one
+// machine, and the fit takes each machine's median before the median over machines.
+struct Samples {
+    std::map<std::string, std::vector<double>> by_machine;
+    void add(const std::string & machine, double v) { by_machine[machine].push_back(v); }
+    std::vector<double> per_machine() const;
+};
+
 Term median_term(std::vector<double> v) {
     Term t;
     if (v.empty()) return t;
@@ -88,6 +96,13 @@ Term median_term(std::vector<double> v) {
         t.hi = v.back() / t.value;
     }
     return t;
+}
+
+std::vector<double> Samples::per_machine() const {
+    std::vector<double> out;
+    for (const auto & [machine, v] : by_machine)
+        if (!v.empty()) out.push_back(median_term(v).value);
+    return out;
 }
 
 // The layer's bytes a probe of the model's own block reads: a token's routed experts in one MoE
@@ -257,8 +272,8 @@ bool fit_parts_model(const PartsCatalog & cat, PartsModel & pm, std::string & er
     for (const Rig & r : cat.rigs)
         if (r.record == skip) skip_gpu = r.gpu, skip_cpu = r.cpu;
     std::vector<std::array<double, 3>> ex, de;
-    std::vector<double> probe, pinned, pageable, pageable_cap, reported, split, hop, wide, plateau_mem, par_eff, ex_pl,
-        de_pl, wi_pl;
+    Samples probe, pinned, pageable, pageable_cap, reported, split, hop, wide, plateau_mem, par_eff, ex_pl, de_pl,
+        wi_pl;
     std::map<std::string, std::vector<double>> r1, low_bit;
     struct Obs {
         std::string core;
@@ -281,6 +296,8 @@ bool fit_parts_model(const PartsCatalog & cat, PartsModel & pm, std::string & er
         const ModelProfile & m = rec.model;
         // ── the host ──
         const CpuSpec & c = cpu->second;
+        const std::string card_key = rig.gpu + "|" + rig.cpu + "|" + std::to_string(rig.link);
+        const std::string host_key = card_key + "|" + std::to_string(m.expert_type_id);
         const double one = one_thread(hw), plateau = hw.host_bandwidth_gibs;
         if (one > 0.0 && c.ghz > 0.0) {
             r1[c.core + "|" + std::to_string(m.expert_type_id)].push_back(one / c.ghz);
@@ -294,12 +311,12 @@ bool fit_parts_model(const PartsCatalog & cat, PartsModel & pm, std::string & er
             const double of_mem = plateau * k_gib / (c.membw * k_gb);
             // A plateau well under the memory's is the cores' limit, not the memory's.
             if (of_mem >= 0.6)
-                plateau_mem.push_back(of_mem);
+                plateau_mem.add(host_key, of_mem);
             else if (one > 0.0 && hw.n_cores > 0)
-                par_eff.push_back(plateau / (one * hw.n_cores));
-            if (hw.host_expert_gibs > 0.0) ex_pl.push_back(hw.host_expert_gibs / plateau);
-            if (hw.host_dense_gibs > 0.0) de_pl.push_back(hw.host_dense_gibs / plateau);
-            if (hw.host_wide_matmul_gibs > 0.0) wi_pl.push_back(hw.host_wide_matmul_gibs / plateau);
+                par_eff.add(host_key, plateau / (one * hw.n_cores));
+            if (hw.host_expert_gibs > 0.0) ex_pl.add(host_key, hw.host_expert_gibs / plateau);
+            if (hw.host_dense_gibs > 0.0) de_pl.add(host_key, hw.host_dense_gibs / plateau);
+            if (hw.host_wide_matmul_gibs > 0.0) wi_pl.add(host_key, hw.host_wide_matmul_gibs / plateau);
         }
         if (!have_host) {
             pm.host_template = rec;
@@ -323,25 +340,25 @@ bool fit_parts_model(const PartsCatalog & cat, PartsModel & pm, std::string & er
         const double bw = g.bw * k_gb;
         if (d->expert_gibs > 0.0) ex.push_back({expert_layer_bytes(m), bw, d->expert_gibs * k_gib});
         if (d->dense_gibs > 0.0) de.push_back({dense_layer_bytes(m), bw, d->dense_gibs * k_gib});
-        if (d->memory_bandwidth_gibs > 0.0) probe.push_back(d->memory_bandwidth_gibs * k_gib / bw);
-        if (g.vram > 0 && d->memory_total > 0) reported.push_back((double) d->memory_total / (double) g.vram);
+        if (d->memory_bandwidth_gibs > 0.0) probe.add(card_key, d->memory_bandwidth_gibs * k_gib / bw);
+        if (g.vram > 0 && d->memory_total > 0) reported.add(card_key, (double) d->memory_total / (double) g.vram);
         if (rig.link > 0.0) {
             if (d->upload_host_buffer_gibs > 0.0)
-                pinned.push_back(d->upload_host_buffer_gibs * k_gib / (rig.link * k_gb));
+                pinned.add(card_key, d->upload_host_buffer_gibs * k_gib / (rig.link * k_gb));
             // A copy from pageable memory goes through the driver's staging buffer. Where it runs at
             // under half of what the same link carries from pinned memory, the host's copy is what
             // bounds it, not the link: on fast links it stays near the same rate whatever the link.
             if (d->upload_gibs > 0.0) {
                 if (d->upload_host_buffer_gibs > 0.0 &&
                     d->upload_gibs < k_copy_bound_of_pinned * d->upload_host_buffer_gibs)
-                    pageable_cap.push_back(d->upload_gibs);
-                else
-                    pageable.push_back(d->upload_gibs * k_gib / (rig.link * k_gb));
+                    pageable_cap.add(card_key, d->upload_gibs);
+                else if (d->upload_host_buffer_gibs > 0.0)
+                    pageable.add(card_key, d->upload_gibs / d->upload_host_buffer_gibs);
             }
         }
-        if (d->split_seconds > 0.0) split.push_back(d->split_seconds);
-        if (d->host_hop_seconds > 0.0) hop.push_back(d->host_hop_seconds);
-        if (d->wide_matmul_gibs > 0.0 && g.fp32 > 0.0) wide.push_back(d->wide_matmul_gibs / g.fp32);
+        if (d->split_seconds > 0.0) split.add(card_key, d->split_seconds);
+        if (d->host_hop_seconds > 0.0) hop.add(card_key, d->host_hop_seconds);
+        if (d->wide_matmul_gibs > 0.0 && g.fp32 > 0.0) wide.add(card_key, d->wide_matmul_gibs / g.fp32);
         if (!have_card) {
             pm.device_template = *d;
             have_card = true;
@@ -353,23 +370,23 @@ bool fit_parts_model(const PartsCatalog & cat, PartsModel & pm, std::string & er
     }
     fit_layer(ex, pm.gpu_expert_eff, pm.gpu_expert_lat_s);
     fit_layer(de, pm.gpu_dense_eff, pm.gpu_dense_lat_s);
-    pm.gpu_probe_bw = median_term(probe);
-    pm.gpu_pinned = median_term(pinned);
-    pm.gpu_pageable = median_term(pageable);
-    pm.gpu_pageable_cap_gibs = median_term(pageable_cap);
-    pm.gpu_reported_memory = median_term(reported);
-    pm.gpu_split_s = median_term(split);
-    pm.gpu_host_hop_s = median_term(hop);
-    pm.gpu_wide_per_tflop = median_term(wide);
+    pm.gpu_probe_bw = median_term(probe.per_machine());
+    pm.gpu_pinned = median_term(pinned.per_machine());
+    pm.gpu_pageable = median_term(pageable.per_machine());
+    pm.gpu_pageable_cap_gibs = median_term(pageable_cap.per_machine());
+    pm.gpu_reported_memory = median_term(reported.per_machine());
+    pm.gpu_split_s = median_term(split.per_machine());
+    pm.gpu_host_hop_s = median_term(hop.per_machine());
+    pm.gpu_wide_per_tflop = median_term(wide.per_machine());
     for (const auto & [k, v] : r1)
         pm.r1_per_ghz[k] = median_term(v);
     for (const auto & [simd, v] : low_bit)
         pm.low_bit_r1_per_ghz[simd] = median_term(v);
-    pm.host_plateau_of_membw = median_term(plateau_mem);
-    pm.host_parallel_eff = median_term(par_eff);
-    pm.host_expert_of_plateau = median_term(ex_pl);
-    pm.host_dense_of_plateau = median_term(de_pl);
-    pm.host_wide_of_plateau = median_term(wi_pl);
+    pm.host_plateau_of_membw = median_term(plateau_mem.per_machine());
+    pm.host_parallel_eff = median_term(par_eff.per_machine());
+    pm.host_expert_of_plateau = median_term(ex_pl.per_machine());
+    pm.host_dense_of_plateau = median_term(de_pl.per_machine());
+    pm.host_wide_of_plateau = median_term(wi_pl.per_machine());
     // log(r1/GHz) = core + quant, alternating least squares with a small pull to 0 so classes that
     // share no quantization with the rest still get a value (and are said to be apart).
     std::map<std::string, double> k;
@@ -507,7 +524,7 @@ HardwareProfile build_hardware(const MachineParts & parts,
         d.dense_gibs = layer_rate(db, bw, pm.gpu_dense_eff, pm.gpu_dense_lat_s) / k_gib;
         d.wide_matmul_gibs = pm.gpu_wide_per_tflop.value * g.fp32;
         d.upload_host_buffer_gibs = pm.gpu_pinned.value * link * k_gb / k_gib;
-        d.upload_gibs = pm.gpu_pageable.value * link * k_gb / k_gib;
+        d.upload_gibs = pm.gpu_pageable.value * d.upload_host_buffer_gibs;
         if (pm.gpu_pageable_cap_gibs.value > 0.0)
             d.upload_gibs = std::min(d.upload_gibs, pm.gpu_pageable_cap_gibs.value);
         d.upload_gibs = std::min(d.upload_gibs, d.upload_host_buffer_gibs);

@@ -32,7 +32,8 @@ cpu epyc-9655      desc="AMD EPYC 9655 96-Core Processor"            cores=96 gh
 cpu apple-m5       desc="Apple M5"                                   cores=10 ghz=4.0 membw=153   core=apple-m5 simd=neon
 cpu ryzen7-7700    desc="AMD Ryzen 7 7700"                           cores=16 ghz=4.8 membw=83.2  core=zen4 simd=avx512
 cpu ryzen9-9950x3d desc="AMD Ryzen 9 9950X3D"                        cores=32 ghz=5.0 membw=96    core=zen5 simd=avx512
-cpu i5-12400f      desc="12th Gen Intel(R) Core(TM) i5-12400F"       cores=12 ghz=4.0 membw=51.2  core=alderlake simd=avx2
+# i5-12400f membw: DDR5-4800 dual channel; the rented box's 55 GiB/s plateau on Q4 is past DDR4-3200's 51.2 GB/s
+cpu i5-12400f      desc="12th Gen Intel(R) Core(TM) i5-12400F"       cores=12 ghz=4.0 membw=76.8  core=alderlake simd=avx2
 cpu ryzen7-9700x   desc="AMD Ryzen 7 9700X 8-Core Processor"         cores=16 ghz=5.0 membw=89.6  core=zen5 simd=avx512
 cpu i7-12700       desc="12th Gen Intel(R) Core(TM) i7-12700"        cores=20 ghz=4.5 membw=76.8  core=alderlake simd=avx2
 
@@ -56,3 +57,9 @@ rig rtx-2x16gb-5060ti-deepseek-v4-ud-iq2m-learned  gpu=rtx5060ti-16 cpu=ryzen7-9
 rig rtx-2x16gb-5060ti-flashnext-125b-q2_0          gpu=rtx5060ti-16 cpu=ryzen7-9700x link=pcie5x8
 rig rtx-2x16gb-5060ti-flashnext-125b-q2_0-ctx16k   gpu=rtx5060ti-16 cpu=ryzen7-9700x link=pcie5x8
 rig rtx-2x16gb-5060ti-flashnext-125b-q2_0-learned  gpu=rtx5060ti-16 cpu=ryzen7-9700x link=pcie5x8
+rig rtx-8gb-3070-flashnext-125b-q2_0 gpu=rtx3070 cpu=i5-12400f link=pcie4x16
+rig rtx-8gb-3070-flashnext-125b-q2_0-ctx16k gpu=rtx3070 cpu=i5-12400f link=pcie4x16
+rig rtx-8gb-3070-flashnext-125b-q2_0-learned gpu=rtx3070 cpu=i5-12400f link=pcie4x16
+rig rtx-8gb-3070-qwen3.6-35b-ud-q4km gpu=rtx3070 cpu=i5-12400f link=pcie4x16
+rig rtx-8gb-3070-qwen3.6-35b-ud-q4km-ctx16k gpu=rtx3070 cpu=i5-12400f link=pcie4x16
+rig rtx-8gb-3070-qwen3.6-35b-ud-q4km-learned gpu=rtx3070 cpu=i5-12400f link=pcie4x16

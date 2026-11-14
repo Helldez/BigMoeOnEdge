@@ -37,17 +37,18 @@ Semantic Versioning.
   Any machine is described by its parts (`ram=`, `cpu=`, `storage=`, `gpu=` lines, public figures
   in `docs/bench-data/hardware-sim/parts.txt`): every rate comes from a model of parts fitted, each
   time, on the measured machines, so every record added moves every simulation. Against a machine
-  left out of the fit, a card's rates land within 0.75-1.28 and a host on 4 bits a weight or more
-  within 0.82-1.15; a host under 4 bits a weight is still a wide range, said with the plan
+  left out of the fit, a card's rates land within 0.72-1.22 and a host on 4 bits a weight or more
+  within 0.94-1.15; a host under 4 bits a weight is still a wide range, said with the plan
   (`bmoe-planlab parts` prints the fit and the check). The rented records join
   `docs/bench-data/plan-records`; the two machines of the 0.43 validation that were not rented are
   in `docs/bench-data/hardware-sim`, with blind predictions for the two rented boxes made before
-  their runs and the results beside them: on two 16 GB cards the plans came out as predicted (same
-  regime, the split within one layer), the speeds 1.3-1.7x lower than estimated. The records of that
-  box moved the model (an upload from the file's mapping is bounded by the host's copy, 7-9 GiB/s
-  on every box, not by the link; a card reports about 3% less memory than its published size), and a
-  shell now carries the bytes the model fingerprint samples, so it finds the model's routing
-  records. `docs/hardware-simulation.md`.
+  their runs and the results beside them: on both the plans came out as predicted (same regime, the
+  same layer counts, the split within one layer), the speeds 1.3-1.9x lower than estimated, mostly
+  from the hit rate the device cache was credited. Their records moved the model (an upload from the
+  file's mapping is bounded by the host's copy, 7-9 GiB/s on every box, not by the link; a card
+  reports about 3% less memory than its published size; a box recorded on several models counts
+  once); a shell now carries the bytes the model fingerprint samples, so it finds the model's routing
+  records; and `routing=` takes a `.routing` trace as bmoe-cli keeps it. `docs/hardware-simulation.md`.
 
 ### Fixed
 - **A cache size set by hand is the one the plan's prediction is priced at.** With `--cache-mb`

@@ -77,3 +77,42 @@ Why, from the records (each rate the box measured against the one the parts mode
 
 Re-simulated after the two fixes, with DeepSeek's own routing from the box (no longer blind): DeepSeek
 8.5 / 7.4 tok/s (measured / estimate 0.68-0.76), Flash-Next 57.8 / 54.5 (0.64-0.68, the hit curve).
+
+## Results: box A (added after its runs; the rows above are unchanged)
+
+Same method as box B. The Qwen3.6 file was the UD-Q4_K_M simulated in the first table (22,134,528,992
+bytes), so the addendum's plain Q4_K_M rows do not apply. Records:
+`docs/bench-data/plan-records/rtx-8gb-3070-*`.
+
+| Box, model | Context | Plan predicted | Plan on the box | Estimate | Measured tok/s | Measured / estimate |
+| --- | --- | --- | --- | ---: | ---: | ---: |
+| A, Flash-Next Q2_0 | 2048 | streamed, 49 layers, device cache 2917, RAM cache 25103 | streamed, 49 layers, device cache 2047, RAM cache 26123 | 24.8 (15-36) | 13.5 CLI | 0.54 |
+| A, Flash-Next Q2_0 | 16384 | streamed, device cache 723, RAM cache 24739 | streamed, device cache 2129 (graph 1024 wide), RAM cache 26732 | 16.3 (10-24) | 13.4 CLI; 16.3 / 8.6 server | 0.53-1.00 |
+| A, Qwen3.6-35B UD-Q4_K_M | 2048 | fits, 41 layers, device cache 4770 | fits, 41 layers, device cache 4284 | 63.0 (39-91) | 38.0 CLI | 0.60 |
+| A, Qwen3.6-35B UD-Q4_K_M | 16384 | fits, device cache 3356 | fits, device cache 2355 | 52.7 (33-76) | 28.0 CLI; 36.6 / 32.9 server | 0.53-0.69 |
+
+The regimes and layer counts came out as predicted; the device caches were 0.7-1.4x the box's; the
+speeds 1.6-1.9x too high but one, three of the four below their range.
+
+Why, from the records:
+
+- **Cards right**: experts 0.95-1.11, dense 0.92-1.15. **Pinned uploads 0.52**: the 3070 on PCIe 4.0
+  x16 carried 11.2 GiB/s, half what the other boxes' links carry at that width. Not explained by the
+  box's parts; kept as data.
+- **The host's memory was not what was assumed.** DDR4-3200 was assumed; a 55 GiB/s plateau on Q4 is
+  past its 51.2 GB/s, so the box had DDR5. The catalog now says DDR5-4800; Q4 plateau 0.97-1.00 left
+  out. Under 4 bits the Alder Lake core is 2.3x faster than the fallback for an unmeasured class gave
+  (the weak spot again, the other way).
+- **Flash-Next's hit rate.** The blind estimate took the hit curve of other runs; replayed on the
+  box's own routing (no longer blind), Flash-Next estimates 17.8 / 13.4 tok/s against 13.5 / 13.4
+  measured (0.76-1.00).
+- **The graph width at 16384 on an 8 GB card**: the box narrowed it to 1024 tokens and kept a 2129 MiB
+  device cache; the simulation planned 8192 wide and 711 MiB.
+- **Qwen3.6**, after the fixes: 45.5 / 36.5 tok/s against 38.0 / 28.0 CLI (0.77-0.84), on a routing
+  recorded on another machine.
+
+A finding for the engine, not the simulator: the routing a streamed run keeps on disk has the expert
+size of the streamed layers only, though it routes every MoE layer, so a run that keeps some layers'
+experts on a card writes a trace its own parser refuses ("no expert bytes for layer 0"); on box A the
+learned plan had no hit curve. `simulate` reads such a trace (`routing=FILE.routing`) by giving those
+layers the others' size, and says so.

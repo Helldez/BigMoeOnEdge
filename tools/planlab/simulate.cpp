@@ -5,6 +5,7 @@
 
 #include "bmoe/auto_plan.h"
 #include "bmoe/probe.h"
+#include "bmoe/routing.h"
 #include "bmoe/version.h"
 
 #include "llama.h"
@@ -17,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <set>
 #include <sstream>
 
 namespace bmoe {
@@ -30,6 +32,45 @@ bool read_file(const std::string & path, std::string & text) {
     all << f.rdbuf();
     text = all.str();
     return true;
+}
+
+// Adds a `# layer=N expert_bytes=B` line, B the median of the given ones, for every layer the trace
+// routes but does not size. Returns how many it added.
+int fill_unsized_layers(std::string & text) {
+    std::istringstream in(text);
+    std::string line, head, body;
+    std::map<uint32_t, uint64_t> sized;
+    std::set<uint32_t> routed;
+    bool in_head = true;
+    while (std::getline(in, line)) {
+        if (in_head && (line.empty() || line[0] == '#')) {
+            unsigned layer = 0;
+            unsigned long long bytes = 0;
+            if (std::sscanf(line.c_str(), "# layer=%u expert_bytes=%llu", &layer, &bytes) == 2 && bytes > 0)
+                sized[layer] = bytes;
+            head += line + "\n";
+            continue;
+        }
+        in_head = false;
+        unsigned layer = 0;
+        char phase = 0;
+        if (std::sscanf(line.c_str(), "%c %u", &phase, &layer) == 2) routed.insert(layer);
+        body += line + "\n";
+    }
+    if (sized.empty()) return 0;
+    std::vector<uint64_t> sizes;
+    for (const auto & [l, b] : sized)
+        sizes.push_back(b);
+    std::sort(sizes.begin(), sizes.end());
+    const uint64_t median = sizes[sizes.size() / 2];
+    int added = 0;
+    for (uint32_t l : routed)
+        if (!sized.count(l)) {
+            head += "# layer=" + std::to_string(l) + " expert_bytes=" + std::to_string(median) + "\n";
+            ++added;
+        }
+    if (added) text = head + body;
+    return added;
 }
 
 bool load_record(const std::string & path, PlanRecord & rec, std::string & error) {
@@ -284,7 +325,30 @@ Simulation simulate_machine(const MachineSpec & spec,
         sim.error = model_path + ": the model's header does not parse";
         return sim;
     }
-    if (!spec.routing.empty()) {
+    if (!spec.routing.empty() && std::filesystem::u8path(spec.routing).extension() == ".routing") {
+        // A routing trace as bmoe-cli keeps it (`<fingerprint>.routing`): attached the way the engine
+        // attaches it, so a trace of another model is rejected with its reason.
+        std::string text, err;
+        RoutingTrace trace;
+        if (read_file(spec.routing, text)) {
+            // 0.43 keeps a streamed run's routing of every MoE layer but the expert bytes of the streamed
+            // ones only, so a layer whose experts stayed on a card has routing and no size, and the trace
+            // does not parse. Such a layer is given the size of the others, said as a caveat.
+            const int filled = fill_unsized_layers(text);
+            if (filled > 0)
+                caveat("the routing trace gave no expert size for " + std::to_string(filled) +
+                       " layer(s) it routed (their experts were on a card in that run): given the median size "
+                       "of the others");
+        }
+        if (text.empty() || !parse_routing_trace(text, trace, err)) {
+            sim.error = spec.routing + ": " + (err.empty() ? "unreadable" : err);
+            return sim;
+        }
+        attach_routing(model, trace, cfg_in.n_expert_used > 0 ? (uint32_t) cfg_in.n_expert_used : model.n_expert_used,
+                       cfg_in.moe.cache_freq_half_life);
+        if (!model.hit_curve.rejected.empty())
+            caveat("the routing trace " + spec.routing + " was rejected: " + model.hit_curve.rejected);
+    } else if (!spec.routing.empty()) {
         PlanRecord r;
         if (!load_record(spec.routing, r, sim.error)) return sim;
         if (r.model.file_bytes != model.file_bytes || r.model.arch != model.arch)
