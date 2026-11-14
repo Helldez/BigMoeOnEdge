@@ -1,0 +1,50 @@
+# Parts for bmoe-planlab simulate (docs/hardware-simulation.md): published specifications, and which
+# parts each measured machine had. Data, not rules: the simulator fits its model of parts on the `rig`
+# lines every time it runs, so a record added there (with its rig line) moves every simulation.
+#
+# gpu ID desc="..." vram=GB bw=GB/s fp32=TFLOPS link=pcieGENxLANES     (the card's own link)
+# cpu ID desc="..." cores=N ghz=all-core clock membw=GB/s core=CLASS simd=avx2|avx512|neon
+# rig RECORD gpu=ID cpu=ID link=pcieGENxLANES                          (the link the card had in that slot)
+# records DIR                                                          (where the rigs' records are)
+
+records ../plan-records
+
+# ── cards ──
+gpu rtx3060      desc="NVIDIA GeForce RTX 3060"        vram=12G bw=360  fp32=12.7  link=pcie4x16
+gpu rtx3070      desc="NVIDIA GeForce RTX 3070"        vram=8G  bw=448  fp32=20.3  link=pcie4x16
+gpu rtx3090      desc="NVIDIA GeForce RTX 3090"        vram=24G bw=936  fp32=35.6  link=pcie4x16
+gpu rtx4060      desc="NVIDIA GeForce RTX 4060"        vram=8G  bw=272  fp32=15.1  link=pcie4x8
+gpu rtx4060ti-16 desc="NVIDIA GeForce RTX 4060 Ti 16GB" vram=16G bw=288 fp32=22.1  link=pcie4x8
+gpu rtx4070-laptop desc="NVIDIA GeForce RTX 4070 Laptop GPU" vram=8G bw=256 fp32=15.6 link=pcie4x8
+gpu rtx4090      desc="NVIDIA GeForce RTX 4090"        vram=24G bw=1008 fp32=82.6  link=pcie4x16
+gpu rtx5060ti-16 desc="NVIDIA GeForce RTX 5060 Ti 16GB" vram=16G bw=448 fp32=23.7  link=pcie5x8
+gpu rtx5070      desc="NVIDIA GeForce RTX 5070"        vram=12G bw=672  fp32=30.9  link=pcie5x16
+gpu rtx5080      desc="NVIDIA GeForce RTX 5080"        vram=16G bw=960  fp32=56.3  link=pcie5x16
+gpu rtx5090      desc="NVIDIA GeForce RTX 5090"        vram=32G bw=1792 fp32=104.8 link=pcie5x16
+gpu rtx-a4000    desc="NVIDIA RTX A4000"               vram=16G bw=448  fp32=19.2  link=pcie4x16
+
+# ── processors (cores: what the engine may use; a rented box's quota goes in the machine spec) ──
+cpu xeon-e5-2680v4 desc="Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz" cores=14 ghz=2.9 membw=76.8  core=broadwell simd=avx2
+cpu xeon-e5-2658v4 desc="Intel(R) Xeon(R) CPU E5-2658 v4 @ 2.30GHz" cores=28 ghz=2.5 membw=153.6 core=broadwell simd=avx2
+cpu i9-9900k       desc="Intel(R) Core(TM) i9-9900K CPU @ 3.60GHz"   cores=16 ghz=4.7 membw=42.7  core=coffeelake simd=avx2
+cpu epyc-7k62      desc="AMD EPYC 7K62 48-Core Processor"            cores=48 ghz=3.0 membw=204.8 core=zen2 simd=avx2
+cpu epyc-9655      desc="AMD EPYC 9655 96-Core Processor"            cores=96 ghz=3.3 membw=576   core=zen5 simd=avx512
+cpu apple-m5       desc="Apple M5"                                   cores=10 ghz=4.0 membw=153   core=apple-m5 simd=neon
+cpu ryzen7-7700    desc="AMD Ryzen 7 7700"                           cores=16 ghz=4.8 membw=83.2  core=zen4 simd=avx512
+cpu ryzen9-9950x3d desc="AMD Ryzen 9 9950X3D"                        cores=32 ghz=5.0 membw=96    core=zen5 simd=avx512
+cpu i7-12700       desc="12th Gen Intel(R) Core(TM) i7-12700"        cores=20 ghz=4.5 membw=76.8  core=alderlake simd=avx2
+
+# ── the measured machines ──
+rig rtx-8gb-flashnext-125b-q2_0          gpu=rtx4060 cpu=xeon-e5-2680v4 link=pcie3x8
+rig rtx-24gb-qwen3.6-35b-ud-q4km         gpu=rtx3090 cpu=i9-9900k       link=pcie3x16
+rig rtx-12gb-deepseek-v4.1-ud-iq2xxs     gpu=rtx5070 cpu=xeon-e5-2658v4 link=pcie3x16
+rig rtx-32gb-flashnext-125b-q2_0         gpu=rtx5090 cpu=epyc-7k62      link=pcie4x16
+rig rtx-32gb-pcie4-flashnext-125b-q2_0   gpu=rtx5090 cpu=epyc-9655      link=pcie4x16
+rig apple-silicon-16gb-gemma-4-26b-a4b-q4_0          cpu=apple-m5
+rig apple-silicon-16gb-gemma-4-26b-a4b-q4_0-learned  cpu=apple-m5
+rig apple-silicon-16gb-olmoe-1b-7b-q8_0              cpu=apple-m5
+rig apple-silicon-16gb-olmoe-1b-7b-q8_0-learned      cpu=apple-m5
+rig apple-silicon-16gb-qwen3.6-35b-a3b-q2_k          cpu=apple-m5
+rig apple-silicon-16gb-qwen3.6-35b-a3b-q2_k-learned  cpu=apple-m5
+rig apple-silicon-16gb-qwen3.6-35b-a3b-q4_k_m        cpu=apple-m5
+rig apple-silicon-16gb-qwen3.6-35b-a3b-q4_k_m-learned cpu=apple-m5

@@ -11,6 +11,7 @@
 #pragma once
 
 #include "plan_record.h"
+#include "sim_parts.h"
 
 #include "bmoe/config.h"
 #include "bmoe/planner.h"
@@ -43,6 +44,14 @@ struct SimDeviceFrom {
 //   routing=<record of the same model>           (its measured hit curve; optional)
 //   hitcurve=2.2G:0.61,6G:0.86,26G:0.97          (measured hit rates at cache sizes; optional, instead of routing=)
 //   set=hw.residency_budget=60000000000          (any record key, applied last; repeatable)
+//
+// or, for any machine, its parts (docs/bench-data/hardware-sim/parts.txt names some):
+//
+//   parts=parts.txt
+//   ram=32G                                      (available=29G: what the engine may hold; default ram - 3G)
+//   cpu=ryzen7-7700 cores=16                     (or cpu=custom cores= ghz= membw= core= simd=)
+//   storage=3.5                                  (GB/s, the drive's sequential read)
+//   gpu=rtx4060 slot=pcie4x8                     (one line per card; or gpu=custom vram= bw= fp32= link=)
 struct MachineSpec {
     std::string note;
     std::string host;    // the record whose host facts (memory, cores, rates, storage) are the machine's
@@ -53,6 +62,12 @@ struct MachineSpec {
     std::vector<std::pair<uint64_t, double>> hit_points;
     std::vector<SimDeviceFrom> devices;
     std::vector<std::string> sets;
+    // Or the machine as its parts (`parts=CATALOG`, then `ram=`, `available=`, `cpu=`, `storage=`,
+    // `gpu=` lines): every rate from the model of parts the catalog's measured machines fit.
+    std::string parts_catalog;
+    PartsCatalog catalog;
+    MachineParts parts;
+    std::string parts_text; // the parts lines as written, kept in the record
 };
 
 bool parse_machine_spec(const std::string & text, const std::string & base_dir, MachineSpec & out, std::string & error);

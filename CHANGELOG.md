@@ -34,8 +34,14 @@ Semantic Versioning.
   placed with fewer layers than a real card takes, which the tool detects and says. `bmoe-planlab
   speed` adds a decode estimate for plans the cost model does not price (a card holding the dense
   part, a device cache), within 11% of the rented runs where the card holds the experts it needs.
-  The rented records join `docs/bench-data/plan-records`; the two machines of the 0.43 validation
-  that were not rented are in `docs/bench-data/hardware-sim`. `docs/hardware-simulation.md`.
+  Any machine is described by its parts (`ram=`, `cpu=`, `storage=`, `gpu=` lines, public figures
+  in `docs/bench-data/hardware-sim/parts.txt`): every rate comes from a model of parts fitted, each
+  time, on the measured machines, so every record added moves every simulation. Against a machine
+  left out of the fit, a card's rates land within 0.81-1.22 and a host on 4 bits a weight or more
+  within 0.82-1.11; a host under 4 bits a weight is still a wide range, said with the plan
+  (`bmoe-planlab parts` prints the fit and the check). The rented records join
+  `docs/bench-data/plan-records`; the two machines of the 0.43 validation that were not rented are
+  in `docs/bench-data/hardware-sim`. `docs/hardware-simulation.md`.
 
 ### Fixed
 - **A cache size set by hand is the one the plan's prediction is priced at.** With `--cache-mb`

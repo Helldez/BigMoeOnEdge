@@ -1,17 +1,14 @@
-# A check against a measured run: the #321 report, two 16 GB RTX 5080 cards, 60 GB of RAM, a desktop CPU, DeepSeek V4
-# Flash UD-IQ2_M, which decoded at 8.72 tok/s on 0.33.3 with an unlimited memlock (41.9 GiB RAM cache, 91.1% hit).
-# Host: the rented 32 GB card box measured (EPYC, 0.87 GB/s storage, close to the 0.96 the report's probe read),
-# memory cut to 60 GB. Cards: the measured 32 GB card scaled to a 5080 by specification: 960 against 1792 GB/s,
-# 56.3 against 104.8 TFLOPS FP32; both on PCIe 5.0 x16. The engine was 0.33.3, so the plan is not the same plan.
-note=two 16 GB cards (5080 class), 60 GB RAM, the #321 report
-host=../plan-records/rtx-32gb-flashnext-125b-q2_0.planrec
-device=../plan-records/rtx-32gb-flashnext-125b-q2_0.planrec#0 memory=16G bandwidth=0.536 compute=0.537 description=16 GB card, 5080 class (32 GB card scaled)
-device=../plan-records/rtx-32gb-flashnext-125b-q2_0.planrec#0 memory=16G bandwidth=0.536 compute=0.537 description=16 GB card, 5080 class (32 GB card scaled)
-set=hw.memory_total=64424509440
-set=hw.residency_budget=60129542144
-set=hw.devices.2.memory_total=64424509440
-set=hw.devices.2.memory_free=60129542144
-set=hw.label=24 cores, 57344 MiB available of 61440 MiB (simulated)
+# the #321 report: two 16 GB 5080s, 60 GB RAM, a 16-core desktop; measured 8.72 tok/s on 0.33.3
+# Described by its parts only: every rate comes from the model of parts fitted on the measured machines
+# in parts.txt (bmoe-planlab parts parts.txt shows the fit and how far it misses a machine left out of it).
+note=the #321 report: two 16 GB 5080s, 60 GB RAM, a 16-core desktop; measured 8.72 tok/s on 0.33.3
+parts=parts.txt
+ram=60G
+cpu=ryzen9-9950x3d
+storage=4.3
+gpu=rtx5080
+gpu=rtx5080
+# storage: the drive reads about 4.3 GB/s (the report's probe read 0.96 on a split model's first shard).
 # DeepSeek V4 Flash: 41.9 GiB at 91% measured on this file (#321); the other points are DeepSeek V4.1 Flash runs
 # (12-96 GB cards), placed at the same share of the expert set.
 hitcurve=6.1G:0.69,28G:0.887,41.9G:0.911

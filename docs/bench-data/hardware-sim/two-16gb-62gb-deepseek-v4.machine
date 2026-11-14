@@ -1,16 +1,13 @@
-# Test (2) of the 0.43 validation: two 16 GB cards (RTX A4000 class) with 62 GB of RAM, the shape of the #321 report.
-# Host: the rented 12 GB card box measured (27-core server CPU, 3.3 GB/s NVMe), its memory cut to 62 GB.
-# Cards: the measured 24 GB card (RTX 3090 class) scaled to an A4000 by specification: 448 against 936 GB/s of
-# memory bandwidth, 19.2 against 35.6 TFLOPS FP32; both on PCIe 4.0 x16.
-note=two 16 GB cards (A4000 class), 62 GB RAM
-host=../plan-records/rtx-12gb-deepseek-v4.1-ud-iq2xxs.planrec
-device=../plan-records/rtx-24gb-qwen3.6-35b-ud-q4km.planrec#0 memory=16G bandwidth=0.479 compute=0.54 description=16 GB card, A4000 class (24 GB card scaled)
-device=../plan-records/rtx-24gb-qwen3.6-35b-ud-q4km.planrec#0 memory=16G bandwidth=0.479 compute=0.54 description=16 GB card, A4000 class (24 GB card scaled)
-set=hw.memory_total=66571993088
-set=hw.residency_budget=62277025792
-set=hw.devices.2.memory_total=66571993088
-set=hw.devices.2.memory_free=62277025792
-set=hw.label=27 cores, 59392 MiB available of 63488 MiB (simulated)
+# two 16 GB cards (A4000 class), 62 GB RAM, 16-core desktop
+# Described by its parts only: every rate comes from the model of parts fitted on the measured machines
+# in parts.txt (bmoe-planlab parts parts.txt shows the fit and how far it misses a machine left out of it).
+note=two 16 GB cards (A4000 class), 62 GB RAM, 16-core desktop
+parts=parts.txt
+ram=62G
+cpu=ryzen9-9950x3d
+storage=3.5
+gpu=rtx-a4000
+gpu=rtx-a4000
 # DeepSeek V4 Flash: 41.9 GiB at 91% measured on this file (#321); the other points are DeepSeek V4.1 Flash runs
 # (12-96 GB cards), placed at the same share of the expert set.
 hitcurve=6.1G:0.69,28G:0.887,41.9G:0.911

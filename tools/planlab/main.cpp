@@ -23,6 +23,7 @@
 
 #include "env_probe.h"
 #include "plan_record.h"
+#include "sim_parts.h"
 #include "sim_speed.h"
 #include "simulate.h"
 
@@ -56,6 +57,7 @@ int usage() {
                "  bmoe-planlab replay FILE [--set KEY=VALUE]... [--sweep PARAM=V1,V2,...] [-o FILE]\n"
                "                      [engine flags]\n"
                "  bmoe-planlab simulate MACHINE -m MODEL -o FILE [engine flags]\n"
+               "  bmoe-planlab parts CATALOG       the model of parts, and each machine left out of it\n"
                "  bmoe-planlab speed DIR           the tool's decode estimate against every measured run\n"
                "  bmoe-planlab errors DIR          predicted against measured, every record with a run\n"
                "  bmoe-planlab table DIR [-o CSV]  every record as one row, every key a column\n"
@@ -682,6 +684,48 @@ int errors_main(const Args & a) {
     return 0;
 }
 
+// ── parts: the model of parts, and how well it predicts a machine it was not fitted on ────────
+int parts_main(const Args & a) {
+    if (a.file.empty()) return usage();
+    std::string text, err;
+    if (!read_text_file(a.file, text)) {
+        std::fprintf(stderr, "bmoe-planlab: cannot read %s\n", a.file.c_str());
+        return 1;
+    }
+    PartsCatalog cat;
+    if (!parse_parts_catalog(text, std::filesystem::u8path(a.file).parent_path().u8string(), cat, err)) {
+        std::fprintf(stderr, "bmoe-planlab: %s: %s\n", a.file.c_str(), err.c_str());
+        return 1;
+    }
+    PartsModel pm;
+    if (!fit_parts_model(cat, pm, err)) {
+        std::fprintf(stderr, "bmoe-planlab: %s\n", err.c_str());
+        return 1;
+    }
+    auto line = [](const char * what, const Term & t, double scale, const char * unit) {
+        std::printf("  %-44s %10.3f %-6s  measured/model %.2f..%.2f over %d\n", what, t.value * scale, unit, t.lo, t.hi,
+                    t.n);
+    };
+    std::printf("fitted on %zu measured machines\n", pm.fitted_on.size());
+    line("card experts: efficiency of spec bandwidth", pm.gpu_expert_eff, 1, "");
+    line("card experts: latency per layer", pm.gpu_expert_lat_s, 1e6, "us");
+    line("card dense: efficiency of spec bandwidth", pm.gpu_dense_eff, 1, "");
+    line("card dense: latency per layer", pm.gpu_dense_lat_s, 1e6, "us");
+    line("card probe bandwidth / spec", pm.gpu_probe_bw, 1, "");
+    line("upload from host memory / link", pm.gpu_pinned, 1, "");
+    line("upload from the mapping / link", pm.gpu_pageable, 1, "");
+    line("graph split", pm.gpu_split_s, 1e6, "us");
+    line("host plateau / spec memory bandwidth", pm.host_plateau_of_membw, 1, "");
+    line("host parallel efficiency (compute-bound)", pm.host_parallel_eff, 1, "");
+    line("host experts / plateau", pm.host_expert_of_plateau, 1, "");
+    line("host dense / plateau", pm.host_dense_of_plateau, 1, "");
+    for (const auto & [k, t] : pm.r1_per_ghz)
+        line(("one thread per GHz: " + k).c_str(), t, 1, "GiB/s");
+    std::printf("\nleave one out: each record's measured rates against the model fitted without its machine\n%s",
+                check_parts_model(cat).c_str());
+    return 0;
+}
+
 // ── speed: the decode estimate against every measured run ───────────────────────────────────
 int speed_main(const Args & a) {
     if (a.file.empty()) return usage();
@@ -724,7 +768,8 @@ int speed_main(const Args & a) {
 int main(int argc, char ** argv) {
     if (argc < 2) return usage();
     const std::string cmd = argv[1];
-    if (cmd != "record" && cmd != "replay" && cmd != "simulate" && cmd != "speed" && cmd != "table" && cmd != "errors")
+    if (cmd != "record" && cmd != "replay" && cmd != "simulate" && cmd != "speed" && cmd != "parts" && cmd != "table" &&
+        cmd != "errors")
         return usage();
     const Args a = parse_args(argc, argv, 2, cmd != "record");
     if (!a.ok) return 2;
@@ -732,6 +777,7 @@ int main(int argc, char ** argv) {
            : cmd == "replay"   ? replay_main(a)
            : cmd == "simulate" ? simulate_main(a)
            : cmd == "speed"    ? speed_main(a)
+           : cmd == "parts"    ? parts_main(a)
            : cmd == "table"    ? table_main(a)
                                : errors_main(a);
 }
