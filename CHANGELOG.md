@@ -140,6 +140,15 @@ Semantic Versioning.
   The check's log line now gives the KL divergence of the device's next-token distributions from the
   host's beside the top-token agreement: 0.004 on that NPU for Qwen3.6-35B-A3B, 0.60 for Gemma, whose
   expert matmuls go past the fp16 range the NPU computes in (ggml-org/llama.cpp#32198).
+- **A phone's NPU prefill no longer stops a load, floods the log or slows decode** (#512, #544). The
+  app's server set the Hexagon backend's two tuning variables, and both now stay at the backend's
+  defaults. Polling for the DSP logged an error for every empty poll on Android, 1.1 to 3.4 million log
+  rows per load on a 12 GB phone and a core spent polling, for a 1525-token prefill in 16.7 s polled
+  and 15.9 s not. The host buffer, which moved the model state where the NPU reads it, bought no
+  prefill there (Qwen3.6-35B-A3B, 1906 tokens at 137-138 tok/s with it, 137-140 without), cost decode
+  7-13% because an op of every decoded token went to the DSP, and with Gemma 4 26B-A4B the load never
+  finished: the plan armed the NPU wherever there was room (a 4096 context, for one), and the DSP
+  never returned from the first layer.
 
 
 ## [0.42.0] - 2026-11-12

@@ -233,10 +233,14 @@ Per-decision numbers: `bench-data/2026-09-29-prefill-routed/`.
 
 ### What else had to move
 
-- **The KV cache and recurrent state** move once, at load, into the NPU's host buffer type: memory the
-  CPU reads directly and the NPU addresses too, so decode and prefill share one cache. Left in plain
-  CPU memory, every attention of a device graph would run on the CPU. The Hexagon backend exposes that
-  buffer type only with `GGML_HEXAGON_HOSTBUF=1`, which the app sets. The buffers llama.cpp first
+- **The KV cache and recurrent state** move once, at load, into the device's host buffer type where it
+  offers one: memory the CPU reads directly and the device addresses too, so decode and prefill share
+  one cache, and a device graph's attention runs on the device. The Hexagon backend offers one only
+  with `GGML_HEXAGON_HOSTBUF=1`, which the app no longer sets: on a 12 GB phone it bought no prefill
+  (Qwen3.6-35B-A3B, a 1906-token prompt at 137-138 tok/s with it, 137-140 without), cost decode 7-13%
+  (an op of every decoded token went to the DSP, #544), and with Gemma 4 26B-A4B the load never
+  finished, the DSP never returning from the first layer. Without it the state stays in CPU memory and
+  the attention of a device graph runs on the CPU. Where it does move, the buffers llama.cpp first
   allocated the state in stay allocated, since only llama.cpp can free them, but nothing reads them
   after the move, so their pages are handed back to the kernel (and again after each
   `llama_memory_clear`, which rewrites them). Kept resident they would double the KV cache: 1760 MiB
@@ -280,17 +284,19 @@ Per-decision numbers: `bench-data/2026-09-29-prefill-routed/`.
   last, where it shadows no system library. A phone without the library simply does not load the
   module. (It must be the phone's library and not a loader in the APK: opened through the Khronos
   loader, the vendor library binds its own `cl*` calls to the loader's exports and the two
-  deadlock at the first platform query, measured on a Snapdragon phone.) The app also sets the
-  two Hexagon variables this section describes, `GGML_HEXAGON_HOSTBUF=1` and
-  `GGML_HEXAGON_OPPOLL=1`; only that backend reads them.
+  deadlock at the first platform query, measured on a Snapdragon phone.) The app sets no Hexagon
+  variable: both below are left at the backend's defaults.
 - `--prefill-loaders N` (default 8) sets the threads that fill the slots, apart from `--io-threads`,
   which stays the decode's read lanes. Each loader reads and repacks, and a K-quant repack is
   CPU-heavy: on a Q4_K_M, 4 loaders left the NPU waiting 10.3 s of a 15.1 s prefill, 8 left it 5.0 of
   10.0.
 - On device: `ADSP_LIBRARY_PATH` pointing at the directory with the `libggml-htp-v*.so` skels (fastrpc
-  resolves the one for the phone's NPU through it), and `GGML_HEXAGON_HOSTBUF=1`.
-  `GGML_HEXAGON_OPPOLL=1` makes the host poll for the DSP instead of waiting on an interrupt, which
-  halves the cost of each crossing.
+  resolves the one for the phone's NPU through it). `GGML_HEXAGON_HOSTBUF` is left off (above).
+  `GGML_HEXAGON_OPPOLL` is left off too. It makes the host poll for the DSP instead of waiting on an
+  interrupt, and on Android the backend's zero-timeout poll goes to the blocking queue read, which
+  logs an error for every empty poll (#512). Measured on a 12 GB phone with Qwen3.6-35B-A3B Q4_K_M:
+  polled, 1.1 to 3.4 million log rows per load and a 1525-token prefill in 16.7 s; waiting on the
+  interrupt, a dozen to a thousand rows and 15.9 s. It once halved each crossing; it no longer pays.
 
 When the device is not there the run does not fail: a name the registry does not know (no backend in
 the build, or a phone without the fastrpc driver, where Hexagon registers nothing) and a device that
