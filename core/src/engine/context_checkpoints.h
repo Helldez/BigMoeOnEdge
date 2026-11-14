@@ -58,6 +58,13 @@ public:
     // leaves the first `kept` tokens reusable, kept <= n, and drop the context past it. Returns kept,
     // 0 when no checkpoint helps (the caller then clears the context).
     int64_t restore(const CheckpointContexts & c, int64_t n);
+    // Whether the context's own memory still holds what the first token after a cut at n reads.
+    // A sliding-window cache accepts any cut (llama.cpp's seq_rm succeeds whatever the position) yet
+    // keeps only the window, so a cut further back than the window would leave that token reading
+    // cells that are gone, and nothing would say so: the answer would just be wrong. Always true for
+    // a model without a window, whose memory refuses the cuts it cannot serve. The same test as
+    // llama-server's.
+    bool memory_covers(const CheckpointContexts & c, int64_t n) const;
     // The context now holds fewer than n tokens of what the checkpoints describe.
     void drop_after(int64_t n);
     void clear() { list_.clear(); }
@@ -67,6 +74,9 @@ public:
 
 private:
     llama_pos pos_of(int64_t n) const { return pos_of_ ? pos_of_(n) : (llama_pos) n; }
+    // A state is of use to a token evaluated at pos_eval when it starts below this: that token reads
+    // the positions its window still covers, and with no window only a state ending before it.
+    llama_pos useful_below(llama_pos pos_eval) const;
     PositionMap pos_of_;
     std::vector<common_prompt_checkpoint> list_;
     int max_count_ = 0;

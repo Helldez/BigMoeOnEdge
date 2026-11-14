@@ -46,9 +46,9 @@ and one event stream per UI, which is microseconds against the tens of milliseco
 
 The server has one file with platform `#if`s (`server/platform.cpp`): the data and configuration
 directories, the executable's own path, the home folder, opening a browser, sending its output to
-a log file, running the agent's commands (and whether it may: not on Android or iOS), and what the
-compute backends are told before they load (on Android, the Hexagon backend's polling and host
-buffer, set only where the environment has not set them). One more, `server/service_manager.cpp`,
+a log file, and running the agent's commands (and whether it may: not on Android or iOS). What the
+compute backends are told before they load is not there but in `frontend/backend_env`, one table every
+front-end applies, with no entry tied to a platform ([backends.md](backends.md)). One more, `server/service_manager.cpp`,
 is an adapter around the init systems: it asks the machine which of their tools answers
 (`launchctl`, `systemctl`, `schtasks`) rather than which platform this is, and the one platform
 call it needs (the user's id for launchd's domain) sits in that adapter. The service itself is

@@ -170,6 +170,7 @@ def build_qwen3moe(out, split_max_tensors=0):
 # expert weight tensors stream; the shared expert, router and gate_inp.scale stay resident.
 DENSE_LAYER = 0            # a dense (non-MoE) layer, to exercise interleaving
 FULL_ATTN_LAYER = 2        # the one non-SWA layer (rest are sliding-window)
+SWA_WINDOW = 16            # far shorter than a context, as a real model's window is (gate G22c)
 
 
 def build_gemma4(out):
@@ -198,7 +199,7 @@ def build_gemma4(out):
     # embeddings are disabled (length 0) to keep the tensor set minimal.
     swa_pattern = [i != FULL_ATTN_LAYER for i in range(N_LAYER)]
     w.add_sliding_window_pattern(swa_pattern)
-    w.add_sliding_window(N_CTX)
+    w.add_sliding_window(SWA_WINDOW)
     w.add_key_length_swa(N_EMBD_HEAD)
     w.add_value_length_swa(N_EMBD_HEAD)
     w.add_embedding_length_per_layer_input(0)

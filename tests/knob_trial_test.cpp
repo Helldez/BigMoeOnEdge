@@ -306,6 +306,48 @@ int main() {
               "record: the device tier's rates read back as written");
         check(!parse_measured_knobs("bmoe-measured-knobs 1\nhardware=a engine=b device_cache_tps=-1\n", bad, err),
               "record: a negative rate is refused");
+        // The device cache's CPU share: each side's rate and failed opens, merged and read back.
+        {
+            MeasuredKnobs sh = on;
+            sh.cpu_share_tps = 21.2;
+            std::vector<MeasuredKnobs> v{sh}, vb;
+            MeasuredKnobs other = on;
+            other.device_cache_tps = 0.0;
+            other.no_cpu_share_tps = 18.5;
+            other.cpu_share_unviable = 0;
+            keep_measured_knobs(v, other);
+            check(parse_measured_knobs(format_measured_knobs(v), vb, err) && vb.size() == 1 &&
+                      std::fabs(vb[0].cpu_share_tps - 21.2) < 1e-3 && std::fabs(vb[0].no_cpu_share_tps - 18.5) < 1e-3,
+                  "record: the CPU share's two rates are merged and read back");
+            // The rate the share is held against: its own, else the width's at the plan's width, else
+            // the tier's; the plan and the server's "other side measured" both read this one.
+            MeasuredKnobs base;
+            base.device_cache_tps = 30.0;
+            check(base.cpu_share_baseline_tps(2048) == 30.0, "record: the share's baseline falls back to the tier");
+            base.width_narrow = 2048;
+            base.narrow_decode_tps = 31.6;
+            base.wide_decode_tps = 26.3;
+            check(base.cpu_share_baseline_tps(2048) == 31.6 && base.cpu_share_baseline_tps(8192) == 26.3,
+                  "record: the share's baseline is the cache timed at the plan's own width");
+            base.no_cpu_share_tps = 32.9;
+            check(base.cpu_share_baseline_tps(2048) == 32.9, "record: the share's own uploaded timing wins");
+            check(MeasuredKnobs{}.cpu_share_baseline_tps(2048) == 0.0, "record: no cache timed, no baseline");
+            KnobTrialConfig side;
+            side.cpu_share_side = 1;
+            MeasuredKnobs rec;
+            rec.hardware = a.hardware;
+            rec.engine = a.engine;
+            rec.cpu_share_unviable = 1;
+            record_side_rate(side, 20.0, rec);
+            check(rec.cpu_share_tps == 20.0 && rec.cpu_share_unviable == 0,
+                  "record: a rate measured for the share clears its failed opens");
+            record_side_unviable(side, rec);
+            check(rec.cpu_share_unviable == 1, "record: a failed open of the share is counted against it");
+            std::vector<MeasuredKnobs> u{rec}, ub;
+            check(parse_measured_knobs(format_measured_knobs(u), ub, err) && ub.size() == 1 &&
+                      ub[0].cpu_share_unviable == 1,
+                  "record: the share's failed opens read back");
+        }
         // The graph width: each side's rates and the usage they are weighed by, merged across loads; a
         // different narrow width starts the comparison afresh.
         MeasuredKnobs w1;
@@ -416,6 +458,69 @@ int main() {
                   uback.size() == 1 && uback[0].threads == 4 && uback[0].wide_unviable == 0 &&
                   uback[0].narrow_unviable == 0 && uback[0].device_cache_unviable == 2,
               "record: a part it cannot read is read past, and the rest of the record holds");
+        // The prefill devices' words: written only when there is one, one per device, read back, merged.
+        check(format_measured_knobs({uv}).find("prefill=") == std::string::npos, "record: no prefill device, no key");
+        MeasuredKnobs pv = uv;
+        pv.set_prefill_word({"HTP0", -1, 0});
+        std::vector<MeasuredKnobs> pback;
+        check(format_measured_knobs({pv}).find("prefill=HTP0:refused") != std::string::npos &&
+                  parse_measured_knobs(format_measured_knobs({pv}), pback, err) && pback.size() == 1 &&
+                  pback[0].prefill.size() == 1 && pback[0].prefill_refused("HTP0") && !pback[0].prefill_refused("GPU0"),
+              "record: a refused prefill device reads back, for that device only");
+        MeasuredKnobs armed;
+        armed.hardware = uv.hardware;
+        armed.engine = uv.engine;
+        armed.set_prefill_word({"HTP0", 0, 1});
+        check(armed.verdicts() == 1 && !armed.prefill_refused("HTP0"),
+              "record: one load that armed a device and never said counts, and the device is tried again");
+        const MeasuredKnobs twice = armed.armed_unconfirmed("HTP0");
+        std::vector<MeasuredKnobs> tback;
+        check(twice.prefill_word("HTP0")->unconfirmed == 2 && twice.prefill_refused("HTP0") &&
+                  format_measured_knobs({twice}).find("prefill=HTP0:unconfirmed-2") != std::string::npos &&
+                  parse_measured_knobs(format_measured_knobs({twice}), tback, err) && tback.size() == 1 &&
+                  tback[0].prefill_word("HTP0")->unconfirmed == 2 && tback[0].prefill_refused("HTP0"),
+              "record: two loads in a row that never said keep the device out, and read back so");
+        check(armed.armed_unconfirmed("GPU0").prefill_word("GPU0")->unconfirmed == 1,
+              "record: another device's count starts afresh");
+        std::vector<MeasuredKnobs> pkept = {armed};
+        MeasuredKnobs opened = armed;
+        opened.set_prefill_word({"HTP0", 1, 0});
+        keep_measured_knobs(pkept, opened);
+        check(pkept[0].prefill_word("HTP0")->verdict == 1 && pkept[0].prefill_word("HTP0")->unconfirmed == 0 &&
+                  !pkept[0].prefill_refused("HTP0"),
+              "record: the session's word replaces the unconfirmed one");
+        // A second device's word leaves the first's: a refused NPU stays refused when the GPU is kept.
+        {
+            std::vector<MeasuredKnobs> two = {pv};
+            MeasuredKnobs gpu = uv;
+            gpu.prefill.clear();
+            gpu.set_prefill_word({"GPU0", 1, 0});
+            keep_measured_knobs(two, gpu);
+            std::vector<MeasuredKnobs> twoback;
+            check(two[0].prefill.size() == 2 && two[0].prefill_refused("HTP0") && !two[0].prefill_refused("GPU0") &&
+                      parse_measured_knobs(format_measured_knobs(two), twoback, err) &&
+                      twoback[0].prefill_refused("HTP0") && twoback[0].prefill_word("GPU0")->verdict == 1,
+                  "record: one word per device, a second device's word does not clear the first's");
+        }
+        // A session that could not open the device is one more load that did not keep it, not a refusal.
+        {
+            std::vector<MeasuredKnobs> v = {armed}; // HTP0 unconfirmed once, written before the open
+            MeasuredKnobs failed_open = armed;
+            failed_open.prefill.clear();
+            failed_open.set_prefill_word({"HTP0", 0, 0});
+            keep_measured_knobs(v, failed_open);
+            check(v[0].prefill_word("HTP0")->verdict == 0 && v[0].prefill_word("HTP0")->unconfirmed == 1 &&
+                      !v[0].prefill_refused("HTP0"),
+                  "record: a device that would not open once is tried again");
+            std::vector<MeasuredKnobs> fresh = {uv};
+            keep_measured_knobs(fresh, failed_open);
+            check(fresh[0].prefill_word("HTP0")->unconfirmed == 1,
+                  "record: an open failure with no earlier mark counts as one");
+        }
+        check(parse_measured_knobs("bmoe-measured-knobs 1\nhardware=a engine=b prefill=HTP0:maybe,GPU0:kept\n", pback,
+                                   err) &&
+                  pback.size() == 1 && !pback[0].prefill_word("HTP0") && pback[0].prefill_word("GPU0"),
+              "record: a prefill word it cannot read is read past, the others hold");
         std::vector<MeasuredKnobs> ukept = {uv};
         MeasuredKnobs again_failed = uv;
         again_failed.no_device_cache_unviable = 2;

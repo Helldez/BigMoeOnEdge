@@ -79,7 +79,7 @@ bool planner_available();
 // starts: its key (bmoe/auto_plan.h, k_plan_steps), its words for a person, its position and how
 // many there are.
 using PlanStepFn = std::function<void(const std::string & step, const std::string & label, int index, int count)>;
-// `routing` (nullable) is the model's own recorded routing from an earlier load (routing_store.h):
+// `routing` (nullable) is the model's own recorded routing from an earlier load (bmoe/model_records.h):
 // with it the cache is priced on the model's hit curve. `knobs` (nullable) are the knob verdicts kept
 // for the model; with `measure_knobs` the plan arms the first answer to measure what is not measured
 // yet, for the caller to keep.

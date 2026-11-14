@@ -60,7 +60,7 @@ int64_t ContextCheckpoints::restore(const CheckpointContexts & c, int64_t n) {
         const common_prompt_checkpoint & k = *it;
         if (k.n_tokens > n) continue;
         const llama_pos pos_eval = pos_of(k.n_tokens);
-        const llama_pos thold = std::max<llama_pos>(0, n_swa_ > 0 ? pos_eval - n_swa_ + 2 : pos_eval);
+        const llama_pos thold = useful_below(pos_eval);
         if (k.pos_max >= pos_eval || !(k.pos_min < thold || k.pos_min == 0)) continue;
         if (!k.load_tgt(c.tgt, k_seq, k_partial) || !k.load_dft(c.dft, k_seq, k_partial)) break;
         if (c.spec) common_speculative_set_state(c.spec, k_seq, k.data_spec);
@@ -73,6 +73,20 @@ int64_t ContextCheckpoints::restore(const CheckpointContexts & c, int64_t n) {
     }
     list_.clear();
     return 0;
+}
+
+llama_pos ContextCheckpoints::useful_below(llama_pos pos_eval) const {
+    return std::max<llama_pos>(0, n_swa_ > 0 ? pos_eval - n_swa_ + 2 : pos_eval);
+}
+
+bool ContextCheckpoints::memory_covers(const CheckpointContexts & c, int64_t n) const {
+    if (n_swa_ <= 0 || !c.tgt || n <= 0) return true;
+    // A cut past everything the memory holds removes nothing: what is there still reads as it did.
+    // Asked first, because a memory with a recurrent part reports the recurrent cell's position as its
+    // minimum, the last one, and would read as a window that no longer covers the prefix.
+    if (pos_of(n) > llama_memory_seq_pos_max(llama_get_memory(c.tgt), k_seq)) return true;
+    const llama_pos pos_min = llama_memory_seq_pos_min(llama_get_memory(c.tgt), k_seq);
+    return pos_min <= 0 || pos_min < useful_below(pos_of(n));
 }
 
 void ContextCheckpoints::drop_after(int64_t n) {

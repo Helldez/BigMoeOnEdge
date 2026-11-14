@@ -21,7 +21,7 @@ cmake_minimum_required(VERSION 3.21)
 # --version, and the run-parameter preamble of every metrics CSV), so a committed benchmark file
 # says which engine produced it. Keep it in step with CHANGELOG.md and the app's versionName:
 # scripts/check-version.sh compares the three, in CI and against the tag before a release builds.
-project(bigmoeonedge VERSION 0.42.0 LANGUAGES CXX)
+project(bigmoeonedge VERSION 0.43.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -189,6 +189,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/CMakeLists.txt")
 endif()
 
 add_subdirectory(core)
+add_subdirectory(frontend)
 
 if(BMOE_BUILD_SERVER AND BMOE_HAVE_LLAMA)
     add_subdirectory(server)

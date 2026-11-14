@@ -556,8 +556,8 @@ Not a trace and not opt-in: a streamed session keeps the experts each MoE layer 
 during its first tokens (`--routing-record N`, default 256 decoded tokens and the last 256 of the
 prompt; `0` is off), for the planner to read the model's hit curve from
 ([hardware-planning.md](hardware-planning.md#the-cache-priced-on-the-models-own-routing)). It asks
-the graph for nothing, so a run with it is a benchmark run. `bmoe-cli --routing-dir DIR` and
-`bmoe-server` (under `routing/` in its data folder) keep it as one text file per model,
+the graph for nothing, so a run with it is a benchmark run. Every front-end keeps it in the per-user
+data folder under `routing/` (`bmoe-cli --routing-dir DIR` names another, `""` none), as one text file per model,
 `<fingerprint>.routing`:
 
 ```
@@ -603,10 +603,12 @@ hardware=<16 hex> engine=<version> threads=<n> threads_tried=<incumbent,candidat
   overlap=<-1|0|1> overlap_incumbent=<-1|0|1> overlap_gain=<f> rounds=<n>
   device_cache_tps=<f> no_device_cache_tps=<f> width_narrow=<n> wide_decode_tps=<f>
   narrow_decode_tps=<f> wide_prefill_tps=<f> narrow_prefill_tps=<f> usage_gen_tokens=<f>
-  usage_long_prompt_tokens=<f> usage_requests=<n> ... [unviable=<side:n,...>]  (one line)
+  usage_long_prompt_tokens=<f> usage_requests=<n> ... [unviable=<side:n,...>]
+  [prefill=<device>:<kept|refused|unconfirmed[-n]>[,...]]  (one line)
 ```
 
-`threads=0` and `overlap=-1` mean not measured, and so does a rate of 0. The two rates are the device
+`threads=0` and `overlap=-1` mean not measured, and so does a rate of 0. `prefill=` is what came of
+each prefill device a load armed for this model, one word per device ([measured-planning.md](measured-planning.md#a-prefill-device-that-did-not-hold-up-for-a-model)). The two rates are the device
 tier's sides, each timed on a different load (`--trial-device-cache`), with these lines:
 
 ```

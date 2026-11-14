@@ -58,8 +58,12 @@ stream's position map, not by its index. `BMOE_DONE.n_prompt` reports the tokens
 this turn; `n_past` is the total context length after it.
 
 **Context checkpoints.** Not every memory can be cut at an arbitrary position: a recurrent state
-(Mamba, Gated DeltaNet) holds only its latest step, and a sliding-window cache has already dropped what
-fell out of its window, so `llama_memory_seq_rm` refuses a cut inside them. The engine keeps
+(Mamba, Gated DeltaNet) holds only its latest step, and `llama_memory_seq_rm` refuses a cut inside it.
+A sliding-window cache keeps its window and one ubatch of cells, not the whole context (the session
+opens it so, as llama.cpp's server does), and has dropped what fell out of it, yet accepts any cut: so
+before a cut the session also checks that the window still holds what the first token after it reads
+(`llama_memory_seq_pos_min`, the server's test), and treats a cut it does not as refused (gate G22c).
+The engine keeps
 checkpoints the way llama.cpp's server does (`--ctx-checkpoints`, default 8 where the server keeps 32,
 since their memory is the expert cache's; `--checkpoint-min-step`, 8192 as there): the part of the state that cannot be cut is copied out through the public
 state API (`llama_state_seq_get_data_ext` with `LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY`, into `common`'s own
@@ -74,7 +78,8 @@ size of that state per checkpoint; the first one of a session logs it (`context 
 and `--ctx-checkpoints 0` turns them off. The plan charges that memory before it sizes the expert cache
 (`checkpoint-budget`, [hardware-planning.md](hardware-planning.md#the-memory-ledger)), so a chat that
 fills its checkpoints does not take it from what the cache already holds. A restored state is the state the same tokens computed, so it
-is lossless; gate G22 checks it on the three memory kinds the tiny models cover.
+is lossless; gate G22 checks it on the three memory kinds the tiny models cover, and G22c a cut past a
+window.
 
 **Fallbacks and costs.** With no checkpoint to restore (none taken yet, or off), a memory that refuses
 the cut is cleared and the whole prompt is prefilled again for that turn (correct, just slower). With

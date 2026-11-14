@@ -482,6 +482,20 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("device-cache-cpu-share", "Device cache misses on the CPU", G::Cache, L::Experimental,
+                          "EXPERIMENTAL: With a device expert cache, the share of its misses the CPU computes from the "
+                          "host's copy instead of uploading them to the device, once the cache is full. 0 uploads "
+                          "every miss; below 1 the cache keeps learning which experts are hot.");
+        d.type = ParamType::Float;
+        d.value_hint = "F";
+        bounds(d, 0.0, MoeStreamConfig::device_cache_cpu_share_max);
+        special(d, "0", "off");
+        bind_float(d, [](RunConfig & c) -> float & { return c.moe.device_cache_cpu_share; });
+        d.details = "Experimental: with a graphics card's expert cache, lets the processor compute part of the "
+                    "experts the card does not hold, instead of sending them over. 0 is off.";
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("io-threads", "Read lanes", G::Streaming, L::Advanced,
                           "Parallel expert-read lanes, including the calling thread. 1 is the serial baseline.");
         d.value_hint = "N";
@@ -547,6 +561,18 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("trial-cpu-share", "Measure the device cache's CPU share", G::Cache, L::Experimental,
+                          "Time the decode of this load's side of the device cache's CPU share, to be compared "
+                          "across loads: 1 with --device-cache-cpu-share as set, 0 with every miss uploaded. -1 "
+                          "times neither. Changes no output; the plan sets it while the two sides have not both "
+                          "been measured on this machine.");
+        d.value_hint = "N";
+        bounds(d, -1, 1, "side");
+        special(d, "-1", "off");
+        bind_int(d, [](RunConfig & c) -> int & { return c.trial.cpu_share_side; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("trial-width", "Measure the graph width", G::Prefill, L::Experimental,
                           "Time this load's side of the graph width, to be compared across loads: 1 the plan's own "
                           "width, 0 the narrower --trial-width-narrow. Times the decode, and the prefill of prompts "
@@ -579,9 +605,8 @@ std::vector<ParamDesc> build() {
         d.switches = {{"--calibrate", "true"}, {"--no-calibrate", "false"}};
         bind_bool(d, [](RunConfig & c) -> bool & { return c.calibrate; });
         d.details = "Only machines with a graphics card that has memory of its own have such a choice: a phone or a "
-                    "computer whose graphics share its memory never calibrates. The command line does it before "
-                    "the first answer; the app serves first and calibrates once it is idle, giving way to any "
-                    "request.";
+                    "computer whose graphics share its memory never calibrates. Every front-end does it before "
+                    "a model's first answer on this machine and keeps the result, so later loads start decided.";
         t.push_back(d);
     }
     {

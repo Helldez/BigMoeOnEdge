@@ -104,15 +104,37 @@ void price_unstreamed(Allocation & a) {
 
     // The ledger keeps what the run holds whatever it does with the weights, and drops the rest.
     Ledger & l = a.ledger;
-    l.rows.erase(
-        std::remove_if(l.rows.begin(), l.rows.end(),
-                       [](const LedgerRow & r) { return r.name == "dense" || r.name == "expert cache" || r.in_turn; }),
-        l.rows.end());
+    l.rows.erase(std::remove_if(l.rows.begin(), l.rows.end(),
+                                [](const LedgerRow & r) {
+                                    return r.kind == LedgerKind::Dense || r.kind == LedgerKind::ExpertCache ||
+                                           r.in_turn;
+                                }),
+                 l.rows.end());
     l.held = l.locked = 0;
     for (const LedgerRow & r : l.rows) {
         l.held += r.bytes;
         if (r.locked) l.locked += r.bytes;
     }
+}
+
+const char * ledger_kind_name(LedgerKind k) {
+    switch (k) {
+    case LedgerKind::ContextCompute:
+        return "context and compute";
+    case LedgerKind::Projector:
+        return "projector";
+    case LedgerKind::Checkpoints:
+        return "context checkpoints";
+    case LedgerKind::Device:
+        return "device";
+    case LedgerKind::Dense:
+        return "dense";
+    case LedgerKind::ExpertCache:
+        return "expert cache";
+    case LedgerKind::DeviceSlots:
+        return "device slots";
+    }
+    return "?";
 }
 
 const char * lane_name(Lane l) {
@@ -569,6 +591,61 @@ void spend_ranking(Pricing & c, std::vector<Candidate> & candidates) {
     c.unspent = remaining;
 }
 
+// What the dense policy holds whatever the ranking concluded. The run's dense mode copies every dense
+// tensor it is handed (AllocationInputs::reserved_bytes), so a group read whole every token that the
+// ranking found no room for is not left mapped in the run: it is held, beyond the budget, and the
+// ledger already charges it there. Priced as mapped it stood in the plan at its refault price while
+// the run computed it from RAM: measured on a 12 GB phone, Gemma 4 26B-A4B with a 16384 context
+// predicted 10-44 s a token (attention and the dense FFN at a 40 MiB/s refault) and decoded at
+// 0.45-0.55. So such a group takes the lane the run gives it, up to the reservation's bytes. A table
+// the graph only gathers rows from is the exception the run makes too (settle_mapped_tables): it stays
+// where the ranking put it.
+void hold_reserved(Pricing & c) {
+    const AllocationInputs & in = c.in;
+    Allocation & a = c.a;
+    if (in.reserved_bytes == 0) return;
+    uint64_t held = 0;
+    std::vector<int> left;
+    for (int i = 0; i < (int) WeightGroup::count; ++i) {
+        const WeightGroup g = (WeightGroup) i;
+        if (g == WeightGroup::Experts || c.model.group(g).bytes == 0) continue;
+        const GroupPlacement & p = a.at(g);
+        if (p.lane == Lane::Resident || p.lane == Lane::Pinned)
+            held += p.resident_bytes;
+        else if (p.lane == Lane::Mmap && p.device < 0 && !c.model.group(g).row_gatherable)
+            left.push_back(i);
+    }
+    std::sort(left.begin(), left.end(), [&](int x, int y) {
+        return c.model.group((WeightGroup) x).bytes > c.model.group((WeightGroup) y).bytes;
+    });
+    uint64_t room = in.reserved_bytes > held ? in.reserved_bytes - held : 0;
+    std::string names;
+    uint64_t over = 0;
+    for (int i : left) {
+        const WeightGroup g = (WeightGroup) i;
+        const GroupDemand & d = c.model.group(g);
+        if (d.bytes > room) continue;
+        const double compute = seconds_at_gibs(d.bytes_per_token, c.host_dense_gibs);
+        if (!std::isfinite(compute)) continue;
+        GroupPlacement & p = a.at(g);
+        room -= d.bytes;
+        over += d.bytes;
+        p.lane = a.dense_pinned ? Lane::Pinned : Lane::Resident;
+        p.resident_bytes = d.bytes;
+        p.seconds_per_token = compute;
+        p.reason = std::string(a.dense_pinned ? "pinned" : "resident") +
+                   ": the dense policy copies it whole, though the budget had no room for it";
+        names += (names.empty() ? "" : ", ") + std::string(group_name(g));
+    }
+    if (over == 0) return;
+    note(a, "dense-held", size_brief(over),
+         "The dense weights are held whole: " + size_brief(over) + " of them past the budget.",
+         "the dense policy copies every dense tensor, so " + names + " (" + mibs(over) +
+             ") are held in RAM although the ranking found no room for them within the budget: they are priced "
+             "as held, at their compute, which is what the run does, and the memory they take is charged to the "
+             "ledger past its ceiling, where the machine has to find it");
+}
+
 // The cache, sized against what the loader will actually leave. Two paths, and which one ran is the
 // difference between a number that was chosen and one that was merely available.
 //
@@ -863,18 +940,18 @@ void write_ledger(Pricing & c) {
     // a reader checks `locked` against is whichever the locked rows were charged to.
     a.ledger.lockable_cap = std::max(in.lockable_bytes, in.lock_in_place_bytes);
     a.ledger.lockable_cap_known = in.lockable_bytes_known && in.lock_in_place_bytes_known;
-    auto row = [&](const char * name, uint64_t bytes, bool is_locked) {
+    auto row = [&](LedgerKind kind, uint64_t bytes, bool is_locked) {
         if (bytes == 0) return;
-        a.ledger.rows.push_back({name, bytes, is_locked});
+        a.ledger.rows.push_back({kind, ledger_kind_name(kind), bytes, is_locked});
         a.ledger.held += bytes;
         if (is_locked) a.ledger.locked += bytes;
     };
-    row("context and compute", in.fixed_bytes, false);
-    row("projector", in.projector_bytes, false);
-    row("context checkpoints", in.checkpoint_bytes, false);
-    row("device", in.device_bytes, in.device_locked);
-    row("dense", in.reserved_bytes, a.dense_pinned);
-    row("expert cache", a.cache_bytes, a.cache_locked_bytes > 0);
+    row(LedgerKind::ContextCompute, in.fixed_bytes, false);
+    row(LedgerKind::Projector, in.projector_bytes, false);
+    row(LedgerKind::Checkpoints, in.checkpoint_bytes, false);
+    row(LedgerKind::Device, in.device_bytes, in.device_locked);
+    row(LedgerKind::Dense, in.reserved_bytes, a.dense_pinned);
+    row(LedgerKind::ExpertCache, a.cache_bytes, a.cache_locked_bytes > 0);
     if (in.device_turn_bytes > 0) {
         // The prefill-time account: the cache yields up to all of itself, and the slots take their
         // turn. Where the cache is at least as large as they are - and locked like them, or neither
@@ -886,7 +963,8 @@ void write_ledger(Pricing & c) {
         const uint64_t lock_yields = in.device_locked ? std::min(a.cache_locked_bytes, turn) : 0;
         const uint64_t locked_then = a.ledger.locked - lock_yields + (in.device_locked ? turn : 0);
         a.turn_fits = held_then <= a.ledger.holdable_cap && (!in.device_locked || locked_then <= a.ledger.lockable_cap);
-        a.ledger.rows.push_back({"device slots", turn, in.device_locked, true});
+        a.ledger.rows.push_back(
+            {LedgerKind::DeviceSlots, ledger_kind_name(LedgerKind::DeviceSlots), turn, in.device_locked, true});
     }
 }
 
@@ -933,6 +1011,7 @@ Allocation allocate(const HardwareProfile & hw,
     charge_fixed(c);
     std::vector<Candidate> candidates = price_lanes(c);
     spend_ranking(c, candidates);
+    hold_reserved(c);
     bound_cache(c);
     offer_devices(c);
     write_ledger(c);
