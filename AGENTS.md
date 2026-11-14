@@ -40,13 +40,15 @@ we do not fork llama.cpp. See `docs/architecture.md` and `docs/seam.md`.
 - `core/include/bmoe/params.h` + `core/src/params.cpp` — the parameter table: every tunable of a
   `RunConfig`, described once. The CLI parses and documents its flags from it; front-ends render
   their settings from its JSON (`bmoe-cli --describe-params`).
-- `frontend/`: what every front-end asks the OS the same way (`user_dirs`: the per-user data folder).
+- `frontend/`: what every front-end does the same way: `user_dirs` (the per-user data folder) and
+  `backend_env` (the one table of what the compute backends read from their environment, set before
+  any loads; `docs/backends.md`). A backend default is an entry there, measured, never an ad-hoc `setenv`.
 - `cli/main.cpp`: `bmoe-cli`; the ONLY place engine environment overrides are read.
 - `server/`: `bmoe-server`, the engine behind the desktop web UI (`docs/server-api.md`). A
   front-end like the CLI: HTTP, files and the platform live here, never in `core/`. Its only env
   reads are the per-user data, config and home folders and `PATH` (to find the coding agents it may
-  start, and the init system's tool) on POSIX, and its only env writes are the two tuning entries
-  the Hexagon backend documents it reads, set before the backend loads (`server/platform.cpp`).
+  start, and the init system's tool) on POSIX, and its only env writes are the backend defaults of
+  `frontend/backend_env`, which the CLI applies too.
   The init systems are the one other adapter (`service_manager.cpp`): which one answers is asked of
   the machine, and what it is handed is rendered by a pure function (`service_spec.cpp`). The agent (`docs/agent.md`) is the server's too: `agent*.{h,cpp}`,
   `provider_protocol`, `connect`; its bundled skills are `skills/`.

@@ -10,9 +10,10 @@ a single ~25-line hook on a fork branch with an explicit sunset (see below and
 ## Layers
 
 ```
-frontend/       what every front-end asks the OS the same way: user_dirs (the per-user data folder,
-                and the folder each model's measurements are kept in), linked by bmoe-cli,
-                bmoe-server and the desktop app, so a calibration one ran is the others'
+frontend/       what every front-end does the same way: user_dirs (the per-user data folder,
+                and the folder each model's measurements are kept in), so a calibration one ran is
+                the others', and backend_env (what the compute backends read from their environment,
+                one table set before any loads); linked by bmoe-cli, bmoe-server and the desktop app
 cli/            bmoe-cli — parses flags, the only place env vars are read
 server/         bmoe-server: the application framework every UI speaks to (docs/application-framework.md),
                 and the engine behind the desktop web UI (docs/server-api.md)

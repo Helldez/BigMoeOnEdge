@@ -43,6 +43,7 @@
 #include "bmoe/config.h"
 #include "bmoe/measured_knobs.h"
 #include "bmoe/model_records.h"
+#include "backend_env.h"
 #include "user_dirs.h"
 #include "bmoe/params.h"
 #include "bmoe/probe.h"
@@ -1835,7 +1836,7 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     // it runs computes, and its timing would hang on the machine's driver.
     const bool load_backends = !embedding.seams || embedding.seams->load_backends;
     // What a backend reads from its environment, set before any backend is loaded.
-    if (load_backends) platform::prepare_compute_backends(data_dir);
+    if (load_backends) frontend::prepare_compute_backends(data_dir);
     // Every backend beside the executable, then the packs installed into the data folder (a pack
     // replaced while in use is moved into place first), before anything asks ggml about devices.
     const std::string backends_root = (fs::u8path(data_dir) / "backends").u8string();

@@ -20,6 +20,7 @@
 #include "bmoe/model_records.h"
 #include "bmoe/decode_trace.h"
 #include "bmoe/version.h"
+#include "backend_env.h"
 #include "user_dirs.h"
 
 #include <atomic>
@@ -947,7 +948,9 @@ int main(int argc, char ** argv) {
     if (seen.count("dense-on-device")) auto_plan = true; // a request to the planner, as before
     // The child of an isolated device probe: one device, its facts on one line, nothing else. If
     // the driver ends this process, or it never returns, that is the parent's answer about the device.
-    // Every backend beside the executable, once, before anything asks ggml about devices.
+    // What the backends read from their environment, as every front-end sets it (frontend/backend_env.h),
+    // then every backend beside the executable, once, before anything asks ggml about devices.
+    frontend::prepare_compute_backends(frontend::default_data_dir());
     register_backends();
     if (!probe_device.empty()) {
         std::string line;
