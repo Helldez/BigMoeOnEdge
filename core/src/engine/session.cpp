@@ -29,6 +29,7 @@
 #include "knob_trial.h"
 #include "../io/platform_io.h"
 #include "../io/mapping_release.h"
+#include "../io/parallel_copy.h"
 #include "../metrics/memory_snapshot.h"
 
 #include "ggml-backend.h"
@@ -300,6 +301,23 @@ struct Session::Impl {
     // the expert tensors point into it, so it outlives the contexts and the model.
     std::unique_ptr<ggml_backend_buffer, void (*)(ggml_backend_buffer_t)> expert_host_buf{nullptr,
                                                                                           ggml_backend_buffer_free};
+    // The same copy where the device's backend pinned memory this session allocated (a registered
+    // host buffer, stage_experts_in_host_buffer) instead of allocating its own: unpinned and freed
+    // with it, after the model.
+    struct RegisteredHostMemory {
+        void * p = nullptr;
+        size_t size = 0;
+        void (*unregister)(void *) = nullptr;
+        RegisteredHostMemory() = default;
+        RegisteredHostMemory(const RegisteredHostMemory &) = delete;
+        RegisteredHostMemory & operator=(const RegisteredHostMemory &) = delete;
+        ~RegisteredHostMemory() {
+            if (!p) return;
+            if (unregister) unregister(p);
+            pio::vm_release(p, size);
+        }
+    };
+    std::unique_ptr<RegisteredHostMemory> expert_host_registered;
     ExpertStreamSource source;
     // Kept per session, not per turn: the reference it measures stalls against is this machine's,
     // and a later turn of a chat is compared with what the earlier ones settled to.
@@ -352,6 +370,7 @@ struct Session::Impl {
     // Prefill on an accelerator (SessionConfig::prefill); null when off. Created before the model
     // load, whose device list it holds, and opened after it.
     std::unique_ptr<detail::PrefillPath> prefill;
+    bool prefill_check_refused = false; // its check on this model refused it (confirm_prefill_device)
 
     // Where the next graph actually goes: a device with no room right now leaves it on the host.
     bool place_prefill(bool on_device, bool hold_slots = false) {
@@ -462,7 +481,8 @@ struct Session::Impl {
         checkpoints.clear();
         media_in_conversation = false;
     }
-    // Keep the first n tokens of the KV and drop the rest. Where the memory refuses the cut, the
+    // Keep the first n tokens of the KV and drop the rest. Where the memory refuses the cut, or a
+    // sliding window has already let go of what the cut would read (memory_covers), the
     // newest checkpoint at or before n stands in for it; returns how many tokens are still held,
     // 0 with the context cleared when no checkpoint helps. A cut inside an image moves to its
     // start: an image is held whole or not at all.
@@ -470,7 +490,8 @@ struct Session::Impl {
         n = std::min(n, kv.size());
         if (const detail::MediaSpan * m = kv.media_at(n); m && m->begin < n) n = m->begin;
         size_t kept = n;
-        if (!llama_memory_seq_rm(llama_get_memory(ctx.get()), 0, kv.pos_at(n), -1)) {
+        if (!checkpoints.memory_covers(checkpoint_contexts(), (int64_t) n) ||
+            !llama_memory_seq_rm(llama_get_memory(ctx.get()), 0, kv.pos_at(n), -1)) {
             kept = (size_t) checkpoints.restore(checkpoint_contexts(), (int64_t) n);
             if (kept == 0) clear_memory(ctx.get());
         }
@@ -584,6 +605,7 @@ struct Session::Impl {
         hook.reset();
         model.reset();
         expert_host_buf.reset();
+        expert_host_registered.reset();
         mapping_placeholders.release();
         if (backend_inited) llama_backend_free();
     }
@@ -1201,6 +1223,14 @@ bool Session::Impl::create_contexts(Opening & o) {
     cparams.n_ubatch = cfg.n_ubatch > 0 ? (uint32_t) cfg.n_ubatch : (uint32_t) cfg.n_batch;
     cparams.type_k = detail::to_ggml_type(cfg.cache_type_k);
     cparams.type_v = detail::to_ggml_type(cfg.cache_type_v);
+    // A sliding-window layer keeps its window, not the whole context. llama.cpp's own default is a
+    // full-size cache on those layers too (common/, which its server and CLI use, turns it off), and
+    // on a model whose layers are mostly windowed that is most of the context's memory spent on cells
+    // no token reads: Gemma 4 26B-A4B at a 16384 context held ~2 GiB for its context on a 12 GB
+    // phone, where that was the memory the expert cache and the prefill device were refused. A
+    // cut further back than the window is served from a checkpoint instead (keep_kv_prefix). The
+    // placement probe opens its context the same way, so the plan prices the cache the run holds.
+    cparams.swa_full = false;
     // The streamer needs the callback to see routing; the compute trace needs it to time nodes.
     // Installing it for the trace alone is what lets a NON-streamed run be measured — the dense
     // mmap baseline the streamed numbers are argued against.
@@ -1245,6 +1275,10 @@ bool Session::Impl::create_contexts(Opening & o) {
     // the expert matmuls read its slots rather than the host tensors, so the capture warm-up, which
     // finds those tensors by the nodes that read them, runs on a context without it.
     if (device_cache_armed) cparams.moe_cache_size = (size_t) cfg.moe.device_cache_mb << 20;
+    // Part of the misses computed on the host from the expert's host copy rather than uploaded: the
+    // same tensors the streamer serves, so the CPU half reads what the slots would have been filled
+    // from (docs/seam.md).
+    if (device_cache_armed) cparams.moe_cache_cpu_share = cfg.moe.device_cache_cpu_share;
 
     llama_context * c = llama_init_from_model(model.get(), cparams);
     // The device cache is sized from what the capacity fitter left free, and the fitter measured a
@@ -1722,25 +1756,118 @@ bool Session::Impl::stage_experts_in_host_buffer(Opening & o) {
     size_t total = 0;
     for (ggml_tensor * t : experts)
         total += GGML_PAD(ggml_nbytes(t), align);
+    // The copy goes onto every core the plan computes a prompt on: one thread copying out of the
+    // mapping is bound by its own page faults (pio::copy_spans).
+    const int copy_threads = std::max(o.cfg.n_threads, o.cfg.n_threads_batch);
+    const auto spans_at = [&](uint8_t * base) {
+        std::vector<pio::CopySpan> spans;
+        size_t off = 0;
+        for (ggml_tensor * t : experts) {
+            spans.push_back({base + off, t->data, ggml_nbytes(t)});
+            off += GGML_PAD(ggml_nbytes(t), align);
+        }
+        return spans;
+    };
+    const auto point_at = [&](const std::vector<pio::CopySpan> & spans) {
+        for (size_t i = 0; i < experts.size(); ++i)
+            experts[i]->data = spans[i].dst;
+    };
+    const auto mib = [](size_t b) { return (double) b / (1024.0 * 1024.0); };
+
+    // Memory the session allocates itself, copied into on every core and then pinned by the device's
+    // backend, where the backend offers that (ggml's generic "ggml_backend_register_host_buffer"
+    // entry point; the front-ends enable it, frontend/backend_env.h). A backend allocating pinned
+    // memory of its own does it a page at a time on one thread: on a rented 3090, 117 GB of
+    // GLM-4.7's experts took 97 s to allocate and 2 s to copy, where touching ordinary memory on 16
+    // threads and pinning it took 6 s every 32 GB. Where the backend has no such entry point, or
+    // declines, the backend's own host memory below, as before.
+    ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+    using RegisterFn = bool (*)(void *, size_t);
+    using UnregisterFn = void (*)(void *);
+    const auto do_register =
+        reg ? (RegisterFn) ggml_backend_reg_get_proc_address(reg, "ggml_backend_register_host_buffer") : nullptr;
+    const auto do_unregister =
+        reg ? (UnregisterFn) ggml_backend_reg_get_proc_address(reg, "ggml_backend_unregister_host_buffer") : nullptr;
+    // Asked first on one page, so a backend that declines (its entry point off, as ggml's CUDA backend
+    // is unless its environment enables it) costs no copy of the experts made for nothing.
+    const auto pins = [&] {
+        const size_t page = pio::vm_page();
+        void * p = pio::vm_reserve(page);
+        const bool ok = p && pio::vm_commit(p, page) && do_register(p, page);
+        if (ok) do_unregister(p);
+        if (p) pio::vm_release(p, page);
+        return ok;
+    };
+    // Memory allocated here is committed only as the copy writes it (pio::vm_reserve), so a copy larger
+    // than the system can still give would end in the out-of-memory killer, where a backend's own
+    // allocation fails and leaves the mapping in place. So it is taken only where it fits what the
+    // system can give and a container still lets this process take; otherwise the backend's own
+    // allocation answers, as before.
+    const auto room = [] {
+        uint64_t r = pio::mem_available_bytes();
+        const uint64_t contained = pio::cgroup_memory_left();
+        if (contained > 0 && (r == 0 || contained < r)) r = contained;
+        return r;
+    }();
+    const bool fits = room > 0 && (uint64_t) total <= room;
+    if (!fits && do_register)
+        log_printf(
+            LogLevel::Info,
+            "expert host buffer: %.0f MiB is more than the %.0f MiB the system can give; the backend allocates it",
+            mib(total), mib((size_t) room));
+    // Both entry points or neither: memory pinned that could not be unpinned would stay pinned once freed.
+    if (fits && do_register && do_unregister && pins()) {
+        const size_t page = pio::vm_page();
+        const size_t size = (total + page - 1) / page * page;
+        const auto t0 = clock_t_::now();
+        void * p = pio::vm_reserve(size);
+        if (p && pio::vm_commit(p, size)) {
+            const std::vector<pio::CopySpan> spans = spans_at((uint8_t *) p);
+            pio::copy_spans(spans, copy_threads);
+            const auto t_copied = clock_t_::now();
+            if (do_register(p, size)) {
+                auto held = std::make_unique<RegisteredHostMemory>();
+                held->p = p;
+                held->size = size;
+                held->unregister = do_unregister;
+                expert_host_registered = std::move(held);
+                point_at(spans);
+                log_printf(LogLevel::Info,
+                           "expert host buffer: %zu expert tensors, %.0f MiB, copied and pinned for %s (%.1f s "
+                           "copying, %.1f s pinning)",
+                           experts.size(), mib(total), ggml_backend_dev_name(dev), secs(t0, t_copied),
+                           secs(t_copied, clock_t_::now()));
+                if (captured_here) clear_memory(ctx.get()); // discard the capture's KV
+                return true;
+            }
+        }
+        // Pinning a page and not the whole copy is a driver's limit met only now; the copy is made again
+        // into the backend's own memory, a few seconds against the minutes that allocation takes.
+        if (p) pio::vm_release(p, size);
+        log_printf(LogLevel::Warn,
+                   "expert host buffer: %s did not pin the %.0f MiB allocated here; it allocates its own",
+                   ggml_backend_dev_name(dev), mib(total));
+    }
+
+    const auto t_alloc = clock_t_::now();
     ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(buft, total);
+    const auto t_copy = clock_t_::now();
     if (!buf) {
         log_printf(LogLevel::Warn,
                    "expert host buffer: %s could not allocate %.0f MiB; the cache uploads from the "
                    "file's mapping",
-                   ggml_backend_buft_name(buft), (double) total / (1024.0 * 1024.0));
+                   ggml_backend_buft_name(buft), mib(total));
         if (captured_here) clear_memory(ctx.get());
         return true;
     }
-    uint8_t * base = (uint8_t *) ggml_backend_buffer_get_base(buf);
-    size_t off = 0;
-    for (ggml_tensor * t : experts) {
-        std::memcpy(base + off, t->data, ggml_nbytes(t));
-        t->data = base + off;
-        off += GGML_PAD(ggml_nbytes(t), align);
-    }
+    const std::vector<pio::CopySpan> spans = spans_at((uint8_t *) ggml_backend_buffer_get_base(buf));
+    pio::copy_spans(spans, copy_threads);
+    point_at(spans);
     expert_host_buf.reset(buf);
-    log_printf(LogLevel::Info, "expert host buffer: %zu expert tensors, %.0f MiB, copied into %s", experts.size(),
-               (double) total / (1024.0 * 1024.0), ggml_backend_buft_name(buft));
+    log_printf(LogLevel::Info,
+               "expert host buffer: %zu expert tensors, %.0f MiB, copied into %s (%.1f s allocating, %.1f s copying)",
+               experts.size(), mib(total), ggml_backend_buft_name(buft), secs(t_alloc, t_copy),
+               secs(t_copy, clock_t_::now()));
     if (captured_here) clear_memory(ctx.get()); // discard the capture's KV
     return true;
 }
@@ -1857,7 +1984,7 @@ bool Session::Impl::confirm_prefill_device(Opening & o) {
     const int want = std::min({std::max(PrefillDeviceConfig::verify_tokens, cfg.prefill.min_tokens),
                                PrefillDeviceConfig::max_outputs, prefill_piece(this->cfg), cfg.n_ctx - 1});
     const int rows = std::min(want, PrefillDeviceConfig::verify_rows);
-    double host_s = 0.0, dev_s = 0.0, agree = 0.0, nmse = 0.0;
+    double host_s = 0.0, dev_s = 0.0, agree = 0.0, nmse = 0.0, kld = 0.0, kld_max = 0.0;
     // A check that cannot run is not a verdict: the device stays as the plan or the caller set it,
     // and the line below says it was not confirmed.
     std::string unchecked;
@@ -1922,6 +2049,25 @@ bool Session::Impl::confirm_prefill_device(Opening & o) {
         } else {
             int same = 0;
             double num = 0.0, den = 0.0;
+            // The KL divergence of the device's next-token distribution from the host's, per row: how far
+            // the whole distribution moved, where agreeing on the top token only says whether a near tie
+            // flipped. Measured on a 12 GB phone's NPU: Qwen3.6-35B-A3B Q4_K_M a mean of 0.004 (rounding,
+            // its two differing rows near ties), Gemma 4 26B-A4B Q4_K_M 0.60 with one row at 13.5 where the
+            // host was 0.999 sure (the backend's expert matmul past the fp16 range, ggml-org/llama.cpp#32198).
+            // Logged beside the verdict, which is still the top-token agreement.
+            const int nv = n_vocab;
+            std::vector<double> lh((size_t) nv), ld((size_t) nv);
+            const auto log_softmax = [nv](const float * x, std::vector<double> & out) {
+                double mx = -INFINITY;
+                for (int v = 0; v < nv; ++v)
+                    mx = std::max(mx, (double) x[v]);
+                double z = 0.0;
+                for (int v = 0; v < nv; ++v)
+                    z += std::exp((double) x[v] - mx);
+                const double lz = mx + std::log(z);
+                for (int v = 0; v < nv; ++v)
+                    out[(size_t) v] = (double) x[v] - lz;
+            };
             for (int r = 0; r < rows; ++r) {
                 const float * h = host_logits.data() + (size_t) r * n_vocab;
                 const float * d = llama_get_logits_ith(c, at[(size_t) r]);
@@ -1931,6 +2077,13 @@ bool Session::Impl::confirm_prefill_device(Opening & o) {
                     num += e * e;
                     den += (double) h[v] * (double) h[v];
                 }
+                log_softmax(h, lh);
+                log_softmax(d, ld);
+                double kl = 0.0;
+                for (int v = 0; v < nv; ++v)
+                    kl += std::exp(lh[(size_t) v]) * (lh[(size_t) v] - ld[(size_t) v]);
+                kld += kl / rows;
+                kld_max = std::max(kld_max, kl);
             }
             agree = (double) same / rows;
             nmse = den > 0.0 ? num / den : 0.0;
@@ -1948,10 +2101,11 @@ bool Session::Impl::confirm_prefill_device(Opening & o) {
     }
     log_printf(LogLevel::Info,
                "prefill-device %s confirmation: %d tokens, %d compared, top token agrees %.0f%%, logit NMSE %.2e, "
-               "host %.2f s, device %.2f s%s%s",
-               cfg.prefill.device.c_str(), want, rows, agree * 100.0, nmse, host_s, dev_s, why.empty() ? "" : " - ",
-               why.c_str());
+               "KL mean %.4f max %.4f, host %.2f s, device %.2f s%s%s",
+               cfg.prefill.device.c_str(), want, rows, agree * 100.0, nmse, kld, kld_max, host_s, dev_s,
+               why.empty() ? "" : " - ", why.c_str());
     if (!why.empty()) {
+        prefill_check_refused = true;
         const std::string perr = cfg.prefill.device + " is not kept as the prefill device: " + why;
         if (!cfg.prefill.best_effort) return o.fail(perr);
         hand_back_prefill(perr);
@@ -2085,7 +2239,7 @@ void Session::Impl::arm_trials() {
         else
             trials.overlap = {cfg.moe.overlap ? 1 : 0, cfg.moe.overlap ? 0 : 1};
     }
-    trials.rate = t.device_tier >= 0 || t.width_side >= 0;
+    trials.rate = t.device_tier >= 0 || t.width_side >= 0 || t.cpu_share_side >= 0;
     trials.stage = stage_done;
     next_trial_stage(/*settled*/ false);
 }
@@ -2191,6 +2345,10 @@ void Session::Impl::rate_step(double seconds, int tokens, uint64_t lookups, uint
     char what[96];
     if (tier)
         std::snprintf(what, sizeof(what), "%s a device expert cache", cfg.trial.device_tier == 1 ? "with" : "without");
+    else if (cfg.trial.cpu_share_side >= 0)
+        std::snprintf(what, sizeof(what), "%s",
+                      cfg.trial.cpu_share_side == 1 ? "with part of the device cache's misses on the CPU"
+                                                    : "with every device cache miss uploaded");
     else
         std::snprintf(what, sizeof(what), "with the graph %s (%d tokens wide)",
                       cfg.trial.width_side == 1 ? "at the plan's width" : "narrowed",
@@ -2451,6 +2609,12 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     if (im.prefill && cfg.prefill.verify && !im.confirm_prefill_device(o)) return nullptr;
     im.arm_decode_traces(o);
     im.arm_trials();
+    // What came of the prefill device asked for, for the record of this model (MeasuredKnobs::prefill):
+    // kept; refused where its check on this model refused it; or not kept, without a verdict on the
+    // device, where it would not open (an allocation another program's memory can fail for a moment):
+    // that counts as one more load that did not keep it, not as a refusal.
+    if (!cfg.prefill.device.empty())
+        im.trials.result.set_prefill_word({cfg.prefill.device, im.prefill ? 1 : im.prefill_check_refused ? -1 : 0, 0});
     im.describe_run(o);
     im.warn_about_load(cfg);
 

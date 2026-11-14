@@ -61,7 +61,9 @@ struct UnviableSide {
 constexpr UnviableSide k_unviable_sides[] = {{"device_cache", &MeasuredKnobs::device_cache_unviable},
                                              {"no_device_cache", &MeasuredKnobs::no_device_cache_unviable},
                                              {"wide", &MeasuredKnobs::wide_unviable},
-                                             {"narrow", &MeasuredKnobs::narrow_unviable}};
+                                             {"narrow", &MeasuredKnobs::narrow_unviable},
+                                             {"cpu_share", &MeasuredKnobs::cpu_share_unviable},
+                                             {"no_cpu_share", &MeasuredKnobs::no_cpu_share_unviable}};
 
 // `name:count` (or `name`, one) per side, comma-separated. A name this engine does not know is a
 // later engine's side: read past, as an unknown key is.
@@ -88,6 +90,39 @@ bool parse_unviable(const std::string & s, MeasuredKnobs & r) {
 
 // A rate measured against another narrow width answers another comparison: a new narrow width
 // starts the width's record afresh.
+// `prefill=<device>:<word>[,<device>:<word>...]`, a word being kept, refused, unconfirmed or
+// unconfirmed-<n> (n loads in a row), the device the part before the last colon. A word it cannot read
+// (a later engine's) is read past, as an unknown key is, and the record still holds.
+bool parse_prefill(const std::string & s, MeasuredKnobs & r) {
+    size_t at = 0;
+    while (at <= s.size()) {
+        size_t end = s.find(',', at);
+        if (end == std::string::npos) end = s.size();
+        const std::string item = s.substr(at, end - at);
+        at = end + 1;
+        const size_t c = item.rfind(':');
+        if (c == std::string::npos || c == 0) continue;
+        const std::string word = item.substr(c + 1);
+        MeasuredKnobs::PrefillWord w;
+        w.device = item.substr(0, c);
+        if (word == "kept") {
+            w.verdict = 1;
+        } else if (word == "refused") {
+            w.verdict = -1;
+        } else if (word == "unconfirmed") {
+            w.unconfirmed = 1;
+        } else if (word.rfind("unconfirmed-", 0) == 0) {
+            const std::string n = word.substr(12);
+            if (n.empty() || n.size() > 6 || n.find_first_not_of("0123456789") != std::string::npos) continue;
+            w.unconfirmed = std::stoi(n);
+        } else {
+            continue;
+        }
+        r.set_prefill_word(w);
+    }
+    return true;
+}
+
 void set_width_narrow(MeasuredKnobs & r, int narrow) {
     if (narrow <= 0 || narrow == r.width_narrow) return;
     r.width_narrow = narrow;
@@ -115,6 +150,10 @@ std::string format_measured_knobs(const std::vector<MeasuredKnobs> & records) {
         out += std::string(" device_cache_tps=") + num;
         std::snprintf(num, sizeof(num), "%.3f", r.no_device_cache_tps);
         out += std::string(" no_device_cache_tps=") + num;
+        std::snprintf(num, sizeof(num), "%.3f", r.cpu_share_tps);
+        out += std::string(" cpu_share_tps=") + num;
+        std::snprintf(num, sizeof(num), "%.3f", r.no_cpu_share_tps);
+        out += std::string(" no_cpu_share_tps=") + num;
         out += " width_narrow=" + std::to_string(r.width_narrow);
         const std::pair<const char *, double> rates[] = {
             {"wide_decode_tps", r.wide_decode_tps},   {"narrow_decode_tps", r.narrow_decode_tps},
@@ -151,6 +190,16 @@ std::string format_measured_knobs(const std::vector<MeasuredKnobs> & records) {
             if (r.*u.count > 0)
                 unviable += (unviable.empty() ? "" : ",") + std::string(u.name) + ":" + std::to_string(r.*u.count);
         if (!unviable.empty()) out += " unviable=" + unviable;
+        // Each prefill device's word, likewise only when there is one.
+        std::string words;
+        for (const MeasuredKnobs::PrefillWord & w : r.prefill) {
+            const std::string word = w.verdict > 0       ? "kept"
+                                     : w.verdict < 0     ? "refused"
+                                     : w.unconfirmed > 1 ? "unconfirmed-" + std::to_string(w.unconfirmed)
+                                                         : "unconfirmed";
+            words += (words.empty() ? "" : ",") + w.device + ":" + word;
+        }
+        if (!words.empty()) out += " prefill=" + words;
         out += "\n";
     }
     return out;
@@ -211,6 +260,10 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
                 ok = as_double(r.device_cache_tps);
             else if (k == "no_device_cache_tps")
                 ok = as_double(r.no_device_cache_tps);
+            else if (k == "cpu_share_tps")
+                ok = as_double(r.cpu_share_tps);
+            else if (k == "no_cpu_share_tps")
+                ok = as_double(r.no_cpu_share_tps);
             else if (k == "width_narrow")
                 ok = as_int(r.width_narrow);
             else if (k == "wide_decode_tps")
@@ -249,6 +302,8 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
                 ok = as_double(r.host_prefill_tps);
             else if (k == "unviable")
                 ok = parse_unviable(v, r);
+            else if (k == "prefill")
+                ok = parse_prefill(v, r);
             // An unknown key is a later engine's addition: read past it, the record still holds.
             if (!ok) {
                 error = "line " + std::to_string(n) + ": bad value for " + k;
@@ -260,13 +315,14 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
             return false;
         }
         if (r.overlap < -1 || r.overlap > 1 || r.overlap_incumbent < -1 || r.overlap_incumbent > 1 || r.threads < 0 ||
-            !(r.device_cache_tps >= 0.0) || !(r.no_device_cache_tps >= 0.0) || r.width_narrow < 0 ||
-            !(r.wide_decode_tps >= 0.0) || !(r.narrow_decode_tps >= 0.0) || !(r.wide_prefill_tps >= 0.0) ||
-            !(r.narrow_prefill_tps >= 0.0) || !(r.usage_gen_tokens >= 0.0) || !(r.usage_long_prompt_tokens >= 0.0) ||
-            r.usage_requests < 0 || !(r.decode_compute_s >= 0.0) || r.decode_threads < 0 ||
-            !(r.decode_hit >= -1.0 && r.decode_hit <= 1.0) || !(r.decode_cache_mib >= 0.0) || r.decode_gpu_layers < 0 ||
-            r.decode_device_cache_mb < 0 || r.mix_requests < 0 || !(r.mix_gen_tokens >= 0.0) ||
-            !(r.mix_wide_prompt_tokens >= 0.0) || !(r.host_prefill_tps >= 0.0)) {
+            !(r.device_cache_tps >= 0.0) || !(r.no_device_cache_tps >= 0.0) || !(r.cpu_share_tps >= 0.0) ||
+            !(r.no_cpu_share_tps >= 0.0) || r.width_narrow < 0 || !(r.wide_decode_tps >= 0.0) ||
+            !(r.narrow_decode_tps >= 0.0) || !(r.wide_prefill_tps >= 0.0) || !(r.narrow_prefill_tps >= 0.0) ||
+            !(r.usage_gen_tokens >= 0.0) || !(r.usage_long_prompt_tokens >= 0.0) || r.usage_requests < 0 ||
+            !(r.decode_compute_s >= 0.0) || r.decode_threads < 0 || !(r.decode_hit >= -1.0 && r.decode_hit <= 1.0) ||
+            !(r.decode_cache_mib >= 0.0) || r.decode_gpu_layers < 0 || r.decode_device_cache_mb < 0 ||
+            r.mix_requests < 0 || !(r.mix_gen_tokens >= 0.0) || !(r.mix_wide_prompt_tokens >= 0.0) ||
+            !(r.host_prefill_tps >= 0.0)) {
             error = "line " + std::to_string(n) + ": a value out of range";
             return false;
         }
@@ -301,6 +357,11 @@ void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKno
                            rec.no_device_cache_tps);
             if (rec.device_cache_tps > 0.0) r.device_cache_tps = rec.device_cache_tps;
             if (rec.no_device_cache_tps > 0.0) r.no_device_cache_tps = rec.no_device_cache_tps;
+            merge_unviable(r.cpu_share_unviable, rec.cpu_share_unviable, r.cpu_share_tps, rec.cpu_share_tps);
+            merge_unviable(r.no_cpu_share_unviable, rec.no_cpu_share_unviable, r.no_cpu_share_tps,
+                           rec.no_cpu_share_tps);
+            if (rec.cpu_share_tps > 0.0) r.cpu_share_tps = rec.cpu_share_tps;
+            if (rec.no_cpu_share_tps > 0.0) r.no_cpu_share_tps = rec.no_cpu_share_tps;
             // A different narrow width is a different comparison: what was measured against the old
             // one no longer answers it.
             set_width_narrow(r, rec.width_narrow);
@@ -335,6 +396,19 @@ void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKno
                 r.mix_wide_prompt_tokens = rec.mix_wide_prompt_tokens;
             }
             if (rec.host_prefill_tps > 0.0) r.host_prefill_tps = rec.host_prefill_tps;
+            // Each device's word is the latest load's: an armed load says unconfirmed, and the session
+            // that opened says what came of it. A session that could not open the device (verdict 0, no
+            // count) is one more load that did not keep it: the count the front-end wrote stands, or
+            // starts at one where none did.
+            for (const MeasuredKnobs::PrefillWord & w : rec.prefill) {
+                MeasuredKnobs::PrefillWord merged = w;
+                if (w.verdict == 0 && w.unconfirmed == 0) {
+                    const MeasuredKnobs::PrefillWord * had = r.prefill_word(w.device);
+                    merged.unconfirmed = had && had->verdict == 0 ? std::max(had->unconfirmed, 1) : 1;
+                }
+                if (merged.verdict != 0) merged.unconfirmed = 0;
+                r.set_prefill_word(merged);
+            }
             return;
         }
     records.push_back(rec);
@@ -349,6 +423,9 @@ void record_side_rate(const KnobTrialConfig & trial, double tokens_per_second, M
         set_width_narrow(rec, trial.width_narrow);
         (trial.width_side == 1 ? rec.wide_decode_tps : rec.narrow_decode_tps) = tokens_per_second;
         (trial.width_side == 1 ? rec.wide_unviable : rec.narrow_unviable) = 0;
+    } else if (trial.cpu_share_side >= 0) {
+        (trial.cpu_share_side == 1 ? rec.cpu_share_tps : rec.no_cpu_share_tps) = tokens_per_second;
+        (trial.cpu_share_side == 1 ? rec.cpu_share_unviable : rec.no_cpu_share_unviable) = 0;
     }
 }
 
@@ -356,6 +433,8 @@ int * unviable_count(const KnobTrialConfig & trial, MeasuredKnobs & rec) {
     if (trial.device_tier >= 0)
         return trial.device_tier == 1 ? &rec.device_cache_unviable : &rec.no_device_cache_unviable;
     if (trial.width_side >= 0) return trial.width_side == 1 ? &rec.wide_unviable : &rec.narrow_unviable;
+    if (trial.cpu_share_side >= 0)
+        return trial.cpu_share_side == 1 ? &rec.cpu_share_unviable : &rec.no_cpu_share_unviable;
     return nullptr;
 }
 

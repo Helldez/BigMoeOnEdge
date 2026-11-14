@@ -34,7 +34,7 @@
 namespace bmoe {
 
 // The decisions a calibration times, each with two sides: the device tier, then the graph width.
-inline constexpr int k_calibration_decisions = 2;
+inline constexpr int k_calibration_decisions = 3;
 inline constexpr int k_calibration_sides = 2;
 
 // What one candidate run is asked to do.
@@ -48,6 +48,9 @@ struct CalibrationRun {
     // seconds per token (RateProbe::set_reference). 0 when that side has not run: this one is timed
     // to its end.
     double reference_lo = 0.0, reference_hi = 0.0;
+    // Whether the first run left every model file cached for the others (CandidateTiming::files_cached):
+    // decided once, by the first run, so every run of a calibration starts from the same cache.
+    bool files_cached = false;
 };
 
 // What a candidate run measured.
@@ -60,6 +63,7 @@ struct CandidateTiming {
     int windows = 0;                     // timed windows behind the rate
     bool cut = false;                    // stopped early, past the reference's range by the margin
     std::vector<int32_t> tokens;         // the ids it decoded, sampled or replayed
+    bool files_cached = false;           // it read every model file into the system's cache for the others
 };
 
 // Plan again on the same facts with this record of measurements.
@@ -101,6 +105,14 @@ struct CalibrationResult {
 
 // Whether `p` has a side of a decision across loads still to time.
 bool side_pending(const Plan & p);
+
+// Whether a served load may open `p` as it is: nothing pending, or only a side that every other load
+// of the plan already opened with: the graph at the plan's own width, or the device cache with every
+// miss uploaded (the narrow graph and a CPU share are configurations no load has run yet). What a
+// server serves instead of an unproven side once the other side has been measured: on a 32 GB card the plan on the
+// measured device cache named the width's wide side, which counted as a side still to prove, so the load served the
+// unproven placement and decoded at 42 tok/s against the cache's 103.
+bool servable(const Plan & p);
 
 // The candidate a pending plan runs: its config with the knob trial's threads and overlap cleared
 // (they switch within a load and are measured on the served one) and no side named, since the

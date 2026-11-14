@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
@@ -282,6 +283,52 @@ json plan_view(const HardwareProfile & hw, const Plan & plan) {
                 {"devices", devices_json(hw, plan)},
                 {"devices_none", none},
                 {"devices_none_text", devices_none_text(none)}};
+}
+
+namespace {
+
+// Two significant digits in plain notation: 0.0202 -> "0.020", 0.31 -> "0.31".
+std::string two_significant(double v) {
+    int decimals = 1 - (int) std::floor(std::log10(v));
+    if (decimals < 0) decimals = 0;
+    char b[48];
+    std::snprintf(b, sizeof b, "%.*f", decimals, v);
+    return b;
+}
+
+// A factor between two rates: whole above 10, one decimal above 1, two significant digits below.
+std::string factor_text(double f) {
+    char b[48];
+    if (f >= 10)
+        std::snprintf(b, sizeof b, "%.0f", f);
+    else if (f >= 1)
+        std::snprintf(b, sizeof b, "%.1f", f);
+    else
+        return two_significant(f);
+    return b;
+}
+
+} // namespace
+
+std::string decode_rate_text(double tok_s) {
+    if (!std::isfinite(tok_s) || tok_s <= 0) return "-";
+    if (tok_s < 0.1) return two_significant(tok_s);
+    char b[48];
+    std::snprintf(b, sizeof b, "%.1f", tok_s);
+    return b;
+}
+
+json speed_check(double predicted_s_per_token, double measured_s_per_token) {
+    if (!(predicted_s_per_token > 0) || !(measured_s_per_token > 0)) return nullptr;
+    const double factor = predicted_s_per_token / measured_s_per_token; // measured rate over predicted rate
+    const std::string expected = decode_rate_text(1.0 / predicted_s_per_token);
+    const char * tone = factor >= 1 ? "ok" : "warn";
+    if (factor >= k_speed_ratio_from || factor <= 1 / k_speed_ratio_from)
+        return json{{"badge", factor_text(factor) + "x"}, {"against", "the " + expected + " expected"}, {"tone", tone}};
+    // As bmoe-cli prints it: positive when the run beat the plan.
+    char b[48];
+    std::snprintf(b, sizeof b, "%+.0f%%", 100 * (factor - 1));
+    return json{{"badge", b}, {"against", "against the " + expected + " expected"}, {"tone", tone}};
 }
 
 std::string value_text(const Decision & d) {

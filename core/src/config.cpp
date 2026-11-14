@@ -121,12 +121,31 @@ ValidationResult validate(const RunConfig & cfg) {
         return fail("{trial-width} and {trial-device-cache} each time a load's decode: one at a time");
     if (cfg.trial.device_tier < -1 || cfg.trial.device_tier > 1)
         return fail("{trial-device-cache} is the device tier's side a load measures: -1 (none), 0 or 1");
+    if (cfg.trial.cpu_share_side < -1 || cfg.trial.cpu_share_side > 1)
+        return fail("{trial-cpu-share} is the device cache CPU share's side a load measures: -1 (none), 0 or 1");
+    if (cfg.trial.cpu_share_side >= 0 && (cfg.trial.device_tier >= 0 || cfg.trial.width_side >= 0))
+        return fail("{trial-cpu-share} and {trial-device-cache} or {trial-width} each time a load's decode: one "
+                    "at a time");
+    if (cfg.trial.cpu_share_side >= 0 && cfg.moe.device_cache_mb <= 0)
+        return fail("{trial-cpu-share} times a device cache's CPU share: it needs {device-cache-mb}");
+    if (cfg.trial.cpu_share_side == 1 && !(cfg.moe.device_cache_cpu_share > 0.0f))
+        return fail("{trial-cpu-share} 1 times a CPU share: it needs {device-cache-cpu-share} above 0");
     if (cfg.n_expert_used < 0) {
         return fail("{n-expert-used} cannot be negative (0 keeps the model's own)");
     }
     if (!cfg.moe.expert_host_buffer.empty() && (cfg.moe.device_cache_mb <= 0 || cfg.moe.enabled))
         return fail("{expert-host-buffer} is where a device cache uploads resident experts from: it needs "
                     "{device-cache-mb} and {moe-stream} off");
+    if (!(cfg.moe.device_cache_cpu_share >= 0.0f &&
+          cfg.moe.device_cache_cpu_share <= MoeStreamConfig::device_cache_cpu_share_max))
+        return fail("{device-cache-cpu-share} is a share of the device cache's misses: from 0 to 1");
+    if (cfg.moe.device_cache_cpu_share > 0.0f && cfg.moe.device_cache_mb <= 0)
+        return fail("{device-cache-cpu-share} splits the misses of a device expert cache: it needs {device-cache-mb}");
+    // The host half reads the experts' host copy as the layer runs; over streamed experts that copy is
+    // the streamer's slots, and no gate covers the pair yet (tests/moe_gates.cpp, G25d is resident).
+    if (cfg.moe.device_cache_cpu_share > 0.0f && cfg.moe.enabled)
+        return fail(
+            "{device-cache-cpu-share} computes misses from the experts' resident copy: it needs {moe-stream} off");
 
     // Sampling ranges are enforced only when sampling is actually on (temp > 0). With temp <= 0
     // the engine takes the argmax path and the other knobs are inert, so a caller that leaves them

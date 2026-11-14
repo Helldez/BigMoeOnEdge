@@ -61,4 +61,16 @@ HardwareProfile without_left_out(const HardwareProfile & hw, const BackendChoice
     return out;
 }
 
+std::vector<std::string> capacity_devices(const HardwareProfile & hw, const std::vector<std::string> & listed) {
+    const auto own = [&](const std::string & name) {
+        for (const ComputeDevice & d : hw.devices)
+            if (!d.is_cpu && d.name == name) return d.has_own_memory() && d.memory_total > 0;
+        return false;
+    };
+    std::vector<std::string> out;
+    for (const std::string & n : listed)
+        if (own(n)) out.push_back(n);
+    return out.empty() ? listed : out;
+}
+
 } // namespace bmoe

@@ -54,6 +54,26 @@ struct MeasuredKnobs {
     double device_cache_tps = 0.0;
     double no_device_cache_tps = 0.0;
 
+    // The device cache's CPU share, decided across loads as the tier is (planner.cpp,
+    // choose_device_cache_cpu_share): the decode rate with the share the plan priced, and with every
+    // miss uploaded, in tokens per second, 0 when that side was not measured. A price proposes the
+    // share and these decide it, because the price cannot see what a share costs on a machine whose
+    // cache never fills: on a 32 GB card a share priced at 0.89 took the decode from 114 to 68 tok/s
+    // with no miss computed on the host at all, and on a 12 GB card 0.77 took it from 18.5 to 21.2.
+    double cpu_share_tps = 0.0;
+    double no_cpu_share_tps = 0.0;
+    // The rate the share is held against at graph width `n_ubatch`: its own timing of every miss
+    // uploaded, else the width's timing of the cache at that width (the width is decided on the cache
+    // before the share is weighed), else the tier's. One answer for the plan that arms a share and for
+    // the front-end that asks whether a load may serve it, so neither takes a share as measured that
+    // the other does not. 0 where no side of the cache was timed.
+    double cpu_share_baseline_tps(int n_ubatch) const {
+        if (no_cpu_share_tps > 0.0) return no_cpu_share_tps;
+        const double at_width =
+            width_narrow > 0 ? (n_ubatch == width_narrow ? narrow_decode_tps : wide_decode_tps) : 0.0;
+        return at_width > 0.0 ? at_width : device_cache_tps;
+    }
+
     // The graph width, decided across loads where a wide graph's compute buffers take device memory
     // the experts would use (planner.cpp, choose_graph_width). A wide graph prefills a long prompt in
     // one pass; a narrow one leaves the experts more of the card. Which wins is a property of this
@@ -117,7 +137,56 @@ struct MeasuredKnobs {
     // hiccup). A rate measured for the side clears it. The width's two are for `width_narrow` only,
     // as its rates are.
     int device_cache_unviable = 0, no_device_cache_unviable = 0;
+    int cpu_share_unviable = 0, no_cpu_share_unviable = 0;
     int wide_unviable = 0, narrow_unviable = 0;
+
+    // What came of each prefill device a load armed for this model, on this machine and engine, one
+    // word per device: `verdict` 1 where the session kept it, -1 where its check on this model refused
+    // it, 0 where a load armed it and never said or could not open it - a front-end writes that before
+    // the session opens, so a load that never returns leaves it - with `unconfirmed` counting such loads
+    // in a row. A plan does not arm a device refused here, nor one that many loads in a row never kept
+    // (planner.cpp, survey_prefill): one may be a person closing the app mid-load or another program
+    // holding the card's memory for a moment, two in a row are the device. One word per device, so a
+    // second device's word never clears the first's: a machine with two that qualify would otherwise
+    // arm the refused one again every other load. Measured on a 12 GB phone: an NPU that gives one
+    // model wrong results (its top token in 25 of 31 positions) and, with that backend's host buffer
+    // on, never returns from that model's first layer. A new engine starts a new record, and tries the
+    // device again.
+    struct PrefillWord {
+        std::string device;
+        int verdict = 0;
+        int unconfirmed = 0;
+    };
+    static constexpr int prefill_unconfirmed_max = 2;
+    std::vector<PrefillWord> prefill;
+    const PrefillWord * prefill_word(const std::string & device) const {
+        for (const PrefillWord & w : prefill)
+            if (w.device == device) return &w;
+        return nullptr;
+    }
+    // Replaces `device`'s word, or adds one.
+    void set_prefill_word(const PrefillWord & w) {
+        for (PrefillWord & x : prefill)
+            if (x.device == w.device) {
+                x = w;
+                return;
+            }
+        prefill.push_back(w);
+    }
+    bool prefill_refused(const std::string & device) const {
+        const PrefillWord * w = device.empty() ? nullptr : prefill_word(device);
+        return w && (w->verdict < 0 || (w->verdict == 0 && w->unconfirmed >= prefill_unconfirmed_max));
+    }
+    // The record a front-end keeps before opening a session that arms `device`: this device's count of
+    // loads that armed it and never kept it, one more.
+    MeasuredKnobs armed_unconfirmed(const std::string & device) const {
+        MeasuredKnobs r;
+        r.hardware = hardware;
+        r.engine = engine;
+        const PrefillWord * w = prefill_word(device);
+        r.prefill.push_back({device, 0, (w && w->verdict == 0 ? w->unconfirmed : 0) + 1});
+        return r;
+    }
 
     bool empty() const { return verdicts() == 0; }
     // How many measurements this record carries: a front-end keeps a record again when it grows. The
@@ -125,10 +194,11 @@ struct MeasuredKnobs {
     // grows rather than as the first request left it; so do the requests of the mix.
     int verdicts() const {
         return (threads > 0) + (overlap >= 0) + (device_cache_tps > 0.0) + (no_device_cache_tps > 0.0) +
-               (wide_decode_tps > 0.0) + (narrow_decode_tps > 0.0) + (wide_prefill_tps > 0.0) +
-               (narrow_prefill_tps > 0.0) + usage_requests + (decode_compute_s > 0.0) + (decode_hit >= 0.0) +
-               mix_requests + (host_prefill_tps > 0.0) + (device_cache_unviable > 0) + (no_device_cache_unviable > 0) +
-               (wide_unviable > 0) + (narrow_unviable > 0);
+               (cpu_share_tps > 0.0) + (no_cpu_share_tps > 0.0) + (wide_decode_tps > 0.0) + (narrow_decode_tps > 0.0) +
+               (wide_prefill_tps > 0.0) + (narrow_prefill_tps > 0.0) + usage_requests + (decode_compute_s > 0.0) +
+               (decode_hit >= 0.0) + mix_requests + (host_prefill_tps > 0.0) + (device_cache_unviable > 0) +
+               (no_device_cache_unviable > 0) + (wide_unviable > 0) + (narrow_unviable > 0) + (cpu_share_unviable > 0) +
+               (no_cpu_share_unviable > 0) + (int) prefill.size();
     }
 };
 

@@ -62,6 +62,10 @@ struct RunOutputs {
     IRouteTraceSink * route_trace = nullptr;
     IComputeTraceSink * compute_trace = nullptr;
     IIoTraceSink * io_trace = nullptr;
+    // Invoked once the session has opened, before the generation, with what it has measured so far
+    // (the prefill device's word among it): a front-end keeps it then, so a run stopped mid-answer
+    // does not leave the record saying the load never opened. Nullable.
+    std::function<void(const MeasuredKnobs &)> on_open;
 };
 
 // Run one generation. Blocks until generation completes or errors.

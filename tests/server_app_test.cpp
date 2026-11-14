@@ -2,9 +2,10 @@
 // (server_seams.h): the server's own policy on a real listening socket, no model. Started without
 // --autoload, the way the desktop and the apps run it.
 //
-//   * a model named at launch is planned and loaded, and answers;
-//   * a plan that leaves a decision across loads pending is calibrated once the server is idle after
-//     an answer: /api/info reads ready with `calibrating`;
+//   * a model named at launch is planned, calibrated before it opens (as bmoe-cli --auto does), and
+//     loaded on the decided plan; a request sent meanwhile waits for it and is answered;
+//   * what a load's calibration leaves pending is calibrated once the server is idle after an answer:
+//     /api/info reads ready with `calibrating`;
 //   * a request during the calibration is answered, not refused: it stops the calibration, which
 //     applies what it decided and loads again;
 //   * one attempt per load: the next answer's end finds nothing armed;
@@ -109,6 +110,9 @@ struct Script {
     bool last_turn_armed = false;
     // What the next plan's record holds: the pending side's other side measured or not.
     bool other_measured = false;
+    // Calibrations that end at once with the side still pending, as one stopped before its verdict:
+    // what leaves the idle point something to calibrate.
+    int pending_next = 0;
 
     template <class F> bool wait(F pred, std::chrono::milliseconds limit = k_ceiling) {
         std::unique_lock<std::mutex> lk(m);
@@ -225,6 +229,16 @@ int main() {
                           const PlanStepFn & on_step) {
         {
             std::lock_guard<std::mutex> lk(sc.m);
+            if (sc.pending_next > 0) {
+                --sc.pending_next;
+                CalibrationOutcome c;
+                c.ran = true;
+                c.plan = p;
+                return c;
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lk(sc.m);
             ++sc.calibrations;
             sc.calibrating = true;
             sc.release = false;
@@ -307,22 +321,53 @@ int main() {
         check(sc.wait([&] { return sc.calibrations > before && sc.calibrating; }),
               what + ": idle after it, the pending side is calibrated");
     };
+    // A load whose own calibration leaves the side pending, for the idle point to calibrate.
+    const auto leave_pending = [&] {
+        std::lock_guard<std::mutex> lk(sc.m);
+        sc.pending_next = 1;
+    };
     const auto load = [&](const fs::path & m) {
+        leave_pending();
         const int before = opened();
         check(post(cli, "/api/session/load", {{"model", m.u8string()}}) == 202 &&
                   sc.wait([&] { return sc.opened > before; }) && wait_info(cli, ready),
               "a load of " + m.filename().u8string());
     };
 
-    // ── the model named at launch, an answer, the calibration, a request during it ──
-    check(wait_info(cli, ready) && opened() == 1, "the model named at launch is planned and loaded");
+    // ── the model named at launch: calibrated before it opens, a request meanwhile waits for it ──
+    check(sc.wait([&] { return sc.calibrating; }) && opened() == 0,
+          "the model named at launch is calibrated before it opens");
+    check(get_json(cli, "/api/info").value("state", "") != "ready", "nothing is served meanwhile");
+    {
+        httplib::Client waiting(cli.host(), cli.port());
+        waiting.set_read_timeout(k_ceiling);
+        std::future<int> answered = std::async(std::launch::async, [&] { return chat(waiting); });
+        {
+            std::lock_guard<std::mutex> lk(sc.m);
+            sc.release = true;
+            sc.changed();
+        }
+        check(answered.get() == 200 && opened() == 1 && config_value(cli, "threads") == "5",
+              "it opens on the decided plan, and the request sent meanwhile is answered on it");
+        int ends = 0;
+        {
+            std::lock_guard<std::mutex> lk(sc.m);
+            ends = sc.turn_ends;
+        }
+        check(chat(cli) == 200 && sc.wait([&] { return sc.turn_ends > ends; }) && !sc.last_turn_armed &&
+                  calibrations() == 1,
+              "one calibration: an answer's end finds nothing left to time");
+    }
+
+    // ── what a load's calibration left pending: calibrated at the idle point, a request during it ──
+    load(model);
     answer_then_calibrating("first load");
     const json during = get_json(cli, "/api/info");
     check(during.value("state", "") == "ready" && during.value("calibrating", false) && during["model"].is_object(),
           "during the calibration /api/info reads ready, calibrating, with its model");
     check(chat(cli) == 200, "a request during the calibration is answered, not refused");
     check(sc.wait([&] { return !sc.calibrating; }) && sc.stopped, "and it stopped the calibration");
-    check(wait_info(cli, ready) && opened() == 2, "the model is loaded again after it");
+    check(wait_info(cli, ready) && opened() == 3, "the model is loaded again after it");
     check(config_value(cli, "threads") == "5", "the decided plan is applied");
     {
         int ends = 0;
@@ -331,7 +376,7 @@ int main() {
             ends = sc.turn_ends;
         }
         check(chat(cli) == 200 && sc.wait([&] { return sc.turn_ends > ends; }) && !sc.last_turn_armed &&
-                  calibrations() == 1,
+                  calibrations() == 2,
               "one calibration per load: the next answer's end finds nothing armed");
     }
 
@@ -379,6 +424,7 @@ int main() {
     answer_then_calibrating("load");
     {
         const int before = opened();
+        leave_pending();
         check(post(cli, "/api/session/load", json::object()) == 202,
               "a load during the calibration is taken, not refused");
         check(sc.wait([&] { return !sc.calibrating && sc.opened > before; }) && wait_info(cli, ready),
@@ -407,6 +453,7 @@ int main() {
             sc.fail_next_opens = 1;
         }
         const int failed = sc.open_failures, before = opened();
+        leave_pending();
         check(post(cli, "/api/session/load", {{"model", model.u8string()}}) == 202, "a load whose side will fail");
         check(sc.wait([&] { return sc.open_failures > failed && sc.opened > before; }) && wait_info(cli, ready),
               "the pending side fails to open, and the other side is loaded instead");

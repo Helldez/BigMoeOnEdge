@@ -1,4 +1,4 @@
-#include "routing_store.h"
+#include "bmoe/model_records.h"
 
 #include "bmoe/log.h"
 #include "bmoe/probe.h"
@@ -9,9 +9,9 @@
 
 namespace fs = std::filesystem;
 
-namespace bmoe::server {
+namespace bmoe {
 
-std::string RoutingStore::path_for(const std::string & model_path, const char * ext) {
+std::string ModelRecords::path_for(const std::string & model_path, const char * ext) {
     if (dir_.empty() || model_path.empty()) return "";
     const fs::path p = fs::u8path(model_path);
     std::error_code ec;
@@ -35,7 +35,7 @@ std::string RoutingStore::path_for(const std::string & model_path, const char * 
     return (fs::u8path(dir_) / (fp + ext)).u8string();
 }
 
-bool RoutingStore::load(const std::string & model_path, RoutingTrace & out) {
+bool ModelRecords::load(const std::string & model_path, RoutingTrace & out) {
     const std::string path = path_for(model_path);
     if (path.empty()) return false;
     std::ifstream f(fs::u8path(path), std::ios::binary);
@@ -48,7 +48,7 @@ bool RoutingStore::load(const std::string & model_path, RoutingTrace & out) {
     return false;
 }
 
-void RoutingStore::keep(const std::string & model_path, const RoutingTrace & rec) {
+void ModelRecords::keep(const std::string & model_path, const RoutingTrace & rec) {
     if (rec.empty() || rec.decode_tokens == 0) return;
     const std::string path = path_for(model_path);
     if (path.empty()) return;
@@ -58,7 +58,7 @@ void RoutingStore::keep(const std::string & model_path, const RoutingTrace & rec
 }
 
 // Written beside and renamed, so a reader never sees half of one.
-void RoutingStore::write(const std::string & path, const std::string & text, const char * what) {
+void ModelRecords::write(const std::string & path, const std::string & text, const char * what) {
     const fs::path p = fs::u8path(path);
     std::error_code ec;
     fs::create_directories(p.parent_path(), ec);
@@ -76,7 +76,7 @@ void RoutingStore::write(const std::string & path, const std::string & text, con
     if (ec) log_printf(LogLevel::Warn, "cannot write the %s %s", what, path.c_str());
 }
 
-bool RoutingStore::load_knobs(const std::string & model_path, std::vector<MeasuredKnobs> & out) {
+bool ModelRecords::load_knobs(const std::string & model_path, std::vector<MeasuredKnobs> & out) {
     out.clear();
     const std::string path = path_for(model_path, ".knobs");
     if (path.empty()) return false;
@@ -90,14 +90,15 @@ bool RoutingStore::load_knobs(const std::string & model_path, std::vector<Measur
     return false;
 }
 
-void RoutingStore::keep_knobs(const std::string & model_path, const MeasuredKnobs & rec) {
+void ModelRecords::keep_knobs(const std::string & model_path, const MeasuredKnobs & rec) {
     if (rec.empty() || rec.hardware.empty() || rec.engine.empty()) return;
     const std::string path = path_for(model_path, ".knobs");
     if (path.empty()) return;
+    std::lock_guard<std::mutex> lk(knobs_m_);
     std::vector<MeasuredKnobs> all;
     load_knobs(model_path, all);
     keep_measured_knobs(all, rec);
     write(path, format_measured_knobs(all), "knob measurements");
 }
 
-} // namespace bmoe::server
+} // namespace bmoe

@@ -178,7 +178,7 @@ jobs:
           cmake --build build-tsan -j
       - name: Threaded tests, sanitized
         env:
-          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1:suppressions=${{ github.workspace }}/tests/sanitizers/tsan.supp
         run: cd build-tsan && ctest -j 2 --output-on-failure -R '^(engine_host|server_logic|agent|moe_gates_.*)$'
 
   ui:

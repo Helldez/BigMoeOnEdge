@@ -1,0 +1,9 @@
+# ThreadSanitizer findings in third_party/llama.cpp, which this project does not patch (AGENTS.md hard
+# rule 1). Each line names one upstream site and why it is here; a race whose stacks start in our own
+# code gets no entry - it is a bug to fix, not to suppress.
+
+# The loopback rpc-server gate G16 registers serves on a detached thread until the process exits (it
+# has no stop call). Since b12214 the client's RPC dispatcher is asynchronous, so that thread can still
+# be computing a graph when exit runs the CPU backend's static destructors: the function-local list of
+# extra buffer types is freed under it. Process teardown only; no result is read after it.
+race:ggml_backend_cpu_get_extra_buffer_types

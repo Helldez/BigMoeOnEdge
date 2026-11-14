@@ -9,3 +9,6 @@ leak:ggml_backend_rpc_start_server
 # hands out (ggml_backend_rpc_buffer_type), are process-lifetime objects upstream never frees.
 leak:ggml_backend_rpc_add_server
 leak:ggml_backend_rpc_buffer_type
+# Since b12214 the scheduler prefetches a split's inputs behind an event of the split's device; the
+# RPC device's event_free deletes its own state but not the ggml_backend_event event_new allocated.
+leak:rpc_dispatcher::event_new
