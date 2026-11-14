@@ -6,6 +6,7 @@
   import { decisionLabel, groupDecisions } from '../../lib/plan';
   import { settingHref } from '../../lib/route';
   import type { PlanDecision } from '../../lib/types';
+  import { t } from '../../lib/text';
 
   let { decisions }: { decisions: PlanDecision[] } = $props();
 
@@ -37,9 +38,9 @@
           <div class="reason">
             <p>{d.brief || d.reason}</p>
             {#if d.brief && d.brief !== d.reason}
-              <details class="why"><summary>Why</summary><p>{d.reason}</p></details>
+              <details class="why"><summary>{t('plan.why')}</summary><p>{d.reason}</p></details>
             {/if}
-            {#if d.label && d.group !== 'notes'}<a href={settingHref(d.knob)}>{d.label} in Settings</a>{/if}
+            {#if d.label && d.group !== 'notes'}<a href={settingHref(d.knob)}>{t('plan.inSettings', { label: d.label })}</a>{/if}
           </div>
         </details>
       {/each}

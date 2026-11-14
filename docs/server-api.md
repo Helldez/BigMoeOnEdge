@@ -1243,7 +1243,15 @@ With a model loaded that an auto load planned, `GET /api/plan` answers at once w
 `"from_last_load": true`, without measuring, as long as nothing was measured after that load; once
 the model has answered it also carries `measured`: what its last complete turn measured for decode
 (`s_per_token`, `cache_hit_pct` over that turn's decode alone, -1 without a cache, and `tokens`), to
-set beside `predicted`; a cancelled turn does not count. `GET /api/plan?cached=1` never measures:
+set beside `predicted`; a cancelled turn does not count. Beside it, `speed_check` says the
+comparison in words, so every UI shows the same thing without working it out:
+`{"badge": "+26%", "against": "against the 3.3 expected", "tone": "ok"}` while measured and expected
+are within 2x of each other, and a ratio once they are further apart either way
+(`{"badge": "84x", "against": "the 0.020 expected", ...}`, where a percentage would read +8314%).
+`tone` is `ok` when the turn met or beat the plan and `warn` when not, a code that only picks the
+badge's colour; the expected rate keeps two significant digits below 0.1 tok/s, so it never reads
+0.0. `speed_check` comes only with the plan the model runs (`from_last_load`) and only when both
+figures are there; the numbers stay in `predicted` and `measured`. `GET /api/plan?cached=1` never measures:
 it answers the last plan this server holds (the last measurement, else the last load's) with
 `"cached": true`, or `{"available": true, "none": true}` when it holds none, so a screen can open on
 it at no cost; with a model loaded and that plan measured for it by hand after the load, the plan

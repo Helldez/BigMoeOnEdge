@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **The Plan screen compares the measured speed with the expected one the same way on every app.**
+  The web UI and the Android app said it as a ratio once the two were more than 2x apart ("84x the
+  0.020 expected"), each with its own copy of the rule, while the iOS app always printed a
+  percentage, "+8314%" for the same run. The server now words the comparison once and sends it with
+  the plan (`speed_check`, [server-api.md](docs/server-api.md)); every app shows it as sent, and the
+  three local rules are gone.
+- **Every word the web UI shows comes from its dictionary.** The Plan and Models screens, the Hugging
+  Face search, the model folders, the plan's memory and progress, and the settings field wrote about
+  240 English strings straight into their markup. They are keys in `ui/src/lib/text/en.ts` now, and a
+  test reads every `.svelte` template and fails on a word written into it: a text node, a title,
+  label or placeholder, or a string shown from an expression.
+
 ## [0.43.0] - 2026-11-14
 
 ### Added

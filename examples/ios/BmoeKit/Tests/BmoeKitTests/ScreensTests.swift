@@ -355,7 +355,7 @@ final class ScreensTests: XCTestCase {
         let f = p.figures
         XCTAssertEqual(f.expectedTokS!, 2.5, accuracy: 1e-9)
         XCTAssertEqual(f.measuredTokS!, 3.2, accuracy: 1e-9)
-        XCTAssertEqual(f.deltaPct!, 28, accuracy: 1e-9)
+        XCTAssertNil(f.speedCheck) // the server sends none here, so there is no comparison to show
         XCTAssertEqual(f.creditedHitPct, 38)
         XCTAssertEqual(f.measuredHitPct, 41.5)
         XCTAssertEqual(f.heldBytes, 3000) // the host pool, wherever it sits

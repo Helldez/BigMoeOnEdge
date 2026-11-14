@@ -71,9 +71,9 @@
 
 <nav class="side" class:collapsed aria-label={t('nav.label')}>
   <div class="brand-row">
-    <a class="brand" href="#/chat" onclick={onNavigate} aria-label="BigMoeOnEdge">
+    <a class="brand" href="#/chat" onclick={onNavigate} aria-label={t('app.name')}>
       <img src="/logo.svg" alt="" width="24" height="24" />
-      {#if !collapsed}<span>BigMoeOnEdge</span>{/if}
+      {#if !collapsed}<span>{t('app.name')}</span>{/if}
     </a>
     {#if !drawer}
       <button

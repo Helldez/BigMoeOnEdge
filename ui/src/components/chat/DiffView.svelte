@@ -1,6 +1,8 @@
 <script lang="ts">
   // A unified diff, line by line: what an edit removed and added, with the sign kept in the text so
   // the change reads without its colour (docs/design.md, "Contrast").
+  import { t } from '../../lib/text';
+
   let { diff }: { diff: string } = $props();
   let lines = $derived(
     diff
@@ -13,7 +15,7 @@
   );
 </script>
 
-<pre class="diff" aria-label="Diff">{#each lines as l, i (i)}<span class="line {l.kind}">{l.text || ' '}</span>{/each}</pre>
+<pre class="diff" aria-label={t('diff.label')}>{#each lines as l, i (i)}<span class="line {l.kind}">{l.text || ' '}</span>{/each}</pre>
 
 <style>
   .diff {

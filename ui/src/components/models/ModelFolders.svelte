@@ -9,6 +9,7 @@
   import { api } from '../../lib/api';
   import { desktop, isDesktop } from '../../lib/desktop';
   import type { ModelsResponse } from '../../lib/types';
+  import { t } from '../../lib/text';
 
   let { data, onChanged }: { data: ModelsResponse; onChanged: (next: ModelsResponse) => void } = $props();
 
@@ -59,53 +60,53 @@
 
 <div class="folders">
   <p class="muted">
-    Downloads land in <code>{data.models_dir}</code>; a gguf you copy there (or into a folder directly inside it) is listed too.
+    {t('folders.land')} <code>{data.models_dir}</code>{t('folders.land.after')}
   </p>
   {#if folders && !folders.models_dir_at_launch}
     <div class="actions">
-      <button type="button" disabled={busy} onclick={() => choose('models')}>Change folder</button>
+      <button type="button" disabled={busy} onclick={() => choose('models')}>{t('folders.change')}</button>
       {#if folders.chosen_models_dir}
-        <button type="button" disabled={busy} onclick={() => save({ models_dir: '' })}>Use the default folder</button>
+        <button type="button" disabled={busy} onclick={() => save({ models_dir: '' })}>{t('folders.default')}</button>
       {/if}
     </div>
     <p class="muted hint">
-      Models already downloaded stay where they are: move them to the new folder, or add the old one below so they are still listed.
+      {t('folders.moveHint')}
     </p>
   {:else if folders}
-    <p class="muted hint">Set when the server was started (<code>--models-dir</code>).</p>
+    <p class="muted hint">{t('folders.atLaunch')} (<code>{t('folders.atLaunch.flag')}</code>).</p>
   {/if}
 
   {#if folders}
-    <h4>Other folders</h4>
-    <p class="muted hint">Models in these folders are listed and loaded in place; nothing is written there.</p>
+    <h4>{t('folders.other')}</h4>
+    <p class="muted hint">{t('folders.other.help')}</p>
     <ul class="list">
       {#each folders.launch_scan_dirs as d (d)}
-        <li><code>{d}</code> <span class="muted">set when the server was started</span></li>
+        <li><code>{d}</code> <span class="muted">{t('folders.scanAtLaunch')}</span></li>
       {/each}
       {#each folders.chosen_scan_dirs as d (d)}
         <li>
           <code>{d}</code>
-          <button type="button" class="link" disabled={busy} onclick={() => removeScan(d)} aria-label={`Stop listing ${d}`}>Remove</button>
+          <button type="button" class="link" disabled={busy} onclick={() => removeScan(d)} aria-label={t('folders.stopListing', { dir: d })}>{t('action.remove')}</button>
         </li>
       {/each}
     </ul>
-    <button type="button" disabled={busy} onclick={() => choose('scan')}>Add a folder</button>
+    <button type="button" disabled={busy} onclick={() => choose('scan')}>{t('folders.add')}</button>
 
     {#if typing}
       <form class="row" onsubmit={submitTyped}>
         <input
           bind:value={typed}
-          placeholder={typing === 'models' ? 'Full path of the new models folder' : 'Full path of a folder with models'}
-          aria-label={typing === 'models' ? 'Full path of the new models folder' : 'Full path of a folder with models'}
+          placeholder={typing === 'models' ? t('folders.path.models') : t('folders.path.scan')}
+          aria-label={typing === 'models' ? t('folders.path.models') : t('folders.path.scan')}
           autocomplete="off"
         />
-        <button type="submit" class="primary" disabled={!typed.trim() || busy}>{typing === 'models' ? 'Use this folder' : 'Add'}</button>
-        <button type="button" onclick={() => (typing = '')}>Cancel</button>
+        <button type="submit" class="primary" disabled={!typed.trim() || busy}>{typing === 'models' ? t('folders.use') : t('folders.addOne')}</button>
+        <button type="button" onclick={() => (typing = '')}>{t('action.cancel')}</button>
       </form>
     {/if}
   {:else if data.scan_dirs?.length}
     <p class="muted">
-      Also listed, and loaded in place: {#each data.scan_dirs as d, i (d)}{i ? ', ' : ''}<code>{d}</code>{/each}.
+      {t('folders.alsoListed')} {#each data.scan_dirs as d, i (d)}{i ? ', ' : ''}<code>{d}</code>{/each}.
     </p>
   {/if}
   {#if error}<p class="banner error" role="alert">{error}</p>{/if}

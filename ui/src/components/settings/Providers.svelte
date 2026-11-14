@@ -111,7 +111,7 @@
     </div>
     <div class="field-row">
       <label for="pv-url">{t('providers.url')}</label>
-      <input id="pv-url" type="url" class="mono" placeholder="https://api.example.com/v1" bind:value={baseUrl} autocomplete="off" spellcheck="false" />
+      <input id="pv-url" type="url" class="mono" placeholder={t('providers.url.example')} bind:value={baseUrl} autocomplete="off" spellcheck="false" />
       <p class="hint">{t('providers.url.help')}</p>
     </div>
     <div class="field-row">

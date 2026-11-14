@@ -164,7 +164,7 @@
     <fieldset disabled={!!editing && editing.source !== 'user'}>
       <div class="field-row">
         <label for="sk-name">{t('skills.name')}</label>
-        <input id="sk-name" type="text" class="mono" bind:value={name} autocomplete="off" spellcheck="false" placeholder="release-notes" />
+        <input id="sk-name" type="text" class="mono" bind:value={name} autocomplete="off" spellcheck="false" placeholder={t('skills.name.example')} />
         <p class="hint" class:err-text={name !== '' && !nameOk}>{t('skills.name.help')}</p>
       </div>
       <div class="field-row">

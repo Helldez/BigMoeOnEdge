@@ -242,6 +242,9 @@ export interface PlanAvailable {
   predicted?: { s_per_token?: number; cache_hit_pct?: number };
   /** What the loaded model's last turn measured; compared to `predicted` only under `from_last_load`. */
   measured?: PlanMeasured;
+  /** `measured` against `predicted` in words, sent only when the loaded model runs this plan:
+   *  `tone` (`ok`, `warn`) only picks the badge's colour. */
+  speed_check?: { badge: string; against: string; tone: 'ok' | 'warn' | (string & {}) };
   memory?: { pools: PlanMemoryPool[] };
   devices?: PlanDevice[];
   /** Why there is no device beyond the host: '' when there is one. */

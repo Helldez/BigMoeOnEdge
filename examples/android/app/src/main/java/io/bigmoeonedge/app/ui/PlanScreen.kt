@@ -304,15 +304,13 @@ private fun SpeedWell(f: PlanFigures, fromLastLoad: Boolean, modifier: Modifier)
         when {
             f.measuredTokS != null -> {
                 Figure(rateText(f.measuredTokS), "tok/s measured")
-                if (f.deltaPct != null && f.delta != null && f.predictedTokS != null) {
-                    if (fromLastLoad) {
-                        Text(
-                            "${f.delta.badge} ${f.delta.against}",
-                            fontSize = 12.sp, color = if (f.deltaPct >= 0) okColor() else warnColor(),
-                        )
-                    } else {
-                        Text("${rateText(f.predictedTokS)} tok/s expected under this plan", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
+                if (f.speedCheck != null) {
+                    Text(
+                        "${f.speedCheck.badge} ${f.speedCheck.against}",
+                        fontSize = 12.sp, color = if (f.speedCheck.ok) okColor() else warnColor(),
+                    )
+                } else if (f.predictedTokS != null) {
+                    Text("${rateText(f.predictedTokS)} tok/s expected under this plan", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             f.predictedTokS != null -> {
