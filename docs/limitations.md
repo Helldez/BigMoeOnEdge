@@ -25,12 +25,19 @@ serial path, and only a single ~25-line hook (with an explicit sunset) for the o
   so the same prompt and the same flags can decode differently run to run, and the byte-identity
   gates cannot cover their output — only their machinery. Both off by default in the CLI, and
   neither can be priced by a wide scoring batch: use `--ppl --ppl-step`.
-- **n=1 only.** The expert sparsity exists only for single-token decode, so streaming is
-  incompatible with speculative decoding or batching. Prefill streams the union of the
-  prompt's routed experts (still far below the full bank, but larger than one token's).
-- **CPU experts.** Streamed experts are computed on CPU; the rebind targets host memory.
-  GPU offload of the streamed experts is not supported (the dense parts can still use the
-  GPU). Decode is flash-I/O-bound anyway, so this is rarely the bottleneck.
+- **One sequence, and sparsity that is widest at one token.** The expert sparsity is a property of
+  single-token decode: a batch routes the union of its tokens' experts. Decode serves one sequence
+  at a time. Speculative decoding ([`--mtp`](mtp.md), [`--ngram`](ngram.md)) works over streamed
+  experts, but every verify batch widens a layer's read set toward the union of its positions'
+  experts, so on a flash-bound device a draft pays only where enough of it is accepted, and neither is
+  on by default. Prefill streams the union of the prompt's
+  routed experts (still far below the full bank, but larger than one token's).
+- **The streamer's buffers live in host memory.** The rebind targets host memory, so the streamer
+  itself reads and holds experts on the host. A device computes them through llama.cpp's
+  device-side expert cache ([backends.md](backends.md#experts-computed-on-a-device-from-a-cache-in-its-memory)),
+  which keeps the experts used most in its own memory and uploads a miss from the host copy, where
+  the plan measured the device faster; a device with no memory of its own (an integrated GPU on
+  shared memory) gains nothing from it, and there the experts are computed on the cores.
 - **Shared experts stay resident.** Architectures with an always-on shared expert (e.g.
   `gemma4`, `deepseek4`, `nemotron_h_moe`) stream the routed experts but keep the shared expert — and any dense layers —
   resident (in the page cache, or in the engine's own buffers under `--dense-weights anon`),
@@ -74,12 +81,14 @@ serial path, and only a single ~25-line hook (with an explicit sunset) for the o
   (20.7 GiB), a 4691 MiB cache and 8 threads, same protocol, arms A B B A: 6.66 and 6.97 tok/s
   against 6.54 and 6.46 buffered, with 23 077 MiB read and an 81.4 % cache hit in all four and
   the same generated text. Two runs an arm is a direction, not a figure.
-- **iOS has run in the simulator only.** `examples/ios` builds the app (the five screens over the
-  same server, linked in-process since iOS does not run command-line binaries) and the measuring
-  harness, and CI compiles both for the simulator. Neither has run on an iPhone or iPad: the
-  process's memory share, whether memory can be locked there, and whether a model larger than
-  memory can be mapped are unmeasured, so there is no supported configuration and no benchmark.
-  Devices are probed in-process there, with no second process to isolate a driver in (#235).
+- **iOS is experimental, built from source and run by one contributor.** `examples/ios` builds the
+  app (the five screens over the same server, linked in-process since iOS does not run command-line
+  binaries) and the measuring harness; CI compiles both for the simulator only. A contributor has
+  run both on one 12 GB iPhone, signed with a free Personal Team ([benchmarks.md](benchmarks.md#iphone),
+  #235): there is no App Store or TestFlight build, and a few chat turns are not a pressure-stability
+  guarantee. The app's memory share is iOS's per-app limit, well below the device's RAM, so the
+  expert cache is smaller and more of each token is read from flash than on an Android phone with
+  the same memory. Devices are probed in-process there, with no second process to isolate a driver in.
 - **Windows throughput.** The cache's reserve-then-commit-per-slice path is heavier on
   Windows than the POSIX lazy-commit path. The gates run on Windows; the throughput
   targets are stated for Android/Linux.
