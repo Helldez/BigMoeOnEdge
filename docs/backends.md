@@ -211,8 +211,6 @@ and no entry is tied to a platform: wherever the backend runs, it reads the same
 | Backend | Variable | Value | Why |
 |---|---|---|---|
 | OpenCL | `GGML_OPENCL_KERNEL_CACHE_DIR` | `<data>/backend-cache` | compiled kernels kept between runs, in a folder an app can write (the default is a temporary folder) |
-| Hexagon | `GGML_HEXAGON_OPPOLL` | `1` | polling halves the cost of each crossing to the DSP ([npu-prefill.md](npu-prefill.md)) |
-| Hexagon | `GGML_HEXAGON_HOSTBUF` | `1` | the host buffer type the prefill device moves the KV cache into |
 | CUDA, ROCm | `GGML_CUDA_REGISTER_HOST` | `1` | enables the backend's generic entry point for pinning memory a process allocated (`ggml_backend_register_host_buffer`), which the engine asks for by name for the experts' host copy behind a device cache ([measured-planning.md](measured-planning.md)): on a rented 3090, 117 GB of GLM-4.7's experts took 97 s to allocate as the backend's own pinned memory, where touching ordinary memory on 16 threads and pinning it took 6 s every 32 GB |
 
 ROCm is ggml's CUDA backend built with HIP, so it reads the same variable; the CUDA measurement is the
@@ -231,8 +229,9 @@ hardware it is for before it gets an entry:
   its host buffer is not measured.
 - Metal: how long a model's buffers stay resident after a load ends (`GGML_METAL_RESIDENCY_KEEP_ALIVE_S`,
   `GGML_METAL_NO_RESIDENCY`), which back-to-back loads on a Mac depend on.
-- Hexagon on Windows on Snapdragon: the two entries above were measured on a phone; that build reads
-  them too and its own run is owed.
+- Hexagon: none. Polling (`GGML_HEXAGON_OPPOLL`) logged over a million error rows a load on a phone
+  for under 1 s of a 16 s prefill, and the host buffer (`GGML_HEXAGON_HOSTBUF`, documented upstream as a
+  debugging aid) cost 7-13% of the decode and hung Gemma 4's load on the NPU (#512, #544).
 - CPU: KleidiAI's SME kernels on Arm (`GGML_KLEIDIAI_SME`).
 
 The rest of the backends' variables (around three hundred in the pinned llama.cpp, most of them

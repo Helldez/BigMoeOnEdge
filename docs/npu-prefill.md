@@ -281,8 +281,7 @@ Per-decision numbers: `bench-data/2026-09-29-prefill-routed/`.
   loader, the vendor library binds its own `cl*` calls to the loader's exports and the two
   deadlock at the first platform query, measured on a Snapdragon phone.) The app also sets the
   two Hexagon variables this section describes, `GGML_HEXAGON_HOSTBUF=1` and
-  `GGML_HEXAGON_OPPOLL=1`, from the front-ends' table of backend defaults (`frontend/backend_env.h`,
-  [backends.md](backends.md)); only that backend reads them.
+  `GGML_HEXAGON_OPPOLL=1`; only that backend reads them.
 - `--prefill-loaders N` (default 8) sets the threads that fill the slots, apart from `--io-threads`,
   which stays the decode's read lanes. Each loader reads and repacks, and a K-quant repack is
   CPU-heavy: on a Q4_K_M, 4 loaders left the NPU waiting 10.3 s of a 15.1 s prefill, 8 left it 5.0 of
