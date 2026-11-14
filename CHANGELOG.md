@@ -150,6 +150,13 @@ Semantic Versioning.
   for the server to serve.
 
 ### Documentation
+- **The same-card comparison with Strata, on a 12 GB card.** On a rented RTX 3060 class card, the
+  0.42.0 release with `--auto` decodes Qwen3.6-35B-A3B UD-Q4_K_XL at 40-44 tok/s and 57-65 with
+  `--mtp`, against Strata's 28-36 on the same box, file and client; Strata reaches the first token of
+  a short prompt sooner (0.33-0.56 s against 0.6-0.9). Strata's own figure for this card is 59, on a
+  20-thread machine: the box's 15-core Zen 2 quota holds back its CPU-side experts, which both pages
+  say. In [comparison.md](docs/comparison.md#same-machine-same-file), [benchmarks.md](docs/benchmarks.md)
+  and the bench-data.
 - **The same-card comparison with Lucebox, measured again on 0.41.2.** On a rented 24 GB card
   (RTX 3090 class), Qwen3.6-35B-A3B decodes at 154 tok/s against Lucebox's 123, Laguna XS 2.1 33B
   at 93 against 84-86, and a 28.6k-token prompt reaches its first token 4-8 times sooner. Lucebox

@@ -15,6 +15,8 @@
 
 Run Mixture-of-Experts models larger than your device's memory. The experts are read from flash as
 the model needs them. Android, iOS, macOS, Windows and Linux, built on llama.cpp.
+Unified Streaming Framework - from phones, laptops, consumer and data-center GPUs - Supports any hardware, any OS, any model, any quant.
+Automated resource scheduling tailor made to optimize tok/s.
 
 <table align="center">
 <tr>
@@ -33,15 +35,12 @@ the model needs them. Android, iOS, macOS, Windows and Linux, built on llama.cpp
 </tr>
 </table>
 
-Qwen3.6-35B-A3B (22 GB), larger than each device's memory; any MoE model in GGUF runs, at any
-quantization. Decode speeds are the [Performance](#performance) table's. On the Android phone and the
-laptop it writes an answer in real time; on the iPhone, the app with the model loaded.
+Qwen3.6-35B-A3B, larger than each device's memory; any MoE model in GGUF runs, at any
+quantization. Decode speeds are the [Performance](#performance) table's.
 
-**The agent on a 2021 laptop, no GPU** (1:33): the viral voxel-pagoda prompt to the built-in agent on a ThinkPad with 15 GB of RAM, CPU only, and Qwen3.6-35B-A3B Q4_K_M (20.8 GB). 988 lines at 2.3 tok/s, then the page in the app's preview; the speed-ups are marked on screen.
+**The agent on a 2021 laptop, no GPU**: the viral voxel-pagoda prompt to the built-in agent on a ThinkPad with 16 GB of RAM, CPU only, and Qwen3.6-35B-A3B Q4_K_M. 988 lines at 2.3 tok/s, then the page in the app's preview; the speed-ups are marked on screen.
 
-<p align="center"><img src="https://github.com/user-attachments/assets/4941d8db-a673-42f0-895f-f31b1b308719" width="640" alt="The built-in agent writing a voxel pagoda garden as one HTML file on a 2021 ThinkPad with 15 GB of RAM and no dedicated GPU, then the page in the app's preview, turning."></p>
-
-https://github.com/user-attachments/assets/a93fc61c-99ff-4ca6-894a-1c29cd27ef53
+<p align="center"><img src="https://github.com/user-attachments/assets/1da744d4-dd98-4d14-a76e-50bdf0d9aec4" width="640" alt="The built-in agent writing a voxel pagoda garden as one HTML file on a 2021 ThinkPad with 15 GB of RAM and no dedicated GPU, then the page in the app's preview, turning."></p>
 
 ## What it does
 
