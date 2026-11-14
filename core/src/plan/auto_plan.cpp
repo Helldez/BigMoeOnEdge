@@ -131,7 +131,17 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     AutoPlan r;
     const char * path = cfg.model_path.c_str();
     int step = 0;
+    // Each stage says what it took as the next starts, so a plan's time before a load can be told apart.
+    auto t_step = std::chrono::steady_clock::now();
+    const auto took = [&] {
+        const auto now = std::chrono::steady_clock::now();
+        if (step > 0 && step <= k_plan_step_count)
+            log_printf(LogLevel::Info, "plan: the %s stage took %.1f s", k_plan_steps[step - 1],
+                       std::chrono::duration<double>(now - t_step).count());
+        t_step = now;
+    };
     const auto starting = [&] {
+        took();
         if (opt.on_step && step < k_plan_step_count) opt.on_step(k_plan_steps[step], step, k_plan_step_count);
         ++step;
     };
@@ -208,6 +218,7 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     detail::log_memory_snapshot("auto-probe-end");
     starting(); // rules
     r.plan = plan_on_facts(r, cfg, req, r.model);
+    took();
     if (opt.calibrate) calibrate_plan(r, cfg, req, opt.calibrate, opt.on_step);
     return r;
 }

@@ -7,16 +7,30 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Changed
-- **A load-time calibration spends less of its time outside the candidates.** Where the system can
-  keep the model's files cached (at most half of the memory it can still give), every candidate now
-  starts with them cached instead of reading the whole model from the drive again: the first reads it
-  through once. Otherwise the cache is still dropped and the dense part read in, as before. The
+- **A load-time calibration takes a third less time.** Measured on a rented 3090 with 1 TB of memory and
+  GLM-4.7 (126 GB), from a cold start to the first answer: 514 s before, 344 s now, the served decode
+  unchanged (11.3-11.7 tok/s). Where the system can keep the model's files cached (at most half of the
+  memory it can still give), every candidate starts with them cached instead of reading the whole
+  model from the drive again; otherwise the cache is dropped and the dense part read in, as before. The
   capacity fitter's re-fits at a narrower graph are asked once per width and kept with the plan's
-  facts, instead of being run again before every candidate: on a 24 GB card with GLM-4.7 each re-fit
-  reloaded the model's metadata for a dozen dry runs, and read the card's free memory after a
-  candidate had used it. A server's plan for the other side of a decision, made with the model
-  loaded, reads the kept fit too. Each candidate logs what its time went to (the file cache, the load,
-  the timing) and each plan between candidates its own.
+  facts, instead of again before every candidate (each reloaded the model's metadata for a dozen dry
+  runs, and read the card's free memory after a candidate had used it); a server's plan made with the
+  model loaded reads the kept fit too. Each plan stage, each candidate (the file cache, the load, the
+  timing) and each plan between candidates now logs its seconds.
+- **The experts' host copy behind a device cache is pinned in place.** A device cache's candidate spent
+  97 of its 114 s opening in the CUDA backend allocating 117 GB of pinned memory a page at a time. The
+  engine now copies the experts into memory it allocates, on every core the plan computes on, and asks
+  the device's backend to pin it through ggml's generic entry point
+  (`ggml_backend_register_host_buffer`); a backend without it, or one that declines, allocates its own
+  as before. Pinning ordinary memory measured 6 s every 32 GB against 27 s allocating it pinned; the
+  calibration with it is not measured yet.
+- **Every front-end starts the compute backends alike.** What a backend reads from its environment is
+  one table in `frontend/backend_env` (`docs/backends.md`), which bmoe-cli applies as bmoe-server does:
+  the CLI used to start the backends without the OpenCL kernel cache folder and the Hexagon entries.
+  It adds `GGML_CUDA_REGISTER_HOST=1` for the pinning above (CUDA and ROCm), and lists per backend the
+  variables that touch this engine's paths and are still to be measured. The Hexagon entries stay
+  Android's, where they were measured. The front-ends' shared library is `bmoe_frontend` (it was
+  `bmoe_user_dirs`).
 - **One `--auto` on every front-end.** The CLI, the server and the apps now plan, calibrate and keep
   what they measured the same way. Before, `bmoe-cli --auto` calibrated only with `--routing-dir` and
   kept nothing without it, and the server served the plan's own side at once and calibrated a minute
