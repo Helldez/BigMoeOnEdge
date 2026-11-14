@@ -85,11 +85,25 @@ than twice this engine's. This engine's draft-model support (#534) is not releas
 run on another 3090 box with the 0.41.0 release candidate is in
 [bench-data/2026-11-10-same-card-lucebox](bench-data/2026-11-10-same-card-lucebox/README.md).
 
+On a 12 GB card (RTX 3060 class, a 15-core quota of a Zen 2 server CPU, 47 GB of RAM), with Strata,
+the same file (Qwen3.6-35B-A3B UD-Q4_K_XL with its MTP head), client and prompts, 256 tokens
+([bench-data](bench-data/2026-11-13-same-card-strata-12gb/README.md)). BigMoeOnEdge is the 0.42.0
+release with `--auto`; Strata 0.2.13.1 through its own launcher, its default and lossless.
+
+| Model, card | BigMoeOnEdge | Strata |
+|---|---|---|
+| Qwen3.6-35B-A3B UD-Q4_K_XL, 12 GB card | **40-44**; **57-65** with `--mtp`; first token 0.6-0.9 s | 28-36 (default), 34-35 (lossless); first token **0.33-0.56 s** |
+
+Strata publishes 58.5-59.7 tok/s for this card and file, on a 20-thread machine; it computes most of
+these experts on the CPU, which this box's 15-core Zen 2 quota and DDR4 hold back.
+
 ## Reading the tables
 
-- Where the model fits between the GPU and RAM, the engines written for a few GPUs lead: Strata and
-  Basalt decode two to four times faster than BigMoeOnEdge on a 4090 or 5090, and prefill long prompts
-  several times faster. They compute the experts the GPU does not hold on the CPU, in parallel with
+- Where the model fits between the GPU and RAM, the engines written for a few GPUs lead on
+  Qwen3.8-Flash-Next: Strata and Basalt decode two to four times faster than BigMoeOnEdge on a 4090 or
+  5090, and prefill long prompts several times faster. On Qwen3.6-35B-A3B on a 12 GB card the order is
+  the other way on one box: 40-44 tok/s (57-65 with `--mtp`) against Strata's 28-36, measured on a
+  server CPU that holds back Strata's CPU-side experts. They compute the experts the GPU does not hold on the CPU, in parallel with
   the GPU; this engine uploads them to the GPU's cache instead. Closing that gap is on the
   [roadmap](roadmap.md).
 - Where the model has to stream from flash, every engine is in the single digits and the drive sets

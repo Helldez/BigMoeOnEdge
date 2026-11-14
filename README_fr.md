@@ -17,6 +17,8 @@ Ceci est une traduction ; le README en anglais fait référence et peut être pl
 
 Exécutez des modèles Mixture-of-Experts plus grands que la mémoire de votre appareil. Les experts sont lus
 depuis la flash quand le modèle en a besoin. Android, iOS, macOS, Windows et Linux, construit sur llama.cpp.
+Framework de streaming unifié : des téléphones et portables aux GPU grand public et de centre de données. Prend en charge tout matériel, tout système d'exploitation, tout modèle, toute quantification.
+Planification automatique des ressources, sur mesure pour optimiser les tok/s.
 
 <table align="center">
 <tr>
@@ -35,16 +37,13 @@ depuis la flash quand le modèle en a besoin. Android, iOS, macOS, Windows et Li
 </tr>
 </table>
 
-Qwen3.6-35B-A3B (22 GB), plus grand que la mémoire de chaque appareil ; tout modèle MoE en GGUF
+Qwen3.6-35B-A3B, plus grand que la mémoire de chaque appareil ; tout modèle MoE en GGUF
 fonctionne, quelle que soit sa quantification. Les vitesses de décodage sont celles du tableau
-[Performances](#performances). Sur le téléphone Android et le portable, il écrit une réponse en temps
-réel ; sur l'iPhone, l'application avec le modèle chargé.
+[Performances](#performances).
 
-**L'agent sur un portable de 2021, sans GPU** (1:33) : le prompt viral de la pagode en voxels donné à l'agent intégré, sur un ThinkPad avec 15 GB de RAM, CPU seulement, et Qwen3.6-35B-A3B Q4_K_M (20,8 GB). 988 lignes à 2,3 tok/s, puis la page dans l'aperçu de l'app ; les passages accélérés sont indiqués à l'écran.
+**L'agent sur un portable de 2021, sans GPU** : le prompt viral de la pagode en voxels donné à l'agent intégré, sur un ThinkPad avec 16 GB de RAM, CPU seulement, et Qwen3.6-35B-A3B Q4_K_M. 988 lignes à 2,3 tok/s, puis la page dans l'aperçu de l'app ; les passages accélérés sont indiqués à l'écran.
 
-<p align="center"><img src="https://github.com/user-attachments/assets/4941d8db-a673-42f0-895f-f31b1b308719" width="640" alt="L'agent intégré écrit un jardin avec une pagode en voxels dans un seul fichier HTML sur un ThinkPad de 2021 avec 15 GB de RAM et sans GPU dédié, puis la page tourne dans l'aperçu de l'app."></p>
-
-https://github.com/user-attachments/assets/a93fc61c-99ff-4ca6-894a-1c29cd27ef53
+<p align="center"><img src="https://github.com/user-attachments/assets/1da744d4-dd98-4d14-a76e-50bdf0d9aec4" width="640" alt="L'agent intégré écrit un jardin avec une pagode en voxels dans un seul fichier HTML sur un ThinkPad de 2021 avec 15 GB de RAM et sans GPU dédié, puis la page tourne dans l'aperçu de l'app."></p>
 
 ## Ce qu'il fait
 
