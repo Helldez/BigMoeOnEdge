@@ -195,6 +195,13 @@ Semantic Versioning.
   the reports that came in elsewhere, the case above and a dense model left on the CPU (#585) among
   them.
 
+### Fixed
+- **A dense model runs on the graphics card again.** A model with no experts streams nothing, and the
+  plan stopped as soon as it saw that, before it applied the capacity fitter's placement. Every
+  layer then stayed on the CPU: a 4B model that fits a 6 GB laptop card decoded at 12 tok/s where
+  llama.cpp gives 65 on the card. The fitter's placement is now applied to a dense model too, as
+  llama.cpp's `--fit` would place it; nothing else in its plan changes.
+
 ## [0.42.0] - 2026-11-12
 
 ### Added
