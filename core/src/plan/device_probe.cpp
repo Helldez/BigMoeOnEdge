@@ -222,6 +222,97 @@ double measure_upload(ggml_backend_dev_t dev, uint64_t granule, bool from_host_b
     return gibs;
 }
 
+// ── what does a host half cost a layer of the device's graph? ─────────────────────────────────
+//
+// A device expert cache with a CPU share gives every MoE layer a host half: the layer's graph is cut,
+// the host's thread pool wakes to compute its part, and the device's graph resumes. Measured as a
+// decode meets it: a chain of `k_hop_layers` layers, each a device op then a host op at the decode's
+// thread count, run through ggml_backend_sched, against the same chain all on the device. The ops
+// are one token's hidden state scaled, trivial on purpose: what is priced is the hop, not arithmetic.
+constexpr int k_hop_layers = 16;
+
+double measure_host_hop(ggml_backend_dev_t dev, int64_t n_embd, int n_threads) {
+    if (!dev || n_embd <= 0) return 0.0;
+    ggml_backend_t gpu = nullptr, cpu = nullptr;
+    try {
+        gpu = ggml_backend_dev_init(dev, nullptr);
+        cpu = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+    } catch (const std::exception &) {
+    }
+    double hop = 0.0;
+    if (gpu && cpu) {
+        if (n_threads > 0) {
+            ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(ggml_backend_get_device(cpu));
+            auto set_threads = reg ? (ggml_backend_set_n_threads_t) ggml_backend_reg_get_proc_address(
+                                         reg, "ggml_backend_set_n_threads")
+                                   : nullptr;
+            if (set_threads) set_threads(cpu, n_threads);
+        }
+        // One timed chain: `mixed` puts every second op on the host.
+        const auto time_chain = [&](bool mixed) -> double {
+            ggml_backend_t backends[2] = {gpu, cpu};
+            ggml_backend_sched_t sched =
+                ggml_backend_sched_new(backends, nullptr, 2, 4 * k_hop_layers + 16, false, false);
+            ggml_init_params ip{};
+            ip.mem_size = ggml_tensor_overhead() * (4 * k_hop_layers + 16) + ggml_graph_overhead();
+            ip.no_alloc = true;
+            ggml_context * ctx = sched ? ggml_init(ip) : nullptr;
+            double per = 0.0;
+            if (ctx) {
+                ggml_tensor * x = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_embd);
+                ggml_set_input(x);
+                ggml_tensor * cur = x;
+                std::vector<ggml_tensor *> dev_ops, host_ops;
+                for (int i = 0; i < k_hop_layers; ++i) {
+                    cur = ggml_scale(ctx, cur, 1.0f);
+                    dev_ops.push_back(cur);
+                    cur = ggml_scale(ctx, cur, 1.0f);
+                    (mixed ? host_ops : dev_ops).push_back(cur);
+                }
+                cur = ggml_scale(ctx, cur, 1.0f);
+                dev_ops.push_back(cur);
+                ggml_set_output(cur);
+                ggml_cgraph * gf = ggml_new_graph_custom(ctx, 4 * k_hop_layers + 16, false);
+                ggml_build_forward_expand(gf, cur);
+                bool ok = ggml_backend_supports_op(gpu, dev_ops.front());
+                for (ggml_tensor * t : dev_ops)
+                    ggml_backend_sched_set_tensor_backend(sched, t, gpu);
+                for (ggml_tensor * t : host_ops)
+                    ggml_backend_sched_set_tensor_backend(sched, t, cpu);
+                ok = ok && ggml_backend_sched_alloc_graph(sched, gf);
+                if (ok) {
+                    std::vector<float> in((size_t) n_embd, 0.5f);
+                    const auto run = [&] {
+                        ggml_backend_tensor_set(x, in.data(), 0, ggml_nbytes(x));
+                        const bool r = ggml_backend_sched_graph_compute(sched, gf) == GGML_STATUS_SUCCESS;
+                        ggml_backend_sched_synchronize(sched);
+                        return r;
+                    };
+                    if (run()) { // the first pays for setting up the path, untimed
+                        const auto t0 = clock_t_::now();
+                        int reps = 0;
+                        while (reps < k_reps_max && run()) {
+                            ++reps;
+                            if (seconds_since(t0) >= k_sample_seconds) break;
+                        }
+                        const double secs = seconds_since(t0);
+                        if (reps > 0 && secs > 0.0) per = secs / reps;
+                    }
+                }
+                ggml_free(ctx);
+            }
+            if (sched) ggml_backend_sched_free(sched);
+            return per;
+        };
+        const double all_device = time_chain(false);
+        const double with_host = time_chain(true);
+        if (all_device > 0.0 && with_host > all_device) hop = (with_host - all_device) / k_hop_layers;
+    }
+    if (cpu) ggml_backend_free(cpu);
+    if (gpu) ggml_backend_free(gpu);
+    return hop;
+}
+
 } // namespace
 
 void probe_device_costs(HardwareProfile & hw, const ModelProfile & model) {
@@ -249,6 +340,9 @@ void probe_device_costs(HardwareProfile & hw, const ModelProfile & model) {
         if (d.has_own_memory() && expert > 0) {
             d.upload_gibs = measure_upload(dev, expert, false);
             d.upload_host_buffer_gibs = measure_upload(dev, expert, true);
+            // At the thread count the host's own matmul was fastest at, the one a decode starts from.
+            const int threads = (int) (hw.best_threads > 0 ? hw.best_threads : hw.n_cores);
+            d.host_hop_seconds = measure_host_hop(dev, (int64_t) model.n_embd, threads);
         }
     }
 }

@@ -108,8 +108,9 @@ cache size moves, and the cache is lossless.
   prompt's last 256), from the ids the hook gathers for the cache anyway: no extra graph nodes, unlike
   `--route-trace`. It is one line per cache request, so a chunked prompt replays as the engine served
   it rather than as one batch.
-- The front-ends keep it: `bmoe-cli --routing-dir DIR`, `bmoe-server` under `routing/` in its data
-  folder, one file per model named by a content fingerprint of the file (`model_fingerprint`). The
+- The front-ends keep it the same way (`ModelRecords`, `bmoe/model_records.h`): in the per-user data
+  folder under `routing/` (`frontend::records_dir`), which `bmoe-cli --routing-dir DIR` can move or
+  `""` turn off, one file per model named by a content fingerprint of the file (`model_fingerprint`). The
   next plan of the file hands it back (`AutoPlanOptions::routing`) and `attach_routing` turns it into
   `ModelProfile::hit_curve`: `hit_share(bytes)`, monotone, over the whole expert set, absent unless
   the record is this model at this top-k with enough decoded tokens.
@@ -199,9 +200,9 @@ output with the gates (`bmoe_moe_gates`), since every knob here is lossless.
   `Session::measured_knobs()` as each knob's verdict comes in. The front-ends keep it beside the
   model's routing record, one `.knobs` file per model fingerprint with a line per machine
   (`hardware_fingerprint`: cores, core classes, total memory, each device's name and own memory) and
-  engine version. `bmoe-cli --routing-dir DIR` arms the trial on its `--auto` plans and writes the
-  verdict; `bmoe-server` always does, under `routing/` in its data folder. `core/` gained no file
-  access and no environment read.
+  engine version. Every front-end arms the trial on its `--auto` plans and writes the verdict
+  (`ModelRecords`, in the folder the front-end names: the per-user data folder by default). `core/`
+  reads no environment.
 - **Read back.** `probe_and_plan` matches the record to this machine and engine
   (`AutoPlanOptions::knobs` into `ModelProfile::knobs`); the plan applies it, says
   `measured on this model` with the gain and the margin, and arms no trial. A plan with the feature
@@ -517,11 +518,16 @@ served (`bmoe/calibrate.h`):
   in the record with the mapping a session's own timing uses (`record_side_rate`, one decision per
   load: the tier where the plan names one, else the width), and asks the planner again
   (`replan`: `probe_and_plan`'s planning half on the same facts, the fitter's re-fits at a narrower
-  width included, no probe). Every rule above holds as it is: the fitter's placement is still timed
+  width included, no probe). A re-fit is asked of the fitter once per width and kept with the facts
+  (`AutoPlan::placement_at_width`): it answers from the same file, devices and context whatever the
+  record says, and asked again between candidates it reloaded GLM-4.7's metadata for a dozen dry runs
+  each time, on a card whose free memory was no longer the one the plan was made on. Every rule above holds as it is: the fitter's placement is still timed
   only where its ceiling could win, and a side wins only past `min_backend_win`. The tier is decided
-  first, the width then on the winner, as the planner already orders them; a configuration already
-  timed is not opened again (the cache side at the plan's width answers the width's wide side too).
-  At most four candidates, every side of both decisions once; a plan that asks past that, or asks
+  first, the width then on the winner, and on a device cache the share of its misses computed on the
+  host last ([hardware-planning.md](hardware-planning.md#who-computes-the-device-caches-misses)), as
+  the planner orders them; a configuration already timed is not opened again (the cache side at the
+  plan's width answers the width's wide side too, and the cache's rate with every miss uploaded is
+  the tier's own). At most six candidates, every side of the three decisions once; a plan that asks past that, or asks
   for something a short decode cannot measure (the prefill of long prompts a machine has been
   sending), is served as it stands and its load times the rest as before.
 - **A candidate** is a `Session` of its own (`run_calibration_candidate`), opened, given one fixed
@@ -529,16 +535,24 @@ served (`bmoe/calibrate.h`):
   one, every token through the same hook, streamer and caches. The first candidate samples with a
   fixed seed (greedy prose falls into loops that replay a few experts) and returns its token ids; a
   later one replays them teacher-forced, so both sides route the same tokens and differ only in where
-  the experts run. Speculation is off: a draft's acceptance would time the drafter. Before each
-  candidate opens, the system's cache of the model's files is evened out, so the later side does not
-  load and decode from memory what the first read from the drive: the cache of every shard, the
-  projector and an MTP head is handed back where the system takes the advice
-  (`pio::drop_file_cache`), and the dense part, which every token reads whatever the placement, is
-  then read in on every system alike. Each candidate so opens with exactly the dense part cached,
-  where a drop is a no-op (Darwin, Windows) as where it is not. What stays uneven there is the experts
-  a placement loads through the mapping, which the later side may find partly cached; they are not
-  read in, since a model larger than the memory is what this engine exists for. A stop is honoured
-  before each open and as soon as a load returns, as well as at every decoded token.
+  the experts run. Speculation is off: a draft's acceptance would time the drafter. Each candidate logs
+  what its time went to (evening the file cache, opening, timing), and each plan between candidates
+  its own, so a calibration's minutes can be told apart. Every candidate
+  starts from the same system cache of the model's files, so the later side does not load and decode
+  from memory what the first read from the drive. Where the system can keep the whole model cached
+  (its files, the projector and an MTP head take at most half of the memory the system can still
+  give, and a container still lets the process take), the first candidate reads them through once
+  and the ones after find them as it left them: every side starts with all of it cached, as the
+  served load then does. The first candidate decides which of the two holds, for all of them: asked
+  again, a later one would count the model pages the first one's load left as memory the system can
+  give, and start warm where the first started cold. Otherwise the cache of every shard, the projector and an MTP head is handed
+  back where the system takes the advice (`pio::drop_file_cache`), and the dense part, which every
+  token reads whatever the placement, is then read in on every system alike. Each candidate so opens
+  with exactly the dense part cached, where a drop is a no-op (Darwin, Windows) as where it is not.
+  What stays uneven there is the experts a placement loads through the mapping, which the later side
+  may find partly cached; they are not read in, since a model larger than the memory is what this
+  engine exists for. A stop is honoured before each open and as soon as a load returns, as well as at
+  every decoded token.
 - **Bounded by measurement.** The windows are the knob trial's (`KnobTrialPolicy`), and the turn ends
   once the rate is known. A cache whose hits the session sees settles as the trial does; a device
   expert cache, filled inside llama.cpp, settles once two windows in a row agree within the margin
@@ -568,7 +582,10 @@ served (`bmoe/calibrate.h`):
   says the first failure was the side's: then, with calibration on, it counts against the side; where
   both fail, the first open's reason is the error and nothing is counted. With calibration off nothing
   would try the side again, so nothing is counted and those loads stay as they were. An "other side"
-  that leaves a side of the other decision pending is no side known to open, and is not offered. A
+  that leaves a side of the other decision pending is no side known to open, and is not offered,
+  unless that side is the graph at the plan's own width (`servable`): every load of the plan opened
+  with that graph, so the load serves it and times the width as it does. Counting it as unproven made a
+  32 GB card's second load serve the fitter's placement at 42 tok/s beside a cache measured at 103. A
   calibration stopped with a side still pending and no proven side to serve applies nothing: the load
   opens the settings it was serving, which opened here.
 - **What is kept, and what is not.** The rates go in the model's `.knobs` record as a served load's
@@ -583,13 +600,19 @@ served (`bmoe/calibrate.h`):
   already seen (all a load timed across loads ever leaves) carries no width value, records nothing,
   and stays where it was decided, as it always has.
 
-**Where it runs.** `bmoe-cli --auto` calibrates at load, before the first answer, and says so on one
-line; with nowhere to keep the verdict (no `--routing-dir`) it does not, and says that instead, since
-every run would pay the candidates again. `bmoe-server` never holds the first answer for it: the
-model loads on the plan's own side and serves at once, the served load timing that side as before.
-Once the server has been idle for `kCalibrationIdleDelay` (a minute, `http_server.cpp`) after an answer,
-nothing running and nothing waiting, it unloads the model, times each side, keeps the record and
-loads the decided plan, as one load (`EngineHost::load_when_idle`). The delay is the gap a
+**Where it runs.** Everywhere the same: a load whose plan leaves a decision pending calibrates
+before its first answer, and keeps the verdict, so the next load of the model on that machine starts
+decided. `bmoe-cli --auto` does it before it decodes and says so on one line; with nowhere to keep the
+verdict (`--routing-dir ""`) it does not, and says that instead, since every run would pay the
+candidates again. `bmoe-server` does it on the load's own thread before the session opens
+(`EngineHost::load_calibrated`): `/api/info` reads `loading`, `plan_progress` names each candidate, and
+a request that arrives waits for the model and is answered on the decided plan. Before, the server
+served the plan's own side at once and calibrated a minute later, so a machine where that side lost
+served at its rate until it went idle (two 24 GB cards with GLM-4.7: 3.7 tok/s on the cache where the
+fitter's placement decoded at 16). What a load's calibration leaves pending (stopped, or past its
+candidates) is tried again once the server has been idle for `kCalibrationIdleDelay` (a minute,
+`http_server.cpp`) after an answer, nothing running and nothing waiting: it unloads the model, times
+each side, keeps the record and loads the decided plan, as one load (`EngineHost::load_when_idle`). The delay is the gap a
 conversation has: a person reads the answer before typing, an agent runs its tools between turns,
 and each new answer starts the wait again. Meanwhile `/api/info` reads `ready` with `calibrating`
 and the model's name, and `plan_progress` events name each candidate (`step` `calibrate`): the

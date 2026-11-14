@@ -189,6 +189,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/CMakeLists.txt")
 endif()
 
 add_subdirectory(core)
+add_subdirectory(frontend)
 
 if(BMOE_BUILD_SERVER AND BMOE_HAVE_LLAMA)
     add_subdirectory(server)

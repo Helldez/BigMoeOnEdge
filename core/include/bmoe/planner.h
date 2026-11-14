@@ -154,6 +154,11 @@ struct PlannerPolicy {
     // A quarter is the plan's own accuracy bound (a prediction within 25% of the measurement).
     float rate_ceiling_slack = 0.25f;
 
+    // The least share of a device cache's misses still uploaded where part of them is computed on the
+    // host (choose_device_cache_cpu_share): a miss computed on the host is not admitted to the cache,
+    // so with every miss there the cache would stop learning which experts turn hot.
+    float device_cache_upload_min = 0.10f;
+
     static PlannerPolicy defaults() { return PlannerPolicy(); }
 };
 

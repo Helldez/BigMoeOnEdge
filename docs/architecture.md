@@ -10,6 +10,10 @@ a single ~25-line hook on a fork branch with an explicit sunset (see below and
 ## Layers
 
 ```
+frontend/       what every front-end does the same way: user_dirs (the per-user data folder,
+                and the folder each model's measurements are kept in), so a calibration one ran is
+                the others', and backend_env (what the compute backends read from their environment,
+                one table set before any loads); linked by bmoe-cli, bmoe-server and the desktop app
 cli/            bmoe-cli — parses flags, the only place env vars are read
 server/         bmoe-server: the application framework every UI speaks to (docs/application-framework.md),
                 and the engine behind the desktop web UI (docs/server-api.md)
@@ -40,11 +44,11 @@ server/         bmoe-server: the application framework every UI speaks to (docs/
                 unpacked), update_service (packs and updates downloaded, checked, put in place):
                 pure policy (bmoe_server_core), with curl_fetch beside it, the system curl behind the
                 HttpFetch port: the library's one adapter, there so its no-curl answer is tested
+                engine_thread: the one thread every computation of the engine runs on (a backend
+                may keep a worker team per calling thread, as ggml's OpenMP CPU backend does);
                 engine_host: the one Session, loads, the turn line, over the HostedSession seam
                 (hosted_session.h) its test drives with a scripted session; model_library: files, catalog,
-                downloads; planner_adapter: /api/plan when the planner is built in; routing_store:
-                each model's routing record and knob verdicts, kept by content fingerprint for the
-                next plan;
+                downloads; planner_adapter: /api/plan when the planner is built in;
                 agent: the agent's runs (one thread each, approvals, stop, MCP tools) and its task
                 scheduler, over EngineHost::chat or a provider; agent_external: a conversation
                 another coding agent works, over ACP; agent_routes: its HTTP routes;
@@ -101,6 +105,8 @@ core/
     measured_knobs.h
                     the lossless knobs' verdicts as a value (what the first answer measured), their
                     text form, and the hardware fingerprint a verdict is kept against
+    model_records.h a model's routing record and verdicts kept on disk between loads, by content
+                    fingerprint, in a folder the front-end names: one store for every front-end
     calibrate.h     load-time calibration: the decisions across loads (device tier, graph width)
                     timed at load, each side a short candidate load, over two ports (Replan,
                     RunCandidate); the planner names the side, the loop runs it and asks again
@@ -162,6 +168,7 @@ core/
                 routing - the routing record's text form, the LRU replay over it, the hit curve
                   and the hottest experts (measured-planning.md, Step 1); pure as the rules
                 measured_knobs - the knob verdicts' text form and the hardware fingerprint (Step 2)
+                model_records - ModelRecords: the routing record and verdicts per model on disk
                 calibrate - load-time calibration's loop: run the side the plan names, record its
                   rate, plan again; pure as the rules
                 hardware_probe, model_probe, storage_probe, headroom_probe, bandwidth_probe,
