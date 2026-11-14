@@ -6,6 +6,7 @@
 #include <cmath>
 #include <regex>
 #include <set>
+#include <string>
 
 namespace bmoe {
 
