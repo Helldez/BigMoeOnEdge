@@ -103,9 +103,10 @@ prefilled in 85 s on Vulkan in fp32 against 65 s on four cores, and the fp16 Vul
 produced text that was not text. OpenCL named by hand is refused by the arena: the backend pads
 every quantized tensor's allocation, so one expert does not fit its share of the slot. What the
 GPU buys on this phone is nothing yet; what the run bought is that the rule said so before a user
-did. The load with the NPU armed then ended in the allocator, twice, before the first token: the
-NPU figure above is the probe's, and the run is tracked in
-[#264](https://github.com/Helldez/BigMoeOnEdge/issues/264).
+did. The load with the NPU armed then ended in the allocator, twice, before the first token
+([#264](https://github.com/Helldez/BigMoeOnEdge/issues/264), since fixed): the NPU figure above is
+the probe's. The release APK's own run, with the Hexagon backend at its defaults, is under
+[What else had to move](#what-else-had-to-move).
 
 **Memory is the limit on a model with a large KV cache.** The device path holds the two expert slots
 (1.1 GB on this model), the device's compute buffers (0.8 GB at ubatch 2048) and the model state in

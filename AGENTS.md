@@ -37,6 +37,8 @@ we do not fork llama.cpp. See `docs/architecture.md` and `docs/seam.md`.
   keeps both on disk, keyed by `model_fingerprint` (and a verdict by `hardware_fingerprint`), in the
   folder the front-end names. Every front-end names the same one (`frontend/user_dirs`), so `--auto`
   is one behaviour on the CLI, the server and the apps.
+- `core/src/metrics/` — the metrics sinks (per-token CSV, routing and decode traces) and
+  `memory_snapshot` (the process's memory per token; `docs/telemetry.md`).
 - `core/include/bmoe/params.h` + `core/src/params.cpp` — the parameter table: every tunable of a
   `RunConfig`, described once. The CLI parses and documents its flags from it; front-ends render
   their settings from its JSON (`bmoe-cli --describe-params`).

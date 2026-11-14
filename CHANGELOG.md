@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Documentation
+- **The limitations, the platform table and the layer map catch up with what ships.**
+  [limitations.md](docs/limitations.md) and [moe-streaming.md](docs/moe-streaming.md) no longer say
+  that streaming rules out speculative decoding (`--mtp` and `--ngram` run over streamed experts,
+  paying the verify batch's union of experts) or that streamed experts are computed only on the CPU
+  (a device with memory of its own computes them through the device expert cache); the iOS entry
+  says it has run on a 12 GB iPhone and what that does not yet prove.
+  [platforms.md](docs/platforms.md), last reviewed against 0.32.0, is reviewed against 0.43.0: the
+  iPhone runs (2.6-3.0 tok/s in the app on 0.33.0, 5.56 through the harness on 0.42.0, now also in
+  [benchmarks.md](docs/benchmarks.md#iphone)), the rented Linux machines the planner was measured on,
+  the NPU prefill on the release APK (#264 closed), and what each platform still owes.
+  [architecture.md](docs/architecture.md) names the files its layer map had missed (`cache_brake`,
+  `image_probe`, `kv_cache_type`, `parallel_copy`, `metal_memory_probe`, `memory_topology`,
+  `memory_snapshot`), and AGENTS.md maps `core/src/metrics/`.
+
 ## [0.43.0] - 2026-11-14
 
 ### Added

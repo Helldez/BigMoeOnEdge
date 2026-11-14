@@ -9,8 +9,9 @@ expert bank per token" into "top-k/n_expert of it" — about 6% for that model.
 
 This sparsity is real **only for autoregressive, one-token-at-a-time decoding**. A batch
 of `T` tokens routes the *union* of `T × k` experts, which approaches all of them for any
-useful `T`. So streaming deliberately runs at n=1 and is incompatible with speculative
-decoding or a canvas — the engine keeps decode single-token by construction.
+useful `T`. So decode runs one token at a time by default. Speculative decoding
+([`--mtp`](mtp.md), [`--ngram`](ngram.md)) does run over streamed experts, verifying a few drafted
+tokens in one batch, and pays that union on every verify, so neither is on by default.
 
 ## Mechanism
 
