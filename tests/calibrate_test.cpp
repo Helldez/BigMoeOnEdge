@@ -309,6 +309,71 @@ int main() {
         check(k.device_cache_tps == 9.0 && k.wide_decode_tps == 0.0, "record: one decision per run, the tier first");
     }
 
+    // What a served load may open as the plan names it (servable): nothing pending, or the width's
+    // wide side, which is the graph the plan's other loads already ran with. An unproven placement
+    // (either side of the device tier) or the narrow graph is left to a calibration.
+    {
+        Plan p;
+        check(servable(p), "servable: nothing pending");
+        p.config.trial.width_side = 1;
+        check(servable(p), "servable: the graph at the plan's own width, timed as it serves");
+        p.config.trial.width_side = 0;
+        check(!servable(p), "servable: the narrow graph is not served before a calibration has run it");
+        p.config.trial.width_side = -1;
+        p.config.trial.device_tier = 0;
+        check(!servable(p), "servable: the fitter's placement unproven is not served");
+        p.config.trial.device_tier = 1;
+        check(!servable(p), "servable: a device cache unproven is not served either");
+    }
+
+    // ── the device cache's CPU share, the third decision: the tier first, then the share on its winner ──
+    {
+        const auto share_side = [](int side) {
+            Plan p = decided(4096);
+            p.config.trial.cpu_share_side = side;
+            p.config.moe.device_cache_cpu_share = side == 1 ? 0.7f : 0.0f;
+            return p;
+        };
+        // The tier as above; on the cache, the share: every miss uploaded first, then the share.
+        const Replan rules = [&](const MeasuredKnobs & k) {
+            const Plan tier = tier_rules(k);
+            if (tier.config.trial.device_tier >= 0 || tier.config.moe.device_cache_mb == 0) return tier;
+            if (k.cpu_share_unviable) return decided(4096);
+            const double without = k.no_cpu_share_tps > 0.0 ? k.no_cpu_share_tps : k.device_cache_tps;
+            if (without <= 0.0) return share_side(0);
+            if (k.cpu_share_tps <= 0.0) return share_side(1);
+            Plan d = decided(4096);
+            if (k.cpu_share_tps > without * 1.1) d.config.moe.device_cache_cpu_share = 0.7f;
+            return d;
+        };
+        Runs runs;
+        const CalibrationResult r =
+            calibrate(rules(MeasuredKnobs{}), MeasuredKnobs{}, rules, table(runs, [](const RunConfig & c) {
+                          if (c.moe.device_cache_mb == 0) return timed(9.9);
+                          return timed(c.moe.device_cache_cpu_share > 0.0f ? 21.2 : 18.5);
+                      }));
+        check(r.complete && r.runs == 3 && r.knobs.device_cache_tps == 18.5 && r.knobs.no_device_cache_tps == 9.9 &&
+                  r.knobs.cpu_share_tps == 21.2,
+              "share: the tier's two sides, then the share on the cache, each timed once");
+        check(r.plan.config.moe.device_cache_mb == 4096 && r.plan.config.moe.device_cache_cpu_share > 0.0f &&
+                  !side_pending(r.plan),
+              "share: the faster share served, nothing left pending");
+        check(runs.configs.size() == 3 && runs.configs[2].moe.device_cache_cpu_share > 0.0f &&
+                  runs.configs[2].trial.cpu_share_side == -1,
+              "share: its candidate carries the share and names no side");
+        Runs lost_runs;
+        const CalibrationResult lost =
+            calibrate(rules(MeasuredKnobs{}), MeasuredKnobs{}, rules, table(lost_runs, [](const RunConfig & c) {
+                          if (c.moe.device_cache_mb == 0) return timed(9.9);
+                          return timed(c.moe.device_cache_cpu_share > 0.0f ? 68.0 : 114.0);
+                      }));
+        check(lost.complete && lost.plan.config.moe.device_cache_cpu_share == 0.0f,
+              "share: measured slower (a cache that never fills), every miss uploaded");
+        check(!servable(share_side(1)) && servable(share_side(0)),
+              "servable: a CPU share is served only once measured; the cache with every miss uploaded is the "
+              "cache every earlier load ran");
+    }
+
     if (failures) {
         std::printf("\n%d check(s) FAILED\n", failures);
         return 1;

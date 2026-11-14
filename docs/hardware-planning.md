@@ -57,7 +57,20 @@ session then loads with the fitter's `n_gpu_layers` and override patterns rather
 zero.
 
 Three of the fitter's answers are read rather than trusted. Left at 0 it picks the model's full
-training context, so our context is always the pin. On a machine with no GPU it leaves
+training context, so our context is always the pin. Where the context checkpoints and the context
+leave the expert cache under a token cycle and the person set neither, they give way, in that order:
+the checkpoints halve down to one (the end of the last prompt, where a follow-up most often
+diverges), then the context halves, the fitter placing again at each length, down to
+`PlannerPolicy::ctx_min_auto` (4096, the fitter's own `--fit-ctx` default) and never under
+`RunConfig::ctx_for_clients` (16384), what the server offers the clients it serves: a coding agent's
+first request alone can be 10k tokens, so the server's own context stays and only a longer one
+nobody set gives way. The rules-only replan a calibration is judged by (`replan_rules`) takes the
+checkpoint step too, and not the context step, which places the model again. The first plan whose cache
+clears its floor is kept; where none does, nothing changes. A value the person set is never moved,
+only named as the lever. The probe opens its
+context as the session does, with sliding-window layers holding their window rather than the whole
+context (llama.cpp's own default is the whole context; its server and CLI turn that off too). On a
+machine with no GPU it leaves
 `n_gpu_layers` at its default, which means "all", so devices are counted instead: the placement is
 applied only when every device the fitter gave bytes to was measured to have memory of its own and
 states its size. Where one reads the host's memory, the fitter has counted one pool twice, and the
@@ -203,8 +216,9 @@ one ([measured-planning.md](measured-planning.md#step-1-the-cache-sized-from-the
   first tokens (`--routing-record`, default 256 decoded tokens and the last 256 of the prompt). It
   asks the graph for nothing and stops by itself. `Session::routing_record()` returns it as a value
   (`bmoe/routing.h`).
-- **Where it lives** is the front-end's decision: `bmoe-cli --routing-dir DIR`, and `bmoe-server` in
-  its data folder under `routing/`, one file per model named by `model_fingerprint()` (a hash of the
+- **Where it lives** is the same for every front-end (`ModelRecords`): the per-user data folder under
+  `routing/` (`bmoe-cli --routing-dir DIR` names another, `""` none), one file per model named by
+  `model_fingerprint()` (a hash of the
   file's size and of bytes sampled across its content, so a copied or renamed file keeps its record
   and two models of one shape do not share one).
 - **The curve.** The next `--auto` hands the record back (`AutoPlanOptions::routing`); `attach_routing`
@@ -275,7 +289,7 @@ measurement instead of a guess ([measured-planning.md](measured-planning.md#step
   resident one.
 - **The verdict** stays for the rest of the session and is returned as a value
   (`Session::measured_knobs()`, `bmoe/measured_knobs.h`). The front-end keeps it beside the model's
-  routing (`bmoe-cli --routing-dir DIR`, `bmoe-server` under `routing/`): one file per model, a line
+  routing (`ModelRecords`, the per-user data folder under `routing/` for every front-end): one file per model, a line
   per machine and engine, keyed by `hardware_fingerprint()` (core count and classes, total memory,
   each device's name and own memory; never a rate or a free-memory figure) and the engine version.
 - **The next plan** of that model on that machine and engine (`AutoPlanOptions::knobs`) starts from
@@ -361,6 +375,11 @@ and `BMOE_*` env overrides both count as the caller speaking.
    gathered table competes for residency against the cache at the cache's linear credit, not at the
    tail of a short routing record's curve, which is flat past the experts the record touched:
    measured why on DeepSeek V4.1, where a 194 GB Engram table outranked the cache for 0.1 ms a token.
+   A group read whole every token is priced as the run holds it: the `anon`/`pinned` policy copies
+   every dense tensor but the tables handed back above, so a group the ranking found no room for is
+   held all the same, past the budget, and priced at its compute (`dense-held`), not at the refault
+   of a mapping the run does not keep. Priced as mapped, a 12 GB phone's plan for Gemma 4 26B-A4B
+   predicted 10-44 s a token where the run decoded at 0.45-0.55.
 5. **The memory ledger**: one account for everything the run holds — context and compute buffers,
    a chat run's context checkpoints, an armed device, the dense set, the expert cache — against two ceilings, what can be held and
    what can be held reclaim-exempt. The cache is what is left under both, capped at the experts'
@@ -532,8 +551,8 @@ alone is how a plan comes to ask for locks the machine stops granting part way.
 |---|---|---|
 | context and compute buffers | llama.cpp's own projection for this model and context | holdable |
 | projector (a run with an `mmproj` file) | the file's size: llama.cpp's library holds it whole to read images, on a device where the run uses one and on the host otherwise. On a device with memory of its own the capacity fitter is told to leave that room before it places a layer, so the layer count and the spare it reports already account for it (a placement with no such reservation charges it off the device cache instead); on a device whose memory is the host's it is the host's row | holdable |
-| context checkpoints (a chat run) | `--ctx-checkpoints` copies of the context's fixed part: llama.cpp's projection at the context and at half of it, twice the half less the whole (a recurrent state, a sliding window; nothing for a context that is all attention) | holdable |
-| a device armed for prefill | two of the model's largest expert layer, plus the compute buffer llama.cpp projects for that device (none for one it never places layers on, such as an NPU) | holdable; lockable too where its buffers are |
+| context checkpoints (a chat run) | `--ctx-checkpoints` copies of the context's fixed part: llama.cpp's projection at the context and at half of it, twice the half less the whole (a recurrent state; nothing for a context that is all attention). A sliding window is the window's cells, from the file, at what a cell costs, read off the projections at two graph widths: the fixed part would also count the ubatch of cells the window's cache holds beyond itself, which a checkpoint does not copy (106 MiB measured on Gemma 4 26B-A4B, where the fixed part at an 8192-wide graph was 744) | holdable |
+| a device armed for prefill | two of the model's largest expert layer, plus the compute buffer llama.cpp projects for that device, or, for one it never places layers on (such as an NPU), the host's own at the same width, since the session hands it the same graph (charged nothing, a phone's NPU reserved 450 MiB the plan never saw and the load did not finish) | holdable; lockable too where its buffers are |
 | dense set | the gguf | holdable; lockable if it is pinned |
 | expert cache | what is left | holdable; lockable for the part that can be locked in place |
 
@@ -1192,6 +1211,36 @@ load-time calibration (on by default) the "loads" are short candidate loads time
 served, the tier first and the width then on its winner, and a side that cannot be opened loses
 ([measured-planning.md](measured-planning.md#decisions-across-loads-timed-at-load)).
 
+### Who computes the device cache's misses
+
+`--device-cache-cpu-share` hands part of a device cache's misses to the host instead of uploading
+them ([backends.md](backends.md)). `choose_device_cache_cpu_share` prices it and the loads decide it.
+The price: a token's experts take the longer of the device's half (the hits, and the misses still
+uploaded then computed) and the host's (its share of the misses at the host's expert rate), plus
+`host_hop_seconds` for each MoE layer whenever the share is above 0. That last term is the fixed
+cost a share adds whatever it computes, a device op, a host op at the decode's thread count and a
+device op again, measured through the scheduler on the device (`measure_host_hop`). The share is
+where the two halves meet, capped by `device_cache_upload_min` so the cache keeps learning, and it is
+only nominated where it beats uploading every miss by `min_backend_win`.
+
+The price cannot see whether the cache fills, and a cache that never fills computes no miss on the
+host and pays the hops anyway. So a nominated share is decided across loads like the device tier and
+the width (`KnobTrialConfig::cpu_share_side`, `MeasuredKnobs::cpu_share_tps`): it is weighed only once
+the tier and the width are decided, a calibration times it as a candidate, the cache's rate with
+every miss uploaded is the tier's own measurement, and the faster stays. A served load never opens a
+share that has not been measured (`servable`). Measured on a rented 32 GB card (RTX 5090 class, PCIe
+4, 48 cores) with Qwen3.8-Flash-Next Q2_0: a hop of 18 us a layer; the price, at an 82% hit share
+read off the expert set the cache holds, nominated 0.89; the calibration timed it at 70.9 tok/s
+against the cache's 103 and every miss stayed uploaded (102.5 served). The same card held down to
+12 GiB free: the share timed 79.9 against 74.9, inside the margin, and stayed off. The share is held
+against the cache on the graph the plan runs, which the width's timing gives where the width was
+decided after the tier: on a 12 GB card on PCIe 3 with 8 cores, the cache decoded at 26.3 tok/s at its
+first width and 31.6 at the 2048-wide graph the width then chose, the share timed 32.2 there, and it
+stayed off (32.5 served; the fitter's placement 21.1). On a 12 GB card
+with a 6-core host (RTX 3060 class, Flash-Next IQ3_S), a share of 0.76-0.78 took the decode from
+18.5 to 21.1-21.2 tok/s (#519), which is the case it is for. On a shared pool there is no device
+cache and nothing is weighed.
+
 The layers the fitter split (`price_layers_home`, [measured-planning.md](measured-planning.md#step-3-the-cost-of-a-device-measured-on-a-real-layer)):
 where the capacity fitter put the dense part of some layers on a device and left their experts on
 the host, each crosses twice a token. Those layers' dense matmuls on the device plus their crossings
@@ -1327,6 +1376,7 @@ Each row is a gap here paired with the public facility that closes it. None need
 | gap | facility | what it would allow |
 |---|---|---|
 | hot experts of host-resident layers kept and computed in device memory | `llama_context_params.moe_cache_size` (experimental upstream) | a device-memory tier under the RAM cache; see [measured-planning.md](measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache) for what it needs before the plan arms it |
+| part of a device cache's misses computed on the host rather than uploaded | `llama_context_params.moe_cache_cpu_share` (experimental upstream) | a knob only, resident experts only: the plan does not set it yet (see above) |
 | streamed experts computed on a device rather than on the CPU cores | **not** a buffer-type override — that route is closed, see below. The open one is `ggml_backend_dev_buffer_from_host_ptr` | on a backend that can wrap memory the caller already owns, the streamer's reservations could be handed over and the device could execute out of them. Who implements it is **not** what `caps.buffer_from_host_ptr` says — see "A capability that lies by omission" below |
 | prefill on the device over streamed experts (built as `--prefill-device`, see [npu-prefill.md](npu-prefill.md); the planner does not arm it yet) | `cparams.op_offload`, `offload_kqv`, the scheduler's batch threshold (`ggml_backend_dev_offload_op`) | per-op copy of host weights to the device above a batch size: the "batch amortises bytes over link bandwidth" rule |
 | ~~no thread rule~~ — **in**, from core classes rather than a core count | `n_threads_batch` distinct from `n_threads`, `llama_numa_init` | still open: different counts for decode and prefill, and NUMA on workstations |

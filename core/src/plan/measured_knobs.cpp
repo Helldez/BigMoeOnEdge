@@ -61,7 +61,9 @@ struct UnviableSide {
 constexpr UnviableSide k_unviable_sides[] = {{"device_cache", &MeasuredKnobs::device_cache_unviable},
                                              {"no_device_cache", &MeasuredKnobs::no_device_cache_unviable},
                                              {"wide", &MeasuredKnobs::wide_unviable},
-                                             {"narrow", &MeasuredKnobs::narrow_unviable}};
+                                             {"narrow", &MeasuredKnobs::narrow_unviable},
+                                             {"cpu_share", &MeasuredKnobs::cpu_share_unviable},
+                                             {"no_cpu_share", &MeasuredKnobs::no_cpu_share_unviable}};
 
 // `name:count` (or `name`, one) per side, comma-separated. A name this engine does not know is a
 // later engine's side: read past, as an unknown key is.
@@ -148,6 +150,10 @@ std::string format_measured_knobs(const std::vector<MeasuredKnobs> & records) {
         out += std::string(" device_cache_tps=") + num;
         std::snprintf(num, sizeof(num), "%.3f", r.no_device_cache_tps);
         out += std::string(" no_device_cache_tps=") + num;
+        std::snprintf(num, sizeof(num), "%.3f", r.cpu_share_tps);
+        out += std::string(" cpu_share_tps=") + num;
+        std::snprintf(num, sizeof(num), "%.3f", r.no_cpu_share_tps);
+        out += std::string(" no_cpu_share_tps=") + num;
         out += " width_narrow=" + std::to_string(r.width_narrow);
         const std::pair<const char *, double> rates[] = {
             {"wide_decode_tps", r.wide_decode_tps},   {"narrow_decode_tps", r.narrow_decode_tps},
@@ -254,6 +260,10 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
                 ok = as_double(r.device_cache_tps);
             else if (k == "no_device_cache_tps")
                 ok = as_double(r.no_device_cache_tps);
+            else if (k == "cpu_share_tps")
+                ok = as_double(r.cpu_share_tps);
+            else if (k == "no_cpu_share_tps")
+                ok = as_double(r.no_cpu_share_tps);
             else if (k == "width_narrow")
                 ok = as_int(r.width_narrow);
             else if (k == "wide_decode_tps")
@@ -305,13 +315,14 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
             return false;
         }
         if (r.overlap < -1 || r.overlap > 1 || r.overlap_incumbent < -1 || r.overlap_incumbent > 1 || r.threads < 0 ||
-            !(r.device_cache_tps >= 0.0) || !(r.no_device_cache_tps >= 0.0) || r.width_narrow < 0 ||
-            !(r.wide_decode_tps >= 0.0) || !(r.narrow_decode_tps >= 0.0) || !(r.wide_prefill_tps >= 0.0) ||
-            !(r.narrow_prefill_tps >= 0.0) || !(r.usage_gen_tokens >= 0.0) || !(r.usage_long_prompt_tokens >= 0.0) ||
-            r.usage_requests < 0 || !(r.decode_compute_s >= 0.0) || r.decode_threads < 0 ||
-            !(r.decode_hit >= -1.0 && r.decode_hit <= 1.0) || !(r.decode_cache_mib >= 0.0) || r.decode_gpu_layers < 0 ||
-            r.decode_device_cache_mb < 0 || r.mix_requests < 0 || !(r.mix_gen_tokens >= 0.0) ||
-            !(r.mix_wide_prompt_tokens >= 0.0) || !(r.host_prefill_tps >= 0.0)) {
+            !(r.device_cache_tps >= 0.0) || !(r.no_device_cache_tps >= 0.0) || !(r.cpu_share_tps >= 0.0) ||
+            !(r.no_cpu_share_tps >= 0.0) || r.width_narrow < 0 || !(r.wide_decode_tps >= 0.0) ||
+            !(r.narrow_decode_tps >= 0.0) || !(r.wide_prefill_tps >= 0.0) || !(r.narrow_prefill_tps >= 0.0) ||
+            !(r.usage_gen_tokens >= 0.0) || !(r.usage_long_prompt_tokens >= 0.0) || r.usage_requests < 0 ||
+            !(r.decode_compute_s >= 0.0) || r.decode_threads < 0 || !(r.decode_hit >= -1.0 && r.decode_hit <= 1.0) ||
+            !(r.decode_cache_mib >= 0.0) || r.decode_gpu_layers < 0 || r.decode_device_cache_mb < 0 ||
+            r.mix_requests < 0 || !(r.mix_gen_tokens >= 0.0) || !(r.mix_wide_prompt_tokens >= 0.0) ||
+            !(r.host_prefill_tps >= 0.0)) {
             error = "line " + std::to_string(n) + ": a value out of range";
             return false;
         }
@@ -346,6 +357,11 @@ void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKno
                            rec.no_device_cache_tps);
             if (rec.device_cache_tps > 0.0) r.device_cache_tps = rec.device_cache_tps;
             if (rec.no_device_cache_tps > 0.0) r.no_device_cache_tps = rec.no_device_cache_tps;
+            merge_unviable(r.cpu_share_unviable, rec.cpu_share_unviable, r.cpu_share_tps, rec.cpu_share_tps);
+            merge_unviable(r.no_cpu_share_unviable, rec.no_cpu_share_unviable, r.no_cpu_share_tps,
+                           rec.no_cpu_share_tps);
+            if (rec.cpu_share_tps > 0.0) r.cpu_share_tps = rec.cpu_share_tps;
+            if (rec.no_cpu_share_tps > 0.0) r.no_cpu_share_tps = rec.no_cpu_share_tps;
             // A different narrow width is a different comparison: what was measured against the old
             // one no longer answers it.
             set_width_narrow(r, rec.width_narrow);
@@ -407,6 +423,9 @@ void record_side_rate(const KnobTrialConfig & trial, double tokens_per_second, M
         set_width_narrow(rec, trial.width_narrow);
         (trial.width_side == 1 ? rec.wide_decode_tps : rec.narrow_decode_tps) = tokens_per_second;
         (trial.width_side == 1 ? rec.wide_unviable : rec.narrow_unviable) = 0;
+    } else if (trial.cpu_share_side >= 0) {
+        (trial.cpu_share_side == 1 ? rec.cpu_share_tps : rec.no_cpu_share_tps) = tokens_per_second;
+        (trial.cpu_share_side == 1 ? rec.cpu_share_unviable : rec.no_cpu_share_unviable) = 0;
     }
 }
 
@@ -414,6 +433,8 @@ int * unviable_count(const KnobTrialConfig & trial, MeasuredKnobs & rec) {
     if (trial.device_tier >= 0)
         return trial.device_tier == 1 ? &rec.device_cache_unviable : &rec.no_device_cache_unviable;
     if (trial.width_side >= 0) return trial.width_side == 1 ? &rec.wide_unviable : &rec.narrow_unviable;
+    if (trial.cpu_share_side >= 0)
+        return trial.cpu_share_side == 1 ? &rec.cpu_share_unviable : &rec.no_cpu_share_unviable;
     return nullptr;
 }
 

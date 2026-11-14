@@ -89,6 +89,14 @@ struct MoeStreamConfig {
     // ggml_backend_dev_name gives it), empty for off: the planner names the device it measured the
     // gain on, where the host holds the copy.
     std::string expert_host_buffer;
+    // The share of that cache's misses COMPUTED ON THE HOST, from the host's copy of the expert, instead
+    // of uploaded to the device, once the cache is full (llama_context_params::moe_cache_cpu_share). 0
+    // uploads every miss. Above it the device and the host each compute part of a layer's experts and
+    // llama.cpp adds the two halves, so the link carries fewer experts while the cores, idle otherwise
+    // with every expert on the device, compute the rest; below 1, the misses still uploaded keep the
+    // cache learning which experts are hot. The planner prices it from the measured rates
+    // (docs/hardware-planning.md). Needs device_cache_mb.
+    float device_cache_cpu_share = 0.0f;
     int cache_floor_mb = 1536; // RAM to leave free for the rest of the system when auto-sizing
     int cache_ceil_mb = 0;     // upper bound on the auto budget in MiB (0 = cap only at the full
                                // expert-set size); useful to keep the cache from taking all the
@@ -407,8 +415,9 @@ struct MoeStreamConfig {
     static constexpr int routing_record_tokens_max = 4096;
     static constexpr int route_ahead_max = 8; // beyond this the staleness has no measured meaning
     static constexpr int predict_spec_max_limit = 8;
-    static constexpr float drop_cold_frac_max = 1.0f;    // the uniform share: never empties a routing
-    static constexpr float substitute_lambda_max = 1.0f; // the whole score range: residency always wins
+    static constexpr float drop_cold_frac_max = 1.0f;         // the uniform share: never empties a routing
+    static constexpr float substitute_lambda_max = 1.0f;      // the whole score range: residency always wins
+    static constexpr float device_cache_cpu_share_max = 1.0f; // every miss on the host: the cache stops learning
 };
 
 // Where the draft tokens of a self-speculative step come from. The verify half of the loop is
@@ -690,8 +699,15 @@ struct KnobTrialConfig {
     // changes, with the requests it served, which the plan weighs the two sides by.
     int width_side = -1;
     int width_narrow = 0;
+    // The device cache's CPU share, decided across loads (MeasuredKnobs::cpu_share_tps): 1 times the
+    // decode with part of the cache's misses computed on the host (moe.device_cache_cpu_share, as the
+    // plan priced it), 0 with every miss uploaded; -1 neither. A share is fixed when a context is
+    // created, so the two sides are timed as loads of their own, as the device tier's are.
+    int cpu_share_side = -1;
 
-    bool enabled() const { return !threads.empty() || overlap || device_tier >= 0 || width_side >= 0; }
+    bool enabled() const {
+        return !threads.empty() || overlap || device_tier >= 0 || width_side >= 0 || cpu_share_side >= 0;
+    }
 
     static constexpr int threads_max_candidates = 2;
     static constexpr int window_tokens_max = 256;

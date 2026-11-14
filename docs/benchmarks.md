@@ -544,6 +544,12 @@ On another rented 24 GB card of that generation (an 8-core desktop CPU, 62 GB of
   prompt reached its first token in 4.7 s (6,025 tok/s);
 - Laguna XS 2.1 33B Q4_K_M decoded at **93**.
 
+On 2026-11-13 a rented 12 GB card (RTX 3060 class, a 15-core quota of a Zen 2 server CPU, 47 GB of
+RAM) ran the 0.42.0 release with `--auto` on Qwen3.6-35B-A3B UD-Q4_K_XL (Unsloth, with its MTP head):
+**40-44** tok/s over four loads, **57-65** with `--mtp`; Strata on the same box and file decoded at
+28-36 ([comparison.md](comparison.md#same-machine-same-file),
+[bench-data/2026-11-13-same-card-strata-12gb](bench-data/2026-11-13-same-card-strata-12gb/README.md)).
+
 And on a rented 12 GB card (RTX 3060 class, 7.7 usable cores, a 42.6 GiB control group), the class
 most people own, Qwen3.8-Flash-Next Q2_0: `--auto` armed a 6 GB device cache and the run was killed
 by the control group at 43 GB (the tier's host-side memory is not in the ledger, #424); with the

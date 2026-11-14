@@ -1142,7 +1142,8 @@ an id that is not an added entry.
 `{"available": true, "error": "..."}` when there is nothing to plan (no model selected).
 Otherwise the planner's proposal for the configured model on this machine. It runs the planner's
 probes (a second or two of storage reads and a bandwidth run, never the intrusive memory probe)
-without loading the model; `409` while a generation runs, since that would skew the measurement.
+without loading the model; `409` while a generation runs, since that would skew the measurement,
+and while a model loads or calibrates, since the probes run on the engine's one thread it holds.
 Each compute device beyond the host is first asked in a process of its own (the server started
 again with `--probe-device`), so a driver that ends the process it is used from marks the device
 unusable instead of ending the server; `--no-isolated-probes` runs them in-process.

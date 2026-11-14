@@ -63,6 +63,9 @@
 //       previous answer (the client resent it edited) restarts from the checkpoint at the end of the
 //       previous prompt where the memory refuses the cut, and answers exactly as the same pieces
 //       prefilled without any restore (a); with checkpoints off such a memory prefills it all (b).
+//       (c) a follow-up that diverges further back than a sliding window does not reuse the window's
+//       memory, which accepts the cut but no longer holds what the next token reads: it starts again
+//       and answers as a fresh session does.
 //   G23 the KV cache at f16, llama.cpp's type: streaming == resident. q8_0 is the default, so every
 //       other gate runs on a quantized cache; this one keeps the lossless type covered. The cache
 //       type changes the output, never what streaming the experts produces.
@@ -78,10 +81,11 @@
 //       second replaying the first's tokens, no side left pending, both rates in the record, and the
 //       winner, opened fresh, == resident.
 //   G25 the device tier: llama.cpp's device-side expert cache over resident experts (a), over
-//       streamed experts (b) and streamed under n-gram speculation (c), each == the resident
-//       placement; and each side of the device tier timed for a decision across loads (e), with its
-//       rate in the record. A load-time calibration of the tier (f): both sides timed as candidates,
-//       and the winner, opened fresh, == the resident placement.
+//       streamed experts (b) and streamed under n-gram speculation (c), and over resident experts
+//       with half the cache's misses computed on the host (d), each == the resident placement; and
+//       each side of the device tier timed for a decision across loads (e), with its rate in the
+//       record. A load-time calibration of the tier (f): both sides timed as candidates, and the
+//       winner, opened fresh, == the resident placement.
 //   G26 the real-layer probe fills every device's facts and agrees with the host on the layer's
 //       matmuls; it is timed, not gated, on the tiny models.
 //
@@ -108,6 +112,7 @@
 #include "platform_io.h"
 
 #include "ggml-backend.h"
+#include "gguf.h"
 
 #include <algorithm>
 #include <chrono>
@@ -1846,6 +1851,20 @@ int main(int argc, char ** argv) {
                 } else {
                     fails += check("G25a device cache over resident experts == resident experts", s_placed, s_cached);
                     fails += check("G25b device cache over streamed experts == resident experts", s_placed, s_cached_s);
+                    // d) part of the misses computed on the host from the resident copy instead of
+                    // uploaded: llama.cpp builds the layer's experts on both and adds the halves, each
+                    // weighted only for the experts it computed. The 4 MiB cache is full within the
+                    // first tokens, which is where the share starts to apply.
+                    RunConfig cached_cpu = cached;
+                    cached_cpu.moe.device_cache_cpu_share = 0.5f;
+                    std::string s_cached_cpu;
+                    if (!gen(cached_cpu, s_cached_cpu, err)) {
+                        std::printf("[FAIL] G25d a device cache run with a host share failed: %s\n", err.c_str());
+                        ++fails;
+                    } else {
+                        fails += check("G25d device cache, half the misses on the host == resident experts", s_placed,
+                                       s_cached_cpu);
+                    }
                     // c) with speculation: a verify batch is a few positions wide, served by the same
                     // slots, and greedy drafting accepts only what the target would have produced.
                     RunConfig cached_spec = cached_s;
@@ -2286,6 +2305,100 @@ int main(int argc, char ** argv) {
                 ++fails;
             }
             fails += check("G22a turn 2 restored from a checkpoint == the same pieces prefilled", out_ref, out_ck);
+        }
+    }
+
+    // G22c — a cut further back than a sliding window. llama.cpp's sliding-window cache accepts any cut
+    // and keeps only its window (and the cells a ubatch needs), so a follow-up that diverges near the
+    // start of a long conversation must not reuse the window's memory: the first token after the cut
+    // would read cells already gone, and nothing would fail. It has to start again from a checkpoint
+    // that reaches back far enough, or from nothing, and answer what a fresh session answers.
+    {
+        int n_swa = 0;
+        {
+            gguf_init_params gp{/*no_alloc*/ true, /*ctx*/ nullptr};
+            if (gguf_context * g = gguf_init_from_file(model.c_str(), gp)) {
+                const int64_t ka = gguf_find_key(g, "general.architecture");
+                if (ka >= 0) {
+                    const int64_t kw =
+                        gguf_find_key(g, (std::string(gguf_get_val_str(g, ka)) + ".attention.sliding_window").c_str());
+                    if (kw >= 0) n_swa = (int) gguf_get_val_u32(g, kw);
+                }
+                gguf_free(g);
+            }
+        }
+        // A window the context outgrows: the cache keeps at least 256 cells, so the conversation is
+        // made longer than that and the window, and the follow-up diverges near its start.
+        const int n_ctx = 1024;
+        if (n_swa <= 0 || n_swa >= 256) {
+            std::printf("[PASS] G22c this model has no sliding window shorter than its cache (%d): nothing to cut\n",
+                        n_swa);
+        } else {
+            auto msgs = [](std::initializer_list<std::pair<const char *, std::string>> l) {
+                std::vector<ChatMessage> v;
+                for (const auto & m : l)
+                    v.push_back(ChatMessage{m.first, m.second});
+                return v;
+            };
+            std::string long1;
+            while (long1.size() < 600)
+                long1 += "Tell me about the river, the hills and the old town by the sea. ";
+            std::string long2 = long1;
+            long2[8] = 'X'; // the divergence, a few tokens into the conversation
+            auto config = [&] {
+                RunConfig c = stream0;
+                c.chatml = true;
+                c.ctx_checkpoints = 32;
+                c.n_ctx = n_ctx;
+                c.n_ubatch = 64; // the window's cache is the window and one ubatch, padded
+                return c;
+            };
+            std::string out_cut, out_ref;
+            int prefilled = 0, n_prompt2 = 0;
+            {
+                std::unique_ptr<Session> s = Session::open(session_config_from(config()), err);
+                if (!s) {
+                    std::fprintf(stderr, "G22c open failed: %s\n", err.c_str());
+                    return 2;
+                }
+                GenerateRequest q;
+                q.messages = msgs({{"user", long1}});
+                q.n_predict = 4;
+                RunResult r1 = s->generate(q);
+                q.messages = msgs({{"user", long2}});
+                q.n_predict = 8;
+                q.clear_kv = false;
+                RunResult r2 = s->generate(q);
+                if (!r1 || !r2) {
+                    std::fprintf(stderr, "G22c run failed: %s\n", (!r1 ? r1.error : r2.error).c_str());
+                    return 2;
+                }
+                out_cut = r2.generated_text;
+                prefilled = r2.summary.n_prompt;
+                n_prompt2 = r2.summary.n_past - r2.summary.n_generated;
+            }
+            {
+                std::unique_ptr<Session> s = Session::open(session_config_from(config()), err);
+                GenerateRequest q;
+                q.messages = msgs({{"user", long2}});
+                q.n_predict = 8;
+                RunResult r = s ? s->generate(q) : RunResult{};
+                if (!s || !r) {
+                    std::fprintf(stderr, "G22c reference failed: %s\n", err.c_str());
+                    return 2;
+                }
+                out_ref = r.generated_text;
+            }
+            if (prefilled != n_prompt2) {
+                std::printf("[FAIL] G22c a cut %d tokens past a window of %d reused the window's memory (prefilled "
+                            "%d of %d)\n",
+                            n_prompt2 - prefilled, n_swa, prefilled, n_prompt2);
+                ++fails;
+            } else {
+                std::printf("[PASS] G22c a cut past the window of %d starts again (prefilled all %d)\n", n_swa,
+                            n_prompt2);
+            }
+            fails += check("G22c the follow-up past the window == a fresh session", out_ref, out_cut);
         }
     }
 

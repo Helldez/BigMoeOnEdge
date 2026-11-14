@@ -106,6 +106,12 @@ struct PlannerPolicy {
     // (RunConfig::graph_width_floor) does not lift it: an image past it is refused instead.
     uint32_t ubatch_max_device = 8192;
 
+    // The shortest context a plan shortens one to, where the person set none and the one given leaves
+    // the expert cache under a token cycle (plan_on_facts). llama.cpp's own: the shortest context its
+    // capacity fitter shrinks to before it moves weights instead (common's --fit-ctx default). A
+    // context the person set is never touched.
+    uint32_t ctx_min_auto = 4096;
+
     // Whether THIS ENGINE can hand a device the memory a streamed expert is made of. It is a fact
     // about our own streamer rather than about any machine, which is why it lives here and not in
     // the hardware profile - and it is false, because the streamer reserves address space and
@@ -147,6 +153,11 @@ struct PlannerPolicy {
     // 23.8 GiB/s, the fitter's placement then decoded at 9.34 tok/s against a ceiling of 8.5 (+10%).
     // A quarter is the plan's own accuracy bound (a prediction within 25% of the measurement).
     float rate_ceiling_slack = 0.25f;
+
+    // The least share of a device cache's misses still uploaded where part of them is computed on the
+    // host (choose_device_cache_cpu_share): a miss computed on the host is not admitted to the cache,
+    // so with every miss there the cache would stop learning which experts turn hot.
+    float device_cache_upload_min = 0.10f;
 
     static PlannerPolicy defaults() { return PlannerPolicy(); }
 };

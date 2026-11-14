@@ -21,6 +21,7 @@ add_library(bmoe_core STATIC
     src/engine/cache_brake.cpp
     src/engine/knob_trial.cpp
     src/plan/measured_knobs.cpp
+    src/plan/model_records.cpp
     src/plan/calibrate.cpp
     src/engine/decide/prompt_split.cpp
     src/engine/decide/choice_scorer.cpp
@@ -42,6 +43,7 @@ if(BMOE_HAVE_LLAMA)
         src/io/platform_io.cpp
         src/io/file_reader.cpp
         src/io/mapping_release.cpp
+        src/io/parallel_copy.cpp
         src/moe/dense_weights.cpp
         src/moe/row_stream.cpp
         src/moe/gguf_offsets.cpp
