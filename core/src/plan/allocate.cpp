@@ -104,15 +104,37 @@ void price_unstreamed(Allocation & a) {
 
     // The ledger keeps what the run holds whatever it does with the weights, and drops the rest.
     Ledger & l = a.ledger;
-    l.rows.erase(
-        std::remove_if(l.rows.begin(), l.rows.end(),
-                       [](const LedgerRow & r) { return r.name == "dense" || r.name == "expert cache" || r.in_turn; }),
-        l.rows.end());
+    l.rows.erase(std::remove_if(l.rows.begin(), l.rows.end(),
+                                [](const LedgerRow & r) {
+                                    return r.kind == LedgerKind::Dense || r.kind == LedgerKind::ExpertCache ||
+                                           r.in_turn;
+                                }),
+                 l.rows.end());
     l.held = l.locked = 0;
     for (const LedgerRow & r : l.rows) {
         l.held += r.bytes;
         if (r.locked) l.locked += r.bytes;
     }
+}
+
+const char * ledger_kind_name(LedgerKind k) {
+    switch (k) {
+    case LedgerKind::ContextCompute:
+        return "context and compute";
+    case LedgerKind::Projector:
+        return "projector";
+    case LedgerKind::Checkpoints:
+        return "context checkpoints";
+    case LedgerKind::Device:
+        return "device";
+    case LedgerKind::Dense:
+        return "dense";
+    case LedgerKind::ExpertCache:
+        return "expert cache";
+    case LedgerKind::DeviceSlots:
+        return "device slots";
+    }
+    return "?";
 }
 
 const char * lane_name(Lane l) {
@@ -918,18 +940,18 @@ void write_ledger(Pricing & c) {
     // a reader checks `locked` against is whichever the locked rows were charged to.
     a.ledger.lockable_cap = std::max(in.lockable_bytes, in.lock_in_place_bytes);
     a.ledger.lockable_cap_known = in.lockable_bytes_known && in.lock_in_place_bytes_known;
-    auto row = [&](const char * name, uint64_t bytes, bool is_locked) {
+    auto row = [&](LedgerKind kind, uint64_t bytes, bool is_locked) {
         if (bytes == 0) return;
-        a.ledger.rows.push_back({name, bytes, is_locked});
+        a.ledger.rows.push_back({kind, ledger_kind_name(kind), bytes, is_locked});
         a.ledger.held += bytes;
         if (is_locked) a.ledger.locked += bytes;
     };
-    row("context and compute", in.fixed_bytes, false);
-    row("projector", in.projector_bytes, false);
-    row("context checkpoints", in.checkpoint_bytes, false);
-    row("device", in.device_bytes, in.device_locked);
-    row("dense", in.reserved_bytes, a.dense_pinned);
-    row("expert cache", a.cache_bytes, a.cache_locked_bytes > 0);
+    row(LedgerKind::ContextCompute, in.fixed_bytes, false);
+    row(LedgerKind::Projector, in.projector_bytes, false);
+    row(LedgerKind::Checkpoints, in.checkpoint_bytes, false);
+    row(LedgerKind::Device, in.device_bytes, in.device_locked);
+    row(LedgerKind::Dense, in.reserved_bytes, a.dense_pinned);
+    row(LedgerKind::ExpertCache, a.cache_bytes, a.cache_locked_bytes > 0);
     if (in.device_turn_bytes > 0) {
         // The prefill-time account: the cache yields up to all of itself, and the slots take their
         // turn. Where the cache is at least as large as they are - and locked like them, or neither
@@ -941,7 +963,8 @@ void write_ledger(Pricing & c) {
         const uint64_t lock_yields = in.device_locked ? std::min(a.cache_locked_bytes, turn) : 0;
         const uint64_t locked_then = a.ledger.locked - lock_yields + (in.device_locked ? turn : 0);
         a.turn_fits = held_then <= a.ledger.holdable_cap && (!in.device_locked || locked_then <= a.ledger.lockable_cap);
-        a.ledger.rows.push_back({"device slots", turn, in.device_locked, true});
+        a.ledger.rows.push_back(
+            {LedgerKind::DeviceSlots, ledger_kind_name(LedgerKind::DeviceSlots), turn, in.device_locked, true});
     }
 }
 

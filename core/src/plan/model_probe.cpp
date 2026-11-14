@@ -5,10 +5,11 @@
 // weights indexed by the declared expert count), the same discovery the streamer runs at load, so
 // there is no table of architectures to fall out of date. A MoE whose layout cannot be read that way
 // gets an error, and the planner declines rather than guessing at a layout. Every other name this
-// file matches (`token_embd`, `output`, `blk.N.attn_*`, `blk.N.ffn_*`) is the gguf naming
-// convention itself, shared by every architecture llama.cpp converts: a property of the FORMAT,
-// not of any model. A name matching nothing lands in Other and is priced as read-whole, which is
-// the conservative direction — an unrecognised tensor can make a plan cautious, never reckless.
+// file matches (the token table, the output head, a block's attention and feed-forward) is the gguf
+// naming convention itself, shared by every architecture llama.cpp converts: a property of the
+// FORMAT, not of any model, and spelled in tensor_names with every other name the engine reads. A
+// name matching nothing lands in Other and is priced as read-whole, which is the conservative
+// direction — an unrecognised tensor can make a plan cautious, never reckless.
 
 #include "bmoe/probe.h"
 
@@ -19,26 +20,12 @@
 
 #include <algorithm>
 #include <cstdio>
-#include <cstring>
 #include <vector>
 #include <map>
 #include <set>
 #include <string>
 
 namespace bmoe {
-
-namespace {
-
-// An embedding table, by the format's own naming. Two tensors qualify and both are gathered by
-// row: `token_embd`, and the per-layer n-gram table some architectures add (gemma4, qwen4exp),
-// which on one released quant is 28.8 GB — 43% of the file. Pricing that as read-whole would put
-// a demand on every token that no token has, and it would dominate every other term in the plan.
-// Matched by the convention rather than by name so a third table needs no new case.
-bool is_embedding_table(const std::string & name) {
-    return name.find("token_embd") != std::string::npos;
-}
-
-} // namespace
 
 GgufHeaderFacts probe_gguf_header(const char * model_path) {
     GgufHeaderFacts h;
@@ -108,7 +95,7 @@ ModelProfile probe_model(const char * model_path) {
     // block at all unless asked, experts AND dense alike, so nothing of it may count toward what
     // the run holds. (Measured: counting its dense tensors overstated the pinned set by ~850 MiB.)
     for (const auto & kv : meta.offsets.size_by_name) {
-        if (kv.first.find("nextn") == std::string::npos) continue;
+        if (!tensor_names::is_mtp_tensor(kv.first.c_str())) continue;
         m.has_mtp = true;
         const int layer = tensor_names::block_layer(kv.first.c_str());
         if (layer >= 0) mtp_layers.insert(layer);
@@ -120,26 +107,30 @@ ModelProfile probe_model(const char * model_path) {
 
         // Classification and the MTP exclusion see every tensor of a block, scales, biases and
         // probs included: those are bytes the file carries either way.
-        const char * rest = "";
-        const int layer = tensor_names::block_layer(name.c_str(), &rest);
+        const int layer = tensor_names::block_layer(name.c_str());
         const bool in_block = layer >= 0;
         if (in_block && mtp_layers.count(layer)) continue; // never loaded
         if (in_block) blocks.insert(layer);
 
         m.file_bytes += size;
 
-        if (name == "output.weight") saw_output_weight = true;
-        if (name == "token_embd.weight") saw_token_embd = true;
+        if (tensor_names::is_output_head(name)) saw_output_weight = true;
+        if (tensor_names::is_token_table(name)) saw_token_embd = true;
 
         // Only the layout's expert weights: a scale, a bias or a probs tensor is not an expert
         // weight however much its name resembles one, and the layout told them apart by rank.
         int elayer = 0;
         const bool is_expert = layout.slot_of(name.c_str(), elayer) >= 0;
 
+        // An embedding table is gathered by row: the token table, and the per-layer n-gram table some
+        // architectures add (gemma4, qwen4exp), which on one released quant is 28.8 GB — 43% of the
+        // file. Pricing that as read-whole would put a demand on every token that no token has, and
+        // it would dominate every other term in the plan.
         WeightGroup g = WeightGroup::Other;
+        const tensor_names::BlockPart part = tensor_names::block_part(name.c_str());
         if (is_expert) {
             g = WeightGroup::Experts;
-        } else if (!in_block && is_embedding_table(name)) {
+        } else if (!in_block && tensor_names::is_embedding_table(name.c_str())) {
             g = WeightGroup::Embedding;
             m.embedding_tensors.push_back(name);
             // A table whose row count the file does not state cannot be turned into a per-token
@@ -149,11 +140,11 @@ ModelProfile probe_model(const char * model_path) {
                 embd_row_bytes += size / r->second;
             else
                 embd_rows_known = false;
-        } else if (name == "output.weight") {
+        } else if (tensor_names::is_output_head(name)) {
             g = WeightGroup::Output;
-        } else if (in_block && std::strncmp(rest, "attn", 4) == 0) {
+        } else if (part == tensor_names::BlockPart::Attention) {
             g = WeightGroup::Attention;
-        } else if (in_block && std::strncmp(rest, "ffn", 3) == 0) {
+        } else if (part == tensor_names::BlockPart::Ffn) {
             g = WeightGroup::DenseFfn;
         }
         m.group(g).bytes += size;
