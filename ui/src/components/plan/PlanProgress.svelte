@@ -3,6 +3,7 @@
   // `plan_progress` events, in the server's words. Before the first event arrives it says only that
   // it is measuring.
   import type { PlanProgress } from '../../lib/types';
+  import { t } from '../../lib/text';
 
   let { progress }: { progress: PlanProgress | null } = $props();
 
@@ -20,15 +21,15 @@
 </script>
 
 <div class="card progress" role="status">
-  <p class="title">Measuring this machine</p>
+  <p class="title">{t('plan.progress.title')}</p>
   <progress max={progress?.count ?? 1} value={progress?.index ?? 0}></progress>
   <ul>
     {#each done as s (s)}
-      <li><span class="badge ok">done</span> {s}</li>
+      <li><span class="badge ok">{t('plan.progress.done')}</span> {s}</li>
     {/each}
     {#if progress}
-      <li><span class="badge info">running</span> {words(progress)}</li>
-      {#if left > 0}<li class="muted"><span class="badge">next</span> {left} more</li>{/if}
+      <li><span class="badge info">{t('plan.progress.running')}</span> {words(progress)}</li>
+      {#if left > 0}<li class="muted"><span class="badge">{t('plan.progress.next')}</span> {t('plan.progress.more', { n: left })}</li>{/if}
     {/if}
   </ul>
 </div>
