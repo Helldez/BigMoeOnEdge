@@ -480,6 +480,9 @@ predicts 2.9 tok/s. Two chat turns measured **3.0 and 2.6 tok/s** (147 and 211 t
 12 GB Android phone because of the per-app memory limit: with a smaller cache, more experts are
 read from flash on each token.
 
+The same contributor's `--auto` harness run on 0.42.0, on the same iPhone and model, measured
+**5.56 tok/s** (#574): the README's iPhone row.
+
 ### Desktop
 
 Measured on fewer machines than the phone. The Windows table below is a configuration set by hand

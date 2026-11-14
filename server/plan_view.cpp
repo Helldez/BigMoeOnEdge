@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
@@ -57,6 +58,20 @@ std::string host_name(const HardwareProfile & hw) {
     return "the host";
 }
 
+// Where a prompt runs: the prefill device where one is armed; else, where the run lets the backends take
+// a wide graph's matmuls (offloads_wide_matmuls), the devices that hold layers, which compute their own
+// weights and the host's copied over for the pass; else the host. One answer for the lanes and the
+// device badges.
+std::vector<std::string> prompt_devices(const HardwareProfile & hw, const Plan & plan) {
+    if (!plan.config.prefill.device.empty()) return {plan.config.prefill.device};
+    std::vector<std::string> out;
+    if (offloads_wide_matmuls(plan.config))
+        for (const ComputeDevice & d : hw.devices)
+            if (has_layers(plan, d)) out.push_back(d.name);
+    if (out.empty()) out.push_back(host_name(hw));
+    return out;
+}
+
 // The badge a device row carries: what it does, or why it does nothing.
 std::string device_badge(const std::vector<std::string> & uses, const std::string & status) {
     if (status == "refused") return "Wrong results";
@@ -80,6 +95,10 @@ std::string rate_text(const ComputeDevice & d, double prompt_ratio) {
 // Every device the plan saw, with what it does in this run and why, from the facts the rules read.
 json devices_json(const HardwareProfile & hw, const Plan & plan) {
     const std::string & armed = plan.config.prefill.device;
+    const std::vector<std::string> prompt = prompt_devices(hw, plan);
+    const auto runs_prompt = [&](const std::string & name) {
+        return std::find(prompt.begin(), prompt.end(), name) != prompt.end();
+    };
     json out = json::array();
     for (const ComputeDevice & d : hw.devices) {
         std::vector<std::string> uses;
@@ -93,7 +112,7 @@ json devices_json(const HardwareProfile & hw, const Plan & plan) {
                                        ? d.memory_bandwidth_gibs / hw.host_bandwidth_gibs
                                        : 0.0;
         if (d.is_cpu) {
-            if (armed.empty()) uses.push_back("prompt");
+            if (runs_prompt(d.name)) uses.push_back("prompt");
             uses.push_back("tokens");
             why = "The host: every rate is measured against it.";
         } else if (d.usable == Tri::No) {
@@ -101,17 +120,19 @@ json devices_json(const HardwareProfile & hw, const Plan & plan) {
             why = d.unusable_reason.empty() ? "Its probe did not come back, so nothing uses it." : d.unusable_reason;
         } else {
             if (has_layers(plan, d)) uses.push_back("layers");
-            if (d.name == armed) uses.push_back("prompt");
+            if (runs_prompt(d.name)) uses.push_back("prompt");
             if (!uses.empty()) {
-                why = d.name == armed ? "Faster than the host on a prompt, with the same results."
-                                      : "Holds layers in memory of its own.";
+                why = d.name == armed       ? "Faster than the host on a prompt, with the same results."
+                      : runs_prompt(d.name) ? "Holds layers in memory of its own, and computes a prompt's wide "
+                                              "matmuls, the host's weights copied over for the pass."
+                                            : "Holds layers in memory of its own.";
             } else if (d.identity_ok == Tri::No || d.wide_identity_ok == Tri::No) {
                 status = "refused";
                 why = "Its results did not match the host's, so it is never used.";
             } else if (prompt_ratio == 0) {
                 why = "Not measured at prompt width, so the plan does not arm it.";
             } else {
-                why = armed.empty() ? "The prompt stays on the host: the prefill decision says why."
+                why = armed.empty() ? "The prompt runs where the layers are: the prefill decision says why."
                                     : armed + " is the one the plan arms for the prompt.";
             }
         }
@@ -204,10 +225,8 @@ json lanes_json(const HardwareProfile & hw, const Plan & plan) {
     json tokens = json::array({host});
     for (const ComputeDevice & d : hw.devices)
         if (has_layers(plan, d)) tokens.push_back(d.name);
-    const std::string & armed = plan.config.prefill.device;
-    return json::array(
-        {json{{"phase", "prompt"}, {"label", "Prompt"}, {"on", json::array({armed.empty() ? host : armed})}},
-         json{{"phase", "tokens"}, {"label", "Tokens"}, {"on", tokens}}});
+    return json::array({json{{"phase", "prompt"}, {"label", "Prompt"}, {"on", prompt_devices(hw, plan)}},
+                        json{{"phase", "tokens"}, {"label", "Tokens"}, {"on", tokens}}});
 }
 
 // The three groups a person reads a plan in, by who decided and what: a setting the plan decided
@@ -282,6 +301,52 @@ json plan_view(const HardwareProfile & hw, const Plan & plan) {
                 {"devices", devices_json(hw, plan)},
                 {"devices_none", none},
                 {"devices_none_text", devices_none_text(none)}};
+}
+
+namespace {
+
+// Two significant digits in plain notation: 0.0202 -> "0.020", 0.31 -> "0.31".
+std::string two_significant(double v) {
+    int decimals = 1 - (int) std::floor(std::log10(v));
+    if (decimals < 0) decimals = 0;
+    char b[48];
+    std::snprintf(b, sizeof b, "%.*f", decimals, v);
+    return b;
+}
+
+// A factor between two rates: whole above 10, one decimal above 1, two significant digits below.
+std::string factor_text(double f) {
+    char b[48];
+    if (f >= 10)
+        std::snprintf(b, sizeof b, "%.0f", f);
+    else if (f >= 1)
+        std::snprintf(b, sizeof b, "%.1f", f);
+    else
+        return two_significant(f);
+    return b;
+}
+
+} // namespace
+
+std::string decode_rate_text(double tok_s) {
+    if (!std::isfinite(tok_s) || tok_s <= 0) return "-";
+    if (tok_s < 0.1) return two_significant(tok_s);
+    char b[48];
+    std::snprintf(b, sizeof b, "%.1f", tok_s);
+    return b;
+}
+
+json speed_check(double predicted_s_per_token, double measured_s_per_token) {
+    if (!(predicted_s_per_token > 0) || !(measured_s_per_token > 0)) return nullptr;
+    const double factor = predicted_s_per_token / measured_s_per_token; // measured rate over predicted rate
+    const std::string expected = decode_rate_text(1.0 / predicted_s_per_token);
+    const char * tone = factor >= 1 ? "ok" : "warn";
+    if (factor >= k_speed_ratio_from || factor <= 1 / k_speed_ratio_from)
+        return json{{"badge", factor_text(factor) + "x"}, {"against", "the " + expected + " expected"}, {"tone", tone}};
+    // As bmoe-cli prints it: positive when the run beat the plan.
+    char b[48];
+    std::snprintf(b, sizeof b, "%+.0f%%", 100 * (factor - 1));
+    return json{{"badge", b}, {"against", "against the " + expected + " expected"}, {"tone", tone}};
 }
 
 std::string value_text(const Decision & d) {

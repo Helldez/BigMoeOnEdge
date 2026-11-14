@@ -451,4 +451,23 @@ ValidationResult validate(const RunConfig & cfg) {
     return r;
 }
 
+bool offloads_wide_matmuls(const MoeStreamConfig & moe, int n_gpu_layers, bool prefill_device) {
+    // Placement is decided by moving weights: a prefill device takes the layers for the prompt itself.
+    if (prefill_device) return false;
+    // Under overlap a streamed expert is waited for inside the CPU's expert matmul, as it is read.
+    // With layers on a device, a wide graph's host-weight matmuls are offered to that device, which
+    // copies the expert tensor before the reads land: a Metal run with 12 layers placed and a
+    // 548-token prompt printed blank lines where the serial run printed the resident text. Serial
+    // streaming has every routed expert in place before the matmul's split starts, so only overlap
+    // gives the offload up; the decode's one-token graphs are never offloaded either way.
+    if (moe.enabled && moe.overlap && n_gpu_layers != 0) return false;
+    // With no layer placed at all, a device is registered only because the caller asked for every
+    // one (`devices=all`); the streamer still rebinds the expert tensors at compute time, on the
+    // CPU, and a backend that takes those ops copies whatever the tensors pointed at before.
+    // Measured on a phone with its GPU backends registered and nothing placed: a 15-token prompt
+    // that answers in 22 s on the CPU alone had not produced a token after eight minutes.
+    if (moe.enabled && n_gpu_layers == 0) return false;
+    return true;
+}
+
 } // namespace bmoe

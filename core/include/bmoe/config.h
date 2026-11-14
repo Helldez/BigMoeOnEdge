@@ -807,7 +807,10 @@ struct RunConfig {
     // falls back to F16 rather than failing the run.
     KvCacheType cache_type_k = k_default_kv_cache_type;
     KvCacheType cache_type_v = k_default_kv_cache_type;
-    bool chatml = false; // wrap the prompt in the model family's chat turn (arch-aware)
+    // Wrap the prompt in chat turns, rendered with the chat template the gguf carries (llama.cpp's
+    // common_chat_templates_init): the model's own template, not one picked by architecture. A file
+    // whose template cannot be read falls back to the raw prompt, with a warning.
+    bool chatml = false;
 
     // Render the chat template with reasoning enabled. Passed to the template as the
     // `enable_thinking` kwarg, so a reasoning model (Qwen3, thinking Gemma, …) only emits
@@ -914,5 +917,15 @@ struct ValidationResult {
 // requires a model path; cache_mb is 0 or >= cache_min_mb (unless force_cache);
 // io_threads in range; n_predict/n_threads positive. Pure function — no I/O.
 ValidationResult validate(const RunConfig & cfg);
+
+// Whether a run lets its GPU backends take a wide graph's matmuls over host-resident weights (llama.cpp's
+// op offload: a prompt's expert matmuls computed on the device the layers are on, the weights copied
+// over for the pass). The one rule the session loads by and a front-end says where a prompt runs by,
+// so the two cannot disagree. Pure. The facts it reads: the expert streamer's config, the layers placed,
+// and whether a prefill device takes the prompt.
+bool offloads_wide_matmuls(const MoeStreamConfig & moe, int n_gpu_layers, bool prefill_device);
+inline bool offloads_wide_matmuls(const RunConfig & cfg) {
+    return offloads_wide_matmuls(cfg.moe, cfg.n_gpu_layers, cfg.prefill.enabled());
+}
 
 } // namespace bmoe

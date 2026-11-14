@@ -51,7 +51,18 @@ int main() {
         put(d + "/fs/memory.current", std::to_string(28 * GiB) + "\n");
         put(d + "/fs/memory.stat", "anon 1\ninactive_file " + std::to_string(12 * GiB) + "\nactive_file 5\n");
         const auto left = cgroup_memory_left((d + "/fs").c_str(), (d + "/self").c_str());
-        check(left == (85 - 28 + 12) * GiB, "v2: the limit less what is held, crediting inactive file pages");
+        check(left == (85 - 28 + 12) * GiB + 5, "v2: the limit less what is held, crediting file pages");
+    }
+    {
+        // The second load of one model in a container: the first left its file on the active list.
+        const std::string d = fresh("v2-active");
+        put(d + "/self", "0::/\n");
+        put(d + "/fs/memory.max", std::to_string(30 * GiB) + "\n");
+        put(d + "/fs/memory.current", std::to_string(21 * GiB) + "\n");
+        put(d + "/fs/memory.stat", "anon " + std::to_string(1 * GiB) + "\nactive_file " + std::to_string(19 * GiB) +
+                                       "\ninactive_file " + std::to_string(1 * GiB) + "\n");
+        check(cgroup_memory_left((d + "/fs").c_str(), (d + "/self").c_str()) == 29 * GiB,
+              "v2: a file the last load read twice is credited, not charged");
     }
     {
         const std::string d = fresh("v2-max");
@@ -85,10 +96,11 @@ int main() {
         put(d + "/self", "12:cpu,cpuacct:/x\n4:memory:/docker/abc\n");
         put(d + "/fs/memory/docker/abc/memory.limit_in_bytes", std::to_string(16 * GiB) + "\n");
         put(d + "/fs/memory/docker/abc/memory.usage_in_bytes", std::to_string(10 * GiB) + "\n");
-        put(d + "/fs/memory/docker/abc/memory.stat", "total_inactive_file " + std::to_string(1 * GiB) + "\n");
+        put(d + "/fs/memory/docker/abc/memory.stat",
+            "total_inactive_file " + std::to_string(1 * GiB) + "\ntotal_active_file " + std::to_string(1 * GiB) + "\n");
         put(d + "/fs/memory/docker/memory.limit_in_bytes", "9223372036854771712\n");
         put(d + "/fs/memory/docker/memory.usage_in_bytes", "1\n");
-        check(cgroup_memory_left((d + "/fs").c_str(), (d + "/self").c_str()) == 7 * GiB,
+        check(cgroup_memory_left((d + "/fs").c_str(), (d + "/self").c_str()) == 8 * GiB,
               "v1: the memory controller's limit, its unlimited sentinel ignored");
     }
     {

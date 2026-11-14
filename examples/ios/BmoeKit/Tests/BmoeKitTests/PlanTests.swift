@@ -55,21 +55,38 @@ final class PlanTests: XCTestCase {
         XCTAssertEqual(d.group, "set")
         XCTAssertTrue(d.brief.hasPrefix("703 MiB"))
         XCTAssertEqual(d.shownValue, "703")
-        let speed = p.speedCheck
+        let speed = p.decodeRates
         XCTAssertEqual(try XCTUnwrap(speed.expected), 1 / 0.302, accuracy: 1e-9)
         XCTAssertNil(speed.measured)
-        XCTAssertNil(speed.deltaPct)
+        XCTAssertNil(p.speedCheck)
     }
 
     func testMeasuredTurnSetsBesideThePrediction() throws {
         let p = PlanResult(try JSON(parsing: #"""
             {"available":true,"from_last_load":true,"predicted":{"s_per_token":0.2},
-             "measured":{"s_per_token":0.16,"cache_hit_pct":-1,"tokens":64}}
+             "measured":{"s_per_token":0.16,"cache_hit_pct":-1,"tokens":64},
+             "speed_check":{"badge":"+25%","against":"against the 5.0 expected","tone":"ok"}}
             """#))
         XCTAssertTrue(p.fromLastLoad)
         XCTAssertEqual(p.measured?.tokens, 64)
         XCTAssertEqual(p.predicted?.cacheHitPct, -1)
-        XCTAssertEqual(try XCTUnwrap(p.speedCheck.deltaPct), 25, accuracy: 1e-9)
+        let c = try XCTUnwrap(p.speedCheck)
+        XCTAssertEqual(c.badge, "+25%")
+        XCTAssertEqual(c.against, "against the 5.0 expected")
+        XCTAssertTrue(c.ok)
+    }
+
+    func testFarApartIsTheServersRatioNeverAPercentage() throws {
+        // A phone measured 1.7 tok/s against ~0.02 predicted: the server says "84x", and the app
+        // shows that as sent rather than "+8314%".
+        let p = PlanResult(try JSON(parsing: #"{"available":true,"from_last_load":true,"predicted":{"s_per_token":49.5},"measured":{"s_per_token":0.588,"cache_hit_pct":-1,"tokens":70},"speed_check":{"badge":"84x","against":"the 0.020 expected","tone":"ok"}}"#))
+        XCTAssertEqual(p.figures.speedCheck?.badge, "84x")
+        XCTAssertEqual(p.figures.speedCheck?.against, "the 0.020 expected")
+        let slow = PlanResult(try JSON(parsing: #"{"available":true,"speed_check":{"badge":"0.31x","against":"the 4.0 expected","tone":"warn"}}"#))
+        XCTAssertEqual(slow.speedCheck?.ok, false)
+        // Without the server's words there is no comparison, whatever the numbers say.
+        let bare = PlanResult(try JSON(parsing: #"{"available":true,"predicted":{"s_per_token":49.5},"measured":{"s_per_token":0.588}}"#))
+        XCTAssertNil(bare.figures.speedCheck)
     }
 
     func testNothingHeldIsNone() throws {

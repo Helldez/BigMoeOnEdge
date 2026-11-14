@@ -32,6 +32,9 @@ describe('text', () => {
       ...['system', 'light', 'dark'].map((s) => `settings.theme.${s}`),
       ...['bundled', 'user', 'workspace'].map((s) => `skills.source.${s}`),
       ...['once', 'interval', 'daily', 'weekly'].map((k) => `tasks.kind.${k}`),
+      ...['you', 'plan', 'default'].map((s) => `param.source.${s}`),
+      ...['available', 'downloading', 'partial', 'on_disk', 'loaded', 'incomplete'].map((s) => `models.state.${s}`),
+      ...['find', 'pick', 'check', 'download'].map((s) => `hf.step.${s}`),
       ...['compute', 'disk', 'mgmt', 'other'].flatMap((k) => [`metrics.split.${k}`, `metrics.split.${k}.hint`]),
       ...['read', 'edited', 'created', 'listed', 'searched', 'commands', 'pages', 'skills', 'other'].flatMap((k) =>
         ['first', 'next'].flatMap((p) => ['one', 'other'].map((f) => `run.${k}.${p}.${f}`)),

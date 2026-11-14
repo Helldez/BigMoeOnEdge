@@ -210,6 +210,7 @@ const PLAN = {
   summary: { sentence: 'Experts stream from disk, with a 7.1 GiB cache', lanes: [{ phase: 'prompt', label: 'Prompt', on: ['GPU'] }, { phase: 'tokens', label: 'Tokens', on: ['CPU'] }] },
   predicted: { s_per_token: 0.072, cache_hit_pct: 71 },
   measured: { s_per_token: 0.066, cache_hit_pct: 74, tokens: 212 },
+  speed_check: { badge: '+9%', against: 'against the 13.9 expected', tone: 'ok' },
   devices: [
     { name: 'CPU', description: 'The processor', cpu: true, own_memory: false, memory_total: 0, prompt_ratio: 1, token_ratio: 1, uses: ['tokens'], status: 'used', badge: 'Tokens', why: 'Computes the tokens.' },
     { name: 'GPU0', description: 'Integrated graphics', cpu: false, own_memory: false, memory_total: 0, prompt_ratio: 6.5, token_ratio: 0.8, uses: ['prompt'], status: 'used', badge: 'Prompt', why: 'Reads the prompt 6.5x faster.' },

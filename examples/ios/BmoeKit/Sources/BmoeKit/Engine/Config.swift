@@ -117,6 +117,21 @@ public struct PlanResult: Equatable, Sendable {
         }
     }
 
+    /// Measured decode against the plan's, as the server words it (`speed_check`): a badge
+    /// ("+26%", or "84x" once the two are far apart), what it is set against, and whether the run
+    /// met the plan (`tone`), which only picks the badge's colour.
+    public struct SpeedCheck: Equatable, Sendable {
+        public let badge: String
+        public let against: String
+        public let ok: Bool
+
+        init(_ j: JSON) {
+            badge = j["badge"].string(or: "")
+            against = j["against"].string(or: "")
+            ok = j["tone"].string(or: "") == "ok"
+        }
+    }
+
     /// One line of the memory ledger. `inTurn`: held in the expert cache's place while a prompt runs.
     public struct MemoryRow: Equatable, Sendable {
         public let name: String
@@ -177,6 +192,9 @@ public struct PlanResult: Equatable, Sendable {
     public let predicted: Decode?
     /// What the loaded model's last complete turn measured; nil before one.
     public let measured: Decode?
+    /// `measured` against `predicted` in the server's words; sent only while the loaded model runs
+    /// this plan. Nothing here works the comparison out from the two numbers.
+    public let speedCheck: SpeedCheck?
     public let pools: [Pool]
     public let devices: [Device]
     /// Why there is no device beyond the host, in words; empty when there is one.
@@ -206,6 +224,7 @@ public struct PlanResult: Equatable, Sendable {
         }
         predicted = j["predicted"].object == nil ? nil : Decode(j["predicted"])
         measured = j["measured"].object == nil ? nil : Decode(j["measured"])
+        speedCheck = j["speed_check"].object == nil ? nil : SpeedCheck(j["speed_check"])
         pools = (j["memory"]["pools"].array ?? []).map { p in
             let name = p["name"].string(or: "")
             return Pool(name: name, label: p["label"].string(or: name), capBytes: p["cap_bytes"].int64(or: 0),
@@ -233,23 +252,20 @@ public struct PlanResult: Equatable, Sendable {
         (["bmoe-cli", "-m", model.isEmpty ? "MODEL" : model] + args).map(Shell.quote).joined(separator: " ")
     }
 
-    /// Decode speed, expected against measured: tokens per second each (nil when absent) and the
-    /// measured one's difference from the expected one, in percent.
-    public var speedCheck: (expected: Double?, measured: Double?, deltaPct: Double?) {
-        let p = predicted.flatMap { $0.sPerToken > 0 ? 1 / $0.sPerToken : nil }
-        let m = measured.flatMap { $0.sPerToken > 0 ? 1 / $0.sPerToken : nil }
-        guard let p, let m else { return (p, m, nil) }
-        return (p, m, 100 * (m / p - 1))
+    /// Decode speed, expected and measured, in tokens per second each (nil when absent).
+    public var decodeRates: (expected: Double?, measured: Double?) {
+        (predicted.flatMap { $0.sPerToken > 0 ? 1 / $0.sPerToken : nil },
+         measured.flatMap { $0.sPerToken > 0 ? 1 / $0.sPerToken : nil })
     }
 
     /// The three figures under the plan's sentence (docs/screens.md, "Plan"), each nil when the
     /// plan does not have it. The measured ones are the loaded model's; a screen compares them to
     /// the expected ones only under `fromLastLoad`.
     public struct Figures: Equatable, Sendable {
-        /// Decode in tokens per second, expected and measured, and the measured one's difference.
+        /// Decode in tokens per second, expected and measured, and the server's words comparing them.
         public let expectedTokS: Double?
         public let measuredTokS: Double?
-        public let deltaPct: Double?
+        public let speedCheck: SpeedCheck?
         /// The cache hit rate the cost model credited, and the one the last turn measured.
         public let creditedHitPct: Double?
         public let measuredHitPct: Double?
@@ -259,10 +275,10 @@ public struct PlanResult: Equatable, Sendable {
     }
 
     public var figures: Figures {
-        let s = speedCheck
+        let s = decodeRates
         let host = pools.first { $0.name == "host" } ?? pools.first
         return Figures(
-            expectedTokS: s.expected, measuredTokS: s.measured, deltaPct: s.deltaPct,
+            expectedTokS: s.expected, measuredTokS: s.measured, speedCheck: speedCheck,
             creditedHitPct: predicted.map(\.cacheHitPct).flatMap { $0 >= 0 ? $0 : nil },
             measuredHitPct: measured.map(\.cacheHitPct).flatMap { $0 >= 0 ? $0 : nil },
             heldBytes: host.flatMap { $0.capBytes > 0 ? $0.heldBytes : nil },
