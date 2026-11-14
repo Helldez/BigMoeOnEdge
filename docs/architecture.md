@@ -119,6 +119,8 @@ core/
                   the streaming path needs
                 file_reader — pooled positioned reader, per-consumer O_DIRECT
                 mapping_release - releases the model file's mapping after load (--release-mmap)
+                parallel_copy - memory copies spread across the plan's threads, landing exactly
+                  where one memcpy would (the experts' host copy behind a device cache)
     moe/        discardable_entries — which cached experts are offered to the kernel to drop, and what a
                   lookup finds after a drop; pure policy over a SpanOps port (platform_io underneath)
                 gguf_offsets (tensor → (shard, offset), split ggufs included), expert_layout,
@@ -136,6 +138,11 @@ core/
                 decide_probe - experimental per-decision expert usage and layer-exit answers (decide.md)
     engine/     session — composition + the generation loop (open/generate/close); open() and
                   generate() are short sequences of named steps (see "The generation loop")
+                cache_brake - the expert cache's brake: halves the budget when the run stalls and
+                  the cache's own pages are being taken back, and never grows it again (pressure.md)
+                image_probe - an encoded image's size from its header alone, so an image too large
+                  to decode is refused before any pixel is allocated
+                kv_cache_type - the KV cache type to the ggml type llama.cpp's context takes
                 prefill_device - moves layer weights and model state onto a device per graph
                 prefill_path - the prefill device for one session: setup, placement, device decode
                 runtime — the one-shot run() wrapper over a Session
@@ -175,9 +182,10 @@ core/
                   layer_probe (one real layer of the model, its experts and its dense matrices, on
                   every backend: measured-planning.md, Step 3), gate_probe,
                   device_probe, placement_probe, isolated_probe (a device asked in a second
-                  process, so a driver that ends it ends only that) - the adapters that measure a
-                  machine and read a gguf; the only place in the planner where a platform or
-                  llama.cpp may appear
+                  process, so a driver that ends it ends only that), metal_memory_probe and
+                  memory_topology (whether a device shares the host's memory) - the adapters that
+                  measure a machine and read a gguf; the only place in the planner where a platform
+                  or llama.cpp may appear
                 auto_plan - the composition of the two: the probes in the order a plan is
                   measured in, then plan_run(). With the adapters because it starts the backends;
                   it decides nothing, and bmoe-cli --auto and the server's /api/plan both call it.
@@ -185,7 +193,9 @@ core/
                   calibration plans with between candidates (calibrate_plan)
     params.cpp  the parameter table's rows (see params.h)
     log.cpp     the log port's default sink and level filter (see log.h)
-    metrics/    csv_metrics_sink, route_trace_sink, decode_trace_sink
+    metrics/    csv_metrics_sink, route_trace_sink, decode_trace_sink; memory_snapshot (the
+                  process's memory on each token's row, and diagnostics in the log that never move a
+                  budget)
 third_party/
   llama.cpp     upstream submodule; public-API consumer, plus one optional overlap hook
 tests/          byte-identity gates
