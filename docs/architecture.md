@@ -190,7 +190,9 @@ tools/          developer instruments (-DBMOE_BUILD_TOOLS=ON); not installed, in
   iobench, membench   the storage and the memory, measured without the engine
   planlab/      bmoe-planlab: everything --auto measured on a machine as a text record, and the
                 plan made again from one anywhere (plan-records.md); tests/plan-records is the
-                corpus the plan_records test replays
+                corpus the plan_records test replays. simulate composes a machine from records
+                and has llama.cpp's fitter place a real model on simulated cards
+                (hardware-simulation.md)
 third_party/
   llama.cpp     upstream submodule; public-API consumer, plus one optional overlap hook
 tests/          byte-identity gates

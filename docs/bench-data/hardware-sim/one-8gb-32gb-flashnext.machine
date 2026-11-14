@@ -1,0 +1,12 @@
+# Test (1) of the 0.43 validation: an 8 GB card (RTX 3070/4060 class) with 32 GB of RAM.
+# Host: the rented 8 GB card box measured (14-core server CPU, its storage and link), its memory cut to 32 GB.
+note=8 GB card, 32 GB RAM
+host=../plan-records/rtx-8gb-flashnext-125b-q2_0.planrec
+device=../plan-records/rtx-8gb-flashnext-125b-q2_0.planrec#0
+set=hw.memory_total=34359738368
+set=hw.residency_budget=31138512896
+set=hw.devices.1.memory_total=34359738368
+set=hw.devices.1.memory_free=31138512896
+set=hw.label=14 cores, 29696 MiB available of 32768 MiB (simulated)
+# Flash-Next Q2_0 device-cache hit rates measured on rented cards (8-32 GB, LLM moe_cache counters, decode).
+hitcurve=2.2G:0.61,3.5G:0.68,3.9G:0.73,6G:0.80,7.8G:0.87,10G:0.90,15.6G:0.92,17.8G:0.94,25G:0.96

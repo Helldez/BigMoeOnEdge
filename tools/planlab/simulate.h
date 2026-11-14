@@ -24,9 +24,9 @@ namespace bmoe {
 // One device of the simulated machine: the facts a record measured for a real card, sized and
 // scaled to the one asked about.
 struct SimDeviceFrom {
-    std::string record;          // the record holding the measured card
-    int index = -1;              // its index in that record's hw.devices; -1: the first that is not the CPU
-    uint64_t memory_total = 0;   // the simulated card's memory; 0: the measured card's
+    std::string record;           // the record holding the measured card
+    int index = -1;               // its index in that record's hw.devices; -1: the first that is not the CPU
+    uint64_t memory_total = 0;    // the simulated card's memory; 0: the measured card's
     double bandwidth_scale = 1.0; // its memory bandwidth against the measured card's
     double compute_scale = 1.0;   // its wide-matmul (compute-bound) rate against the measured card's
     double link_scale = 1.0;      // its host link (uploads) against the measured card's
@@ -41,11 +41,16 @@ struct SimDeviceFrom {
 //   device=../plan-records/3090-24g-qwen3.6-35b-q4km.planrec memory=16G bandwidth=0.479 compute=0.54
 //   device=...                                   (one line per card, in order)
 //   routing=<record of the same model>           (its measured hit curve; optional)
+//   hitcurve=2.2G:0.61,6G:0.86,26G:0.97          (measured hit rates at cache sizes; optional, instead of routing=)
 //   set=hw.residency_budget=60000000000          (any record key, applied last; repeatable)
 struct MachineSpec {
     std::string note;
     std::string host;    // the record whose host facts (memory, cores, rates, storage) are the machine's
     std::string routing; // a record of the same model whose hit curve the plan prices the cache with
+    // Measured cache hit rates of this model, as (cache size, share served) points, where no routing
+    // trace of it exists: what real runs' cache counters said at the sizes they ran with. A curve made
+    // of them is a measurement of the model's locality, not a replay of its routing, and is said so.
+    std::vector<std::pair<uint64_t, double>> hit_points;
     std::vector<SimDeviceFrom> devices;
     std::vector<std::string> sets;
 };

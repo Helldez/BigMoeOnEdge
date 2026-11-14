@@ -45,8 +45,8 @@ const Placement & fitted_at(
             at = facts.placement_at_width.emplace(key, facts.refit(key)).first;
         } else {
             at = facts.placement_at_width
-                     .emplace(key, probe_placement(cfg.model_path.c_str(), model, facts.hw, (uint32_t) cfg.n_ctx,
-                                                   width, cfg.cache_type_k, cfg.cache_type_v, facts.backends, &cfg.spec))
+                     .emplace(key, probe_placement(cfg.model_path.c_str(), model, facts.hw, (uint32_t) cfg.n_ctx, width,
+                                                   cfg.cache_type_k, cfg.cache_type_v, facts.backends, &cfg.spec))
                      .first;
             detail::log_memory_snapshot(snapshot);
         }

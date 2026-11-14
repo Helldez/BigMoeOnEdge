@@ -21,7 +21,7 @@
 namespace bmoe {
 
 struct SimDeviceSpec {
-    std::string description;  // what the device reports as its description ("RTX A4000 class")
+    std::string description;   // what the device reports as its description ("RTX A4000 class")
     uint64_t memory_total = 0; // bytes
     uint64_t memory_free = 0;  // bytes; 0: the total less what a driver keeps (sim_driver_reserve)
 };

@@ -24,6 +24,18 @@ Semantic Versioning.
   that moves the plan on a recorded machine fails with both plans printed, and each record made
   with a run prints the prediction beside the measurement. It says what the planner decides and
   predicts; whether a plan is fast is still the machine's to answer. `docs/plan-records.md`.
+- **A machine nobody has, planned for (`bmoe-planlab simulate`, a developer tool for the project; not
+  in any release, nothing in `--auto` or any front-end uses it).** A machine spec composes a host
+  from one record and cards from others, sized to the ones asked about; llama.cpp's own capacity
+  fitter places the real model, from a header-only shell of its file (`tools/planlab/gguf_shell.py`,
+  a few MB for a 125 GB model), on simulated ggml devices of those sizes, and the rules plan on the
+  result, which is a plan record like any other. Rebuilt from their own records, the rented 24 GB
+  and 32 GB cards get the plan they recorded, within 130 MiB of the real placement; DeepSeek V4 is
+  placed with fewer layers than a real card takes, which the tool detects and says. `bmoe-planlab
+  speed` adds a decode estimate for plans the cost model does not price (a card holding the dense
+  part, a device cache), within 11% of the rented runs where the card holds the experts it needs.
+  The rented records join `docs/bench-data/plan-records`; the two machines of the 0.43 validation
+  that were not rented are in `docs/bench-data/hardware-sim`. `docs/hardware-simulation.md`.
 
 ### Fixed
 - **A cache size set by hand is the one the plan's prediction is priced at.** With `--cache-mb`

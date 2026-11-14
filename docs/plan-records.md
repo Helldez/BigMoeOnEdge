@@ -17,6 +17,7 @@ again, with no model file, no device and no drive.
 | What would the rules do there with a bigger cache, another width, a pinned thread count? | Yes: replay with the knob typed. |
 | What would the same model get with less memory or a slower drive? | Yes, as far as the changed fact goes: replay with `--set`. |
 | How far is the cost model's prediction from what the machine measured? | Yes, when the record was made with a run. |
+| What would the plan be on a machine nobody recorded (two 16 GB cards, an 8 GB card with 32 GB of RAM)? | Yes, from measured parts: `bmoe-planlab simulate` ([hardware-simulation.md](hardware-simulation.md)). |
 | Is the plan actually fast there? Does the driver crash? Does the kernel kill the process? | **No.** That is the machine's to answer. |
 
 This is a developer's instrument, not a feature of the product: it lives in `tools/planlab`, is
@@ -178,6 +179,8 @@ A replay that moves away from them says so:
 
 - a graph width the fitter was never asked at: the recorded placement is moved along the slope it
   measured (`Placement::at_width`), and the layers it placed do not change;
+- a context the fitter was never asked at (the context giving way to the expert cache asks it at
+  shorter ones): the first placement stands in for it;
 - another context length, KV type or device list: the placement was made for the recorded ones.
 
 Such a plan is still the rules' answer to the facts given; it is not what the fitter would have
@@ -209,12 +212,15 @@ fact *means* invalidates the records made before it; re-make them on the machine
 - `tools/planlab/plan_record.h`, `plan_record.cpp`: the record, its text, and `replay_plan`. Pure;
   every field is named once, in the walk the writer and the reader share. A field added to a
   profile gets a line there.
-- `tools/planlab/main.cpp`: `bmoe-planlab record` and `replay`.
-- `plan_run_placed` in `core/src/plan/planner.cpp`: the rules over a first stage that can be asked
-  again at another width. `probe_and_plan` runs it over the live fitter, a replay over the record.
+- `tools/planlab/main.cpp`: `bmoe-planlab record`, `replay`, `simulate`, `speed`, `errors`, `table`.
+- `tools/planlab/simulate.cpp`, `sim_device.cpp`, `sim_speed.cpp`, `gguf_shell.py`: a machine
+  composed from records ([hardware-simulation.md](hardware-simulation.md)).
+- `replan()` in `core/src/plan/auto_plan.cpp`: the rules on facts already gathered, the same a
+  calibration plans with. A record holds every answer the fitter gave (`AutoPlan::placement` and
+  `placement_at_width`), and a replay hands them back through `AutoPlan::refit`, which a live plan
+  leaves unset so the fitter itself is asked.
 
-The engine's side of it is that one function and the list of placements `probe_and_plan` returns
-beside the plan (`AutoPlan::placements`); nothing in `core/`, the CLI or the server reads a record.
+The engine's side of it is that hook; nothing in `core/`, the CLI or the server reads a record.
 
 The `plan_records` test builds with the tests and needs no tool. To build the tool itself:
 

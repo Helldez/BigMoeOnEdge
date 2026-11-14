@@ -1,0 +1,15 @@
+# Test (2) of the 0.43 validation: two 16 GB cards (RTX A4000 class) with 62 GB of RAM, the shape of the #321 report.
+# Host: the rented 12 GB card box measured (27-core server CPU, 3.3 GB/s NVMe), its memory cut to 62 GB.
+# Cards: the measured 24 GB card (RTX 3090 class) scaled to an A4000 by specification: 448 against 936 GB/s of
+# memory bandwidth, 19.2 against 35.6 TFLOPS FP32; both on PCIe 4.0 x16.
+note=two 16 GB cards (A4000 class), 62 GB RAM
+host=../plan-records/rtx-12gb-deepseek-v4.1-ud-iq2xxs.planrec
+device=../plan-records/rtx-24gb-qwen3.6-35b-ud-q4km.planrec#0 memory=16G bandwidth=0.479 compute=0.54 description=16 GB card, A4000 class (24 GB card scaled)
+device=../plan-records/rtx-24gb-qwen3.6-35b-ud-q4km.planrec#0 memory=16G bandwidth=0.479 compute=0.54 description=16 GB card, A4000 class (24 GB card scaled)
+set=hw.memory_total=66571993088
+set=hw.residency_budget=62277025792
+set=hw.devices.2.memory_total=66571993088
+set=hw.devices.2.memory_free=62277025792
+set=hw.label=27 cores, 59392 MiB available of 63488 MiB (simulated)
+# Flash-Next Q2_0 device-cache hit rates measured on rented cards (8-32 GB, LLM moe_cache counters, decode).
+hitcurve=2.2G:0.61,3.5G:0.68,3.9G:0.73,6G:0.80,7.8G:0.87,10G:0.90,15.6G:0.92,17.8G:0.94,25G:0.96

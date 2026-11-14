@@ -115,6 +115,23 @@ DecodeEstimate estimate_decode(const Plan & plan,
                               : slowest->upload_gibs;
         const double miss_tok = host_experts_tok * (1.0 - hit);
         part("device cache hits", seconds(host_experts_tok * hit, dev));
+        if (c.moe.enabled && miss_tok > 0.0) {
+            // Streamed: a miss is fetched from the RAM cache before it is uploaded, and from flash where
+            // that misses too. The RAM cache holds what the device cache holds and more, so the share of
+            // the device's misses it serves is what its larger size adds over the device's.
+            const uint64_t ram = (uint64_t) std::max(0, c.moe.cache_mb) << 20;
+            double ram_hit = 0.0;
+            if (model.hit_curve.measured) {
+                const double h_ram = model.hit_curve.hit_share((uint64_t) ((double) ram / std::max(host_share, 1e-9)));
+                ram_hit = hit < 1.0 ? std::clamp((h_ram - hit) / (1.0 - hit), 0.0, 1.0) : 1.0;
+            } else if (host_expert_bytes > dcache) {
+                ram_hit =
+                    std::min(1.0, (double) (ram > dcache ? ram - dcache : 0) / (double) (host_expert_bytes - dcache));
+            }
+            const double flash = hw.storage.rate_at((uint32_t) model.expert_slice_bytes, (uint32_t) c.moe.io_threads);
+            part("device cache misses read from flash",
+                 flash > 0.0 ? miss_tok * (1.0 - ram_hit) / (flash * 1024.0 * 1024.0) : NAN);
+        }
         const double share = c.moe.device_cache_cpu_share;
         if (share > 0.0) {
             const double on_card = seconds(miss_tok * (1.0 - share), up) + seconds(miss_tok * (1.0 - share), dev);
@@ -128,7 +145,8 @@ DecodeEstimate estimate_decode(const Plan & plan,
     } else if (host_experts_tok > 0.0) {
         if (c.moe.enabled) {
             // Streamed: the cost model's own price of the host's experts (RAM cache hits, flash reads).
-            part("experts streamed (the cost model's price)", plan.allocation.at(WeightGroup::Experts).seconds_per_token);
+            part("experts streamed (the cost model's price)",
+                 plan.allocation.at(WeightGroup::Experts).seconds_per_token);
         } else {
             part("experts on the host", seconds(host_experts_tok, hw.host_expert_rate()));
         }

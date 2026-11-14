@@ -376,16 +376,44 @@ int record_main(const Args & a) {
     return 0;
 }
 
+// ── the decode estimate (sim_speed.h) ───────────────────────────────────────────────────────
+// The fitter's answer a plan was made on: the one at the plan's own width and context.
+const Placement & placement_for(const PlanRecord & rec, const Plan & plan) {
+    static const Placement none;
+    const PlacedAt * best = nullptr;
+    for (const PlacedAt & p : rec.placements) {
+        if (!best) best = &p;
+        if (p.n_ubatch == (uint32_t) plan.config.graph_width() &&
+            (p.n_ctx == 0 || p.n_ctx == (uint32_t) plan.config.n_ctx))
+            best = &p;
+    }
+    return best ? best->placement : none;
+}
+
+void print_estimate(const char * who, const DecodeEstimate & e) {
+    if (e.seconds <= 0.0) {
+        std::printf("%s: no decode estimate: %s\n", who, e.why.c_str());
+        return;
+    }
+    std::printf("%s: decode estimate %.1f ms/token (%.1f tok/s), a sum of measured rates:\n", who, 1e3 * e.seconds,
+                1.0 / e.seconds);
+    for (const auto & [name, s] : e.parts)
+        std::printf("  %-50s %8.2f ms\n", name.c_str(), 1e3 * s);
+    if (e.device_cache_hit >= 0.0)
+        std::printf("  device cache serves %.0f%% of the host's experts (%s)\n", 100.0 * e.device_cache_hit,
+                    e.hit_from_routing ? "the model's own routing" : "the fraction it holds: no routing given");
+}
+
 // ── replay ──────────────────────────────────────────────────────────────────────────────────
 // One line of a replay: what the plan holds and what it predicts, for a table of several.
-void print_row(const std::string & what, const Replay & r) {
+void print_row(const std::string & what, const Replay & r, double estimate) {
     const Allocation & al = r.plan.allocation;
     const double s = al.seconds_per_token;
     const double mib = 1024.0 * 1024.0;
-    std::printf("%-22s %-15s %9.0f %7.0f%% %9.0f %9.0f %9.3f %8.2f%s\n", what.c_str(),
+    std::printf("%-22s %-15s %9.0f %7.0f%% %9.0f %9.0f %9.3f %8.2f %8.2f%s\n", what.c_str(),
                 r.plan.streaming_declined ? "declined" : regime_name(r.plan.regime), (double) al.cache_bytes / mib,
                 100.0 * al.cache_hit_credited, (double) al.ledger.held / mib, (double) al.ledger.holdable_cap / mib, s,
-                s > 0.0 ? 1.0 / s : 0.0, r.caveats.empty() ? "" : "  *");
+                s > 0.0 ? 1.0 / s : 0.0, estimate > 0.0 ? 1.0 / estimate : 0.0, r.caveats.empty() ? "" : "  *");
 }
 
 // Exit 0, or 4 when a replay with nothing changed is no longer the plan the record carries.
@@ -435,9 +463,13 @@ int replay_main(const Args & a) {
             std::fprintf(stderr, "bmoe-planlab: --sweep wants PARAM=V1,V2,... with PARAM a parameter key\n");
             return 2;
         }
-        std::printf("%-22s %-15s %9s %8s %9s %9s %9s %8s\n", d->key.c_str(), "regime", "cache MiB", "hits", "held MiB",
-                    "cap MiB", "s/token", "tok/s");
-        print_row("(the plan's choice)", replay_plan(rec, cfg, req));
+        std::printf("%-22s %-15s %9s %8s %9s %9s %9s %8s %8s\n", d->key.c_str(), "regime", "cache MiB", "hits",
+                    "held MiB", "cap MiB", "s/token", "tok/s", "est t/s");
+        const auto est = [&](const Replay & x) {
+            return estimate_decode(x.plan, rec.hw, rec.model, placement_for(rec, x.plan)).seconds;
+        };
+        const Replay chosen = replay_plan(rec, cfg, req);
+        print_row("(the plan's choice)", chosen, est(chosen));
         if (!req.is_pinned(d->key.c_str())) req.pinned.push_back(d->key);
         std::stringstream values(a.sweep.substr(eq + 1));
         std::string v;
@@ -450,7 +482,7 @@ int replay_main(const Args & a) {
             }
             const Replay r = replay_plan(rec, at, req);
             starred = starred || !r.caveats.empty();
-            print_row(v, r);
+            print_row(v, r, est(r));
         }
         if (starred) std::printf("  * planned on less than the record holds; replay that value alone to read why\n");
         return 0;
@@ -463,6 +495,7 @@ int replay_main(const Args & a) {
         std::printf("replay: caveat: %s\n", c.c_str());
     const double s = r.plan.allocation.seconds_per_token;
     if (s > 0.0) std::printf("replay: predicts %.3f s/token (%.2f tok/s)\n", s, 1.0 / s);
+    print_estimate("replay", estimate_decode(r.plan, rec.hw, rec.model, placement_for(rec, r.plan)));
     if (rec.ran()) {
         const Facts & o = rec.observed;
         const double measured = fact(o, "seconds_per_token");
@@ -505,34 +538,6 @@ int replay_main(const Args & a) {
     return rc;
 }
 
-// ── the decode estimate (sim_speed.h) ───────────────────────────────────────────────────────
-// The fitter's answer a plan was made on: the one at the plan's own width and context.
-const Placement & placement_for(const PlanRecord & rec, const Plan & plan) {
-    static const Placement none;
-    const PlacedAt * best = nullptr;
-    for (const PlacedAt & p : rec.placements) {
-        if (!best) best = &p;
-        if (p.n_ubatch == (uint32_t) plan.config.graph_width() &&
-            (p.n_ctx == 0 || p.n_ctx == (uint32_t) plan.config.n_ctx))
-            best = &p;
-    }
-    return best ? best->placement : none;
-}
-
-void print_estimate(const char * who, const DecodeEstimate & e) {
-    if (e.seconds <= 0.0) {
-        std::printf("%s: no decode estimate: %s\n", who, e.why.c_str());
-        return;
-    }
-    std::printf("%s: decode estimate %.1f ms/token (%.1f tok/s), a sum of measured rates:\n", who, 1e3 * e.seconds,
-                1.0 / e.seconds);
-    for (const auto & [name, s] : e.parts)
-        std::printf("  %-50s %8.2f ms\n", name.c_str(), 1e3 * s);
-    if (e.device_cache_hit >= 0.0)
-        std::printf("  device cache serves %.0f%% of the host's experts (%s)\n", 100.0 * e.device_cache_hit,
-                    e.hit_from_routing ? "the model's own routing" : "the fraction it holds: no routing given");
-}
-
 // ── simulate ────────────────────────────────────────────────────────────────────────────────
 int simulate_main(const Args & a) {
     if (a.file.empty() || a.cfg.model_path.empty() || a.out.empty()) return usage();
@@ -562,8 +567,8 @@ int simulate_main(const Args & a) {
         std::printf("simulate: caveat: %s\n", c.c_str());
     const double s = sim.plan.allocation.seconds_per_token;
     if (s > 0.0) std::printf("simulate: the cost model predicts %.3f s/token (%.2f tok/s)\n", s, 1.0 / s);
-    print_estimate("simulate", estimate_decode(sim.plan, sim.record.hw, sim.record.model,
-                                               placement_for(sim.record, sim.plan)));
+    print_estimate("simulate",
+                   estimate_decode(sim.plan, sim.record.hw, sim.record.model, placement_for(sim.record, sim.plan)));
     if (!write_text_file(a.out, format_plan_record(sim.record))) {
         std::fprintf(stderr, "bmoe-planlab: cannot write %s\n", a.out.c_str());
         return 1;
@@ -719,13 +724,14 @@ int speed_main(const Args & a) {
 int main(int argc, char ** argv) {
     if (argc < 2) return usage();
     const std::string cmd = argv[1];
-    if (cmd != "record" && cmd != "replay" && cmd != "simulate" && cmd != "speed" && cmd != "table" && cmd != "errors") return usage();
+    if (cmd != "record" && cmd != "replay" && cmd != "simulate" && cmd != "speed" && cmd != "table" && cmd != "errors")
+        return usage();
     const Args a = parse_args(argc, argv, 2, cmd != "record");
     if (!a.ok) return 2;
-    return cmd == "record"   ? record_main(a)
+    return cmd == "record"     ? record_main(a)
            : cmd == "replay"   ? replay_main(a)
            : cmd == "simulate" ? simulate_main(a)
            : cmd == "speed"    ? speed_main(a)
-           : cmd == "table"  ? table_main(a)
-                             : errors_main(a);
+           : cmd == "table"    ? table_main(a)
+                               : errors_main(a);
 }

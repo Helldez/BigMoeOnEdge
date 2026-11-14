@@ -1,0 +1,5 @@
+# The recorded machine rebuilt from its own record: the simulator's check against a real fit.
+note=rtx-32gb-flashnext-125b-q2_0, rebuilt from its record
+host=../plan-records/rtx-32gb-flashnext-125b-q2_0.planrec
+device=../plan-records/rtx-32gb-flashnext-125b-q2_0.planrec
+routing=../plan-records/rtx-32gb-flashnext-125b-q2_0.planrec

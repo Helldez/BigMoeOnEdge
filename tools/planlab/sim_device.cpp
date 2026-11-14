@@ -164,16 +164,16 @@ bool dev_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t buft) 
 
 int64_t op_batch_size(const ggml_tensor * op) {
     switch (op->op) {
-        case GGML_OP_GET_ROWS:
-            return 0;
-        case GGML_OP_MUL_MAT:
-            return op->ne[1];
-        case GGML_OP_MUL_MAT_ID:
-        case GGML_OP_ROPE:
-        case GGML_OP_ROPE_BACK:
-            return op->ne[2];
-        default:
-            return ggml_nrows(op);
+    case GGML_OP_GET_ROWS:
+        return 0;
+    case GGML_OP_MUL_MAT:
+        return op->ne[1];
+    case GGML_OP_MUL_MAT_ID:
+    case GGML_OP_ROPE:
+    case GGML_OP_ROPE_BACK:
+        return op->ne[2];
+    default:
+        return ggml_nrows(op);
     }
 }
 
@@ -216,13 +216,13 @@ std::vector<std::string> register_sim_devices(const std::vector<SimDeviceSpec> &
                       : specs[i].memory_total > sim_driver_reserve_bytes
                           ? specs[i].memory_total - sim_driver_reserve_bytes
                           : 0;
-            d->buft.iface = {buft_name, buft_alloc, nullptr, buft_alignment, buft_max_size, buft_alloc_size, nullptr,
-                             buft_is_host};
+            d->buft.iface = {buft_name,     buft_alloc,      nullptr, buft_alignment,
+                             buft_max_size, buft_alloc_size, nullptr, buft_is_host};
             d->buft.device = &d->dev;
             d->buft.context = d.get();
-            d->dev.iface = {dev_name,       dev_description, dev_memory,      dev_type, dev_props,
-                            dev_init_backend, dev_buft,      nullptr,         nullptr,  dev_supports_op,
-                            dev_supports_buft, dev_offload_op, nullptr,       nullptr,  nullptr};
+            d->dev.iface = {dev_name,          dev_description, dev_memory, dev_type, dev_props,
+                            dev_init_backend,  dev_buft,        nullptr,    nullptr,  dev_supports_op,
+                            dev_supports_buft, dev_offload_op,  nullptr,    nullptr,  nullptr};
             d->dev.reg = &g_registry->reg;
             d->dev.context = d.get();
             g_registry->devices.push_back(std::move(d));

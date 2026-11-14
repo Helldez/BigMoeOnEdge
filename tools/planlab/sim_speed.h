@@ -39,9 +39,7 @@ struct DecodeEstimate {
 };
 
 // `placement` is the fitter's answer the plan was made on (the one at the plan's own width).
-DecodeEstimate estimate_decode(const Plan & plan,
-                               const HardwareProfile & hw,
-                               const ModelProfile & model,
-                               const Placement & placement);
+DecodeEstimate
+estimate_decode(const Plan & plan, const HardwareProfile & hw, const ModelProfile & model, const Placement & placement);
 
 } // namespace bmoe

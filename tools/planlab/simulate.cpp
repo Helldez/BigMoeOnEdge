@@ -8,6 +8,7 @@
 
 #include "llama.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <cstdio>
@@ -49,9 +50,12 @@ bool parse_size(const std::string & s, uint64_t & out) {
     if (end == s.c_str() || v < 0.0) return false;
     const std::string unit = end;
     double mul = 1.0;
-    if (unit == "G" || unit == "GiB" || unit == "g") mul = 1024.0 * 1024.0 * 1024.0;
-    else if (unit == "M" || unit == "MiB" || unit == "m") mul = 1024.0 * 1024.0;
-    else if (!unit.empty()) return false;
+    if (unit == "G" || unit == "GiB" || unit == "g")
+        mul = 1024.0 * 1024.0 * 1024.0;
+    else if (unit == "M" || unit == "MiB" || unit == "m")
+        mul = 1024.0 * 1024.0;
+    else if (!unit.empty())
+        return false;
     out = (uint64_t) std::llround(v * mul);
     return true;
 }
@@ -71,7 +75,10 @@ std::string gib(uint64_t b) {
 
 } // namespace
 
-bool parse_machine_spec(const std::string & text, const std::string & base_dir, MachineSpec & out, std::string & error) {
+bool parse_machine_spec(const std::string & text,
+                        const std::string & base_dir,
+                        MachineSpec & out,
+                        std::string & error) {
     std::istringstream lines(text);
     std::string line;
     int n = 0;
@@ -93,6 +100,19 @@ bool parse_machine_spec(const std::string & text, const std::string & base_dir, 
             out.host = resolve(base_dir, value);
         } else if (key == "routing") {
             out.routing = resolve(base_dir, value);
+        } else if (key == "hitcurve") {
+            std::istringstream pts(value);
+            std::string pt;
+            while (std::getline(pts, pt, ',')) {
+                const size_t colon = pt.find(':');
+                uint64_t bytes = 0;
+                if (colon == std::string::npos || !parse_size(pt.substr(0, colon), bytes)) {
+                    error = "line " + std::to_string(n) + ": hitcurve wants SIZE:SHARE,...";
+                    return false;
+                }
+                out.hit_points.emplace_back(bytes, std::atof(pt.c_str() + colon + 1));
+            }
+            std::sort(out.hit_points.begin(), out.hit_points.end());
         } else if (key == "set") {
             out.sets.push_back(value);
         } else if (key == "device") {
@@ -112,16 +132,21 @@ bool parse_machine_spec(const std::string & text, const std::string & base_dir, 
                 const std::string k = e == std::string::npos ? w : w.substr(0, e);
                 const std::string v = e == std::string::npos ? "" : w.substr(e + 1);
                 bool ok = true;
-                if (k == "memory") ok = parse_size(v, d.memory_total);
-                else if (k == "bandwidth") d.bandwidth_scale = std::atof(v.c_str());
-                else if (k == "compute") d.compute_scale = std::atof(v.c_str());
-                else if (k == "link") d.link_scale = std::atof(v.c_str());
+                if (k == "memory")
+                    ok = parse_size(v, d.memory_total);
+                else if (k == "bandwidth")
+                    d.bandwidth_scale = std::atof(v.c_str());
+                else if (k == "compute")
+                    d.compute_scale = std::atof(v.c_str());
+                else if (k == "link")
+                    d.link_scale = std::atof(v.c_str());
                 else if (k == "description") {
                     // the rest of the line: a description has spaces
                     std::string rest;
                     std::getline(words, rest);
                     d.description = v + rest;
-                } else ok = false;
+                } else
+                    ok = false;
                 if (!ok) {
                     error = "line " + std::to_string(n) + ": device option '" + w + "' not understood";
                     return false;
@@ -185,8 +210,7 @@ Simulation simulate_machine(const MachineSpec & spec,
         d.physical_id = "sim:" + std::to_string(i);
         if (from.memory_total) {
             // What the driver kept of the measured card, kept in proportion.
-            const double free_share =
-                d.memory_total ? (double) d.memory_free / (double) d.memory_total : 1.0 - 0.0366;
+            const double free_share = d.memory_total ? (double) d.memory_free / (double) d.memory_total : 1.0 - 0.0366;
             d.memory_total = from.memory_total;
             d.memory_free = (uint64_t) ((double) from.memory_total * free_share);
         }
@@ -196,9 +220,8 @@ Simulation simulate_machine(const MachineSpec & spec,
         d.wide_matmul_gibs *= from.compute_scale;
         d.upload_gibs *= from.link_scale;
         d.upload_host_buffer_gibs *= from.link_scale;
-        d.description = !from.description.empty()
-                            ? from.description
-                            : measured + " (simulated, " + gib(d.memory_total) + ")";
+        d.description =
+            !from.description.empty() ? from.description : measured + " (simulated, " + gib(d.memory_total) + ")";
         if (from.bandwidth_scale != 1.0 || from.compute_scale != 1.0 || from.link_scale != 1.0)
             caveat(d.name + " is " + measured + " as measured, its rates scaled (bandwidth x" +
                    std::to_string(from.bandwidth_scale).substr(0, 5) + ", compute x" +
@@ -206,9 +229,9 @@ Simulation simulate_machine(const MachineSpec & spec,
                    std::to_string(from.link_scale).substr(0, 5) + "): a ratio of specifications, not a measurement");
         const std::string model_name = std::filesystem::u8path(model_path).filename().u8string();
         if (rec.env.count("model_file") && rec.env.at("model_file") != model_name)
-        caveat(d.name + "'s measured rates and op support were read on " +
-               (rec.env.count("model_file") ? rec.env.at("model_file") : std::string("another model")) +
-               ": a card's rate on another quantization is not the same rate");
+            caveat(d.name + "'s measured rates and op support were read on " +
+                   (rec.env.count("model_file") ? rec.env.at("model_file") : std::string("another model")) +
+                   ": a card's rate on another quantization is not the same rate");
         hw.devices.push_back(d);
         sims.push_back({d.description, d.memory_total, d.memory_free});
     }
@@ -245,6 +268,18 @@ Simulation simulate_machine(const MachineSpec & spec,
         if (r.model.file_bytes != model.file_bytes || r.model.arch != model.arch)
             caveat("the hit curve is " + spec.routing + "'s, a file of another size or architecture");
         model.hit_curve = r.model.hit_curve;
+    } else if (!spec.hit_points.empty()) {
+        HitCurve curve;
+        curve.measured = true;
+        curve.points.push_back({0, 0.0});
+        double last = 0.0;
+        for (const auto & [bytes, share] : spec.hit_points) {
+            last = std::max(last, std::clamp(share, 0.0, 1.0)); // monotone, as a curve must be
+            curve.points.push_back({bytes, last});
+        }
+        model.hit_curve = curve;
+        caveat("the hit curve is made of measured runs' cache hit rates (hitcurve=), not a replay of this "
+               "model's routing: a cache of another policy or another conversation serves another share");
     } else if (model.is_moe) {
         caveat("no routing of this model was given (routing=): the cache's hit rate is the planner's "
                "conservative default, as on a first load");
@@ -279,9 +314,8 @@ Simulation simulate_machine(const MachineSpec & spec,
     facts.hw = hw;
     facts.model = model;
     facts.backends = names;
-    facts.placement = probe_placement(model_path.c_str(), model, hw, (uint32_t) cfg.n_ctx,
-                                      (uint32_t) cfg.graph_width(), cfg.cache_type_k, cfg.cache_type_v, names,
-                                      &cfg.spec);
+    facts.placement = probe_placement(model_path.c_str(), model, hw, (uint32_t) cfg.n_ctx, (uint32_t) cfg.graph_width(),
+                                      cfg.cache_type_k, cfg.cache_type_v, names, &cfg.spec);
     facts.refit = [&](const AutoPlan::FitKey & key) {
         RunConfig at = cfg;
         at.n_ctx = (int) key.n_ctx;
