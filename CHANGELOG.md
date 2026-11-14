@@ -4,6 +4,40 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **A second load of a model plans from the same facts as the first.** Two rented Linux CUDA boxes
+  (an 8 GB card, and two 16 GB cards) ran each model twice on one data folder, the second load planned
+  from the first's records, and several second loads decoded slower. Each cause is fixed for every
+  platform and model, not for those runs:
+  - *A container's memory read the model file the last load left in the page cache as taken.* The
+    control group's remainder credited only its inactive file pages, and a file read twice sits on the
+    active list. A 30 GiB group then read as 10 GiB, and Qwen3.6-35B-A3B, which fits, was streamed:
+    35.2 tok/s on the first load, 13.1-18.9 on the second. Both file lists are now credited, as
+    `MemAvailable` credits them ([hardware-planning.md](docs/hardware-planning.md)).
+  - *A routing record of a run with experts on a device was refused whole.* The record sized only the
+    layers the streamer serves, the reader refuses a layer with no size, and the next plan had no hit
+    curve. Every MoE layer is now sized from the file, wherever the plan put it
+    ([measured-planning.md](docs/measured-planning.md#step-1-the-cache-sized-from-the-models-own-routing)).
+  - *The graph width swung back on the same measurements.* The 10% margin always guarded the full width,
+    so a narrow graph chosen at 11% ahead on the decode was dropped at 9% ahead on the requests served,
+    with 4 GB less device cache (DeepSeek-V4-Flash, two 16 GB cards). The margin now guards the width
+    in force (`width_held` in the model's record).
+- **Two cards share the device cache by the room each has.** llama.cpp hands each card a share of the
+  cache's budget by the layers the split gives it, and the split was the fitter's whole-layer one: on two
+  16 GB cards, 6 layers on the first and 38 on the second left 10 GB of the first card empty. The plan
+  now gives each card layers in proportion to its room under the cache and sizes the budget so every
+  card holds its share (`device_tier_split`, [measured-planning.md](docs/measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache)).
+- **The CLI and the server plan alike where the model fits.** The device cache's CPU share was refused
+  as "streamed" when the front-end started with streaming on (the server) and weighed when it did not
+  (the CLI), before the plan declined the stream: 36.6 against 43.9 tok/s on the same 8 GB card. The
+  rule now reads the regime the plan decided.
+- **The plan says the prompt runs on the cards that hold layers.** A prompt's wide matmuls are taken by
+  the devices holding layers wherever the run allows llama.cpp's op offload, but the plan's prompt lane
+  read "CPU" whenever no prefill device was armed. The lane, the device badges and the session now
+  read one rule (`offloads_wide_matmuls`, [server-api.md](docs/server-api.md)).
+
 ## [0.43.0] - 2026-11-14
 
 ### Added

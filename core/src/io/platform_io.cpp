@@ -757,20 +757,24 @@ uint64_t cgroup_memory_left(const char * fs_root, const char * self) {
         const uint64_t left = limit > held ? limit - held : 1; // over the cap: nothing left, but known
         if (best == 0 || left < best) best = left;
     };
+    // Both file LRU lists are credited, as MemAvailable credits them: a model file read twice by the
+    // last load sits on the active list, clean, and the kernel reclaims it before it would end
+    // anything. Crediting the inactive list alone read a rented box's 30 GiB group as 10.
     auto walk = [&](const std::string & base, const std::string & path, const char * max_f, const char * cur_f,
-                    const char * stat_key, bool v1_units) {
+                    const char * inactive_key, const char * active_key, bool v1_units) {
         cgroup_walk(base, path, [&](const std::string & dir) {
             uint64_t limit = 0, used = 0;
             if (read_cgroup_number(dir + "/" + max_f, &limit) && read_cgroup_number(dir + "/" + cur_f, &used)) {
                 if (v1_units && limit >= k_cgroup_v1_unlimited) limit = 0;
-                consider(limit, used, read_cgroup_stat(dir + "/memory.stat", stat_key));
+                const std::string stat = dir + "/memory.stat";
+                consider(limit, used, read_cgroup_stat(stat, inactive_key) + read_cgroup_stat(stat, active_key));
             }
         });
     };
-    if (place.v2) walk(root, place.v2_path, "memory.max", "memory.current", "inactive_file", false);
+    if (place.v2) walk(root, place.v2_path, "memory.max", "memory.current", "inactive_file", "active_file", false);
     if (place.v1)
         walk(root + "/memory", place.v1_path, "memory.limit_in_bytes", "memory.usage_in_bytes", "total_inactive_file",
-             true);
+             "total_active_file", true);
     return best;
 }
 

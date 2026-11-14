@@ -13,6 +13,7 @@
 
 #include <cstdio>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 using namespace bmoe;
@@ -138,6 +139,31 @@ int main() {
         const ExpertLayout L = discover_expert_layout(t, n_expert);
         check(!L.ok && L.error.find("more than") != std::string::npos,
               "refused: four expert tensors in a layer is more than the streamer holds");
+    }
+
+    // ── what one expert of each layer costs a cache, from the file alone ─────────────
+    {
+        // Two leading dense blocks, then MoE blocks whose projections differ in size: every MoE layer is
+        // sized, and none from where a plan put it.
+        std::vector<TensorExtent> t;
+        std::unordered_map<std::string, uint64_t> size;
+        t.push_back({blk(0, "ffn_up.weight"), 0});
+        size[blk(0, "ffn_up.weight")] = 4096;
+        for (int il = 2; il < 5; ++il) {
+            split_block(t, il, n_expert);
+            size[blk(il, "ffn_gate_exps.weight")] = 100 * n_expert;
+            size[blk(il, "ffn_up_exps.weight")] = 100 * n_expert;
+            size[blk(il, "ffn_down_exps.weight")] = 120 * n_expert;
+            size[blk(il, "ffn_down_exps.scale")] = 8 * n_expert; // a companion is not charged
+        }
+        const ExpertLayout L = discover_expert_layout(t, n_expert);
+        const std::vector<uint64_t> b = expert_bytes_per_layer(L, t, size, 6);
+        check(b == std::vector<uint64_t>{0, 0, 320, 320, 320, 0},
+              "expert bytes: every MoE layer from its tensors' sizes, dense and absent layers 0");
+        check(expert_bytes_per_layer(L, t, size, 3) == std::vector<uint64_t>{0, 0, 320},
+              "expert bytes: layers past the count asked for are left out");
+        check(expert_bytes_per_layer(ExpertLayout{}, t, size, 4) == std::vector<uint64_t>(4, 0),
+              "expert bytes: no layout, nothing sized");
     }
 
     if (failures) {

@@ -1982,7 +1982,19 @@ static void plan_view_tests() {
               v["memory"]["pools"][1]["estimated"] == false,
           "plan view: a device's own memory is its own pool");
     check(v["summary"]["lanes"][1]["on"] == json::array({"CPU", "CUDA0"}), "plan view: layers put the card on tokens");
-    check((*device_named(v, "CUDA0"))["badge"] == "Layers", "plan view: the card's badge");
+    // A prompt's wide matmuls go to the card that holds layers, the host's weights copied over for the
+    // pass: the prompt lane says so, as the session loads (offloads_wide_matmuls).
+    check(v["summary"]["lanes"][0]["on"] == json::array({"CUDA0"}) &&
+              (*device_named(v, "CUDA0"))["badge"] == "Layers and prompt" &&
+              (*device_named(v, "CPU"))["badge"] == "Tokens",
+          "plan view: layers on a card put the prompt there too");
+    Plan overlapped = dp; // a run that gives the offload up keeps the prompt on the host
+    overlapped.config.moe.enabled = true;
+    overlapped.config.moe.overlap = true;
+    overlapped.config.n_gpu_layers = 12;
+    const json ov = plan_view(desk, overlapped);
+    check(ov["summary"]["lanes"][0]["on"] == json::array({"CPU"}) && (*device_named(ov, "CUDA0"))["badge"] == "Layers",
+          "plan view: under overlap the prompt stays on the host");
     dp.placement.shared_memory_placement = true;
     v = plan_view(desk, dp);
     check(v["memory"]["pools"].size() == 1, "plan view: a declined placement holds nothing on the device");

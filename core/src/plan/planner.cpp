@@ -414,26 +414,126 @@ double expert_share_at(const ModelProfile & model, uint64_t bytes, bool * measur
 // Whether every device the fitter put layers on can hold a cache of experts and compute them there,
 // and the slowest of them at the experts, which bounds the rest. Nullptr, with the reason, where a
 // device cannot or its rate is unmeasured.
-// What the cards' spare memory adds to the cache, as ONE budget: llama.cpp splits `moe_cache_size`
-// among the cards as it splits the layers (by the tensor split the plan passes), so a card with a
-// tenth of the layers is handed a tenth of the budget whatever it has free. The budget is the
-// largest one whose every card's share fits that card's spare beside the expert bytes it already
-// held, taken pro rata to its layers like the share itself; one card is simply its spare.
-uint64_t device_spare_budget(const Placement & pl) {
-    if (pl.device_spare.empty() || pl.device_split.empty()) return 0;
-    uint64_t layers = 0;
-    for (const auto & e : pl.device_split)
-        layers += e.second;
-    if (layers == 0) return 0;
-    uint64_t budget = UINT64_MAX;
-    for (const auto & e : pl.device_split) {
-        if (e.second == 0) continue;
-        uint64_t spare = 0; // a card the probe read no spare for has none to give
-        for (const auto & sp : pl.device_spare)
-            if (sp.first == e.first) spare = sp.second;
-        budget = std::min(budget, (uint64_t) ((double) spare * (double) layers / (double) e.second));
+// The layers' split among the cards and the device cache's budget, decided together. llama.cpp hands
+// each card a share of one `moe_cache_size` pro rata to the layers the plan's split gives it, whatever
+// the card has free (its MoE cache splits the budget by the tensor split). So a budget summed over the
+// cards and a split left as the fitter made it disagree: the fitter fills a card with whole layers'
+// experts, and once the cache sends them to the host, the room they leave is on that card while the
+// budget follows the layer counts. Two 16 GB cards: the fitter's 6 whole layers on the first and 38
+// dense-only ones on the second, the first card's share 6/44 of the budget, 10 GB of it left empty.
+//
+// Under the cache a card holds its layers' dense part and context and its share of the budget. Its
+// room for those is what it had free beyond the fitter's projection, plus the experts the fitter put
+// on it, plus the dense part and context of its own layers. Each card's share per layer is then its
+// room over its layers less one layer's dense part, and the budget is the tightest card's share times
+// the layers: highest when every card has layers in proportion to its room. The fitter's split is
+// kept unless the proportional one gives a larger budget. A layer's dense part and context are taken
+// as the model's average; the experts the fitter put on the devices are counted exactly in total and
+// shared among the cards by how many of those layers each held. One card is its own split: its budget
+// is what it had free plus the experts the fitter gave it.
+struct TierSplit {
+    std::vector<std::pair<std::string, uint32_t>> split; // the split to load with; the fitter's when kept
+    uint64_t budget = 0;
+    bool resplit = false; // the split differs from the fitter's
+};
+
+TierSplit device_tier_split(const Placement & pl, const ModelProfile & m, uint64_t on_devices) {
+    TierSplit out;
+    out.split = pl.device_split;
+    uint64_t spare_sum = 0;
+    for (const auto & sp : pl.device_spare)
+        spare_sum += sp.second;
+    if (pl.device_split.size() <= 1 || m.n_layer == 0) {
+        out.budget = on_devices + spare_sum;
+        return out;
     }
-    return budget == UINT64_MAX ? 0 : budget;
+    const uint32_t slots = m.n_layer + 1; // the layers and, last, the output, as llama.cpp fills them
+    const uint32_t ngl = pl.n_gpu_layers < 0 ? slots : std::min<uint32_t>((uint32_t) pl.n_gpu_layers, slots);
+    const auto is_moe = [&](uint32_t il) {
+        return m.moe_layers.empty() || std::find(m.moe_layers.begin(), m.moe_layers.end(), il) != m.moe_layers.end();
+    };
+    const auto experts_home = [&](uint32_t il) {
+        return std::find(pl.host_expert_layers.begin(), pl.host_expert_layers.end(), il) != pl.host_expert_layers.end();
+    };
+    struct Card {
+        uint32_t layers = 0, whole = 0, output = 0;
+        uint64_t spare = 0;
+        double room = 0.0;
+    };
+    std::vector<Card> cards(pl.device_split.size());
+    uint32_t at = slots - ngl, n_layers = 0, n_whole = 0;
+    for (size_t i = 0; i < pl.device_split.size(); ++i) {
+        Card & c = cards[i];
+        for (const auto & sp : pl.device_spare)
+            if (sp.first == pl.device_split[i].first) c.spare = sp.second;
+        for (uint32_t k = 0; k < pl.device_split[i].second && at < slots; ++k, ++at) {
+            if (at == m.n_layer) {
+                c.output = 1;
+                continue;
+            }
+            ++c.layers;
+            if (is_moe(at) && !experts_home(at)) ++c.whole;
+        }
+        n_layers += c.layers;
+        n_whole += c.whole;
+    }
+    if (n_layers == 0) {
+        out.budget = on_devices + spare_sum;
+        return out;
+    }
+    const double dense_per_layer =
+        (double) (m.group(WeightGroup::Attention).bytes + m.group(WeightGroup::DenseFfn).bytes +
+                  m.group(WeightGroup::Other).bytes + pl.device_context_bytes) /
+        (double) m.n_layer;
+    for (Card & c : cards)
+        c.room =
+            (double) c.spare + (n_whole ? (double) on_devices * c.whole / n_whole : 0.0) + dense_per_layer * c.layers;
+    // The budget a split of the layers lets every card take its share of; 0 where a card cannot hold
+    // even its layers' dense part.
+    const auto budget_of = [&](const std::vector<uint32_t> & n) {
+        double b = -1.0;
+        for (size_t i = 0; i < cards.size(); ++i) {
+            if (n[i] == 0) continue;
+            const double left = cards[i].room - dense_per_layer * n[i];
+            const double share = left <= 0.0 ? 0.0 : left * (double) n_layers / (double) n[i];
+            b = b < 0.0 ? share : std::min(b, share);
+        }
+        return b < 0.0 ? 0.0 : b;
+    };
+    std::vector<uint32_t> kept(cards.size()), even(cards.size(), 0);
+    double room_sum = 0.0;
+    for (size_t i = 0; i < cards.size(); ++i) {
+        kept[i] = cards[i].layers;
+        room_sum += cards[i].room;
+    }
+    // Layers in proportion to each card's room, the remainder to the largest fractions.
+    std::vector<std::pair<double, size_t>> frac;
+    uint32_t given = 0;
+    for (size_t i = 0; i < cards.size(); ++i) {
+        const double want = room_sum > 0.0 ? (double) n_layers * cards[i].room / room_sum : 0.0;
+        even[i] = (uint32_t) std::floor(want);
+        given += even[i];
+        frac.push_back({want - (double) even[i], i});
+    }
+    std::sort(frac.begin(), frac.end(), [](const auto & a, const auto & b) { return a.first > b.first; });
+    for (size_t k = 0; given < n_layers && k < frac.size(); ++k, ++given)
+        ++even[frac[k].second];
+    const double b_kept = budget_of(kept), b_even = budget_of(even);
+    // Rounded down to a MiB, and never more than the cards had: free beyond the fitter's projection
+    // and the experts it gave them.
+    const auto cap = [&](double b) {
+        return std::min<uint64_t>((uint64_t) b, on_devices + spare_sum) & ~(uint64_t) 0xFFFFF;
+    };
+    out.budget = cap(b_kept);
+    if (b_even > b_kept && even != kept) {
+        out.budget = cap(b_even);
+        out.resplit = true;
+        out.split.clear();
+        for (size_t i = 0; i < cards.size(); ++i)
+            if (even[i] + cards[i].output > 0)
+                out.split.emplace_back(pl.device_split[i].first, even[i] + cards[i].output);
+    }
+    return out;
 }
 
 const ComputeDevice * device_tier_device(const Planning & s, std::string & why) {
@@ -574,23 +674,31 @@ void choose_device_tier(Planning & s) {
     // The cache is not bound to the fitter's granularity: it takes the experts' bytes AND what the
     // fitter left free under one more whole layer, which on a small card is everything past the dense
     // part. The same budget as the RAM cache's: what the memory can hold, floored at one token cycle.
-    const uint64_t spare = device_spare_budget(pl);
+    const TierSplit tier = device_tier_split(pl, m, on_devices);
     // The projector is on this device too (every layer is). The fitter reserved its room before
     // placing layers (Placement::device_projector_bytes, already off the spare and in the device's
     // bytes); whatever it did not reserve - a placement made without the fitter - comes off what the
     // card has before the cache does. Where the card's memory is the host's it is charged there.
     const uint64_t unreserved = m.projector_bytes - std::min(m.projector_bytes, pl.device_projector_bytes);
     const uint64_t projector = s.p.config.device_use != DeviceUse::CpuOnly && !devices_share_host_memory(s.hw)
-                                   ? std::min(on_devices + spare, unreserved)
+                                   ? std::min(tier.budget, unreserved)
                                    : 0;
-    const uint64_t budget = on_devices + spare - projector;
+    const uint64_t budget = tier.budget - projector;
+    // What the budget holds beyond the fitter's experts, for the rationale.
+    const uint64_t spare = tier.budget > on_devices ? tier.budget - on_devices : 0;
     if (budget == 0) return;
 
     const auto mib_s = [](uint64_t b) { return u64s(mib(b)); };
-    const std::string held = mib_s(budget) + " MiB (" + mib_s(on_devices) + " the capacity fitter gave " +
-                             u64s(s.n_moe_layer - s.host_layers) + " of " + u64s(s.n_moe_layer) + " layers' experts, " +
-                             (projector > 0 ? "less the projector's " + mib_s(projector) + " MiB, " : "") +
-                             mib_s(spare) + " it left free under one more whole layer)";
+    const std::string held =
+        tier.budget >= on_devices
+            ? mib_s(budget) + " MiB (" + mib_s(on_devices) + " the capacity fitter gave " +
+                  u64s(s.n_moe_layer - s.host_layers) + " of " + u64s(s.n_moe_layer) + " layers' experts, " +
+                  (projector > 0 ? "less the projector's " + mib_s(projector) + " MiB, " : "") + mib_s(spare) +
+                  " it left free under one more whole layer)"
+            : mib_s(budget) + " MiB (what every card can take its share of, by its layers, of the " +
+                  mib_s(on_devices) + " the capacity fitter gave " + u64s(s.n_moe_layer - s.host_layers) + " of " +
+                  u64s(s.n_moe_layer) + " layers' experts and what it left free" +
+                  (projector > 0 ? ", less the projector's " + mib_s(projector) + " MiB" : "") + ")";
     std::string why;
     const ComputeDevice * dev = device_tier_device(s, why);
     // The host and the device on the same experiment: the model's own expert block where both were
@@ -738,6 +846,22 @@ void choose_device_tier(Planning & s) {
         for (uint32_t il = 0; il < m.n_layer; ++il)
             pl.host_expert_layers.push_back(il);
     pl.override_patterns = pl.all_expert_patterns;
+    if (tier.resplit) {
+        const auto list = [](const std::vector<std::pair<std::string, uint32_t>> & v) {
+            std::string out;
+            for (const auto & e : v)
+                out += (out.empty() ? "" : ", ") + e.first + " " + u64s(e.second);
+            return out;
+        };
+        s.note("device-split", list(tier.split), Source::Derived,
+               "The layers are spread over the cards by the room each has beside the expert cache.",
+               "llama.cpp hands each card a share of the cache's budget by its layers, so the split follows each "
+               "card's room under the cache (what it had free, the experts the fitter put on it, and its layers' "
+               "dense part and context): " +
+                   list(tier.split) + " in place of the fitter's " + list(pl.device_split) +
+                   ", so every card can take its share of " + mib_s(budget) + " MiB");
+        pl.device_split = tier.split;
+    }
     pl.device_bytes = pl.device_bytes > on_devices ? pl.device_bytes - on_devices : 0;
     pl.device_bytes += projector; // the part the fitter had not reserved is the device's all the same
     s.host_layers = s.n_moe_layer;
@@ -877,7 +1001,11 @@ void choose_device_cache_cpu_share(Planning & s) {
     const char * knob = "device-cache-cpu-share";
     const char * off = "Every miss of the device cache is uploaded to the device.";
     const bool tier_armed = trial.cpu_share_side == 1 && moe.device_cache_cpu_share > 0.0f;
-    if (s.p.regime != Regime::Fits || moe.enabled) {
+    // The regime is decided by now, and a plan that fits declines the stream (declines_residency) after
+    // this: `moe.enabled` here is still the front-end's starting value. The server starts streamed, the
+    // CLI does not, so reading it gave one machine and model two plans: on an 8 GB card the CLI timed
+    // a share and decoded at 43.9 tok/s, the server refused it as "streamed" and decoded at 36.6.
+    if (s.p.regime != Regime::Fits) {
         moe.device_cache_cpu_share = 0.0f;
         if (trial.cpu_share_side >= 0) trial.cpu_share_side = -1;
         s.note(knob, "0", Source::Derived, off,
@@ -1327,17 +1455,29 @@ bool width_across_loads(Planning & s, uint32_t full) {
                       wd, nd, narrow);
     const std::string margin = u64s((uint64_t) (s.pol.min_backend_win * 100.0f + 0.5f)) + "%";
     if (!served) p.config.trial.width_narrow = (int) narrow;
-    if (t_wide > t_narrow * (1.0 + (double) s.pol.min_backend_win)) {
+    // The margin guards the width in force: the one an earlier load ran as decided, else the full
+    // width. The other takes over only past it, so the same rates weighed again keep the graph where
+    // it is rather than swinging it on a few percent.
+    const double win = 1.0 + (double) s.pol.min_backend_win;
+    const bool narrow_held = mk.width_held == 0;
+    const bool narrow_wins = narrow_held ? !(t_narrow > t_wide * win) : t_wide > t_narrow * win;
+    if (narrow_wins) {
         s.placement = s.placement.at_width(narrow);
         p.placement = s.placement;
         p.config.n_ubatch = (int) narrow;
         s.note("ubatch", n, Source::Measured, n + " tokens per pass: on this machine's own requests it is faster.",
-               std::string(nums) + ", past the " + margin + " margin");
+               std::string(nums) + (narrow_held
+                                        ? "; the narrow graph is in force, and the full width is not faster by the " +
+                                              margin + " margin"
+                                        : ", past the " + margin + " margin"));
         return true;
     }
     s.note("ubatch", u64s((uint64_t) p.config.graph_width()), Source::Measured,
            "A prompt runs in one pass: on this machine's own requests the full width is as fast or faster.",
-           std::string(nums) + "; the narrow graph is not faster by the " + margin + " margin");
+           std::string(nums) + (narrow_held ? ", the full width past the " + margin +
+                                                  " margin over the narrow "
+                                                  "graph in force"
+                                            : "; the narrow graph is not faster by the " + margin + " margin"));
     return true;
 }
 

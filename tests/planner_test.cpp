@@ -1189,6 +1189,32 @@ int main() {
                 cal.narrow_decode_tps = 14.5; // inside the margin
                 check(plan_with(cal).config.graph_width() == 16384 && plan_with(cal).config.trial.width_side == -1,
                       "width, no request served, inside the margin: the full width holds");
+                // The margin guards the width in force, not the full width: a narrow graph an earlier
+                // load ran as decided holds against a full width faster by less than the margin, and
+                // gives way to one faster by more. The same rates, weighed again, do not swing it.
+                MeasuredKnobs held = cal;
+                held.width_held = 0;
+                held.narrow_decode_tps = 14.2;
+                held.wide_decode_tps = 15.0; // the full width 6% ahead
+                dw = find(plan_with(held), "ubatch");
+                check(plan_with(held).config.n_ubatch == (int) narrow && dw &&
+                          dw->reason.find("in force") != std::string::npos,
+                      "width, the narrow graph in force, the full width inside the margin: it holds",
+                      dw ? dw->reason : "none");
+                held.wide_decode_tps = 16.0; // 13% ahead
+                check(plan_with(held).config.graph_width() == 16384,
+                      "width, the narrow graph in force, the full width past the margin: it takes over");
+                MeasuredKnobs drift = cal; // narrow 11% ahead on the decode alone: decided narrow
+                drift.narrow_decode_tps = 7.80;
+                drift.wide_decode_tps = 7.03;
+                check(plan_with(drift).config.n_ubatch == (int) narrow, "width, drift: decided narrow");
+                drift.width_held = 0; // what that load ran, and then its requests weigh: 9% ahead
+                drift.narrow_decode_tps = 7.79;
+                drift.wide_decode_tps = 7.17;
+                drift.usage_requests = 4;
+                drift.usage_gen_tokens = 171;
+                check(plan_with(drift).config.n_ubatch == (int) narrow,
+                      "width, drift: the same lead weighed again keeps the narrow graph in force");
                 // A width a calibration could not open loses.
                 MeasuredKnobs fails_narrow;
                 fails_narrow.width_narrow = (int) narrow;
@@ -3090,6 +3116,17 @@ int main() {
                       sd ? sd->reason : "no decision");
                 check(validate(nominate.config).ok, "cpu share: the timed load is a valid config",
                       validate(nominate.config).error);
+                // A front-end that starts streamed (the server) gets the same answer as one that does not
+                // (the CLI): a plan that fits declines the stream, and the share is decided by the regime.
+                RunConfig streamed_base = base_cfg();
+                streamed_base.moe.enabled = true;
+                const Plan from_server =
+                    plan_run(streamed_base, slow_link, decided, half, PlanRequest{}, PlannerPolicy::defaults());
+                check(from_server.regime == nominate.regime &&
+                          from_server.config.moe.device_cache_cpu_share == nominate.config.moe.device_cache_cpu_share &&
+                          from_server.config.trial.cpu_share_side == nominate.config.trial.cpu_share_side,
+                      "cpu share: the same plan whether the front-end starts streamed or not",
+                      std::to_string(from_server.config.moe.device_cache_cpu_share));
                 ModelProfile faster = decided;
                 faster.knobs.cpu_share_tps = 21.2;
                 faster.knobs.no_cpu_share_tps = 18.5;
@@ -3369,16 +3406,72 @@ int main() {
                       e->reason.find("token cycle") != std::string::npos,
                   "device tier, under one token cycle: no cache", e ? e->reason : "none");
 
-            // Two cards: llama.cpp hands each a share of one budget by its layers, so the budget is
-            // what the card with the least spare per layer can take its share of.
+            // Two cards: llama.cpp hands each a share of one budget by its layers, so the layers and the
+            // budget are decided together. Each card's room under the cache is what it had free, the
+            // experts the fitter put on it and its layers' dense part and context; every card must
+            // hold its layers' dense part and its share of the budget within that room.
+            const double dense_layer =
+                (double) (model.group(WeightGroup::Attention).bytes + model.group(WeightGroup::DenseFfn).bytes +
+                          model.group(WeightGroup::Other).bytes) /
+                (double) model.n_layer;
+            const auto fits_every_card = [&](const Plan & p, const std::vector<double> & room) {
+                uint32_t layers = 0;
+                for (const auto & e : p.config.device_split)
+                    layers += (uint32_t) e.second;
+                layers -= 1; // the output's slot
+                const double budget = (double) p.config.moe.device_cache_mb * (double) MiB;
+                for (size_t i = 0; i < p.config.device_split.size(); ++i) {
+                    const double n = (double) p.config.device_split[i].second - (i + 1 == room.size() ? 1 : 0);
+                    if (n * dense_layer + budget * n / layers > room[i] + (double) MiB) return false;
+                }
+                return true;
+            };
             Placement two = half;
             two.device_split = {{"discrete", 37}, {"second", 12}};
             two.device_spare = {{"discrete", 6 * GiB}, {"second", 1 * GiB}};
             const Plan pair = plan_on(slow_cores, two, PlanRequest{});
-            const uint64_t want = 9 * GiB + (uint64_t) ((double) GiB * 49.0 / 12.0);
-            check(pair.config.moe.device_cache_mb == (int) (want / MiB),
-                  "device tier, two cards: the budget each card can take its share of",
-                  std::to_string(pair.config.moe.device_cache_mb) + " MiB, want " + std::to_string(want / MiB));
+            // Layers 0-36 on the first (24 with their experts home, 13 whole), 37-47 and the output on
+            // the second (11 whole): the fitter's 9 GiB of experts over its 24 whole layers.
+            const double per_whole = 9.0 * (double) GiB / 24.0;
+            const std::vector<double> room = {6.0 * GiB + 13 * per_whole + 37 * dense_layer,
+                                              1.0 * GiB + 11 * per_whole + 11 * dense_layer};
+            const double kept_budget =
+                std::min((room[0] - 37 * dense_layer) * 48 / 37, (room[1] - 11 * dense_layer) * 48 / 11);
+            check(fits_every_card(pair, room) && pair.config.moe.device_cache_mb > (int) (kept_budget / MiB) &&
+                      pair.config.moe.device_cache_mb <= (int) (16 * 1024),
+                  "device tier, two cards: every card holds its share, more than the fitter's split allowed",
+                  std::to_string(pair.config.moe.device_cache_mb) + " MiB against " +
+                      std::to_string((int) (kept_budget / MiB)));
+            const Decision * ds = find(pair, "device-split");
+            check(ds && pair.config.device_split.size() == 2 && pair.config.device_split[0].second != 37 &&
+                      pair.config.device_split[0].second + pair.config.device_split[1].second == 49 &&
+                      validate(pair.config).ok,
+                  "device tier, two cards: the layers follow the room, every slot still placed",
+                  ds ? ds->reason : "no device-split decision");
+
+            // The case it is for: two equal cards, the fitter's whole layers all on the first (its room
+            // is their experts) and dense-only layers on the second. With the fitter's split the first
+            // card's share was its 6 layers' worth of the budget, and most of the card stayed empty.
+            Placement lopsided = half;
+            lopsided.host_expert_layers.clear();
+            for (uint32_t il = 6; il < model.n_layer; ++il)
+                lopsided.host_expert_layers.push_back(il);
+            lopsided.override_patterns.assign(lopsided.all_expert_patterns.begin() + 6,
+                                              lopsided.all_expert_patterns.end());
+            lopsided.device_split = {{"discrete", 6}, {"second", (uint32_t) model.n_layer + 1 - 6}};
+            lopsided.device_spare = {{"discrete", 256 * MiB}, {"second", 4 * GiB}};
+            const Plan even = plan_on(slow_cores, lopsided, PlanRequest{});
+            const uint64_t six = model.expert_bytes / model.n_moe_layer * 6;
+            const std::vector<double> room2 = {256.0 * MiB + (double) six + 6 * dense_layer,
+                                               4.0 * GiB + (double) (model.n_layer - 6) * dense_layer};
+            const double kept2 =
+                std::min((room2[0] - 6 * dense_layer) * model.n_layer / 6,
+                         (room2[1] - (model.n_layer - 6) * dense_layer) * model.n_layer / (model.n_layer - 6));
+            check(fits_every_card(even, room2) && even.config.moe.device_cache_mb > (int) (kept2 / MiB) &&
+                      even.config.device_split[0].second > 6,
+                  "device tier, whole layers on one card: the split follows the room the cache leaves",
+                  std::to_string(even.config.moe.device_cache_mb) + " MiB against " +
+                      std::to_string((int) (kept2 / MiB)));
         }
 
         // The caller's placement is the caller's.

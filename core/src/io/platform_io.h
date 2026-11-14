@@ -317,7 +317,8 @@ uint64_t mem_available_bytes();
 
 // What a memory control group still lets this process take, in bytes: the tightest of its group
 // and every ancestor it can see, each as the limit less what the group holds, plus the group's own
-// inactive file pages, which the kernel drops before it would end anything. A container caps a
+// file pages (active and inactive, as MemAvailable counts them), which the kernel drops before it
+// would end anything. A container caps a
 // process this way whatever the machine has free, and exceeding the cap ends the process, so it is
 // the same kind of fact as a phone app's own share. 0 where no finite limit is set or none can be
 // read (no cgroups, an unlimited group, another kernel). The paths are parameters so a test can

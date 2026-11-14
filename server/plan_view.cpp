@@ -57,6 +57,20 @@ std::string host_name(const HardwareProfile & hw) {
     return "the host";
 }
 
+// Where a prompt runs: the prefill device where one is armed; else, where the run lets the backends take
+// a wide graph's matmuls (offloads_wide_matmuls), the devices that hold layers, which compute their own
+// weights and the host's copied over for the pass; else the host. One answer for the lanes and the
+// device badges.
+std::vector<std::string> prompt_devices(const HardwareProfile & hw, const Plan & plan) {
+    if (!plan.config.prefill.device.empty()) return {plan.config.prefill.device};
+    std::vector<std::string> out;
+    if (offloads_wide_matmuls(plan.config))
+        for (const ComputeDevice & d : hw.devices)
+            if (has_layers(plan, d)) out.push_back(d.name);
+    if (out.empty()) out.push_back(host_name(hw));
+    return out;
+}
+
 // The badge a device row carries: what it does, or why it does nothing.
 std::string device_badge(const std::vector<std::string> & uses, const std::string & status) {
     if (status == "refused") return "Wrong results";
@@ -80,6 +94,10 @@ std::string rate_text(const ComputeDevice & d, double prompt_ratio) {
 // Every device the plan saw, with what it does in this run and why, from the facts the rules read.
 json devices_json(const HardwareProfile & hw, const Plan & plan) {
     const std::string & armed = plan.config.prefill.device;
+    const std::vector<std::string> prompt = prompt_devices(hw, plan);
+    const auto runs_prompt = [&](const std::string & name) {
+        return std::find(prompt.begin(), prompt.end(), name) != prompt.end();
+    };
     json out = json::array();
     for (const ComputeDevice & d : hw.devices) {
         std::vector<std::string> uses;
@@ -93,7 +111,7 @@ json devices_json(const HardwareProfile & hw, const Plan & plan) {
                                        ? d.memory_bandwidth_gibs / hw.host_bandwidth_gibs
                                        : 0.0;
         if (d.is_cpu) {
-            if (armed.empty()) uses.push_back("prompt");
+            if (runs_prompt(d.name)) uses.push_back("prompt");
             uses.push_back("tokens");
             why = "The host: every rate is measured against it.";
         } else if (d.usable == Tri::No) {
@@ -101,17 +119,19 @@ json devices_json(const HardwareProfile & hw, const Plan & plan) {
             why = d.unusable_reason.empty() ? "Its probe did not come back, so nothing uses it." : d.unusable_reason;
         } else {
             if (has_layers(plan, d)) uses.push_back("layers");
-            if (d.name == armed) uses.push_back("prompt");
+            if (runs_prompt(d.name)) uses.push_back("prompt");
             if (!uses.empty()) {
-                why = d.name == armed ? "Faster than the host on a prompt, with the same results."
-                                      : "Holds layers in memory of its own.";
+                why = d.name == armed       ? "Faster than the host on a prompt, with the same results."
+                      : runs_prompt(d.name) ? "Holds layers in memory of its own, and computes a prompt's wide "
+                                              "matmuls, the host's weights copied over for the pass."
+                                            : "Holds layers in memory of its own.";
             } else if (d.identity_ok == Tri::No || d.wide_identity_ok == Tri::No) {
                 status = "refused";
                 why = "Its results did not match the host's, so it is never used.";
             } else if (prompt_ratio == 0) {
                 why = "Not measured at prompt width, so the plan does not arm it.";
             } else {
-                why = armed.empty() ? "The prompt stays on the host: the prefill decision says why."
+                why = armed.empty() ? "The prompt runs where the layers are: the prefill decision says why."
                                     : armed + " is the one the plan arms for the prompt.";
             }
         }
@@ -204,10 +224,8 @@ json lanes_json(const HardwareProfile & hw, const Plan & plan) {
     json tokens = json::array({host});
     for (const ComputeDevice & d : hw.devices)
         if (has_layers(plan, d)) tokens.push_back(d.name);
-    const std::string & armed = plan.config.prefill.device;
-    return json::array(
-        {json{{"phase", "prompt"}, {"label", "Prompt"}, {"on", json::array({armed.empty() ? host : armed})}},
-         json{{"phase", "tokens"}, {"label", "Tokens"}, {"on", tokens}}});
+    return json::array({json{{"phase", "prompt"}, {"label", "Prompt"}, {"on", prompt_devices(hw, plan)}},
+                        json{{"phase", "tokens"}, {"label", "Tokens"}, {"on", tokens}}});
 }
 
 // The three groups a person reads a plan in, by who decided and what: a setting the plan decided

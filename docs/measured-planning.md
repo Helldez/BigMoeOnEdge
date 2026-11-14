@@ -107,7 +107,10 @@ cache size moves, and the cache is lossless.
 - The record is kept by the session itself (`--routing-record`, default 256 decoded tokens and the
   prompt's last 256), from the ids the hook gathers for the cache anyway: no extra graph nodes, unlike
   `--route-trace`. It is one line per cache request, so a chunked prompt replays as the engine served
-  it rather than as one batch.
+  it rather than as one batch. Every MoE layer is sized from the file (`expert_bytes_per_layer`: each
+  expert tensor's size over its expert count), never from where the plan put it: the hook records
+  every layer's routing, and a record sized by the streamer named no bytes for the layers whose
+  experts sat on a device, which the reader refuses whole, so the next load planned with no curve.
 - The front-ends keep it the same way (`ModelRecords`, `bmoe/model_records.h`): in the per-user data
   folder under `routing/` (`frontend::records_dir`), which `bmoe-cli --routing-dir DIR` can move or
   `""` turn off, one file per model named by a content fingerprint of the file (`model_fingerprint`). The
@@ -385,8 +388,14 @@ without a device of their own, an unchanged plan.
   layers' experts, so it inherited the fitter's granularity: the memory under one more whole layer was
   never used, and a card whose dense part fit with no whole layer beside it got no cache at all. The
   cache now takes those bytes plus what the fitter left free past its margin, per card, read in the
-  placement probe off the same free figure the fitter planned against; on several cards, the largest
-  budget whose share (llama.cpp splits it by layers) fits every card. Its floor is one token cycle,
+  placement probe off the same free figure the fitter planned against. On several cards the layers'
+  split and the budget are one decision (`device_tier_split`): llama.cpp hands each card a share of
+  the budget by the layers the split gives it, so the plan gives each card layers in proportion to its
+  room under the cache (what it had free, the experts the fitter put on it, its layers' dense part and
+  context), and the budget is what the tightest card takes its share of. The fitter's split is kept
+  where it gives the larger budget. Left as the fitter made it, the split followed whole layers: on two
+  rented 16 GB cards with DeepSeek-V4-Flash, 6 layers on the first card (all its whole layers) and 38
+  on the second, the first card was handed 6/44 of the budget and 10 GB of it stayed empty. Its floor is one token cycle,
   the RAM cache's floor for the same reason; under it, the fitter's placement stands. llama.cpp's
   cache is an SLRU and the replayed hit curve an LRU's, so the plan's share for it is an estimate.
 - **Why not a price.** The first version priced the two per token (the split's host layers at the
@@ -598,7 +607,12 @@ served (`bmoe/calibrate.h`):
   requests they serve; the plan after weighs those, asking for each side's prefill of long prompts if
   they show up, timed on a served load as before. Only that case records: a width decided on requests
   already seen (all a load timed across loads ever leaves) carries no width value, records nothing,
-  and stays where it was decided, as it always has.
+  and stays where it was decided, as it always has. The margin guards the width in force
+  (`MeasuredKnobs::width_held`, what a load that timed no side ran), not the full width: weighing the
+  same rates again on the requests served does not swing the graph back. On two rented 16 GB cards
+  with DeepSeek-V4-Flash the narrow graph was 11% ahead on the decode alone and chosen, then 9% ahead
+  on the requests served, inside the margin, and the next load went back to the full width with 4 GB
+  less device cache.
 
 **Where it runs.** Everywhere the same: a load whose plan leaves a decision pending calibrates
 before its first answer, and keeps the verdict, so the next load of the model on that machine starts

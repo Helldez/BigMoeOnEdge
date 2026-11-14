@@ -90,6 +90,12 @@ struct MeasuredKnobs {
     // decoded and the prompt tokens beyond the narrow width (prefilled after reuse), over `usage_requests`.
     double usage_gen_tokens = 0.0, usage_long_prompt_tokens = 0.0;
     int usage_requests = 0;
+    // The width a load ran as decided, not as a side timed: 1 the full width, 0 `width_narrow`, -1 none
+    // recorded. The margin a decision asks for guards this one: the other width takes over only when it
+    // is faster by the margin, so the same measurements weighed again do not swing the graph from one
+    // load to the next (two 16 GB cards, DeepSeek-V4-Flash: narrow 11% ahead on the decode alone, then
+    // 9% on the requests served, back to the full width and 4 GB less device cache).
+    int width_held = -1;
 
     // What the decode itself cost here, the coefficient a run's own counters correct
     // (docs/measured-planning.md, "The decode's own cost"). The plan prices decode compute from a
@@ -195,10 +201,10 @@ struct MeasuredKnobs {
     int verdicts() const {
         return (threads > 0) + (overlap >= 0) + (device_cache_tps > 0.0) + (no_device_cache_tps > 0.0) +
                (cpu_share_tps > 0.0) + (no_cpu_share_tps > 0.0) + (wide_decode_tps > 0.0) + (narrow_decode_tps > 0.0) +
-               (wide_prefill_tps > 0.0) + (narrow_prefill_tps > 0.0) + usage_requests + (decode_compute_s > 0.0) +
-               (decode_hit >= 0.0) + mix_requests + (host_prefill_tps > 0.0) + (device_cache_unviable > 0) +
-               (no_device_cache_unviable > 0) + (wide_unviable > 0) + (narrow_unviable > 0) + (cpu_share_unviable > 0) +
-               (no_cpu_share_unviable > 0) + (int) prefill.size();
+               (wide_prefill_tps > 0.0) + (narrow_prefill_tps > 0.0) + usage_requests + (width_held >= 0) +
+               (decode_compute_s > 0.0) + (decode_hit >= 0.0) + mix_requests + (host_prefill_tps > 0.0) +
+               (device_cache_unviable > 0) + (no_device_cache_unviable > 0) + (wide_unviable > 0) +
+               (narrow_unviable > 0) + (cpu_share_unviable > 0) + (no_cpu_share_unviable > 0) + (int) prefill.size();
     }
 };
 

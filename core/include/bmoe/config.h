@@ -915,4 +915,14 @@ struct ValidationResult {
 // io_threads in range; n_predict/n_threads positive. Pure function — no I/O.
 ValidationResult validate(const RunConfig & cfg);
 
+// Whether a run lets its GPU backends take a wide graph's matmuls over host-resident weights (llama.cpp's
+// op offload: a prompt's expert matmuls computed on the device the layers are on, the weights copied
+// over for the pass). The one rule the session loads by and a front-end says where a prompt runs by,
+// so the two cannot disagree. Pure. The facts it reads: the expert streamer's config, the layers placed,
+// and whether a prefill device takes the prompt.
+bool offloads_wide_matmuls(const MoeStreamConfig & moe, int n_gpu_layers, bool prefill_device);
+inline bool offloads_wide_matmuls(const RunConfig & cfg) {
+    return offloads_wide_matmuls(cfg.moe, cfg.n_gpu_layers, cfg.prefill.enabled());
+}
+
 } // namespace bmoe
