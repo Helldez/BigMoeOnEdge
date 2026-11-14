@@ -90,6 +90,9 @@ def data_offset(buf):
     return (r.pos + alignment - 1) // alignment * alignment
 
 
+FP_HEAD, FP_WINDOW, FP_WINDOWS = 1 << 20, 64 << 10, 4
+
+
 def fetch(url, start, end):
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Range": "bytes=%d-%d" % (start, end)})
     with urllib.request.urlopen(req, timeout=120) as resp:
@@ -120,6 +123,21 @@ def shell(url, out_dir):
     with open(path, "wb") as f:
         f.write(buf[:off])
         f.truncate(total)  # sparse: the weights are a hole
+        # The bytes the engine's model fingerprint samples (model_fingerprint in
+        # core/src/plan/model_probe.cpp: the first MiB and four 64 KiB windows), so a shell has the
+        # real file's fingerprint and finds the routing and knob records kept under it.
+        spans = [(0, min(FP_HEAD, total))]
+        if total > FP_WINDOW:
+            spans += [((total - FP_WINDOW) // FP_WINDOWS * i, FP_WINDOW) for i in range(1, FP_WINDOWS + 1)]
+        for start, n in spans:
+            n = min(n, total - start)
+            if start + n <= off:
+                continue
+            data, _ = fetch(url, start, start + n - 1)
+            if len(data) != n:
+                raise ValueError("%s: asked %d bytes at %d, got %d" % (name, n, start, len(data)))
+            f.seek(start)
+            f.write(data)
     print("%s: header %d bytes of %.1f GiB" % (path, off, total / 2**30))
 
 

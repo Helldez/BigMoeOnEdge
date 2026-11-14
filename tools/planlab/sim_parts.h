@@ -71,11 +71,13 @@ struct Term {
 struct PartsModel {
     // Cards: time per layer = bytes / (efficiency x spec bandwidth) + latency.
     Term gpu_expert_eff, gpu_expert_lat_s, gpu_dense_eff, gpu_dense_lat_s;
-    Term gpu_probe_bw;   // the probe's bandwidth / spec bandwidth
-    Term gpu_pinned;     // upload from the backend's host memory / link
-    Term gpu_pageable;   // upload from the file's mapping / link
-    Term gpu_split_s;    // a graph split, seconds
-    Term gpu_host_hop_s; // a host half in a device graph, seconds
+    Term gpu_probe_bw;          // the probe's bandwidth / spec bandwidth
+    Term gpu_pinned;            // upload from the backend's host memory / link
+    Term gpu_pageable;          // upload from the file's mapping / link, where the link is what bounds it
+    Term gpu_pageable_cap_gibs; // upload from the mapping where the host's staging copy bounds it, GiB/s
+    Term gpu_reported_memory;   // the memory the driver reports / the card's published size
+    Term gpu_split_s;           // a graph split, seconds
+    Term gpu_host_hop_s;        // a host half in a device graph, seconds
     Term gpu_wide_per_tflop;
     // Hosts.
     std::map<std::string, Term> r1_per_ghz;         // "core|quant" -> one thread's GiB/s per GHz

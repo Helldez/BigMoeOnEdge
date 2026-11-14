@@ -50,3 +50,9 @@ rig apple-silicon-16gb-qwen3.6-35b-a3b-q2_k          cpu=apple-m5
 rig apple-silicon-16gb-qwen3.6-35b-a3b-q2_k-learned  cpu=apple-m5
 rig apple-silicon-16gb-qwen3.6-35b-a3b-q4_k_m        cpu=apple-m5
 rig apple-silicon-16gb-qwen3.6-35b-a3b-q4_k_m-learned cpu=apple-m5
+rig rtx-2x16gb-5060ti-deepseek-v4-ud-iq2m          gpu=rtx5060ti-16 cpu=ryzen7-9700x link=pcie5x8
+rig rtx-2x16gb-5060ti-deepseek-v4-ud-iq2m-ctx16k   gpu=rtx5060ti-16 cpu=ryzen7-9700x link=pcie5x8
+rig rtx-2x16gb-5060ti-deepseek-v4-ud-iq2m-learned  gpu=rtx5060ti-16 cpu=ryzen7-9700x link=pcie5x8
+rig rtx-2x16gb-5060ti-flashnext-125b-q2_0          gpu=rtx5060ti-16 cpu=ryzen7-9700x link=pcie5x8
+rig rtx-2x16gb-5060ti-flashnext-125b-q2_0-ctx16k   gpu=rtx5060ti-16 cpu=ryzen7-9700x link=pcie5x8
+rig rtx-2x16gb-5060ti-flashnext-125b-q2_0-learned  gpu=rtx5060ti-16 cpu=ryzen7-9700x link=pcie5x8

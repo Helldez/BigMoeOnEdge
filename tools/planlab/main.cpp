@@ -716,6 +716,8 @@ int parts_main(const Args & a) {
     line("card probe bandwidth / spec", pm.gpu_probe_bw, 1, "");
     line("upload from host memory / link", pm.gpu_pinned, 1, "");
     line("upload from the mapping / link", pm.gpu_pageable, 1, "");
+    line("upload from the mapping, host-copy bound", pm.gpu_pageable_cap_gibs, 1, "GiB/s");
+    line("card memory reported / published", pm.gpu_reported_memory, 1, "");
     line("graph split", pm.gpu_split_s, 1e6, "us");
     line("host plateau / spec memory bandwidth", pm.host_plateau_of_membw, 1, "");
     line("host parallel efficiency (compute-bound)", pm.host_parallel_eff, 1, "");

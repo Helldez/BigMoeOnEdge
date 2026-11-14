@@ -129,6 +129,8 @@ double bits_per_weight(int type) {
 // 0.73-0.88 of the memory's specification on Q4 and Q8; 2-bit plateaus at 0.24-0.46 on servers and
 // 0.42 on a laptop, under their cores' sum).
 constexpr double k_compute_bound_bits = 4.0;
+// A pageable upload under this share of the same link's pinned upload is bounded by the host's copy.
+constexpr double k_copy_bound_of_pinned = 0.5;
 
 std::string quant_name(int type) {
     return type >= 0 && type < GGML_TYPE_COUNT ? ggml_type_name((ggml_type) type) : "unknown";
@@ -255,7 +257,8 @@ bool fit_parts_model(const PartsCatalog & cat, PartsModel & pm, std::string & er
     for (const Rig & r : cat.rigs)
         if (r.record == skip) skip_gpu = r.gpu, skip_cpu = r.cpu;
     std::vector<std::array<double, 3>> ex, de;
-    std::vector<double> probe, pinned, pageable, split, hop, wide, plateau_mem, par_eff, ex_pl, de_pl, wi_pl;
+    std::vector<double> probe, pinned, pageable, pageable_cap, reported, split, hop, wide, plateau_mem, par_eff, ex_pl,
+        de_pl, wi_pl;
     std::map<std::string, std::vector<double>> r1, low_bit;
     struct Obs {
         std::string core;
@@ -321,10 +324,20 @@ bool fit_parts_model(const PartsCatalog & cat, PartsModel & pm, std::string & er
         if (d->expert_gibs > 0.0) ex.push_back({expert_layer_bytes(m), bw, d->expert_gibs * k_gib});
         if (d->dense_gibs > 0.0) de.push_back({dense_layer_bytes(m), bw, d->dense_gibs * k_gib});
         if (d->memory_bandwidth_gibs > 0.0) probe.push_back(d->memory_bandwidth_gibs * k_gib / bw);
+        if (g.vram > 0 && d->memory_total > 0) reported.push_back((double) d->memory_total / (double) g.vram);
         if (rig.link > 0.0) {
             if (d->upload_host_buffer_gibs > 0.0)
                 pinned.push_back(d->upload_host_buffer_gibs * k_gib / (rig.link * k_gb));
-            if (d->upload_gibs > 0.0) pageable.push_back(d->upload_gibs * k_gib / (rig.link * k_gb));
+            // A copy from pageable memory goes through the driver's staging buffer. Where it runs at
+            // under half of what the same link carries from pinned memory, the host's copy is what
+            // bounds it, not the link: on fast links it stays near the same rate whatever the link.
+            if (d->upload_gibs > 0.0) {
+                if (d->upload_host_buffer_gibs > 0.0 &&
+                    d->upload_gibs < k_copy_bound_of_pinned * d->upload_host_buffer_gibs)
+                    pageable_cap.push_back(d->upload_gibs);
+                else
+                    pageable.push_back(d->upload_gibs * k_gib / (rig.link * k_gb));
+            }
         }
         if (d->split_seconds > 0.0) split.push_back(d->split_seconds);
         if (d->host_hop_seconds > 0.0) hop.push_back(d->host_hop_seconds);
@@ -343,6 +356,8 @@ bool fit_parts_model(const PartsCatalog & cat, PartsModel & pm, std::string & er
     pm.gpu_probe_bw = median_term(probe);
     pm.gpu_pinned = median_term(pinned);
     pm.gpu_pageable = median_term(pageable);
+    pm.gpu_pageable_cap_gibs = median_term(pageable_cap);
+    pm.gpu_reported_memory = median_term(reported);
     pm.gpu_split_s = median_term(split);
     pm.gpu_host_hop_s = median_term(hop);
     pm.gpu_wide_per_tflop = median_term(wide);
@@ -482,8 +497,10 @@ HardwareProfile build_hardware(const MachineParts & parts,
         const double free_share = pm.device_template.memory_total
                                       ? (double) pm.device_template.memory_free / pm.device_template.memory_total
                                       : 0.96;
-        d.memory_total = g.vram;
-        d.memory_free = (uint64_t) ((double) g.vram * free_share);
+        // A card reports a little less than its published size (the driver keeps some).
+        const double reported = pm.gpu_reported_memory.value > 0.0 ? pm.gpu_reported_memory.value : 1.0;
+        d.memory_total = (uint64_t) ((double) g.vram * reported);
+        d.memory_free = (uint64_t) ((double) d.memory_total * free_share);
         const double bw = g.bw * k_gb;
         d.memory_bandwidth_gibs = pm.gpu_probe_bw.value * bw / k_gib;
         d.expert_gibs = layer_rate(xb, bw, pm.gpu_expert_eff, pm.gpu_expert_lat_s) / k_gib;
@@ -491,6 +508,9 @@ HardwareProfile build_hardware(const MachineParts & parts,
         d.wide_matmul_gibs = pm.gpu_wide_per_tflop.value * g.fp32;
         d.upload_host_buffer_gibs = pm.gpu_pinned.value * link * k_gb / k_gib;
         d.upload_gibs = pm.gpu_pageable.value * link * k_gb / k_gib;
+        if (pm.gpu_pageable_cap_gibs.value > 0.0)
+            d.upload_gibs = std::min(d.upload_gibs, pm.gpu_pageable_cap_gibs.value);
+        d.upload_gibs = std::min(d.upload_gibs, d.upload_host_buffer_gibs);
         d.split_seconds = pm.gpu_split_s.value;
         d.host_hop_seconds = pm.gpu_host_hop_s.value;
         hw.devices.push_back(d);
@@ -527,9 +547,9 @@ HardwareProfile build_hardware(const MachineParts & parts,
 std::string check_parts_model(const PartsCatalog & cat) {
     std::ostringstream o;
     char buf[512];
-    std::snprintf(buf, sizeof(buf), "%-40s %-10s %10s %10s %10s %10s %10s %10s %10s\n",
+    std::snprintf(buf, sizeof(buf), "%-40s %-10s %10s %10s %10s %10s %10s %10s %10s %10s\n",
                   "left out (measured / modelled)", "quant", "host thr1", "plateau", "host exp", "card exp",
-                  "card dense", "pinned", "pageable");
+                  "card dense", "pinned", "pageable", "card mem");
     o << buf;
     std::vector<double> all;
     for (const Rig & rig : cat.rigs) {
@@ -560,14 +580,15 @@ std::string check_parts_model(const PartsCatalog & cat) {
         const ComputeDevice * dm = first_card(rec.hw);
         const ComputeDevice * ds = first_card(hw);
         const bool card = dm && ds && dm->has_own_memory() && gpu != cat.gpus.end();
-        std::snprintf(buf, sizeof(buf), "%-40.40s %-10s %10s %10s %10s %10s %10s %10s %10s\n", rig.record.c_str(),
+        std::snprintf(buf, sizeof(buf), "%-40.40s %-10s %10s %10s %10s %10s %10s %10s %10s %10s\n", rig.record.c_str(),
                       quant_name(rec.model.expert_type_id).c_str(), ratio(one_thread(rec.hw), one_thread(hw)).c_str(),
                       ratio(rec.hw.host_bandwidth_gibs, hw.host_bandwidth_gibs).c_str(),
                       ratio(rec.hw.host_expert_gibs, hw.host_expert_gibs).c_str(),
                       card ? ratio(dm->expert_gibs, ds->expert_gibs).c_str() : "-",
                       card ? ratio(dm->dense_gibs, ds->dense_gibs).c_str() : "-",
                       card ? ratio(dm->upload_host_buffer_gibs, ds->upload_host_buffer_gibs).c_str() : "-",
-                      card ? ratio(dm->upload_gibs, ds->upload_gibs).c_str() : "-");
+                      card ? ratio(dm->upload_gibs, ds->upload_gibs).c_str() : "-",
+                      card ? ratio((double) dm->memory_total, (double) ds->memory_total).c_str() : "-");
         o << buf;
     }
     if (!all.empty()) {

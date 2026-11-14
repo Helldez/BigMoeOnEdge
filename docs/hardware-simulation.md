@@ -17,7 +17,7 @@ nothing a release carries.
 | The placement (layers per card, experts left on the host, KV, compute buffers) | llama.cpp's own capacity fitter, run on simulated cards that report the memory the spec gives them | see [the check against real fits](#the-check-against-real-fits) |
 | The model's shapes | the real gguf's header: a *shell* of the file (its header at its own offsets, the rest a hole) | exact |
 | The host: memory, cores, thread sweep, matmul rates, storage | its parts' specifications through the model of parts fitted on every measured machine ([any machine from its parts](#any-machine-from-its-parts)); or, composed, a record measured on a real machine | memory-bound quantizations within 0.82-1.11 of a host left out of the fit; under 4 bits a weight, 0.5-3.8 (see below) |
-| A card's rates: memory bandwidth, expert and dense matmul, uploads, a crossing | the same model of parts from its published bandwidth, FP32 and link; or a record of a real card | within 0.81-1.22 of a card left out of the fit |
+| A card's rates: memory bandwidth, expert and dense matmul, uploads, a crossing | the same model of parts from its published bandwidth, FP32 and link; or a record of a real card | within 0.75-1.28 of a card left out of the fit |
 | The cache's hit rate | the model's own routing from a record of it (`routing=`), or hit rates real runs measured at given cache sizes (`hitcurve=`) | a replay of the model's routing is the planner's own source; measured points are a second best; with neither the plan credits the share of the experts the cache holds, which is far below what a cache of a skewed router serves |
 | The decode speed | a sum of the measured rates over the parts a token goes through ([sim_speed.h](../tools/planlab/sim_speed.h)) | see [the speed estimate against measured runs](#the-speed-estimate-against-measured-runs) |
 
@@ -46,9 +46,10 @@ to the data set, with its rig line, moves every simulation with no code changed.
 
 | Rate | Model | Fit on the measured machines |
 | --- | --- | --- |
-| A card's expert and dense matmul | time a layer = its bytes / (efficiency x published bandwidth) + a latency, at the simulated model's own layer size | experts 0.60 of the bandwidth and 3 us; dense 0.85 and 37 us |
-| A card's uploads | efficiency x the link (the slower of the card's and the slot's) | 0.74 from the backend's host memory, 0.45 from the file's mapping |
-| A crossing, a host hop | the measured median | 11 us a split |
+| A card's expert and dense matmul | time a layer = its bytes / (efficiency x published bandwidth) + a latency, at the simulated model's own layer size | experts 0.61 of the bandwidth and 2 us; dense 0.94 and 55 us |
+| A card's uploads | efficiency x the link (the slower of the card's and the slot's); from the file's mapping, the lower of that and the host's copy rate (where a box measured it under half its pinned rate) | 0.73 from the backend's host memory; 0.46 from the file's mapping, at most 7.4 GiB/s |
+| A card's memory | the published size x what cards report of it | 0.967 |
+| A crossing, a host hop | the measured median | 9 us a split |
 | The host on 4 bits a weight or more | 0.80 x the memory's published bandwidth: every host measured on Q4 and Q8 sat at 0.73-0.88 of it | |
 | The host under 4 bits a weight | threads x one thread's rate: the cores dequantize slower than the memory feeds them (2-bit plateaus at 0.24-0.46 of the memory) | one thread's rate per GHz for that core class and quantization where measured; else the median of the hosts measured under 4 bits with the same SIMD |
 | The host's experts, dense, wide matmul | ratios of the plateau | 0.78, 0.82 |
@@ -57,15 +58,22 @@ to the data set, with its rig line, moves every simulation with no code changed.
 How far it misses a machine it was not fitted on (each record against the model fitted without its
 machine, `bmoe-planlab parts`):
 
-| Left out | Host plateau | Host experts | Card experts | Card dense | Upload pinned / pageable |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 8 GB card, 14-core Xeon (Q2_0) | 0.86 | 0.86 | 1.22 | 0.90 | 0.93 / 1.05 |
-| 24 GB card, 8-core desktop (Q4_K) | 1.11 | 1.07 | 0.86 | 1.09 | 0.98 / 1.07 |
-| 12 GB card, 28-core Xeon (IQ2) | 0.50 | 0.66 | 0.81 | 1.12 | 1.07 / 1.21 |
-| 32 GB card, Zen 2 EPYC (Q2_0) | 3.77 | 3.21 | 0.85 | 0.97 | 0.95 / 0.64 |
-| 32 GB card, Zen 5 EPYC (Q2_0) | 2.26 | 2.44 | 0.90 | 1.00 | 1.10 / 0.89 |
-| Apple silicon laptop, Q4_0 / Q8_0 / Q4_K | 0.82-0.96 | 0.84-1.11 | | | |
-| Apple silicon laptop, Q2_K | 2.40 | 2.41 | | | |
+| Left out | Host plateau | Host experts | Card experts | Card dense | Upload pinned / pageable | Card memory |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 8 GB card, 14-core Xeon (Q2_0) | 0.94 | 0.95 | 1.14 | 0.90 | 0.97 / 0.99 | 0.98 |
+| 24 GB card, 8-core desktop (Q4_K) | 1.15 | 1.11 | 0.81 | 1.28 | 1.04 / 1.01 | 1.01 |
+| 12 GB card, 28-core Xeon (IQ2) | 0.66 | 0.88 | 0.92 | 1.00 | 1.09 / 1.14 | 1.00 |
+| 32 GB card, Zen 2 EPYC (Q2_0) | 4.13 | 3.53 | 0.75 | 1.21 | 1.00 / 1.16 | 1.01 |
+| 32 GB card, Zen 5 EPYC (Q2_0) | 1.71 | 1.86 | 0.79 | 1.24 | 1.13 / 1.60 | 1.01 |
+| Two 16 GB cards, 8-core Zen 5 desktop (IQ2, Q2_0) | 0.44-0.91 | 0.34-0.64 | 1.03-1.11 | 0.91-1.09 | 0.77-1.08 / 0.81-1.08 | 0.99 |
+| Apple silicon laptop, Q4_0 / Q8_0 / Q4_K | 1.01-1.18 | 1.06-1.40 | | | | |
+| Apple silicon laptop, Q2_K | 2.43 | 2.52 | | | | |
+
+The two 16 GB cards were added after a blind prediction of that box
+([blind-0.43-rented.md](bench-data/hardware-sim/blind-0.43-rented.md)); its records moved two terms
+of the model. An upload from the file's mapping ran at 7-9 GiB/s on every box whatever its link (the
+host's copy through the driver's staging buffer), so it is the lower of a share of the link and that
+rate; and a card reports about 3% less memory than its published size, which the model now fits.
 
 The cards and a memory-bound host carry over to parts nobody measured. A host on a quantization
 under 4 bits does not yet: how fast one core dequantizes 2 bits differs by generation (0.7 GiB/s a
@@ -93,7 +101,10 @@ composes it from measured machines directly; the machines rebuilt from their own
    interface breaks this file, never the engine.
 3. **The model** is a shell made by [gguf_shell.py](../tools/planlab/gguf_shell.py): its header
    fetched with HTTP range requests into a sparse file of the model's full size. A 125 GB model costs
-   about 11 MB of download and of disk. Never load a shell to run it: its weights are zeros.
+   about 11 MB of download and of disk. It also fetches the bytes the engine's model fingerprint
+   samples (the first MiB and four 64 KiB windows), so a shell has the real file's fingerprint and
+   a simulated record finds the routing and knob records kept under it. Never load a shell to run
+   it: its other weights are zeros.
 4. **The plan** is the rules on the composed facts, through the same `replan()` a calibration
    plans with; every re-fit the rules ask for (a narrower graph, a context giving way) asks the
    real fitter again on the simulated cards.

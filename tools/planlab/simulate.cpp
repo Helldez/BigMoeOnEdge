@@ -461,6 +461,8 @@ Simulation simulate_machine(const MachineSpec & spec,
         sim.record.env["simulated_device_" + std::to_string(i)] =
             std::filesystem::u8path(spec.devices[i].record).filename().u8string();
     sim.record.env["model_file"] = std::filesystem::u8path(model_path).filename().u8string();
+    // The model is the one simulated, not the one the host's facts were recorded on.
+    sim.record.env["model_fingerprint"] = model_fingerprint(model_path.c_str());
     return sim;
 }
 
