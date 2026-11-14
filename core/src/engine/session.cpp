@@ -480,7 +480,8 @@ struct Session::Impl {
         checkpoints.clear();
         media_in_conversation = false;
     }
-    // Keep the first n tokens of the KV and drop the rest. Where the memory refuses the cut, the
+    // Keep the first n tokens of the KV and drop the rest. Where the memory refuses the cut, or a
+    // sliding window has already let go of what the cut would read (memory_covers), the
     // newest checkpoint at or before n stands in for it; returns how many tokens are still held,
     // 0 with the context cleared when no checkpoint helps. A cut inside an image moves to its
     // start: an image is held whole or not at all.
@@ -488,7 +489,8 @@ struct Session::Impl {
         n = std::min(n, kv.size());
         if (const detail::MediaSpan * m = kv.media_at(n); m && m->begin < n) n = m->begin;
         size_t kept = n;
-        if (!llama_memory_seq_rm(llama_get_memory(ctx.get()), 0, kv.pos_at(n), -1)) {
+        if (!checkpoints.memory_covers(checkpoint_contexts(), (int64_t) n) ||
+            !llama_memory_seq_rm(llama_get_memory(ctx.get()), 0, kv.pos_at(n), -1)) {
             kept = (size_t) checkpoints.restore(checkpoint_contexts(), (int64_t) n);
             if (kept == 0) clear_memory(ctx.get());
         }
@@ -1220,6 +1222,14 @@ bool Session::Impl::create_contexts(Opening & o) {
     cparams.n_ubatch = cfg.n_ubatch > 0 ? (uint32_t) cfg.n_ubatch : (uint32_t) cfg.n_batch;
     cparams.type_k = detail::to_ggml_type(cfg.cache_type_k);
     cparams.type_v = detail::to_ggml_type(cfg.cache_type_v);
+    // A sliding-window layer keeps its window, not the whole context. llama.cpp's own default is a
+    // full-size cache on those layers too (common/, which its server and CLI use, turns it off), and
+    // on a model whose layers are mostly windowed that is most of the context's memory spent on cells
+    // no token reads: Gemma 4 26B-A4B at a 16384 context held ~2 GiB for its context on a 12 GB
+    // phone, where that was the memory the expert cache and the prefill device were refused. A
+    // cut further back than the window is served from a checkpoint instead (keep_kv_prefix). The
+    // placement probe opens its context the same way, so the plan prices the cache the run holds.
+    cparams.swa_full = false;
     // The streamer needs the callback to see routing; the compute trace needs it to time nodes.
     // Installing it for the trace alone is what lets a NON-streamed run be measured — the dense
     // mmap baseline the streamed numbers are argued against.

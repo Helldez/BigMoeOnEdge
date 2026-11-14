@@ -111,6 +111,9 @@ struct ModelProfile {
 
     uint32_t n_expert = 0;      // experts per MoE layer
     uint32_t n_expert_used = 0; // routed per token (top-k)
+    // The sliding window, in positions, from the file (0 without one): what a context checkpoint of a
+    // windowed layer copies, at the cost per cell the placement probe measures.
+    uint32_t n_swa = 0;
 
     // The hidden state's width. Not a size the streamer cares about — it is what a tensor handed
     // across a host/device boundary actually carries, so it is the shape the split probe measures

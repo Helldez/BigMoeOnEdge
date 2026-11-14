@@ -91,6 +91,9 @@ Placement probe_placement(const char * model_path,
     // The cache's own element types, so the KV it projects is the one the run allocates.
     cparams.type_k = detail::to_ggml_type(type_k);
     cparams.type_v = detail::to_ggml_type(type_v);
+    // And its own size: windowed layers keep their window, as the session opens them
+    // (Session::Impl::create_contexts), not llama.cpp's default of the whole context.
+    cparams.swa_full = false;
 
     std::vector<float> tensor_split(llama_max_devices(), 0.0f);
     std::vector<llama_model_tensor_buft_override> overrides(llama_max_tensor_buft_overrides());
@@ -340,6 +343,19 @@ Placement probe_placement(const char * model_path,
                     pl.host_compute_per_token = (pl.raw_host_compute_bytes - host_half) / span;
                 if (pl.device_compute_bytes > dev_half)
                     pl.device_compute_per_token = (pl.device_compute_bytes - dev_half) / span;
+                // The context moves with the width only where a window holds one ubatch of cells beyond
+                // itself; the cells the two widths hold apart are what the difference is made of.
+                pl.n_ctx = cparams.n_ctx;
+                pl.n_swa = model.n_swa;
+                const uint64_t cells = pl.window_cells(cparams.n_ubatch) - pl.window_cells(half.n_ubatch);
+                uint64_t dev_ctx_half = 0;
+                for (size_t i = 0; i + 1 < hm.size(); ++i)
+                    dev_ctx_half += (uint64_t) hm[i].context;
+                const uint64_t host_ctx_half = (uint64_t) hm.back().context;
+                if (cells > 0 && pl.raw_host_context_bytes > host_ctx_half)
+                    pl.host_window_cell_bytes = (pl.raw_host_context_bytes - host_ctx_half) / cells;
+                if (cells > 0 && pl.device_context_bytes > dev_ctx_half)
+                    pl.device_window_cell_bytes = (pl.device_context_bytes - dev_ctx_half) / cells;
             }
         }
 
@@ -364,6 +380,18 @@ Placement probe_placement(const char * model_path,
                 }
                 pl.context_fixed_bytes = 2 * halved > whole ? 2 * halved - whole : 0;
             }
+        }
+        // A windowed cache holds the window and one ubatch of cells, where a checkpoint copies the window
+        // alone: measured on Gemma 4 26B-A4B, a checkpoint of 106 MiB, 1024 cells, where twice the half
+        // less the whole at an 8192-wide graph was 744 (and nothing at a context too short to halve).
+        // So where a window is measured, a checkpoint is the window at what a cell costs, plus what the
+        // fixed part holds beyond the window and its ubatch of cells (a recurrent state, on a model with
+        // both), never less than the window alone.
+        const uint64_t per_cell = pl.host_window_cell_bytes + pl.device_window_cell_bytes;
+        if (per_cell > 0) {
+            const uint64_t window = per_cell * std::min<uint64_t>(pl.n_swa, cparams.n_ctx);
+            const uint64_t held = per_cell * ((uint64_t) pl.n_swa + cparams.n_ubatch);
+            pl.context_fixed_bytes = window + (pl.context_fixed_bytes > held ? pl.context_fixed_bytes - held : 0);
         }
     }
 

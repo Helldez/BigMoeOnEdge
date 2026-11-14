@@ -1500,6 +1500,32 @@ int main() {
                   std::to_string(a.cache_bytes >> 20) + " MiB");
         }
 
+        // The dense policy copies every dense tensor, so a group read whole every token that the
+        // budget had no room for is held by the run all the same, and priced as held. Priced as
+        // mapped, at its refault, it made a phone's plan predict 10-44 s a token for a model that
+        // decoded at 0.5 (Gemma 4 26B-A4B, its 16384 context taking the budget).
+        {
+            AllocationInputs in = inputs(3 * GiB);
+            in.fixed_bytes = 3 * GiB - 64 * MiB; // the context leaves no room for any dense group
+            uint64_t read_whole = 0;
+            for (WeightGroup g : {WeightGroup::Attention, WeightGroup::DenseFfn, WeightGroup::Other})
+                read_whole += model.group(g).bytes;
+            in.reserved_bytes = read_whole;
+            const Allocation a = allocate(measured_machine(), model, in, pol);
+            const GroupPlacement & att = a.at(WeightGroup::Attention);
+            check(att.lane == Lane::Resident && att.resident_bytes == model.group(WeightGroup::Attention).bytes,
+                  "a read-whole group the dense policy holds is held in the plan too");
+            check(att.seconds_per_token > 0.0 && att.seconds_per_token < att.seconds_worst_case,
+                  "and priced at its compute, not at its refault");
+            check(a.at(WeightGroup::Embedding).resident_bytes == 0,
+                  "a row-gathered table stays where the ranking put it: the run leaves it mapped too");
+            AllocationInputs none = in;
+            none.reserved_bytes = 0;
+            const Allocation mapped = allocate(measured_machine(), model, none, pol);
+            check(mapped.at(WeightGroup::Attention).lane == Lane::Mmap,
+                  "with nothing copied, a group with no room is still priced as mapped");
+        }
+
         // THE refutation. A device three times the host's bandwidth is still not used while the
         // price of a graph crossing is unmeasured: dense and expert halves alternate per layer, and
         // a bandwidth ratio cannot see that cost. Measured 20 against 12 GiB/s on a phone that then

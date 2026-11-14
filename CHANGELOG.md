@@ -6,6 +6,27 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+- **A device expert cache computes part of its misses on the CPU where that was measured faster**
+  (`--device-cache-cpu-share`, experimental). With a device cache over resident experts, every miss
+  used to cross the link before the device computed it, while the cores computed no expert. A share
+  of the misses can now be computed on the CPU from the host's copy, beside the device, the rest
+  still uploaded so the cache keeps learning. `--auto` prices the share from measured rates,
+  including a new probe of what a host half costs each layer of the device's graph
+  (`host_hop_seconds`), and then times it across loads like the device tier and the graph width:
+  a calibration opens it as a candidate, and it is kept only past the 10% margin over uploading
+  every miss. A served load never opens an unmeasured share. Measured on a rented 32 GB card
+  (Qwen3.8-Flash-Next Q2_0): the price nominated 0.89, the calibration timed it at 70.9 tok/s against
+  103, and every miss stayed uploaded, where the opt-in at 0.89 had cost 40%. On a 12 GB card on PCIe
+  3 with 8 cores the share timed 32.2 tok/s against the cache's 31.6 on the same graph and stayed off
+  (32.5 served, the fitter's placement 21.1); on a 12 GB card with a 6-core host, on another model, a
+  share of 0.77 had taken the decode from 18.5 to 21.1-21.2 tok/s. Never over streamed experts,
+  which no gate covers (validation refuses the pair). Gate G25d: half the misses on the host give
+  the resident placement's bytes. A cache that loses to the capacity fitter's placement with every
+  miss uploaded is timed with its share before it is set aside, where the price says the share could
+  win: the case it is for (GLM-4.7 on two 24 GB cards: cache 4.0 tok/s at 56% hits, fitter 16.2).
+  ([hardware-planning.md](docs/hardware-planning.md#who-computes-the-device-caches-misses))
+
 ### Changed
 - **A load-time calibration takes a third less time.** Measured on a rented 3090 with 1 TB of memory and
   GLM-4.7 (126 GB), from a cold start to the first answer: 514 s before, 344 s now, the served decode
@@ -43,33 +64,18 @@ Semantic Versioning.
   function every front-end links (`frontend/user_dirs`). What a load's calibration leaves pending is
   still tried again at the server's idle point.
 
-### Added
-- **A device expert cache computes part of its misses on the CPU where that was measured faster**
-  (`--device-cache-cpu-share`, experimental). With a device cache over resident experts, every miss
-  used to cross the link before the device computed it, while the cores computed no expert. A share
-  of the misses can now be computed on the CPU from the host's copy, beside the device, the rest
-  still uploaded so the cache keeps learning. `--auto` prices the share from measured rates,
-  including a new probe of what a host half costs each layer of the device's graph
-  (`host_hop_seconds`), and then times it across loads like the device tier and the graph width:
-  a calibration opens it as a candidate, and it is kept only past the 10% margin over uploading
-  every miss. A served load never opens an unmeasured share. Measured on a rented 32 GB card
-  (Qwen3.8-Flash-Next Q2_0): the price nominated 0.89, the calibration timed it at 70.9 tok/s against
-  103, and every miss stayed uploaded, where the opt-in at 0.89 had cost 40%. On a 12 GB card on PCIe
-  3 with 8 cores the share timed 32.2 tok/s against the cache's 31.6 on the same graph and stayed off
-  (32.5 served, the fitter's placement 21.1); on a 12 GB card with a 6-core host, on another model, a
-  share of 0.77 had taken the decode from 18.5 to 21.1-21.2 tok/s. Never over streamed experts,
-  which no gate covers (validation refuses the pair). Gate G25d: half the misses on the host give
-  the resident placement's bytes. A cache that loses to the capacity fitter's placement with every
-  miss uploaded is timed with its share before it is set aside, where the price says the share could
-  win: the case it is for (GLM-4.7 on two 24 GB cards: cache 4.0 tok/s at 56% hits, fitter 16.2).
-  ([hardware-planning.md](docs/hardware-planning.md#who-computes-the-device-caches-misses))
-
-### Changed
 - **llama.cpp bumped to upstream `b12214`** (2026-11-09) plus the expert-ready hook, on fork branch
   `bmoe/expert-ready-hook-0911`. It brings the device expert cache's frequency-aware eviction
   (ClassLRU: an expert's uses, decayed with a half-life, decide which slot is freed), which takes a
   12 GB card from 17.9 to 18.5 tok/s with nothing else changed, and `moe_cache_cpu_share`. The
   placement probe passes the new out-parameter of `common_get_device_memory_data`.
+- **Checkpoints, then the context, give way to the expert cache where nobody set them.** Where the
+  checkpoints and the context leave the expert cache under one token cycle (a cache that returns no
+  hits), the plan halves the checkpoints down to one, then a context longer than the server's 16384
+  down to that, placing the model again at each length, and keeps the first plan whose cache clears
+  its floor; where none does, nothing changes. The server's own context is never shortened, since a
+  coding agent's first request alone can be 10k tokens. A value set by hand (`--ctx-checkpoints`, `--ctx-size`, the settings) is never
+  moved ([hardware-planning.md](docs/hardware-planning.md#the-flow)).
 
 ### Fixed
 - **The server decodes as fast as the CLI.** On the same plan of GLM-4.7 on two 24 GB cards
@@ -95,6 +101,31 @@ Semantic Versioning.
   (`servable`, [measured-planning.md](docs/measured-planning.md#decisions-across-loads-timed-at-load)):
   the same card's second load decodes at 97-98 tok/s, and the calibration then times the fitter's
   placement while the server is idle.
+- **A sliding-window model keeps its window, not the whole context, in its KV cache.** llama.cpp's
+  default gives a sliding-window layer a cache as long as the context (its own server and CLI turn
+  that off), and the engine kept the default, so on a model whose layers are mostly windowed most of
+  the context's memory held cells no token reads. Gemma 4 26B-A4B at a 16384 context: the plan's
+  context and compute went from 2273 to 394 MiB on a 16 GB Mac, and the process held 4.4 GB at the
+  start of a chat where it held 7.3, with the same text; on a 12 GB phone the room it took was what the
+  expert cache and the NPU prefill had been refused for. The session and the plan's placement probe
+  both open the context with the window only. A follow-up that diverges further back than the window
+  starts again from a context checkpoint, or from nothing, instead of reusing a window that no longer
+  holds what the next token reads (gate G22c; the tiny gemma4 fixture now has a 16-token window).
+- **A context checkpoint of a windowed model is charged what it holds.** A checkpoint copies the
+  window's cells: 106 MiB each on Gemma 4 26B-A4B, measured, where the plan charged 11 (and nothing at
+  a context under 16384). The plan now prices it as the window, read from the file, at the cost of a
+  cell, measured at two graph widths; the KV it charges follows the graph width too, since a windowed
+  cache holds one ubatch of cells beyond its window.
+- **A plan prices the dense weights as the run holds them.** The dense policy copies every dense
+  tensor, but a group the plan's ranking found no room for was priced as left mapped, at the refault
+  rate of the storage: a 12 GB phone's plan for Gemma 4 predicted 10-44 s a token, and the Plan page
+  showed "18x the expected", where the run decoded at 0.45-0.55. Such a group is now priced at its
+  compute, and the plan says it is held past the budget (`dense-held`).
+- **An NPU armed for the prefill is charged its compute buffer.** The plan charged a prefill device the
+  compute buffer llama.cpp's fitter projected for it, which is none for a device it never places layers
+  on, and the session then reserved one for the same graph: 221-450 MiB on a phone's NPU that the
+  expert cache had been sized into. Such a device is now charged the host's own buffer at that width.
+
 
 ## [0.42.0] - 2026-11-12
 
