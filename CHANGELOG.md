@@ -4,7 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.43.1] - 2026-11-14
+
+### Added
+- **[docs/field-reports.md](docs/field-reports.md)**: the problems people report from their own
+  machines, each with how to recognise it, its cause, the version that fixes it and a workaround for
+  the versions before: 26 cases, the open ones first, from the issues people opened since July and
+  the reports that came in elsewhere, the case above and a dense model left on the CPU (#585) among
+  them.
 
 ### Changed
 - **The planner no longer reads its own prose or its ledger's labels to decide anything.** The
@@ -32,8 +39,6 @@ Semantic Versioning.
   240 English strings straight into their markup. They are keys in `ui/src/lib/text/en.ts` now, and a
   test reads every `.svelte` template and fails on a word written into it: a text node, a title,
   label or placeholder, or a string shown from an expression.
-
-### Fixed
 - **A second load of a model plans from the same facts as the first.** Two rented Linux CUDA boxes
   (an 8 GB card, and two 16 GB cards) ran each model twice on one data folder, the second load planned
   from the first's records, and several second loads decoded slower. Each cause is fixed for every
@@ -65,6 +70,18 @@ Semantic Versioning.
   the devices holding layers wherever the run allows llama.cpp's op offload, but the plan's prompt lane
   read "CPU" whenever no prefill device was armed. The lane, the device badges and the session now
   read one rule (`offloads_wide_matmuls`, [server-api.md](docs/server-api.md)).
+- **A graphics card beside the processor's integrated GPU is used again.** With a second backend for
+  the card (the CUDA pack beside Vulkan), the plan handed llama.cpp's capacity fitter the integrated
+  GPU too. The fitter put part of the model there, and since that memory is the host's own the plan
+  set the whole placement aside, the card's share with it: a model that fit a 32 GB card decoded on
+  the CPU, streamed, at a fifth of the speed the plan expected. The fitter is now asked only of the
+  devices with memory of their own where there is one, as llama.cpp's own default list does, and a
+  device list set by hand is the one it places on.
+- **A dense model runs on the graphics card again.** A model with no experts streams nothing, and the
+  plan stopped as soon as it saw that, before it applied the capacity fitter's placement. Every
+  layer then stayed on the CPU: a 4B model that fits a 6 GB laptop card decoded at 12 tok/s where
+  llama.cpp gives 65 on the card. The fitter's placement is now applied to a dense model too, as
+  llama.cpp's `--fit` would place it; nothing else in its plan changes.
 
 ### Documentation
 - **The limitations, the platform table and the layer map catch up with what ships.**
@@ -80,8 +97,6 @@ Semantic Versioning.
   [architecture.md](docs/architecture.md) names the files its layer map had missed (`cache_brake`,
   `image_probe`, `kv_cache_type`, `parallel_copy`, `metal_memory_probe`, `memory_topology`,
   `memory_snapshot`), and AGENTS.md maps `core/src/metrics/`.
-
-### Documentation
 - **The 0.43.0 release measured on an 8 GB card and on two 16 GB cards**: the README's speed table,
   benchmarks.md, community-benchmarks.md and comparison.md carry them. On the 8 GB card (31 GB of
   RAM) Qwen3.6-35B-A3B decodes at 37-44 tok/s at a 16k context, where Strata does not start at that
@@ -235,28 +250,6 @@ Semantic Versioning.
   finished: the plan armed the NPU wherever there was room (a 4096 context, for one), and the DSP
   never returned from the first layer.
 
-### Fixed
-- **A graphics card beside the processor's integrated GPU is used again.** With a second backend for
-  the card (the CUDA pack beside Vulkan), the plan handed llama.cpp's capacity fitter the integrated
-  GPU too. The fitter put part of the model there, and since that memory is the host's own the plan
-  set the whole placement aside, the card's share with it: a model that fit a 32 GB card decoded on
-  the CPU, streamed, at a fifth of the speed the plan expected. The fitter is now asked only of the
-  devices with memory of their own where there is one, as llama.cpp's own default list does, and a
-  device list set by hand is the one it places on.
-
-### Added
-- **[docs/field-reports.md](docs/field-reports.md)**: the problems people report from their own
-  machines, each with how to recognise it, its cause, the version that fixes it and a workaround for
-  the versions before: 26 cases, the open ones first, from the issues people opened since July and
-  the reports that came in elsewhere, the case above and a dense model left on the CPU (#585) among
-  them.
-
-### Fixed
-- **A dense model runs on the graphics card again.** A model with no experts streams nothing, and the
-  plan stopped as soon as it saw that, before it applied the capacity fitter's placement. Every
-  layer then stayed on the CPU: a 4B model that fits a 6 GB laptop card decoded at 12 tok/s where
-  llama.cpp gives 65 on the card. The fitter's placement is now applied to a dense model too, as
-  llama.cpp's `--fit` would place it; nothing else in its plan changes.
 
 ## [0.42.0] - 2026-11-12
 
