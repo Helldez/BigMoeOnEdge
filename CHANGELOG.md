@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Documentation
+- **The 0.43.0 release measured on an 8 GB card and on two 16 GB cards**: the README's speed table,
+  benchmarks.md, community-benchmarks.md and comparison.md carry them. On the 8 GB card (31 GB of
+  RAM) Qwen3.6-35B-A3B decodes at 37-44 tok/s at a 16k context, where Strata does not start at that
+  context, and Qwen3.8-Flash-Next streams at 16. On two 16 GB cards (60 GB of RAM) Flash-Next decodes
+  at 41-48 and DeepSeek V4 Flash streams at 5. The 8 GB row replaces the older 8 GB + 125 GB one.
+  ([bench-data](docs/bench-data/2026-11-14-rented-0.43/README.md))
+
 ## [0.43.0] - 2026-11-14
 
 ### Added

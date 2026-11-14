@@ -70,7 +70,10 @@ Qwen3.6-35B-A3B 大于每台设备的内存；任何 GGUF 格式的 MoE 模型�
 |  | 其中 12 GB 空闲 | Qwen3.6-35B-A3B | 21 GB | RAM，GPU 缓存 | 59-67 |
 |  |  | Gemma 4 26B-A4B | 17 GB | GPU | 114 |
 |  |  | Laguna XS 2.1 33B | 20 GB | GPU | 93-94 |
-| **桌面 GPU**（NVIDIA） | 8 GB + 125 GB RAM | Qwen3.6-35B-A3B | 21 GB | RAM，GPU | 32-33 |
+| **桌面 GPU**（NVIDIA） | 8 GB + 31 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | 闪存，GPU 缓存 | 16 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | RAM，GPU 缓存 | 37-44 |
+| **两块桌面 GPU**（NVIDIA） | 2 × 16 GB + 60 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM，GPU 缓存 | 41-48 |
+|  |  | DeepSeek V4 Flash 284B | 91 GB | 闪存，GPU 缓存 | 5 |
 | **数据中心 GPU**（AMD，ROCm） | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
 
 范围表示多次运行之间的差异。方法与每次运行：

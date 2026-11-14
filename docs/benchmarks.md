@@ -550,6 +550,18 @@ RAM) ran the 0.42.0 release with `--auto` on Qwen3.6-35B-A3B UD-Q4_K_XL (Unsloth
 28-36 ([comparison.md](comparison.md#same-machine-same-file),
 [bench-data/2026-11-13-same-card-strata-12gb](bench-data/2026-11-13-same-card-strata-12gb/README.md)).
 
+On 2026-11-14 the 0.43.0 release ran with `--auto` and a 16384 context on two more rented machines
+([bench-data/2026-11-14-rented-0.43](bench-data/2026-11-14-rented-0.43/README.md)):
+- an 8 GB card (RTX 3070 class, a 6-core desktop CPU, 31 GB of RAM):
+  - Qwen3.6-35B-A3B decoded at **37** tok/s through the server and **40-44** through the CLI. Its
+    experts were in RAM, with the ones used most cached on the card. A 4.7k-token prompt reached its
+    first token in 5.3 s (873 tok/s).
+  - Qwen3.8-Flash-Next Q2_0 (66 GB, twice the RAM) streamed from the drive at **16**.
+- two 16 GB cards (RTX 5060 Ti class, an 8-core desktop CPU, 60 GB of RAM):
+  - Qwen3.8-Flash-Next Q2_0 decoded at **41-48**, every layer on the cards with an 18.5 GB device
+    cache.
+  - DeepSeek V4 Flash UD-IQ2_M (91 GB) streamed at **5**.
+
 And on a rented 12 GB card (RTX 3060 class, 7.7 usable cores, a 42.6 GiB control group), the class
 most people own, Qwen3.8-Flash-Next Q2_0: `--auto` armed a 6 GB device cache and the run was killed
 by the control group at 43 GB (the tier's host-side memory is not in the ledger, #424); with the
