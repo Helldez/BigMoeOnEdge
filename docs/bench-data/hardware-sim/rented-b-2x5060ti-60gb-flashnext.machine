@@ -1,0 +1,9 @@
+# Blind prediction for box B, made before its run.
+note=box B: two 5060 Ti 16 GB, 60 GB RAM, Ryzen 7 9700X
+parts=parts.txt
+ram=60G
+cpu=ryzen7-9700x
+storage=3.6
+gpu=rtx5060ti-16
+gpu=rtx5060ti-16
+hitcurve=2.2G:0.61,3.5G:0.68,3.9G:0.73,6G:0.80,7.8G:0.87,10G:0.90,15.6G:0.92,17.8G:0.94,25G:0.96

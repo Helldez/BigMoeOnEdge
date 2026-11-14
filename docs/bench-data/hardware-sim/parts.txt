@@ -32,6 +32,8 @@ cpu epyc-9655      desc="AMD EPYC 9655 96-Core Processor"            cores=96 gh
 cpu apple-m5       desc="Apple M5"                                   cores=10 ghz=4.0 membw=153   core=apple-m5 simd=neon
 cpu ryzen7-7700    desc="AMD Ryzen 7 7700"                           cores=16 ghz=4.8 membw=83.2  core=zen4 simd=avx512
 cpu ryzen9-9950x3d desc="AMD Ryzen 9 9950X3D"                        cores=32 ghz=5.0 membw=96    core=zen5 simd=avx512
+cpu i5-12400f      desc="12th Gen Intel(R) Core(TM) i5-12400F"       cores=12 ghz=4.0 membw=51.2  core=alderlake simd=avx2
+cpu ryzen7-9700x   desc="AMD Ryzen 7 9700X 8-Core Processor"         cores=16 ghz=5.0 membw=89.6  core=zen5 simd=avx512
 cpu i7-12700       desc="12th Gen Intel(R) Core(TM) i7-12700"        cores=20 ghz=4.5 membw=76.8  core=alderlake simd=avx2
 
 # ── the measured machines ──
