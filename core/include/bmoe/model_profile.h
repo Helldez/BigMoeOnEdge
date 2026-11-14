@@ -157,6 +157,9 @@ struct ModelProfile {
     // The same for a block's NON-expert tensors (attention, norms, shared experts): under
     // streaming a prefill device carries those through two slots of their own.
     uint64_t largest_layer_dense_bytes = 0;
+    // Each block's non-expert bytes, by layer (`n_layer` long where the file was read, else empty). A
+    // plan that moves layers between devices charges the ones it moves, not an average or a bound.
+    std::vector<uint64_t> layer_dense_bytes;
 
     // The same bytes again, decomposed by access shape. `groups[...].bytes` sums to `file_bytes`,
     // and Experts::bytes equals `expert_bytes`; both spellings are kept because a capacity check

@@ -2429,6 +2429,21 @@ int main(int argc, char ** argv) {
         const std::string rpc = loopback_rpc_device(); // registered once per process; "" without RPC
         HardwareProfile hw = probe_hardware(model.c_str());
         const ModelProfile mp = probe_model(model.c_str());
+        {
+            // Each block's dense bytes, by llama.cpp's layer index: one per layer, the largest the one
+            // the bound reads (a plan that moves layers between devices charges these).
+            const uint64_t top = mp.layer_dense_bytes.empty()
+                                     ? 0
+                                     : *std::max_element(mp.layer_dense_bytes.begin(), mp.layer_dense_bytes.end());
+            if (mp.layer_dense_bytes.size() != mp.n_layer || top != mp.largest_layer_dense_bytes || top == 0) {
+                std::printf("[FAIL] G26 per-layer dense bytes: %zu for %u layers, largest %llu against %llu\n",
+                            mp.layer_dense_bytes.size(), mp.n_layer, (unsigned long long) top,
+                            (unsigned long long) mp.largest_layer_dense_bytes);
+                ++fails;
+            } else {
+                std::printf("[PASS] G26 per-layer dense bytes: one per layer, the largest the bound's\n");
+            }
+        }
         probe_device_support(hw, mp);
         const auto t0 = std::chrono::steady_clock::now();
         probe_bandwidth(hw, mp);

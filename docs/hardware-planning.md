@@ -1129,7 +1129,9 @@ on a compressing machine, which is why the two were one piece of work rather tha
 
 The residency budget is `MemAvailable` on every platform that reports it, capped by what this
 process's memory control group still lets it take (`pio::cgroup_memory_left`: the tightest limit of
-its group and every ancestor it can see, less what each holds, crediting its inactive file pages).
+its group and every ancestor it can see, less what each holds, crediting its file pages on both LRU lists as
+`MemAvailable` does: a model file the last load read twice sits on the active list, and crediting only the
+inactive one read a rented box's 30 GiB group as 10 GiB on the second load).
 A rented GPU box reported 103 GB available inside an 85 GiB group; a plan sized from the first
 figure would be ended by the second. The cores are read the same way (`usable_cores` in the hardware probe):
 the CPUs the process may be scheduled on (its affinity mask, which a phone narrows for an app it
@@ -1245,7 +1247,11 @@ first width and 31.6 at the 2048-wide graph the width then chose, the share time
 stayed off (32.5 served; the fitter's placement 21.1). On a 12 GB card
 with a 6-core host (RTX 3060 class, Flash-Next IQ3_S), a share of 0.76-0.78 took the decode from
 18.5 to 21.1-21.2 tok/s (#519), which is the case it is for. On a shared pool there is no device
-cache and nothing is weighed.
+cache and nothing is weighed. The share is weighed only where the plan does not stream, and that is read
+off the regime the plan has already decided, not off the starting configuration's `moe.enabled`: the
+server starts streamed and the CLI does not, and reading the starting value gave the same machine two
+plans. On a rented 8 GB card with Qwen3.6-35B-A3B, which fits in RAM, the CLI timed a share and decoded
+at 43.9 tok/s while the server refused it as streamed and decoded at 36.6.
 
 The layers the fitter split (`price_layers_home`, [measured-planning.md](measured-planning.md#step-3-the-cost-of-a-device-measured-on-a-real-layer)):
 where the capacity fitter put the dense part of some layers on a device and left their experts on
