@@ -80,7 +80,10 @@ GGUF, con cualquier cuantización. Las velocidades de decodificación son las de
 |  | 12 GB de ellos libres | Qwen3.6-35B-A3B | 21 GB | RAM, caché en GPU | 59-67 |
 |  |  | Gemma 4 26B-A4B | 17 GB | GPU | 114 |
 |  |  | Laguna XS 2.1 33B | 20 GB | GPU | 93-94 |
-| **GPU de escritorio** (NVIDIA) | 8 GB + 125 GB RAM | Qwen3.6-35B-A3B | 21 GB | RAM, GPU | 32-33 |
+| **GPU de escritorio** (NVIDIA) | 8 GB + 31 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | flash, caché en GPU | 16 |
+|  |  | Qwen3.6-35B-A3B | 21 GB | RAM, caché en GPU | 37-44 |
+| **Dos GPU de escritorio** (NVIDIA) | 2 × 16 GB + 60 GB RAM | Qwen3.8-Flash-Next 125B | 66 GB | RAM, caché en GPU | 41-48 |
+|  |  | DeepSeek V4 Flash 284B | 91 GB | flash, caché en GPU | 5 |
 | **GPU de centro de datos** (AMD, ROCm) | 192 GB | Qwen3.8-Flash-Next 125B | 66 GB | GPU | 53 |
 
 Un rango es la variación entre ejecuciones. Método y todas las ejecuciones:
