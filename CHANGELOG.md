@@ -28,8 +28,9 @@ Semantic Versioning.
   one table in `frontend/backend_env` (`docs/backends.md`), which bmoe-cli applies as bmoe-server does:
   the CLI used to start the backends without the OpenCL kernel cache folder and the Hexagon entries.
   It adds `GGML_CUDA_REGISTER_HOST=1` for the pinning above (CUDA and ROCm), and lists per backend the
-  variables that touch this engine's paths and are still to be measured. The Hexagon entries stay
-  Android's, where they were measured. The front-ends' shared library is `bmoe_frontend` (it was
+  variables that touch this engine's paths and are still to be measured. No entry is tied to a
+  platform: the Hexagon entries, set on Android only before, now reach the same backend on Windows on
+  Snapdragon too. The front-ends' shared library is `bmoe_frontend` (it was
   `bmoe_user_dirs`).
 - **One `--auto` on every front-end.** The CLI, the server and the apps now plan, calibrate and keep
   what they measured the same way. Before, `bmoe-cli --auto` calibrated only with `--routing-dir` and
