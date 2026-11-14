@@ -624,6 +624,43 @@ void hold_reserved(Pricing & c) {
              "ledger past its ceiling, where the machine has to find it");
 }
 
+// The expert lane with a cache of `sized` bytes: the hit rate credited at that size, the read and
+// compute time it leaves, and the sentence that says so. One place, because the size the ranking
+// settles on and a size the caller set are priced by the same arithmetic or not comparable at all.
+void price_expert_cache(Pricing & c, uint64_t sized) {
+    const AllocationInputs & in = c.in;
+    const ModelProfile & model = c.model;
+    Allocation & a = c.a;
+    GroupPlacement & p = a.at(WeightGroup::Experts);
+    // The cost and the rationale, both from the size that was actually chosen.
+    const double held = (double) sized / (double) in.cacheable_bytes;
+    const HitCurve & curve = model.hit_curve;
+    const bool from_curve = curve.measured && model.expert_bytes > 0;
+    // Scaled by what a load measured at its own budget (AllocationInputs::hit_scale): the curve as a
+    // whole, so the sizes stay priced relative to each other.
+    const double hit =
+        std::min(1.0, from_curve ? curve.hit_share((uint64_t) ((double) sized * (double) model.expert_bytes /
+                                                               (double) in.cacheable_bytes)) *
+                                       in.hit_scale
+                                 : (double) c.pol.cache_hit_optimism * in.hit_scale * held);
+    a.cache_hit_credited = hit;
+    p.seconds_per_token =
+        seconds_at_mibs((uint64_t) ((1.0 - hit) * (double) model.token_cycle_bytes), c.stream_mibs) +
+        finite_or_zero(seconds_at_gibs(model.group(WeightGroup::Experts).bytes_per_token, c.host_gibs));
+    char buf[320];
+    if (from_curve)
+        std::snprintf(buf, sizeof(buf),
+                      "streamed with a %s cache, %.0f%% of the expert set; credited hit rate %.0f%% [measured on "
+                      "this model]: its own routing, %u decoded tokens, replayed through the cache at this size",
+                      mibs(sized).c_str(), 100.0 * held, 100.0 * hit, curve.decode_tokens);
+    else
+        std::snprintf(buf, sizeof(buf),
+                      "streamed with a %s cache, %.0f%% of the expert set; credited hit rate %.0f%%, which is "
+                      "conservative on purpose and is the coefficient a run's own counters correct",
+                      mibs(sized).c_str(), 100.0 * held, 100.0 * hit);
+    p.reason = buf;
+}
+
 // The cache, sized against what the loader will actually leave. Two paths, and which one ran is the
 // difference between a number that was chosen and one that was merely available.
 //
@@ -760,33 +797,7 @@ void bound_cache(Pricing & c) {
     p.lane = Lane::ExpertStream;
     p.resident_bytes = sized;
 
-    // The cost and the rationale, both from the size that was actually chosen.
-    const double held = (double) sized / (double) in.cacheable_bytes;
-    const HitCurve & curve = model.hit_curve;
-    const bool from_curve = curve.measured && model.expert_bytes > 0;
-    // Scaled by what a load measured at its own budget (AllocationInputs::hit_scale): the curve as a
-    // whole, so the sizes stay priced relative to each other.
-    const double hit =
-        std::min(1.0, from_curve ? curve.hit_share((uint64_t) ((double) sized * (double) model.expert_bytes /
-                                                               (double) in.cacheable_bytes)) *
-                                       in.hit_scale
-                                 : (double) c.pol.cache_hit_optimism * in.hit_scale * held);
-    a.cache_hit_credited = hit;
-    p.seconds_per_token =
-        seconds_at_mibs((uint64_t) ((1.0 - hit) * (double) model.token_cycle_bytes), c.stream_mibs) +
-        finite_or_zero(seconds_at_gibs(model.group(WeightGroup::Experts).bytes_per_token, c.host_gibs));
-    char buf[320];
-    if (from_curve)
-        std::snprintf(buf, sizeof(buf),
-                      "streamed with a %s cache, %.0f%% of the expert set; credited hit rate %.0f%% [measured on "
-                      "this model]: its own routing, %u decoded tokens, replayed through the cache at this size",
-                      mibs(sized).c_str(), 100.0 * held, 100.0 * hit, curve.decode_tokens);
-    else
-        std::snprintf(buf, sizeof(buf),
-                      "streamed with a %s cache, %.0f%% of the expert set; credited hit rate %.0f%%, which is "
-                      "conservative on purpose and is the coefficient a run's own counters correct",
-                      mibs(sized).c_str(), 100.0 * held, 100.0 * hit);
-    p.reason = buf;
+    price_expert_cache(c, sized);
 }
 
 // ── 3. offer each resident group to a device ─────────────────────────────────────────────────
@@ -957,6 +968,48 @@ void add_totals(Pricing & c) {
 }
 
 } // namespace
+
+void price_caller_cache(Allocation & a,
+                        const HardwareProfile & hw,
+                        const ModelProfile & model,
+                        const AllocationInputs & in,
+                        const PlannerPolicy & pol,
+                        uint64_t cache_bytes) {
+    if (!model.is_moe || in.cacheable_bytes == 0 || model.token_cycle_bytes == 0) return;
+    // The rates the allocation was priced at, measured again into an allocation nobody reads: the
+    // notes they carry are already in `a`.
+    Allocation scratch;
+    Pricing rates{hw, model, in, pol, scratch};
+    measure_rates(rates);
+    if (rates.stream_mibs <= 0.0) return; // the expert lane was never priced; there is nothing to move
+    Pricing c{hw, model, in, pol, a};
+    c.host_gibs = rates.host_gibs;
+    c.stream_mibs = rates.stream_mibs;
+
+    GroupPlacement & p = a.at(WeightGroup::Experts);
+    const double was = finite_or_zero(p.seconds_per_token);
+    const uint64_t held = p.resident_bytes;
+    const uint64_t sized = std::min(cache_bytes, in.cacheable_bytes);
+    a.cache_bytes = sized;
+    a.cache_locked_bytes = std::min(a.cache_locked_bytes, sized);
+    p.lane = Lane::ExpertStream;
+    p.resident_bytes = sized;
+    if (sized >= model.token_cycle_bytes) {
+        price_expert_cache(c, sized);
+    } else {
+        // Under one token cycle the cache evicts what the same token still needs: it holds its
+        // memory and serves nothing, so the token is priced as read whole.
+        a.cache_hit_credited = 0.0;
+        p.seconds_per_token =
+            seconds_at_mibs(model.token_cycle_bytes, c.stream_mibs) +
+            finite_or_zero(seconds_at_gibs(model.group(WeightGroup::Experts).bytes_per_token, c.host_gibs));
+        p.reason = sized ? "streamed with a " + mibs(sized) + " cache, under the " + mibs(model.token_cycle_bytes) +
+                               " one token reads: credited no hits"
+                         : "streamed, no cache: the routed top-k read as sequential slices";
+    }
+    a.seconds_per_token += finite_or_zero(p.seconds_per_token) - was;
+    a.resident_bytes = a.resident_bytes - std::min(a.resident_bytes, held) + sized;
+}
 
 double host_compute_seconds(const HardwareProfile & hw, const ModelProfile & model) {
     double sum = 0.0;

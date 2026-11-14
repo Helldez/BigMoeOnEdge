@@ -186,6 +186,11 @@ core/
     params.cpp  the parameter table's rows (see params.h)
     log.cpp     the log port's default sink and level filter (see log.h)
     metrics/    csv_metrics_sink, route_trace_sink, decode_trace_sink
+tools/          developer instruments (-DBMOE_BUILD_TOOLS=ON); not installed, in no release
+  iobench, membench   the storage and the memory, measured without the engine
+  planlab/      bmoe-planlab: everything --auto measured on a machine as a text record, and the
+                plan made again from one anywhere (plan-records.md); tests/plan-records is the
+                corpus the plan_records test replays
 third_party/
   llama.cpp     upstream submodule; public-API consumer, plus one optional overlap hook
 tests/          byte-identity gates

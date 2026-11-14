@@ -4,6 +4,34 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **A machine as a file, for whoever works on the planner (`bmoe-planlab`, a developer tool; not in
+  any release).** The rules are pure functions over what the probes report, so a machine nobody has
+  at hand is, to them, those facts. `bmoe-planlab record` writes everything `--auto` measured for
+  one model on one machine as text (no weights, no prompt, no local path), with what the plan's run
+  then measured; `bmoe-planlab replay` makes that machine's plan again anywhere, with no model and
+  no device, with a knob pinned (`--sweep cache-mb=...` prints the cache, the memory held and the
+  predicted speed per value) or a fact changed (`--set hw.residency_budget=...`). A record also
+  carries where it ran (system, kernel, swap and its kind, a container's limit), the prediction in
+  parts, and the run as distributions per token with the process's and the system's memory through
+  it; `errors DIR` sets the prediction beside the measurement for every record and `table DIR`
+  writes them all as one CSV, the table a better predictor is to be built on. The project's own
+  test runs keep their records in `docs/bench-data/plan-records`; for anyone else it is off, and
+  `scripts/bench-report.sh` makes one only with `BENCH_PLAN_RECORD=1`. Records kept in
+  `tests/plan-records` are replayed by the new `plan_records` test on every build: a rule change
+  that moves the plan on a recorded machine fails with both plans printed, and each record made
+  with a run prints the prediction beside the measurement. It says what the planner decides and
+  predicts; whether a plan is fast is still the machine's to answer. `docs/plan-records.md`.
+
+### Fixed
+- **A cache size set by hand is the one the plan's prediction is priced at.** With `--cache-mb`
+  pinned the plan charged that cache to its memory ledger and went on predicting the speed, and
+  crediting the hit rate, of the cache it would have chosen itself, so "predicted against measured"
+  compared the run with another configuration. The expert lane is now re-priced at the caller's
+  size by the arithmetic the ranking uses for its own (no hits under one token cycle).
+
 ## [0.43.0] - 2026-11-14
 
 ### Added
@@ -76,6 +104,8 @@ Semantic Versioning.
   its floor; where none does, nothing changes. The server's own context is never shortened, since a
   coding agent's first request alone can be 10k tokens. A value set by hand (`--ctx-checkpoints`, `--ctx-size`, the settings) is never
   moved ([hardware-planning.md](docs/hardware-planning.md#the-flow)).
+
+### Added
 
 ### Fixed
 - **The server decodes as fast as the CLI.** On the same plan of GLM-4.7 on two 24 GB cards

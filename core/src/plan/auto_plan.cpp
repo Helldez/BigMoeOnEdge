@@ -41,11 +41,15 @@ const Placement & fitted_at(
                     cfg.spec.mtp_head + "|" + std::to_string(cfg.spec.mtp_head_on_devices);
     auto at = facts.placement_at_width.find(key);
     if (at == facts.placement_at_width.end()) {
-        at = facts.placement_at_width
-                 .emplace(key, probe_placement(cfg.model_path.c_str(), model, facts.hw, (uint32_t) cfg.n_ctx, width,
-                                               cfg.cache_type_k, cfg.cache_type_v, facts.backends, &cfg.spec))
-                 .first;
-        detail::log_memory_snapshot(snapshot);
+        if (facts.refit) {
+            at = facts.placement_at_width.emplace(key, facts.refit(key)).first;
+        } else {
+            at = facts.placement_at_width
+                     .emplace(key, probe_placement(cfg.model_path.c_str(), model, facts.hw, (uint32_t) cfg.n_ctx,
+                                                   width, cfg.cache_type_k, cfg.cache_type_v, facts.backends, &cfg.spec))
+                     .first;
+            detail::log_memory_snapshot(snapshot);
+        }
     }
     return at->second;
 }
@@ -203,9 +207,7 @@ Plan give_way(const AutoPlan & facts,
         RunConfig shorter = base;
         shorter.n_ctx = (int) n_ctx;
         AutoPlan at = facts;
-        at.placement = probe_placement(cfg.model_path.c_str(), model, facts.hw, n_ctx, (uint32_t) shorter.graph_width(),
-                                       cfg.cache_type_k, cfg.cache_type_v, facts.backends, &cfg.spec);
-        detail::log_memory_snapshot("auto-probe-context");
+        at.placement = fitted_at(facts, shorter, model, (uint32_t) shorter.graph_width(), "auto-probe-context");
         if (!at.placement.fitted && facts.placement.fitted) break;
         Plan q = plan_layout(at, shorter, req, model);
         if (!clears(q)) continue;

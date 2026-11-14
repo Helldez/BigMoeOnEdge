@@ -23,3 +23,12 @@ if(ANDROID)
     # AHardwareBuffer_* live in libandroid.so.
     target_link_libraries(bmoe-membench PRIVATE android)
 endif()
+
+# The planner's bench: record everything `--auto` measured on a machine as a text file, and plan
+# again from such a file anywhere, with no model and no device (docs/plan-records.md). A developer's
+# instrument: it is not installed and no release carries it. Unlike the two above it is the engine
+# itself that it drives, so it needs llama.cpp.
+if(BMOE_HAVE_LLAMA)
+    add_executable(bmoe-planlab planlab/main.cpp planlab/plan_record.cpp planlab/env_probe.cpp)
+    target_link_libraries(bmoe-planlab PRIVATE bmoe_core)
+endif()

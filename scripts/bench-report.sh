@@ -24,6 +24,12 @@
 #      is kept;
 #   4. parses each CSV trailer and prints one markdown block, with the plan `--auto` chose.
 #
+#   5. only when BENCH_PLAN_RECORD=1 (off by default): one more run through bmoe-planlab, which
+#      writes a plan record beside the CSVs - everything the plan was made from and what its run
+#      measured, as text (docs/plan-records.md). It is for whoever wants their machine in the data
+#      the planner's predictions are improved against; nothing is sent anywhere, the file is yours
+#      to read and attach. Needs a source build (the tool is in no release archive).
+#
 # Env overrides: N_PREDICT (256), BENCH_RUNS (3; 2 skips the overlap row, 1 reports the first load
 # alone), BENCH_SETTLE
 # (30: seconds between the runs, see below), BENCH_OUT (.bench-report), BMOE_CLI (build/bin/bmoe-cli). Anything after the model path is passed to
@@ -46,6 +52,8 @@ BENCH_RUNS="${BENCH_RUNS:-3}"
 BENCH_SETTLE="${BENCH_SETTLE:-30}"
 BENCH_OUT="${BENCH_OUT:-$ROOT/.bench-report}"
 BMOE_CLI="${BMOE_CLI:-$ROOT/build/bin/bmoe-cli}"
+BENCH_PLAN_RECORD="${BENCH_PLAN_RECORD:-0}"
+BMOE_PLANLAB="${BMOE_PLANLAB:-$ROOT/build/bin/bmoe-planlab}"
 PROMPT="Write a long detailed essay about the history of computing including its origins its key milestones the people involved and the future directions of the field"
 
 # --- 1. binary ------------------------------------------------------------------------------
@@ -253,3 +261,19 @@ for (( i = 0; i < ${#LOGS[@]}; i++ )); do
     echo
     echo "</details>"
 done
+
+# --- 5. plan record (opt-in) ----------------------------------------------------------------
+if [ "$BENCH_PLAN_RECORD" = "1" ]; then
+    if [ ! -x "$BMOE_PLANLAB" ]; then
+        echo "bmoe-planlab not found at $BMOE_PLANLAB, building with the tools on..." >&2
+        "$ROOT/scripts/build-host.sh" -DBMOE_BUILD_TOOLS=ON >&2
+    fi
+    [ "$BENCH_SETTLE" -gt 0 ] && { echo "settling ${BENCH_SETTLE}s before the plan record's run" >&2; sleep "$BENCH_SETTLE"; }
+    RECORD="$BENCH_OUT/$TAG.planrec"
+    echo "running the plan record: $TAG, $N_PREDICT tokens" >&2
+    "$BMOE_PLANLAB" record -m "$MODEL" -o "$RECORD" --routing-dir "$BENCH_OUT/routing" \
+        --chatml -n "$N_PREDICT" "$@" --run "$PROMPT" > "$BENCH_OUT/$TAG.planrec.log" 2>&1 ||
+        { echo "bmoe-planlab failed, see $BENCH_OUT/$TAG.planrec.log" >&2; exit 1; }
+    echo
+    echo "Plan record: \`$(basename "$RECORD")\` and \`$(basename "$RECORD").csv\` in \`$BENCH_OUT\`. It is plain text: read it, then attach both to the issue if you want this machine in the planner's data."
+fi
