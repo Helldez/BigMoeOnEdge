@@ -87,7 +87,10 @@ that an entire automatic run fits or completes under memory pressure.
 
 Two outcomes of the first stage end the plan early, and both are stated: if the host residual
 fits in RAM the experts stay resident and nothing streams (the classic `-ot exps=CPU` offload);
-if every layer's experts land on a device, nothing is left for the streamer.
+if every layer's experts land on a device, nothing is left for the streamer. A model with no
+experts ends it too, before any rule weighs memory, but the fitter's placement is applied first: it
+is what puts a dense model on a card, and the plan used to stop before it, leaving the model on
+the CPU at a fifth of the card's speed.
 
 The placement is loaded as the fitter projected it, split included: `--device-split` names each
 device it put layers on, in its order, with its own count. Without it llama.cpp divides the layers

@@ -743,6 +743,34 @@ int main() {
         dense.is_moe = false;
         const Plan p = plan_run(base_cfg(), desktop(), dense, PlanRequest{});
         check(p.regime == Regime::NotMoe && !p.config.moe.enabled, "dense model: declined");
+        check(p.config.n_gpu_layers == 0 && p.config.device_split.empty(),
+              "dense model, nothing placed: every layer stays on the CPU");
+
+        // Nothing streams, but what the fitter placed on a card stays there: dropping it left a model
+        // that fit the card opening on the CPU alone.
+        Placement placed;
+        placed.fitted = true;
+        placed.n_gpu_layers = (int32_t) dense.n_layer + 1;
+        placed.device_split = {{"discrete", dense.n_layer + 1}};
+        placed.n_ctx = 8192;
+        placed.outcome = "the capacity fitter placed every layer";
+        const Plan on_card = plan_run(base_cfg(), desktop(), dense, placed, PlanRequest{}, PlannerPolicy::defaults());
+        check(on_card.regime == Regime::NotMoe && !on_card.config.moe.enabled &&
+                  on_card.config.n_gpu_layers == placed.n_gpu_layers && on_card.config.device_split.size() == 1 &&
+                  on_card.config.device_split[0].first == "discrete" && on_card.config.n_ctx == 8192,
+              "dense model, placed by the fitter: the placement is applied, streaming stays off");
+        PlanRequest ctx_pinned;
+        ctx_pinned.pinned = {"ctx-size"};
+        RunConfig ctx_cfg = base_cfg();
+        ctx_cfg.n_ctx = 4096;
+        check(plan_run(ctx_cfg, desktop(), dense, placed, ctx_pinned, PlannerPolicy::defaults()).config.n_ctx == 4096,
+              "dense model, placed: a context set by the caller is the caller's");
+        Placement declined = placed;
+        declined.fitted = false;
+        declined.shared_memory_placement = true;
+        check(plan_run(base_cfg(), desktop(), dense, declined, PlanRequest{}, PlannerPolicy::defaults())
+                      .config.n_gpu_layers == 0,
+              "dense model, placement set aside: every layer stays on the CPU");
     }
 
     // ── an unprofiled machine declines instead of inventing numbers ────────────────

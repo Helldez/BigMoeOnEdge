@@ -42,7 +42,9 @@ the CLI and in the server's response:
 
 - **A dense model.** `expert_count` is absent or 1: "a dense model, which this engine runs as plain
   mmap and does not stream". With streaming off the model runs as llama.cpp would run it; the
-  CLI's `mode:` line says so, and the UIs label the file as one this build does not stream.
+  CLI's `mode:` line says so, and the UIs label the file as one this build does not stream. Under
+  `--auto` (every UI) the capacity fitter's placement still applies, so a dense model that fits a
+  graphics card runs on it, as llama.cpp's `--fit` would put it.
 - **Experts declared, none found.** The count is declared but no block holds a 3-D weight indexed
   by it. Nothing is streamed.
 - **Layers that disagree.** One layer names `{gate, up, down}` and another `{up, down}`: "the
