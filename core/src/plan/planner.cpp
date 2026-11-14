@@ -909,6 +909,26 @@ void price_layers_home(Planning & s) {
                "the cache and did not fund";
 }
 
+// A model with no experts streams nothing, but the capacity fitter's placement still holds: it is
+// what puts a model that fits a card on the card. Without it the run keeps n_gpu_layers 0 and, with
+// the devices left to the plan, opens on the CPU alone. The fitter's answer is applied as it is, the
+// same fields apply_placement sets; nothing below prices it, since nothing streams.
+void place_dense(Planning & s) {
+    const Placement & placement = s.placement;
+    if (!placement.fitted) return;
+    RunConfig & c = s.p.config;
+    if (placement.n_ctx && !s.req.is_pinned("ctx-size")) c.n_ctx = (int) placement.n_ctx;
+    c.n_gpu_layers = placement.n_gpu_layers;
+    c.buft_overrides = placement.override_patterns;
+    c.device_split.clear();
+    for (const auto & d : placement.device_split)
+        c.device_split.emplace_back(d.first, (int) d.second);
+    const std::string layers =
+        placement.n_gpu_layers < 0 ? "every layer" : u64s((uint64_t) std::max(0, placement.n_gpu_layers)) + " layers";
+    s.note("placement", layers + " on devices", Source::Measured,
+           layers + " on a device, as the capacity fitter placed them.", placement.outcome);
+}
+
 // ── the regime: a ratio of the two profiles, never a property of either ─────────
 // The three inputs no plan can be made from. True when the plan has declined and is complete.
 bool declines_unplannable(Planning & s) {
@@ -924,6 +944,7 @@ bool declines_unplannable(Planning & s) {
         s.decline("this model has no routed experts: there is nothing for the expert streamer to do");
         s.note("moe-stream", "off", Source::Derived, "Not streamed: this model has no experts to stream.",
                "the file carries no expert tensors");
+        place_dense(s);
         return true;
     }
     if (s.hw.residency_budget == 0) {
