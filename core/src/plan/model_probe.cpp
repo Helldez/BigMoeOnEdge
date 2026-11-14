@@ -199,8 +199,12 @@ ModelProfile probe_model(const char * model_path) {
         m.expert_bytes += kv.second;
         m.largest_expert_layer_bytes = std::max(m.largest_expert_layer_bytes, kv.second);
     }
-    for (const auto & kv : per_layer_dense_bytes)
+    // By llama.cpp's own layer index: every block the file carries, an MTP block not among them.
+    m.layer_dense_bytes.assign(blocks.size(), 0);
+    for (const auto & kv : per_layer_dense_bytes) {
         m.largest_layer_dense_bytes = std::max(m.largest_layer_dense_bytes, kv.second);
+        if (kv.first >= 0 && (size_t) kv.first < blocks.size()) m.layer_dense_bytes[(size_t) kv.first] = kv.second;
+    }
     for (const auto & kv : per_layer_one_expert) {
         // The granule the streamer issues as a read is one expert of one projection; the LARGEST
         // of them is what should be looked up on the storage rate curve, because that is the

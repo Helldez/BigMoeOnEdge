@@ -481,18 +481,29 @@ TierSplit device_tier_split(const Placement & pl, const ModelProfile & m, uint64
         out.budget = on_devices + spare_sum;
         return out;
     }
-    // A layer's dense part and context: the model's average, and a bound for the layers a card takes
-    // on (the file's largest dense layer, where the file states it). A card that takes more layers
-    // than the fitter gave it is charged the bound for each, since llama.cpp loads them before any
-    // cache is made and a load past the card's memory has nothing to fall back on; a card that gives
-    // layers up is credited the average, since a cache past a card's memory is made smaller by the
-    // session (create_contexts) rather than failing the load.
+    // A layer's dense part and context. The split is contiguous from the first device slot, so a
+    // split names exactly which layers each card holds, and where the file's per-layer bytes are known
+    // a card is charged the layers it takes on and credited the ones it gives up, byte for byte: on
+    // GLM-4.5-Air layer 0 is twice the average. The context is the model's average per layer. Where
+    // the per-layer bytes are unknown, a layer a card takes on is charged the file's largest dense
+    // layer, since llama.cpp loads it before any cache is made and a load past the card's memory has
+    // nothing to fall back on; a layer a card gives up is credited the average, since a cache past a
+    // card's memory is made smaller by the session (create_contexts) rather than failing the load.
     const double kv_per_layer = (double) pl.device_context_bytes / (double) m.n_layer;
     const double dense_per_layer = (double) (m.group(WeightGroup::Attention).bytes +
                                              m.group(WeightGroup::DenseFfn).bytes + m.group(WeightGroup::Other).bytes) /
                                        (double) m.n_layer +
                                    kv_per_layer;
     const double dense_bound = std::max(dense_per_layer, (double) m.largest_layer_dense_bytes + kv_per_layer);
+    const uint32_t first = slots - ngl;
+    const bool exact = m.layer_dense_bytes.size() == m.n_layer;
+    // The dense part and context of layers [from, from + n), the output's slot not among them.
+    const auto dense_of = [&](uint32_t from, uint32_t n) {
+        double b = 0.0;
+        for (uint32_t il = from; il < from + n && il < m.n_layer; ++il)
+            b += (double) m.layer_dense_bytes[il] + kv_per_layer;
+        return b;
+    };
     // What each card holds for the cache today, beside the layers the fitter gave it.
     for (Card & c : cards)
         c.room = (double) c.spare + (n_whole ? (double) on_devices * c.whole / n_whole : 0.0);
@@ -500,10 +511,20 @@ TierSplit device_tier_split(const Placement & pl, const ModelProfile & m, uint64
     // the layers it takes on.
     const auto budget_of = [&](const std::vector<uint32_t> & n) {
         double b = -1.0;
+        uint32_t was = first, now = first; // where each card's layers start, before and after
         for (size_t i = 0; i < cards.size(); ++i) {
+            const uint32_t had = cards[i].layers;
+            double charge = 0.0;
+            if (exact)
+                charge = dense_of(now, n[i]) - dense_of(was, had);
+            else {
+                const double moved = (double) n[i] - (double) had;
+                charge = moved > 0 ? moved * dense_bound : moved * dense_per_layer;
+            }
+            was += had;
+            now += n[i];
             if (n[i] == 0) continue;
-            const double moved = (double) n[i] - (double) cards[i].layers;
-            const double left = cards[i].room - (moved > 0 ? moved * dense_bound : moved * dense_per_layer);
+            const double left = cards[i].room - charge;
             const double share = left <= 0.0 ? 0.0 : left * (double) n_layers / (double) n[i];
             b = b < 0.0 ? share : std::min(b, share);
         }

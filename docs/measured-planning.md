@@ -394,10 +394,13 @@ without a device of their own, an unchanged plan.
   room under the cache (what it had free, the experts the fitter put on it, its layers' dense part and
   context), and the budget is what the tightest card takes its share of; from there one layer at a
   time moves between cards while the budget grows. The fitter's split is kept where it gives the
-  larger budget. A layer a card takes on is charged the file's largest dense layer and its context,
-  not the average: it is loaded before any cache is made, and a load past a card's memory has nothing
-  to fall back on, where a cache past it is made smaller by the session. A layer a card gives up is
-  credited the average. Left as the fitter made it, the split followed whole layers: on two
+  larger budget. The split is contiguous, so it names the layers each card takes on and gives up, and
+  each is charged or credited its own dense bytes from the file (`ModelProfile::layer_dense_bytes`;
+  GLM-4.5-Air's layer 0 is twice the average) and the average context per layer. Where the per-layer
+  bytes are not known, a layer a card takes on is charged the file's largest dense layer, since it is
+  loaded before any cache is made and a load past a card's memory has nothing to fall back on, and a
+  layer it gives up is credited the average, since a cache past a card's memory is made smaller by
+  the session. The context is uniform per layer here, which a sliding-window or hybrid model's is not. Left as the fitter made it, the split followed whole layers: on two
   rented 16 GB cards with DeepSeek-V4-Flash, 6 layers on the first card (all its whole layers) and 38
   on the second, the first card was handed 6/44 of the budget and 10 GB of it stayed empty. Its floor is one token cycle,
   the RAM cache's floor for the same reason; under it, the fitter's placement stands. llama.cpp's

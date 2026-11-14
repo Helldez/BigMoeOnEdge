@@ -28,8 +28,8 @@ Semantic Versioning.
   cache's budget by the layers the split gives it, and the split was the fitter's whole-layer one: on two
   16 GB cards, 6 layers on the first and 38 on the second left 10 GB of the first card empty. The plan
   now gives each card layers by its room under the cache and sizes the budget so every card holds its
-  share, charging each layer a card takes on at the file's largest dense layer, since a load past a
-  card's memory has nothing to fall back on (`device_tier_split`, [measured-planning.md](docs/measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache)).
+  share, charging each layer a card takes on and crediting each it gives up by that layer's own dense
+  bytes from the file (the split is contiguous, so it names them) (`device_tier_split`, [measured-planning.md](docs/measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache)).
 - **The CLI and the server plan alike where the model fits.** The device cache's CPU share was refused
   as "streamed" when the front-end started with streaming on (the server) and weighed when it did not
   (the CLI), before the plan declined the stream: 36.6 against 43.9 tok/s on the same 8 GB card. The

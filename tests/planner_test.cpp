@@ -3500,6 +3500,36 @@ int main() {
                       std::to_string(safe.config.device_split[0].second) + "/" +
                           std::to_string(safe.config.device_split[1].second) + ", " +
                           std::to_string(safe.config.moe.device_cache_mb) + " MiB");
+
+                // Where the file's per-layer bytes are known, the layers a card takes on are charged
+                // exactly: the split is contiguous, so it names them. Layer 0, on the first card, is the
+                // heavy one; the first card takes on layers from 6 up, of the average size, and is not
+                // charged layer 0's size for each.
+                ModelProfile known = uneven;
+                const double avg = dense_layer;
+                known.layer_dense_bytes.assign(model.n_layer, (uint64_t) avg);
+                known.layer_dense_bytes[0] = (uint64_t) (3.0 * avg);
+                const Plan exact_plan =
+                    plan_run(base_cfg(), slow_cores, known, lopsided, PlanRequest{}, PlannerPolicy::defaults());
+                const double eb = (double) exact_plan.config.moe.device_cache_mb * (double) MiB;
+                bool exact_fits = exact_plan.config.device_split.size() == 2;
+                uint32_t at = 0;
+                const uint32_t had_from[2] = {0, 6};
+                for (size_t i = 0; exact_fits && i < 2; ++i) {
+                    const uint32_t n = exact_plan.config.device_split[i].second - (i == 1 ? 1 : 0);
+                    double now = 0.0, before = 0.0;
+                    for (uint32_t il = at; il < at + n; ++il)
+                        now += (double) known.layer_dense_bytes[il];
+                    for (uint32_t il = had_from[i]; il < had_from[i] + had[i]; ++il)
+                        before += (double) known.layer_dense_bytes[il];
+                    exact_fits = eb * n / layers + (now - before) <= hold[i] + (double) MiB;
+                    at += n;
+                }
+                check(exact_fits && exact_plan.config.moe.device_cache_mb > safe.config.moe.device_cache_mb,
+                      "device tier, per-layer bytes known: the layers moved are charged exactly, and the cache is "
+                      "larger than under the bound",
+                      std::to_string(exact_plan.config.moe.device_cache_mb) + " MiB against " +
+                          std::to_string(safe.config.moe.device_cache_mb));
             }
         }
 
