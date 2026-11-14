@@ -28,3 +28,14 @@ Known weak spots, said before the runs: the hosts' rates under 4 bits a weight (
 come from processors of another generation (an Alder Lake and a desktop Zen 5 were never measured);
 every simulated fit turned a fused op off at least once, so the real cards may take more layers;
 the DeepSeek 7 + 37 split on two equal cards may be that difference.
+
+## Addendum, still before any result: box A's Qwen3.6 file
+
+Box A runs a plain Q4_K_M of Qwen3.6-35B-A3B, not the UD-Q4_K_M simulated above (unsloth's repository
+lists only UD variants, so the exact file is still to be confirmed). Simulated on the plain Q4_K_M
+(ggml-org's), with the same machine:
+
+| Box, model | Context | Plan | Estimate tok/s (range) |
+| --- | --- | --- | ---: |
+| A, Qwen3.6-35B Q4_K_M | 2048 | fits; 41 layers on the card, device cache 4346 MiB (83%) | 61.1 (38-89) |
+| A, Qwen3.6-35B Q4_K_M | 16384 | fits; device cache 3085 MiB (76%) | 51.9 (32-75) |
