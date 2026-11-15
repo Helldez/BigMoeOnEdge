@@ -521,7 +521,12 @@ load cannot try both sides: the device tier (a cache of experts on the card, or 
 whole layers: `MeasuredKnobs::device_cache_tps`, `no_device_cache_tps`) and the graph width where
 even a graph held to the device bound (`ubatch_max_device`) takes more of the card's memory than its
 share, memory the experts would use (`width_narrow` and its rates,
-[hardware-planning.md](hardware-planning.md#the-widest-graph)). Timed across loads, each side cost a
+[hardware-planning.md](hardware-planning.md#the-widest-graph)). Two more joined them since: the share
+of a device cache's misses the host computes (`cpu_share_tps`), and where a model held in memory runs
+on a machine whose device reads that same memory, on the cores or every layer on the device
+(`shared_device_tps`, `no_shared_device_tps`,
+[hardware-planning.md](hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it)): which
+engine decodes a model is fixed when it is loaded. Timed across loads, each side cost a
 whole session of a person's use at whatever rate it decoded. On rented cards a model's second load
 decoded at 37 tok/s instead of 68 on a 12 GB card, and at 35 instead of 84 on a 32 GB one.
 
@@ -530,9 +535,9 @@ load of its own and timed before the plan is served, and the plan on the grown r
 served (`bmoe/calibrate.h`):
 
 - **The planner stays the oracle.** A side is pending exactly when the plan sets one
-  (`KnobTrialConfig::device_tier` or `width_side`). `calibrate()` runs that candidate, puts its rate
-  in the record with the mapping a session's own timing uses (`record_side_rate`, one decision per
-  load: the tier where the plan names one, else the width), and asks the planner again
+  (`KnobTrialConfig::device_tier`, `width_side`, `cpu_share_side` or `shared_device_side`).
+  `calibrate()` runs that candidate, puts its rate in the record with the mapping a session's own
+  timing uses (`record_side_rate`, one decision per load, in that order), and asks the planner again
   (`replan`: `probe_and_plan`'s planning half on the same facts, the fitter's re-fits at a narrower
   width included, no probe). A re-fit is asked of the fitter once per width and kept with the facts
   (`AutoPlan::placement_at_width`): it answers from the same file, devices and context whatever the
@@ -543,7 +548,9 @@ served (`bmoe/calibrate.h`):
   host last ([hardware-planning.md](hardware-planning.md#who-computes-the-device-caches-misses)), as
   the planner orders them; a configuration already timed is not opened again (the cache side at the
   plan's width answers the width's wide side too, and the cache's rate with every miss uploaded is
-  the tier's own). At most six candidates, every side of the three decisions once; a plan that asks past that, or asks
+  the tier's own). The shared-memory device is a decision of its own: it arises only where none of the
+  others does (a device with memory of its own goes through the fitter), its cores side first, the
+  placement every load had before it. At most eight candidates, every side of the four decisions once; a plan that asks past that, or asks
   for something a short decode cannot measure (the prefill of long prompts a machine has been
   sending), is served as it stands and its load times the rest as before.
 - **A candidate** is a `Session` of its own (`run_calibration_candidate`), opened, given one fixed

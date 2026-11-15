@@ -63,7 +63,9 @@ constexpr UnviableSide k_unviable_sides[] = {{"device_cache", &MeasuredKnobs::de
                                              {"wide", &MeasuredKnobs::wide_unviable},
                                              {"narrow", &MeasuredKnobs::narrow_unviable},
                                              {"cpu_share", &MeasuredKnobs::cpu_share_unviable},
-                                             {"no_cpu_share", &MeasuredKnobs::no_cpu_share_unviable}};
+                                             {"no_cpu_share", &MeasuredKnobs::no_cpu_share_unviable},
+                                             {"shared_device", &MeasuredKnobs::shared_device_unviable},
+                                             {"no_shared_device", &MeasuredKnobs::no_shared_device_unviable}};
 
 // `name:count` (or `name`, one) per side, comma-separated. A name this engine does not know is a
 // later engine's side: read past, as an unknown key is.
@@ -166,6 +168,14 @@ std::string format_measured_knobs(const std::vector<MeasuredKnobs> & records) {
         }
         out += " usage_requests=" + std::to_string(r.usage_requests);
         out += " width_held=" + std::to_string(r.width_held);
+        // The shared-memory device: later keys, written only once a side is measured so a record
+        // without them reads as it always did; an older engine reads past them.
+        if (r.shared_device_tps > 0.0 || r.no_shared_device_tps > 0.0) {
+            std::snprintf(num, sizeof(num), "%.3f", r.shared_device_tps);
+            out += std::string(" shared_device_tps=") + num;
+            std::snprintf(num, sizeof(num), "%.3f", r.no_shared_device_tps);
+            out += std::string(" no_shared_device_tps=") + num;
+        }
         // The decode's own cost: later keys of the same format, which an older engine reads past.
         std::snprintf(num, sizeof(num), "%.6f", r.decode_compute_s);
         out += std::string(" decode_compute_s=") + num;
@@ -266,6 +276,10 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
                 ok = as_double(r.cpu_share_tps);
             else if (k == "no_cpu_share_tps")
                 ok = as_double(r.no_cpu_share_tps);
+            else if (k == "shared_device_tps")
+                ok = as_double(r.shared_device_tps);
+            else if (k == "no_shared_device_tps")
+                ok = as_double(r.no_shared_device_tps);
             else if (k == "width_narrow")
                 ok = as_int(r.width_narrow);
             else if (k == "wide_decode_tps")
@@ -326,7 +340,8 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
             r.width_held < -1 || r.width_held > 1 || !(r.decode_compute_s >= 0.0) || r.decode_threads < 0 ||
             !(r.decode_hit >= -1.0 && r.decode_hit <= 1.0) || !(r.decode_cache_mib >= 0.0) || r.decode_gpu_layers < 0 ||
             r.decode_device_cache_mb < 0 || r.mix_requests < 0 || !(r.mix_gen_tokens >= 0.0) ||
-            !(r.mix_wide_prompt_tokens >= 0.0) || !(r.host_prefill_tps >= 0.0)) {
+            !(r.mix_wide_prompt_tokens >= 0.0) || !(r.host_prefill_tps >= 0.0) || !(r.shared_device_tps >= 0.0) ||
+            !(r.no_shared_device_tps >= 0.0)) {
             error = "line " + std::to_string(n) + ": a value out of range";
             return false;
         }
@@ -366,6 +381,12 @@ void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKno
                            rec.no_cpu_share_tps);
             if (rec.cpu_share_tps > 0.0) r.cpu_share_tps = rec.cpu_share_tps;
             if (rec.no_cpu_share_tps > 0.0) r.no_cpu_share_tps = rec.no_cpu_share_tps;
+            merge_unviable(r.shared_device_unviable, rec.shared_device_unviable, r.shared_device_tps,
+                           rec.shared_device_tps);
+            merge_unviable(r.no_shared_device_unviable, rec.no_shared_device_unviable, r.no_shared_device_tps,
+                           rec.no_shared_device_tps);
+            if (rec.shared_device_tps > 0.0) r.shared_device_tps = rec.shared_device_tps;
+            if (rec.no_shared_device_tps > 0.0) r.no_shared_device_tps = rec.no_shared_device_tps;
             // A different narrow width is a different comparison: what was measured against the old
             // one no longer answers it.
             set_width_narrow(r, rec.width_narrow);
@@ -431,6 +452,9 @@ void record_side_rate(const KnobTrialConfig & trial, double tokens_per_second, M
     } else if (trial.cpu_share_side >= 0) {
         (trial.cpu_share_side == 1 ? rec.cpu_share_tps : rec.no_cpu_share_tps) = tokens_per_second;
         (trial.cpu_share_side == 1 ? rec.cpu_share_unviable : rec.no_cpu_share_unviable) = 0;
+    } else if (trial.shared_device_side >= 0) {
+        (trial.shared_device_side == 1 ? rec.shared_device_tps : rec.no_shared_device_tps) = tokens_per_second;
+        (trial.shared_device_side == 1 ? rec.shared_device_unviable : rec.no_shared_device_unviable) = 0;
     }
 }
 
@@ -440,6 +464,8 @@ int * unviable_count(const KnobTrialConfig & trial, MeasuredKnobs & rec) {
     if (trial.width_side >= 0) return trial.width_side == 1 ? &rec.wide_unviable : &rec.narrow_unviable;
     if (trial.cpu_share_side >= 0)
         return trial.cpu_share_side == 1 ? &rec.cpu_share_unviable : &rec.no_cpu_share_unviable;
+    if (trial.shared_device_side >= 0)
+        return trial.shared_device_side == 1 ? &rec.shared_device_unviable : &rec.no_shared_device_unviable;
     return nullptr;
 }
 

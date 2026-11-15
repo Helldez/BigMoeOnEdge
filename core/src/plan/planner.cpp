@@ -1772,7 +1772,10 @@ uint64_t checkpoint_reserve(const RunConfig & c, const Placement & placement) {
     return placement.context_fixed_bytes * (uint64_t) c.ctx_checkpoints;
 }
 
-void classify_regime(Planning & s) {
+// What the host holds against what it may (s.host_all, s.air and the rest), and the regime that puts
+// the run in. Read for a model with no experts too, where the only question it answers is whether the
+// whole model is held in memory.
+Regime residency_regime(Planning & s) {
     const Placement & placement = s.placement;
     // With a placement, what the fitter left here; without one, the whole file.
     //
@@ -1819,13 +1822,9 @@ void classify_regime(Planning & s) {
     s.host_dense = placement.fitted ? placement.host_resident_bytes + s.device_on_host + s.checkpoint_bytes
                                     : s.model.dense_bytes + unfitted_fixed;
     s.host_dense += s.projector_host;
-    if (s.host_all <= s.usable) {
-        s.p.regime = Regime::Fits;
-    } else if (s.host_dense <= s.usable) {
-        s.p.regime = Regime::ExpertsStream;
-    } else {
-        s.p.regime = Regime::DenseOversized;
-    }
+    Regime regime = s.host_all <= s.usable     ? Regime::Fits
+                    : s.host_dense <= s.usable ? Regime::ExpertsStream
+                                               : Regime::DenseOversized;
 
     // Fitting is not the same as being left alone. Where the machine can take pages back, residency
     // has to clear a second bar: room beyond the model itself, so its weights are not reclaimed and
@@ -1836,8 +1835,13 @@ void classify_regime(Planning & s) {
     // the cheap side of that asymmetry is the right default, and a caller who disagrees drops --auto.
     s.air = s.usable > s.host_all ? s.usable - s.host_all : 0;
     const uint64_t air_needed = (uint64_t) ((double) s.host_all * (double) s.pol.fits_air_ratio);
-    s.air_short = s.p.regime == Regime::Fits && reclaim_is_cheap(s.hw.anon_overflow) && s.air < air_needed;
-    if (s.air_short) s.p.regime = s.host_dense <= s.usable ? Regime::ExpertsStream : Regime::DenseOversized;
+    s.air_short = regime == Regime::Fits && reclaim_is_cheap(s.hw.anon_overflow) && s.air < air_needed;
+    if (s.air_short) regime = s.host_dense <= s.usable ? Regime::ExpertsStream : Regime::DenseOversized;
+    return regime;
+}
+
+void classify_regime(Planning & s) {
+    s.p.regime = residency_regime(s);
 }
 
 // What the first stage placed, applied, and said - or why nothing was.
@@ -1846,12 +1850,13 @@ void apply_placement(Planning & s) {
     const Placement & placement = s.placement;
     if (!placement.fitted) {
         s.note("placement", "none", placement.shared_memory_placement ? Source::Derived : Source::Unprobed,
-               placement.shared_memory_placement ? "Every layer stays on the CPU: the device shares its memory."
+               placement.shared_memory_placement ? "The fitter's placement is set aside: the device shares this memory."
                                                  : "Every layer stays on the CPU: no device placement was tried.",
                placement.shared_memory_placement
                    ? "the capacity fitter ran and its answer was set aside: the device it placed layers on "
                      "reads this host's own memory, so 'what fits where' has one pool and no answer. "
-                     "Everything is on the host, which is what it already was"
+                     "Everything is on the host, which is what it already was, unless the model is held in "
+                     "memory whole and a measurement moves it (shared-device)"
                    : "the capacity fitter was not run, so no layer is placed on a device: everything is on "
                      "the host");
         return;
@@ -1965,6 +1970,182 @@ bool declines_residency(Planning & s) {
         return true;
     }
     return false;
+}
+
+// ── a model held in memory, on a device that reads that same memory ─────────────
+// The capacity fitter's answer is set aside on such a machine because its arithmetic counts one pool
+// twice (apply_placement). That settles capacity, and capacity is not the question here: the model is
+// in this pool either way, so running it on the device frees nothing and costs nothing. What is left
+// is which engine runs it faster, and that is the question the streamed regime already answers by
+// measurement for the prompt; here it is asked of the whole model, as a decision across loads
+// (MeasuredKnobs::shared_device_tps): one load times the decode on the cores, one with every layer on
+// the device, and the plan after keeps the faster by the margin. A calibration times both before the
+// first answer is served (bmoe/calibrate.h). Where the two decode level, the device's measured prompt
+// rate decides, since a move that costs no decode and no memory and prefills faster is a win.
+//
+// Measured, because nothing smaller predicts it. The decode is the model's whole op mix, and on a
+// unified-memory laptop the one-token probe read the cores 60% ahead (109 GiB/s against 67) while the
+// model itself decoded 54 tok/s on the GPU against 40 on the cores; a laptop iGPU through Vulkan decoded
+// a 1.7B model 28% faster than its cores, and one through OpenCL 37% slower (#602, #375).
+//
+// The whole model or none of it: a partial placement crosses the boundary twice per split layer, the
+// shape measured slower on a phone. One device, named, so llama.cpp does not divide the layers between
+// two backends that drive the same silicon. A candidate has to have computed the host's results on
+// one real layer of this model (ComputeDevice::identity_ok), run its expert matmul in the file's own
+// format, take the mapped weights without a repack (hard rule 2), and have room for the compute buffer
+// it reserves beside the model in this pool. Whether its weights then stay the file's mapping or are
+// copied into the device's own buffers is the backend's (host_ptr_verified); either way they occupy
+// this pool once, and the plan says which.
+namespace {
+struct SharedDeviceCandidate {
+    const ComputeDevice * dev = nullptr;
+    uint64_t compute = 0; // the compute buffer it reserves, from the fitter's projection
+    std::string refused;  // why each device that is not one is not, "; "-separated
+};
+
+// The device a whole model held in `resident` bytes of this pool could move to, or none and why.
+SharedDeviceCandidate shared_device_candidate(const Planning & s, uint64_t resident) {
+    SharedDeviceCandidate c;
+    const uint64_t air_needed = (uint64_t) ((double) resident * (double) s.pol.fits_air_ratio);
+    const bool cheap = reclaim_is_cheap(s.hw.anon_overflow);
+    // Among several, the one that applies this model's weights fastest on one real layer at decode
+    // width: a ranking only, since the timed decode is what decides against the cores.
+    const auto layer_rate = [&](const ComputeDevice & d) {
+        const double r = s.model.is_moe ? d.expert_gibs : d.dense_gibs;
+        return r > 0.0 ? r : d.memory_bandwidth_gibs;
+    };
+    for (const ComputeDevice & d : s.hw.devices) {
+        if (d.is_cpu) continue;
+        std::string why;
+        const uint64_t compute = s.placement.device_compute_of(d.name);
+        if (d.has_own_memory())
+            continue; // the capacity fitter's device: not this question
+        else if (d.usable == Tri::No)
+            why = "it did not survive being probed";
+        else if (d.identity_ok != Tri::Yes)
+            why = "it has not been shown to compute the host's results on this model";
+        else if (s.model.is_moe && d.runs_expert_op != Tri::Yes)
+            why = "it does not run this model's expert matmul in the file's own format";
+        else if (d.needs_repack == Tri::Yes)
+            why = "it needs the weights repacked into a layout of its own, and the model loads as mapped";
+        else if (compute == 0)
+            why = "the compute buffer it would reserve was never projected";
+        else if (resident + compute > s.usable || (cheap && s.usable - resident - compute < air_needed))
+            why = "its compute buffer of " + u64s(mib(compute)) + " MiB beside the " + u64s(mib(resident)) +
+                  " MiB the model holds leaves too little of the " + u64s(mib(s.usable)) + " MiB usable";
+        if (!why.empty()) {
+            c.refused += (c.refused.empty() ? "" : "; ") + d.name + ": " + why;
+            continue;
+        }
+        if (!c.dev || layer_rate(d) > layer_rate(*c.dev)) {
+            c.dev = &d;
+            c.compute = compute;
+        }
+    }
+    return c;
+}
+} // namespace
+
+void choose_shared_device(Planning & s, uint64_t resident) {
+    if (s.placement.fitted || !s.devices_share_host_memory) return;
+    for (const char * knob : {"gpu-layers", "device-split", "devices", "device-list", "tensor-overrides"})
+        if (s.req.is_pinned(knob)) return;
+    // One decision is timed a load: another one this plan left pending goes first.
+    const KnobTrialConfig & pending = s.p.config.trial;
+    if (pending.device_tier >= 0 || pending.width_side >= 0 || pending.cpu_share_side >= 0) return;
+    const char * knob = "shared-device";
+    const SharedDeviceCandidate cand = shared_device_candidate(s, resident);
+    if (!cand.dev) {
+        if (!cand.refused.empty())
+            s.note(knob, "cpu", Source::Derived, "The model runs on the CPU: no device that shares this memory can.",
+                   "a device that reads this memory could run the whole model at no cost in capacity, but " +
+                       cand.refused);
+        return;
+    }
+    const ComputeDevice & dev = *cand.dev;
+    RunConfig & c = s.p.config;
+    KnobTrialConfig & trial = c.trial;
+    const MeasuredKnobs & mk = s.model.knobs;
+    const double on = mk.shared_device_tps, off = mk.no_shared_device_tps;
+    const double m = (double) s.pol.min_backend_win;
+    const std::string margin = u64s((uint64_t) (m * 100.0 + 0.5)) + "%";
+    const std::string held = is_yes(dev.host_ptr_verified) && is_yes(dev.host_ptr_buffers)
+                                 ? "its weights stay the file's mapping, which the device reads in place"
+                                 : "its weights are copied into the device's own buffers, which are this same "
+                                   "memory, and the mapping's pages are left for the system to reclaim";
+    const std::string place = "every layer could run on " + dev.name +
+                              " at no cost in capacity, since it reads this memory: " + held + ", and its compute " +
+                              "buffer, " + u64s(mib(cand.compute)) + " MiB, fits beside the model";
+    char measured[128];
+    std::snprintf(measured, sizeof(measured), "%.2f tok/s on %s against %.2f on the CPU", on, dev.name.c_str(), off);
+
+    const auto on_device = [&](Source src, const std::string & brief, const std::string & reason) {
+        const int layers = (int) s.model.n_layer + 1; // every block and the output head
+        c.n_gpu_layers = layers;
+        c.buft_overrides.clear();
+        c.device_split.assign(1, {dev.name, layers});
+        s.note(knob, dev.name, src, brief, place + "; " + reason);
+    };
+    const auto on_cores = [&](Source src, const std::string & brief, const std::string & reason) {
+        s.note(knob, "cpu", src, brief, place + "; " + reason);
+    };
+
+    if (mk.shared_device_unviable > 0) {
+        on_cores(Source::Measured, "The model runs on the CPU: a load with it on " + dev.name + " failed here.",
+                 "a load of this model with every layer on " + dev.name + " failed on this machine");
+        return;
+    }
+    if (on > 0.0 && (off > 0.0 || mk.no_shared_device_unviable > 0)) {
+        if (off <= 0.0 || on > off * (1.0 + m)) {
+            on_device(Source::Measured, "Every layer runs on " + dev.name + ", which decodes this model faster.",
+                      off > 0.0 ? "measured on earlier loads of this model here: " + std::string(measured) +
+                                      ", past the " + margin + " margin"
+                                : std::string("a load of this model on the cores failed here"));
+            return;
+        }
+        // Level on the decode, inside the margin either way: the prompt decides, from the rate this
+        // device measured on a real layer of this model as wide as a prompt, with the host's results.
+        const bool level = on >= off * (1.0 - m);
+        const bool prompts_faster = dev.wide_identity_ok == Tri::Yes && s.hw.host_wide_matmul_gibs > 0.0 &&
+                                    dev.wide_matmul_gibs > s.hw.host_wide_matmul_gibs * (1.0 + m);
+        char wide[96];
+        std::snprintf(wide, sizeof(wide), "%.1fx the host's rate on a prompt-wide layer",
+                      s.hw.host_wide_matmul_gibs > 0.0 ? dev.wide_matmul_gibs / s.hw.host_wide_matmul_gibs : 0.0);
+        if (level && prompts_faster) {
+            on_device(Source::Measured,
+                      "Every layer runs on " + dev.name + ": it decodes level with the CPU and prompts faster.",
+                      "measured on earlier loads of this model here: " + std::string(measured) + ", inside the " +
+                          margin + " margin, and " + dev.name + " computes " + wide + ", so the prompt decides");
+            return;
+        }
+        on_cores(Source::Measured, "The model runs on the CPU: " + dev.name + " decodes it no faster.",
+                 "measured on earlier loads of this model here: " + std::string(measured) +
+                     (level ? ", inside the " + margin + " margin, and the prompt does not settle it (" + wide + ")"
+                            : ", not past the " + margin + " margin"));
+        return;
+    }
+    if (off <= 0.0) {
+        // Nothing measured yet: the cores first, the placement every load before this rule ran.
+        trial.shared_device_side = 0;
+        on_cores(Source::Policy, "The model runs on the CPU while its speed on " + dev.name + " is measured.",
+                 "this load times the decode on the cores, and a later one with every layer on " + dev.name +
+                     ", so the plan after keeps the faster");
+        return;
+    }
+    trial.shared_device_side = 1;
+    char before[160];
+    std::snprintf(before, sizeof(before),
+                  "an earlier load of this model here decoded at %.2f tok/s on the cores, and this one times it on "
+                  "%s so the next plan can keep the faster",
+                  off, dev.name.c_str());
+    on_device(Source::Policy, "Every layer runs on " + dev.name + " while its speed there is measured.", before);
+}
+
+// The same question for a model with no experts: nothing streams, so whether it is held in memory
+// whole is the only part of the regime that applies.
+void choose_shared_device_dense(Planning & s) {
+    size_budget(s);
+    if (residency_regime(s) == Regime::Fits) choose_shared_device(s, s.host_all);
 }
 
 // ── the accelerator axis: what may leave the host BEYOND the fitter's placement ─
@@ -3754,7 +3935,10 @@ Plan plan_once(const RunConfig & base,
 
     // The machine and the model, against each other.
     share_of_host(s);
-    if (declines_unplannable(s)) return p;
+    if (declines_unplannable(s)) {
+        if (p.regime == Regime::NotMoe) choose_shared_device_dense(s);
+        return p;
+    }
     choose_device_tier(s);
     size_budget(s);
     choose_graph_width(s);
@@ -3779,6 +3963,7 @@ Plan plan_once(const RunConfig & base,
                                                          "them home in, so the fitter's placement stands");
             s.p.decisions.push_back(s.home.decision);
         }
+        choose_shared_device(s, s.host_all);
         // Resident, the cores still compute whatever the devices do not: the layers the fitter left on
         // the host, or all of them. Leaving the count at its default here ran a 24 GB card's 21 host
         // layers on 4 threads of a 32-core box, at 26 tok/s where 16 threads decoded at 47.5.

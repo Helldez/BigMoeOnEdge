@@ -66,6 +66,31 @@ desktop app is not affected: it installs the pack itself.
 
 ## Fixed
 
+### Integrated graphics stays idle while the model generates (#602)
+
+**Seen on** 0.43.1, Linux: a laptop processor with integrated graphics through Vulkan, 16 GB of RAM.
+`amdgpu_top` showed the GPU idle while the model generated. On a model held in memory whole, a 1.7B
+model generated 28% faster with every layer on the iGPU in `llama-bench` than on the cores.
+
+**How to recognise it.** The device reads the computer's own memory (the Plan screen's memory line,
+"the device shares its memory"), and "Tokens" says CPU. On a model larger than the memory left free,
+the case this report started from (a 21 GB model with about 8 GB free), the generation is limited by
+the drive instead and the GPU would not change it: the prompt already runs on the iGPU there.
+
+**Cause.** On a device that shares the host's memory the plan sets the capacity fitter's placement
+aside, since its arithmetic counts that one pool twice, and left every layer on the cores without
+measuring the device: a rule taken from one machine where the cores were faster. Published runs go
+from an iGPU 37% slower than its cores to Max-class unified memory several times faster.
+
+**Fixed in** the release after 0.43.1: where the whole model is held in memory, two loads time the
+decode on the cores and with every layer on the device, a calibration doing it before the first
+answer, and the faster stays
+([hardware-planning.md](hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it)).
+
+**On 0.43.1 and earlier**, set Settings, advanced, "Layers on a device" to 99 (`--gpu-layers 99`) and
+load the model again: a value set by hand is kept. Compare the speed with it and without it on your
+own machine, since on some the cores are faster.
+
 ### A graphics card beside integrated graphics: the model runs on the CPU
 
 **Seen on** 0.42.0, the desktop app: a 32 GB card, a desktop processor with integrated graphics,

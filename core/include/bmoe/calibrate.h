@@ -1,16 +1,19 @@
 // Load-time calibration: the decisions across loads, timed before the plan is served.
 //
-// Two plan decisions are fixed when the model or its context is created, so one load cannot try both
+// Some plan decisions are fixed when the model or its context is created, so one load cannot try both
 // sides: whether a device with memory of its own holds a cache of experts or the capacity fitter's
-// whole layers (MeasuredKnobs::device_cache_tps), and how wide the graph is where even a graph held
+// whole layers (MeasuredKnobs::device_cache_tps), how wide the graph is where even a graph held
 // to the device bound (PlannerPolicy::ubatch_max_device) takes more of the card's memory than its share
-// (MeasuredKnobs::width_narrow). Timed across loads, each side costs a whole session of a person's use
-// at whatever rate it decodes: measured on rented cards, a model's second load decoded at 37 tok/s
+// (MeasuredKnobs::width_narrow), how much of that cache's misses the cores compute
+// (MeasuredKnobs::cpu_share_tps), and whether a model held in memory runs on the cores or on a device
+// that reads that same memory (MeasuredKnobs::shared_device_tps). Timed across loads, each side costs a whole session
+// of a person's use at whatever rate it decodes: measured on rented cards, a model's second load decoded at 37 tok/s
 // instead of 68 on a 12 GB card and at 35 instead of 84 on a 32 GB one. So a load that has such a decision pending
 // opens each side as a short candidate load of its own first, times its decode, and serves the winner.
 //
 // The planner stays the oracle. A side is pending exactly when the plan sets one
-// (KnobTrialConfig::device_tier or width_side, side_pending()); calibrate() runs that candidate,
+// (KnobTrialConfig::device_tier, width_side, cpu_share_side or shared_device_side, side_pending());
+// calibrate() runs that candidate,
 // puts its rate in the record with the mapping a session's own timing uses (record_side_rate), and
 // asks the planner again on the grown record, until no side is pending. Every rule the across-loads
 // timing has holds as it is: a fitter's placement whose decode ceiling cannot win is never timed, a
@@ -33,8 +36,9 @@
 
 namespace bmoe {
 
-// The decisions a calibration times, each with two sides: the device tier, then the graph width.
-inline constexpr int k_calibration_decisions = 3;
+// The decisions a calibration times, each with two sides: the device tier, the graph width, the device
+// cache's CPU share, and where a model held in memory runs beside a device that shares that memory.
+inline constexpr int k_calibration_decisions = 4;
 inline constexpr int k_calibration_sides = 2;
 
 // What one candidate run is asked to do.
@@ -107,8 +111,9 @@ struct CalibrationResult {
 bool side_pending(const Plan & p);
 
 // Whether a served load may open `p` as it is: nothing pending, or only a side that every other load
-// of the plan already opened with: the graph at the plan's own width, or the device cache with every
-// miss uploaded (the narrow graph and a CPU share are configurations no load has run yet). What a
+// of the plan already opened with: the graph at the plan's own width, the device cache with every
+// miss uploaded, or the model on the cores (the narrow graph, a CPU share and a model moved onto a
+// device that shares this memory are configurations no load has run yet). What a
 // server serves instead of an unproven side once the other side has been measured: on a 32 GB card the plan on the
 // measured device cache named the width's wide side, which counted as a side still to prove, so the load served the
 // unproven placement and decoded at 42 tok/s against the cache's 103.

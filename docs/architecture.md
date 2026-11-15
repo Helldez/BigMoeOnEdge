@@ -107,7 +107,8 @@ core/
                     text form, and the hardware fingerprint a verdict is kept against
     model_records.h a model's routing record and verdicts kept on disk between loads, by content
                     fingerprint, in a folder the front-end names: one store for every front-end
-    calibrate.h     load-time calibration: the decisions across loads (device tier, graph width)
+    calibrate.h     load-time calibration: the decisions across loads (device tier, graph width,
+                    the device cache's CPU share, a model held in memory on a shared-memory device)
                     timed at load, each side a short candidate load, over two ports (Replan,
                     RunCandidate); the planner names the side, the loop runs it and asks again
     probe.h         the adapters' entry points: what fills the two profiles
