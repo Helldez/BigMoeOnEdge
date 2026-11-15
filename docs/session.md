@@ -67,8 +67,20 @@ The engine keeps
 checkpoints the way llama.cpp's server does (`--ctx-checkpoints`, default 8 where the server keeps 32,
 since their memory is the expert cache's; `--checkpoint-min-step`, 8192 as there): the part of the state that cannot be cut is copied out through the public
 state API (`llama_state_seq_get_data_ext` with `LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY`, into `common`'s own
-`common_prompt_checkpoint`) at the end of every prompt, and every `min_step` tokens inside a prompt
-prefilled in pieces. A refused cut restores the newest checkpoint at or before the divergence and
+`common_prompt_checkpoint`) where the server takes them: at the start of a user message (the last one
+always, an earlier one only `min_step` past the newest checkpoint), and `n_ubatch` + 4 and 4 tokens
+before the end of the prompt, the prefill stopping at each of those points; and at the end of every
+prompt and of every image. The user messages are found by the template's own message delimiters,
+which llama.cpp reads off the template by rendering variants of it (`common_chat_params::message_delimiters`,
+split into `common_chat_msg_spans`), so no model or family is named; a template that gives none keeps
+the older rule, a checkpoint every `min_step` tokens of a prompt prefilled in pieces. The two near the
+end are there because a template renders a past answer again differently from how it was sampled
+(Qwen3.6 drops its think block), so the next request diverges a few tokens before the end of this
+prompt, past a checkpoint taken only at the end: on 0.43.1 a follow-up on Qwen3.6 reused 0 tokens of 4447
+with the prefill on the CPU, 1024 of 7015 on the GPU. The one at the first user message is the end of the system prompt
+and tools, which a new conversation shares. When the list is full, a checkpoint an earlier request
+took within `min_step` of the one before it goes first, then the oldest, as in the server, so the
+sparse ones, the preamble's among them, outlive the turns of a conversation. A refused cut restores the newest checkpoint at or before the divergence and
 prefills from there (`core/src/engine/context_checkpoints.{h,cpp}`, the same position rule as the
 server's). This is what an agent needs: a client resends the model's answer as text, the template
 renders it back into tokens that need not be the ones sampled, and on a hybrid model the prompt then
@@ -78,8 +90,8 @@ size of that state per checkpoint; the first one of a session logs it (`context 
 and `--ctx-checkpoints 0` turns them off. The plan charges that memory before it sizes the expert cache
 (`checkpoint-budget`, [hardware-planning.md](hardware-planning.md#the-memory-ledger)), so a chat that
 fills its checkpoints does not take it from what the cache already holds. A restored state is the state the same tokens computed, so it
-is lossless; gate G22 checks it on the three memory kinds the tiny models cover, and G22c a cut past a
-window.
+is lossless; gate G22 checks it on the three memory kinds the tiny models cover, G22c a cut past a
+window, and G27 a new conversation with the same system message and a follow-up.
 
 **Fallbacks and costs.** With no checkpoint to restore (none taken yet, or off), a memory that refuses
 the cut is cleared and the whole prompt is prefilled again for that turn (correct, just slower). With

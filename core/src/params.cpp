@@ -752,8 +752,9 @@ std::vector<ParamDesc> build() {
     }
     {
         ParamDesc d = row("checkpoint-min-step", "Checkpoint spacing", G::Memory, L::Debug,
-                          "Least distance between two context checkpoints inside one prompt prefilled in "
-                          "pieces. The end of every prompt gets one regardless. 0 = no minimum.");
+                          "Least distance between two context checkpoints at the start of user messages, or "
+                          "inside a prompt whose template names no messages. The last user message and the "
+                          "end of every prompt get one regardless. 0 = no minimum.");
         d.value_hint = "N";
         bounds(d, 0, RunConfig::tokens_max, "tokens");
         typical(d, usual::checkpoint_step_lo, usual::checkpoint_step_hi);

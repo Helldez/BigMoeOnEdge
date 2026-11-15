@@ -36,17 +36,6 @@ NVIDIA driver is present but no CUDA module loaded.
 **Workaround.** Extract the pack inside the `bmoe-cli-...` folder ([platforms.md](platforms.md)). The
 desktop app is not affected: it installs the pack itself.
 
-### Every new conversation prefills the system prompt again on a hybrid model (#583)
-
-- **Seen on** 0.42.0, CPU-only ARM machines (a 2-core cloud VM with 12 GB, phones with 6 and 22 GB),
-  hybrid models (Qwen3.6 REAP, Qwen3.8-Flash-Next, LFM2.5-24B) under an agent with a 4-6k token
-  preamble: 9 to 13 minutes of prefill for every new conversation and for the first request after a
-  restart, against 11-29 s with the reporter's own change.
-- **How to recognise it.** A new conversation does not reuse the preamble's tokens: the prompt's
-  prefill time is the whole preamble's every time.
-- **Cause.** Not confirmed yet. The reporter's reading: no context checkpoint sits at the end of the
-  preamble, and the oldest of the 8 kept is the first evicted.
-
 ### An image follow-up on a 12 GB iPhone ends the app (#573)
 
 - **Seen on** 0.42.0, iOS, a 12 GB iPhone, Qwen3.6-35B-A3B Q4_K_M with its Q8_0 projector, 16384
@@ -65,6 +54,31 @@ desktop app is not affected: it installs the pack itself.
   (`sudo prlimit --pid $$ --memlock=unlimited:unlimited`): 8.72 tok/s, 91.1 % cache hits.
 
 ## Fixed
+
+### A hybrid model prefills the conversation again on every turn (#583)
+
+**Seen on** 0.42.0, CPU-only ARM machines (a 2-core cloud VM with 12 GB, phones with 6 and 22 GB),
+hybrid models (Qwen3.6 REAP, Qwen3.8-Flash-Next, LFM2.5-24B) under an agent with a 4-6k token
+preamble: 9 to 13 minutes of prefill for every new conversation. On 0.43.1 on a 16 GB Mac,
+Qwen3.6-35B-A3B: a follow-up in the same conversation reused 1024 of 7015 tokens with the prefill on
+the GPU, and 0 of 4447 with it on the CPU.
+
+**How to recognise it.** On a hybrid model (or one with a sliding window) the second message of a chat
+or a new conversation with the same system prompt takes as long to start as the first; the answer's
+`cached_tokens` is 0 or a multiple of 1024.
+
+**Cause.** Such a memory cannot be cut back, so a turn reuses the conversation only from a context
+checkpoint before the point where the new prompt differs. One was taken at the end of every prompt,
+after the turn header, and the template renders the previous answer again a few tokens before that
+point (Qwen3.6 drops its think block), so it was always past the divergence. None sat at the end of
+the system prompt either.
+
+**Fixed in** the release after 0.43.1: checkpoints are taken where llama.cpp's server takes them, at the
+start of user messages, found from the template's own delimiters, and 4 and n_ubatch + 4 tokens before
+a prompt's end ([session.md](session.md)). The same Mac: the follow-up reuses 6915 of 7007 tokens,
+and a new conversation with the same 4.4k-token system prompt reuses 4397 and starts in 0.9 s instead
+of 17.5 s, with the same answer as a fresh session. Still open: a conversation with a different system
+prompt in between, and the first request after a restart, prefill the system prompt again.
 
 ### A graphics card beside integrated graphics: the model runs on the CPU
 

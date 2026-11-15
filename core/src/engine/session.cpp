@@ -51,6 +51,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <map>
 #include <memory>
 #include <string>
 #include <unordered_set>
@@ -475,6 +476,7 @@ struct Session::Impl {
     // kv, so they go wherever it goes.
     detail::ContextCheckpoints checkpoints;
     bool checkpoint_size_logged = false; // the size is the model's, so said once per session
+    int checkpoint_turn = 0;             // which request took a checkpoint (ContextCheckpoints::create)
     detail::CheckpointContexts checkpoint_contexts() { return {ctx.get(), ctx_dft.get(), mtp.get()}; }
     void forget_kv_tokens() {
         kv.clear();
@@ -2679,6 +2681,11 @@ struct Session::Impl::Turn {
     int n_prompt = 0;
     int n_predict = 0;
     size_t n_common = 0; // leading prompt tokens the KV already held
+    // Where each user message starts in `tokens`, from the template's own message delimiters, which
+    // llama.cpp reads off the template by rendering variants of it: the prefill stops there for a
+    // checkpoint (ContextCheckpoints::Stops). Empty when the template gave no delimiters.
+    common_chat_msg_delimiters message_delimiters;
+    std::vector<size_t> user_starts;
 
     // The frame the I/O rows are stamped with at flush; the other traces carry their own.
     int trace_phase = 0, trace_step = 0;
@@ -2837,6 +2844,8 @@ struct Session::Impl::Turn {
             common_chat_params cp = common_chat_templates_apply(im.chat_tmpls.get(), inputs);
             prompt = cp.prompt.str();
             parse_params = detail::build_parse_params(cp);
+            message_delimiters = cp.message_delimiters;
+            message_delimiters.tokenize(im.vocab);
             // An explicit response format also constrains a prefilled answer: the template
             // owns the grammar and its generation prefix, including any reasoning envelope.
             std::string grammar_err;
@@ -2915,6 +2924,15 @@ struct Session::Impl::Turn {
         }
         // No ceiling at all (0) is the context's room: the budget then grows with the context.
         n_predict = req.n_predict > 0 ? std::min(req.n_predict, ctx_room) : ctx_room;
+        user_starts.clear();
+        if (chat_on && !message_delimiters.delimiters.empty()) {
+            // An image's placeholders are no tokens a delimiter could match: stepped over, as the server does.
+            std::map<size_t, size_t> skips;
+            for (const detail::MediaSpan & m : tk.stream.media)
+                skips[m.begin] = m.n_tokens;
+            for (const common_chat_msg_span & sp : message_delimiters.split(tokens, skips).spans)
+                if (sp.role == COMMON_CHAT_ROLE_USER) user_starts.push_back(sp.pos);
+        }
         return true;
     }
 
@@ -3069,6 +3087,8 @@ struct Session::Impl::Turn {
         arena_cache0 = im.prefill ? im.prefill->arena_cache_bytes() : 0;
         arena_stall0 = im.prefill ? im.prefill->arena_stall_seconds() : 0.0;
         const long long device_nodes0 = im.hook->device_nodes();
+        const int turn = ++im.checkpoint_turn;
+        const detail::ContextCheckpoints::Stops stops{&user_starts, n_prompt, pf_step, (int) llama_n_ubatch(ctx)};
         size_t next_media = 0; // the first span at or after i
         for (int i = (int) n_common; i < n_prompt;) {
             while (next_media < tk.stream.media.size() && tk.stream.media[next_media].begin < (size_t) i)
@@ -3080,10 +3100,12 @@ struct Session::Impl::Turn {
             // A text run ends where the next image begins; an image goes in whole, as its own graphs.
             const int run_end =
                 next_media < tk.stream.media.size() ? (int) tk.stream.media[next_media].begin : n_prompt;
-            const int chunk = span ? (int) span->n_tokens : std::min(pf_step, run_end - i);
-            // A long prompt prefilled in pieces leaves checkpoints inside it too, min_step apart.
-            if (chat_on && i > (int) n_common && im.checkpoints.wanted(i, /*prompt_end*/ false))
-                im.checkpoints.create(im.checkpoint_contexts(), i);
+            int chunk = span ? (int) span->n_tokens : std::min(pf_step, run_end - i);
+            // A text piece stops where a checkpoint is due (a user message's start, the prompt's last
+            // tokens), and the checkpoint is taken at the start of the piece, before it is decoded.
+            if (chat_on && !span) chunk = (int) (im.checkpoints.next_stop(stops, i, chunk) - i);
+            if (chat_on && i > (int) n_common && im.checkpoints.wanted_at(stops, i, chunk))
+                im.checkpoints.create(im.checkpoint_contexts(), i, turn);
             if (im.prefill) {
                 const bool on_dev = im.place_prefill(chunk >= im.cfg.prefill.min_tokens);
                 if (on_dev) prefill_device_tokens += chunk;
@@ -3130,7 +3152,7 @@ struct Session::Impl::Turn {
             // block), where a memory that cannot be cut falls back to the newest checkpoint before the
             // divergence. Without one here that was the one before the image, and the image was
             // encoded and prefilled again on every turn after it.
-            if (chat_on && span) im.checkpoints.create(im.checkpoint_contexts(), i);
+            if (chat_on && span) im.checkpoints.create(im.checkpoint_contexts(), i, turn);
             // The draft context has to walk the prompt too: its KV must reach the last prompt position
             // or the first draft is made from a hidden state that never saw the prompt. It is a second
             // context on the host's backends, so the weights go home for its walk, slots kept, and the
@@ -3145,7 +3167,7 @@ struct Session::Impl::Turn {
         if (chat_on) im.kv.append(tk.stream, n_common, (size_t) n_prompt);
         // The end of this prompt is where the next request most often diverges: a client sends the
         // answer back as text, and the template's tokens for it need not be the ones sampled.
-        if (chat_on && im.checkpoints.create(im.checkpoint_contexts(), n_prompt) && !im.checkpoint_size_logged) {
+        if (chat_on && im.checkpoints.create(im.checkpoint_contexts(), n_prompt, turn) && !im.checkpoint_size_logged) {
             im.checkpoint_size_logged = true;
             log_printf(LogLevel::Info, "context checkpoints: %.1f MiB each, up to %d kept",
                        (double) im.checkpoints.bytes() / im.checkpoints.count() / (1024.0 * 1024.0),

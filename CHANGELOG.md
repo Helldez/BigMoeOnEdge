@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **A follow-up on a hybrid model no longer prefills the conversation again.** Context checkpoints are
+  now taken where llama.cpp's server takes them: at the start of a user message, found from the
+  template's own message delimiters (`common_chat_msg_spans`, no model named), and 4 and n_ubatch + 4
+  tokens before the end of the prompt, the prefill stopping at each. The only per-turn checkpoint was
+  at the end of the prompt, and the template renders the previous answer again a few tokens before it
+  (Qwen3.6 drops its think block), so a follow-up started from the last checkpoint before that, often
+  none. On a 16 GB Mac with Qwen3.6-35B-A3B and the prefill on the GPU, a follow-up after a 7k-token
+  prompt reused 1024 tokens and now reuses 6915 (15.9 s to 3.5 s); a new conversation with the same
+  4.4k-token system prompt reuses 4397 and starts in 0.9 s instead of 17.5 s, with the same answer as a
+  fresh session. When the list is full, the checkpoints close together go first, so the one at the end
+  of the system prompt outlives the turns. Gate G27; G22c now checks a cut past a sliding window with
+  checkpoints off and on. Co-authored by @pt7777, who found the missing preamble checkpoint (#583, #600).
+
 ## [0.43.1] - 2026-11-14
 
 ### Added

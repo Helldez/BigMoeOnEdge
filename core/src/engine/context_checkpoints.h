@@ -36,6 +36,11 @@ struct CheckpointContexts {
     common_speculative * spec = nullptr;
 };
 
+// How many tokens before a prompt's end the last checkpoints sit (llama.cpp's server, upstream #20288):
+// a template renders a past turn's header and reasoning envelope again differently, a few tokens
+// before the end of the prompt that sampled it, and a checkpoint has to be at or before that point.
+inline constexpr int k_checkpoint_tail_tokens = 4;
+
 class ContextCheckpoints {
 public:
     // max_count: checkpoints kept, the oldest dropped first (0 = none). min_step: the least spacing
@@ -51,9 +56,30 @@ public:
     // Whether a checkpoint after n_tokens is worth taking: the end of a prompt always is, a point
     // inside one only min_step past the last.
     bool wanted(int64_t n_tokens, bool prompt_end) const;
+    // Where the prefill stops for a checkpoint, the way llama.cpp's server places them: at the start
+    // of a user message (the last one always, an earlier one only min_step past the newest checkpoint)
+    // and n_ubatch + k_checkpoint_tail_tokens and k_checkpoint_tail_tokens before the prompt's end. A template renders
+    // a past turn again differently from how it was sampled (Qwen3.6 drops its think block), so the next request
+    // diverges a few tokens before the end of this prompt, and a checkpoint only at the end is past
+    // the divergence. The start of the first user message is also the end of the preamble a new
+    // conversation shares. user_starts: token indices, ascending, from the template's own message
+    // delimiters (common_chat_msg_spans); empty when the template gave none.
+    struct Stops {
+        const std::vector<size_t> * user_starts = nullptr;
+        int64_t n_prompt = 0;
+        int n_batch = 0;  // the prefill's piece
+        int n_ubatch = 0; // the context's ubatch
+    };
+    // The first stop strictly inside (i, i + chunk), or i + chunk when there is none.
+    int64_t next_stop(const Stops & s, int64_t i, int64_t chunk) const;
+    // Whether a piece [i, i + chunk) starts where a checkpoint is taken (llama.cpp's do_checkpoint).
+    bool wanted_at(const Stops & s, int64_t i, int64_t chunk) const;
     // Copy the cut-resistant state after the first n_tokens tokens of seq 0. Kept only when there is
     // such a state; returns whether one was kept.
-    bool create(const CheckpointContexts & c, int64_t n_tokens);
+    // turn: which request took it. When the list is full, a checkpoint an earlier request took within
+    // min_step of the one before it goes first, then the oldest: so the sparse ones, the preamble's
+    // among them, outlive the turns of a long conversation (llama.cpp's create_checkpoint).
+    bool create(const CheckpointContexts & c, int64_t n_tokens, int turn = -1);
     // The context refused to drop everything from position n: restore the newest checkpoint that
     // leaves the first `kept` tokens reusable, kept <= n, and drop the context past it. Returns kept,
     // 0 when no checkpoint helps (the caller then clears the context).

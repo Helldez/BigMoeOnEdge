@@ -66,6 +66,10 @@
 //       (c) a follow-up that diverges further back than a sliding window does not reuse the window's
 //       memory, which accepts the cut but no longer holds what the next token reads: it starts again
 //       and answers as a fresh session does.
+//   G27 checkpoints where llama.cpp's server places them: on a memory that refuses the cut, a new
+//       conversation with the same system message restores the checkpoint at the start of its user
+//       message and answers exactly as a fresh session does, and a follow-up that sends the answer
+//       back reuses at least the preamble; a memory that cuts anywhere needs none.
 //   G23 the KV cache at f16, llama.cpp's type: streaming == resident. q8_0 is the default, so every
 //       other gate runs on a quantized cache; this one keeps the lossless type covered. The cache
 //       type changes the output, never what streaming the experts produces.
@@ -2345,18 +2349,21 @@ int main(int argc, char ** argv) {
                 long1 += "Tell me about the river, the hills and the old town by the sea. ";
             std::string long2 = long1;
             long2[8] = 'X'; // the divergence, a few tokens into the conversation
-            auto config = [&] {
+            // With checkpoints, a restore may still land before the divergence (at the start of the
+            // user message, where the prefill stops for one); without, the window's memory is all
+            // there is, and it must not be reused.
+            auto config = [&](int checkpoints = 32) {
                 RunConfig c = stream0;
                 c.chatml = true;
-                c.ctx_checkpoints = 32;
+                c.ctx_checkpoints = checkpoints;
                 c.n_ctx = n_ctx;
                 c.n_ubatch = 64; // the window's cache is the window and one ubatch, padded
                 return c;
             };
-            std::string out_cut, out_ref;
+            std::string out_cut, out_cut_off, out_ref;
             int prefilled = 0, n_prompt2 = 0;
-            {
-                std::unique_ptr<Session> s = Session::open(session_config_from(config()), err);
+            for (const int checkpoints : {0, 32}) {
+                std::unique_ptr<Session> s = Session::open(session_config_from(config(checkpoints)), err);
                 if (!s) {
                     std::fprintf(stderr, "G22c open failed: %s\n", err.c_str());
                     return 2;
@@ -2373,7 +2380,11 @@ int main(int argc, char ** argv) {
                     std::fprintf(stderr, "G22c run failed: %s\n", (!r1 ? r1.error : r2.error).c_str());
                     return 2;
                 }
-                out_cut = r2.generated_text;
+                if (checkpoints > 0) {
+                    out_cut = r2.generated_text;
+                    continue;
+                }
+                out_cut_off = r2.generated_text;
                 prefilled = r2.summary.n_prompt;
                 n_prompt2 = r2.summary.n_past - r2.summary.n_generated;
             }
@@ -2390,7 +2401,8 @@ int main(int argc, char ** argv) {
                 out_ref = r.generated_text;
             }
             if (prefilled != n_prompt2) {
-                std::printf("[FAIL] G22c a cut %d tokens past a window of %d reused the window's memory (prefilled "
+                std::printf("[FAIL] G22c without checkpoints a cut %d tokens past a window of %d reused the window's "
+                            "memory (prefilled "
                             "%d of %d)\n",
                             n_prompt2 - prefilled, n_swa, prefilled, n_prompt2);
                 ++fails;
@@ -2398,7 +2410,97 @@ int main(int argc, char ** argv) {
                 std::printf("[PASS] G22c a cut past the window of %d starts again (prefilled all %d)\n", n_swa,
                             n_prompt2);
             }
-            fails += check("G22c the follow-up past the window == a fresh session", out_ref, out_cut);
+            fails += check("G22c the follow-up past the window == a fresh session", out_ref, out_cut_off);
+            fails += check("G22c the same with checkpoints == a fresh session", out_ref, out_cut);
+        }
+    }
+
+    // G27 — checkpoints at the start of a user message and a few tokens before a prompt's end
+    // (ContextCheckpoints::next_stop), the way llama.cpp's server places them. A new conversation
+    // with the same system message diverges right after the start of its user message; a follow-up
+    // diverges where the template renders the previous answer again. The reference for the new
+    // conversation is a fresh session: its prefill stops at the same places, so both decode the
+    // same pieces and the restored state is the one those pieces computed.
+    {
+        auto msgs = [](std::initializer_list<std::pair<const char *, std::string>> l) {
+            std::vector<ChatMessage> v;
+            for (const auto & m : l)
+                v.push_back(ChatMessage{m.first, m.second});
+            return v;
+        };
+        std::string sys;
+        while (sys.size() < 2400)
+            sys += "You answer briefly and name the river, the hills and the old town by the sea. ";
+        const std::string u1 = "Name a colour.";
+        const std::string u2 = "And a fruit?";
+        auto config = [&](int checkpoints) {
+            RunConfig c = stream0;
+            c.chatml = true;
+            c.n_ctx = 4096;
+            c.ctx_checkpoints = checkpoints;
+            return c;
+        };
+        struct Step {
+            std::string out;
+            int prefilled = 0, n_prompt = 0;
+        };
+        // The requests in order, in one session; each a whole conversation. False (with err) on failure.
+        auto run = [&](int checkpoints, const std::vector<std::vector<ChatMessage>> & reqs, std::vector<Step> & steps) {
+            std::unique_ptr<Session> s = Session::open(session_config_from(config(checkpoints)), err);
+            if (!s) return false;
+            for (const auto & m : reqs) {
+                GenerateRequest q;
+                q.messages = m;
+                q.n_predict = 8;
+                q.clear_kv = false;
+                RunResult r = s->generate(q);
+                if (!r) {
+                    err = r.error;
+                    return false;
+                }
+                steps.push_back(Step{r.generated_text, r.summary.n_prompt, r.summary.n_past - r.summary.n_generated});
+            }
+            return true;
+        };
+        const auto first = msgs({{"system", sys}, {"user", u1}});
+        const auto fresh = msgs({{"system", sys}, {"user", u2}});
+        std::vector<Step> off, on, ref;
+        if (!run(0, {first, fresh}, off) || !run(8, {first, fresh}, on) || !run(8, {fresh}, ref)) {
+            std::fprintf(stderr, "G27 run failed: %s\n", err.c_str());
+            return 2;
+        }
+        // The follow-up: the first conversation, its answer sent back as text, and a second question.
+        std::vector<Step> follow;
+        {
+            std::vector<Step> t1;
+            if (!run(8, {first}, t1)) {
+                std::fprintf(stderr, "G27 run failed: %s\n", err.c_str());
+                return 2;
+            }
+            auto next = first;
+            next.push_back(ChatMessage{"assistant", t1[0].out});
+            next.push_back(ChatMessage{"user", u2});
+            if (!run(8, {first, next}, follow)) {
+                std::fprintf(stderr, "G27 run failed: %s\n", err.c_str());
+                return 2;
+            }
+        }
+        const int floor = 256; // the system message alone is longer than this
+        if (off[1].prefilled < off[1].n_prompt) {
+            std::printf("[PASS] G27 this model's context cuts anywhere (a new conversation prefilled %d of %d without "
+                        "checkpoints): nothing to place\n",
+                        off[1].prefilled, off[1].n_prompt);
+        } else {
+            const bool restored = on[1].prefilled <= on[1].n_prompt - floor;
+            std::printf("[%s] G27a a new conversation restored the checkpoint at its user message (prefilled %d of "
+                        "%d; %d of %d without checkpoints)\n",
+                        restored ? "PASS" : "FAIL", on[1].prefilled, on[1].n_prompt, off[1].prefilled, off[1].n_prompt);
+            fails += restored ? 0 : 1;
+            fails += check("G27a a restored conversation == a fresh session", ref[0].out, on[1].out);
+            const bool reused = follow[1].prefilled <= follow[1].n_prompt - floor;
+            std::printf("[%s] G27b a follow-up reused at least the preamble (prefilled %d of %d)\n",
+                        reused ? "PASS" : "FAIL", follow[1].prefilled, follow[1].n_prompt);
+            fails += reused ? 0 : 1;
         }
     }
 
