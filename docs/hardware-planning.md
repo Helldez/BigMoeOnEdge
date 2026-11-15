@@ -1297,7 +1297,9 @@ cores to Max-class unified memory several times faster, where the cores cannot r
 GPU does. A rule over any of those figures would be wrong on some of them.
 
 A device is a candidate only where each of these is a fact: it computed the host's results on one
-real layer of this model (`identity_ok`), it runs the model's expert matmul in the file's own
+real layer of this model, one token wide and as wide as a prompt (`identity_ok`, `wide_identity_ok`:
+the prompt runs there too, and on a phone a GPU matched the host one token wide and wrote garbage on a
+prompt), it runs the model's expert matmul in the file's own
 format, it takes the mapped weights without a repack (the invariant above), and the compute buffer
 the fitter projected for it fits beside the model in the same pool with the `fits` exit's air. A
 device that fails any of them is never timed, and the plan names which one failed. Where the

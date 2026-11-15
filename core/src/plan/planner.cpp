@@ -1991,7 +1991,8 @@ bool declines_residency(Planning & s) {
 // The whole model or none of it: a partial placement crosses the boundary twice per split layer, the
 // shape measured slower on a phone. One device, named, so llama.cpp does not divide the layers between
 // two backends that drive the same silicon. A candidate has to have computed the host's results on
-// one real layer of this model (ComputeDevice::identity_ok), run its expert matmul in the file's own
+// one real layer of this model, one token wide and as wide as a prompt (ComputeDevice::identity_ok,
+// wide_identity_ok), since the prompt runs there too, run its expert matmul in the file's own
 // format, take the mapped weights without a repack (hard rule 2), and have room for the compute buffer
 // it reserves beside the model in this pool. Whether its weights then stay the file's mapping or are
 // copied into the device's own buffers is the backend's (host_ptr_verified); either way they occupy
@@ -2024,6 +2025,10 @@ SharedDeviceCandidate shared_device_candidate(const Planning & s, uint64_t resid
             why = "it did not survive being probed";
         else if (d.identity_ok != Tri::Yes)
             why = "it has not been shown to compute the host's results on this model";
+        else if (d.wide_identity_ok != Tri::Yes)
+            // The whole model there runs every prompt there too, and a backend's batched kernel is not its
+            // one-token path: on a phone a GPU matched the host one token wide and wrote garbage on a prompt.
+            why = "it has not been shown to compute the host's results as wide as a prompt";
         else if (s.model.is_moe && d.runs_expert_op != Tri::Yes)
             why = "it does not run this model's expert matmul in the file's own format";
         else if (d.needs_repack == Tri::Yes)
@@ -2106,8 +2111,8 @@ void choose_shared_device(Planning & s, uint64_t resident) {
         // Level on the decode, inside the margin either way: the prompt decides, from the rate this
         // device measured on a real layer of this model as wide as a prompt, with the host's results.
         const bool level = on >= off * (1.0 - m);
-        const bool prompts_faster = dev.wide_identity_ok == Tri::Yes && s.hw.host_wide_matmul_gibs > 0.0 &&
-                                    dev.wide_matmul_gibs > s.hw.host_wide_matmul_gibs * (1.0 + m);
+        const bool prompts_faster =
+            s.hw.host_wide_matmul_gibs > 0.0 && dev.wide_matmul_gibs > s.hw.host_wide_matmul_gibs * (1.0 + m);
         char wide[96];
         std::snprintf(wide, sizeof(wide), "%.1fx the host's rate on a prompt-wide layer",
                       s.hw.host_wide_matmul_gibs > 0.0 ? dev.wide_matmul_gibs / s.hw.host_wide_matmul_gibs : 0.0);

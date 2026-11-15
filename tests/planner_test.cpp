@@ -2978,6 +2978,14 @@ int main() {
         check(on_cores(w) && w.config.trial.shared_device_side == -1 && dr && dr->source == Source::Derived,
               "shared device that has not computed the host's results: never timed, never moved");
 
+        HardwareProfile wide_wrong = roomy;
+        for (ComputeDevice & d : wide_wrong.devices)
+            if (!d.is_cpu) d.wide_identity_ok = Tri::No;
+        const Plan ww = plan_with(54.0, 40.0, wide_wrong);
+        check(on_cores(ww) && ww.config.trial.shared_device_side == -1,
+              "shared device right one token wide and wrong on a prompt: never timed, never moved (the prompt "
+              "would run there too)");
+
         Placement unpriced = shared;
         unpriced.projected_devices.clear();
         unpriced.projected_compute_bytes.clear();
