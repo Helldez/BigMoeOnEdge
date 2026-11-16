@@ -15,6 +15,17 @@ Semantic Versioning.
   survived, the run lists them by name so llama.cpp's default list does not hand the failed one
   back, and the plan says which device was left out and why. With none left, the run is the host's
   as before.
+- **The command-line tools installed by `install.sh` find their backends on macOS** (#605). The
+  engine looks for its backend modules in the folder of its own executable, and asked the platform
+  where that is. macOS names the path the process was started by, so through the link `install.sh`
+  puts on PATH (`~/.local/bin/bmoe-cli` to `~/.local/lib/bigmoeonedge/bmoe-cli`) the search went to
+  the link's folder, found nothing, and `bmoe-cli` and `bmoe-server` registered no backend at all,
+  not even the CPU: no model loaded, and the plan blamed the build. The executable's path is now the
+  file's own with every link resolved, on every platform (Linux already reported it so, which is why
+  only macOS was hit). A test starts itself through a link and checks the path it is told
+  (`self_path`), and the release workflow now installs each command-line archive the way
+  `install.sh` does and fails when the server started through the link registers other backends than
+  started beside them.
 
 ## [0.43.1] - 2026-11-14
 
