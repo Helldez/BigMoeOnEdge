@@ -26,6 +26,7 @@
 #include "idle_timer.h"
 #include "server_seams.h"
 #include "json_util.h"
+#include "listen_port.h"
 #include "model_inspect.h"
 #include "model_library.h"
 #include "plan_view.h"
@@ -73,8 +74,6 @@ using namespace bmoe;
 using namespace bmoe::server;
 
 namespace {
-
-constexpr int kPortMax = 65535;
 
 constexpr const char * kDefaultHfEndpoint = "https://huggingface.co";
 constexpr int kHfSearchLimit = 20; // repositories a search answers with: a screen's worth
@@ -125,7 +124,17 @@ constexpr int kTcpKeepAliveProbes = 3;
 // one that does not keeps its defaults for the options it does not copy. Each option is set where
 // the system's headers define it: what the stack can do, not which system it is.
 void set_listener_options(socket_t sock) {
-    httplib::default_socket_options(sock); // what replacing the library's default must keep
+    // The port is this server's alone. The library's default shares it (SO_REUSEPORT where the stack
+    // has it, SO_REUSEADDR elsewhere, which on Windows lets any program bind over a listening port):
+    // a second process bound beside this one would be handed part of the connections, bearer key and
+    // all, and a bind that succeeds would not mean the port was free. An exclusive bind where the
+    // stack offers one; elsewhere only the reuse that lets a restart bind past its old connections
+    // still closing, which no stack extends to a port another socket listens on.
+#if defined(SO_EXCLUSIVEADDRUSE)
+    httplib::set_socket_opt(sock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, 1);
+#else
+    httplib::set_socket_opt(sock, SOL_SOCKET, SO_REUSEADDR, 1);
+#endif
     httplib::set_socket_opt(sock, SOL_SOCKET, SO_KEEPALIVE, 1);
 #if defined(TCP_KEEPIDLE)
     httplib::set_socket_opt(sock, IPPROTO_TCP, TCP_KEEPIDLE, kTcpKeepAliveIdleS);
@@ -150,6 +159,8 @@ void set_listener_options(socket_t sock) {
 struct Options {
     std::string host = kDefaultHost;
     int port = kDefaultPort;
+    bool port_fallback = false; // --port-fallback: a taken port moves the server to the next free one
+    std::string port_file;      // --port-file: where the port taken is written once bound
     std::string ui_dir, models_dir, data_dir, catalog;
     std::string skills_dir;             // the agent's bundled skills; default skills/ beside this binary
     std::string mcp_config;             // the MCP servers' config; default <data>/mcp.json
@@ -196,6 +207,9 @@ void print_usage(const char * argv0) {
                 "\n"
                 "  --host ADDR          address to bind (default %s; anything else exposes the engine)\n"
                 "  --port N             port (default %d; 0 takes any free port and prints it)\n"
+                "  --port-fallback      when the port is taken, listen on the next free one (%d tried in all)\n"
+                "  --port-file PATH     once listening, write the port to PATH (the digits and a newline):\n"
+                "                       how a program that started this server learns where it listens\n"
                 "  --open               open the UI in the default browser once listening\n"
                 "  --models-dir PATH    where models are listed and downloaded (default: <data dir>/models)\n"
                 "  --scan-dir PATH      also list the models in PATH and in the folders directly inside it,\n"
@@ -241,7 +255,8 @@ void print_usage(const char * argv0) {
                 "\n"
                 "%s service install|uninstall|start|stop|status: the server as a service of your init\n"
                 "system, started at login (%s service --help).\n",
-                argv0, kDefaultHost, kDefaultPort, kDefaultHfEndpoint, (int) (kLogRotateBytes >> 20), argv0, argv0);
+                argv0, kDefaultHost, kDefaultPort, kPortFallbackTries, kDefaultHfEndpoint,
+                (int) (kLogRotateBytes >> 20), argv0, argv0);
 }
 
 // -1: continue; otherwise the exit code.
@@ -266,7 +281,11 @@ int parse_args(int argc, char ** argv, Options & o) {
                 return 2;
             }
             o.port = (int) port;
-        } else if (a == flag::open)
+        } else if (a == "--port-fallback")
+            o.port_fallback = true;
+        else if (a == "--port-file")
+            o.port_file = next();
+        else if (a == flag::open)
             o.open_browser = true;
         else if (a == "--models-dir")
             o.models_dir = next();
@@ -1847,17 +1866,41 @@ int run(int argc, char ** argv, const Embedding & embedding) {
         // A request body here is a chat history, with its images inline as base64, or a handful of
         // settings. The library's default would let every worker buffer far more than that.
         svr.set_payload_max_length(kMaxRequestBytes);
-        // --port 0 takes any free port, which is then the one printed, served and allowed as an
-        // origin: bound before the guards are made from it.
+        // The port taken is the one printed, served, allowed as an origin and written to the port
+        // file: bound before the guards are made from it. --port 0 takes any free port.
         if (o.port == 0) {
             o.port = svr.bind_to_any_port(o.host);
             if (o.port <= 0) {
                 std::fprintf(stderr, "bmoe-server: cannot listen on %s\n", o.host.c_str());
                 return 1;
             }
-        } else if (!svr.bind_to_port(o.host, o.port)) {
-            std::fprintf(stderr, "bmoe-server: cannot listen on %s:%d (in use?)\n", o.host.c_str(), o.port);
-            return 1;
+        } else {
+            const std::string probe = probe_host(o.host);
+            const int preferred = o.port;
+            const int tries = o.port_fallback ? kPortFallbackTries : 1;
+            o.port = take_first_port(preferred, tries, [&](int port) {
+                if (port_answers(probe, port)) return false;
+                if (svr.bind_to_port(o.host, port)) return true;
+                svr.stop(); // a failed bind leaves the library refusing every later one until stopped
+                return false;
+            });
+            if (o.port == 0) {
+                if (tries > 1)
+                    std::fprintf(stderr, "bmoe-server: cannot listen on %s: ports %d to %d are all in use\n",
+                                 o.host.c_str(), preferred, std::min(preferred + tries - 1, kPortMax));
+                else
+                    std::fprintf(stderr, "bmoe-server: cannot listen on %s:%d (in use?)\n", o.host.c_str(), preferred);
+                return 1;
+            }
+            if (o.port != preferred)
+                std::fprintf(stderr, "bmoe-server: port %d is in use, listening on %d\n", preferred, o.port);
+        }
+        if (!o.port_file.empty()) {
+            std::string err;
+            if (!agent::write_file_atomic(o.port_file, port_file_text(o.port), false, err)) {
+                std::fprintf(stderr, "bmoe-server: --port-file: %s\n", err.c_str());
+                return 1;
+            }
         }
         if (embedding.seams && embedding.seams->bound) embedding.seams->bound(o.port);
     }

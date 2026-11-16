@@ -12,6 +12,15 @@ it is a local program, like the CLI. See [Security model](#security-model) for e
 does and does not protect. On a machine that stays on it runs as a service of the person's init
 system, started at login and back after a failure: [Running as a service](#running-as-a-service).
 
+**The port, when another program holds it.** Remote-access tools and other servers often sit on
+8765 too. `--port-fallback` lets the server take the next free port instead (up to 20 from the one
+asked for, the one asked for included), and `--port-file PATH` writes the port it took to `PATH`
+(the digits and a newline, through a temporary file and a rename) as soon as the socket is bound,
+before the slow start-up. That is how a program that starts the server learns where it listens: the
+desktop app, the phone apps and a supervisor of your own pass both, remove the file before a start,
+and read the port from it rather than assume one. Without `--port-fallback` a port in use stops the
+server at start, as before. The code is `server/listen_port.h`.
+
 It is also the application framework of this project: the same server, reached the same way,
 stands behind every UI, on the desktop and on a phone ([application-framework.md](application-framework.md)).
 
@@ -46,6 +55,13 @@ other software, or other people, on that machine or on a network it was told to 
   widens it. A `--host` beyond loopback is refused at start unless a key is set (`--api-key-file`
   or `--api-key`) or `--no-api-key` says the open server is meant, and the server prints a warning
   in that case.
+- The port is the server's alone. Its listening socket is bound exclusively (`SO_EXCLUSIVEADDRUSE`
+  where the stack has it, otherwise only `SO_REUSEADDR`, never the `SO_REUSEPORT` the HTTP library
+  sets by default), so no program started after it can bind the same port and be handed part of its
+  connections, keys and all (up to 0.43.2, one running as the same user could, and on Windows any). Before it binds, the
+  server checks that nothing already answers on the port (a stack may let a specific address be
+  bound beside a wildcard one), and a port something answers on counts as taken. A front-end talks
+  only to the port its own server wrote to `--port-file`, never to one it assumed.
 - With a key, every request to `/api/*` or `/v1/*` must carry `Authorization: Bearer KEY` (or
   `X-Api-Key: KEY`, as Anthropic clients send it), whatever its origin, or is refused with `401` and a `WWW-Authenticate: Bearer` header. The key is
   compared in constant time. The UI's own files are served without it: the UI asks for the key
@@ -253,8 +269,8 @@ metrics show for that answer: tokens generated and the decode speed, prompt toke
 in how long, the context length after the turn, the expert bytes read and the cache hit rate.
 A server that served an agent for a day answers "how much did it read" from its log.
 
-**With the desktop app.** The app looks for a free port from 8765 up, so a service on 8765 and the
-app's own server live side by side; the app's conversations and tasks are the app's. A service
+**With the desktop app.** The app starts its server with `--port-fallback`, so a service on 8765 and
+the app's own server live side by side, the app's on the next free port; the app's conversations and tasks are the app's. A service
 listening beyond loopback is what the phone and the apps connect to over the network, with the
 key, under the same security statement.
 

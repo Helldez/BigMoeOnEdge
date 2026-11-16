@@ -104,7 +104,9 @@ object Chat {
             migrated = true
             return
         }
-        val r = Migration.run(StoreConversations(ConversationStore(dir)), Engine.api())
+        // A stop between the server coming up and this leaves no client: tried again on the next start.
+        val api = runCatching { Engine.api() }.getOrNull() ?: return
+        val r = Migration.run(StoreConversations(ConversationStore(dir)), api)
         if (r.error == null) migrated = true
         if (r.kept == 0 && r.error == null) dir.listFiles()?.isEmpty()?.let { empty -> if (empty) dir.delete() }
     }

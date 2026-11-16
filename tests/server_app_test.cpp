@@ -19,6 +19,7 @@
 // Every wait is for an event (a state, a count, a turn's end), never for time to pass.
 // Checks are explicit (not <cassert>): the Release build defines NDEBUG, which compiles assert out.
 
+#include "listen_port.h"
 #include "server.h"
 #include "server_seams.h"
 
@@ -283,9 +284,27 @@ int main() {
         if (stop && !stop_set.exchange(true)) stop_promise.set_value(stop);
     };
 
+    // Another program's server holds the port this one prefers, with the library's default options (a
+    // port shared where the stack allows it): the server must move past it, not share it, and say
+    // where it went in the port file.
+    httplib::Server holder;
+    holder.Get("/",
+               [](const httplib::Request &, httplib::Response & res) { res.set_content("not bmoe", "text/plain"); });
+    // A port with room for the fallback after it: the system may hand out one at the top of the range.
+    int held = holder.bind_to_any_port("127.0.0.1");
+    for (int i = 0; i < 16 && held > kPortMax - kPortFallbackTries; ++i) {
+        holder.stop();
+        held = holder.bind_to_any_port("127.0.0.1");
+    }
+    std::thread holding([&] { holder.listen_after_bind(); });
+    holder.wait_until_ready();
+    check(held > 0, "another server holds a port");
+
     const std::string dir_s = dir.u8string(), models_s = (dir / "models").u8string(), model_s = model.u8string();
-    std::vector<std::string> args = {"bmoe-server", "--host",       "127.0.0.1", "--port",  "0",    "--data-dir",
-                                     dir_s,         "--models-dir", models_s,    "--model", model_s};
+    const std::string port_file = (dir / "server.port").u8string();
+    std::vector<std::string> args = {"bmoe-server",     "--host",      "127.0.0.1", "--port",     std::to_string(held),
+                                     "--port-fallback", "--port-file", port_file,   "--data-dir", dir_s,
+                                     "--models-dir",    models_s,      "--model",   model_s};
     std::vector<char *> argv;
     for (std::string & a : args)
         argv.push_back(a.data());
@@ -296,12 +315,20 @@ int main() {
     auto port_future = port_promise.get_future();
     auto stop_future = stop_promise.get_future();
     const bool bound = port_future.wait_for(k_ceiling) == std::future_status::ready;
-    check(bound, "the server binds the port the system chose");
+    check(bound, "the server binds a port");
     if (!bound) {
         server.detach();
+        holder.stop();
+        holding.join();
         return 1;
     }
-    httplib::Client cli("127.0.0.1", port_future.get());
+    const int port = port_future.get();
+    check(port != held && port > held && port < held + kPortFallbackTries,
+          "a port in use is moved past, to a free one after it");
+    check(read_port_file(port_file) == port, "the port taken is in the port file once bound");
+    holder.stop();
+    holding.join();
+    httplib::Client cli("127.0.0.1", port);
     cli.set_connection_timeout(k_ceiling);
     cli.set_read_timeout(k_ceiling);
     cli.set_write_timeout(k_ceiling);

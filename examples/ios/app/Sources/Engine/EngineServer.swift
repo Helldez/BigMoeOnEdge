@@ -4,30 +4,35 @@ import Foundation
 /// It listens on loopback with a key only the app holds, since on a phone every installed app can
 /// reach loopback; on the network, when the person asks, with the key they are shown.
 final class EngineServer {
-    /// The server's own default port (server/server.h), so an OpenAI client on the network finds a
-    /// phone where it finds a desktop. The launch argument `-BmoePort N` moves it, for the simulator:
-    /// it shares the Mac's loopback, where a desktop bmoe-server may hold that port already.
-    static let port: Int = {
-        let p = UserDefaults.standard.integer(forKey: "BmoePort")
-        return (1...65535).contains(p) ? p : 8765
-    }()
-
     struct Launch {
         let share: Bool
         let key: String
+        /// The port the person chose, 0 for the server's own default (server/server.h), so an OpenAI
+        /// client on the network finds a phone where it finds a desktop. The server moves past it when
+        /// another program holds it (the simulator shares the Mac's loopback, where a desktop
+        /// bmoe-server may hold it already) and writes the one it took to `portFile`.
+        let port: Int
     }
 
     private(set) var running = false
 
-    var baseURL: URL { URL(string: "http://127.0.0.1:\(Self.port)/")! }
+    /// The app's own server on `port`, on loopback whatever else it listens on.
+    static func baseURL(port: Int) -> URL { URL(string: "http://127.0.0.1:\(port)/")! }
+
+    /// Where the server writes the port it took (ListenPort), beside its data.
+    static func portFile(_ paths: AppPaths) -> URL { paths.data.appendingPathComponent("server.port") }
 
     /// Starts the server. `exited` is called on the main queue once it stops, with its exit code.
     func start(_ launch: Launch, paths: AppPaths, exited: @escaping (Int32) -> Void) {
         precondition(!running, "one server per process")
+        let portFile = Self.portFile(paths)
+        // An earlier run's file would name a port that may be another program's by now.
+        try? FileManager.default.removeItem(at: portFile)
         var args = [
             "bmoe-server",
             "--host", launch.share ? "0.0.0.0" : "127.0.0.1",
-            "--port", String(Self.port),
+            "--port-fallback",
+            "--port-file", portFile.path,
             "--data-dir", paths.data.path,
             "--models-dir", paths.documents.path,
             // The key on the command line: inside one process there is no process list to read it from.
@@ -38,6 +43,7 @@ final class EngineServer {
             // desktop's (docs/agent.md).
             "--chat-only",
         ]
+        if launch.port > 0 { args += ["--port", String(launch.port)] }
         if let catalog = paths.catalog { args += ["--catalog", catalog.path] }
         running = true
         let argv = args.map { strdup($0) }

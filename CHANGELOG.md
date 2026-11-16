@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **A port another program holds no longer stops the engine on a phone (#611).** Remote-access apps
+  and other servers often listen on 8765, and the Android and iOS apps started their server there
+  and nowhere else: the engine did not start. The server now takes the next free port when asked to
+  (`--port-fallback`, up to 20 from the one asked for) and writes the port it took to a file the
+  program that started it names (`--port-file`), once bound and before its slow start-up. Every
+  front-end uses it: the phone apps, and the desktop app, which used to probe ports itself and could
+  lose the port between its probe and the start. A front-end now talks only to the port its own
+  server wrote, never to one it assumed, so its key is never sent to another program's server.
+  Under Serve on the network, the phone apps show the address with the port taken and have a Port
+  field (empty for the server's default); when the port chosen is in use, the field says where the
+  engine went. The logic is one module, `server/listen_port.h`.
+
+### Security
+- **The server's port is its own.** The HTTP library binds with `SO_REUSEPORT` (on Windows,
+  `SO_REUSEADDR`, which lets any program bind a port already in use), so a program started after the
+  server as the same user (on Windows, any program) could bind the same port and be handed part of
+  its connections, bearer key included. Measured on macOS: a second socket with `SO_REUSEPORT` bound
+  the server's port beside it; now the bind is refused (`EADDRINUSE`). The listening socket is bound
+  exclusively (`SO_EXCLUSIVEADDRUSE` where the stack has it, otherwise only `SO_REUSEADDR`), and a
+  port something already answers on counts as taken before the server binds it.
+
 ## [0.43.2] - 2026-11-16
 
 ### Changed

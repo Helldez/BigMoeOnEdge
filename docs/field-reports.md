@@ -55,6 +55,24 @@ desktop app is not affected: it installs the pack itself.
 
 ## Fixed
 
+### The engine does not start on a phone where another app uses port 8765 (#611)
+
+**Seen on** 0.43.2, Android, with a remote-access app that listens on 8765 running beside the app.
+
+**How to recognise it.** The app says that port 8765 is held by a server it did not start, or that
+the engine stopped as it started; closing the other app makes it start.
+
+**Cause.** The Android and iOS apps started their server on 8765 and nowhere else, and only talked to
+8765. Many programs use that port, and a remote-access app often cannot be moved to another.
+
+**Fixed in** the release after 0.43.2: the server moves to the next free port (`--port-fallback`)
+and writes the one it took (`--port-file`), which every front-end reads; the phone apps show the
+address with that port under Serve on the network, and have a Port field to choose another
+([server-api.md](server-api.md)).
+
+**Workaround.** On 0.43.2, close the program that holds 8765 while the engine starts. A desktop app
+already moved to the next free port.
+
 ### A hybrid model prefills the conversation again on every turn (#583)
 
 **Seen on** 0.42.0, CPU-only ARM machines (a 2-core cloud VM with 12 GB, phones with 6 and 22 GB),

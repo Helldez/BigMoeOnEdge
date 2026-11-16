@@ -393,6 +393,8 @@ data class EngineUi(
     val serverError: String? = null,
     /** How the running server was started: on the network with the key, or on loopback. */
     val shared: Boolean = false,
+    /** The port the running server took (ListenPort), once it has: null while it starts. */
+    val port: Int? = null,
     /** The system refuses this app any socket, loopback included: only the person can fix it (#298). */
     val networkDenied: Boolean = false,
     val info: ServerInfo? = null,
@@ -440,8 +442,10 @@ object Engine {
     val state: StateFlow<EngineUi> = _state.asStateFlow()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    // Until a launch says otherwise, a key no server has: nothing it reaches is taken for the app's.
-    @Volatile private var api = Api(ServerProcess.baseUrl(), Api.randomKey())
+    // The client of the server this launch started, made once that server has said which port it
+    // took: until then there is no client, so the key is never sent to a port the app only assumed.
+    @Volatile private var client: Api? = null
+    private val api: Api get() = client ?: throw ConnectException("the engine is not listening yet")
     @Volatile private var connector: Job? = null
     @Volatile private var idleUnload: Job? = null
     @Volatile private var recorder: MetricsRecorder? = null
@@ -452,6 +456,8 @@ object Engine {
     // the exit of the server it stopped, which arrives seconds later, changes nothing.
     private val launches = AtomicLong(0)
     @Volatile private var currentLaunch = 0L
+    // The key the current launch's server was started with, for the client made once it listens.
+    @Volatile private var launchKey = ""
     // Whether a server this app started should be up: between a stop and the next start the
     // connector waits, rather than reconnect to the process that is still on its way out.
     @Volatile private var serving = false
@@ -497,23 +503,33 @@ object Engine {
 
     // ── what the service reports ──
 
-    /** A server is about to start with [apiKey]: the client speaks to it, and its launch number is returned. */
+    /** A server is about to start with [apiKey]: its launch number is returned. */
     @Synchronized
     internal fun serverStarting(share: Boolean, apiKey: String): Long {
         val launch = launches.incrementAndGet()
         currentLaunch = launch
-        api = Api(ServerProcess.baseUrl(), apiKey)
+        launchKey = apiKey
+        client = null
         serving = true
-        _state.update { it.copy(serverError = null, shared = share) }
+        _state.update { it.copy(serverError = null, shared = share, port = null) }
         return launch
+    }
+
+    /** The server of [launch] listens on [port]: the client speaks to it from now on. */
+    @Synchronized
+    internal fun serverListening(launch: Long, port: Int) {
+        if (launch != currentLaunch) return // a server already stopped or replaced
+        client = Api(ServerProcess.baseUrl(port), launchKey)
+        _state.update { it.copy(port = port) }
     }
 
     @Synchronized
     internal fun serverStopping() {
         serving = false
         currentLaunch = launches.incrementAndGet()
+        client = null
         recorder?.close()
-        _state.update { it.copy(serverUp = false, serverError = "The engine was stopped.", info = null) }
+        _state.update { it.copy(serverUp = false, serverError = "The engine was stopped.", info = null, port = null) }
     }
 
     @Synchronized
@@ -532,24 +548,26 @@ object Engine {
     private suspend fun connectForever() {
         var backoffMs = 500L
         while (true) {
-            if (!serving) {
+            // Nothing to reach until the server this launch started has said where it listens.
+            val a = client
+            if (!serving || a == null) {
                 if (_state.value.serverUp) _state.update { it.copy(serverUp = false) }
-                delay(500L)
+                delay(if (serving) 100L else 500L)
                 continue
             }
-            val a = api
             try {
                 if (!a.isOurs()) {
-                    // Something answers on the port, and it is not the server this launch started:
-                    // another app's, or one left over. A conversation is not handed to it.
-                    if (a === api) {
+                    // Something answers on the port, and it is not the server this launch started.
+                    // The server holds its port alone and wrote it once bound, so this is not
+                    // expected; a conversation is still not handed to it.
+                    if (a === client) {
                         _state.update {
                             it.copy(
                                 serverUp = false,
                                 info = null,
-                                serverError = "Port ${ServerProcess.PORT} is held by a server this app did not start, so " +
-                                    "the engine cannot listen there. Close the program that holds it (or force-stop " +
-                                    "this app if it is an old engine of its own), then start the engine again.",
+                                serverError = "Port ${it.port} answers as a server this app did not start, so the " +
+                                    "engine is not used there. Start the engine again; if it persists, choose " +
+                                    "another port under Serve on the network.",
                             )
                         }
                     }
@@ -559,7 +577,7 @@ object Engine {
                 // Only while this launch is the one being served: after a stop or a restart the old
                 // process can still send a ping or a state frame for the seconds it takes to end, and
                 // one of those must not mark the engine up again or reach the screens.
-                val current = { serving && a === api }
+                val current = { serving && a === client }
                 a.events(
                     onEvent = { ev ->
                         if (current()) {
@@ -791,7 +809,10 @@ object Engine {
         catching { api.deletePartial(id); Unit }.also { refreshModels() }
     }
 
-    /** The client for a chat stream: the chat runs it on its own thread and owns the connection. */
+    /**
+     * The client for a chat stream: the chat runs it on its own thread and owns the connection.
+     * Throws a ConnectException while no server of this app listens, as a closed port would.
+     */
     fun api(): Api = api
 
     private suspend fun call(block: () -> Unit): Result<Unit> = withContext(Dispatchers.IO) { catching(block) }

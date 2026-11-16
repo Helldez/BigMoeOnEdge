@@ -1,5 +1,7 @@
 #include "supervisor.h"
 
+#include "listen_port.h"
+
 #define SUBPROCESS_HAVE_CWD 0
 #include "sheredom/subprocess.h"
 
@@ -57,10 +59,16 @@ ServerSupervisor::~ServerSupervisor() {
     stop();
 }
 
-bool ServerSupervisor::start(const ServerLaunch & launch, int port, std::string & err) {
+bool ServerSupervisor::start(const ServerLaunch & launch,
+                             const std::string & port_file,
+                             int & port,
+                             std::string & err) {
     stop();
     std::unique_lock<std::mutex> lk(m_);
     std::error_code ec;
+    port = 0;
+    // A port file left by an earlier run would send the window to whatever holds that port now.
+    fs::remove(fs::u8path(port_file), ec);
     fs::create_directories(fs::u8path(log_path_).parent_path(), ec);
     // The previous run's log is kept beside this one: a crash is read after the restart.
     fs::rename(fs::u8path(log_path_), fs::u8path(log_path_ + ".1"), ec);
@@ -116,11 +124,13 @@ bool ServerSupervisor::start(const ServerLaunch & launch, int port, std::string 
                   log_tail(log_path_);
             return false;
         }
-        if (answers_info(port)) return true;
+        if (port == 0) port = server::read_port_file(port_file);
+        if (port > 0 && answers_info(port)) return true;
         std::this_thread::sleep_for(kPollInterval);
     }
-    err = "bmoe-server did not answer on port " + std::to_string(port) + " in " +
-          std::to_string(kServerStartTimeout.count()) + " s";
+    err = (port > 0 ? "bmoe-server did not answer on port " + std::to_string(port)
+                    : std::string("bmoe-server did not say which port it took")) +
+          " in " + std::to_string(kServerStartTimeout.count()) + " s";
     return false;
 }
 
