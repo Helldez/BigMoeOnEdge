@@ -1282,8 +1282,11 @@ elsewhere, for testing.
 
 ### `GET /api/backends`
 
-`{registered, target, feed, packs, installed, restart_required, feed_error?}`. `registered` is every
-backend that registered at start (`CPU`, `MTL`, `Vulkan`, ...); `target` the build's
+`{registered, graphics, target, feed, packs, installed, restart_required, feed_error?}`. `registered`
+is every backend that registered at start (`CPU`, `MTL`, `Vulkan`, ...); `graphics` the local
+graphics cards they offer, discrete or integrated, `{backend, description}` with the device's own
+description, read from each device's type and never from a backend's name (a remote backend's
+devices are not local, and the processor's are not graphics); `target` the build's
 (`macos-arm64`, ...); `feed` `{version, published}` of the verified feed known, or `null`. `packs`
 is that feed's packs for this target: `{id, title, size, applies, installed, installed_version,
 current}`, `applies` when one of the pack's driver libraries loads here, `current` when the

@@ -5,6 +5,7 @@
   // whatever the plan holds. The plan itself lives in the server store, which reads it again when
   // a session opens and when a turn ends, so this page only draws it.
   import { onMount } from 'svelte';
+  import CellMeter from '../components/CellMeter.svelte';
   import PlanDecisions from '../components/plan/PlanDecisions.svelte';
   import PlanDevices from '../components/plan/PlanDevices.svelte';
   import PlanMemory from '../components/plan/PlanMemory.svelte';
@@ -91,6 +92,12 @@
     }
     setTimeout(() => (diag = diag === 'ok' ? 'idle' : diag), 2000);
   }
+  // A lane names devices by their engine id (MTL0, CUDA0); the plan's device list knows what the
+  // system calls them, which is what a person reads.
+  const deviceName = (id: string) => {
+    const d = avail?.devices?.find((x) => x.name === id);
+    return d?.description && d.description !== id ? d.description : id;
+  };
   const PLANNING_DOC = 'https://github.com/Helldez/BigMoeOnEdge/blob/main/docs/hardware-planning.md';
   import { t, tp } from '../lib/text';
 </script>
@@ -167,7 +174,7 @@
       {#if avail.summary?.lanes?.length}
         <p class="lanes">
           {#each avail.summary.lanes as lane (lane.phase)}
-            <span><span class="muted">{lane.label ?? lane.phase}</span> <span class="figure">{lane.on.join(' + ')}</span></span>
+            <span><span class="muted">{lane.label ?? lane.phase}</span> <span class="figure">{lane.on.map(deviceName).join(' + ')}</span></span>
           {/each}
         </p>
       {/if}
@@ -199,12 +206,12 @@
               <span class="figure big">{formatNum(check.measuredHitPct ?? check.predictedHitPct, 0)}%</span>
               <span class="figure muted">{check.measuredHitPct !== null ? t('plan.hits.measured') : t('plan.hits.credited')}</span>
             </span>
-            <div class="hits" aria-hidden="true">
-              <span style="width: {Math.min(100, check.measuredHitPct ?? check.predictedHitPct ?? 0)}%"></span>
-              {#if check.measuredHitPct !== null && check.predictedHitPct !== null}
-                <i style="left: {Math.min(100, check.predictedHitPct)}%"></i>
-              {/if}
-            </div>
+            <CellMeter
+              value={check.measuredHitPct ?? check.predictedHitPct ?? 0}
+              mark={check.measuredHitPct !== null ? check.predictedHitPct : null}
+              label={t('plan.tile.hits')}
+              valueText="{formatNum(check.measuredHitPct ?? check.predictedHitPct, 0)}%"
+            />
             {#if check.measuredHitPct !== null && check.predictedHitPct !== null}
               <span class="muted k">{t('plan.hits.mark', { pct: check.predictedHitPct.toFixed(0) })}</span>
             {/if}
@@ -214,9 +221,7 @@
           <div class="tile">
             <span class="muted k">{t('plan.tile.memory')}</span>
             <span><span class="figure big">{formatBytes(host.held_bytes)}</span> <span class="figure muted">{t('plan.memory.held')}</span></span>
-            <div class="hits" aria-hidden="true">
-              <span style="width: {Math.min(100, (100 * host.held_bytes) / host.cap_bytes)}%"></span>
-            </div>
+            <CellMeter value={(100 * host.held_bytes) / host.cap_bytes} label={t('plan.tile.memory')} valueText={formatBytes(host.held_bytes)} />
             <span class="muted k">{t('plan.memory.ofCap', { size: formatBytes(host.cap_bytes) })}</span>
           </div>
         {/if}
@@ -259,7 +264,11 @@
     {/if}
 
     <h2>{t('plan.section.decisions')}</h2>
-    <PlanDecisions decisions={avail.decisions} />
+    {#if avail.decisions?.length}
+      <PlanDecisions decisions={avail.decisions} />
+    {:else}
+      <p class="muted">{t('plan.decisions.none')}</p>
+    {/if}
 
     {#if avail.args?.length}
       <h2>{t('plan.section.command')}</h2>
@@ -324,21 +333,22 @@
     letter-spacing: -0.01em;
     line-height: 1.25;
     max-width: 34ch;
+    text-wrap: balance;
   }
   .machine {
     margin: 0;
   }
+  /* Figures side by side in the summary card, parted by a rule: no box inside the box. */
   .tiles {
     align-self: stretch;
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 0.75rem;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: var(--s4) var(--s5);
+    border-top: var(--edge) solid var(--line);
+    padding-top: var(--s4);
   }
   .tile {
-    background: var(--bg);
-    border: var(--edge) solid var(--line);
-    border-radius: var(--radius);
-    padding: 0.75rem;
+    padding: 0 var(--s3) 0 0;
     display: flex;
     flex-direction: column;
     gap: 0.35rem;
@@ -351,33 +361,16 @@
     font-size: 1.9rem;
     line-height: 1.1;
   }
-  .hits {
-    position: relative;
-    height: 8px;
-    border-radius: var(--pill);
-    background: var(--surface-2);
-  }
-  .hits span {
-    display: block;
-    height: 100%;
-    border-radius: var(--pill);
-    background: var(--accent);
-  }
-  .hits i {
-    position: absolute;
-    top: -5px;
-    bottom: -5px;
-    width: 2px;
-    background: var(--text);
-  }
   .lanes {
     margin: 0;
     display: flex;
     flex-wrap: wrap;
     gap: 0.3rem 1.25rem;
   }
+  /* Facts, not links: the words' colour, weighted, so only links wear the link colour. */
   .lanes .figure {
-    color: var(--accent-ink);
+    color: var(--text);
+    font-weight: 600;
     overflow-wrap: anywhere;
   }
   .doc {

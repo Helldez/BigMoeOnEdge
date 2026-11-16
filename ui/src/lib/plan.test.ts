@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { appliedChanges, deviceTone, diagnosticText, groupDecisions, memorySegments, rateScale, rateText, speedCheck } from './plan';
+import { appliedChanges, deviceTone, diagnosticText, groupDecisions, memoryCells, memorySegments, rateScale, rateText, speedCheck } from './plan';
 import type { ParamSpec, PlanDecision, PlanDevice, PlanMemoryPool } from './types';
 
 describe('appliedChanges', () => {
@@ -65,6 +65,22 @@ describe('groupDecisions', () => {
   it('keeps no grouping policy of its own: an ungrouped decision is with the set ones', () => {
     const g = groupDecisions([dec('storage-rate', 'derived'), dec('a', 'operator')]);
     expect([g.set.length, g.kept.length, g.notes.length]).toEqual([2, 0, 0]);
+  });
+});
+
+describe('memoryCells', () => {
+  const seg = (slot: number, frac: number, bytes = 1) => ({ label: String(slot), bytes, frac, locked: false, slot });
+  it('counts each part in cells that add up to the row', () => {
+    const c = memoryCells([seg(0, 0.125), seg(1, 0.6), seg(-1, 0.275)], 40);
+    expect(c).toHaveLength(40);
+    expect(c.filter((x) => x === 0)).toHaveLength(5);
+    expect(c.filter((x) => x === 1)).toHaveLength(24);
+    expect(c.filter((x) => x === -1)).toHaveLength(11);
+  });
+  it('keeps a cell for a part too small to round to one', () => {
+    const c = memoryCells([seg(0, 0.005), seg(1, 0.995)], 40);
+    expect(c.filter((x) => x === 0)).toHaveLength(1);
+    expect(c).toHaveLength(40);
   });
 });
 

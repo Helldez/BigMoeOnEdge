@@ -1,24 +1,37 @@
 import SwiftUI
 
-/// A box of the language: a surface with an 8-point continuous corner and a 1-point line. A card
-/// also lifts off the page with a soft shadow; an inner box (a bubble, a field) stays flat.
+/// A box of the language. A sheet (a card, an answer) is the surface with a 6-point corner, lifted
+/// off the desk by a soft shadow and no visible frame; an inner box (a field, a row) stays flat
+/// with a 1-point line.
 struct Box: ViewModifier {
     var fill = Palette.surface
-    var edge = Palette.line
+    var edge: Color?
     var lifted = true
+    var radius = Grid.radius
 
     func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: Grid.radius, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
         content
             .background(shape.fill(fill))
-            .overlay(shape.strokeBorder(edge, lineWidth: Grid.line))
-            .shadow(color: .black.opacity(lifted ? 0.07 : 0), radius: 8, x: 0, y: 2)
+            .overlay(shape.strokeBorder(edge ?? (lifted ? .clear : Palette.line), lineWidth: Grid.line))
+            .sheetShadow(lifted)
     }
 }
 
 extension View {
-    func box(fill: Color = Palette.surface, edge: Color = Palette.line, lifted: Bool = true) -> some View {
-        modifier(Box(fill: fill, edge: edge, lifted: lifted))
+    func box(fill: Color = Palette.surface, edge: Color? = nil, lifted: Bool = true, radius: CGFloat = Grid.radius) -> some View {
+        modifier(Box(fill: fill, edge: edge, lifted: lifted, radius: radius))
+    }
+
+    /// The sheets' soft shadow: a hairline close under the edge and a wide, faint one below it.
+    @ViewBuilder
+    func sheetShadow(_ on: Bool = true) -> some View {
+        if on {
+            shadow(color: Palette.shadow.opacity(0.08), radius: 1, x: 0, y: 1)
+                .shadow(color: Palette.shadow.opacity(0.08), radius: 12, x: 0, y: 6)
+        } else {
+            self
+        }
     }
 
     /// A card: the padding of the grid inside the box.
@@ -27,7 +40,7 @@ extension View {
     }
 }
 
-/// A button of the language: the primary one filled with the accent's ink, a secondary on the
+/// A button of the language: the primary one (one a screen) filled with the ink, a secondary on the
 /// second surface, a destructive one in the error's tint. Pressed, it dims: the system's feedback.
 struct AppButtonStyle: ButtonStyle {
     enum Kind { case primary, secondary, destructive }
@@ -35,7 +48,7 @@ struct AppButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
 
     func makeBody(configuration: Configuration) -> some View {
-        let shape = RoundedRectangle(cornerRadius: Grid.radius, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: Grid.control, style: .continuous)
         return configuration.label
             .font(.ui(15, weight: .semibold))
             .lineLimit(1)
@@ -50,7 +63,7 @@ struct AppButtonStyle: ButtonStyle {
 
     private var fill: Color {
         switch kind {
-        case .primary: return Palette.accentInk
+        case .primary: return Palette.primary
         case .secondary: return Palette.surface2
         case .destructive: return Palette.errTint
         }
@@ -58,7 +71,7 @@ struct AppButtonStyle: ButtonStyle {
 
     private var foreground: Color {
         switch kind {
-        case .primary: return Palette.onAccent
+        case .primary: return Palette.onPrimary
         case .secondary: return Palette.text
         case .destructive: return Palette.err
         }
@@ -156,7 +169,8 @@ extension Banner where Actions == EmptyView {
     }
 }
 
-/// A text field of the language: the surface, the line, the accent while focused.
+/// A text field of the language: the surface, the strong line of a field's edge, the accent while
+/// focused.
 struct AppField: View {
     let placeholder: String
     @Binding var text: String
@@ -165,7 +179,7 @@ struct AppField: View {
     @FocusState private var focused: Bool
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: Grid.radius, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: Grid.control, style: .continuous)
         TextField(placeholder, text: $text, axis: axis)
             .font(mono ? .code : .ui(17))
             .foregroundStyle(Palette.text)
@@ -174,7 +188,7 @@ struct AppField: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
             .background(shape.fill(Palette.surface))
-            .overlay(shape.strokeBorder(focused ? Palette.accent : Palette.line, lineWidth: focused ? 2 : Grid.line))
+            .overlay(shape.strokeBorder(focused ? Palette.accent : Palette.lineStrong, lineWidth: focused ? 2 : Grid.line))
     }
 }
 

@@ -25,11 +25,12 @@ namespace bmoe::server {
 
 struct UpdateConfig {
     std::string data_dir;
-    std::string feed_url;                // kFeedUrl unless --feed-url
-    std::string public_key;              // base64; empty: this build reads no feed
-    std::string target;                  // the build's own (platform::build_target)
-    std::string version;                 // the running engine's
-    std::vector<std::string> registered; // the backends that registered at start
+    std::string feed_url;                 // kFeedUrl unless --feed-url
+    std::string public_key;               // base64; empty: this build reads no feed
+    std::string target;                   // the build's own (platform::build_target)
+    std::string version;                  // the running engine's
+    std::vector<std::string> registered;  // the backends that registered at start
+    std::vector<GraphicsDevice> graphics; // of their devices, the local graphics cards (probe.h)
     LibraryProbe library_loads;
     // Runs a command (argv[0] searched on PATH) and gives its exit status and output: how the
     // archive is listed and unpacked with the system's tar. A test hands a fake.

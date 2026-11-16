@@ -100,6 +100,8 @@ data class ServerInfo(
     val ramAvailableMib: Long,
     /** While planning or loading: the seconds since that load began; -1 from an older server. */
     val loadElapsedS: Double,
+    /** The processor threads the server sees; 0 when it does not say. */
+    val cpuThreads: Int = 0,
 ) {
     val ready get() = state == "ready" && model != null
 
@@ -116,6 +118,7 @@ data class ServerInfo(
                 ramTotalMib = host?.optLong("ram_total_mib", 0) ?: 0,
                 ramAvailableMib = host?.optLong("ram_available_mib", 0) ?: 0,
                 loadElapsedS = o.optDouble("load_elapsed_s", -1.0),
+                cpuThreads = host?.optInt("cpu_threads", 0) ?: 0,
             )
         }
     }
@@ -670,6 +673,7 @@ object Engine {
                 val t = _state.value.live.copy().applyDone(o)
                 recorder?.done(o)
                 _state.update { it.copy(live = t, lastDone = o) }
+                Chat.onTurnDone(o, _state.value.info?.model?.nCtx ?: 0, choosing = Decisions.state.value?.running == true)
                 // A finished turn is a new measurement beside the plan the model runs with.
                 if (_state.value.info?.model != null) refreshPlan()
             }

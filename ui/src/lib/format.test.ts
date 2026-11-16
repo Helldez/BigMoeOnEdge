@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { commandLine, formatBytes, formatGb, progress, quoteArg, resumeLabel } from './format';
+import { commandLine, formatBytes, progress, quoteArg, resumeLabel } from './format';
 import { parseHash } from './route';
 import { planDecisions } from './plan';
 
@@ -20,9 +20,8 @@ describe('format', () => {
     expect(commandLine(['--model', 'a b.gguf', '--threads', '8'])).toBe('bmoe-cli --model "a b.gguf" --threads 8');
   });
 
-  it('a resumable download names what is on disk and the whole, in decimal GB', () => {
-    expect(formatGb(47_000_000_000)).toBe('47.0 GB');
-    expect(resumeLabel(14_230_000_000, 47_000_000_000)).toBe('Resume (14.2 of 47.0 GB)');
+  it('a resumable download names what is on disk and the whole, in the unit the progress bar uses', () => {
+    expect(resumeLabel(14_230_000_000, 47_000_000_000)).toBe('Resume (13.3 GiB of 43.8 GiB)');
   });
 
   it('progress is null without a total', () => {

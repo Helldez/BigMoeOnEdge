@@ -196,8 +196,8 @@ UpdateService::Reply UpdateService::backends(bool refresh) {
         feed_error = no_key().body["error"].get<std::string>();
     }
     std::lock_guard<std::mutex> lk(m_);
-    json body = backends_answer(cfg_.registered, cfg_.target, feed_.get(), installed_packs(backends_root()),
-                                cfg_.library_loads, restart_required_);
+    json body = backends_answer(cfg_.registered, cfg_.graphics, cfg_.target, feed_.get(),
+                                installed_packs(backends_root()), cfg_.library_loads, restart_required_);
     if (!feed_error.empty()) body["feed_error"] = feed_error;
     return {200, body};
 }

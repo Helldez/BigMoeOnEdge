@@ -1947,7 +1947,11 @@ int run(int argc, char ** argv, const Embedding & embedding) {
         uc.public_key = kFeedPublicKey;
         uc.target = platform::build_target();
         uc.version = version();
-        if (load_backends) uc.registered = backend_inventory().names;
+        if (load_backends) {
+            const BackendInventory inv = backend_inventory();
+            uc.registered = inv.names;
+            uc.graphics = inv.graphics;
+        }
         uc.library_loads = platform::library_loads;
         app.updates = std::make_unique<UpdateService>(app.bus, *app.net, uc);
     }

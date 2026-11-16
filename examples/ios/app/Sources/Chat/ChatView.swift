@@ -23,10 +23,12 @@ struct ChatView: View {
         .toolbar {
             ToolbarItem(placement: .navigationBarLeading) {
                 Button { showConversations = true } label: { Image(systemName: "sidebar.left") }
+                    .tint(Palette.onShell)
                     .accessibilityLabel("Conversations")
             }
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button { chat.newChat() } label: { Image(systemName: "square.and.pencil") }
+                    .tint(Palette.onShell)
                     .accessibilityLabel("New chat")
             }
         }
@@ -58,7 +60,7 @@ struct ChatView: View {
                     if chat.running && !(chat.items.last?.streaming ?? false) {
                         HStack(spacing: Grid.s) {
                             ProgressView().controlSize(.small)
-                            Text(chat.items.last?.kind == .user ? "Reading the prompt…" : "Working…")
+                            Text(chat.items.last?.kind == .user ? "Reading your message…" : "Working…")
                                 .font(.ui(14)).foregroundStyle(Palette.muted)
                         }
                     }
@@ -69,7 +71,6 @@ struct ChatView: View {
                             Text("Reading the options…").font(.ui(14)).foregroundStyle(Palette.muted)
                         }
                     }
-                    if chat.running || chat.deciding { LiveLine() }
                     if let e = chat.error { errorBanner(e) }
                     Color.clear.frame(height: 1).id(Self.bottom)
                 }
@@ -83,20 +84,47 @@ struct ChatView: View {
 
     private static let bottom = "bottom"
 
+    /// The welcome: the logo on a sheet over the seal's yellow rule, the promise that nothing
+    /// leaves, and the question. A phone has no folders to give a job, so the line asks only for a
+    /// question; with no model loaded the way to Models is under it (the composer says to load one).
     private var empty: some View {
-        VStack(alignment: .leading, spacing: Grid.s) {
-            Logo(size: 48)
-            Text(engine.ready ? "Ask anything." : "Load a model to start.")
+        VStack(spacing: 12) {
+            SealedLogo(size: 64).padding(.bottom, 4)
+            // The state while there is one to say ("No model loaded", "Loading the model…"); the
+            // promise that nothing leaves once a model can answer.
+            let said = StatusWords.say(.of(engine: engine, chat: chat), greet: true)
+            Text(said.text)
+                .font(.ui(15, weight: .medium)).foregroundStyle(said.mood == .alert ? Palette.warn : Palette.muted)
+            Text("What shall we do?")
                 .font(.ui(22, weight: .semibold)).foregroundStyle(Palette.text)
-            Text(engine.ready
-                ? "The model runs on this phone, and nothing you write leaves it."
-                : "The model runs on this phone, and nothing you write leaves it. Load one from Models, then write below.")
-                .font(.ui(15)).foregroundStyle(Palette.muted)
+                .padding(.top, Grid.s)
+                .accessibilityAddTraits(.isHeader)
+            Text("Ask a question.").font(.ui(15)).foregroundStyle(Palette.muted)
+            if engine.ready && !chat.running && !chat.sending {
+                // The first success is one tap away: a question that shows what the model does,
+                // sent as it is, editable afterwards like any message.
+                VStack(spacing: Grid.s) {
+                    ForEach(Setup.tries, id: \.self) { q in
+                        Button { Task { await chat.send(q) } } label: {
+                            Text(q).font(.ui(15)).foregroundStyle(Palette.text).multilineTextAlignment(.leading)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 14).padding(.vertical, 12)
+                                .box(edge: Palette.line, radius: Grid.control)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.top, Grid.m)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Questions to try")
+            }
             if !engine.ready {
                 Button("Models", action: openModels).buttonStyle(.appPrimary).padding(.top, Grid.s)
             }
         }
-        .padding(.top, Grid.xl)
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: .infinity)
+        .padding(.top, 72)
     }
 
     /// Decided on by the error's code, never its wording (docs/server-api.md).
@@ -136,7 +164,10 @@ struct Composer: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Grid.s) {
-            controls
+            if engine.loading {
+                Text("The model is loading; you can write as soon as it is ready.")
+                    .font(.ui(13)).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
+            }
             if !images.isEmpty { attachments }
             if let imageError {
                 Text(imageError).font(.ui(13)).foregroundStyle(Palette.err).fixedSize(horizontal: false, vertical: true)
@@ -147,9 +178,16 @@ struct Composer: View {
                 AppField(placeholder: "Options, one per line", text: $options, axis: .vertical)
                     .lineLimit(2...6)
             }
-            HStack(alignment: .bottom, spacing: Grid.s) {
-                AppField(placeholder: choosing ? "The question" : "Message", text: $input, axis: .vertical)
-                    .lineLimit(1...6)
+            TextField(choosing ? "The question" : engine.ready || engine.loading ? "Message" : "Load a model to start", text: $input, axis: .vertical)
+                .lineLimit(1...6)
+                .font(.ui(17))
+                .foregroundStyle(Palette.text)
+                .tint(Palette.accent)
+                .padding(.horizontal, 4)
+                .padding(.top, 2)
+            HStack(alignment: .center, spacing: Grid.s) {
+                controls
+                Spacer(minLength: 0)
                 if chat.running {
                     Button { chat.stop() } label: { Image(systemName: "stop.fill").frame(width: 22, height: 22) }
                         .buttonStyle(.appDestructive)
@@ -162,10 +200,13 @@ struct Composer: View {
                 }
             }
         }
+        // A sheet of its own: the field's strong edge, a soft shadow, a control's corner.
+        .padding(12)
+        .box(edge: Palette.lineStrong, radius: Grid.control)
         .padding(.horizontal, Grid.m)
-        .padding(.vertical, 12)
-        .background(Palette.surface)
-        .overlay(alignment: .top) { Rectangle().fill(Palette.line).frame(height: Grid.line) }
+        .padding(.top, Grid.s)
+        .padding(.bottom, 12)
+        .background(Palette.bg)
         // The system's photo picker, up to what the message still has room for, images only.
         .photosPicker(isPresented: $picking, selection: $picked, maxSelectionCount: max(1, ImageAttachments.maxImages - images.count),
                       matching: .images)
@@ -335,29 +376,6 @@ struct ChoiceRow: View {
     }
 }
 
-/// The live line while the local model generates: the rate, the compute and flash shares, the
-/// cache hit rate. The full card is in Metrics.
-struct LiveLine: View {
-    @EnvironmentObject private var engine: Engine
-
-    var body: some View {
-        let t = engine.live
-        if t.step > 0 {
-            let b = t.breakdown
-            let share = { (ms: Double) in b.totalMs > 0 ? String(format: "%.0f%%", 100 * ms / b.totalMs) : "–" }
-            HStack(spacing: Grid.m) {
-                Text(String(format: "%.1f tok/s", t.rate))
-                Text("compute \(share(b.computeMs))")
-                Text("flash \(share(b.flashWaitMs))")
-                if t.cacheHitPct >= 0 { Text(String(format: "cache %.0f%%", t.cacheHitPct)) }
-                if t.cpuTempC > 0 { Text(String(format: "CPU %.0f°C", t.cpuTempC)) }
-            }
-            .font(.figure(13))
-            .foregroundStyle(Palette.muted)
-        }
-    }
-}
-
 /// The server's conversations, newest first: title, state, when it changed. Open, rename, delete, new.
 struct ConversationsView: View {
     @EnvironmentObject private var chat: ChatModel
@@ -375,17 +393,20 @@ struct ConversationsView: View {
                     } label: {
                         HStack(spacing: Grid.s) {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(c.displayTitle).font(.ui(16)).foregroundStyle(Palette.text).lineLimit(1)
+                                Text(c.displayTitle).font(.ui(16, weight: c.id == chat.current?.id ? .semibold : .regular))
+                                    .foregroundStyle(Palette.onShell).lineLimit(1)
                                 if let u = c.updated {
-                                    Text(u.formatted(.relative(presentation: .named))).font(.ui(12)).foregroundStyle(Palette.muted).lineLimit(1)
+                                    Text(u.formatted(.relative(presentation: .named))).font(.ui(12)).foregroundStyle(Palette.onShellMuted).lineLimit(1)
                                 }
                             }
                             Spacer()
-                            if c.state == "running" { ProgressView().controlSize(.small) }
+                            if c.state == "running" { ProgressView().controlSize(.small).tint(Palette.onShell) }
                             else if c.state == "error" { Badge(text: "Error", color: Palette.err) }
                         }
                     }
-                    .listRowBackground(c.id == chat.current?.id ? Palette.accentTint : Palette.surface)
+                    .listRowBackground(c.id == chat.current?.id ? Palette.shellHi : Palette.shell)
+                    .listRowSeparatorTint(Palette.shellHi)
+                    .accessibilityAddTraits(c.id == chat.current?.id ? .isSelected : [])
                     .swipeActions {
                         Button(role: .destructive) { chat.delete(c.id) } label: { Label("Delete", systemImage: "trash") }
                         Button {
@@ -395,12 +416,14 @@ struct ConversationsView: View {
                     }
                 }
             }
+            // The drawer of the other UIs: the navigation's ink, the open conversation raised in it.
+            .listStyle(.plain)
             .scrollContentBackground(.hidden)
-            .background(Palette.bg)
+            .background(Palette.shell.ignoresSafeArea())
             .refreshable { await chat.refreshConversations() }
             .overlay {
                 if chat.conversations.isEmpty {
-                    Text("No conversations yet").font(.ui(15)).foregroundStyle(Palette.muted)
+                    Text("No conversations yet").font(.ui(15)).foregroundStyle(Palette.onShellMuted)
                 }
             }
             .navigationTitle("Conversations")
@@ -411,8 +434,10 @@ struct ConversationsView: View {
                         chat.newChat()
                         dismiss()
                     }
+                    .tint(Palette.onShell)
                 }
             }
+            .shellBar()
             .alert("Rename", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
                 TextField("Title", text: $newTitle)
                 Button("Save") { if let c = renaming { chat.rename(c.id, to: newTitle) } }
@@ -454,15 +479,17 @@ struct EditMessageSheet: View {
                     .font(.ui(13)).foregroundStyle(Palette.muted).padding(Grid.m)
             }
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.tint(Palette.onShell) }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Send") {
                         chat.edit(item, to: text, images: item.images)
                         dismiss()
                     }
+                    .tint(Palette.onShell)
                     .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && item.images.isEmpty)
                 }
             }
+            .shellBar()
         }
         .onAppear { text = item.text }
     }

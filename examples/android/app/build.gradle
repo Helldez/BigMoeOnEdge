@@ -33,11 +33,12 @@ def keystorePropsFile = rootProject.file('keystore.properties')
 def keystoreProps = new Properties()
 if (keystorePropsFile.exists()) keystoreProps.load(new FileInputStream(keystorePropsFile))
 
-// LICENSE and THIRD_PARTY_LICENSES from the repository root, staged into a directory of their own
-// so that only they become assets.
+// LICENSE and THIRD_PARTY_LICENSES from the repository root, and the licence of each font the app
+// bundles in res/font (licenses/), staged into a directory of their own so that only they become assets.
 def licenseAssets = layout.buildDirectory.dir('generated/licenseAssets').get().asFile
 def stageLicenses = tasks.register('stageLicenses', Copy) {
     from("$rootDir/../../LICENSE", "$rootDir/../../THIRD_PARTY_LICENSES")
+    from("licenses")
     into licenseAssets
 }
 preBuild.dependsOn stageLicenses

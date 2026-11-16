@@ -1,30 +1,28 @@
 <script lang="ts">
-  // The last answer's account, from its `done` event, in plain labels.
+  // The last answer's account, from its `done` event, in the words the figures under an answer use.
+  // Where its time went is the split above this card, so it is not repeated here in other terms.
   import { formatMib, formatNum } from '../lib/format';
   import type { DoneSummary } from '../lib/types';
   import { t } from '../lib/text';
 
-  let { done }: { done: DoneSummary } = $props();
-  const ms = (s: number) => formatNum(s * 1000, 1);
+  let { done, nCtx = 0 }: { done: DoneSummary; nCtx?: number } = $props();
 </script>
 
 <dl class="summary figure">
   <dt>{t('done.tokens')}</dt>
   <dd>{done.tokens}{done.cancelled ? ` (${t('done.stopped')})` : ''}</dd>
-  <dt title={t('live.speed.hint')}>{t('done.speed')}</dt>
-  <dd>{formatNum(done.tok_s, 2)} tok/s</dd>
-  <dt title={t('done.reading.hint')}>{t('done.reading')}</dt>
-  <dd>{formatNum(done.prefill_s, 2)} s · {formatNum(done.prefill_tps, 1)} tok/s ({done.n_prompt} tok)</dd>
+  <dt>{t('figure.speed')}</dt>
+  <dd>{t('figure.rate', { rate: formatNum(done.tok_s, 1) })}</dd>
+  <dt>{t('figure.prompt')}</dt>
+  <dd>{t('figure.prompt.value', { rate: formatNum(done.prefill_tps, 1), n: Math.max(0, done.n_prompt), s: formatNum(done.prefill_s, 1) })}</dd>
   <dt>{t('done.first')}</dt>
   <dd>{formatNum(done.ttft_s, 2)} s</dd>
-  <dt title={t('done.context.hint')}>{t('done.context')}</dt>
-  <dd>{done.n_past} tok</dd>
-  <dt title={t('live.cache.hint')}>{t('done.cache')}</dt>
-  <dd>{done.cache_hit_pct < 0 ? t('metrics.cache.none') : `${formatNum(done.cache_hit_pct, 1)}%`} · {formatMib(done.cache_resident_mib)} / {formatMib(done.cache_budget_mib)}</dd>
+  <dt>{t('figure.context')}</dt>
+  <dd>{nCtx > 0 ? t('figure.context.value', { used: done.n_past.toLocaleString('en'), total: nCtx.toLocaleString('en') }) : done.n_past.toLocaleString('en')}</dd>
+  <dt>{t('figure.cache')}</dt>
+  <dd>{done.cache_hit_pct < 0 ? t('metrics.cache.none') : t('figure.cache.value', { n: Math.round(done.cache_hit_pct) })}</dd>
   <dt>{t('done.read')}</dt>
   <dd>{formatMib(done.read_mib)}</dd>
-  <dt>{t('done.perToken')}</dt>
-  <dd>{t('done.perToken.value', { io: ms(done.io_s_tok), compute: ms(done.compute_s_tok), stall: ms(done.stall_s_tok), mgmt: ms(done.mgmt_s_tok) })}</dd>
 </dl>
 
 <style>
@@ -37,9 +35,6 @@
   }
   dt {
     color: var(--muted);
-  }
-  dt[title] {
-    cursor: help;
   }
   dd {
     margin: 0;

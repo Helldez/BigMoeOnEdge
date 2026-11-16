@@ -230,12 +230,17 @@ static void pack_tests() {
     check(inst.size() == 1 && inst[0].id == "gpu" && inst[0].version == "0.39.0",
           "installed: a marker that names another pack than its folder is not believed");
 
-    json answer = backends_answer({"CPU"}, "test-target", &feed, inst, loads_driver, false);
+    json answer =
+        backends_answer({"CPU", "GPU0"}, {{"GPU0", "A test card"}}, "test-target", &feed, inst, loads_driver, false);
+    check(answer["graphics"].size() == 1 && answer["graphics"][0]["backend"] == "GPU0" &&
+              answer["graphics"][0]["description"] == "A test card",
+          "backends: the local graphics cards, by the device's own description");
     check(answer["packs"].size() == 1 && answer["packs"][0]["applies"].get<bool>() &&
               answer["packs"][0]["installed"].get<bool>() && answer["packs"][0]["current"].get<bool>(),
           "backends: this target's pack only, applying, installed and current");
-    answer = backends_answer({"CPU"}, "test-target", nullptr, {}, loads_driver, true);
-    check(answer["feed"].is_null() && answer["packs"].empty() && answer["restart_required"].get<bool>(),
+    answer = backends_answer({"CPU"}, {}, "test-target", nullptr, {}, loads_driver, true);
+    check(answer["feed"].is_null() && answer["packs"].empty() && answer["restart_required"].get<bool>() &&
+              answer["graphics"].is_array() && answer["graphics"].empty(),
           "backends: no feed read, no pack offered");
     fs::remove_all(root, ec);
 }

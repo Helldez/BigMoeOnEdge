@@ -4,6 +4,8 @@
   // above and the turn's figures under; a notice as a line that says why something did not happen.
   import Icon from '../Icon.svelte';
   import Markdown from './Markdown.svelte';
+  import LiveLine from './LiveLine.svelte';
+  import TurnFigures from './TurnFigures.svelte';
   import type { AssistantItem, NoticeItem, UserItem } from '../../lib/agent';
   import { agent } from '../../stores/agent.svelte';
   import { t } from '../../lib/text';
@@ -87,6 +89,7 @@
     {:else if item.streaming && !item.reasoning}
       <p class="muted waiting"><span class="skeleton bar"></span>{t('message.reading')}</p>
     {/if}
+    {#if item.streaming && last && agent.route === 'local'}<LiveLine />{/if}
     {#if !item.streaming && item.text}
       <div class="foot">
         <button type="button" class="ghost small" onclick={() => copy(item.text)}><Icon name={copied ? 'check' : 'copy'} size={15} />{copied ? t('action.copied') : t('action.copy')}</button>
@@ -94,7 +97,7 @@
           <button type="button" class="ghost small" disabled={agent.running} onclick={() => agent.regenerate()}><Icon name="refresh" size={15} />{t('message.regenerate')}</button>
         {/if}
         {#if agent.metrics[item.id]}
-          <span class="metrics muted figure" title={t('message.metrics.hint')}>{agent.metrics[item.id]}</span>
+          <TurnFigures summary={agent.metrics[item.id].summary} nCtx={agent.metrics[item.id].nCtx} />
         {/if}
       </div>
     {/if}
@@ -130,9 +133,11 @@
     border-radius: var(--radius);
     border: 1px solid var(--line);
   }
+  /* The person's words in ink, the model's on a white sheet: who said what at a glance. */
   .bubble {
-    background: var(--surface-2);
-    border-radius: var(--radius) var(--radius) 2px var(--radius);
+    background: var(--shell-hi);
+    color: var(--on-shell);
+    border-radius: var(--radius) var(--radius) 3px var(--radius);
     padding: var(--s2) var(--s3);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
@@ -168,6 +173,10 @@
   .assistant {
     max-width: 100%;
     min-width: 0;
+    background: var(--surface);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-md);
+    padding: var(--s4) var(--s5) var(--s2);
   }
   .thinking {
     margin-bottom: var(--s3);
@@ -212,10 +221,6 @@
   .foot button {
     color: var(--muted);
     font-weight: 500;
-  }
-  .metrics {
-    font-size: 0.75rem;
-    margin-left: var(--s2);
   }
   .notice {
     display: flex;

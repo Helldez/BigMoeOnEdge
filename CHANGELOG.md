@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Changed
+- **One look on every UI, for people who are not engine experts.** The web UI, the Android app and
+  the iOS app share one visual language (`docs/design.md`): an ink shell, answers on white sheets,
+  Hanken Grotesk in place of Inter, the logo's yellow rule. The model's name no longer heads every
+  answer; one line under it gives the answer speed and the prompt speed (tg, pp) and opens to the
+  figures, where the time split adds up to 100 and the memory reads as parts out of 100. Beside
+  the logo, the engine's state is said in words (thinking, writing, reading part of the model from
+  the disk).
+- **The first run leads to the first answer.** It is steps the screen marks: where a graphics pack
+  applies to the computer and is missing, installing it (or choosing the processor); then a model
+  that fits in memory beside a larger one, its download with the time left, and the model loading
+  by itself. The conversation opens when the model is ready, with three questions to try
+  (`docs/screens.md`, "First run"). Where no pack is needed it names the graphics cards the engine
+  computes on, which `GET /api/backends` now reports as `graphics` (each local GPU or integrated
+  GPU by its device's own description, read from the device's type, never a backend's name); where
+  none was found, it says how to get a driver.
+
 ## [0.43.2] - 2026-11-16
 
 ### Changed

@@ -9,6 +9,7 @@
   import { api } from '../lib/api';
   import { formatBytes, resumeLabel } from '../lib/format';
   import { libraryRows, type LibraryRow, type RowState } from '../lib/library';
+  import { router } from '../stores/router.svelte';
   import { href } from '../lib/route';
   import { roleLabel, splitByRole } from '../lib/roles';
   import type { CatalogEntry, ModelsResponse } from '../lib/types';
@@ -33,17 +34,6 @@
   let empty = $derived(!!data && yours.length === 0 && localGroups.companions.length === 0);
   let planning = $derived(server.info?.state === 'planning');
   let loading = $derived(server.info?.state === 'loading' || planning);
-
-  // Seconds since the load began, so a long load reads as progress rather than as a hang. Counted
-  // from what the server reported and when (the store's), not from this screen: leaving and coming
-  // back used to restart the count at zero.
-  let now = $state(Date.now());
-  $effect(() => {
-    if (!loading) return;
-    const id = setInterval(() => (now = Date.now()), 1000);
-    return () => clearInterval(id);
-  });
-  let elapsed = $derived(server.loadBase ? Math.max(0, Math.round(server.loadBase.elapsed + (now - server.loadBase.at) / 1000)) : 0);
 
   async function refresh() {
     try {
@@ -130,7 +120,24 @@
     });
   }
 
+  // A load started here ends in a conversation, as the first-run setup's does: the person loaded a
+  // model to talk to it. Only while this screen is open, and not after a failed load.
+  let goChatAfter = $state('');
+  // Seen planning or loading since the click: an "empty" before that is the state the click found.
+  let sawLoad = false;
+  $effect(() => {
+    if (!goChatAfter) return;
+    const st = server.info?.state;
+    if (st === 'planning' || st === 'loading') sawLoad = true;
+    else if (st === 'ready' && sawLoad && server.info?.model?.path === goChatAfter) {
+      goChatAfter = '';
+      location.hash = href('chat');
+    } else if (st === 'error' || (st === 'empty' && sawLoad)) goChatAfter = '';
+  });
+
   function load(path: string) {
+    sawLoad = false;
+    goChatAfter = path;
     act(`load:${path}`, () => api.load(path));
   }
 
@@ -153,6 +160,24 @@
     incomplete: 'err',
   };
   import { t, tp } from '../lib/text';
+
+  // "Already have models?": the folders section opened on adding one, from the first-model card or
+  // a link (`#/models/add-folder`, the first-run setup's).
+  let whereOpen = $state(false);
+  let whereEl: HTMLDetailsElement | undefined = $state();
+  let addNow = $state(0);
+  function addFolder() {
+    whereOpen = true;
+    addNow++;
+    queueMicrotask(() => whereEl?.scrollIntoView({ block: 'start', behavior: 'smooth' }));
+  }
+  // Once per arrival on the link, not again each time the list refreshes.
+  let handled = false;
+  $effect(() => {
+    const wanted = router.target === 'add-folder' && !!data;
+    if (wanted && !handled) addFolder();
+    handled = wanted;
+  });
 </script>
 
 <div class="page-col">
@@ -171,18 +196,16 @@
   <p class="banner error">{t('models.loadFailed')} {server.info.error}</p>
 {/if}
 
-{#if server.info?.model}
+{#if server.info?.model && !rows.some((r) => r.state === 'loaded')}
+  <!-- A model opened from outside the listed folders has no row: the banner carries it. A listed
+       one is said on its own row, not twice. -->
   <div class="banner info">
     <span>{t('models.loaded')} <strong>{server.info.model.name}</strong> ({server.info.model.arch}, {t('models.loadTime', { s: server.info.model.load_s.toFixed(1) })})</span>
     <StreamingBadge streaming={server.info.model.streaming} />
-    {#if !rows.some((r) => r.state === 'loaded')}
-      <!-- A model opened from outside the listed folders has no row to carry these. -->
-      <button type="button" onclick={() => act('unload', api.unload)} disabled={pending.unload}>{t('models.unload')}</button>
-      <a class="button primary" href={href('chat')}>{t('models.goToChat')}</a>
-    {/if}
+    <button type="button" onclick={() => act('unload', api.unload)} disabled={pending.unload}>{t('models.unload')}</button>
+    <a class="button primary" href={href('chat')}>{t('models.goToChat')}</a>
   </div>
 {:else if loading}
-  <p class="banner warn" role="status">{planning ? t('models.planningLoad') : t('models.loading')} · {elapsed} s</p>
   {#if planning}<PlanProgress progress={server.planProgress} />{/if}
 {/if}
 
@@ -223,7 +246,7 @@
         <ProgressBar received={e.received ?? 0} total={e.bytes} label={t('models.partial', { name: r.title })} />
       {/if}
       {#if dl?.state === 'error'}
-        <p class="err">{t('models.downloadFailed')} {dl.error}</p>
+        <p class="err">{t('models.downloadFailed', { error: dl.error })}</p>
       {:else if dl?.state === 'cancelled' && r.state !== 'available'}
         <p class="muted note">{t('models.cancelled')}</p>
       {/if}
@@ -239,13 +262,13 @@
         <button type="button" disabled={pending.unload} onclick={() => act('unload', api.unload)}>{t('models.unload')}</button>
         <a class="button primary" href={href('chat')}>{t('models.goToChat')}</a>
       {:else if r.state === 'on_disk' && m}
-        <button type="button" class="primary" disabled={loading || pending[`load:${m.path}`]} onclick={() => load(m.path)}>{t('models.load')}<span class="visually-hidden"> {r.title}</span></button>
+        <button type="button" disabled={loading || pending[`load:${m.path}`]} onclick={() => load(m.path)}>{t('models.load')}<span class="visually-hidden"> {r.title}</span></button>
       {:else if r.state === 'downloading' && e}
         <button type="button" class="danger" disabled={pending[`cancel:${e.id}`]} onclick={() => act(`cancel:${e.id}`, () => api.cancelDownload(e.id))}>
           {t('action.cancel')}<span class="visually-hidden"> {t('models.downloadOf', { name: r.title })}</span>
         </button>
       {:else if (r.state === 'partial' || r.state === 'available' || r.state === 'incomplete') && e}
-        <button type="button" class="primary" disabled={pending[`dl:${e.id}`]} onclick={() => download(e)}>
+        <button type="button" disabled={pending[`dl:${e.id}`]} onclick={() => download(e)}>
           {e.partial ? resumeLabel(e.received ?? 0, e.bytes) : t('hf.download')}<span class="visually-hidden"> {r.title}</span>
         </button>
         {#if e.partial}
@@ -273,6 +296,7 @@
   {#if empty}
     <section class="card first">
       <h2>{t('models.first')}</h2>
+      <p class="have">{t('models.have')} <button type="button" class="link" onclick={addFolder}>{t('models.have.add')}</button></p>
       <ol class="three">
         <li><strong>{t('models.first.find')}</strong>{t('models.first.find.how')}</li>
         <li><strong>{t('hf.check')}</strong>{t('models.first.check.how')}</li>
@@ -346,9 +370,9 @@
     </details>
   {/if}
 
-  <details class="where">
+  <details class="where" bind:open={whereOpen} bind:this={whereEl}>
     <summary class="muted">{t('models.where')}</summary>
-    <ModelFolders {data} onChanged={(next) => (data = next)} />
+    <ModelFolders {data} onChanged={(next) => (data = next)} {addNow} />
   </details>
 {:else if !error}
   <div class="skel" aria-hidden="true">{#each [0, 1, 2] as i (i)}<span class="skeleton"></span>{/each}</div>
@@ -450,6 +474,9 @@
   .suggested-title {
     font-size: 0.95rem;
     margin: 1rem 0 0.5rem;
+  }
+  .have {
+    margin: 0 0 var(--s3);
   }
   .first h2 {
     margin-top: 0;

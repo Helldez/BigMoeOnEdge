@@ -42,6 +42,8 @@ import io.bigmoeonedge.app.ui.BmoeTheme
 import androidx.compose.foundation.layout.Column
 import io.bigmoeonedge.app.ui.ChatScreen
 import io.bigmoeonedge.app.ui.EngineStatusLine
+import io.bigmoeonedge.app.ui.SetupScreen
+import io.bigmoeonedge.app.data.Setup
 import io.bigmoeonedge.app.ui.MetricsScreen
 import io.bigmoeonedge.app.ui.ModelsScreen
 import io.bigmoeonedge.app.ui.PlanScreen
@@ -83,10 +85,16 @@ private enum class Screen(val label: String, val icon: ImageVector?) {
     PLAN("Plan", Icons.Filled.Info),
     SETTINGS("Settings", Icons.Filled.Settings),
     METRICS("Metrics", null),
+    /** The first run: getting a first model onto the phone. Under Models, where it would otherwise be found. */
+    SETUP("Get started", null),
 }
 
 /** The bar item lit while [this] is shown. */
-private val Screen.barItem: Screen get() = if (this == Screen.METRICS) Screen.SETTINGS else this
+private val Screen.barItem: Screen get() = when (this) {
+    Screen.METRICS -> Screen.SETTINGS
+    Screen.SETUP -> Screen.MODELS
+    else -> this
+}
 
 @Composable
 private fun Root() {
@@ -94,15 +102,17 @@ private fun Root() {
     // The setting a link points at (the Plan screen, the context warning): Settings lands on it.
     var settingTarget by rememberSaveable { mutableStateOf("") }
     val openSetting = { key: String -> settingTarget = key; screen = Screen.SETTINGS }
-    // With nothing on the phone there is nothing to chat with: the first listing of a launch, if it is
-    // empty, opens Models instead. Once: a person who then goes to Chat stays there.
+    // With nothing on the phone and nothing coming there is nothing to chat with: the first listing of
+    // a launch then opens the first run instead. Once: a person who then goes to Chat stays there.
     var firstListingSeen by rememberSaveable { mutableStateOf(false) }
     val models by remember { Engine.state.map { it.models }.distinctUntilChanged() }.collectAsStateWithLifecycle(null)
     LaunchedEffect(models) {
         val m = models ?: return@LaunchedEffect
         if (firstListingSeen) return@LaunchedEffect
         firstListingSeen = true
-        if (m.local.isEmpty() && screen == Screen.CHAT) screen = Screen.MODELS
+        if (screen == Screen.CHAT && Setup.firstRun(m.local.size, downloading = m.catalog.any { it.serverStatus == "downloading" })) {
+            screen = Screen.SETUP
+        }
     }
     // While the keyboard is up the window is resized above it, and the bars would ride on top of it,
     // taking the room the field being typed into needs (and covering a screen's own button). Nobody
@@ -129,11 +139,18 @@ private fun Root() {
     ) { padding ->
         val m = Modifier.padding(padding)
         when (screen) {
-            Screen.CHAT -> ChatScreen(m, ChatNav(openModels = { screen = Screen.MODELS }, openSetting = openSetting))
+            Screen.CHAT -> ChatScreen(
+                m,
+                ChatNav(
+                    openModels = { screen = Screen.MODELS }, openSetting = openSetting,
+                    openPlan = { screen = Screen.PLAN }, openMetrics = { screen = Screen.METRICS },
+                ),
+            )
             Screen.MODELS -> ModelsScreen(m, onOpenChat = { screen = Screen.CHAT })
             Screen.PLAN -> PlanScreen(m, onOpenSetting = openSetting, onOpenModels = { screen = Screen.MODELS })
             Screen.SETTINGS -> SettingsScreen(m, target = settingTarget, onLanded = { settingTarget = "" }, onOpenMetrics = { screen = Screen.METRICS })
             Screen.METRICS -> MetricsScreen(m, onBack = { screen = Screen.SETTINGS })
+            Screen.SETUP -> SetupScreen(m, onOpenChat = { screen = Screen.CHAT }, onOpenModels = { screen = Screen.MODELS })
         }
     }
 }

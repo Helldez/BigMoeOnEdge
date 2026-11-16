@@ -2,9 +2,9 @@
   // The conversation (docs/screens.md, "Conversation"): the server's items as messages, tool cards
   // and notices, the composer under them. The run belongs to the server: this screen shows it as
   // it goes and sends what the person says or decides.
+  import ChipBuddy from '../components/ChipBuddy.svelte';
   import Icon from '../components/Icon.svelte';
   import Composer from '../components/chat/Composer.svelte';
-  import LiveLine from '../components/chat/LiveLine.svelte';
   import MessageItem from '../components/chat/MessageItem.svelte';
   import RunGroup from '../components/chat/RunGroup.svelte';
   import { contextAdvice } from '../lib/context';
@@ -23,6 +23,9 @@
   let file = $derived(latestFile(agent.items));
   let ctx = $derived(contextAdvice(server.info?.model, server.params));
   let ws = $derived(agent.workspaces.find((w) => w.id === agent.workspace) ?? null);
+  // Questions to try on an empty conversation, once a model can answer them.
+  const TRIES = ['conversation.try.1', 'conversation.try.2', 'conversation.try.3'] as const;
+  let canTry = $derived(!ws && !agent.sending && (agent.route !== 'local' || server.ready));
   let title = $derived(agent.current?.title || (agent.currentId ? t('conversation.untitled') : t('conversation.new')));
 
   // Keep the newest words in view while they stream, unless the person scrolled up to read.
@@ -53,10 +56,11 @@
 
 <div class="conversation">
   <header class="head">
+    {#if agent.items.length > 0 || agent.running}<ChipBuddy size={36} />{/if}
+    <span class="spacer"></span>
     <h1 title={title}>{title}</h1>
     {#if ws}<span class="badge" title={ws.path}><Icon name="folder" size={13} />{ws.name}</span>{/if}
     {#if agent.current && agent.mode !== 'ask'}<span class="badge {agent.mode === 'full' ? 'warn' : ''}">{t(`mode.${agent.mode}`)}</span>{/if}
-    <span class="spacer"></span>
     {#if file && !preview.open}
       <button type="button" class="ghost small" onclick={() => preview.show(agent.currentId, file)}><Icon name="eye" size={15} />{t('preview.show')}</button>
     {/if}
@@ -82,9 +86,18 @@
         </div>
       {:else if agent.items.length === 0 && agent.decisions.length === 0}
         <div class="welcome">
-          <img src="/logo.svg" alt="" width="40" height="40" />
+          <ChipBuddy size={96} greet />
           <h2>{t('conversation.welcome')}</h2>
           <p class="muted">{ws ? t('conversation.welcome.folder', { name: ws.name }) : t('conversation.welcome.plain')}</p>
+          {#if canTry}
+            <!-- The first success is one click away: a question that shows what the model does,
+                 sent as it is, editable afterwards like any message. -->
+            <div class="tries" role="group" aria-label={t('conversation.try')}>
+              {#each TRIES as key (key)}
+                <button type="button" class="try" onclick={() => agent.send(t(key))}>{t(key)}</button>
+              {/each}
+            </div>
+          {/if}
         </div>
       {/if}
 
@@ -136,7 +149,6 @@
           <button type="button" class="ghost small" onclick={() => agent.clearError()}>{t('action.dismiss')}</button>
         </div>
       {/if}
-      {#if agent.route === 'local' && agent.items.length > 0}<LiveLine />{/if}
       <Composer />
     </div>
   </div>
@@ -166,9 +178,16 @@
     white-space: nowrap;
     min-width: 0;
   }
-  /* On a phone the top bar already names the conversation. */
+  /* On a phone the top bar already names the conversation: the head stays only for what it adds
+     (the folder, the mode, the preview), and goes when it would be an empty strip. */
   @media (max-width: 899px) {
     .head h1 {
+      display: none;
+    }
+    .head {
+      min-height: 2.5rem;
+    }
+    .head:not(:has(.badge, button, .buddy)) {
       display: none;
     }
   }
@@ -194,6 +213,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--s2);
+    padding-top: var(--s3);
     padding-bottom: var(--s4);
   }
   .foot .banner {
@@ -212,12 +232,29 @@
     margin: 12vh auto 0;
     max-width: 30rem;
   }
-  .welcome img {
-    image-rendering: pixelated;
+  .tries {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s2);
+    margin-top: var(--s3);
+    width: 100%;
+  }
+  .try {
+    justify-content: flex-start;
+    text-align: left;
+    white-space: normal;
+    font-weight: 500;
+    background: var(--surface);
+    border-color: var(--line);
+    box-shadow: var(--shadow-sm);
+  }
+  .try:hover:not(:disabled) {
+    border-color: var(--line-strong);
   }
   .welcome h2 {
     margin: var(--s2) 0 0;
     font-size: 1.375rem;
+    overflow-wrap: anywhere;
   }
   .skel {
     display: flex;

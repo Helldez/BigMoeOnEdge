@@ -31,6 +31,8 @@ data class ChatUi(
     val errorCode: String = "",
     /** The server answered the conversation routes with 404: a build without them. */
     val unsupported: Boolean = false,
+    /** How each finished answer ran, by its item id: the engine's `done` summary, held while the app runs. */
+    val figures: Map<String, TurnSummary> = emptyMap(),
 ) {
     /** An answer is being written in the open conversation: Stop instead of Send. */
     val running get() = open?.busy == true || items.any { it.streaming }
@@ -80,6 +82,19 @@ object Chat {
             "item", "delta" -> _state.update { s ->
                 s.copy(items = ItemReducer.apply(s.open?.id, s.items, event, data))
             }
+        }
+    }
+
+    /**
+     * A turn ended (the engine's `done` event, with the context the model has): its figures belong
+     * to the open conversation's newest answer. A choice among options runs outside the conversation
+     * and keeps its own figures.
+     */
+    fun onTurnDone(summary: JSONObject, nCtx: Int, choosing: Boolean) {
+        if (choosing) return
+        _state.update { s ->
+            val answer = s.items.lastOrNull { it.kind == ChatItem.KIND_ASSISTANT }
+            if (s.open == null || answer == null) s else s.copy(figures = s.figures + (answer.id to TurnSummary(summary, nCtx)))
         }
     }
 

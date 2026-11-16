@@ -38,10 +38,10 @@
     <!-- The faces every word is set in (docs/design.md), bundled from Resources/Fonts. -->
     <key>UIAppFonts</key>
     <array>
-        <string>Inter-Regular.ttf</string>
-        <string>Inter-Medium.ttf</string>
-        <string>Inter-SemiBold.ttf</string>
-        <string>Inter-Bold.ttf</string>
+        <string>HankenGrotesk-Regular.ttf</string>
+        <string>HankenGrotesk-Medium.ttf</string>
+        <string>HankenGrotesk-SemiBold.ttf</string>
+        <string>HankenGrotesk-Bold.ttf</string>
         <string>JetBrainsMono-Regular.ttf</string>
         <string>JetBrainsMono-Bold.ttf</string>
     </array>
