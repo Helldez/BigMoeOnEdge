@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **A card that works beside one that does not is used again** (#606). When a device failed its
+  probe in the second process (a build with no code for that card, a driver missing a function, a
+  device that never answers), the plan stopped the capacity fitter for every device and ran the
+  model on the CPU. On a desktop with two cards, one too old for the CUDA pack, a model the other
+  card could take decoded at 6 tok/s on the cores. The fitter is now asked of the devices that
+  survived, the run lists them by name so llama.cpp's default list does not hand the failed one
+  back, and the plan says which device was left out and why. With none left, the run is the host's
+  as before.
+
 ## [0.43.1] - 2026-11-14
 
 ### Added

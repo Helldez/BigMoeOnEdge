@@ -2422,6 +2422,64 @@ int main() {
               validate(cpu_only.config).error);
         check(cpu_only.to_flags().find("--devices cpu") != std::string::npos,
               "isolated: the reproduce line carries the device choice", cpu_only.to_flags());
+        // A card that works beside one that failed its probe keeps what the fitter placed on it, and
+        // the run names it, so the failed one is not handed back by llama.cpp's default list (#606).
+        HardwareProfile mixed = desktop();
+        ComputeDevice dead;
+        dead.name = "dead";
+        dead.memory_total = 11 * GiB;
+        dead.memory_free = 11 * GiB;
+        dead.shares_host_memory = Tri::No;
+        dead.usable = Tri::No;
+        dead.unusable_reason = "its probe ended the process that ran it (signal 6)";
+        dead.probed_out_of_process = true;
+        mixed.devices.push_back(dead);
+        bool dropped = false;
+        check(surviving_devices(mixed, {}, &dropped) == std::vector<std::string>{"discrete"} && dropped,
+              "survivors: an empty list names the devices that survived");
+        check(surviving_devices(mixed, {"discrete"}, &dropped) == std::vector<std::string>{"discrete"} && !dropped,
+              "survivors: a list without the failed device is left as it is");
+        check(surviving_devices(desktop(), {}, &dropped).empty() && !dropped,
+              "survivors: with every device alive, an empty list stays llama.cpp's default");
+        HardwareProfile all_dead = mixed;
+        all_dead.devices.erase(all_dead.devices.begin());
+        check(surviving_devices(all_dead, {}, &dropped).empty() && dropped,
+              "survivors: with none alive, nothing is named and the drop is reported");
+        Placement on_good;
+        on_good.fitted = true;
+        on_good.n_gpu_layers = (int32_t) mm.n_layer + 1;
+        on_good.device_split = {{"discrete", mm.n_layer + 1}};
+        on_good.outcome = "the capacity fitter found a placement that is projected to fit";
+        const Plan beside_dead = plan_run(base_cfg(), mixed, mm, on_good, PlanRequest{}, PlannerPolicy::defaults());
+        const Decision * kept = find(beside_dead, "devices");
+        check(beside_dead.config.n_gpu_layers == on_good.n_gpu_layers &&
+                  beside_dead.config.device_use != DeviceUse::CpuOnly &&
+                  beside_dead.config.device_list == std::vector<std::string>{"discrete"},
+              "isolated: the card that works keeps its layers and is the run's only device");
+        check(kept && kept->value == "discrete" && kept->reason.find("signal 6") != std::string::npos,
+              "isolated: and the plan says which device was left out and why",
+              kept ? kept->value + ": " + kept->reason : "no decision");
+        check(validate(beside_dead.config).ok, "isolated: that plan is a valid config",
+              validate(beside_dead.config).error);
+        check(beside_dead.to_flags().find("dead") == std::string::npos,
+              "isolated: the reproduce line does not name the failed device", beside_dead.to_flags());
+        // The same when the host half streams: the rule is asked on that path as well.
+        Placement half;
+        half.fitted = true;
+        half.outcome = "synthetic";
+        half.n_gpu_layers = 24;
+        half.n_ctx = 4096;
+        for (uint32_t il = 0; il < 24; ++il)
+            half.host_expert_layers.push_back(il);
+        half.host_resident_bytes = 4 * GiB;
+        half.device_bytes = 8 * GiB;
+        half.device_split = {{"discrete", 24}};
+        const Plan streamed = plan_run(base_cfg(), mixed, model, half, PlanRequest{}, PlannerPolicy::defaults());
+        check(streamed.config.moe.enabled && streamed.config.n_gpu_layers == 24 &&
+                  streamed.config.device_list == std::vector<std::string>{"discrete"},
+              "isolated, streamed: the card that works keeps its layers and is the only device listed",
+              streamed.to_flags());
+
         // No runner: nothing is marked, and the probes here do the asking as they always did.
         HardwareProfile plain = unified();
         probe_devices_isolated(plain, nullptr);
