@@ -964,8 +964,10 @@ again with the device's name, which runs everything that touches that device and
 as one line. If the line comes back the facts are taken; if the child dies, or does not answer in
 its time, the device is marked unusable with the reason. Either way the probes in this process
 leave it alone. An unusable device is weighed by nothing and kept out of the run - the fitter is
-not asked about it, no layer is placed on it, and the host carries the run - because what ended the
-probe would end the load the same way.
+not asked about it, no layer is placed on it, and the run names the devices that survived so
+llama.cpp's default list does not hand it back - because what ended the probe would end the load the
+same way. The devices that survived keep what the fitter placed on them; with none left, the host
+carries the run (`surviving_devices`, #606).
 
 The same phone, the same build: the plan now completes in 23 s, prints
 `device Vulkan0: UNUSABLE - its probe ended the process that ran it (signal 11)`, keeps it out, and

@@ -18,6 +18,42 @@ Semantic Versioning.
   token stays 1e-3, a wrong kernel is off by 1e-1 or more, and a prefill device is still confirmed on the whole model when it loads. The CLI's `--plan` now
   says "different result" where it said "WRONG result".
 
+### Fixed
+- **A follow-up on a hybrid model no longer prefills the conversation again.** Context checkpoints are
+  now taken where llama.cpp's server takes them: at the start of a user message, found from the
+  template's own message delimiters (`common_chat_msg_spans`, no model named), and 4 and n_ubatch + 4
+  tokens before the end of the prompt, the prefill stopping at each. The only per-turn checkpoint was
+  at the end of the prompt, and the template renders the previous answer again a few tokens before it
+  (Qwen3.6 drops its think block), so a follow-up started from the last checkpoint before that, often
+  none. On a 16 GB Mac with Qwen3.6-35B-A3B and the prefill on the GPU, a follow-up after a 7k-token
+  prompt reused 1024 tokens and now reuses 6915 (15.9 s to 3.5 s); a new conversation with the same
+  4.4k-token system prompt reuses 4397 and starts in 0.9 s instead of 17.5 s, with the same answer as a
+  fresh session. When the list is full, the checkpoints close together go first, and the one at the end
+  of the system prompt goes last: with the oldest-first rule a long follow-up pushed it out, and on
+  @pt7777's runs (two phones and an ARM server, 4.3k-token preamble, 4 kept) a new conversation after a
+  20k-token one prefilled the preamble again, 400-580 s instead of 4-6 s. Gate G27; G22c now checks a
+  cut past a sliding window with checkpoints off and on. Co-authored by @pt7777, who found the missing
+  preamble checkpoint (#583, #600) and measured this on three machines.
+- **A card that works beside one that does not is used again** (#606). When a device failed its
+  probe in the second process (a build with no code for that card, a driver missing a function, a
+  device that never answers), the plan stopped the capacity fitter for every device and ran the
+  model on the CPU. On a desktop with two cards, one too old for the CUDA pack, a model the other
+  card could take decoded at 6 tok/s on the cores. The fitter is now asked of the devices that
+  survived, the run lists them by name so llama.cpp's default list does not hand the failed one
+  back, and the plan says which device was left out and why. With none left, the run is the host's
+  as before.
+- **The command-line tools installed by `install.sh` find their backends on macOS** (#605). The
+  engine looks for its backend modules in the folder of its own executable, and asked the platform
+  where that is. macOS names the path the process was started by, so through the link `install.sh`
+  puts on PATH (`~/.local/bin/bmoe-cli` to `~/.local/lib/bigmoeonedge/bmoe-cli`) the search went to
+  the link's folder, found nothing, and `bmoe-cli` and `bmoe-server` registered no backend at all,
+  not even the CPU: no model loaded, and the plan blamed the build. The executable's path is now the
+  file's own with every link resolved, on every platform (Linux already reported it so, which is why
+  only macOS was hit). A test starts itself through a link and checks the path it is told
+  (`self_path`), and the release workflow now installs each command-line archive the way
+  `install.sh` does and fails when the server started through the link registers other backends than
+  started beside them.
+
 ## [0.43.1] - 2026-11-14
 
 ### Added

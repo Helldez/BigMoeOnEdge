@@ -727,6 +727,39 @@ jobs:
               ;;
           esac
 
+      # The command-line archive installed as install.sh installs it: unpacked into a folder of its
+      # own, each tool a link on PATH, started from elsewhere. The backends the server registers
+      # through the link must be the ones it registers started from its own folder, and there must
+      # be some: a release whose tools found their modules only when started beside them shipped
+      # once (#605). Whatever this runner's backends are, the two answers must agree.
+      - name: Smoke the command-line archive as installed
+        if: runner.os != 'Windows'
+        shell: bash
+        timeout-minutes: 10
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          ROOT="$(mktemp -d)"
+          PREFIX="$ROOT/lib/bigmoeonedge"; BIN="$ROOT/bin"
+          mkdir -p "$PREFIX" "$BIN"
+          tar -xzf "bmoe-cli-$TAG-${{ matrix.target }}.tar.gz" -C "$PREFIX" --strip-components=1
+          for c in bmoe-cli bmoe-server; do ln -sf "$PREFIX/$c" "$BIN/$c"; done
+          registered() { # <server>: the backends it registers at start, one line, sorted
+            "$1" --port 8766 --data-dir "$ROOT/data" > "$ROOT/server.log" 2>&1 &
+            local pid=$!
+            curl -fsS --max-time 10 --retry 60 --retry-delay 1 --retry-connrefused \
+              http://127.0.0.1:8766/api/backends > "$ROOT/backends.json" || { cat "$ROOT/server.log"; kill "$pid"; return 1; }
+            kill "$pid"; wait "$pid" 2> /dev/null || true
+            python3 -c 'import json,sys; print(" ".join(sorted(json.load(open(sys.argv[1]))["registered"])))' "$ROOT/backends.json"
+          }
+          beside="$(cd "$PREFIX" && registered ./bmoe-server)"
+          linked="$(cd "$ROOT" && registered "$BIN/bmoe-server")"
+          echo "started beside its modules: $beside"
+          echo "started through the link:   $linked"
+          [ -n "$beside" ] || { echo "the server registers no backend even beside its modules"; exit 1; }
+          [ "$linked" = "$beside" ] || { echo "started through a link, the server finds other backends (#605)"; exit 1; }
+          "$BIN/bmoe-cli" --version
+
       # Always a workflow artifact: the dry run's result, and what `publish` attaches to a release.
       - name: Keep as workflow artifact
         uses: actions/upload-artifact@v7

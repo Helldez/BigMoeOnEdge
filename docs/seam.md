@@ -187,7 +187,10 @@ reason. The integration changes neither upstream code nor the streamed-weight la
 
 `context_checkpoints.cpp` keeps its checkpoints in `common_prompt_checkpoint`, the type llama.cpp's
 server keeps them in, and copies them with its `update_tgt` / `load_tgt` helpers, which call the public
-`llama_state_seq_*_ext` functions with `LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY`. The restore rule (how far
+`llama_state_seq_*_ext` functions with `LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY`. Where they are taken is
+the server's rule too, over the user messages `common` finds with the template's message delimiters
+(`common_chat_msg_delimiters::split`); the server's loop itself is not a library, so the rule is
+written again in `ContextCheckpoints::next_stop`. The restore rule (how far
 back a checkpoint may reach under a sliding window) is the server's, and the MTP driver's own state is
 saved beside it with `common_speculative_get_state`, as the server does. See [session.md](session.md).
 

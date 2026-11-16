@@ -58,14 +58,16 @@ Placement probe_placement(const char * model_path,
     Placement pl;
     if (!model_path || !*model_path || !model.ok) return pl;
 
-    // The fitter works by asking every device, and a device that did not survive its own probe is
-    // not one to ask again from this process: what ended the probe would end the plan. Nothing is
-    // placed, which is also the answer the run needs - that device is being kept out of it.
-    for (const ComputeDevice & d : hw.devices)
-        if (!d.is_cpu && d.usable == Tri::No) {
-            pl.outcome = "the capacity fitter was not run: " + d.name + " failed its probe";
-            return pl;
-        }
+    // The fitter works by asking every device it is handed, and a device that did not survive its own
+    // probe is not one to ask again from this process: what ended the probe would end the plan. So it
+    // is asked of the others only. One failed device used to stop the fitter for all of them, and a
+    // card that works next to one that does not ran on the CPU (#606).
+    bool dropped = false;
+    const std::vector<std::string> alive = surviving_devices(hw, devices, &dropped);
+    if (dropped && alive.empty()) {
+        pl.outcome = "the capacity fitter was not run: no device survived its probe";
+        return pl;
+    }
 
     // The fitter only touches parameters still at their default, and it refuses to run at all if
     // tensor_buft_overrides is already set — so the experts-on-host pin is not something we pass
@@ -111,13 +113,13 @@ Placement probe_placement(const char * model_path,
     // own; on a shared pool the projector is the host's and the placement is set aside anyway.
     size_t n_dev_local = 0;
     for (const ComputeDevice & d : hw.devices)
-        if (d.has_own_memory() && d.memory_total > 0) ++n_dev_local;
+        if (d.usable != Tri::No && d.has_own_memory() && d.memory_total > 0) ++n_dev_local;
     const uint64_t projector_reserved = n_dev_local ? model.projector_bytes : 0;
     margins[0] += (size_t) projector_reserved;
     // Only the devices that add capacity: one layer on an integrated GPU beside a discrete card would
     // set the whole placement aside below (capacity_devices).
     std::vector<ggml_backend_dev_t> listed;
-    for (const std::string & n : capacity_devices(hw, devices))
+    for (const std::string & n : capacity_devices(hw, alive))
         if (ggml_backend_dev_t dev = ggml_backend_dev_by_name(n.c_str())) listed.push_back(dev);
     if (!listed.empty()) {
         listed.push_back(nullptr);

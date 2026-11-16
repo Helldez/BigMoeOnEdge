@@ -21,7 +21,7 @@ void ContextCheckpoints::configure(int max_count, int min_step, int n_swa) {
     max_count_ = std::max(0, max_count);
     min_step_ = std::max(0, min_step);
     n_swa_ = std::max(0, n_swa);
-    list_.clear();
+    clear();
 }
 
 bool ContextCheckpoints::wanted(int64_t n_tokens, bool prompt_end) const {
@@ -30,7 +30,52 @@ bool ContextCheckpoints::wanted(int64_t n_tokens, bool prompt_end) const {
     return n_tokens >= list_.back().n_tokens + min_step_;
 }
 
-bool ContextCheckpoints::create(const CheckpointContexts & c, int64_t n_tokens) {
+namespace {
+
+bool is_user_start(const std::vector<size_t> * starts, int64_t i) {
+    return starts && std::binary_search(starts->begin(), starts->end(), (size_t) i);
+}
+
+int64_t last_user_start(const std::vector<size_t> * starts) {
+    return starts && !starts->empty() ? (int64_t) starts->back() : -1;
+}
+
+} // namespace
+
+int64_t ContextCheckpoints::next_stop(const Stops & s, int64_t i, int64_t chunk) const {
+    if (!enabled()) return i + chunk;
+    int64_t stop = i + chunk;
+    const auto inside = [&](int64_t p) { return p > i && p < stop; };
+    if (s.user_starts) {
+        const int64_t last = list_.empty() ? -1 : list_.back().n_tokens;
+        for (auto it = std::upper_bound(s.user_starts->begin(), s.user_starts->end(), (size_t) i);
+             it != s.user_starts->end() && inside((int64_t) *it); ++it) {
+            const int64_t p = (int64_t) *it;
+            if (p == last_user_start(s.user_starts) || last < 0 || p > last + min_step_) {
+                stop = p;
+                break;
+            }
+        }
+    }
+    for (const int offset : {k_checkpoint_tail_tokens + s.n_ubatch, k_checkpoint_tail_tokens}) {
+        const int64_t p = s.n_prompt - std::min(s.n_batch, offset);
+        if (inside(p)) stop = p;
+    }
+    return stop;
+}
+
+bool ContextCheckpoints::wanted_at(const Stops & s, int64_t i, int64_t chunk) const {
+    if (!enabled() || i <= 0) return false;
+    const bool near_end = s.n_prompt < i + chunk + s.n_ubatch;
+    // A template that named no message boundaries: the prompt's last tokens, and the spacing rule
+    // inside it, as before.
+    if (!s.user_starts || s.user_starts->empty()) return near_end || wanted(i, /*prompt_end*/ false);
+    const bool user_start = is_user_start(s.user_starts, i);
+    if (!user_start && !near_end) return false;
+    return list_.empty() || i == last_user_start(s.user_starts) || near_end || i > list_.back().n_tokens + min_step_;
+}
+
+bool ContextCheckpoints::create(const CheckpointContexts & c, int64_t n_tokens, int turn, bool preamble) {
     if (!wanted(n_tokens, /*prompt_end*/ true) || !c.tgt) return false;
     // A memory that cuts anywhere has no partial state: nothing to keep, and nothing it would need.
     if (llama_state_seq_get_size_ext(c.tgt, k_seq, k_partial) == 0) return false;
@@ -39,10 +84,29 @@ bool ContextCheckpoints::create(const CheckpointContexts & c, int64_t n_tokens) 
     list_.erase(std::remove_if(list_.begin(), list_.end(),
                                [&](const common_prompt_checkpoint & k) { return k.n_tokens == n_tokens; }),
                 list_.end());
-    while ((int) list_.size() >= max_count_)
-        list_.erase(list_.begin());
+    if (preamble) preamble_ = n_tokens;
+    const bool hold = preamble_ >= 0 && max_count_ > k_checkpoint_turn_slots;
+    const auto held = [&](const common_prompt_checkpoint & k) { return hold && k.n_tokens == preamble_; };
+    // Full: first the ones an earlier request took within min_step of the one before them, so the
+    // sparse ones stay; then the oldest, the preamble's last.
+    if ((int) list_.size() + 1 >= max_count_) {
+        int64_t last = -1;
+        for (auto it = list_.begin(); it != list_.end();) {
+            if (!held(*it) && it->id_task != turn && last >= 0 && it->n_tokens <= last + min_step_) {
+                it = list_.erase(it);
+                continue;
+            }
+            last = it->n_tokens;
+            ++it;
+        }
+    }
+    while ((int) list_.size() >= max_count_) {
+        auto it = std::find_if_not(list_.begin(), list_.end(), held);
+        list_.erase(it != list_.end() ? it : list_.begin());
+    }
 
     common_prompt_checkpoint & k = list_.emplace_back();
+    k.id_task = turn;
     llama_memory_t mem = llama_get_memory(c.tgt);
     k.update_pos(n_tokens, llama_memory_seq_pos_min(mem, k_seq), llama_memory_seq_pos_max(mem, k_seq));
     k.update_tgt(c.tgt, k_seq, k_partial);
@@ -71,7 +135,7 @@ int64_t ContextCheckpoints::restore(const CheckpointContexts & c, int64_t n) {
         drop_after(kept);
         return kept;
     }
-    list_.clear();
+    clear();
     return 0;
 }
 
@@ -93,6 +157,7 @@ void ContextCheckpoints::drop_after(int64_t n) {
     list_.erase(
         std::remove_if(list_.begin(), list_.end(), [&](const common_prompt_checkpoint & k) { return k.n_tokens > n; }),
         list_.end());
+    if (preamble_ > n) preamble_ = -1;
 }
 
 size_t ContextCheckpoints::bytes() const {
