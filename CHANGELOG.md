@@ -7,6 +7,21 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Fixed
+- **A follow-up on a hybrid model no longer prefills the conversation again.** Context checkpoints are
+  now taken where llama.cpp's server takes them: at the start of a user message, found from the
+  template's own message delimiters (`common_chat_msg_spans`, no model named), and 4 and n_ubatch + 4
+  tokens before the end of the prompt, the prefill stopping at each. The only per-turn checkpoint was
+  at the end of the prompt, and the template renders the previous answer again a few tokens before it
+  (Qwen3.6 drops its think block), so a follow-up started from the last checkpoint before that, often
+  none. On a 16 GB Mac with Qwen3.6-35B-A3B and the prefill on the GPU, a follow-up after a 7k-token
+  prompt reused 1024 tokens and now reuses 6915 (15.9 s to 3.5 s); a new conversation with the same
+  4.4k-token system prompt reuses 4397 and starts in 0.9 s instead of 17.5 s, with the same answer as a
+  fresh session. When the list is full, the checkpoints close together go first, and the one at the end
+  of the system prompt goes last: with the oldest-first rule a long follow-up pushed it out, and on
+  @pt7777's runs (two phones and an ARM server, 4.3k-token preamble, 4 kept) a new conversation after a
+  20k-token one prefilled the preamble again, 400-580 s instead of 4-6 s. Gate G27; G22c now checks a
+  cut past a sliding window with checkpoints off and on. Co-authored by @pt7777, who found the missing
+  preamble checkpoint (#583, #600) and measured this on three machines.
 - **A card that works beside one that does not is used again** (#606). When a device failed its
   probe in the second process (a build with no code for that card, a driver missing a function, a
   device that never answers), the plan stopped the capacity fitter for every device and ran the
