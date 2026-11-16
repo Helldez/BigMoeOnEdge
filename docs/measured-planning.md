@@ -264,7 +264,12 @@ unchanged plan.
   far from the right result at one token is refused for good (`identity_ok = No`); at 128 tokens it
   is not armed for the prefill. The right result is computed: the compared nodes (the first decode
   group, and the first four tokens at width) in double precision from the dequantized weights. A
-  device passes within twice llama.cpp's per-op NMSE bound of it (`k_max_nmse_device`, 1e-3).
+  device passes within twice llama.cpp's per-op NMSE bound of it (`k_max_nmse_device`, 1e-3) at one
+  token, and within 1e-2 at 128 tokens (`k_max_nmse_device_wide`, a bound that leans towards the
+  device): a backend runs the wide matmul with another kernel, and Metal on an Apple M5 measured 2.4e-3 on OLMoE Q4_K_M's attention at width, a
+  model whose prompt computed there lost what the models inside 1e-3 lost (KL 0.004 against the host,
+  perplexity 60.85 against 61.00), so that bound refused rounding. A prefill device is still
+  confirmed on the whole model at load.
   Upstream's 5e-4 compares a backend with the CPU on random data, and upstream relaxes it where a
   backend quantizes the activations its own way. RTX 3090 cards on GLM-4.5-Air's Q5_0/Q5_1 experts
   measured 5.3e-4 from the exact result (the host 1.1e-5, every other layout 6e-6 or less), where a

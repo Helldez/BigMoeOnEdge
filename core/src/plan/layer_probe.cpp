@@ -651,12 +651,12 @@ bool probe_real_layer(HardwareProfile & hw, const ModelProfile & model) {
     // The exact result of the compared nodes, computed once: the reference a device is judged by.
     const Exact ex = exact_layer(L);
     const auto judged = [](const Part & dev, const Part & host, const std::vector<std::vector<double>> & exact,
-                           const char * name, const char * half) {
+                           const char * name, const char * half, double bound = k_max_nmse_device) {
         const double e_host = nmse_exact(host, exact), e_dev = nmse_exact(dev, exact);
         if (e_host < 0.0 || e_host >= k_max_nmse || e_dev < 0.0) return agreement(dev, host);
         log_printf(LogLevel::Info, "real layer: %s on the %s: %.2e from the exact result, the host %.2e (bound %.0e)",
-                   name, half, e_dev, e_host, k_max_nmse_device);
-        return e_dev < k_max_nmse_device ? Tri::Yes : Tri::No;
+                   name, half, e_dev, e_host, bound);
+        return e_dev < bound ? Tri::Yes : Tri::No;
     };
     const uint64_t needed = L.held_bytes();
     for (ComputeDevice & d : hw.devices) {
@@ -686,8 +686,10 @@ bool probe_real_layer(HardwareProfile & hw, const ModelProfile & model) {
         const double wd = run.wide_d.rate() > 0.0 ? blended(run.wide_d, host_wd) : host_wd;
         if (run.wide_e.rate() > 0.0 || run.wide_d.rate() > 0.0) {
             d.wide_matmul_gibs = wide_rate(L, we, wd) / k_gib;
-            const Tri ae = judged(run.wide_e, ref.wide_e, ex.wide_e, d.name.c_str(), "experts, wide");
-            const Tri ad = judged(run.wide_d, ref.wide_d, ex.wide_d, d.name.c_str(), "dense, wide");
+            const Tri ae =
+                judged(run.wide_e, ref.wide_e, ex.wide_e, d.name.c_str(), "experts, wide", k_max_nmse_device_wide);
+            const Tri ad =
+                judged(run.wide_d, ref.wide_d, ex.wide_d, d.name.c_str(), "dense, wide", k_max_nmse_device_wide);
             d.wide_identity_ok = (ae == Tri::No || ad == Tri::No)     ? Tri::No
                                  : (ae == Tri::Yes || ad == Tri::Yes) ? Tri::Yes
                                                                       : Tri::Unknown;

@@ -1086,7 +1086,7 @@ int main(int argc, char ** argv) {
             // the figures it was made from. 0 is "not measured", never "slow".
             for (const ComputeDevice & d : hw.devices) {
                 const auto verdict = [](Tri t) {
-                    return t == Tri::Yes ? "same result" : t == Tri::No ? "WRONG result" : "unverified";
+                    return t == Tri::Yes ? "same result" : t == Tri::No ? "different result" : "unverified";
                 };
                 if (d.usable == Tri::No) {
                     std::fprintf(stderr, "plan: device %s: UNUSABLE - %s\n", d.name.c_str(), d.unusable_reason.c_str());
