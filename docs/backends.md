@@ -263,7 +263,8 @@ each of the others.
 NVIDIA runtime and cuBLAS, HIP against ROCm) is not in the installers but a pack of its own, which
 the desktop app installs where it applies ([desktop-app.md](desktop-app.md)). The server installs
 it into `<data>/backends/<id>/`, and at start-up the engine loads modules from each folder under
-`<data>/backends/` after the executable's own: `core/` does not know the data folder, so
+`<data>/backends/` after the executable's own (the folder of the executable's file, every link to
+it resolved, so a link on PATH such as `install.sh` makes still finds them: #605). `core/` does not know the data folder, so
 `register_backends()` takes the folders from its front-end (the server; the CLI passes none and
 loads from its own folder only). A folder adds a module only for a backend no folder before it
 had, the executable's first, so no device registers twice; within a folder the module named after

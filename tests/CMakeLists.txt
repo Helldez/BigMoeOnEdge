@@ -144,6 +144,14 @@ target_link_libraries(bmoe_file_reader_test PRIVATE bmoe_core)
 target_include_directories(bmoe_file_reader_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/io)
 add_test(NAME file_reader COMMAND bmoe_file_reader_test)
 
+# self_path: the executable's own file with every link resolved, so a link on PATH (what install.sh
+# puts there) still finds the backend modules beside the real file (#605). Starts itself again
+# through a link; no model.
+add_executable(bmoe_self_path_test self_path_test.cpp)
+target_link_libraries(bmoe_self_path_test PRIVATE bmoe_core)
+target_include_directories(bmoe_self_path_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/io)
+add_test(NAME self_path COMMAND bmoe_self_path_test)
+
 # The llama.cpp log bridge: DEBUG dropped unless asked, CONT following its message, a requested
 # cancel's decode errors demoted while it is in flight. Drives the installed callback; no model.
 add_executable(bmoe_llama_log_test llama_log_test.cpp)

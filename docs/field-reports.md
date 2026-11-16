@@ -66,6 +66,28 @@ desktop app is not affected: it installs the pack itself.
 
 ## Fixed
 
+### macOS, installed with `install.sh`: "no backends are loaded", no model loads (#605)
+
+**Seen on** 0.42.0, macOS on an Apple silicon desktop with 16 GB, the command-line tools installed
+with the one-line `install.sh`. Every model failed to load; the same code built from source ran.
+
+**How to recognise it.** `bmoe-cli` prints `llama_model_load_from_file_impl: no backends are
+loaded` and `could not load the model`; `--plan` says the build "carries no accelerator backend";
+`--probe-device MTL0` answers `no such device to probe`. Started as
+`~/.local/lib/bigmoeonedge/bmoe-cli` instead of plain `bmoe-cli`, the same command works.
+
+**Cause.** The backends are modules beside the executable (`libggml-cpu.so`, `libggml-metal.so`,
+...), and the engine looks for them in the executable's folder. On macOS it took that folder from
+the path the process was started by, which is the link `install.sh` puts in `~/.local/bin`, not the
+folder the files are in; nothing was found there, not even the CPU module. Linux reports the file's
+own path, so only macOS was affected, and the desktop app, started from its own bundle, was not.
+
+**Fixed in** the release after 0.43.1 (#605): the executable's path has its links resolved before
+its folder is searched.
+
+**Workaround.** Run the tools by their full path, `~/.local/lib/bigmoeonedge/bmoe-cli` (and
+`bmoe-server`), or put that folder on PATH in place of the links.
+
 ### A graphics card beside integrated graphics: the model runs on the CPU
 
 **Seen on** 0.42.0, the desktop app: a 32 GB card, a desktop processor with integrated graphics,
