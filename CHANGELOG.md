@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.43.2] - 2026-11-16
 
 ### Changed
 - **A device's result at prompt width is judged within 1e-2 of the exact one, no longer 1e-3.** A
