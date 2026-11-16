@@ -288,6 +288,7 @@ bool parse_chat_request(const json & body, const RunConfig & cfg, OpenAiChatRequ
     out.stream = body.contains("stream") && body["stream"].is_boolean() && body["stream"].get<bool>();
     out.include_usage = body.contains("stream_options") && body["stream_options"].is_object() &&
                         body["stream_options"].value("include_usage", json(false)) == json(true);
+    out.return_progress = body.contains("return_progress") && body["return_progress"] == json(true);
     return true;
 }
 

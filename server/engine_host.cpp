@@ -53,6 +53,16 @@ public:
     bool vision() const override { return s_->vision(); }
     RoutingTrace routing_record() const override { return s_->routing_record(); }
     MeasuredKnobs measured_knobs() const override { return s_->measured_knobs(); }
+    std::vector<int32_t> tokenize(const std::string & text, bool add_special, bool parse_special) const override {
+        return s_->tokenize(text, add_special, parse_special);
+    }
+    std::string token_piece(int32_t token) const override { return s_->token_piece(token); }
+    bool detokenize(const std::vector<int32_t> & tokens, std::string & text) const override {
+        return s_->detokenize(tokens, text);
+    }
+    bool render_chat(const GenerateRequest & req, std::string & prompt, std::string & error) const override {
+        return s_->render_chat(req, prompt, error);
+    }
 
 private:
     std::unique_ptr<Session> s_;
@@ -392,6 +402,25 @@ void EngineHost::unload() {
     publish_state();
 }
 
+bool EngineHost::with_session(const std::function<void(const HostedSession &)> & f) const {
+    // Held across `f`: every place that closes a session takes m_ to drop it, so it outlives the call.
+    std::lock_guard<std::mutex> lk(m_);
+    if (state_ != State::Ready || !session_) return false;
+    f(*session_);
+    return true;
+}
+
+std::string EngineHost::scrape_metrics() {
+    ServeTotals t;
+    {
+        std::lock_guard<std::mutex> lk(m_);
+        t = totals_;
+        totals_.window_prompt_tokens = totals_.window_predicted_tokens = 0;
+        totals_.window_prompt_seconds = totals_.window_predicted_seconds = 0.0;
+    }
+    return metrics_text(t, generating_ ? 1 : 0, (int) turns_.waiting());
+}
+
 json EngineHost::last_turn() const {
     std::lock_guard<std::mutex> lk(m_);
     return last_turn_;
@@ -502,7 +531,8 @@ std::unique_lock<std::mutex> EngineHost::take_turn() {
 ChatOutcome EngineHost::chat(const ChatRequest & req,
                              const std::function<bool(const TokenMetrics &)> & on_token,
                              const std::function<bool()> & still_wanted,
-                             const std::atomic<bool> * stop) {
+                             const std::atomic<bool> * stop,
+                             const std::function<void(const PrefillProgress &)> & on_prefill) {
     ChatOutcome out;
     // Declared first, so it runs last: after the turn has left the line and released the model.
     struct TurnEnd {
@@ -564,6 +594,7 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
     gr.json_schema = req.json_schema;
     gr.render_text = true;
     gr.stop = stop;
+    gr.on_prefill = on_prefill;
 
     generating_ = true;
     publish_state();
@@ -623,6 +654,10 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
     if (!out.result.cancelled && sum.n_predict > 0 && context_set_budget && sum.n_generated >= sum.n_predict)
         log_context_cut(s->n_ctx(), gr.n_predict, sum.n_predict);
     // A cancelled turn is no measurement: it stopped at a moment the person chose, often mid-load.
+    {
+        std::lock_guard<std::mutex> lk(m_);
+        totals_.add(sum);
+    }
     if (!out.result.cancelled && sum.n_generated > 0 && sum.s_per_token > 0) {
         std::lock_guard<std::mutex> lk(m_);
         // The decode's own hit rate, the figure the plan credits; the session-cumulative one also
