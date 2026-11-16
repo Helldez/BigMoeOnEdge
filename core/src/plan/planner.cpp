@@ -3348,25 +3348,43 @@ void choose_gate_mirror(Planning & s) {
 
 // ── which devices the run lists ─────────────────────────────────────────────────
 // A device that did not survive its probe stays out of the run, whatever else is decided. This is
-// not a preference: what ended the probe - a driver without a function the backend calls, a device
-// that never answers - would end the run the same way, at load. The host carries it, unless a
-// different device was armed for the prefill, which is then the only one listed.
+// not a preference: what ended the probe - a driver without a function the backend calls, a build
+// with no code for that device, a device that never answers - would end the run the same way, at
+// load. The devices that did survive carry what the fitter placed on them, and the run lists them by
+// name, so llama.cpp's default list does not hand the failed one back. With nothing placed on them,
+// the host carries it, unless a different device was armed for the prefill, which is then the only
+// one listed.
 //
 // And where nothing is going on a device, no device should be in the graph. It is not enough to
 // decline a placement: a registered backend collects work on its own, and every piece it collects
 // is a crossing. Measured with zero layers placed - 61 splits a token, and a build carrying the
 // backend losing to one without it. A caller who wants the device anyway pins the knob.
-void choose_devices(Planning & s) {
+// Returns whether a device failed, which settles the knob. Asked on every path, the resident one
+// too: there the fitter's placement is the whole plan, and an unnamed list would load the failed
+// device beside the layers.
+bool leave_out_failed_devices(Planning & s) {
     RunConfig & c = s.p.config;
     std::string broken;
     for (const ComputeDevice & d : s.hw.devices)
         if (!d.is_cpu && d.usable == Tri::No)
             broken += (broken.empty() ? "" : "; ") + d.name + ": " + d.unusable_reason;
     if (!broken.empty()) {
+        bool dropped = false;
+        const std::vector<std::string> alive = surviving_devices(s.hw, c.device_list, &dropped);
         if (s.req.is_pinned("devices")) {
             s.note("devices", "as set", Source::Operator, "Devices as you set them, though one failed its check.",
                    "set by the caller, and left alone - but a device here failed its probe (" + broken +
                        "), and a run that lists it may end the same way");
+        } else if (!alive.empty() && (c.n_gpu_layers != 0 || c.dense_on_device)) {
+            if (dropped) c.device_list = alive;
+            std::string names;
+            for (const std::string & n : alive)
+                names += (names.empty() ? "" : ",") + n;
+            s.note("devices", names, Source::Measured,
+                   "A device that failed its check is left out; the others run the model.",
+                   "a device was probed in a process of its own and did not survive it (" + broken +
+                       "): it is kept out of the run, and the devices that survived keep what the fitter "
+                       "placed on them");
         } else {
             if (!c.prefill.enabled()) c.device_use = DeviceUse::CpuOnly;
             c.n_gpu_layers = 0;
@@ -3376,9 +3394,14 @@ void choose_devices(Planning & s) {
                    "a device was probed in a process of its own and did not survive it (" + broken +
                        "): it is kept out of the run, which is the only way the run starts");
         }
-        return;
+        return true;
     }
+    return false;
+}
 
+void choose_devices(Planning & s) {
+    if (leave_out_failed_devices(s)) return;
+    RunConfig & c = s.p.config;
     if (s.req.is_pinned("devices") || c.n_gpu_layers != 0 || c.dense_on_device || c.prefill.enabled()) return;
     size_t non_cpu = 0;
     for (const ComputeDevice & d : s.hw.devices)
@@ -3782,6 +3805,7 @@ Plan plan_once(const RunConfig & base,
         // Resident, the cores still compute whatever the devices do not: the layers the fitter left on
         // the host, or all of them. Leaving the count at its default here ran a 24 GB card's 21 host
         // layers on 4 threads of a 32-core box, at 26 tok/s where 16 threads decoded at 47.5.
+        leave_out_failed_devices(s);
         choose_threads(s);
         return p;
     }

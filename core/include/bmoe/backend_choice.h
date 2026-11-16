@@ -42,4 +42,11 @@ HardwareProfile without_left_out(const HardwareProfile & hw, const BackendChoice
 // integrated GPU out beside a discrete one. Where none has, `listed` is returned as it is.
 std::vector<std::string> capacity_devices(const HardwareProfile & hw, const std::vector<std::string> & listed);
 
+// The devices of `listed` that survived their probe. An empty `listed` stands for every device
+// registered (llama.cpp's own default list), so where one of them did not survive, the others are
+// named instead: left empty, the list would hand the failed device straight back. Where every device
+// survived, `listed` is returned as it is and `dropped` (when given) is false.
+std::vector<std::string>
+surviving_devices(const HardwareProfile & hw, const std::vector<std::string> & listed, bool * dropped = nullptr);
+
 } // namespace bmoe

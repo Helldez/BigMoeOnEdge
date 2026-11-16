@@ -66,6 +66,26 @@ desktop app is not affected: it installs the pack itself.
 
 ## Fixed
 
+### Two cards, one unsupported: the model runs on the CPU (#606)
+
+**Seen on** 0.42.0, Linux, the CUDA pack: a desktop with a 12 GB card and an older 11 GB card the
+pack has no code for, 96 GB of RAM, a MoE model larger than either card. 6 tok/s on the CPU.
+
+**How to recognise it.** The plan prints `device ...: UNUSABLE - its probe ended the process that
+ran it`, then `placement none` with "the capacity fitter was not run", and `devices` reads "cpu
+only" or "prefill device only". Running the failed device's probe by hand (`bmoe-cli --probe-device
+<name>`) shows the backend's own error, here `no kernel image is available for execution on the
+device`.
+
+**Cause.** A device that failed its probe stopped the capacity fitter for every device, not only
+for itself, so the card that works got no layer either.
+
+**Fixed in** the release after 0.43.1 (#606): the fitter is asked of the devices that survived their
+probe, and the run lists them by name (`surviving_devices`, [hardware-planning.md](hardware-planning.md#a-device-is-probed-in-a-process-of-its-own)).
+
+**On 0.43.1 and earlier**, hide the failed card from every backend that sees it, for instance
+`CUDA_VISIBLE_DEVICES=0 GGML_VK_VISIBLE_DEVICES=` on Linux with the working card first.
+
 ### macOS, installed with `install.sh`: "no backends are loaded", no model loads (#605)
 
 **Seen on** 0.42.0, macOS on an Apple silicon desktop with 16 GB, the command-line tools installed
