@@ -16,6 +16,14 @@
 
 namespace bmoe {
 
+// One candidate at a token's position: its id, its text (special tokens spelled out) and its
+// natural log-probability.
+struct TokenLogprob {
+    int32_t id = 0;
+    std::string piece;
+    float logprob = 0.0f;
+};
+
 struct TokenMetrics {
     int step = 0;            // 1-based index of this token
     int steps = 0;           // n_predict target
@@ -115,6 +123,12 @@ struct TokenMetrics {
     // client that concatenates fragments relies on). Display-only: what the turn decided is
     // RunResult::tool_calls. Empty with chat off or when the answer has no call.
     std::vector<ChatToolCall> tool_calls;
+    // Only when GenerateRequest::n_probs asks: this token's log-probability and the most likely
+    // tokens at its position, most likely first, from the model's own distribution before any
+    // sampling stage (what llama.cpp's server and the OpenAI protocol report as logprobs).
+    bool has_logprobs = false;
+    float logprob = 0.0f;
+    std::vector<TokenLogprob> top_logprobs;
 };
 
 struct RunSummary {

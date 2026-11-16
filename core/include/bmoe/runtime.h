@@ -39,6 +39,8 @@ struct RunResult {
     // The tool calls the turn made, parsed out of the generation by the model's own chat format.
     // Empty unless the request described tools. A turn that calls usually has no answer text.
     std::vector<ChatToolCall> tool_calls;
+    // The GenerateRequest::stop_text entry the answer stopped at; empty when it stopped otherwise.
+    std::string stop_text;
     RunSummary summary;
     // What the session recorded of the model's routing (Session::routing_record). run() fills it;
     // Session::generate() leaves it empty, since a session's record spans its turns.

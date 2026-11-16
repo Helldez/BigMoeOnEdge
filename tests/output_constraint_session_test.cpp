@@ -13,6 +13,7 @@
 #include "llama.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -361,6 +362,108 @@ void streamed_identity(const std::string & model, bool sampled, const GrammarOra
 }
 } // namespace
 
+// A request's own sampling, stop text, grammar, logprobs and prefill progress, on real decodes: each
+// changes what the request asked and nothing else, and a request that asks nothing decodes as before.
+void request_controls(const std::string & model) {
+    std::string error;
+    auto greedy = bmoe::Session::open(config(model, false), error);
+    auto sampled = bmoe::Session::open(config(model, true), error);
+    check(greedy && sampled, "request controls: both sessions open", error);
+    if (!greedy || !sampled) return;
+
+    const auto plain = request("", 24);
+    const auto reference = generate(*greedy, plain);
+    check(reference.result.ok && reference.result.generated_text.size() >= 8, "request controls: a greedy reference",
+          reference.result.error);
+    if (!reference.result.ok || reference.result.generated_text.size() < 8) return;
+    const std::string & ref = reference.result.generated_text;
+
+    // temperature 0 on a session that samples is the greedy answer.
+    auto req = plain;
+    req.sampling = bmoe::RequestSampling{};
+    req.sampling->temp = 0.0f;
+    check(generate(*sampled, req).result.generated_text == ref,
+          "request controls: temperature 0 decodes greedily on a sampling session");
+
+    // A fixed seed draws the same answer twice; the session's own seed is left alone.
+    req.sampling->temp = 1.0f;
+    req.sampling->seed = 1234u;
+    const auto first = generate(*greedy, req), second = generate(*greedy, req);
+    check(first.result.ok && first.result.generated_text == second.result.generated_text,
+          "request controls: a request's seed reproduces its answer");
+    check(generate(*greedy, plain).result.generated_text == ref,
+          "request controls: the next request without sampling decodes as before");
+
+    // A stop ends the answer before it, says which stop, and is never shown while it forms. Two
+    // ASCII characters past the first: the fixture writes stray bytes too, which the answer's text
+    // shows as replacement characters, so a stop cut from that text may not be in what was generated.
+    size_t at = 1;
+    while (at + 1 < ref.size() && !(std::isalnum((unsigned char) ref[at]) && std::isalnum((unsigned char) ref[at + 1])))
+        ++at;
+    check(at + 1 < ref.size(), "request controls: the reference has two ASCII characters to stop at");
+    if (at + 1 >= ref.size()) return;
+    const std::string stop = ref.substr(at, 2);
+    auto stopped = plain;
+    stopped.stop_text = {"\x01never", stop};
+    const auto s = generate(*greedy, stopped);
+    const std::string want = ref.substr(0, ref.find(stop));
+    bool shown_clean = true;
+    for (const auto & row : s.rows)
+        if (row.text.find(stop) != std::string::npos || want.compare(0, row.text.size(), row.text) != 0)
+            shown_clean = false;
+    check(s.result.ok && s.result.generated_text == want && s.result.stop_text == stop && shown_clean,
+          "request controls: a stop ends the answer before it and is never streamed", s.result.generated_text);
+
+    // A GBNF grammar holds the whole answer.
+    auto gram = plain;
+    gram.grammar = R"(root ::= "ab" "c"*)";
+    gram.n_predict = 6;
+    const auto g = generate(*greedy, gram);
+    const std::string & gt = g.result.generated_text;
+    check(g.result.ok && gt.rfind("ab", 0) == 0 && gt.find_first_not_of('c', 2) == std::string::npos,
+          "request controls: a request's grammar holds the answer", gt + " " + g.result.error);
+    gram.grammar = "root ::= (";
+    const auto bad = generate(*greedy, gram);
+    check(!bad.result.ok && bad.result.error_kind == bmoe::RunError::InvalidRequest,
+          "request controls: a grammar that does not parse is the request's fault");
+
+    // logprobs: every token reports its candidates, most likely first, and greedy takes the first.
+    auto probs = plain;
+    probs.n_probs = 3;
+    probs.n_predict = 6;
+    const auto p = generate(*greedy, probs);
+    bool sane = !p.rows.empty();
+    for (const auto & row : p.rows) {
+        sane = sane && row.has_logprobs && row.top_logprobs.size() == 3 && row.logprob <= 0.0f &&
+               row.top_logprobs[0].logprob >= row.top_logprobs[1].logprob &&
+               row.top_logprobs[1].logprob >= row.top_logprobs[2].logprob &&
+               row.top_logprobs[0].logprob == row.logprob && row.top_logprobs[0].piece == row.piece;
+    }
+    check(sane && p.result.generated_text == ref.substr(0, p.result.generated_text.size()),
+          "request controls: logprobs are reported and change nothing");
+
+    // Prefill progress: from nothing decoded to the whole prompt but its cached part.
+    std::vector<bmoe::PrefillProgress> steps;
+    auto prog = plain;
+    prog.n_predict = 2;
+    prog.on_prefill = [&](const bmoe::PrefillProgress & pp) { steps.push_back(pp); };
+    generate(*greedy, prog);
+    check(steps.size() >= 2 && steps.front().processed == 0 &&
+              steps.back().processed == steps.back().total - steps.back().cached && steps.back().total > 0,
+          "request controls: prefill progress runs from 0 to the prompt's uncached part");
+
+    // The tokenizer and the template outside a turn.
+    std::string text, prompt, err;
+    const auto ids = greedy->tokenize("hello", false, false);
+    check(!ids.empty() && greedy->detokenize(ids, text) && text == "hello" && !greedy->detokenize({-1}, text) &&
+              greedy->token_piece(ids[0]) == text.substr(0, greedy->token_piece(ids[0]).size()),
+          "request controls: tokenize and detokenize round-trip, an id outside the vocabulary refused");
+    bmoe::GenerateRequest chat;
+    chat.messages = {{"user", "hi"}};
+    check(greedy->render_chat(chat, prompt, err) && prompt.find("hi") != std::string::npos,
+          "request controls: the template renders a conversation outside a turn", err);
+}
+
 int main(int argc, char ** argv) {
     if (argc != 2) {
         std::fprintf(stderr, "usage: bmoe_output_constraint_session_test <tiny-model.gguf>\n");
@@ -378,5 +481,6 @@ int main(int argc, char ** argv) {
     speculation(argv[1], oracle);
     streamed_identity(argv[1], false, oracle);
     streamed_identity(argv[1], true, oracle);
+    request_controls(argv[1]);
     return failures ? 1 : 0;
 }

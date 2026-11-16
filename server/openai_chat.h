@@ -69,6 +69,10 @@ json tool_calls_delta(const std::vector<ChatToolCall> & calls);
 // the events add nothing a client reads.
 json tool_call_events_delta(const std::vector<ToolCallEvent> & events);
 
+// One token of an answer's `logprobs.content`, as OpenAI and llama-server write it: the token's
+// text, its logprob, its bytes, and up to `top` of the candidates at its position.
+json logprob_entry(const TokenMetrics & m, int top);
+
 // The chunk stream_options.include_usage asks for: no choices, only the counts.
 json usage_chunk_json(const ChatResponseMeta & meta, const RunSummary & s);
 
