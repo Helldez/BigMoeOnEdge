@@ -44,9 +44,11 @@ constexpr double k_max_nmse_device = 1e-3;
 // OLMoE Q4_K_M 2.4e-3 (0.0040, 61.00 and 60.85). The last was refused at 1e-3 and loses no more than
 // the ones that passed: one layer's distance does not order what the model loses, so the bound only
 // has to separate rounding from a wrong result. A prefill device is confirmed again on the whole model
-// at load (PrefillDeviceConfig::verify); decode width keeps k_max_nmse_device.
+// at load (PrefillDeviceConfig::verify); decode width keeps k_max_nmse_device. It is the bound of every
+// comparison at width, whichever the reference: the exact result, the host where that cannot be
+// computed, and the synthetic matmul a model with no readable layer is measured with.
 constexpr double k_max_nmse_device_wide = 1e-2;
-bool agrees(const std::vector<float> & a, const std::vector<float> & b);
+bool agrees(const std::vector<float> & a, const std::vector<float> & b, double bound = k_max_nmse);
 
 // One real layer of the model, built from the file's own tensors and bytes, run on the host (at
 // hw.best_threads) and on every device probed here, at decode width and at prefill width: the

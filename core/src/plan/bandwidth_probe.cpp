@@ -392,7 +392,7 @@ void probe_bandwidth(HardwareProfile & hw, const ModelProfile & model) {
             const RunResult r = run_gemv(dev, wide, 0, false);
             if (!r.ok) continue;
             d.wide_matmul_gibs = r.gibs;
-            d.wide_identity_ok = agrees(r.out, wide_ref) ? Tri::Yes : Tri::No;
+            d.wide_identity_ok = agrees(r.out, wide_ref, k_max_nmse_device_wide) ? Tri::Yes : Tri::No;
         }
     }
 

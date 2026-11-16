@@ -14,8 +14,8 @@ Semantic Versioning.
   anyway, that model's prompt lost what the models inside the old bound lost: KL 0.004 against the
   host's next-token distribution (Qwen3.6-35B Q4_K_M 0.003, Granite-3.1-3B Q4_K_M 0.007, both
   accepted before), perplexity 60.85 against the host's 61.00 over 5.9k tokens. The new bound
-  leans towards the device; the one at one token stays 1e-3, a wrong kernel is off by 1e-1 or more,
-  and a prefill device is still confirmed on the whole model when it loads. The CLI's `--plan` now
+  leans towards the device and is the same for every device, model and reference; the one at one
+  token stays 1e-3, a wrong kernel is off by 1e-1 or more, and a prefill device is still confirmed on the whole model when it loads. The CLI's `--plan` now
   says "different result" where it said "WRONG result".
 
 ## [0.43.1] - 2026-11-14
