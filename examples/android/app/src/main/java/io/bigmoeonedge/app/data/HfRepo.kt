@@ -99,7 +99,8 @@ data class HfFacts(
                 nExpertUsed = m.optInt("n_expert_used", 0),
                 nLayer = m.optInt("n_layer", 0),
                 nMoeLayer = m.optInt("n_moe_layer", 0),
-                denseBytes = m.optLong("dense_bytes", 0),
+                // What stays in memory: the server leaves out the tables read a row at a time.
+                denseBytes = m.optLong("resident_bytes", m.optLong("dense_bytes", 0)),
                 expertBytes = m.optLong("expert_bytes", 0),
                 tokenCycleBytes = m.optLong("token_cycle_bytes", 0),
                 streamable = m.optBoolean("streamable", false),

@@ -1759,6 +1759,18 @@ static void hf_tests() {
     in.budget = 1ull << 30;
     check(fit_verdict(in).memory.find("more than the 1024 MiB") != std::string::npos,
           "hf: a floor past the budget says so");
+    // A per-layer table gathered by row can be most of the dense bytes; the plan leaves it mapped.
+    in.dense_bytes = 31ull << 30;
+    in.mapped_bytes = 27ull << 30;
+    in.budget = 9ull << 30;
+    v = fit_verdict(in);
+    check(v.fit == "fits" && v.memory.find("4096 MiB stays resident") != std::string::npos &&
+              v.memory.find("27648 MiB of tables") != std::string::npos,
+          "hf: tables read a row at a time are not counted resident");
+    in.mapped_bytes = 0;
+    check(fit_verdict(in).fit == "will_not_fit", "hf: without them the same dense bytes do not fit");
+    in.dense_bytes = 1ull << 30;
+    in.budget = 1ull << 30;
     in.is_moe = false;
     in.streamable = false;
     check(fit_verdict(in).mode == "plain mmap", "hf: a dense model runs as plain mmap");
