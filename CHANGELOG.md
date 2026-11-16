@@ -6,6 +6,18 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Changed
+- **A device's result at prompt width is judged within 1e-2 of the exact one, no longer 1e-3.** A
+  backend runs a matmul over many tokens with another kernel than the one it runs a single token
+  with, and it may round more there. Metal on an Apple M5 measured 2.4e-3 on OLMoE Q4_K_M's
+  attention at 128 tokens, so the plan refused it for prompts as a wrong result. Computed there
+  anyway, that model's prompt lost what the models inside the old bound lost: KL 0.004 against the
+  host's next-token distribution (Qwen3.6-35B Q4_K_M 0.003, Granite-3.1-3B Q4_K_M 0.007, both
+  accepted before), perplexity 60.85 against the host's 61.00 over 5.9k tokens. The new bound
+  leans towards the device and is the same for every device, model and reference; the one at one
+  token stays 1e-3, a wrong kernel is off by 1e-1 or more, and a prefill device is still confirmed on the whole model when it loads. The CLI's `--plan` now
+  says "different result" where it said "WRONG result".
+
 ### Fixed
 - **A follow-up on a hybrid model no longer prefills the conversation again.** Context checkpoints are
   now taken where llama.cpp's server takes them: at the start of a user message, found from the
