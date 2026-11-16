@@ -79,6 +79,9 @@ struct HitPoint {
 
 struct HitCurve {
     bool measured = false;
+    // Not this model's routing: the prior every model without a record is credited (prior_hit_curve in
+    // bmoe/routing.h). Priced as a curve, said as a prior, and never kept as a record.
+    bool prior = false;
     // Ascending in cache_bytes, monotone in hit, starting at (0, 0). Between two points the share is
     // interpolated; past the last it holds the last.
     std::vector<HitPoint> points;
@@ -88,7 +91,9 @@ struct HitCurve {
     // rejected trace leaves `measured` false, and the plan is the one it would be without it.
     std::string rejected;
 
-    // The share served at `cache_bytes`, 0..1, non-decreasing in it. 0 when not measured.
+    // A curve the cost model prices by: this model's own, or the prior.
+    bool credited() const { return measured || prior; }
+    // The share served at `cache_bytes`, 0..1, non-decreasing in it. 0 when there is no curve.
     double hit_share(uint64_t cache_bytes) const;
 };
 
