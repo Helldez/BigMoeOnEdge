@@ -69,7 +69,8 @@
 //   G27 checkpoints where llama.cpp's server places them: on a memory that refuses the cut, a new
 //       conversation with the same system message restores the checkpoint at the start of its user
 //       message and answers exactly as a fresh session does, and a follow-up that sends the answer
-//       back reuses at least the preamble; a memory that cuts anywhere needs none.
+//       back reuses at least the preamble, and (c) the preamble's checkpoint outlives a conversation
+//       that fills the list; a memory that cuts anywhere needs none.
 //   G23 the KV cache at f16, llama.cpp's type: streaming == resident. q8_0 is the default, so every
 //       other gate runs on a quantized cache; this one keeps the lossless type covered. The cache
 //       type changes the output, never what streaming the experts produces.
@@ -2436,7 +2437,8 @@ int main(int argc, char ** argv) {
         auto config = [&](int checkpoints) {
             RunConfig c = stream0;
             c.chatml = true;
-            c.n_ctx = 4096;
+            c.n_ctx = 8192;
+            c.n_ubatch = 512; // a phone's: the n_ubatch + 4 checkpoint lands inside a long follow-up
             c.ctx_checkpoints = checkpoints;
             return c;
         };
@@ -2501,6 +2503,39 @@ int main(int argc, char ** argv) {
             std::printf("[%s] G27b a follow-up reused at least the preamble (prefilled %d of %d)\n",
                         reused ? "PASS" : "FAIL", follow[1].prefilled, follow[1].n_prompt);
             fails += reused ? 0 : 1;
+            // G27c — the preamble's checkpoint outlives a conversation that fills the list: with 4
+            // kept, a follow-up longer than a ubatch takes 4 of its own (its user message, n_ubatch + 4
+            // and 4 before its end, its end), and the oldest-first rule dropped the preamble's, so a new
+            // conversation after it prefilled the system message again.
+            std::string long_u;
+            while (long_u.size() < 1200)
+                long_u += "Now list the towns along the river, from the hills down to the sea. ";
+            auto next = msgs({{"system", sys}, {"user", u1}});
+            std::vector<std::vector<ChatMessage>> reqs{next};
+            std::vector<Step> prev;
+            for (const std::string & u : {long_u, std::string("And a bird?")}) {
+                prev.clear();
+                if (!run(4, reqs, prev)) {
+                    std::fprintf(stderr, "G27c run failed: %s\n", err.c_str());
+                    return 2;
+                }
+                next.push_back(ChatMessage{"assistant", prev.back().out});
+                next.push_back(ChatMessage{"user", u});
+                reqs.push_back(next);
+            }
+            reqs.push_back(fresh);
+            std::vector<Step> held;
+            if (!run(4, reqs, held)) {
+                std::fprintf(stderr, "G27c run failed: %s\n", err.c_str());
+                return 2;
+            }
+            const Step & last = held.back();
+            const bool kept = last.prefilled <= last.n_prompt - floor;
+            std::printf("[%s] G27c a new conversation after %zu turns with 4 checkpoints kept its preamble "
+                        "(prefilled %d of %d)\n",
+                        kept ? "PASS" : "FAIL", reqs.size() - 1, last.prefilled, last.n_prompt);
+            fails += kept ? 0 : 1;
+            fails += check("G27c a restored conversation == a fresh session", ref[0].out, last.out);
         }
     }
 

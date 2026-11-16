@@ -40,6 +40,10 @@ struct CheckpointContexts {
 // a template renders a past turn's header and reasoning envelope again differently, a few tokens
 // before the end of the prompt that sampled it, and a checkpoint has to be at or before that point.
 inline constexpr int k_checkpoint_tail_tokens = 4;
+// The checkpoints a turn needs at its end for the next request to reuse it: the one
+// k_checkpoint_tail_tokens before the prompt's end, and the one at the end. The preamble's checkpoint
+// is held back from eviction only when the list has room for it and for these.
+inline constexpr int k_checkpoint_turn_slots = 2;
 
 class ContextCheckpoints {
 public:
@@ -77,9 +81,13 @@ public:
     // Copy the cut-resistant state after the first n_tokens tokens of seq 0. Kept only when there is
     // such a state; returns whether one was kept.
     // turn: which request took it. When the list is full, a checkpoint an earlier request took within
-    // min_step of the one before it goes first, then the oldest: so the sparse ones, the preamble's
-    // among them, outlive the turns of a long conversation (llama.cpp's create_checkpoint).
-    bool create(const CheckpointContexts & c, int64_t n_tokens, int turn = -1);
+    // min_step of the one before it goes first, then the oldest (llama.cpp's create_checkpoint), except
+    // the preamble's. preamble: this one is at the start of the prompt's first user message, the end of
+    // the system prompt and tools a new conversation shares. It is the most valuable checkpoint and the
+    // oldest, so the oldest-first rule dropped it first: with 4 kept, a third new conversation prefilled
+    // the preamble again. The newest such checkpoint goes last, when the list holds more than it and
+    // k_checkpoint_turn_slots; one at another preamble takes its place.
+    bool create(const CheckpointContexts & c, int64_t n_tokens, int turn = -1, bool preamble = false);
     // The context refused to drop everything from position n: restore the newest checkpoint that
     // leaves the first `kept` tokens reusable, kept <= n, and drop the context past it. Returns kept,
     // 0 when no checkpoint helps (the caller then clears the context).
@@ -93,7 +101,10 @@ public:
     bool memory_covers(const CheckpointContexts & c, int64_t n) const;
     // The context now holds fewer than n tokens of what the checkpoints describe.
     void drop_after(int64_t n);
-    void clear() { list_.clear(); }
+    void clear() {
+        list_.clear();
+        preamble_ = -1;
+    }
 
     size_t count() const { return list_.size(); }
     size_t bytes() const;
@@ -108,6 +119,7 @@ private:
     int max_count_ = 0;
     int min_step_ = 0;
     int n_swa_ = 0;
+    int64_t preamble_ = -1; // n_tokens of the preamble's checkpoint, -1 when there is none
 };
 
 } // namespace bmoe::detail

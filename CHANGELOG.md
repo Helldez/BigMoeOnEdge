@@ -16,9 +16,12 @@ Semantic Versioning.
   none. On a 16 GB Mac with Qwen3.6-35B-A3B and the prefill on the GPU, a follow-up after a 7k-token
   prompt reused 1024 tokens and now reuses 6915 (15.9 s to 3.5 s); a new conversation with the same
   4.4k-token system prompt reuses 4397 and starts in 0.9 s instead of 17.5 s, with the same answer as a
-  fresh session. When the list is full, the checkpoints close together go first, so the one at the end
-  of the system prompt outlives the turns. Gate G27; G22c now checks a cut past a sliding window with
-  checkpoints off and on. Co-authored by @pt7777, who found the missing preamble checkpoint (#583, #600).
+  fresh session. When the list is full, the checkpoints close together go first, and the one at the end
+  of the system prompt goes last: with the oldest-first rule a long follow-up pushed it out, and on
+  @pt7777's runs (two phones and an ARM server, 4.3k-token preamble, 4 kept) a new conversation after a
+  20k-token one prefilled the preamble again, 400-580 s instead of 4-6 s. Gate G27; G22c now checks a
+  cut past a sliding window with checkpoints off and on. Co-authored by @pt7777, who found the missing
+  preamble checkpoint (#583, #600) and measured this on three machines.
 
 ## [0.43.1] - 2026-11-14
 

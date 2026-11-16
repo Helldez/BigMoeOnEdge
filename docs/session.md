@@ -79,8 +79,12 @@ end are there because a template renders a past answer again differently from ho
 prompt, past a checkpoint taken only at the end: on 0.43.1 a follow-up on Qwen3.6 reused 0 tokens of 4447
 with the prefill on the CPU, 1024 of 7015 on the GPU. The one at the first user message is the end of the system prompt
 and tools, which a new conversation shares. When the list is full, a checkpoint an earlier request
-took within `min_step` of the one before it goes first, then the oldest, as in the server, so the
-sparse ones, the preamble's among them, outlive the turns of a conversation. A refused cut restores the newest checkpoint at or before the divergence and
+took within `min_step` of the one before it goes first, then the oldest, as in the server, except the
+preamble's: the checkpoint at the first user message goes last, when the list holds more than it and
+the two a turn needs at its end. The oldest-first rule dropped it first, and a follow-up longer than a
+ubatch takes four checkpoints of its own: with 4 kept, a new conversation after one prefilled the whole
+system prompt again (#603, reported on two phones and an ARM server with a 4.3k-token preamble). With 2
+kept nothing is held back. A refused cut restores the newest checkpoint at or before the divergence and
 prefills from there (`core/src/engine/context_checkpoints.{h,cpp}`, the same position rule as the
 server's). This is what an agent needs: a client resends the model's answer as text, the template
 renders it back into tokens that need not be the ones sampled, and on a hybrid model the prompt then
@@ -91,7 +95,8 @@ and `--ctx-checkpoints 0` turns them off. The plan charges that memory before it
 (`checkpoint-budget`, [hardware-planning.md](hardware-planning.md#the-memory-ledger)), so a chat that
 fills its checkpoints does not take it from what the cache already holds. A restored state is the state the same tokens computed, so it
 is lossless; gate G22 checks it on the three memory kinds the tiny models cover, G22c a cut past a
-window, and G27 a new conversation with the same system message and a follow-up.
+window, and G27 a new conversation with the same system message, a follow-up, and a new conversation after a
+long follow-up with 4 kept.
 
 **Fallbacks and costs.** With no checkpoint to restore (none taken yet, or off), a memory that refuses
 the cut is cleared and the whole prompt is prefilled again for that turn (correct, just slower). With

@@ -3105,7 +3105,8 @@ struct Session::Impl::Turn {
             // tokens), and the checkpoint is taken at the start of the piece, before it is decoded.
             if (chat_on && !span) chunk = (int) (im.checkpoints.next_stop(stops, i, chunk) - i);
             if (chat_on && i > (int) n_common && im.checkpoints.wanted_at(stops, i, chunk))
-                im.checkpoints.create(im.checkpoint_contexts(), i, turn);
+                im.checkpoints.create(im.checkpoint_contexts(), i, turn,
+                                      !user_starts.empty() && (size_t) i == user_starts.front());
             if (im.prefill) {
                 const bool on_dev = im.place_prefill(chunk >= im.cfg.prefill.min_tokens);
                 if (on_dev) prefill_device_tokens += chunk;
