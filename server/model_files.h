@@ -2,11 +2,12 @@
 // "<stem>-00002-of-00005.gguf") is one model, listed by its first shard, which is the file the
 // engine opens and resolves the rest from; and what a file is for (a model, or a file that only
 // goes with one). Pure rules over names and header facts, so they are tested without a model;
-// the one function that reads a disk, scan_model_files, only lists names.
+// the functions that read a disk (scan_model_files, model_set_stamp) only list names and sizes.
 #pragma once
 
 #include "bmoe/probe.h"
 
+#include <cstdint>
 #include <set>
 #include <string>
 #include <vector>
@@ -50,6 +51,22 @@ std::vector<ModelFiles> group_model_files(const std::vector<std::string> & names
 // confine_model_path's decision (access.h), which resolves links and refuses anything outside the
 // roots whatever the listing showed.
 std::vector<ModelFiles> scan_model_files(const std::string & dir);
+
+// A file as it is on disk now: what a reading of its header kept for later must still match.
+struct FileStamp {
+    std::string name;    // the file name, no folder
+    uint64_t size = 0;   // 0 when it cannot be read
+    long long mtime = 0; // the filesystem's modification time, in its own ticks; 0 when unreadable
+    bool operator==(const FileStamp & o) const { return name == o.name && size == o.size && mtime == o.mtime; }
+    bool operator!=(const FileStamp & o) const { return !(*this == o); }
+};
+
+// The files a reading of the model at `path` depends on, as they are now: the file itself, or, for
+// the first shard of a split set, every shard of that set present beside it, grouped as the
+// listing groups them (group_model_files). The engine's reading of a split model takes every
+// shard's header, so a reading kept against the first file alone stays wrong after a later shard
+// arrives, grows or is replaced, while the first file does not change; against this it does not.
+std::vector<FileStamp> model_set_stamp(const std::string & path);
 
 // What a gguf file is for, from its header: a model to chat with, or a file that only goes with
 // one. Names (`mmproj-`, `mtp-`) are a convention and not the format, so they never decide this.

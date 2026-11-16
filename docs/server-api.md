@@ -918,7 +918,10 @@ from two of the listed places (a scan directory inside the models directory, a l
 the first place that listed it. The host app is
 what knows where else models sit (the phone's adb-pushed and shared-storage folders); the server is
 what says what they are. `streamable` is whether this build streams the
-architecture. `role` is what the file is for, read from its header and never from its name:
+architecture, `arch` the header's (`""` when it could not be read, as for a split set missing a
+shard: the reading takes every shard's header). The reading is kept with each present shard's size
+and modification time, so a shard that lands or changes later retakes it on the next listing; a UI
+says how a model runs only once `complete` and `arch` are set. `role` is what the file is for, read from its header and never from its name:
 `model`; `projector` (a multimodal projector: `general.type` is `mmproj`, or the projector
 architecture `clip`; a model entry's own `projector` is the name of the one in its folder that goes
 with it, by `general.name`, "" when none does); `draft` (a draft head for speculative decoding: it names another model's

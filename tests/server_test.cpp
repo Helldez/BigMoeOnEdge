@@ -1479,6 +1479,26 @@ static void file_tests() {
     check(!confine_model_path("set/../../secret.gguf", models, out, err) &&
               !confine_model_path((dir / "models" / "set" / ".." / ".." / "secret.gguf").u8string(), models, out, err),
           "scan: a way out through the subfolder is refused");
+
+    // A reading of a split set takes every shard's header, so what it is kept against covers every
+    // shard present: one that lands, or changes, after the first is unchanged makes it differ.
+    const fs::path half = dir / "models" / "half";
+    write(half / "big-00001-of-00002.gguf", "first");
+    const std::vector<FileStamp> one = model_set_stamp((half / "big-00001-of-00002.gguf").u8string());
+    check(one.size() == 1 && one.front().name == "big-00001-of-00002.gguf" && one.front().size == 5,
+          "stamp: a set with one shard here is that shard");
+    write(half / "big-00002-of-00002.gguf", "second");
+    const std::vector<FileStamp> both = model_set_stamp((half / "big-00001-of-00002.gguf").u8string());
+    check(both.size() == 2 && both != one, "stamp: the second shard landing changes it, the first unchanged");
+    write(half / "big-00002-of-00002.gguf", "second, longer");
+    check(model_set_stamp((half / "big-00001-of-00002.gguf").u8string()) != both,
+          "stamp: a shard that changes changes it");
+    write(half / "other.gguf", "x");
+    check(model_set_stamp((half / "big-00001-of-00002.gguf").u8string()).size() == 2,
+          "stamp: another model in the folder is not part of it");
+    const std::vector<FileStamp> lone = model_set_stamp((half / "other.gguf").u8string());
+    check(lone.size() == 1 && lone.front().name == "other.gguf" && lone.front().size == 1,
+          "stamp: a single-file model is itself");
     fs::remove_all(dir, ec);
 }
 
