@@ -22,6 +22,25 @@ Semantic Versioning.
   20k-token one prefilled the preamble again, 400-580 s instead of 4-6 s. Gate G27; G22c now checks a
   cut past a sliding window with checkpoints off and on. Co-authored by @pt7777, who found the missing
   preamble checkpoint (#583, #600) and measured this on three machines.
+- **A card that works beside one that does not is used again** (#606). When a device failed its
+  probe in the second process (a build with no code for that card, a driver missing a function, a
+  device that never answers), the plan stopped the capacity fitter for every device and ran the
+  model on the CPU. On a desktop with two cards, one too old for the CUDA pack, a model the other
+  card could take decoded at 6 tok/s on the cores. The fitter is now asked of the devices that
+  survived, the run lists them by name so llama.cpp's default list does not hand the failed one
+  back, and the plan says which device was left out and why. With none left, the run is the host's
+  as before.
+- **The command-line tools installed by `install.sh` find their backends on macOS** (#605). The
+  engine looks for its backend modules in the folder of its own executable, and asked the platform
+  where that is. macOS names the path the process was started by, so through the link `install.sh`
+  puts on PATH (`~/.local/bin/bmoe-cli` to `~/.local/lib/bigmoeonedge/bmoe-cli`) the search went to
+  the link's folder, found nothing, and `bmoe-cli` and `bmoe-server` registered no backend at all,
+  not even the CPU: no model loaded, and the plan blamed the build. The executable's path is now the
+  file's own with every link resolved, on every platform (Linux already reported it so, which is why
+  only macOS was hit). A test starts itself through a link and checks the path it is told
+  (`self_path`), and the release workflow now installs each command-line archive the way
+  `install.sh` does and fails when the server started through the link registers other backends than
+  started beside them.
 
 ## [0.43.1] - 2026-11-14
 

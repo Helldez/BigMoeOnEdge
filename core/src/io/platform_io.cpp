@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <filesystem>
 
 // System headers MUST be included at global scope, never inside the namespace below:
 // <cstdlib> etc. do `using ::abs;` and would otherwise be pulled into bmoe::pio, where
@@ -67,6 +68,19 @@
 #endif
 
 namespace bmoe::pio {
+
+namespace {
+// What the platform names as this executable can be a link to it: an installer that puts a link on
+// PATH and the files in a folder of their own, a package manager's shim. Everything a release ships
+// sits beside the file itself, so the path that counts is the one with every link resolved. Where
+// it cannot be resolved the name as given is still the best answer there is.
+std::string without_links(const std::string & path) {
+    if (path.empty()) return path;
+    std::error_code ec;
+    const std::filesystem::path real = std::filesystem::canonical(std::filesystem::path(path), ec);
+    return ec ? path : real.string();
+}
+} // namespace
 
 #if !defined(_WIN32)
 // mincore's vector argument is `unsigned char *` on Linux/Android but `char *` on the BSDs and
@@ -1026,7 +1040,7 @@ std::string self_path() {
     char buf[4096];
     const DWORD n = GetModuleFileNameA(nullptr, buf, (DWORD) sizeof(buf));
     if (n == 0 || n >= sizeof(buf)) return "";
-    return std::string(buf, n);
+    return without_links(std::string(buf, n));
 }
 
 bool can_run_self() {
@@ -1161,13 +1175,13 @@ std::string self_path() {
     char buf[4096];
     uint32_t n = sizeof(buf);
     if (_NSGetExecutablePath(buf, &n) != 0) return "";
-    return buf;
+    return without_links(buf);
 #else
     char buf[4096];
     const ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
     if (n <= 0) return "";
     buf[n] = 0;
-    return buf;
+    return without_links(buf);
 #endif
 }
 
