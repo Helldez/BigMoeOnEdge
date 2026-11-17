@@ -96,6 +96,10 @@ conversation with no folder.
   figures from the turn's own summary, each rate named by its phase:
   `decode 1.7 tok/s (9 tok) · prefill 3.3 tok/s (13 tok, 4.0 s) · ctx 22/4096 · cache 54%`, with a
   tooltip saying what each means. Before the first word: "Reading your message…".
+- **System prompt.** A button in the conversation's header opens what the engine tells the model
+  before this conversation, read-only and exactly as sent, with how many tokens of the context it
+  takes (`GET /api/conversations/<id>/system`). It names no setting to change it: a client that
+  wants its own sends it over the API.
 - **Tool calls.** One card each, with the tool's plain title ("Read src/main.cpp"), its state in
   words, the lines an edit added and removed, and on demand what it was given (the command, the
   address, the arguments) and what it answered, an edit as a diff whose `+` and `−` stay in the
@@ -415,7 +419,8 @@ only that:
   being answered or after an error.
 - **Messages as above.** The person's text with Copy and Edit and send again (on a long press),
   the answer as Markdown with its reasoning folded above it, Copy under it and Answer again on the
-  last one, the server's notices, Stop. Choose from options stays, in the composer, and so does
+  last one, the server's notices, Stop, and the System prompt from the top bar (none under
+  `--chat-only`, and it says so). Choose from options stays, in the composer, and so does
   Image: the composer's + offers an image from the photos or the camera, disabled with the reason
   while the loaded model reads none, and a message shows the images it carried.
 - **The empty chat** says the model runs on the phone and leads to Models while none is loaded.

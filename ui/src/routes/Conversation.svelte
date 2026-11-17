@@ -7,6 +7,7 @@
   import LiveLine from '../components/chat/LiveLine.svelte';
   import MessageItem from '../components/chat/MessageItem.svelte';
   import RunGroup from '../components/chat/RunGroup.svelte';
+  import SystemPrompt from '../components/chat/SystemPrompt.svelte';
   import { contextAdvice } from '../lib/context';
   import { blocks, latestFile } from '../lib/items';
   import { agent } from '../stores/agent.svelte';
@@ -15,6 +16,7 @@
   import { server } from '../stores/server.svelte';
 
   let log: HTMLElement | undefined = $state();
+  let showSystem = $state(false);
   let view = $derived(blocks(agent.items));
   let lastAssistant = $derived.by(() => {
     for (let i = agent.items.length - 1; i >= 0; i--) if (agent.items[i].kind === 'assistant') return agent.items[i].id;
@@ -51,12 +53,17 @@
   };
 </script>
 
+<SystemPrompt bind:open={showSystem} conversation={agent.currentId} />
+
 <div class="conversation">
   <header class="head">
     <h1 title={title}>{title}</h1>
     {#if ws}<span class="badge" title={ws.path}><Icon name="folder" size={13} />{ws.name}</span>{/if}
     {#if agent.current && agent.mode !== 'ask'}<span class="badge {agent.mode === 'full' ? 'warn' : ''}">{t(`mode.${agent.mode}`)}</span>{/if}
     <span class="spacer"></span>
+    {#if agent.currentId}
+      <button type="button" class="ghost small" onclick={() => (showSystem = true)}>{t('system.show')}</button>
+    {/if}
     {#if file && !preview.open}
       <button type="button" class="ghost small" onclick={() => preview.show(agent.currentId, file)}><Icon name="eye" size={15} />{t('preview.show')}</button>
     {/if}

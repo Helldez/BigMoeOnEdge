@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
@@ -20,6 +21,7 @@ import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.*
@@ -30,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -77,6 +80,7 @@ fun ChatScreen(modifier: Modifier = Modifier, nav: ChatNav) {
     val scope = rememberCoroutineScope()
     var confirmDelete by remember { mutableStateOf<ConversationSummary?>(null) }
     var renaming by remember { mutableStateOf<ConversationSummary?>(null) }
+    var showSystem by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { Chat.refreshConversations() }
 
     ModalNavigationDrawer(
@@ -145,6 +149,7 @@ fun ChatScreen(modifier: Modifier = Modifier, nav: ChatNav) {
                 },
                 actions = {
                     if (chat.open != null) {
+                        IconButton(onClick = { showSystem = true }) { Icon(Icons.Filled.Info, contentDescription = "System prompt") }
                         IconButton(onClick = { Chat.newConversation() }) { Icon(Icons.Filled.Add, contentDescription = "New chat") }
                     }
                 },
@@ -165,6 +170,8 @@ fun ChatScreen(modifier: Modifier = Modifier, nav: ChatNav) {
             dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } },
         )
     }
+    val openId = chat.open?.id
+    if (showSystem && openId != null) SystemPromptDialog(openId) { showSystem = false }
     renaming?.let { c ->
         var title by remember(c.id) { mutableStateOf(c.title) }
         AlertDialog(
@@ -175,6 +182,43 @@ fun ChatScreen(modifier: Modifier = Modifier, nav: ChatNav) {
             dismissButton = { TextButton(onClick = { renaming = null }) { Text("Cancel") } },
         )
     }
+}
+
+/** What the server tells the model before conversation [id], read when opened: the text the next message sends (#625). */
+@Composable
+private fun SystemPromptDialog(id: String, onDismiss: () -> Unit) {
+    var prompt by remember(id) { mutableStateOf<io.bigmoeonedge.app.engine.SystemPrompt?>(null) }
+    var error by remember(id) { mutableStateOf("") }
+    LaunchedEffect(id) {
+        Engine.systemPrompt(id).onSuccess { prompt = it }.onFailure { error = "Could not read the system prompt: ${it.message}" }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("System prompt") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "What the engine tells the model before this conversation, exactly as it is sent. Apps that connect through the API send their own.",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                val p = prompt
+                when {
+                    error.isNotEmpty() -> Text(error, fontSize = 13.sp, color = warnColor())
+                    p == null -> LinearProgressIndicator(Modifier.fillMaxWidth())
+                    p.external -> Text("This conversation runs another agent program, which writes its own system prompt.", fontSize = 13.sp)
+                    p.text.isEmpty() -> Text("None: the model reads the conversation alone.", fontSize = 13.sp)
+                    else -> {
+                        Text(p.text, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                        p.tokens?.let {
+                            Text("$it token${if (it == 1) "" else "s"} of the context", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+    )
 }
 
 @Composable

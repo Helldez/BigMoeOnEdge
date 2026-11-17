@@ -791,6 +791,11 @@ object Engine {
         catching { api.deletePartial(id); Unit }.also { refreshModels() }
     }
 
+    /** The system prompt of conversation [id] as the server sends it (#625). */
+    suspend fun systemPrompt(id: String): Result<SystemPrompt> = withContext(Dispatchers.IO) {
+        catching { SystemPrompt.of(api.systemPrompt(id)) }
+    }
+
     /** The client for a chat stream: the chat runs it on its own thread and owns the connection. */
     fun api(): Api = api
 

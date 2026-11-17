@@ -27,6 +27,13 @@ Semantic Versioning.
   it forms, so a client never sees one the server then takes back. With speculation armed the
   session stays greedy (a draft is accepted by the model's argmax) and a request's sampling is read
   but not applied; `stop`, `grammar` and `logprobs` still are. `n` above 1 is refused with `400`.
+- **The system prompt the engine writes is shown, on every UI** (#625). The agent puts a short
+  prompt before each conversation (the platform, the date, the folder, the mode, the skills), and a
+  model asked about it could only say it had one. `GET /api/conversations/<id>/system` now answers it
+  exactly as the next message sends it, with the tokens it takes of the context (counted as
+  `/tokenize` counts), and the web UI, the desktop app, Android and iOS show it read-only from the
+  conversation. It stays the engine's: a client that wants its own system prompt sends it over the
+  API, as before.
 
 ## [0.43.2] - 2026-11-16
 
