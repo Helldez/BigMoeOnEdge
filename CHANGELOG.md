@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [0.44.1] - 2026-11-17
+## [0.44.1] - 2026-11-18
 
 ### Changed
 - **The plan decides by calculation what a load cannot switch, and no load is opened to try a side.**
