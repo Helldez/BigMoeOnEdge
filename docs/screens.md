@@ -366,9 +366,10 @@ there on every front-end (#465):
 - **The UI's own** (besides General; inside the desktop app, Serve on the network is General's first
   card, the same card), on the phone: **Serve on the network** first, a card of its
   own whose closed header says whether it is on and at which address; open, the switch, each
-  address on the local network to copy, the key (hidden until shown, copyable, replaceable with New
-  key, which restarts the engine), the line a client needs (base URL and key) and a warning that
-  the traffic is unencrypted. Then **Appearance**: the theme (System, Light, Dark, as on the web).
+  address on the local network to copy, with the port the server took, the key (hidden until shown,
+  copyable, replaceable with New key, which restarts the engine), the line a client needs (base URL
+  and key), a Port field (empty for the server's default; it says where the engine went when the
+  port chosen is in use; a change restarts the engine) and a warning that the traffic is unencrypted. Then **Appearance**: the theme (System, Light, Dark, as on the web).
   Then **This app**: Stop/Start engine. Then **Metrics**, always. Never an engine parameter.
 
 ## Metrics

@@ -130,8 +130,9 @@ Inter for every word, JetBrains Mono for code, paths and keys, both bundled from
 releases with their licences; 8-point rounded boxes with a 1-point line and a soft shadow on cards;
 the system's navigation, tab bars, lists, forms, sheets and menus, tinted. The pixel logo is unchanged.
 
-The server listens on `127.0.0.1:8765` with a random key per launch, since every app on the
-device can reach loopback. **Serve on the network** in Settings restarts it on all addresses
+The server listens on loopback, on the server's default port (8765) or the next free one when another
+app holds it, with a random key per launch, since every app on the device can reach loopback. The
+app learns the port from the file the server writes (`--port-file`) and talks to no other. **Serve on the network** in Settings restarts it on all addresses
 with a key kept in the keychain and shown there, for an OpenAI client on another machine; it
 serves while the app is open, since iOS suspends an app in the background. A coding agent needs a
 larger Context than a chat (its first request alone is about 10k tokens): set Context to 16384 or
@@ -197,8 +198,9 @@ cp model.gguf "$(xcrun simctl get_app_container booted io.bigmoeonedge.app data)
 xcrun simctl launch --console-pty booted io.bigmoeonedge.app
 ```
 
-The simulator shares the Mac's loopback: if a desktop `bmoe-server` holds port 8765, the app
-says so on its status line. Launch it on another port with `-BmoePort 8799` after the bundle id.
+The simulator shares the Mac's loopback: if a desktop `bmoe-server` holds port 8765, the app's
+server takes the next free one. Launch it on a port of your choice with `-BmoePort 8799` after the
+bundle id (the same preference as the Port field in Settings).
 
 **The simulator proves that it builds and runs, not what a device would do.** It runs on the Mac's
 kernel with the Mac's memory, storage and GPU, and the planner reads that kernel's facts (no

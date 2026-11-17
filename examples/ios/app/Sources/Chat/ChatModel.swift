@@ -41,7 +41,10 @@ final class ChatModel: ObservableObject {
         engine.connected = { [weak self] in Task { await self?.serverReached() } }
     }
 
-    private var api: APIClient { engine.api }
+    /// Throws as a closed port would while the engine's server has not said where it listens.
+    private var api: APIClient {
+        get throws { try engine.api }
+    }
 
     /// An answer is being written in the open conversation: Stop, not Send.
     var running: Bool { sending || (current?.busy ?? false) }
@@ -73,7 +76,9 @@ final class ChatModel: ObservableObject {
     private func migrate() async {
         let store = ConversationStore(directory: engine.paths.conversations)
         guard !store.list().isEmpty else { return }
-        let out = await ConversationMigration.run(store: store, client: api)
+        // A stop between the server coming up and this leaves no client: tried again on the next start.
+        guard let client = try? api else { return }
+        let out = await ConversationMigration.run(store: store, client: client)
         if out.moved > 0 {
             migrationNote = "Moved \(out.moved) saved \(out.moved == 1 ? "conversation" : "conversations") from this "
                 + "device to the engine, where every conversation is now kept."
