@@ -1275,8 +1275,9 @@ count) otherwise.
 On a machine whose accelerator reads the host's own memory (an integrated GPU, Apple's unified
 memory), the capacity fitter's placement is set aside, because its arithmetic counts that one pool
 twice (`placement-declined`). That settles capacity and nothing else: where the whole model is held
-in memory (`fits`, or a model with no experts that fits), running it on the device frees nothing and
-costs nothing, and what is left is which engine runs it faster. `choose_shared_device` asks that of
+in memory (`fits`, or any model with no experts, which the cores hold whole on every plan), running it
+on the device frees nothing and costs only its compute buffer, and what is left is which engine runs
+it faster. `choose_shared_device` asks that of
 the model itself, as a decision across loads like the device tier
 (`KnobTrialConfig::shared_device_side`, `MeasuredKnobs::shared_device_tps`): one load times the
 decode on the cores, the placement every load had before this rule; one times it with every layer
@@ -1301,8 +1302,17 @@ real layer of this model, one token wide and as wide as a prompt (`identity_ok`,
 the prompt runs there too, and on a phone a GPU matched the host one token wide and wrote garbage on a
 prompt), it runs the model's expert matmul in the file's own
 format, it takes the mapped weights without a repack (the invariant above), and the compute buffer
-the fitter projected for it fits beside the model in the same pool with the `fits` exit's air. A
-device that fails any of them is never timed, and the plan names which one failed. Where the
+the fitter projected for it fits beside the model in the same pool. Where the system takes pages back
+cheaply, the room left must also clear `fits_air_ratio`, measured against what the move is weighed
+against: for a model whose experts could stream, the whole model, as the `fits` exit asks, since
+holding it whole is the choice that bar guards; for a model with nothing to stream, what the move adds
+to the pool, its compute buffer and, where the backend copies the weights into buffers of its own, the
+weights too, since the cores hold the model whole on every plan. Measured on a 16 GB laptop with 5.7
+GB usable: a 2B dense model holding 2670 MiB was kept on the cores because the 1638 MiB left beside
+it and the GPU's 1364 MiB buffer fell short of the 2670 the model holds, which the cores held all the
+same; against what the move adds it is a candidate, and a 4B model with 406 MiB left beside a 524 MiB
+buffer is still refused, now with the figures. A device that fails any of them is never timed, and
+the plan names which one failed, whatever the regime. Where the
 backend can wrap the file's mapping (`host_ptr_verified`, Metal does) the weights stay the mapping
 and the device reads them in place; where it cannot (Vulkan and OpenCL advertise no such buffer),
 llama.cpp copies them into the device's own buffers, which are this same memory, and leaves the
