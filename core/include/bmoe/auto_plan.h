@@ -14,8 +14,8 @@
 // The rules stay pure; nothing here decides a knob.
 #pragma once
 
-#include "bmoe/calibrate.h"
 #include "bmoe/config.h"
+#include "bmoe/measured_knobs.h"
 #include "bmoe/hardware_profile.h"
 #include "bmoe/model_profile.h"
 #include "bmoe/plan.h"
@@ -70,12 +70,6 @@ struct AutoPlanOptions {
     // hardware_fingerprint and engine version are this run's becomes ModelProfile::knobs; the rest
     // are another machine's or another engine's and are not read. Not owned; read during the call.
     const std::vector<MeasuredKnobs> * knobs = nullptr;
-
-    // Calibrate at load (bmoe/calibrate.h): where the plan leaves a decision across loads pending, time
-    // each side with this candidate runner before returning, and return the decided plan with what it
-    // measured (AutoPlan::calibration). Its stages are reported through on_step as k_calibrate_step.
-    // Empty: the plan is returned as it is, and the load it is served on times its side as before.
-    RunCandidate calibrate;
 };
 
 // The stages probe_and_plan() reports through AutoPlanOptions::on_step, in the order they run. The
@@ -83,10 +77,6 @@ struct AutoPlanOptions {
 inline constexpr const char * k_plan_steps[] = {"devices", "model",     "compute", "storage",
                                                 "memory",  "placement", "rules"};
 inline constexpr int k_plan_step_count = (int) (sizeof(k_plan_steps) / sizeof(k_plan_steps[0]));
-// The stage a load-time calibration reports, once per candidate it opens: its index among the runs
-// and the most it makes (CalibrationPolicy::runs_max), apart from the stages above since most plans
-// have nothing to calibrate.
-inline constexpr const char * k_calibrate_step = "calibrate";
 
 // The plan and the two profiles it was made from: a front-end that explains a plan quotes the
 // facts (every device's figures, the model's weight groups) beside the decisions. The first
@@ -118,17 +108,11 @@ struct AutoPlan {
     // ask for (replan), each asked of the fitter once and then read from here. A re-fit answers from
     // the same file, devices, context and cache types whatever the record of measurements, so asking
     // again only costs time: on a 24 GB card with GLM-4.7 every re-fit loaded the model's metadata for a
-    // dozen dry runs, between every two candidates of a calibration. It is also the right answer: the
-    // fitter reads the devices' free memory, which is the machine's as it was planned on only before a
-    // candidate or the served model holds any of it. Kept with the facts, so a copy of them (a server's
-    // plan basis) carries what was fitted; keyed by everything else a fit depends on, so a plan for
+    // dozen dry runs. It is also the right answer: the fitter reads the devices' free memory, which is
+    // the machine's as it was planned on only before the served model holds any of it. Kept with the facts, so a copy
+    // of them (a server's plan basis) carries what was fitted; keyed by everything else a fit depends on, so a plan for
     // another context or cache type asks the fitter again.
     mutable std::map<FitKey, Placement> placement_at_width;
-
-    // Whether a load-time calibration ran (AutoPlanOptions::calibrate, calibrate_plan), and what it
-    // gave: `plan` is then its final plan, and `calibration.knobs` the record for the front-end to keep.
-    bool calibrated = false;
-    CalibrationResult calibration;
 };
 
 // Probe this machine and `cfg.model_path`, then plan `cfg` on them. `req` carries what the caller
@@ -145,26 +129,9 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
 // The rules once more on the facts `facts` was planned on, with `knobs` as the record of measurements:
 // the planning half of probe_and_plan, the capacity fitter's re-fits at a narrower width included, and
 // no probe. A re-fit at a width the facts already hold is read from them (AutoPlan::placement_at_width),
-// so only a width not fitted before asks the fitter. What a calibration plans with after each candidate
-// (bmoe/calibrate.h, Replan).
+// so only a width not fitted before asks the fitter. What a front-end plans a plan's other side with
+// (the side a load opens when the one the plan names does not).
 Plan replan(const AutoPlan & facts, const RunConfig & cfg, const PlanRequest & req, const MeasuredKnobs & knobs);
-
-// The rules alone on those facts, without the capacity fitter's re-fits at a narrower width: no
-// probe, nothing that reads the machine as it is now, so it may run with a model loaded. Which side
-// of a decision across loads is pending is the rules' (the re-fits keep the side the first plan named),
-// so this answers whether a calibration would open anything (calibration_due) at the cost of one
-// planning pass.
-Plan replan_rules(const AutoPlan & facts, const RunConfig & cfg, const PlanRequest & req, const MeasuredKnobs & knobs);
-
-// Calibrate `ap` (planned by probe_and_plan for `cfg` and `req`) with `run` as each candidate, and
-// leave the decided plan in it (AutoPlan::calibrated, calibration). `on_step` (nullable) hears each
-// candidate as it starts, as AutoPlanOptions::on_step does. A plan with nothing pending runs nothing.
-const CalibrationResult &
-calibrate_plan(AutoPlan & ap,
-               const RunConfig & cfg,
-               const PlanRequest & req,
-               const RunCandidate & run,
-               const std::function<void(const char * step, int index, int count)> & on_step = nullptr);
 
 // The child's side of an isolated device probe, whole: start the backends, probe `device` for the
 // model at `model_path`, and return in `line` what the child prints on its standard output for the

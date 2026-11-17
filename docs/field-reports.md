@@ -180,9 +180,9 @@ aside, since its arithmetic counts that one pool twice, and left every layer on 
 measuring the device: a rule taken from one machine where the cores were faster. Published runs go
 from an iGPU 37% slower than its cores to Max-class unified memory several times faster.
 
-**Fixed in** the release after 0.43.2: where the whole model is held in memory, two loads time the
-decode on the cores and with every layer on the device, a calibration doing it before the first
-answer, and the faster stays
+**Fixed in** the release after 0.43.2: where the whole model is held in memory, the plan prices the
+decode on the cores and with every layer on the device and serves the faster, and the load times its
+own side as it serves
 ([hardware-planning.md](hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it)).
 
 **On 0.43.2 and earlier**, set Settings, advanced, "Layers on a device" to 99 (`--gpu-layers 99`) and

@@ -39,7 +39,6 @@ public:
     void leave();
 
     size_t waiting() const; // callers in line, not counting the one whose turn it is
-    bool empty() const;     // no caller holds a turn or waits for one
 
 private:
     const size_t max_waiting_;

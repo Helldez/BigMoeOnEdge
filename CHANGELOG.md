@@ -6,7 +6,53 @@ Semantic Versioning.
 
 ## [0.44.1] - 2026-11-17
 
+### Changed
+- **The plan decides by calculation what a load cannot switch, and no load is opened to try a side.**
+  Whether a card holds a cache of experts or the fitter's whole layers, how wide the graph is, and
+  whether a model held in memory runs on a device that shares it were each timed as short loads of
+  their own before the first answer (the load-time calibration of 0.43). Every candidate reopened
+  the model: on two 16 GB cards Qwen3.8-Flash-Next Q2_0 was ready after 609 s against 126 s on 0.42,
+  DeepSeek-V4 UD-IQ2_M after 1094 s against 252 s, and a 12 GB card took 112 s against 50 s. Each
+  side is now priced from the rates the load already probed (the device's and the host's on a real
+  layer of the model, the upload rate, the hit share a cache of that size reaches); the load serves
+  the side priced faster and times its own decode as it serves, a measured side stands at its
+  measurement, and the other takes over only past the 10% margin. A price that is wrong by more
+  than the margin costs one load at the slower side before its measurement corrects it
+  ([measured-planning.md](docs/measured-planning.md#decisions-fixed-at-load-priced-served-then-measured)).
+- **The graph's width is the one a request takes less time on, prompt and answer together.** It was
+  decided on the decode alone, so a narrow graph won wherever it decoded faster and long prompts
+  paid for it: a 4.6k-token prompt prefilled 40% slower on an 8 GB card, 28% on a 12 GB one and 47%
+  on two 16 GB cards with a 284B model. A request is now priced at each width as its decoded tokens
+  at that width's decode, plus its prompt at the device's prompt-wide rate and, for every pass, the
+  upload of the experts that are not on the device, which is what those three cards measured between
+  one pass and three. The request is the machine's own once a load has answered one (the recorded
+  mix), and 4096 prompt tokens against 300 decoded on a first load.
+- **A model held in memory moves to a device that shares it where a request is priced shorter
+  there**, from the rates each processor probed on a real layer one token wide and as wide as a
+  prompt, on the first load. It was decided by timing both sides as loads of their own. Once both
+  sides have a decode rate, their ratio replaces the probe's.
+- **A side that fails to open is tried once more before it loses.** The load opens the plan's other
+  side in its place, as before, and the failure is now always counted; a second one settles it for
+  that engine version.
+
+### Removed
+- **Load-time calibration** (`--calibrate` / `--no-calibrate`, the `calibrate` parameter, the
+  `calibrate` step of `plan_progress` and `calibrating` in `/api/info`). The server no longer unloads
+  a model when idle to time a decision.
+- **The plan no longer arms a CPU share of the device cache's misses.** It is fixed when the context
+  is created, no price of it held (114 to 68 tok/s on a 32 GB card at a share priced 0.89, 18.5 to
+  21.2 on a 12 GB card at 0.77), and deciding it took a load of its own for each side.
+  `--device-cache-cpu-share` still sets it by hand.
+
 ### Fixed
+- **A second load no longer narrows the graph on a claim that the full width failed.** On a 12 GB
+  card with Qwen3.6-35B the calibration filed a candidate that named two decisions at once (a
+  narrow graph with a CPU share) as the narrow width's rate, and the server served the narrow graph
+  in place of a full width it could have served, which read as a failed open: the second load ran
+  2048 tokens wide and a 4.6k-token prompt prefilled at 1479 tok/s against 2065. Present since 0.43.
+  Both mechanisms are gone with the calibration.
+- **A `stop` the reasoning happens to contain no longer ends the turn with an empty answer.** The
+  stop is matched in the answer only (#617, new in 0.44.0).
 - **A phone's NPU prefill works again, and no longer ends the engine.** Since 0.43 a load that put
   the prompt on the NPU ended the server (exit 134) in one try out of two, and where it survived, the
   NPU computed experts it read as the wrong layout; after two failed loads the plan gave the NPU up

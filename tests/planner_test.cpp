@@ -15,7 +15,6 @@
 #include "bmoe/config.h"
 #include "bmoe/allocate.h"
 #include "bmoe/backend_choice.h"
-#include "bmoe/calibrate.h"
 #include "bmoe/planner.h"
 #include "bmoe/probe.h"
 #include "bmoe/routing.h"
@@ -1109,7 +1108,13 @@ int main() {
             // decided across loads (MeasuredKnobs::width_narrow), by the requests this machine serves.
             {
                 HardwareProfile no_tier = card;
-                no_tier.devices[0].identity_ok = Tri::No; // no device cache: the width alone is weighed
+                no_tier.devices[0].identity_ok = Tri::No;     // no device cache: the width alone is weighed
+                no_tier.devices[0].upload_gibs = 24.0;        // what a prompt's pass gathers at
+                no_tier.devices[0].wide_matmul_gibs = 1500.0; // a prompt-wide layer on the card
+                no_tier.host_expert_gibs = 20.0;              // the host and the card on this model's own layer
+                no_tier.host_dense_gibs = 30.0;
+                no_tier.devices[0].expert_gibs = 400.0;
+                no_tier.devices[0].dense_gibs = 400.0;
                 Placement roomy_layers = all_layers;
                 for (uint32_t il = 0; il < 8; ++il)
                     roomy_layers.host_expert_layers.push_back(il);
@@ -1119,108 +1124,84 @@ int main() {
                     mm.knobs = k;
                     return plan_run(big_ctx, no_tier, mm, roomy_layers, PlanRequest{}, unbounded);
                 };
+                // Nothing measured, no request served: both widths are priced from the probed rates
+                // over the default mix, the load serves the one priced faster and times it as it serves.
                 const Plan first = plan_with(MeasuredKnobs{});
-                check(narrow > 0 && narrow < 16384 && first.config.trial.width_side == 1 &&
-                          first.config.trial.width_narrow == (int) narrow && first.config.graph_width() == 16384,
-                      "width across loads, nothing measured: the full width is timed",
-                      std::to_string(first.config.trial.width_side) + " " + std::to_string(narrow));
-                check(validate(first.config).ok, "width across loads: a valid config", validate(first.config).error);
-                MeasuredKnobs k;
+                const Decision * dw = find(first, "ubatch");
+                const bool first_narrow = first.config.n_ubatch == (int) narrow;
+                check(narrow > 0 && narrow < 16384 && first.config.trial.width_narrow == (int) narrow &&
+                          first.config.trial.width_side == (first_narrow ? 0 : 1) && dw &&
+                          dw->source == Source::Derived && dw->reason.find("the default mix") != std::string::npos &&
+                          dw->reason.find("priced from the probed rates") != std::string::npos,
+                      "width, nothing measured: priced on the default mix, the side served is the side timed",
+                      dw ? dw->reason : "none");
+                check(validate(first.config).ok, "width: a valid config", validate(first.config).error);
+                // The mix decides between the same prices: a machine that only decodes takes the narrow
+                // graph (more of the experts on the card, nothing to gather twice), and one whose prompts
+                // are long and answers short takes whichever its passes cost less on.
+                MeasuredKnobs chat_mix;
+                chat_mix.mix_requests = 5;
+                chat_mix.mix_gen_tokens = 500;
+                const Plan chat_priced = plan_with(chat_mix);
+                dw = find(chat_priced, "ubatch");
+                check(chat_priced.config.n_ubatch == (int) narrow && chat_priced.config.trial.width_side == 0 && dw &&
+                          dw->reason.find("the requests this machine served") != std::string::npos,
+                      "width, a machine that only decodes: the narrow graph, priced", dw ? dw->reason : "none");
+                // Both decodes measured on served loads, no long prompt: the measurements decide, and the
+                // load times nothing more (it still records its requests against the narrow width).
+                MeasuredKnobs k = chat_mix;
                 k.width_narrow = (int) narrow;
                 k.wide_decode_tps = 14.2;
-                const Plan second = plan_with(k);
-                check(second.config.trial.width_side == 0 && second.config.n_ubatch == (int) narrow,
-                      "width across loads, the full width timed: this load times the narrow one",
-                      std::to_string(second.config.n_ubatch));
-                // Both decodes measured, a machine that never sends a prompt longer than the narrow width:
-                // the narrow graph costs it nothing and decodes faster.
                 k.narrow_decode_tps = 19.4;
-                k.usage_requests = 5;
-                k.usage_gen_tokens = 500;
                 const Plan chat = plan_with(k);
-                const Decision * dw = find(chat, "ubatch");
-                check(chat.config.n_ubatch == (int) narrow && chat.config.trial.width_side == -1 && dw &&
-                          dw->source == Source::Measured,
-                      "width across loads, short prompts only: the narrow graph", dw ? dw->reason : "none");
-                // Long prompts served, their prefill not timed on the narrow side: that side is timed again.
-                k.usage_long_prompt_tokens = 9500;
+                dw = find(chat, "ubatch");
+                check(chat.config.n_ubatch == (int) narrow && chat.config.trial.width_side == -1 &&
+                          chat.config.trial.width_narrow == (int) narrow && dw && dw->source == Source::Measured,
+                      "width, both decodes measured, short prompts only: the narrow graph", dw ? dw->reason : "none");
+                // The same decodes on a machine that prefills 9500 tokens a request, both prefills
+                // measured: 500 tokens decoded and 9500 prefilled weigh for the wide graph.
+                k.mix_wide_prompt_tokens = 9500;
                 k.wide_prefill_tps = 610;
-                const Plan again = plan_with(k);
-                check(again.config.trial.width_side == 0, "width across loads, long prompts: the side without "
-                                                          "their prefill is timed");
-                // Both prefills timed: 500 tokens decoded and 9500 prefilled per request weigh for the wide graph.
                 k.narrow_prefill_tps = 104;
                 const Plan agent = plan_with(k);
                 dw = find(agent, "ubatch");
                 check(agent.config.graph_width() == 16384 && agent.config.trial.width_side == -1 && dw &&
                           dw->source == Source::Measured,
-                      "width across loads, long prompts: the full width wins on this machine's requests",
+                      "width, long prompts measured slower on the narrow graph: the full width wins",
+                      dw ? dw->reason : "none");
+                // One side measured: both prices are scaled by how far that side's ran from it, so the
+                // ratio between the widths stays the price's and no load is opened to time the other.
+                MeasuredKnobs one = chat_mix;
+                one.width_narrow = (int) narrow;
+                one.narrow_decode_tps = 19.4;
+                const Plan scaled = plan_with(one);
+                dw = find(scaled, "ubatch");
+                check(scaled.config.n_ubatch == chat_priced.config.n_ubatch && scaled.config.trial.width_side == -1 &&
+                          dw && dw->reason.find("corrected by the width measured") != std::string::npos,
+                      "width, one side measured: the price corrected, the same side served, nothing timed again",
                       dw ? dw->reason : "none");
                 // A narrow width other than the one measured: the measurements do not answer it.
-                k.width_narrow = (int) narrow * 2;
-                const Plan stale = plan_with(k);
-                check(stale.config.trial.width_side == 1, "width across loads, another narrow width: measured afresh");
+                MeasuredKnobs stale = k;
+                stale.width_narrow = (int) narrow * 2;
+                const Plan stale_plan = plan_with(stale);
+                dw = find(stale_plan, "ubatch");
+                check(dw && dw->source == Source::Derived, "width, another narrow width: priced afresh");
                 // A pinned width is the caller's.
                 PlanRequest pin_ub;
                 pin_ub.pinned.push_back("ubatch");
                 ModelProfile mm = model;
                 const Plan pinned_ub = plan_run(big_ctx, no_tier, mm, roomy_layers, pin_ub, unbounded);
-                check(pinned_ub.config.trial.width_side == -1, "width across loads, pinned: nothing timed");
+                check(pinned_ub.config.trial.width_side == -1 && pinned_ub.config.trial.width_narrow == 0,
+                      "width, pinned: nothing weighed, nothing timed");
 
-                // A load-time calibration times both decodes before any request is served: with none
-                // seen, the decode rates alone weigh the two widths (bmoe/calibrate.h).
-                MeasuredKnobs cal;
+                // The margin guards the width in force: the full width until a load ran the narrow one
+                // as decided, then that one. The same rates, weighed again, do not swing it.
+                MeasuredKnobs cal = chat_mix;
                 cal.width_narrow = (int) narrow;
                 cal.wide_decode_tps = 14.2;
-                cal.narrow_decode_tps = 19.4;
-                const Plan unserved = plan_with(cal);
-                dw = find(unserved, "ubatch");
-                check(cal.usage_requests == 0 && unserved.config.n_ubatch == (int) narrow &&
-                          unserved.config.trial.width_side == -1 && dw && dw->source == Source::Measured &&
-                          dw->reason.find("no request served yet") != std::string::npos,
-                      "width, no request served: the faster decode decides", dw ? dw->reason : "none");
-                check(unserved.config.trial.width_narrow == (int) narrow && validate(unserved.config).ok,
-                      "width, decided: the load still records its requests against the narrow width");
-                // Provisional: the loads that verdict serves record their requests, and once long prompts
-                // show up the prefill of each side is timed (the side without it, on a served load), and
-                // then weighs in: here enough to turn the verdict to the full width.
-                MeasuredKnobs used = cal;
-                used.usage_requests = 5;
-                used.usage_gen_tokens = 500;
-                used.usage_long_prompt_tokens = 9500;
-                const Plan needs_prefill = plan_with(used);
-                check(needs_prefill.config.trial.width_side == 1,
-                      "width, decided on the decode, then long prompts recorded: a side's prefill is timed");
-                used.wide_prefill_tps = 610;
-                used.narrow_prefill_tps = 104;
-                const Plan flipped = plan_with(used);
-                dw = find(flipped, "ubatch");
-                check(flipped.config.graph_width() == 16384 && flipped.config.trial.width_side == -1 && dw &&
-                          dw->source == Source::Measured &&
-                          dw->reason.find("a request here decodes") != std::string::npos,
-                      "width, decided on the decode alone: the recorded long prompts turn it to the full width",
-                      dw ? dw->reason : "none");
-                // A width decided on requests already seen (the across-loads timing, calibration off)
-                // records nothing more: its loads carry no width value, so a session of another mix
-                // hands on no usage, the kept record is unchanged, and the width stays where it was.
-                MeasuredKnobs decided_k = used;
-                std::vector<MeasuredKnobs> kept_k = {decided_k};
-                const Plan decided_p = plan_with(kept_k[0]);
-                MeasuredKnobs other_mix; // what a load of the decided plan hands on: no width usage
-                other_mix.mix_requests = 3;
-                other_mix.mix_gen_tokens = 4000;
-                keep_measured_knobs(kept_k, other_mix);
-                const Plan after = plan_with(kept_k[0]);
-                check(decided_p.config.trial.width_narrow == 0 && decided_p.config.trial.width_side == -1 &&
-                          decided_p.to_flags().find("trial-width") == std::string::npos &&
-                          after.config.n_ubatch == decided_p.config.n_ubatch && kept_k[0].usage_requests == 5,
-                      "width decided on requests: no width value on its loads, and it stays across sessions");
                 cal.narrow_decode_tps = 14.5; // inside the margin
                 check(plan_with(cal).config.graph_width() == 16384 && plan_with(cal).config.trial.width_side == -1,
-                      "width, no request served, inside the margin: the full width holds");
-                // The margin guards the width in force, not the full width: a narrow graph an earlier
-                // load ran as decided holds against a full width faster by less than the margin, and
-                // gives way to one faster by more. The same rates, weighed again, do not swing it.
+                      "width, the narrow graph inside the margin: the full width holds");
                 MeasuredKnobs held = cal;
                 held.width_held = 0;
                 held.narrow_decode_tps = 14.2;
@@ -1234,53 +1215,29 @@ int main() {
                 held.wide_decode_tps = 16.0; // 13% ahead
                 check(plan_with(held).config.graph_width() == 16384,
                       "width, the narrow graph in force, the full width past the margin: it takes over");
-                MeasuredKnobs drift = cal; // narrow 11% ahead on the decode alone: decided narrow
-                drift.narrow_decode_tps = 7.80;
-                drift.wide_decode_tps = 7.03;
-                check(plan_with(drift).config.n_ubatch == (int) narrow, "width, drift: decided narrow");
-                drift.width_held = 0; // what that load ran, and then its requests weigh: 9% ahead
-                drift.narrow_decode_tps = 7.79;
-                drift.wide_decode_tps = 7.17;
-                drift.usage_requests = 4;
-                drift.usage_gen_tokens = 171;
-                check(plan_with(drift).config.n_ubatch == (int) narrow,
-                      "width, drift: the same lead weighed again keeps the narrow graph in force");
-                // A width a calibration could not open loses.
-                MeasuredKnobs fails_narrow;
+                // A width that failed to open here as often as a plan lets it loses; once is the
+                // machine's moment, and the price still decides.
+                MeasuredKnobs fails_narrow = chat_mix;
                 fails_narrow.width_narrow = (int) narrow;
-                fails_narrow.narrow_unviable = true;
+                fails_narrow.narrow_unviable = 1;
+                check(plan_with(fails_narrow).config.n_ubatch == (int) narrow,
+                      "width, the narrow graph failed to open once: still the plan's, on its price");
+                fails_narrow.narrow_unviable = MeasuredKnobs::unviable_max;
                 const Plan wide_kept = plan_with(fails_narrow);
                 dw = find(wide_kept, "ubatch");
                 check(wide_kept.config.graph_width() == 16384 && wide_kept.config.trial.width_side == -1 && dw &&
                           dw->source == Source::Measured && dw->reason.find("failed") != std::string::npos,
                       "width, the narrow graph could not be opened: the full width stands", dw ? dw->reason : "none");
                 MeasuredKnobs fails_wide = fails_narrow;
-                fails_wide.narrow_unviable = false;
-                fails_wide.wide_unviable = true;
+                fails_wide.narrow_unviable = 0;
+                fails_wide.wide_unviable = MeasuredKnobs::unviable_max;
                 const Plan narrow_kept = plan_with(fails_wide);
                 check(narrow_kept.config.n_ubatch == (int) narrow && narrow_kept.config.trial.width_side == -1,
                       "width, the full width could not be opened: the narrow graph stands");
                 // Another narrow width: what failed against the old one answers nothing.
                 fails_narrow.width_narrow = (int) narrow * 2;
-                check(plan_with(fails_narrow).config.trial.width_side == 1,
-                      "width, a failure at another narrow width: measured afresh");
-
-                // The whole loop on the real rules: calibrate() asks the plan, times each side it names,
-                // and serves the narrow graph that decoded faster, with no request served.
-                const auto width_run = [&](const RunConfig & c, const CalibrationRun &) {
-                    CandidateTiming t;
-                    t.created = true;
-                    t.tokens_per_second = c.n_ubatch == (int) narrow ? 19.4 : 14.2;
-                    t.step_lo = t.step_hi = 1.0 / t.tokens_per_second;
-                    t.tokens = {1, 2, 3};
-                    return t;
-                };
-                const CalibrationResult cw = calibrate(first, MeasuredKnobs{}, plan_with, width_run);
-                check(cw.complete && cw.runs == 2 && cw.plan.config.n_ubatch == (int) narrow &&
-                          cw.knobs.wide_decode_tps == 14.2 && cw.knobs.narrow_decode_tps == 19.4 &&
-                          cw.knobs.width_narrow == (int) narrow,
-                      "calibration, graph width: both sides timed, the narrow graph served",
-                      std::to_string(cw.runs) + " runs, ubatch " + std::to_string(cw.plan.config.n_ubatch));
+                check(plan_with(fails_narrow).config.n_ubatch == (int) narrow,
+                      "width, a failure at another narrow width: priced afresh");
             }
 
             // A slope the device side did not measure decides nothing there.
@@ -2944,16 +2901,18 @@ int main() {
         }
     }
 
-    // ── a model held in memory, on a device that reads that same memory: decided across loads ─
+    // ── a model held in memory, on a device that reads that same memory: decided by calculation ─
     // The fitter's placement on such a device is set aside (one pool, counted twice), so what is left
-    // is which engine runs the model faster: the cores timed first, then every layer on the device,
-    // and the plan after keeps the faster by the margin, or the device where the decode is level and
-    // its prompt-wide rate wins.
+    // is which engine serves this machine's requests faster: a request's decoded tokens and its prompt
+    // at the rates each processor probed on a real layer of the model, one token wide and as wide as
+    // a prompt. The load serves the side priced faster and times its decode; with both decodes
+    // measured their ratio replaces the probe's. No load is opened to try the device.
     {
         HardwareProfile roomy = unified();
         roomy.residency_budget = 64 * GiB;
         roomy.memory_total = 64 * GiB;
-        roomy.host_wide_matmul_gibs = 100.0;
+        roomy.host_wide_matmul_gibs = 1000.0;
+        roomy.host_expert_gibs = roomy.host_dense_gibs = 100.0; // level with the device one token wide
         for (ComputeDevice & d : roomy.devices) {
             if (d.is_cpu) continue;
             d.usable = Tri::Yes;
@@ -2961,7 +2920,8 @@ int main() {
             d.runs_expert_op = Tri::Yes;
             d.needs_repack = Tri::No;
             d.wide_identity_ok = Tri::Yes;
-            d.wide_matmul_gibs = 90.0; // no faster on a prompt than the host
+            d.wide_matmul_gibs = 900.0; // no faster on a prompt than the host
+            d.expert_gibs = d.dense_gibs = 100.0;
         }
         Placement shared;
         shared.shared_memory_placement = true;
@@ -2985,50 +2945,72 @@ int main() {
             return p.config.n_gpu_layers == 0 && p.config.device_split.empty();
         };
 
+        // The same on a machine whose requests are answers with no long prompt (what its loads recorded).
+        const auto plan_chat = [&](double on, double off, const HardwareProfile & h) {
+            ModelProfile m = model;
+            m.knobs.shared_device_tps = on;
+            m.knobs.no_shared_device_tps = off;
+            m.knobs.mix_requests = 4;
+            m.knobs.mix_gen_tokens = 400;
+            return plan_run(base_cfg(), h, m, shared, PlanRequest{}, PlannerPolicy::defaults());
+        };
+
+        // Level one token wide and no faster on a prompt: the cores keep the model and time it.
         const Plan first = plan_with(0.0, 0.0);
         check(first.regime == Regime::Fits, "shared device: the model is held in memory");
         check(first.config.trial.shared_device_side == 0 && on_cores(first),
-              "shared device, nothing measured: this load times the cores, nothing moves yet");
+              "shared device, priced no faster: the cores serve, and time their own decode");
         const Decision * d0 = find(first, "shared-device");
-        check(d0 && d0->value == "cpu" && d0->source == Source::Policy, "shared device: a policy line says so");
-        check(validate(first.config).ok, "shared device, cores timed: a valid config", validate(first.config).error);
-
+        check(d0 && d0->value == "cpu" && d0->source == Source::Derived &&
+                  d0->reason.find("the default mix") != std::string::npos,
+              "shared device: the line prices a request on the default mix", d0 ? d0->reason : "no line");
+        check(validate(first.config).ok, "shared device, on the cores: a valid config", validate(first.config).error);
+        // The cores measured changes nothing: one side's rate moves no ratio, and no load tries the device.
         const Plan second = plan_with(0.0, 40.0);
-        check(second.config.trial.shared_device_side == 1 && on_device(second),
-              "shared device, the cores measured: this load times every layer on the device");
-        check(validate(second.config).ok, "shared device, device timed: a valid config", validate(second.config).error);
+        check(second.config.trial.shared_device_side == -1 && on_cores(second),
+              "shared device, the cores measured: nothing more to time, no load opened on the device");
 
-        const Plan faster = plan_with(54.0, 40.0);
-        const Decision * df = find(faster, "shared-device");
-        check(on_device(faster) && faster.config.trial.shared_device_side == -1,
-              "shared device, faster by the margin: every layer moves, nothing left to time");
-        check(df && df->value == "accel" && df->source == Source::Measured &&
-                  df->reason.find("copied into the device's own buffers") != std::string::npos,
-              "shared device: a measured line naming the device and how its weights are held", df ? df->reason : "");
-        check(validate(faster.config).ok, "shared device, faster: a valid config", validate(faster.config).error);
-
-        check(on_cores(plan_with(41.0, 40.0)), "shared device, level and no faster on a prompt: the cores keep it");
-        check(on_cores(plan_with(30.0, 40.0)), "shared device, slower: the cores keep it");
-
+        // A device that computes a prompt 2.5x faster serves the default request faster, on the first load.
         HardwareProfile prompts = roomy;
         for (ComputeDevice & d : prompts.devices)
-            if (!d.is_cpu) d.wide_matmul_gibs = 250.0;
+            if (!d.is_cpu) d.wide_matmul_gibs = 2500.0;
+        const Plan moved = plan_with(0.0, 0.0, prompts);
+        const Decision * df = find(moved, "shared-device");
+        check(on_device(moved) && moved.config.trial.shared_device_side == 1,
+              "shared device, priced faster on a prompt: every layer moves on the first load, timed as it serves");
+        check(df && df->value == "accel" && df->source == Source::Derived &&
+                  df->reason.find("copied into the device's own buffers") != std::string::npos,
+              "shared device: a line naming the device and how its weights are held", df ? df->reason : "");
+        check(validate(moved.config).ok, "shared device, moved: a valid config", validate(moved.config).error);
+        // The same device on a machine that only decodes: the prompt weighs nothing, the decode is level.
+        check(on_cores(plan_chat(0.0, 0.0, prompts)),
+              "shared device, faster on prompts this machine never sends: the cores keep it");
+
+        // Both decodes measured: their ratio is the decode's, whatever the probe read.
+        const Plan faster = plan_chat(54.0, 40.0, roomy);
+        df = find(faster, "shared-device");
+        check(on_device(faster) && faster.config.trial.shared_device_side == -1 && df && df->source == Source::Measured,
+              "shared device, measured faster on the decode this machine serves: every layer moves");
+        check(on_cores(plan_chat(41.0, 40.0, roomy)), "shared device, level on the decode: the cores keep it");
+        check(on_cores(plan_chat(30.0, 40.0, roomy)), "shared device, slower: the cores keep it");
         check(on_device(plan_with(41.0, 40.0, prompts)),
               "shared device, level on the decode and faster on a prompt: the device takes it");
-        check(on_cores(plan_with(30.0, 40.0, prompts)),
-              "shared device, slower on the decode: a faster prompt does not buy the move");
+        check(on_cores(plan_chat(30.0, 40.0, prompts)),
+              "shared device, slower on the decode of a machine that only decodes: a faster prompt buys nothing");
+        // A decode 35% faster against a prompt 10% slower, on the default request: inside the margin.
+        check(on_cores(plan_with(54.0, 40.0)),
+              "shared device, the decode's gain inside the margin of the whole request: the cores keep it");
 
         ModelProfile failed = model;
-        failed.knobs.no_shared_device_tps = 40.0;
-        failed.knobs.shared_device_unviable = 1;
-        const Plan f = plan_run(base_cfg(), roomy, failed, shared, PlanRequest{}, PlannerPolicy::defaults());
+        failed.knobs.shared_device_unviable = MeasuredKnobs::unviable_max;
+        const Plan f = plan_run(base_cfg(), prompts, failed, shared, PlanRequest{}, PlannerPolicy::defaults());
         check(on_cores(f) && f.config.trial.shared_device_side == -1,
-              "shared device that failed to load the model: the cores, nothing timed again");
+              "shared device that failed to load the model: the cores, whatever its price");
 
         HardwareProfile wraps = roomy;
         for (ComputeDevice & d : wraps.devices)
             if (!d.is_cpu) d.host_ptr_buffers = d.host_ptr_verified = Tri::Yes;
-        const Plan in_place = plan_with(54.0, 40.0, wraps);
+        const Plan in_place = plan_chat(54.0, 40.0, wraps);
         const Decision * dw = find(in_place, "shared-device");
         check(dw && dw->reason.find("stay the file's mapping") != std::string::npos,
               "shared device that reads our memory in place: the line says the weights stay mapped",
@@ -3077,9 +3059,11 @@ int main() {
         dense.file_bytes = dense.dense_bytes = 5 * GiB;
         const Plan dp = plan_run(base_cfg(), roomy, dense, shared, PlanRequest{}, PlannerPolicy::defaults());
         check(dp.regime == Regime::NotMoe && dp.config.trial.shared_device_side == 0,
-              "shared device, a dense model held in memory: the cores timed first as well");
+              "shared device, a dense model held in memory: priced the same way, the cores timed");
         dense.knobs.shared_device_tps = 27.0;
         dense.knobs.no_shared_device_tps = 21.0;
+        dense.knobs.mix_requests = 4;
+        dense.knobs.mix_gen_tokens = 400;
         const Plan dm = plan_run(base_cfg(), roomy, dense, shared, PlanRequest{}, PlannerPolicy::defaults());
         check(dm.config.n_gpu_layers == 33 && dm.config.device_split.size() == 1,
               "shared device, a dense model measured faster on the device: every layer moves");
@@ -3099,7 +3083,7 @@ int main() {
             const Decision * da = find(asked, "shared-device");
             check(asked.regime == Regime::NotMoe && asked.config.trial.shared_device_side == 0 && da,
                   "shared device, a dense model short of residency's room, weights read in place: still asked, "
-                  "the cores timed first",
+                  "and priced",
                   da ? da->reason : "no line");
             // Copied, the weights become this process's memory: the move adds them, and the bar is on that.
             const Plan copied =
@@ -3323,229 +3307,125 @@ int main() {
         }
         check(validate(tier.config).ok, "device tier, cache faster: a valid config", validate(tier.config).error);
 
-        // Decided across loads: the first load arms the cache and times it, the next times the
-        // fitter's placement, the plan after keeps the faster (MeasuredKnobs::device_cache_tps).
+        // Decided by calculation: each side at its measurement where a load timed it, at its price from
+        // the probed rates otherwise; the load serves the faster and times its own decode as it serves
+        // (MeasuredKnobs::device_cache_tps). No load is opened to try a side.
         {
-            check(tier.config.trial.device_tier == 1, "device tier, nothing measured: the cache is armed and timed",
+            const auto tier_on = [&](const HardwareProfile & h, const MeasuredKnobs & k) {
+                ModelProfile mm = model;
+                mm.knobs = k;
+                return plan_run(base_cfg(), h, mm, half, PlanRequest{}, PlannerPolicy::defaults());
+            };
+            // Nothing measured: the cache is priced far past the fitter's ceiling (13.4 tok/s: its 24
+            // host layers' experts, 291.5 MiB a token, at the host's 4 GiB/s, the rest at the card's 881).
+            check(tier.config.trial.device_tier == 1,
+                  "device tier, nothing measured: the cache is priced faster, served, and timed as it serves",
                   std::to_string(tier.config.trial.device_tier));
-            ModelProfile once = model;
-            once.knobs.device_cache_tps = 1.6;
-            const Plan second = plan_run(base_cfg(), slow_cores, once, half, PlanRequest{}, PlannerPolicy::defaults());
-            const Decision * e = find(second, "device-cache-mb");
+            // The same machine over a link that makes every miss the whole token: the fitter's
+            // placement is priced faster, so it is the first load's, with no load spent on the cache.
+            HardwareProfile dial_up = slow_cores;
+            dial_up.devices[0].upload_gibs = 0.05;
+            dial_up.devices[0].upload_host_buffer_gibs = 0.0;
+            const Plan fitter_first = tier_on(dial_up, MeasuredKnobs{});
+            const Decision * e = find(fitter_first, "device-cache-mb");
+            check(fitter_first.config.moe.device_cache_mb == 0 && fitter_first.config.trial.device_tier == 0 &&
+                      fitter_first.config.buft_overrides.size() == 24 && e && e->source == Source::Derived &&
+                      e->reason.find("priced from the probed rates") != std::string::npos,
+                  "device tier, nothing measured, misses too slow to upload: the fitter's placement is served first",
+                  e ? e->reason : "no decision");
+            check(validate(fitter_first.config).ok, "device tier, the fitter's placement first: a valid config",
+                  validate(fitter_first.config).error);
+
+            // The cache measured on a load at 1.6 tok/s, under the fitter's price by the margin: the
+            // next load serves the fitter's placement and times it.
+            MeasuredKnobs once;
+            once.device_cache_tps = 1.6;
+            const Plan second = tier_on(slow_cores, once);
+            e = find(second, "device-cache-mb");
             check(second.config.moe.device_cache_mb == 0 && second.config.trial.device_tier == 0 &&
-                      second.config.buft_overrides.size() == 24 && e && e->source == Source::Policy,
-                  "device tier, the cache timed: this load times the fitter's placement as it made it",
+                      second.config.buft_overrides.size() == 24 && e && e->source == Source::Derived &&
+                      e->reason.find("1.60 tok/s with a device cache (measured on a load here) against 6.7") !=
+                          std::string::npos,
+                  "device tier, the cache measured under the fitter's price: the fitter's placement is served",
                   e ? e->reason : "no decision");
             check(validate(second.config).ok, "device tier, second load: a valid config",
                   validate(second.config).error);
+            // The placement is priced at half its ceiling (6.7 tok/s), what such placements were measured
+            // to reach. Measured at 20, or at 15, the cache is past it: it stays, nothing is timed again,
+            // and no load runs the slower side. At 5 (5.5 with the margin) the placement's price is past it.
+            for (double tps : {20.0, 15.0}) {
+                MeasuredKnobs fast;
+                fast.device_cache_tps = tps;
+                const Plan untimed = tier_on(slow_cores, fast);
+                e = find(untimed, "device-cache-mb");
+                check(untimed.config.moe.device_cache_mb > 0 && untimed.config.trial.device_tier == -1 && e &&
+                          e->reason.find("not past the 10% margin") != std::string::npos && validate(untimed.config).ok,
+                      "device tier, the cache measured past the fitter's price: kept, the other side never opened",
+                      e ? e->reason : "no decision");
+            }
+            MeasuredKnobs under;
+            under.device_cache_tps = 5.0;
+            check(tier_on(slow_cores, under).config.trial.device_tier == 0,
+                  "device tier, the cache measured under the fitter's price by the margin: the fitter's placement");
 
-            // The fitter's placement is timed only where it could win. Here its ceiling is 13.4 tok/s:
-            // its 24 host layers' experts (291.5 MiB a token) at the host's 4 GiB/s, the rest at the
-            // card's 881 GiB/s; 16.8 with the probe's slack. A cache measured at 20 (22 with the
-            // margin) is past what it could reach: kept, and nothing timed.
-            ModelProfile fast = model;
-            fast.knobs.device_cache_tps = 20.0;
-            const Plan untimed = plan_run(base_cfg(), slow_cores, fast, half, PlanRequest{}, PlannerPolicy::defaults());
-            e = find(untimed, "device-cache-mb");
-            check(untimed.config.moe.device_cache_mb > 0 && untimed.config.trial.device_tier == -1 && e &&
-                      e->source == Source::Measured && e->reason.find("could reach 16.") != std::string::npos &&
-                      e->reason.find("so it is not timed") != std::string::npos,
-                  "device tier, the cache measured past the fitter's ceiling: kept, the slower side never timed",
-                  e ? e->reason : "no decision");
-            check(validate(untimed.config).ok, "device tier, the cache past the ceiling: a valid config",
-                  validate(untimed.config).error);
-            // At 15 (16.5 with the margin) the ceiling's 16.8 could still win: it is timed.
-            ModelProfile near = model;
-            near.knobs.device_cache_tps = 15.0;
-            const Plan timed = plan_run(base_cfg(), slow_cores, near, half, PlanRequest{}, PlannerPolicy::defaults());
-            e = find(timed, "device-cache-mb");
-            check(timed.config.moe.device_cache_mb == 0 && timed.config.trial.device_tier == 0 && e &&
-                      e->reason.find("could reach 16.") != std::string::npos,
-                  "device tier, the cache inside the fitter's ceiling: the fitter's placement is timed",
-                  e ? e->reason : "no decision");
-            // The same cache with no slack for the probe: 13.4 cannot reach 16.5, nothing is timed.
-            PlannerPolicy exact = PlannerPolicy::defaults();
-            exact.rate_ceiling_slack = 0.0f;
-            check(plan_run(base_cfg(), slow_cores, near, half, PlanRequest{}, exact).config.trial.device_tier == -1,
-                  "device tier, no slack: the ceiling alone decides");
-
-            ModelProfile lost = once;
-            lost.knobs.no_device_cache_tps = 3.94; // the fitter's placement decoded 2.5x faster
-            const Plan third = plan_run(base_cfg(), slow_cores, lost, half, PlanRequest{}, PlannerPolicy::defaults());
+            MeasuredKnobs lost = once;
+            lost.no_device_cache_tps = 3.94; // the fitter's placement decoded 2.5x faster
+            const Plan third = tier_on(slow_cores, lost);
             e = find(third, "device-cache-mb");
             check(third.config.moe.device_cache_mb == 0 && third.config.trial.device_tier == -1 &&
                       third.config.buft_overrides.size() == 24 && e && e->source == Source::Measured &&
-                      e->reason.find("1.60 tok/s with a device cache against 3.94") != std::string::npos,
+                      e->reason.find("1.60 tok/s with a device cache (measured on a load here) against 3.94") !=
+                          std::string::npos,
                   "device tier, the fitter's placement measured faster: it is kept, and the plan says by how much",
                   e ? e->reason : "no decision");
+            // The fitter's placement measured, the cache only priced: its price past the measurement by
+            // the margin brings the cache back, timed as it serves.
+            MeasuredKnobs fitter_only;
+            fitter_only.no_device_cache_tps = 30.0;
+            const Plan back = tier_on(slow_cores, fitter_only);
+            check(back.config.moe.device_cache_mb > 0 && back.config.trial.device_tier == 1,
+                  "device tier, the fitter's placement measured under the cache's price: the cache, timed");
 
-            ModelProfile won = once;
-            won.knobs.device_cache_tps = 17.5;
-            won.knobs.no_device_cache_tps = 9.9;
-            const Plan kept = plan_run(base_cfg(), slow_cores, won, half, PlanRequest{}, PlannerPolicy::defaults());
+            MeasuredKnobs won;
+            won.device_cache_tps = 17.5;
+            won.no_device_cache_tps = 9.9;
+            const Plan kept = tier_on(slow_cores, won);
             e = find(kept, "device-cache-mb");
             check(kept.config.moe.device_cache_mb > 0 && kept.config.trial.device_tier == -1 && e &&
-                      e->reason.find("measured: 17.50 tok/s with a device cache") != std::string::npos,
+                      e->reason.find("17.50 tok/s with a device cache (measured on a load here)") != std::string::npos,
                   "device tier, the cache measured faster: armed, nothing timed again", e ? e->reason : "no decision");
 
-            // The device cache's CPU share, once the tier is decided: the price nominates a share where the
-            // link is slow against the host's cores, and the loads decide it as the tier's are.
-            {
-                HardwareProfile slow_link = card; // a host at 66 GiB/s, the card's link at 3
-                slow_link.devices[0].upload_gibs = 3.0;
-                slow_link.devices[0].host_hop_seconds = 58e-6;
-                ModelProfile decided = won; // the cache measured faster than the fitter's placement
-                const auto share_plan = [&](const HardwareProfile & h, const ModelProfile & m) {
-                    return plan_run(base_cfg(), h, m, half, PlanRequest{}, PlannerPolicy::defaults());
-                };
-                const Plan nominate = share_plan(slow_link, decided);
-                const Decision * sd = find(nominate, "device-cache-cpu-share");
-                check(nominate.config.moe.device_cache_mb > 0 && nominate.config.moe.device_cache_cpu_share > 0.0f &&
-                          nominate.config.trial.cpu_share_side == 1 && sd && sd->source == Source::Policy &&
-                          sd->reason.find("this one times the share") != std::string::npos,
-                      "cpu share: priced past the margin, the share is timed on its own load against the cache's rate",
-                      sd ? sd->reason : "no decision");
-                check(validate(nominate.config).ok, "cpu share: the timed load is a valid config",
-                      validate(nominate.config).error);
-                // A front-end that starts streamed (the server) gets the same answer as one that does not
-                // (the CLI): a plan that fits declines the stream, and the share is decided by the regime.
-                RunConfig streamed_base = base_cfg();
-                streamed_base.moe.enabled = true;
-                const Plan from_server =
-                    plan_run(streamed_base, slow_link, decided, half, PlanRequest{}, PlannerPolicy::defaults());
-                check(from_server.regime == nominate.regime &&
-                          from_server.config.moe.device_cache_cpu_share == nominate.config.moe.device_cache_cpu_share &&
-                          from_server.config.trial.cpu_share_side == nominate.config.trial.cpu_share_side,
-                      "cpu share: the same plan whether the front-end starts streamed or not",
-                      std::to_string(from_server.config.moe.device_cache_cpu_share));
-                ModelProfile faster = decided;
-                faster.knobs.cpu_share_tps = 21.2;
-                faster.knobs.no_cpu_share_tps = 18.5;
-                const Plan kept_share = share_plan(slow_link, faster);
-                sd = find(kept_share, "device-cache-cpu-share");
-                check(kept_share.config.moe.device_cache_cpu_share > 0.0f &&
-                          kept_share.config.trial.cpu_share_side == -1 && sd && sd->source == Source::Measured,
-                      "cpu share: measured faster, kept with nothing timed", sd ? sd->reason : "no decision");
-                // The share is held against the cache on the graph this plan runs: the width's timing of the
-                // cache where the width was timed after the tier (a 12 GB card: 26.3 tok/s wide, 31.6 narrow,
-                // the share 32.2 on the narrow graph, a 2% win and not 22%).
-                ModelProfile at_width = decided;
-                at_width.knobs.width_narrow = 777; // not this plan's width: the wide side is the plan's graph
-                at_width.knobs.wide_decode_tps = 30.0;
-                at_width.knobs.narrow_decode_tps = 25.0;
-                at_width.knobs.cpu_share_tps = 21.2; // past the tier's 17.5, short of the graph's own 30
-                const Plan width_base = share_plan(slow_link, at_width);
-                sd = find(width_base, "device-cache-cpu-share");
-                check(width_base.config.moe.device_cache_cpu_share == 0.0f &&
-                          width_base.config.trial.cpu_share_side == -1 && sd &&
-                          sd->reason.find("against 30.00") != std::string::npos,
-                      "cpu share: held against the cache at the plan's own width, not the tier's older rate",
-                      sd ? sd->reason : "no decision");
-                ModelProfile even_share = decided;
-                even_share.knobs.cpu_share_tps = 18.6;
-                even_share.knobs.no_cpu_share_tps = 18.5;
-                const Plan dropped = share_plan(slow_link, even_share);
-                check(dropped.config.moe.device_cache_cpu_share == 0.0f && dropped.config.trial.cpu_share_side == -1,
-                      "cpu share: measured inside the margin, every miss is uploaded");
-                ModelProfile failed = decided;
-                failed.knobs.cpu_share_unviable = 1;
-                check(share_plan(slow_link, failed).config.moe.device_cache_cpu_share == 0.0f,
-                      "cpu share: a load with the share that failed leaves every miss uploaded");
-                // The hop is a cost of every MoE layer whatever the share computes: past what the share
-                // saves, the price nominates nothing and no load is spent on it.
-                HardwareProfile costly_hop = slow_link;
-                costly_hop.devices[0].host_hop_seconds = 50e-3;
-                const Plan no_share = share_plan(costly_hop, decided);
-                sd = find(no_share, "device-cache-cpu-share");
-                check(no_share.config.moe.device_cache_cpu_share == 0.0f &&
-                          no_share.config.trial.cpu_share_side == -1 && sd &&
-                          sd->reason.find("of hops over") != std::string::npos,
-                      "cpu share: hops past the saving, nothing nominated", sd ? sd->reason : "no decision");
-                // Unmeasured hop: no price, no share.
-                HardwareProfile no_hop = slow_link;
-                no_hop.devices[0].host_hop_seconds = 0.0;
-                const Plan unpriced_share = share_plan(no_hop, decided);
-                sd = find(unpriced_share, "device-cache-cpu-share");
-                check(unpriced_share.config.moe.device_cache_cpu_share == 0.0f && sd && sd->source == Source::Unprobed,
-                      "cpu share: the hop unmeasured, every miss uploaded and the plan says why");
-                // Cores slower at the experts than the link brings them: nothing to gain, nothing timed.
-                HardwareProfile slow_host = slow_link;
-                slow_host.host_bandwidth_gibs = 4.0;
-                slow_host.devices[0].upload_gibs = 24.0;
-                const Plan host_slow = share_plan(slow_host, decided);
-                check(host_slow.config.moe.device_cache_cpu_share == 0.0f &&
-                          host_slow.config.trial.cpu_share_side == -1,
-                      "cpu share: cores slower than the link, every miss uploaded and nothing timed");
-                // A fast link with faster cores is still only a nomination: the loads decide. (A 32 GB card's
-                // cache that never filled lost 40% to a share: a measured loss keeps every miss uploaded.)
-                // A model whose record says the cache misses as often as the share of the set it leaves
-                // out (a flat routing): the misses are what a share would move to the cores.
-                HardwareProfile fast_link = slow_link;
-                fast_link.devices[0].upload_gibs = 24.0;
-                ModelProfile flat = decided;
-                flat.hit_curve.measured = true;
-                flat.hit_curve.decode_tokens = 256;
-                flat.hit_curve.points = {{0, 0.0}, {flat.expert_bytes, 1.0}};
-                ModelProfile lost_share = flat;
-                lost_share.knobs.cpu_share_tps = 68.0;
-                lost_share.knobs.no_cpu_share_tps = 114.0;
-                check(
-                    share_plan(fast_link, flat).config.trial.cpu_share_side == 1 &&
-                        share_plan(fast_link, lost_share).config.moe.device_cache_cpu_share == 0.0f &&
-                        share_plan(fast_link, lost_share).config.trial.cpu_share_side == -1,
-                    "cpu share: a fast link with faster cores is timed, and a measured loss keeps every miss uploaded");
-                // The cache lost to the fitter's placement with every miss uploaded: on a slow link that is the
-                // case a share is for, so the cache with part of its misses on the host is timed before the
-                // fitter's placement is kept (two 24 GB cards, GLM-4.7: cache 4.0, fitter 16.2, share untimed).
-                ModelProfile lost_tier = decided;
-                lost_tier.knobs.device_cache_tps = 4.0;
-                lost_tier.knobs.no_device_cache_tps = 16.2;
-                const Plan try_share = share_plan(slow_link, lost_tier);
-                sd = find(try_share, "device-cache-cpu-share");
-                check(try_share.config.moe.device_cache_mb > 0 && try_share.config.moe.device_cache_cpu_share > 0.0f &&
-                          try_share.config.trial.cpu_share_side == 1 && try_share.config.trial.device_tier == -1 &&
-                          sd && sd->reason.find("before the plan keeps either") != std::string::npos &&
-                          validate(try_share.config).ok,
-                      "cpu share: the cache that lost to the fitter is timed with a share before it is set aside",
-                      sd ? sd->reason : "no decision");
-                // Where the rest of the plan rules the share out (the cache's experts would be streamed, which
-                // no gate covers with a share), the cache it was armed for is never served: it lost to the
-                // fitter's placement with every miss uploaded (a server on GLM-4.7 served 3.6 tok/s so,
-                // against the fitter's measured 16.2).
-                HardwareProfile tight = slow_link;
-                tight.residency_budget = 2 * GiB;
-                const Plan no_room = share_plan(tight, lost_tier);
-                check(!(no_room.config.moe.device_cache_mb > 0 && no_room.config.moe.device_cache_cpu_share == 0.0f &&
-                        no_room.config.trial.cpu_share_side == -1),
-                      "cpu share: ruled out by the rest of the plan, the cache that lost is not served without it",
-                      std::to_string(no_room.config.moe.device_cache_mb) + " MiB cache, share " +
-                          std::to_string(no_room.config.moe.device_cache_cpu_share));
-                ModelProfile share_won = lost_tier;
-                share_won.knobs.cpu_share_tps = 19.0;
-                const Plan cache_back = share_plan(slow_link, share_won);
-                check(cache_back.config.moe.device_cache_mb > 0 &&
-                          cache_back.config.moe.device_cache_cpu_share > 0.0f &&
-                          cache_back.config.trial.cpu_share_side == -1 && cache_back.config.trial.device_tier == -1,
-                      "cpu share: the cache with its share past the fitter's placement, served with nothing timed");
-                ModelProfile share_lost = lost_tier;
-                share_lost.knobs.cpu_share_tps = 9.0;
-                const Plan fitter_kept_share = share_plan(slow_link, share_lost);
-                check(fitter_kept_share.config.moe.device_cache_mb == 0 &&
-                          fitter_kept_share.config.moe.device_cache_cpu_share == 0.0f &&
-                          fitter_kept_share.config.trial.cpu_share_side == -1,
-                      "cpu share: the share timed and still slower than the fitter's placement: the fitter's stands");
-                // While the tier is still being timed, the share waits for it.
-                check(share_plan(slow_link, model).config.trial.cpu_share_side == -1 &&
-                          share_plan(slow_link, model).config.moe.device_cache_cpu_share == 0.0f,
-                      "cpu share: the tier still timed, one decision at a time");
-            }
-
-            ModelProfile tie = once;
-            tie.knobs.device_cache_tps = 10.0;
-            tie.knobs.no_device_cache_tps = 10.5; // inside the margin: the rule's choice holds
-            const Plan held = plan_run(base_cfg(), slow_cores, tie, half, PlanRequest{}, PlannerPolicy::defaults());
+            MeasuredKnobs tie;
+            tie.device_cache_tps = 10.0;
+            tie.no_device_cache_tps = 10.5; // inside the margin: the cache holds
+            const Plan held = tier_on(slow_cores, tie);
             check(held.config.moe.device_cache_mb > 0 && held.config.trial.device_tier == -1,
                   "device tier, the two inside the margin: the cache holds");
+
+            // The device cache's CPU share is a person's setting: the plan uploads every miss, names no
+            // side for it, and says how to set it, on a machine where a price used to nominate one (a
+            // host at 66 GiB/s behind a link at 3).
+            {
+                HardwareProfile slow_link = card;
+                slow_link.devices[0].upload_gibs = 3.0;
+                slow_link.devices[0].host_hop_seconds = 58e-6;
+                const Plan uploaded = tier_on(slow_link, won);
+                const Decision * sd = find(uploaded, "device-cache-cpu-share");
+                check(uploaded.config.moe.device_cache_mb > 0 && uploaded.config.moe.device_cache_cpu_share == 0.0f &&
+                          uploaded.config.trial.cpu_share_side == -1 && sd && sd->source == Source::Policy &&
+                          sd->reason.find("sets it by hand") != std::string::npos,
+                      "cpu share: never the plan's, every miss uploaded, and the plan says how to set it",
+                      sd ? sd->reason : "no decision");
+                PlanRequest pin_share;
+                pin_share.pinned.push_back("device-cache-cpu-share");
+                RunConfig with_share = base_cfg();
+                with_share.moe.device_cache_cpu_share = 0.5f;
+                ModelProfile mm = model;
+                mm.knobs = won;
+                const Plan asked = plan_run(with_share, slow_link, mm, half, pin_share, PlannerPolicy::defaults());
+                check(asked.config.moe.device_cache_cpu_share == 0.5f && asked.config.trial.cpu_share_side == -1,
+                      "cpu share: a share the person set is kept as set");
+            }
 
             // A caller who placed it is not measured against.
             PlanRequest pin;
@@ -3553,57 +3433,27 @@ int main() {
             const Plan pinned = plan_run(base_cfg(), slow_cores, model, half, pin, PlannerPolicy::defaults());
             check(pinned.config.trial.device_tier == -1, "device tier, pinned by the caller: nothing timed");
 
-            // A side a load-time calibration could not open loses (bmoe/calibrate.h).
-            ModelProfile no_cache = model;
-            no_cache.knobs.device_cache_unviable = true;
-            const Plan fitter_kept =
-                plan_run(base_cfg(), slow_cores, no_cache, half, PlanRequest{}, PlannerPolicy::defaults());
+            // A side that failed to open here as often as a plan lets it loses; once is the machine's
+            // moment, and the price still decides.
+            MeasuredKnobs no_cache;
+            no_cache.device_cache_unviable = 1;
+            check(tier_on(slow_cores, no_cache).config.moe.device_cache_mb > 0,
+                  "device tier, the cache failed to open once: still the plan's, on its price");
+            no_cache.device_cache_unviable = MeasuredKnobs::unviable_max;
+            const Plan fitter_kept = tier_on(slow_cores, no_cache);
             e = find(fitter_kept, "device-cache-mb");
             check(fitter_kept.config.moe.device_cache_mb == 0 && fitter_kept.config.trial.device_tier == -1 &&
                       fitter_kept.config.buft_overrides.size() == 24 && e && e->source == Source::Measured,
                   "device tier, the cache could not be opened: the fitter's placement, nothing timed",
                   e ? e->reason : "no decision");
-            ModelProfile no_fitter = model;
-            no_fitter.knobs.no_device_cache_unviable = true;
-            const Plan cache_kept =
-                plan_run(base_cfg(), slow_cores, no_fitter, half, PlanRequest{}, PlannerPolicy::defaults());
+            MeasuredKnobs no_fitter = once; // the cache measured under the ceiling, the other side unopenable
+            no_fitter.no_device_cache_unviable = MeasuredKnobs::unviable_max;
+            const Plan cache_kept = tier_on(slow_cores, no_fitter);
             e = find(cache_kept, "device-cache-mb");
             check(cache_kept.config.moe.device_cache_mb > 0 && cache_kept.config.trial.device_tier == -1 && e &&
                       e->reason.find("failed") != std::string::npos,
                   "device tier, the fitter's placement could not be opened: the cache, nothing timed",
                   e ? e->reason : "no decision");
-
-            // The whole loop on the real rules: the cache side first, then the fitter's placement, and
-            // the faster served. Each candidate is told by its config alone.
-            const auto replan_tier = [&](const MeasuredKnobs & k) {
-                ModelProfile mm = model;
-                mm.knobs = k;
-                return plan_run(base_cfg(), slow_cores, mm, half, PlanRequest{}, PlannerPolicy::defaults());
-            };
-            const auto tier_run = [](double cache, double fitter) {
-                return [cache, fitter](const RunConfig & c, const CalibrationRun &) {
-                    CandidateTiming t;
-                    t.created = true;
-                    t.tokens_per_second = c.moe.device_cache_mb > 0 ? cache : fitter;
-                    t.step_lo = t.step_hi = 1.0 / t.tokens_per_second;
-                    t.tokens = {7, 8, 9};
-                    return t;
-                };
-            };
-            const CalibrationResult won_c = calibrate(tier, MeasuredKnobs{}, replan_tier, tier_run(15.0, 9.9));
-            check(won_c.complete && won_c.runs == 2 && won_c.plan.config.moe.device_cache_mb > 0 &&
-                      won_c.knobs.device_cache_tps == 15.0 && won_c.knobs.no_device_cache_tps == 9.9,
-                  "calibration, device tier: both sides timed in one load, the cache served",
-                  std::to_string(won_c.runs) + " runs");
-            const CalibrationResult lost_c = calibrate(tier, MeasuredKnobs{}, replan_tier, tier_run(1.6, 3.94));
-            check(lost_c.complete && lost_c.runs == 2 && lost_c.plan.config.moe.device_cache_mb == 0 &&
-                      lost_c.plan.config.buft_overrides.size() == 24,
-                  "calibration, device tier: the fitter's placement decoded faster and is served");
-            // The cache past the fitter's ceiling: the fitter's side is never opened.
-            const CalibrationResult ceiling_c = calibrate(tier, MeasuredKnobs{}, replan_tier, tier_run(20.0, 30.0));
-            check(ceiling_c.complete && ceiling_c.runs == 1 && ceiling_c.plan.config.moe.device_cache_mb > 0 &&
-                      ceiling_c.knobs.no_device_cache_tps == 0.0,
-                  "calibration, device tier: past the fitter's ceiling, one candidate only");
         }
 
         // The device's rate unmeasured: nothing says it is the faster processor, and nothing moves.

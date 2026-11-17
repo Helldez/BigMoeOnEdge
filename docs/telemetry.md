@@ -609,7 +609,7 @@ hardware=<16 hex> engine=<version> threads=<n> threads_tried=<incumbent,candidat
 
 `threads=0` and `overlap=-1` mean not measured, and so does a rate of 0. `prefill=` is what came of
 each prefill device a load armed for this model, one word per device ([measured-planning.md](measured-planning.md#a-prefill-device-that-did-not-hold-up-for-a-model)). The two rates are the device
-tier's sides, each timed on a different load (`--trial-device-cache`), with these lines:
+tier's sides, each timed by a load that serves it (`--trial-device-cache`), with these lines:
 
 ```
 bmoe: knob trial: timing the decode <with|without> a device expert cache
@@ -626,18 +626,10 @@ bmoe: knob trial: timing the decode with the graph <at the plan's width|narrowed
 bmoe: knob trial: <f> tok/s with the graph <...> (<n> tokens wide), the median of <n> windows
 ```
 
-A load-time calibration ([measured-planning.md](measured-planning.md#decisions-across-loads-timed-at-load))
-puts its rates in the same keys, with these lines:
-
-```
-bmoe: calibration: timing the decode <side> (candidate <i> of at most <n>)
-bmoe: calibration: <f> tok/s <side>, <the median of <n> windows|cut once past the other side's range>
-```
-
-`unviable` counts the failed opens of each side, a calibration's or a served load's
-(`device_cache`, `no_device_cache`, `wide`, `narrow`; the width's at `width_narrow`), as `side:n`,
-written only when there is one: the plan treats each as the losing side, and a calibration tries it
-again while the count is under its retry budget. A rate measured since clears it. A name the reader does
+`unviable` counts the failed opens of each side: a load whose side would not open and that opened the
+plan's other side instead (`device_cache`, `no_device_cache`, `wide`, `narrow`; the width's at
+`width_narrow`), as `side:n`, written only when there is one. After one failure the plan may name the
+side once more; from two on it is the losing side in every plan. A rate measured since clears it. A name the reader does
 not know, or a part it cannot read, is skipped.
 
 Keeping a record merges it into the one already kept for that machine and engine: each measurement it

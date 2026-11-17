@@ -4,8 +4,8 @@
 // One thread copying from a file's mapping into another buffer is bound by its own page faults and
 // a single core's copy rate, not by the memory: on a rented card's host, copying a 126 GB model's
 // experts into the device backend's host memory (MoeStreamConfig::expert_host_buffer) took most of
-// the two minutes a load-time calibration's device-cache candidate spent opening, against 15 s for
-// the candidates without it. Spread over the cores the plan computes on, the faults and the copy run
+// the two minutes a load with a device cache spent opening, against 15 s for a load without one.
+// Spread over the cores the plan computes on, the faults and the copy run
 // side by side. The bytes land exactly where one memcpy would put them.
 #include <cstddef>
 #include <vector>

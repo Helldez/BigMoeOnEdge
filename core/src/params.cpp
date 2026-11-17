@@ -553,7 +553,7 @@ std::vector<ParamDesc> build() {
         ParamDesc d = row("trial-device-cache", "Measure the device tier", G::Cache, L::Experimental,
                           "Time the decode of this load's side of the device tier, to be compared across loads: 1 "
                           "with a device expert cache, 0 without one. -1 times neither. Changes no output; the plan "
-                          "sets it while the two sides have not both been measured on this machine.");
+                          "sets it on a load that serves a side not yet measured on this machine.");
         d.value_hint = "N";
         bounds(d, -1, 1, "side");
         special(d, "-1", "off");
@@ -564,8 +564,7 @@ std::vector<ParamDesc> build() {
         ParamDesc d = row("trial-cpu-share", "Measure the device cache's CPU share", G::Cache, L::Experimental,
                           "Time the decode of this load's side of the device cache's CPU share, to be compared "
                           "across loads: 1 with --device-cache-cpu-share as set, 0 with every miss uploaded. -1 "
-                          "times neither. Changes no output; the plan sets it while the two sides have not both "
-                          "been measured on this machine.");
+                          "times neither. Changes no output; set by hand only: the plan arms no CPU share.");
         d.value_hint = "N";
         bounds(d, -1, 1, "side");
         special(d, "-1", "off");
@@ -577,7 +576,7 @@ std::vector<ParamDesc> build() {
                           "Time the decode of this load's side of where a model held in memory runs, on a machine "
                           "whose device reads the host's own memory, to be compared across loads: 1 with every "
                           "layer on the device (--gpu-layers and --device-split), 0 on the cores. -1 times neither. "
-                          "Changes no output; the plan sets it while the two sides have not both been measured on "
+                          "Changes no output; the plan sets it on a load that serves a side not yet measured on "
                           "this machine.");
         d.value_hint = "N";
         bounds(d, -1, 1, "side");
@@ -606,20 +605,6 @@ std::vector<ParamDesc> build() {
         bounds(d, 0, RunConfig::tokens_max, "tokens");
         special(d, "0", "none");
         bind_int(d, [](RunConfig & c) -> int & { return c.trial.width_narrow; });
-        t.push_back(d);
-    }
-    {
-        ParamDesc d = row("calibrate", "Calibrate at load", G::Cache, L::Advanced,
-                          "Where the automatic plan cannot tell which of two placements on a graphics card decodes "
-                          "faster, time each side as a short load of its own and serve the faster. Off, each side "
-                          "is timed over a whole session of use instead. Changes no output.");
-        d.type = ParamType::Bool;
-        d.flag.clear();
-        d.switches = {{"--calibrate", "true"}, {"--no-calibrate", "false"}};
-        bind_bool(d, [](RunConfig & c) -> bool & { return c.calibrate; });
-        d.details = "Only machines with a graphics card that has memory of its own have such a choice: a phone or a "
-                    "computer whose graphics share its memory never calibrates. Every front-end does it before "
-                    "a model's first answer on this machine and keeps the result, so later loads start decided.";
         t.push_back(d);
     }
     {

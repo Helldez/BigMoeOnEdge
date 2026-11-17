@@ -48,9 +48,4 @@ size_t TurnQueue::waiting() const {
     return in_line > 0 ? in_line - 1 : 0;
 }
 
-bool TurnQueue::empty() const {
-    std::lock_guard<std::mutex> lk(m_);
-    return next_ticket_ - serving_ == gone_.size();
-}
-
 } // namespace bmoe::server
