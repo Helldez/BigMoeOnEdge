@@ -179,7 +179,7 @@ fun SetupScreen(modifier: Modifier = Modifier, onOpenChat: () -> Unit, onOpenMod
             Surface(color = tokens.surface, shape = SheetCorner, shadowElevation = SheetElevation, modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     when {
-                        !engine.serverUp -> Text("The engine is not running.", color = tokens.err)
+                        !engine.serverUp -> EngineDown(engine)
                         models == null -> SkeletonLine()
                         chosen == null -> Row(verticalAlignment = Alignment.CenterVertically) {
                             Text("No model is suggested here. Find one in", modifier = Modifier.weight(1f, fill = false))

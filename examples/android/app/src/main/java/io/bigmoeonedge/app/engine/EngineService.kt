@@ -249,7 +249,10 @@ class EngineService : Service() {
             s.start(
                 share, key, AppPrefs.port(this),
                 onListening = { port -> Engine.serverListening(launch, port) },
-                onExit = { code, tail -> Engine.serverExited(launch, code, tail) },
+                onExit = { code, tail ->
+                    // A crash nobody asked for: the engine comes back without a model (Engine.serverExited).
+                    if (Engine.serverExited(launch, code, tail)) lifecycle { startServer() }
+                },
             )
         } catch (t: Throwable) {
             server = null
