@@ -4,7 +4,78 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.44.0] - 2026-11-17
+
+### Added
+- **bmoe-server answers the parts of llama.cpp's server that its clients read** (#613). A chat
+  completion carries llama-server's `timings`, and a streamed one asked with `return_progress`
+  reports the prompt's prefill as `prompt_progress` chunks, so a client's progress bar moves through
+  a long prompt (the engine is told after each piece it decodes). New routes, in llama-server's
+  shapes and with nothing of it linked: `/health`, `/props`, `/metrics` (Prometheus, `llamacpp:*`),
+  `/slots`, `/tokenize`, `/detokenize`, `/apply-template`, `/chat/completions/input_tokens` and
+  `/responses/input_tokens`; `/chat/completions`, `/responses` and `/models` answer as their `/v1`
+  routes. `/v1/messages/count_tokens` now counts with the loaded model's template and tokenizer
+  instead of estimating from the length. Measured with llama.cpp's own server test suite run
+  against bmoe-server: the routes above pass its tokenize, health, metrics and template tests.
+- **A request samples as it asks.** The chat endpoint reads `temperature`, `top_p`, `top_k`, `min_p`,
+  `seed`, the penalties (`presence_penalty`, `frequency_penalty`, `repeat_penalty`, `repeat_last_n`),
+  `logit_bias`, `stop`, a GBNF `grammar` and `logprobs`/`top_logprobs` (and llama-server's
+  `n_probs`); Messages reads `temperature`, `top_p`, `top_k` and `stop_sequences` (answering
+  `stop_reason: "stop_sequence"`), Responses `temperature` and `top_p`. They were accepted and not
+  read: a client asking for `stop` got text past it. A field left out keeps the session's setting,
+  and a request that names none decodes exactly as before. A stop is held back from the stream while
+  it forms, so a client never sees one the server then takes back. With speculation armed the
+  session stays greedy (a draft is accepted by the model's argmax) and a request's sampling is read
+  but not applied; `stop`, `grammar` and `logprobs` still are. `n` above 1 is refused with `400`.
+- **A model held in memory runs on an integrated GPU, or on Apple's unified-memory GPU, where it
+  measured faster there.** On a machine whose device reads the host's own memory the plan set the
+  capacity fitter's placement aside, since it counts that one pool twice, and left every layer on the
+  cores without measuring the device. Where the whole model is held in memory, MoE or dense, that is
+  now a decision across loads like the device tier: one load times the decode on the cores, one with
+  every layer on the device, and the faster stays by the margin, the device's prompt rate deciding
+  where the two decode level. A calibration times both before the first answer, so a machine pays it
+  once per model and engine (`--trial-shared-device`, `MeasuredKnobs::shared_device_tps`). A device is
+  timed only where it computed the host's results on a real layer of the model and its compute buffer
+  fits beside it; the plan says whether its weights stay the file's mapping or are copied into the
+  device's buffers, the same memory either way. The Plan screen shows the device on the prompt and
+  tokens lanes when it runs the model. Measured: a 1.7B model decoded 28% faster on a laptop iGPU
+  through Vulkan than on its cores (#602), and a MoE held in memory 54 against 40 tok/s on a 16 GB
+  unified-memory laptop's GPU (#380), while published runs put an older iGPU 37% behind its cores
+  (#375, [hardware-planning.md](docs/hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it)).
+
+### Changed
+- **A model with no routing record yet is credited the cache hits measured models deliver, no longer
+  the share of the expert set the cache holds.** That share is what a cache would serve if every
+  expert were as likely as every other; routing is nothing like it, and a first load was priced as if
+  a third of Qwen3.6-35B in cache served a third of its reads, where the runs served 85-92%. The
+  replayed curves of five records (Gemma 4 26B-A4B, OLMoE 1B-7B, Qwen3.6 35B-A3B at two
+  quantizations, DeepSeek V4) agree once the cache is counted in token cycles, the bytes one token
+  routes through, so the prior is a curve in those: two constants (a 0.92 ceiling the cold misses
+  keep, 63% of it at 2.25 cycles), never under the share held, with no table of models. Left one
+  model out at a time, it lands within 0.04 on average of the decode hits thirteen first loads
+  measured, where the share held was off by 0.45; the decode time the plan predicts for the nineteen
+  recorded runs moves from 44% off on average to 31%. It is ranked and credited through the path a
+  record's curve takes, and a record, once a model has one, replaces it; a load's measured hits
+  scale it both ways. Every plan the 36 plan records of the project's machines replay to is the same
+  plan, knob for knob: the ranking already gave the cache what it left unspent. What moves is the
+  prediction, the rationale (the hit rate is said to be a prior), and where a cache's hit rate
+  decides between processors (a device cache's CPU share), a choice priced on misses the linear
+  credit overstated.
+- **One look on every UI, for people who are not engine experts.** The web UI, the Android app and
+  the iOS app share one visual language (`docs/design.md`): an ink shell, answers on white sheets,
+  Hanken Grotesk in place of Inter, the logo's yellow rule. The model's name no longer heads every
+  answer; one line under it gives the answer speed and the prompt speed (tg, pp) and opens to the
+  figures, where the time split adds up to 100 and the memory reads as parts out of 100. Beside
+  the logo, the engine's state is said in words (thinking, writing, reading part of the model from
+  the disk).
+- **The first run leads to the first answer.** It is steps the screen marks: where a graphics pack
+  applies to the computer and is missing, installing it (or choosing the processor); then a model
+  that fits in memory beside a larger one, its download with the time left, and the model loading
+  by itself. The conversation opens when the model is ready, with three questions to try
+  (`docs/screens.md`, "First run"). Where no pack is needed it names the graphics cards the engine
+  computes on, which `GET /api/backends` now reports as `graphics` (each local GPU or integrated
+  GPU by its device's own description, read from the device's type, never a backend's name); where
+  none was found, it says how to get a driver.
 
 ### Fixed
 - **A split model downloaded shard by shard no longer lists as "runs mapped" until the server
@@ -40,61 +111,6 @@ Semantic Versioning.
   the server's port beside it; now the bind is refused (`EADDRINUSE`). The listening socket is bound
   exclusively (`SO_EXCLUSIVEADDRUSE` where the stack has it, otherwise only `SO_REUSEADDR`), and a
   port something already answers on counts as taken before the server binds it.
-### Changed
-- **A model with no routing record yet is credited the cache hits measured models deliver, no longer
-  the share of the expert set the cache holds.** That share is what a cache would serve if every
-  expert were as likely as every other; routing is nothing like it, and a first load was priced as if
-  a third of Qwen3.6-35B in cache served a third of its reads, where the runs served 85-92%. The
-  replayed curves of five records (Gemma 4 26B-A4B, OLMoE 1B-7B, Qwen3.6 35B-A3B at two
-  quantizations, DeepSeek V4) agree once the cache is counted in token cycles, the bytes one token
-  routes through, so the prior is a curve in those: two constants (a 0.92 ceiling the cold misses
-  keep, 63% of it at 2.25 cycles), never under the share held, with no table of models. Left one
-  model out at a time, it lands within 0.04 on average of the decode hits thirteen first loads
-  measured, where the share held was off by 0.45; the decode time the plan predicts for the nineteen
-  recorded runs moves from 44% off on average to 31%. It is ranked and credited through the path a
-  record's curve takes, and a record, once a model has one, replaces it; a load's measured hits
-  scale it both ways. Every plan the 36 plan records of the project's machines replay to is the same
-  plan, knob for knob: the ranking already gave the cache what it left unspent. What moves is the
-  prediction, the rationale (the hit rate is said to be a prior), and where a cache's hit rate
-  decides between processors (a device cache's CPU share), a choice priced on misses the linear
-  credit overstated.
-### Added
-- **bmoe-server answers the parts of llama.cpp's server that its clients read** (#613). A chat
-  completion carries llama-server's `timings`, and a streamed one asked with `return_progress`
-  reports the prompt's prefill as `prompt_progress` chunks, so a client's progress bar moves through
-  a long prompt (the engine is told after each piece it decodes). New routes, in llama-server's
-  shapes and with nothing of it linked: `/health`, `/props`, `/metrics` (Prometheus, `llamacpp:*`),
-  `/slots`, `/tokenize`, `/detokenize`, `/apply-template`, `/chat/completions/input_tokens` and
-  `/responses/input_tokens`; `/chat/completions`, `/responses` and `/models` answer as their `/v1`
-  routes. `/v1/messages/count_tokens` now counts with the loaded model's template and tokenizer
-  instead of estimating from the length. Measured with llama.cpp's own server test suite run
-  against bmoe-server: the routes above pass its tokenize, health, metrics and template tests.
-- **A request samples as it asks.** The chat endpoint reads `temperature`, `top_p`, `top_k`, `min_p`,
-  `seed`, the penalties (`presence_penalty`, `frequency_penalty`, `repeat_penalty`, `repeat_last_n`),
-  `logit_bias`, `stop`, a GBNF `grammar` and `logprobs`/`top_logprobs` (and llama-server's
-  `n_probs`); Messages reads `temperature`, `top_p`, `top_k` and `stop_sequences` (answering
-  `stop_reason: "stop_sequence"`), Responses `temperature` and `top_p`. They were accepted and not
-  read: a client asking for `stop` got text past it. A field left out keeps the session's setting,
-  and a request that names none decodes exactly as before. A stop is held back from the stream while
-  it forms, so a client never sees one the server then takes back. With speculation armed the
-  session stays greedy (a draft is accepted by the model's argmax) and a request's sampling is read
-  but not applied; `stop`, `grammar` and `logprobs` still are. `n` above 1 is refused with `400`.
-### Changed
-- **One look on every UI, for people who are not engine experts.** The web UI, the Android app and
-  the iOS app share one visual language (`docs/design.md`): an ink shell, answers on white sheets,
-  Hanken Grotesk in place of Inter, the logo's yellow rule. The model's name no longer heads every
-  answer; one line under it gives the answer speed and the prompt speed (tg, pp) and opens to the
-  figures, where the time split adds up to 100 and the memory reads as parts out of 100. Beside
-  the logo, the engine's state is said in words (thinking, writing, reading part of the model from
-  the disk).
-- **The first run leads to the first answer.** It is steps the screen marks: where a graphics pack
-  applies to the computer and is missing, installing it (or choosing the processor); then a model
-  that fits in memory beside a larger one, its download with the time left, and the model loading
-  by itself. The conversation opens when the model is ready, with three questions to try
-  (`docs/screens.md`, "First run"). Where no pack is needed it names the graphics cards the engine
-  computes on, which `GET /api/backends` now reports as `graphics` (each local GPU or integrated
-  GPU by its device's own description, read from the device's type, never a backend's name); where
-  none was found, it says how to get a driver.
 
 ## [0.43.2] - 2026-11-16
 
@@ -145,22 +161,6 @@ Semantic Versioning.
   (`self_path`), and the release workflow now installs each command-line archive the way
   `install.sh` does and fails when the server started through the link registers other backends than
   started beside them.
-### Added
-- **A model held in memory runs on an integrated GPU, or on Apple's unified-memory GPU, where it
-  measured faster there.** On a machine whose device reads the host's own memory the plan set the
-  capacity fitter's placement aside, since it counts that one pool twice, and left every layer on the
-  cores without measuring the device. Where the whole model is held in memory, MoE or dense, that is
-  now a decision across loads like the device tier: one load times the decode on the cores, one with
-  every layer on the device, and the faster stays by the margin, the device's prompt rate deciding
-  where the two decode level. A calibration times both before the first answer, so a machine pays it
-  once per model and engine (`--trial-shared-device`, `MeasuredKnobs::shared_device_tps`). A device is
-  timed only where it computed the host's results on a real layer of the model and its compute buffer
-  fits beside it; the plan says whether its weights stay the file's mapping or are copied into the
-  device's buffers, the same memory either way. The Plan screen shows the device on the prompt and
-  tokens lanes when it runs the model. Measured: a 1.7B model decoded 28% faster on a laptop iGPU
-  through Vulkan than on its cores (#602), and a MoE held in memory 54 against 40 tok/s on a 16 GB
-  unified-memory laptop's GPU (#380), while published runs put an older iGPU 37% behind its cores
-  (#375, [hardware-planning.md](docs/hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it)).
 
 ## [0.43.1] - 2026-11-14
 
