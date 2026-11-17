@@ -405,7 +405,7 @@ std::vector<Candidate> price_lanes(Pricing & c) {
                          "floor enforced here is the model's");
 
             // With this model's own hit curve, the cache is priced along it.
-            if (model.hit_curve.measured && c.in.cacheable_bytes > 0 && model.expert_bytes > 0) {
+            if (model.hit_curve.credited() && c.in.cacheable_bytes > 0 && model.expert_bytes > 0) {
                 push_curve_pieces(candidates, model.hit_curve,
                                   (double) c.in.cacheable_bytes / (double) model.expert_bytes, d.bytes, floor,
                                   seconds_at_mibs(cycle, c.stream_mibs) * c.in.hit_scale);
@@ -785,7 +785,7 @@ void bound_cache(Pricing & c) {
     // The cost and the rationale, both from the size that was actually chosen.
     const double held = (double) sized / (double) in.cacheable_bytes;
     const HitCurve & curve = model.hit_curve;
-    const bool from_curve = curve.measured && model.expert_bytes > 0;
+    const bool from_curve = curve.credited() && model.expert_bytes > 0;
     // Scaled by what a load measured at its own budget (AllocationInputs::hit_scale): the curve as a
     // whole, so the sizes stay priced relative to each other.
     const double hit =
@@ -798,11 +798,17 @@ void bound_cache(Pricing & c) {
         seconds_at_mibs((uint64_t) ((1.0 - hit) * (double) model.token_cycle_bytes), c.stream_mibs) +
         finite_or_zero(seconds_at_gibs(model.group(WeightGroup::Experts).bytes_per_token, c.host_gibs));
     char buf[320];
-    if (from_curve)
+    if (from_curve && curve.measured)
         std::snprintf(buf, sizeof(buf),
                       "streamed with a %s cache, %.0f%% of the expert set; credited hit rate %.0f%% [measured on "
                       "this model]: its own routing, %u decoded tokens, replayed through the cache at this size",
                       mibs(sized).c_str(), 100.0 * held, 100.0 * hit, curve.decode_tokens);
+    else if (from_curve)
+        std::snprintf(buf, sizeof(buf),
+                      "streamed with a %s cache, %.0f%% of the expert set; credited hit rate %.0f%% [prior]: %.1f "
+                      "token cycles, on the curve every model without a routing record is credited",
+                      mibs(sized).c_str(), 100.0 * held, 100.0 * hit,
+                      model.token_cycle_bytes ? (double) sized / (double) model.token_cycle_bytes : 0.0);
     else
         std::snprintf(buf, sizeof(buf),
                       "streamed with a %s cache, %.0f%% of the expert set; credited hit rate %.0f%%, which is "

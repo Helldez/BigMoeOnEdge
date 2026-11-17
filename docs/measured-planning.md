@@ -127,10 +127,14 @@ cache size moves, and the cache is lossless.
   RAM and Qwen3.8-Flash-Next, the plan's 15.7 GB cache held 83% of the routed experts over 1024
   tokens and decoded 11.6 tok/s, where 22 GB held 96% and decoded 20.7 (27.5 over the last 256
   tokens).
-- **Not removed:** `cache_hit_optimism` and the linear credit stay as what a first load, with no
-  record yet, is priced with, and a plan without a record is byte for byte the plan before this step
-  (asserted in `planner`). They go when every front-end ships with a record for every model it
-  plans, which is not yet true on a first download.
+- **A first load is priced on a prior, not the linear credit** (`prior_hit_curve`, `bmoe/routing.h`).
+  The replayed curves of five records agree once the cache is counted in token cycles (the bytes one
+  token routes through), so a model with no record is credited `0.92 x (1 - exp(-cycles / 2.25))`,
+  never under the share of the set it holds: within 0.04 on average of the decode hits thirteen first
+  loads measured, one model left out of the fit at a time, where the linear credit was off by 0.45.
+  The prior is a curve like a record's and takes the same path through the ranking and the price; the
+  plan says its hit rate is a prior (`cache-hits`) until a record replaces it. `cache_hit_optimism`
+  and the linear credit remain only for a model whose token cycle is unknown.
 - The same record ranks the hottest (block, expert) pairs by use (`hottest_experts`), for Step 4's
   device tier to warm from at start. Nothing reads it yet.
 
@@ -465,7 +469,7 @@ without a device of their own, an unchanged plan.
 
 - **What it removes:** a decode price that never learns. The ledger prices a token's compute from a
   probed matmul rate (`seconds_at_gibs(bytes_per_token, host rate)` per group) and the cache's hits
-  from the routing replay or the linear credit, and a one-token decode pays what neither sees:
+  from the routing replay or the prior, and a one-token decode pays what neither sees:
   per-op and thread-synchronisation costs, and a cache that serves less than the replay of a few
   hundred tokens did. Measured on a 12 GB phone with Ling-3.0-tiny Q8_0, `--auto` through
   `bmoe-server`: predicted 0.037 s/token at a 95% credited hit rate, measured 0.107 at 77-85%, the
@@ -491,14 +495,14 @@ without a device of their own, an unchanged plan.
   keep their prices relative to each other, and the ranking, whose savings are reads, decides what it
   decided. Hits: the ratio between the hits measured at that budget and the credit there scales the
   credit at every size (`AllocationInputs::hit_scale`): the curve, lowered toward the measurement and
-  never raised past what the replay justified; the linear credit, which is conservative on purpose,
+  never raised past what the replay justified; the prior, which is no measurement of this model,
   either way. A cache whose hits are worth less may then be sized differently, which is the ranking's
   legitimate answer to a changed price. A `decode-cost` decision, `[measured]`, states both figures
   against the predicted ones. With no record, or one that measured no decode, the plan is byte for
   byte the one before this existed.
 - **Checked:** planner checks (a compute three times the model's adds twice the model's compute to
   the token and is reported as measured; another thread count or placement is not used; hits scale
-  the linear credit and the curve, never above the replay; an empty record leaves the plan as it is);
+  the prior and the curve, never above the replay; an empty record leaves the plan as it is);
   record round-trip checks in the `knob_trial` test; gate G24d, a streamed decode with no trial whose
   answer is the resident one and whose record carries the decode's cost.
 - **Not done.** The read rate is not calibrated: the expert lane's price stays the storage probe's,

@@ -40,6 +40,24 @@ Semantic Versioning.
   the server's port beside it; now the bind is refused (`EADDRINUSE`). The listening socket is bound
   exclusively (`SO_EXCLUSIVEADDRUSE` where the stack has it, otherwise only `SO_REUSEADDR`), and a
   port something already answers on counts as taken before the server binds it.
+### Changed
+- **A model with no routing record yet is credited the cache hits measured models deliver, no longer
+  the share of the expert set the cache holds.** That share is what a cache would serve if every
+  expert were as likely as every other; routing is nothing like it, and a first load was priced as if
+  a third of Qwen3.6-35B in cache served a third of its reads, where the runs served 85-92%. The
+  replayed curves of five records (Gemma 4 26B-A4B, OLMoE 1B-7B, Qwen3.6 35B-A3B at two
+  quantizations, DeepSeek V4) agree once the cache is counted in token cycles, the bytes one token
+  routes through, so the prior is a curve in those: two constants (a 0.92 ceiling the cold misses
+  keep, 63% of it at 2.25 cycles), never under the share held, with no table of models. Left one
+  model out at a time, it lands within 0.04 on average of the decode hits thirteen first loads
+  measured, where the share held was off by 0.45; the decode time the plan predicts for the nineteen
+  recorded runs moves from 44% off on average to 31%. It is ranked and credited through the path a
+  record's curve takes, and a record, once a model has one, replaces it; a load's measured hits
+  scale it both ways. Every plan the 36 plan records of the project's machines replay to is the same
+  plan, knob for knob: the ranking already gave the cache what it left unspent. What moves is the
+  prediction, the rationale (the hit rate is said to be a prior), and where a cache's hit rate
+  decides between processors (a device cache's CPU share), a choice priced on misses the linear
+  credit overstated.
 
 ## [0.43.2] - 2026-11-16
 

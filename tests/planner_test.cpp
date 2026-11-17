@@ -18,6 +18,7 @@
 #include "bmoe/calibrate.h"
 #include "bmoe/planner.h"
 #include "bmoe/probe.h"
+#include "bmoe/routing.h"
 
 #include <cmath>
 #include <cstdio>
@@ -2550,22 +2551,28 @@ int main() {
         };
         const ModelProfile steep = curve_model({{0.02, 0.0}, {0.05, 0.40}, {0.13, 0.75}, {0.25, 0.85}, {1.0, 1.0}});
 
-        // No trace: the plan is today's. Pinned to the figures this fixture produced before the curve
-        // existed (and its whole rationale was diffed byte for byte against that build): the linear
-        // credit, the cache it sized and the cost it predicted.
+        // No trace: the cache is credited the prior in token cycles (prior_hit_curve), ranked and priced
+        // by the same path as a record's curve, and the plan says the figure is a prior.
         {
             const Plan p = plan_run(base_cfg(), measured_machine(), model, PlanRequest{});
             const GroupPlacement & e = p.allocation.at(WeightGroup::Experts);
-            check(p.allocation.cache_bytes == 9147777024ull, "no trace: the cache is the linear credit's",
+            const HitCurve prior = prior_hit_curve(model.expert_bytes, model.token_cycle_bytes);
+            check(p.allocation.cache_bytes == 9147777024ull,
+                  "no trace: every byte the ranking leaves goes to the cache, as before the prior",
                   std::to_string(p.allocation.cache_bytes));
-            check(std::fabs(p.allocation.cache_hit_credited - 0.473307) < 1e-6, "no trace: credited linearly",
-                  std::to_string(p.allocation.cache_hit_credited));
-            check(std::fabs(p.allocation.seconds_per_token - 0.160544713) < 1e-9, "no trace: the same prediction",
+            const double expect = prior.hit_share(p.allocation.cache_bytes);
+            check(expect > 0.473307 && std::fabs(p.allocation.cache_hit_credited - expect) < 1e-12,
+                  "no trace: credited the prior at the cache's size, above the share of the set it holds",
+                  std::to_string(p.allocation.cache_hit_credited) + " vs " + std::to_string(expect));
+            check(p.allocation.seconds_per_token < 0.160544713,
+                  "no trace: more hits credited, a cheaper token than the linear credit priced",
                   std::to_string(p.allocation.seconds_per_token));
-            check(e.reason == "streamed with a 8724 MiB cache, 47% of the expert set; credited hit rate 47%, which is "
-                              "conservative on purpose and is the coefficient a run's own counters correct",
-                  "no trace: the experts' rationale is word for word today's", e.reason);
-            check(!find(p, "cache-hits"), "no trace: nothing is said about a curve there is none of");
+            check(e.reason.find("[prior]") != std::string::npos && e.reason.find("token cycles") != std::string::npos,
+                  "no trace: the experts' rationale says the hit rate is the prior", e.reason);
+            const Decision * ch = find(p, "cache-hits");
+            check(ch && ch->source == Source::Policy && ch->reason.find("no routing record") != std::string::npos,
+                  "no trace: the plan says its hits are a prior until a record exists", ch ? ch->reason : "none");
+            check(!model.hit_curve.credited(), "no trace: the prior is the plan's, never written into the model");
 
             // A trace that is not this model's is the same plan, plus the one line saying why.
             ModelProfile rejected = model;
@@ -2576,7 +2583,7 @@ int main() {
             for (const Decision & d : r.decisions)
                 if (d.knob != "cache-hits") without += d.knob + "=" + d.value + ":" + d.reason + "|" + d.brief + "\n";
             for (const Decision & d : p.decisions)
-                reasons += d.knob + "=" + d.value + ":" + d.reason + "|" + d.brief + "\n";
+                if (d.knob != "cache-hits") reasons += d.knob + "=" + d.value + ":" + d.reason + "|" + d.brief + "\n";
             check(without == reasons && r.allocation.cache_bytes == p.allocation.cache_bytes &&
                       r.allocation.seconds_per_token == p.allocation.seconds_per_token,
                   "a rejected trace leaves the plan as it is without one");
@@ -2598,9 +2605,9 @@ int main() {
             const Decision * d = find(p, "cache-hits");
             check(d && d->source == Source::Measured && d->reason.find("256 decoded") != std::string::npos,
                   "with a curve: a measured decision states the hit rate and what it was replayed from");
-            const Plan lin = plan_run(base_cfg(), measured_machine(), model, PlanRequest{});
-            check(p.allocation.seconds_per_token < lin.allocation.seconds_per_token,
-                  "with a steep curve the same cache is priced cheaper than the linear credit says");
+            const Plan pri = plan_run(base_cfg(), measured_machine(), model, PlanRequest{});
+            check(pri.allocation.cache_hit_credited != p.allocation.cache_hit_credited,
+                  "with a curve: the model's own record replaces the prior");
         }
 
         // ── the decode's own cost, measured on an earlier load (MeasuredKnobs::decode_*) ──────────
@@ -2658,18 +2665,17 @@ int main() {
                       find(pl, "decode-cost")->source == Source::Derived,
                   "decode cost: a figure measured with layers on a device does not answer for a host plan");
 
-            // Hits: the linear credit is scaled to what was measured at the load's budget.
+            // Hits: the prior is scaled to what was measured at the load's budget, both ways.
             ModelProfile hits = rec;
             hits.knobs.decode_hit = 0.5 * base.allocation.cache_hit_credited;
             hits.knobs.decode_cache_mib = (double) base.allocation.cache_bytes / (double) MiB;
             const Plan h = plan_run(base_cfg(), hw, hits, PlanRequest{});
             const double expect_h =
-                0.5 * std::min(1.0, (double) PlannerPolicy::defaults().cache_hit_optimism *
-                                        (double) h.allocation.cache_bytes / (double) model.expert_bytes);
+                0.5 * prior_hit_curve(model.expert_bytes, model.token_cycle_bytes).hit_share(h.allocation.cache_bytes);
             check(h.allocation.cache_bytes > 0 && std::fabs(h.allocation.cache_hit_credited - expect_h) < 1e-9 &&
                       h.allocation.seconds_per_token > base.allocation.seconds_per_token && find(h, "decode-cost") &&
                       find(h, "decode-cost")->source == Source::Measured,
-                  "decode cost: the linear credit moves to the hits measured at that budget",
+                  "decode cost: the prior moves to the hits measured at that budget",
                   std::to_string(h.allocation.cache_hit_credited) + " vs " + std::to_string(expect_h));
 
             // With the model's own curve: lowered toward the measurement, never raised past the replay.
@@ -3004,7 +3010,7 @@ int main() {
         const Plan linear = plan_on(card, half, PlanRequest{});
         const Decision * d = find(linear, "device-cache-mb");
         check(d && d->source == Source::Measured && linear.config.moe.device_cache_mb == (int) (9 * 1024) &&
-                  d->reason.find("the fraction of the expert set it holds") != std::string::npos,
+                  d->reason.find("the prior in token cycles") != std::string::npos,
               "device tier, no record: the cache is on the faster processor all the same", d ? d->reason : "none");
         check(linear.config.buft_overrides.size() == model.n_layer && !linear.config.moe.record_unstreamed,
               "device tier, no record: every layer's experts on the host, nothing recorded for a price");
@@ -3284,13 +3290,19 @@ int main() {
                       "cpu share: cores slower than the link, every miss uploaded and nothing timed");
                 // A fast link with faster cores is still only a nomination: the loads decide. (A 32 GB card's
                 // cache that never filled lost 40% to a share: a measured loss keeps every miss uploaded.)
+                // A model whose record says the cache misses as often as the share of the set it leaves
+                // out (a flat routing): the misses are what a share would move to the cores.
                 HardwareProfile fast_link = slow_link;
                 fast_link.devices[0].upload_gibs = 24.0;
-                ModelProfile lost_share = decided;
+                ModelProfile flat = decided;
+                flat.hit_curve.measured = true;
+                flat.hit_curve.decode_tokens = 256;
+                flat.hit_curve.points = {{0, 0.0}, {flat.expert_bytes, 1.0}};
+                ModelProfile lost_share = flat;
                 lost_share.knobs.cpu_share_tps = 68.0;
                 lost_share.knobs.no_cpu_share_tps = 114.0;
                 check(
-                    share_plan(fast_link, decided).config.trial.cpu_share_side == 1 &&
+                    share_plan(fast_link, flat).config.trial.cpu_share_side == 1 &&
                         share_plan(fast_link, lost_share).config.moe.device_cache_cpu_share == 0.0f &&
                         share_plan(fast_link, lost_share).config.trial.cpu_share_side == -1,
                     "cpu share: a fast link with faster cores is timed, and a measured loss keeps every miss uploaded");
