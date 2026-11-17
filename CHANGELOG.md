@@ -37,6 +37,14 @@ Semantic Versioning.
   side in its place, as before, and the failure is now always counted; a second one settles it for
   that engine version.
 
+- **A placement that streams is priced with its flash reads, and a side is kept at what its load
+  decoded at.** The two sides of the device tier were priced on compute alone, so a placement whose
+  host experts do not fit memory looked faster than it ran (11 tok/s priced, 3.5 measured on an 8 GB
+  card), and a load was spent on it. And the rate kept for a side was a few dozen tokens early in the
+  first answer: on two 16 GB cards with a 284B model that read the faster side as the slower (2.27
+  tok/s timed on a load that decoded at 4.1 to 6.5), and the plan settled on a device cache at 2.8.
+  The rate is now the load's own over every turn it served.
+
 ### Removed
 - **Load-time calibration** (`--calibrate` / `--no-calibrate`, the `calibrate` parameter, the
   `calibrate` step of `plan_progress` and `calibrating` in `/api/info`). The server no longer unloads

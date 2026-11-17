@@ -572,9 +572,21 @@ serves the side it prices faster, and lets the served load time that side:
   takes three. On the decode alone, as the width was decided before, a narrow graph won wherever it
   decoded faster: +40% decode and -40% on a 4.6k-token prompt on an 8 GB card, -28% on a 12 GB one,
   -47% on two 16 GB cards with a 284B model.
+- **A side that streams pays for flash in its price.** Both sides' prices above are compute. Where
+  the experts a placement leaves on the host do not fit its memory, a token also reads from flash
+  the routed bytes neither the host's RAM cache nor a device cache serves, at the rate this storage
+  measured at the model's slice size (`host_expert_flash_seconds`), and that is added to the side it
+  belongs to. Priced without it, an 8 GB card with a model twice the host's memory served the
+  fitter's placement for a load at 3.5 tok/s where its price said 11.
 - **A served load measures.** The plan names the side it serves (`KnobTrialConfig::device_tier`,
   `width_side`, `shared_device_side`) where that side has no decode rate yet, and the session times
   it once the knob trials have their verdicts and files it with one mapping (`record_side_rate`).
+  The probe's windows are a few dozen tokens early in the first answer, so the figure kept is then
+  replaced, at the end of every turn, by what the load decoded at over all its turns. The windows
+  alone compared a side timed after a knob trial with one timed from the first token on a cold
+  cache: on two 16 GB cards with a 284B model the fitter's placement was timed at 2.27 tok/s on a
+  load whose answers decoded at 4.1 and 6.5, against a device cache timed at 3.17 on a load that
+  decoded at 2.8 and 3.6, and the plan kept the slower side (as 0.42 did on the same machine).
   One decision's rate a load, the device tier's first. A measured side stands at its measurement; a
   width measured on one side scales both widths' prices by how far that side ran from it, so the
   ratio between them stays the price's until both are measured.

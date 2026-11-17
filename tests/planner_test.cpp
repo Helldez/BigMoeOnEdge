@@ -3420,6 +3420,22 @@ int main() {
             check(tier_on(slow_cores, under).config.trial.device_tier == 0,
                   "device tier, the cache measured under the fitter's price by the margin: the fitter's placement");
 
+            // A cache measured at 5.8 (6.4 with the margin) is under the placement's 6.7 where the host
+            // holds the experts the fitter leaves it. On a host whose memory does not, they stream, a
+            // token also waits on flash for them, and the placement's price with those reads is no
+            // longer past the cache. Priced on compute alone, an 8 GB card served the fitter's placement
+            // for a load at 3.5 tok/s where its price said 11.
+            MeasuredKnobs near_cache;
+            near_cache.device_cache_tps = 5.8;
+            HardwareProfile tight_host = slow_cores;
+            tight_host.residency_budget = 3 * GiB;
+            const Plan streams = tier_on(tight_host, near_cache);
+            e = find(streams, "device-cache-mb");
+            check(tier_on(slow_cores, near_cache).config.trial.device_tier == 0 &&
+                      streams.config.moe.device_cache_mb > 0 && streams.config.trial.device_tier == -1,
+                  "device tier, the fitter's experts stream on this host: its flash reads are in its price",
+                  e ? e->reason : "no decision");
+
             MeasuredKnobs lost = once;
             lost.no_device_cache_tps = 3.94; // the fitter's placement decoded 2.5x faster
             const Plan third = tier_on(slow_cores, lost);
