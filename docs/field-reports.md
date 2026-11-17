@@ -68,11 +68,13 @@ first run. After two such loads the prompt runs on OpenCL, several times slower 
 **Cause.** Confirmed on the phone: the Hexagon backend of the 0.43 bump flushes its DSP queue on every
 `set_tensor`, from whichever thread calls it, and the NPU prefill's loader threads write the next
 layer's experts while the NPU computes. The queue is not thread-safe, so the two collide. The same bump
-moved tiling to graph time, where a refilled slot was not tiled again. The app did not start a
+moved tiling to graph time, where a refilled slot was not tiled again. A write to plain device memory
+still flushes the queue, and the loaders wrote a layer's non-matrix weights (norms, biases) there. The app did not start a
 stopped engine again, and its Start engine button was only in Settings.
 
 **Fixed in** 0.44.1: a commit on the llama.cpp fork branch tiles a weight as it is written and leaves
-the queue alone on a weight write ([seam.md](seam.md)); the app starts an engine that stopped on its own
+the queue alone on a weight write ([seam.md](seam.md)), and the non-matrix weights stay on the device,
+written once at load ([npu-prefill.md](npu-prefill.md)); the app starts an engine that stopped on its own
 again and shows Start engine where the engine is needed.
 
 **Workaround.** On 0.43-0.44.0, Settings, Start engine, then load again: after two failed loads the

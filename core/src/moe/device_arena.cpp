@@ -267,7 +267,9 @@ bool DeviceExpertArena::init_dense(ggml_backend_dev_t dev,
     // attention and recurrent blocks), and each layer is laid out from the start of its slot.
     // Sized for each weight as the device will hold it, which is not always the file's type: a matrix
     // may be converted for the device's matmul, a non-matrix weight keeps its own type.
-    size_t need[2][2] = {{0, 0}, {0, 0}}; // [data][parity]; data = 1 for the non-matrix slots
+    // [data][parity]; data = 1 for the non-matrix weights, which are not streamed: they stay on the
+    // device for every layer, in one buffer ([1][0]), written once here (header, init_dense).
+    size_t need[2][2] = {{0, 0}, {0, 0}};
     std::vector<std::vector<ggml_type>> dtype(per_layer.size());
     {
         ggml_init_params sp{};
@@ -284,8 +286,8 @@ bool DeviceExpertArena::init_dense(ggml_backend_dev_t dev,
                 sz[data] += GGML_PAD(ggml_backend_buft_get_alloc_size(buft, shaped), align);
                 ggml_free(c);
             }
-            for (int d = 0; d < 2; ++d)
-                need[d][il % 2] = std::max(need[d][il % 2], sz[d]);
+            need[0][il % 2] = std::max(need[0][il % 2], sz[0]);
+            need[1][0] += sz[1];
         }
     }
     for (int d = 0; d < 2; ++d) {
@@ -302,6 +304,7 @@ bool DeviceExpertArena::init_dense(ggml_backend_dev_t dev,
             ggml_backend_buffer_set_usage(bufs[s],
                                           d ? GGML_BACKEND_BUFFER_USAGE_ANY : GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
             dense_slot_bytes_ += need[d][s];
+            if (d) dense_resident_bytes_ += need[d][s];
         }
     }
 
@@ -314,30 +317,35 @@ bool DeviceExpertArena::init_dense(ggml_backend_dev_t dev,
         return false;
     }
     dense_.assign(per_layer.size(), DenseLayer{});
+    // The non-matrix weights of every layer, one after the other in their one buffer.
+    ggml_tallocr resident = {};
+    if (dense_slot_[1][0]) resident = ggml_tallocr_new(dense_slot_[1][0]);
     for (size_t il = 0; il < per_layer.size(); ++il) {
         if (per_layer[il].empty()) continue;
-        // Fresh allocators per layer: every layer of a parity starts at the same offset, on purpose.
-        ggml_tallocr ta[2] = {};
-        for (int d = 0; d < 2; ++d) {
-            // One table, indexed the way init_dense sized it. This replaced picking between two member
-            // arrays with a conditional; the two are the same selection and the same layout, so it
-            // changes nothing. It was made while gate G17 (nemotron_h_moe) aborted under ASan+UBSan
-            // with a recurrent layer in the wrong parity's slot, and the gate passed afterwards; the
-            // cause of that abort was NOT found and this rewrite cannot have been it, so treat a
-            // return of that failure as the same open fault (a race in the arena, or an
-            // uninitialised read), not as a regression of this line.
-            ggml_backend_buffer_t b = dense_slot_[d][il % 2];
-            if (b) ta[d] = ggml_tallocr_new(b);
-        }
+        // A fresh allocator per layer for the matrices: every layer of a parity starts at the same
+        // offset of its slot, on purpose. (Gate G17, nemotron_h_moe, once aborted under ASan+UBSan
+        // with a recurrent layer in the wrong parity's slot; the cause was never found, so treat a
+        // return of that failure as an open fault in the arena, not a regression of this layout.)
+        ggml_tallocr matrices = {};
+        if (dense_slot_[0][il % 2]) matrices = ggml_tallocr_new(dense_slot_[0][il % 2]);
         DenseLayer & D = dense_[il];
         for (size_t j = 0; j < per_layer[il].size(); ++j) {
             ggml_tensor * t = per_layer[il][j];
             const ggml_type dt = dtype[il][j];
             ggml_tensor * w = ggml_new_tensor(dense_ctx_, dt, GGML_MAX_DIMS, t->ne);
             ggml_set_name(w, t->name);
-            if (ggml_tallocr_alloc(&ta[non_matrix.count(t) != 0], w) != GGML_STATUS_SUCCESS) {
+            const bool data = non_matrix.count(t) != 0;
+            if (ggml_tallocr_alloc(data ? &resident : &matrices, w) != GGML_STATUS_SUCCESS) {
                 err = std::string("cannot place ") + t->name + " in its dense slot";
                 return false;
+            }
+            if (data) {
+                // Written here, on the loading thread, before any graph runs. A backend may make a
+                // write to plain device memory wait for its queue (Hexagon flushes it), which is not
+                // safe from the loaders while the graph's thread drives that queue.
+                ggml_backend_tensor_set(w, t->data, 0, ggml_nbytes(w));
+            } else {
+                D.streamed.push_back((int) D.t.size());
             }
             D.t.push_back(t);
             D.twin.push_back(w);
@@ -537,10 +545,11 @@ void DeviceExpertArena::schedule(int k, const std::vector<uint8_t> * want, bool 
 void DeviceExpertArena::schedule_dense(int il) {
     if (il < 0 || il >= (int) dense_.size() || dense_scheduled_[(size_t) il]) return;
     dense_scheduled_[(size_t) il] = true;
-    const int n = (int) dense_[(size_t) il].t.size();
+    const std::vector<int> & streamed = dense_[(size_t) il].streamed;
+    const int n = (int) streamed.size();
     dense_remaining_[(size_t) il] = n;
     in_flight_ += n;
-    for (int i = 0; i < n; ++i) {
+    for (int i : streamed) {
         Task t;
         t.dense = true;
         t.k = il;

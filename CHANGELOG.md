@@ -16,7 +16,14 @@ Semantic Versioning.
   computes, so the graph either read a refill untiled or re-tiled it serially, and two threads used a
   queue that is not thread-safe. The fork branch now carries a second commit, beside the expert-ready
   hook: a weight written in whole slices is tiled on the writer's thread, as before 0.43, and a weight
-  write does not touch the queue ([seam.md](docs/seam.md)). It changes nothing off Hexagon.
+  write does not touch the queue ([seam.md](docs/seam.md)). It changes nothing off Hexagon. A layer's
+  weights that are not a matmul's matrix (norms, biases, convolution kernels: 4.4 MiB for Qwen3.6) live
+  in plain device memory, where a write still flushes the queue, so they are no longer streamed: they
+  are written once at load and stay. On a 12 GB phone, Qwen3.6-35B-A3B Q4_K_M under `--auto` prefills
+  1001 tokens at 116-121 tok/s and 1801 at 125-159 over eight loads, none ended, with the NPU's
+  answer matching the cores as on 0.42 (top token 94%, logit NMSE 1.30e-03); 0.42 on the same phone
+  today, 104 and 126 tok/s. One load of the eight found the NPU's probe unanswered after 120 s and
+  prefilled on the cores.
 - **The Hexagon host buffer is off again.** Upstream made it the backend's default in the same bump,
   so 0.43 and 0.44.0, which set no Hexagon variable after #542, ran with the host buffer that #544
   had measured costing decode 7-13% and hanging Gemma 4's load on the NPU. Every front-end now sets
