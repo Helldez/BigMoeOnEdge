@@ -125,6 +125,23 @@ bool parse_prefill(const std::string & s, MeasuredKnobs & r) {
     return true;
 }
 
+// `device_answer=<device>:<word>[,<device>:<word>...]`, a word being confirmed or differs, the device
+// the part before the last colon. A word it cannot read is read past, as above.
+bool parse_device_answers(const std::string & s, MeasuredKnobs & r) {
+    size_t at = 0;
+    while (at <= s.size()) {
+        size_t end = s.find(',', at);
+        if (end == std::string::npos) end = s.size();
+        const std::string item = s.substr(at, end - at);
+        at = end + 1;
+        const size_t c = item.rfind(':');
+        if (c == std::string::npos || c == 0) continue;
+        const std::string word = item.substr(c + 1);
+        r.set_device_answer(item.substr(0, c), word == "confirmed" ? 1 : word == "differs" ? -1 : 0);
+    }
+    return true;
+}
+
 void set_width_narrow(MeasuredKnobs & r, int narrow) {
     if (narrow <= 0 || narrow == r.width_narrow) return;
     r.width_narrow = narrow;
@@ -212,6 +229,11 @@ std::string format_measured_knobs(const std::vector<MeasuredKnobs> & records) {
             words += (words.empty() ? "" : ",") + w.device + ":" + word;
         }
         if (!words.empty()) out += " prefill=" + words;
+        // Each device's answer word, likewise.
+        std::string answers;
+        for (const MeasuredKnobs::AnswerWord & w : r.device_answers)
+            answers += (answers.empty() ? "" : ",") + w.device + ":" + (w.verdict > 0 ? "confirmed" : "differs");
+        if (!answers.empty()) out += " device_answer=" + answers;
         out += "\n";
     }
     return out;
@@ -322,6 +344,8 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
                 ok = parse_unviable(v, r);
             else if (k == "prefill")
                 ok = parse_prefill(v, r);
+            else if (k == "device_answer")
+                ok = parse_device_answers(v, r);
             // An unknown key is a later engine's addition: read past it, the record still holds.
             if (!ok) {
                 error = "line " + std::to_string(n) + ": bad value for " + k;
@@ -435,6 +459,10 @@ void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKno
                 if (merged.verdict != 0) merged.unconfirmed = 0;
                 r.set_prefill_word(merged);
             }
+            // A device's answer word is the latest comparison's; a load that compared nothing carries
+            // none and leaves what was kept.
+            for (const MeasuredKnobs::AnswerWord & w : rec.device_answers)
+                r.set_device_answer(w.device, w.verdict);
             return;
         }
     records.push_back(rec);

@@ -342,6 +342,15 @@ public:
 
 private:
     Session();
+    // One opening of a configuration as it stands; open() opens the cores after it where a device's
+    // answers for the model were not confirmed (KnobTrialConfig::answer_device).
+    struct AnswerCheck;
+    static std::unique_ptr<Session> open_placed(const SessionConfig & cfg,
+                                                std::string & error,
+                                                IRouteTraceSink * route_trace,
+                                                IComputeTraceSink * compute_trace,
+                                                IIoTraceSink * io_trace,
+                                                AnswerCheck * check);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

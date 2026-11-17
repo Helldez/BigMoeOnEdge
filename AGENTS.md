@@ -25,7 +25,8 @@ we do not fork llama.cpp. See `docs/architecture.md` and `docs/seam.md`.
   policy over a port, `platform_io` implements it).
 - `core/src/engine/` — `session.cpp`, the composition root: one `Session` loads the model, binds
   the streamer and runs every generation; `runtime.cpp` is the one-shot wrapper over it. Beside it:
-  the prefill device and path, the chat template and parsers, and `decide/` (`docs/decide.md`).
+  the prefill device and path, the whole-model check of a device's answers (`device_answer`), the chat
+  template and parsers, and `decide/` (`docs/decide.md`).
 - `core/src/plan/` — the hardware planner behind `--auto` (`docs/hardware-planning.md`). The rules
   (`planner`, `allocate`, `plan`) are pure functions over `hardware_profile.h` / `model_profile.h`
   and name no platform, vendor, device or architecture; the `*_probe` adapters are the only files

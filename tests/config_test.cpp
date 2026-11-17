@@ -171,6 +171,25 @@ int main() {
         expect_fail("trial shared device out of range", t);
     }
     {
+        // The answer check: a model held whole in memory, with layers on a device to compare.
+        RunConfig t = ok_base();
+        t.trial.answer_device = "accel";
+        expect_fail("trial device answer with no layer on a device", t);
+        t.n_gpu_layers = 49;
+        t.device_split = {{"accel", 49}};
+        expect_ok("trial device answer, every layer on the device", t);
+        RunConfig timed = t;
+        timed.trial.shared_device_side = 1;
+        expect_ok("trial device answer on a load that times the device's side", timed);
+        RunConfig cached = t;
+        cached.moe.device_cache_mb = 2048;
+        expect_fail("trial device answer beside a device expert cache", cached);
+        RunConfig streamed = ok_moe();
+        streamed.n_gpu_layers = 49;
+        streamed.trial.answer_device = "accel";
+        expect_fail("trial device answer on a streamed model", streamed);
+    }
+    {
         RunConfig c = ok_moe();
         c.moe.io_threads = MoeStreamConfig::io_threads_max + 1;
         expect_fail("io_threads out of range", c);

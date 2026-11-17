@@ -1952,13 +1952,23 @@ bool declines_residency(Planning & s) {
 //
 // The whole model or none of it: a partial placement crosses the boundary twice per split layer, the
 // shape measured slower on a phone. One device, named, so llama.cpp does not divide the layers between
-// two backends that drive the same silicon. A candidate has to have computed the host's results on
-// one real layer of this model, one token wide and as wide as a prompt (ComputeDevice::identity_ok,
-// wide_identity_ok), since the prompt runs there too, run its expert matmul in the file's own
-// format, take the mapped weights without a repack (hard rule 2), and have room for the compute buffer
-// it reserves beside the model in this pool. Whether its weights then stay the file's mapping or are
-// copied into the device's own buffers is the backend's (host_ptr_verified); either way they occupy
-// this pool once, and the plan says which.
+// two backends that drive the same silicon. A candidate has to have computed the host's results in
+// the probes, one token wide and as wide as a prompt (ComputeDevice::identity_ok, wide_identity_ok),
+// since the prompt runs there too, run its expert matmul in the file's own format, take the mapped
+// weights without a repack (hard rule 2), and have room for the compute buffer it reserves beside the
+// model in this pool. Whether its weights then stay the file's mapping or are copied into the device's
+// own buffers is the backend's (host_ptr_verified); either way they occupy this pool once, and the plan
+// says which.
+//
+// The probes are a filter, not the guarantee. Each computes a part of a model in isolation (a
+// synthetic matmul, one layer's matrices where the model has experts, nothing of the model at all
+// where it has none), and a device can pass every one and still not compute a given model: on a 16 GB
+// Apple-silicon laptop SmolVLM-256M Q8_0 wrote one repeated character with every layer on the GPU and
+// sane text on the cores, where two other dense models were correct on the same GPU and the probes
+// passed for all three. What a model answers on a device is only known by decoding the model there, so
+// the load that moves it compares the two before it serves (KnobTrialConfig::answer_device) and the
+// record keeps the word (MeasuredKnobs::device_answers): a device whose answers for this model
+// differed here is no candidate, and one that matched is not compared again.
 namespace {
 // What a device applies this model's weights at, one token wide: on one real layer of the model where
 // that was probed, its memory bandwidth otherwise.
@@ -1971,6 +1981,7 @@ struct SharedDeviceCandidate {
     const ComputeDevice * dev = nullptr;
     uint64_t compute = 0; // the compute buffer it reserves, from the fitter's projection
     std::string refused;  // why each device that is not one is not, "; "-separated
+    std::string differed; // the ones the record refused: their answers for this model differed, ", "-separated
 };
 
 // The device a whole model held in `resident` bytes of this pool could move to, or none and why.
@@ -2001,7 +2012,10 @@ SharedDeviceCandidate shared_device_candidate(const Planning & s, uint64_t resid
         const uint64_t compute = s.placement.device_compute_of(d.name);
         if (d.has_own_memory())
             continue; // the capacity fitter's device: not this question
-        else if (d.usable == Tri::No)
+        else if (s.model.knobs.device_answer(d.name) < 0) {
+            why = "its answers for this model differed from the cores' on this machine";
+            c.differed += (c.differed.empty() ? "" : ", ") + d.name;
+        } else if (d.usable == Tri::No)
             why = "it did not survive being probed";
         else if (d.identity_ok != Tri::Yes)
             why = "it has not been shown to compute the host's results on this model";
@@ -2047,7 +2061,14 @@ void choose_shared_device(Planning & s, uint64_t resident) {
     const char * knob = "shared-device";
     const SharedDeviceCandidate cand = shared_device_candidate(s, resident);
     if (!cand.dev) {
-        if (!cand.refused.empty())
+        // A device the record refused is this machine's own measurement of this model, and the line
+        // says so: it is not a device that could not, it is one that did and answered differently.
+        if (!cand.differed.empty())
+            s.note(knob, "cpu", Source::Measured,
+                   "The model runs on the CPU: " + cand.differed + " did not give the CPU's answers for it here.",
+                   "a device that reads this memory could run the whole model at no cost in capacity, but " +
+                       cand.refused);
+        else if (!cand.refused.empty())
             s.note(knob, "cpu", Source::Derived, "The model runs on the CPU: no device that shares this memory can.",
                    "a device that reads this memory could run the whole model at no cost in capacity, but " +
                        cand.refused);
@@ -2075,7 +2096,15 @@ void choose_shared_device(Planning & s, uint64_t resident) {
         c.n_gpu_layers = layers;
         c.buft_overrides.clear();
         c.device_split.assign(1, {dev.name, layers});
-        s.note(knob, dev.name, src, brief, place + "; " + reason);
+        // The probes let the device through; what this model answers there is compared by the load
+        // that moves it, once: a device the record already confirmed for it is not asked again.
+        const bool confirmed = mk.device_answer(dev.name) > 0;
+        if (!confirmed) trial.answer_device = dev.name;
+        s.note(knob, dev.name, src, brief,
+               place + "; " + reason +
+                   (confirmed ? "; its answers for this model matched the cores' on this machine"
+                              : "; the load compares its answers for this model with the cores' before it serves, "
+                                "and reopens on the cores where they differ"));
     };
     const auto on_cores = [&](Source src, const std::string & brief, const std::string & reason) {
         s.note(knob, "cpu", src, brief, place + "; " + reason);

@@ -585,6 +585,18 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("trial-device-answer", "Check the device's answers", G::Memory, L::Experimental,
+                          "Before serving, compare this model's answers on the device its layers are on with the "
+                          "cores': a short fixed sequence decoded on both, and where the device does not pick the "
+                          "cores' next tokens the model is reopened on the cores. NAME is the device, the name the "
+                          "verdict is kept under for this model, machine and engine. Needs --gpu-layers above 0 and "
+                          "a model held in memory; the plan sets it on a load that moves a whole model onto a "
+                          "device whose answers for it were never compared here.");
+        d.value_hint = "NAME";
+        bind_string(d, [](RunConfig & c) -> std::string & { return c.trial.answer_device; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("trial-width", "Measure the graph width", G::Prefill, L::Experimental,
                           "Time this load's side of the graph width, to be compared across loads: 1 the plan's own "
                           "width, 0 the narrower --trial-width-narrow. Times the decode, and the prefill of prompts "

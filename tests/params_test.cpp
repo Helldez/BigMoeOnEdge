@@ -333,6 +333,7 @@ int main() {
     expect_flag({"--trial-threads", "12"},
                 [](const RunConfig & c) { return c.trial.threads == std::vector<int>({12}); });
     expect_flag({"--trial-overlap"}, [](const RunConfig & c) { return c.trial.overlap; });
+    expect_flag({"--trial-device-answer", "GPU0"}, [](const RunConfig & c) { return c.trial.answer_device == "GPU0"; });
     expect_reject({"--trial-threads", "6,"});
     expect_reject({"--trial-threads", "6,,8"});
     expect_reject({"--trial-threads", "x"});
