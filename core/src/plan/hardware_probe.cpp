@@ -341,8 +341,13 @@ BackendInventory backend_inventory() {
         const size_t n = ggml_backend_reg_dev_count(reg);
         bool host_side = n > 0;
         for (size_t j = 0; j < n; ++j) {
-            const enum ggml_backend_dev_type t = ggml_backend_dev_type(ggml_backend_reg_dev_get(reg, j));
+            ggml_backend_dev_t dev = ggml_backend_reg_dev_get(reg, j);
+            const enum ggml_backend_dev_type t = ggml_backend_dev_type(dev);
             if (t != GGML_BACKEND_DEVICE_TYPE_CPU && t != GGML_BACKEND_DEVICE_TYPE_ACCEL) host_side = false;
+            if (t == GGML_BACKEND_DEVICE_TYPE_GPU || t == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+                const char * d = ggml_backend_dev_description(dev);
+                inv.graphics.push_back({ggml_backend_reg_name(reg), d ? d : ""});
+            }
         }
         if (!host_side) ++inv.placeable;
     }

@@ -112,7 +112,7 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
 
     Scaffold(
         modifier = modifier,
-        topBar = { TopAppBar(title = { Text("Settings") }, navigationIcon = { Box(Modifier.padding(start = 16.dp)) { BrandMark(wordmark = false) } }) },
+        topBar = { TopAppBar(title = { Text("Settings") }, navigationIcon = { Box(Modifier.padding(start = 16.dp)) { BrandMark(wordmark = false) } }, colors = shellTopBarColors()) },
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
         Column(
@@ -423,7 +423,7 @@ private fun Updates(serverUp: Boolean) {
         }
         val page = i?.releasePage
         if (i != null && i.available && page != null) {
-            Button(shape = Corner, modifier = Modifier.fillMaxWidth(), onClick = {
+            Button(shape = Corner, colors = primaryButtonColors(), modifier = Modifier.fillMaxWidth(), onClick = {
                 runCatching {
                     context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(page)))
                 }

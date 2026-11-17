@@ -17,6 +17,21 @@ struct Logo: View {
     }
 }
 
+/// The logo on a white sheet over the seal's 3-point yellow rule: the head of the welcome and of
+/// the first run.
+struct SealedLogo: View {
+    var size: CGFloat = 64
+
+    var body: some View {
+        Logo(size: size)
+            .padding(14)
+            .background(Palette.surface)
+            .overlay(alignment: .bottom) { Rectangle().fill(Palette.seal).frame(height: 3) }
+            .clipShape(RoundedRectangle(cornerRadius: Grid.radius, style: .continuous))
+            .sheetShadow()
+    }
+}
+
 /// The logo's pixels, read once from the SVG: its `viewBox` and its `rect` elements.
 struct LogoPixels {
     struct Pixel {

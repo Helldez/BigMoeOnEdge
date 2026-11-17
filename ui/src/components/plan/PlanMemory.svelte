@@ -3,14 +3,15 @@
   // are the plan's ledger; the colour follows a row's position, never its name, from the series
   // palette so neighbouring parts stay apart.
   import { formatBytes } from '../../lib/format';
-  import { memorySegments } from '../../lib/plan';
+  import { memoryCells, memorySegments } from '../../lib/plan';
   import type { PlanMemoryPool } from '../../lib/types';
   import { t } from '../../lib/text';
 
   let { pools }: { pools: PlanMemoryPool[] } = $props();
 
   const SERIES = 6;
-  const colour = (slot: number) => (slot < 0 ? 'var(--surface-2)' : `var(--series-${(slot % SERIES) + 1})`);
+  // The colour as a class (s1..s6, free): no style attribute, as the cell meter.
+  const tone = (slot: number) => (slot < 0 ? 'free' : `s${(slot % SERIES) + 1}`);
 </script>
 
 {#each pools as pool, pi (pi)}
@@ -21,15 +22,13 @@
       <span>{pool.label ?? pool.name}{#if pool.estimated}<span class="muted"> {t('plan.memory.estimated')}</span>{/if}</span>
       {#if pool.cap_bytes > 0}<span class="muted"><span class="figure cap">{formatBytes(pool.cap_bytes)}</span> {t('plan.memory.mayHold')}</span>{/if}
     </div>
-    <div class="bar" role="img" aria-label={segs.map((s) => `${s.label} ${formatBytes(s.bytes)}`).join(', ')}>
-      {#each segs as s, i (i)}
-        <span style="width: {(s.frac * 100).toFixed(2)}%; background: {colour(s.slot)}"></span>
-      {/each}
+    <div class="cells" role="img" aria-label={segs.map((s) => `${s.label} ${formatBytes(s.bytes)}`).join(', ')}>
+      {#each memoryCells(segs) as slot, i (i)}<i class={tone(slot)}></i>{/each}
     </div>
     <ul class="legend">
       {#each segs as s, i (i)}
         <li>
-          <span class="swatch" style="background: {colour(s.slot)}"></span>
+          <span class="swatch {tone(s.slot)}"></span>
           <span class="figure">{formatBytes(s.bytes)}</span>
           <span class="muted">{s.label}</span>
           {#if s.locked}<span class="badge">{t('plan.memory.locked')}</span>{/if}
@@ -65,22 +64,29 @@
   .cap {
     color: var(--text);
   }
-  .bar {
-    display: flex;
-    height: 28px;
-    border: var(--edge) solid var(--line);
-    background: var(--surface-2);
-    overflow: hidden;
+  /* The pool counted in cells, as every share the engine measures (docs/design.md). */
+  .cells {
+    display: grid;
+    grid-template-columns: repeat(40, 1fr);
+    gap: 2px;
+    height: 20px;
   }
-  .bar span + span {
-    border-left: var(--edge) solid var(--bg);
+  .cells i {
+    border-radius: 1px;
   }
+  .s1 { background: var(--series-1); }
+  .s2 { background: var(--series-2); }
+  .s3 { background: var(--series-3); }
+  .s4 { background: var(--series-4); }
+  .s5 { background: var(--series-5); }
+  .s6 { background: var(--series-6); }
+  .free { background: var(--surface-2); }
   .legend {
     list-style: none;
     margin: 0;
     padding: 0;
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
     gap: 0.4rem 1rem;
   }
   .legend li {
@@ -95,7 +101,10 @@
   .swatch {
     flex: 0 0 12px;
     height: 12px;
-    border: 1px solid var(--line);
+    border-radius: 1px;
+  }
+  .swatch.free {
+    box-shadow: inset 0 0 0 1px var(--line-strong);
   }
   .note {
     margin: 0;

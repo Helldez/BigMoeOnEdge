@@ -40,14 +40,17 @@ const MODEL = {
   ctx_advice: { recommended: 16384, short: false, param: 'ctx-size', refused: false, warn: false },
 };
 
+// The engine's state, which a download and a load move: a first run can be walked through end to
+// end. Open the mock with `?first` (before the hash) to start with no model on the computer.
+const engine: { state: string; model: typeof MODEL | null } = { state: 'ready', model: MODEL };
 const info = () => ({
   version: '0.39.0',
   overlap_available: true,
   planner_available: true,
   host: { ram_total_mib: 16384, ram_available_mib: 9100, cpu_threads: 10 },
-  state: 'ready',
+  state: engine.state,
   error: '',
-  model: MODEL,
+  model: engine.model,
   generating: false,
 });
 
@@ -201,9 +204,14 @@ const PLAN = {
   regime: 'stream',
   streaming_declined: false,
   decline_reason: '',
-  decisions: [],
+  decisions: [
+    { knob: 'cache-mib', value: '7300', value_text: '7.1 GiB', source: 'derived', label: 'Expert cache size', group: 'set', brief: 'As large as the free memory allows, leaving room for the system.', reason: 'Free memory 9.8 GiB after the dense weights; 2.7 GiB kept for the system and the context, the rest holds experts.' },
+    { knob: 'prefill-device', value: 'GPU0', value_text: 'Integrated graphics', source: 'measured', label: 'Prompt device', group: 'set', brief: 'The graphics read the prompt 6.5x faster than the processor.', reason: 'Measured at a 512-token prompt: GPU0 6.5x the CPU; tokens stay on the CPU, where the cache lives.' },
+    { knob: 'ctx-size', value: '16384', value_text: '16384 tokens', source: 'operator', label: 'Context size', group: 'kept', brief: 'Your value: kept.', reason: 'Set by you; the plan never changes a value you set.' },
+    { knob: 'storage', value: '-', value_text: '3.1 GB/s', source: 'measured', group: 'notes', brief: 'Disk read speed, measured.', reason: 'Random 4 MiB reads over the model file: 3.1 GB/s.' },
+  ],
   values: {},
-  args: ['--cache-mib', '7300'],
+  args: ['--cache-mib', '7300', '--prefill-device', 'GPU0'],
   explain: '',
   machine: '10 cores, 16 GiB, one integrated GPU',
   from_last_load: true,
@@ -212,16 +220,33 @@ const PLAN = {
   measured: { s_per_token: 0.066, cache_hit_pct: 74, tokens: 212 },
   speed_check: { badge: '+9%', against: 'against the 13.9 expected', tone: 'ok' },
   devices: [
-    { name: 'CPU', description: 'The processor', cpu: true, own_memory: false, memory_total: 0, prompt_ratio: 1, token_ratio: 1, uses: ['tokens'], status: 'used', badge: 'Tokens', why: 'Computes the tokens.' },
-    { name: 'GPU0', description: 'Integrated graphics', cpu: false, own_memory: false, memory_total: 0, prompt_ratio: 6.5, token_ratio: 0.8, uses: ['prompt'], status: 'used', badge: 'Prompt', why: 'Reads the prompt 6.5x faster.' },
+    { name: 'CPU', description: 'The processor', cpu: true, own_memory: false, memory_total: 0, prompt_ratio: 1, token_ratio: 1, rate_text: 'the reference', uses: ['tokens'], status: 'used', badge: 'Tokens', why: 'Computes the tokens.' },
+    { name: 'GPU0', description: 'Integrated graphics', cpu: false, own_memory: false, memory_total: 0, prompt_ratio: 6.5, token_ratio: 0.8, rate_text: '6.5x the processor on a prompt', uses: ['prompt'], status: 'used', badge: 'Prompt', why: 'Reads the prompt 6.5x faster.' },
   ],
-  memory: { pools: [] },
+  memory: {
+    pools: [
+      {
+        name: 'host',
+        label: 'This computer',
+        cap_bytes: 12_884_901_888,
+        lockable_cap_bytes: 0,
+        held_bytes: 10_200_547_328,
+        locked_bytes: 0,
+        rows: [
+          { name: 'dense', label: 'Shared weights', bytes: 1_610_612_736, locked: false, in_turn: false },
+          { name: 'cache', label: 'Expert cache', bytes: 7_654_604_800, locked: false, in_turn: false },
+          { name: 'kv', label: 'Context', bytes: 935_329_792, locked: false, in_turn: false },
+        ],
+      },
+    ],
+  },
 };
 
 const BACKENDS = {
   registered: ['CPU', 'Metal'],
+  graphics: [{ backend: 'Metal', description: 'Example integrated graphics' }],
   packs: [
-    { id: 'cuda', title: 'NVIDIA graphics (CUDA)', size: 520_000_000, applies: true, installed: false },
+    { id: 'cuda', title: 'NVIDIA graphics (CUDA)', size: 520_000_000, applies: false, installed: false },
     { id: 'hip', title: 'AMD graphics (HIP)', size: 610_000_000, applies: false, installed: false },
   ],
 };
@@ -333,6 +358,56 @@ async function handle(req: Req, res: Res, next: () => void) {
   if (p === '/api/params') return send(res, 200, PARAMS);
   if (p === '/api/config') return send(res, 200, CONFIG);
   if (p === '/api/models') return send(res, 200, MODELS);
+  // A first run: no model on this computer, no model loaded.
+  if (p === '/api/mock/first' && m === 'POST') {
+    // `{ "gpu": "nvidia" }`: a computer whose NVIDIA driver loads, so the CUDA pack applies.
+    const opts = (await body(req)) as { gpu?: string };
+    BACKENDS.registered = opts.gpu === 'nvidia' ? ['CPU', 'Vulkan'] : ['CPU', 'Metal'];
+    BACKENDS.graphics = [{ backend: BACKENDS.registered[1], description: opts.gpu === 'nvidia' ? 'Example discrete card' : 'Example integrated graphics' }];
+    for (const pk of BACKENDS.packs) pk.applies = opts.gpu === 'nvidia' && pk.id === 'cuda';
+    MODELS.local = [];
+    engine.state = 'empty';
+    engine.model = null;
+    emit('state', info());
+    return send(res, 200, {});
+  }
+  // A download in about eight seconds, then the file is on disk.
+  if (p === '/api/models/download' && m === 'POST') {
+    const { id: entryId } = (await body(req)) as { id: string };
+    const entry = MODELS.catalog.find((e) => e.id === entryId);
+    if (!entry) return send(res, 404, { error: 'no such entry' });
+    let got = entry.partial ? (entry.received ?? 0) : 0;
+    const step = (entry.bytes - got) / 16;
+    const tick = setInterval(() => {
+      got = Math.min(entry.bytes, got + step);
+      const done = got >= entry.bytes;
+      emit('download', { id: entry.id, file: entry.file, received: got, total: entry.bytes, state: done ? 'done' : 'running', error: '' });
+      if (done) {
+        clearInterval(tick);
+        // As the server: the catalog keeps its entry, and the file in the models folder is matched to it.
+        entry.partial = false;
+        entry.received = entry.bytes;
+        MODELS.local.push({ name: entry.file, path: `/home/me/models/${entry.file}`, dir: '/home/me/models', folder: '', role: 'model', files: [entry.file], bytes: entry.bytes, shards: 1, arch: 'qwen3moe', streamable: true, complete: true });
+      }
+    }, 500);
+    return send(res, 200, {});
+  }
+  // A load: measuring, then loading, then ready, a few seconds each.
+  if (p === '/api/session/load' && m === 'POST') {
+    const { model } = (await body(req)) as { model?: string };
+    engine.state = 'planning';
+    emit('state', info());
+    setTimeout(() => {
+      engine.state = 'loading';
+      emit('state', info());
+    }, 2500);
+    setTimeout(() => {
+      engine.state = 'ready';
+      engine.model = { ...MODEL, path: model ?? MODEL.path, name: (model ?? MODEL.path).split('/').pop() ?? MODEL.name };
+      emit('state', info());
+    }, 5000);
+    return send(res, 200, {});
+  }
   if (p === '/api/plan') return send(res, 200, PLAN);
   if (p === '/api/agent' && m === 'GET')
     return send(res, 200, {
@@ -457,6 +532,19 @@ async function handle(req: Req, res: Res, next: () => void) {
   if (p === '/api/connect') return send(res, 200, connect);
   if (parts[0] === 'connect') return send(res, 200, { file: '/home/me/.config/agent/settings.json', backup: '/home/me/.config/agent/settings.json.bak' });
   if (p === '/api/backends') return send(res, 200, BACKENDS);
+  // A pack install: progress over three seconds, then installed.
+  if (p.startsWith('/api/backends/') && p.endsWith('/install') && m === 'POST') {
+    const packId = decodeURIComponent(p.split('/')[3]);
+    const pk = BACKENDS.packs.find((x) => x.id === packId);
+    if (!pk) return send(res, 404, { error: 'no such pack' });
+    for (let i = 1; i <= 6; i++)
+      await new Promise<void>((r) => setTimeout(() => {
+        emit('backend', { id: pk.id, received: (pk.size * i) / 6, total: pk.size, state: i === 6 ? 'done' : 'running' });
+        r();
+      }, 500));
+    pk.installed = true;
+    return send(res, 200, { ok: true, id: pk.id, restart_required: true });
+  }
   if (parts[0] === 'backends' && parts[2] === 'install') {
     for (let i = 1; i <= 5; i++) setTimeout(() => emit('backend', { id: parts[1], received: i * 104_000_000, total: 520_000_000, state: i === 5 ? 'done' : 'running' }), i * 300);
     await wait(1600);

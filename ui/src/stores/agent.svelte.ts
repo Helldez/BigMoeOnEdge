@@ -22,9 +22,8 @@ import { isDoneSummary } from '../lib/guards';
 import { applyDelta, lastUserItem, truncateFrom, upsertItem, upsertSummary, sortNewest } from '../lib/items';
 import { importLegacy } from '../lib/legacyImport';
 import type { SseEvent } from '../lib/sse';
-import { turnMetrics } from '../lib/turnMetrics';
 import { api } from '../lib/api';
-import type { ChoiceScore } from '../lib/types';
+import type { ChoiceScore, DoneSummary } from '../lib/types';
 import { t } from '../lib/text';
 import { desktopState } from './desktop.svelte';
 import { server } from './server.svelte';
@@ -76,8 +75,8 @@ class AgentStore {
   sending = $state(false);
   /** Approvals sent and not answered by an event yet, by item id. */
   answering = $state<Record<string, boolean>>({});
-  /** The one-line figure under a local answer, from the engine's `done` event, by item id. */
-  metrics = $state<Record<string, string>>({});
+  /** The engine's summary of a local answer (its `done` event) and the context size then, by item id. */
+  metrics = $state<Record<string, { summary: DoneSummary; nCtx: number }>>({});
   decisions = $state<Decision[]>([]);
   /** How many conversations the first start moved from this browser to the server. */
   imported = $state(0);
@@ -443,7 +442,7 @@ class AgentStore {
           for (let i = this.items.length - 1; i >= 0; i--) {
             const it = this.items[i];
             if (it.kind === 'assistant') {
-              this.metrics = { ...this.metrics, [it.id]: turnMetrics(data, server.info?.model?.n_ctx ?? 0, data.cancelled) };
+              this.metrics = { ...this.metrics, [it.id]: { summary: data, nCtx: server.info?.model?.n_ctx ?? 0 } };
               break;
             }
           }

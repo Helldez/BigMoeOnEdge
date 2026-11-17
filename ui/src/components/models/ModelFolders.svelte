@@ -11,7 +11,8 @@
   import type { ModelsResponse } from '../../lib/types';
   import { t } from '../../lib/text';
 
-  let { data, onChanged }: { data: ModelsResponse; onChanged: (next: ModelsResponse) => void } = $props();
+  // `addNow`: bumped by the page to start adding a folder from elsewhere ("Already have models?").
+  let { data, onChanged, addNow = 0 }: { data: ModelsResponse; onChanged: (next: ModelsResponse) => void; addNow?: number } = $props();
 
   let folders = $derived(data.folders);
   let typing = $state<'' | 'models' | 'scan'>('');
@@ -51,6 +52,14 @@
   function removeScan(path: string) {
     return save({ scan_dirs: (folders?.chosen_scan_dirs ?? []).filter((d) => d !== path) });
   }
+
+  let seenAdd = 0;
+  $effect(() => {
+    if (addNow > seenAdd) {
+      seenAdd = addNow;
+      choose('scan');
+    }
+  });
 
   function submitTyped(e: SubmitEvent) {
     e.preventDefault();
@@ -94,7 +103,9 @@
 
     {#if typing}
       <form class="row" onsubmit={submitTyped}>
+        <!-- svelte-ignore a11y_autofocus -->
         <input
+          autofocus
           bind:value={typed}
           placeholder={typing === 'models' ? t('folders.path.models') : t('folders.path.scan')}
           aria-label={typing === 'models' ? t('folders.path.models') : t('folders.path.scan')}

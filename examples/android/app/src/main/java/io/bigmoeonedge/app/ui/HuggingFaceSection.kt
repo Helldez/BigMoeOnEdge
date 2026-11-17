@@ -134,6 +134,7 @@ fun HuggingFaceSection(onAdded: suspend (id: String) -> Unit) {
         )
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(
+                colors = primaryButtonColors(),
                 shape = Corner, onClick = { list() },
                 enabled = canList, modifier = Modifier.weight(1f),
             ) { Text(if (busy == "list") "Looking…" else "Find") }
@@ -219,6 +220,7 @@ fun HuggingFaceSection(onAdded: suspend (id: String) -> Unit) {
                     if (companionsOpen) companions.forEach { ModelChoice(it) }
                 }
                 Button(
+                    colors = primaryButtonColors(),
                     shape = Corner, onClick = { inspect() },
                     enabled = chosen != null && busy.isEmpty(), modifier = Modifier.fillMaxWidth(),
                 ) { Text(if (busy == "inspect") "Reading the header…" else "Check it fits here") }
@@ -256,6 +258,7 @@ fun HuggingFaceSection(onAdded: suspend (id: String) -> Unit) {
                 Text("Downloading: follow it in Your models; Load appears on its row when it is done.", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
             } else {
                 Button(
+                    colors = primaryButtonColors(),
                     shape = Corner, onClick = { add() },
                     enabled = f.downloadable && chosen.complete && busy.isEmpty(), modifier = Modifier.fillMaxWidth(),
                 ) { Text(if (busy == "add") "Starting…" else "Download") }

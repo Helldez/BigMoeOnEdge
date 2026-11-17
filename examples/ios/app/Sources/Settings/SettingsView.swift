@@ -319,7 +319,7 @@ struct ParamRow: View {
                     .onChange(of: focused) { f in if !f { commit() } }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
-                    .overlay(RoundedRectangle(cornerRadius: Grid.radius, style: .continuous).strokeBorder(focused ? Palette.accent : Palette.line, lineWidth: Grid.line))
+                    .overlay(RoundedRectangle(cornerRadius: Grid.control, style: .continuous).strokeBorder(focused ? Palette.accent : Palette.lineStrong, lineWidth: Grid.line))
                 if let unit = spec.unit { Text(unit).font(.ui(14)).foregroundStyle(Palette.muted) }
                 if spec.acceptsAuto && value.string != "auto" {
                     Button("auto") { set(.string("auto")) }.buttonStyle(.appSecondary)

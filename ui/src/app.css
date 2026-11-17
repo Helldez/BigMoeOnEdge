@@ -1,14 +1,25 @@
-/* The visual language (docs/design.md): slate surfaces, one cyan accent, Inter for words and
-   JetBrains Mono for code, 8 px corners, 1 px lines and soft shadows. Light and dark follow the
+/* The visual language (docs/design.md, "Letterhead"): company stationery. Deep ink for the shell
+   and the one primary action, white sheets on a pale ground, the logo's chip as the seal at the
+   head of every answer with the chip's yellow as its rule. Hanken Grotesk for words, JetBrains
+   Mono for code. Light and dark follow the
    system unless the person picked one (`data-theme` on <html>). Every token below is checked for
    contrast by src/lib/contrast.test.ts, which reads this file: change a hex here and the test says
    whether the pairs the UI draws still read. */
 @font-face {
-  font-family: 'Inter';
-  src: url('/fonts/InterVariable.woff2') format('woff2');
+  font-family: 'Hanken Grotesk';
+  src: url('/fonts/HankenGrotesk-latin.woff2') format('woff2');
   font-weight: 100 900;
   font-style: normal;
   font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Hanken Grotesk';
+  src: url('/fonts/HankenGrotesk-latin-ext.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 @font-face {
   font-family: 'JetBrains Mono';
@@ -20,39 +31,45 @@
 
 /* tokens:light */
 :root {
-  --bg: #f6f8f9;
+  --bg: #f3f4f8;
   --surface: #ffffff;
-  --surface-2: #eef2f4;
-  --hover: #e8edf0;
-  --line: #dfe5e9;
-  --line-strong: #7d8b96;
-  --text: #111820;
-  --muted: #56636e;
-  --accent: #0891b2;
-  --accent-ink: #0e7490;
-  --accent-fill: #0e7490;
-  --accent-fill-hover: #155e75;
+  --surface-2: #eceef4;
+  --hover: #e6e8f1;
+  --line: #dcdfea;
+  --line-strong: #6e7396;
+  --text: #1b1f3a;
+  --muted: #555a7c;
+  --accent: #2f3a8f;
+  --accent-ink: #2f3a8f;
+  --accent-fill: #1b1f3a;
+  --accent-fill-hover: #2c3160;
+  --accent-edge: #1b1f3a;
   --on-accent: #ffffff;
-  --accent-tint: #e6f4f8;
-  --focus: #0891b2;
+  --accent-tint: #e6e8f4;
+  --focus: #2f3a8f;
   --ok: #157a3c;
-  --ok-tint: #eaf6ee;
-  --warn: #a14a07;
-  --warn-tint: #fdf3e2;
-  /* A chart's categories, told apart by hue: one per part of a whole (the plan's memory bar). */
-  --series-1: #0891b2;
-  --series-2: #7c3aed;
-  --series-3: #d97706;
-  --series-4: #16a34a;
-  --series-5: #e11d48;
-  --series-6: #64748b;
-  --err: #b91c1c;
-  --err-tint: #fcebeb;
-  --code-bg: #f1f4f6;
-  --scrim: rgb(17 24 32 / 0.4);
-  --shadow-sm: 0 1px 2px rgb(17 24 32 / 0.06), 0 1px 3px rgb(17 24 32 / 0.06);
-  --shadow-md: 0 4px 12px rgb(17 24 32 / 0.08), 0 1px 3px rgb(17 24 32 / 0.06);
-  --shadow-lg: 0 12px 32px rgb(17 24 32 / 0.14), 0 2px 6px rgb(17 24 32 / 0.08);
+  --ok-tint: #e6f4ea;
+  --warn: #9a4a00;
+  --warn-tint: #fff1d6;
+  --series-1: #2f3a8f;
+  --series-2: #0b8ea8;
+  --series-3: #b87400;
+  --series-4: #2e8b57;
+  --series-5: #c2416e;
+  --series-6: #6b6f88;
+  --err: #b42318;
+  --err-tint: #fdecea;
+  --code-bg: #f3f4f8;
+  --shell: #1b1f3a;
+  --shell-2: #12152b;
+  --shell-hi: #2c3160;
+  --on-shell: #ffffff;
+  --on-shell-muted: #c7cae0;
+  --seal: #ffc53d;
+  --scrim: rgb(27 31 58 / 0.45);
+  --shadow-sm: 0 1px 2px rgb(27 31 58 / 0.08);
+  --shadow-md: 0 1px 2px rgb(27 31 58 / 0.08), 0 8px 24px rgb(27 31 58 / 0.08);
+  --shadow-lg: 0 2px 6px rgb(27 31 58 / 0.1), 0 16px 40px rgb(27 31 58 / 0.18);
   color-scheme: light;
 }
 /* end tokens */
@@ -62,76 +79,90 @@
 @media (prefers-color-scheme: dark) {
   /* tokens:dark-system */
   :root:not([data-theme='light']) {
-    --bg: #0b1014;
-    --surface: #131a20;
-    --surface-2: #1a232b;
-    --hover: #202a33;
-    --line: #222c34;
-    --line-strong: #5b6b78;
-    --text: #e6edf2;
-    --muted: #93a1ac;
-    --accent: #22b8d6;
-    --accent-ink: #22b8d6;
-    --accent-fill: #22b8d6;
-    --accent-fill-hover: #4cc9e1;
-    --on-accent: #0b1014;
-    --accent-tint: #0f2a33;
-    --focus: #22b8d6;
+    --bg: #10121f;
+    --surface: #191c30;
+    --surface-2: #20243c;
+    --hover: #272b47;
+    --line: #2c3150;
+    --line-strong: #7d82a8;
+    --text: #e8e9f4;
+    --muted: #a9adc9;
+    --accent: #8e9bff;
+    --accent-ink: #aab4ff;
+    --accent-fill: #e8e9f4;
+    --accent-fill-hover: #ffffff;
+    --accent-edge: #e8e9f4;
+    --on-accent: #10121f;
+    --accent-tint: #23284a;
+    --focus: #8e9bff;
     --ok: #4ade80;
     --ok-tint: #12261b;
     --warn: #fbbf24;
     --warn-tint: #2a2111;
-    --series-1: #22b8d6;
-    --series-2: #a78bfa;
-    --series-3: #fbbf24;
+    --series-1: #8e9bff;
+    --series-2: #21e6ff;
+    --series-3: #ffc53d;
     --series-4: #4ade80;
     --series-5: #fb7185;
-    --series-6: #94a3b8;
+    --series-6: #a7abc4;
     --err: #f87171;
     --err-tint: #2c1517;
-    --code-bg: #0f151a;
-    --scrim: rgb(0 0 0 / 0.55);
+    --code-bg: #141729;
+    --shell: #0b0d18;
+    --shell-2: #05060d;
+    --shell-hi: #23284a;
+    --on-shell: #ffffff;
+    --on-shell-muted: #b7bad4;
+    --seal: #ffc53d;
+    --scrim: rgb(0 0 0 / 0.6);
     --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
-    --shadow-md: 0 4px 12px rgb(0 0 0 / 0.35), 0 1px 3px rgb(0 0 0 / 0.3);
-    --shadow-lg: 0 12px 32px rgb(0 0 0 / 0.5), 0 2px 6px rgb(0 0 0 / 0.3);
+    --shadow-md: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px rgb(0 0 0 / 0.35);
+    --shadow-lg: 0 2px 6px rgb(0 0 0 / 0.45), 0 16px 40px rgb(0 0 0 / 0.5);
     color-scheme: dark;
   }
   /* end tokens */
 }
 /* tokens:dark */
 :root[data-theme='dark'] {
-  --bg: #0b1014;
-  --surface: #131a20;
-  --surface-2: #1a232b;
-  --hover: #202a33;
-  --line: #222c34;
-  --line-strong: #5b6b78;
-  --text: #e6edf2;
-  --muted: #93a1ac;
-  --accent: #22b8d6;
-  --accent-ink: #22b8d6;
-  --accent-fill: #22b8d6;
-  --accent-fill-hover: #4cc9e1;
-  --on-accent: #0b1014;
-  --accent-tint: #0f2a33;
-  --focus: #22b8d6;
+  --bg: #10121f;
+  --surface: #191c30;
+  --surface-2: #20243c;
+  --hover: #272b47;
+  --line: #2c3150;
+  --line-strong: #7d82a8;
+  --text: #e8e9f4;
+  --muted: #a9adc9;
+  --accent: #8e9bff;
+  --accent-ink: #aab4ff;
+  --accent-fill: #e8e9f4;
+  --accent-fill-hover: #ffffff;
+  --accent-edge: #e8e9f4;
+  --on-accent: #10121f;
+  --accent-tint: #23284a;
+  --focus: #8e9bff;
   --ok: #4ade80;
   --ok-tint: #12261b;
   --warn: #fbbf24;
   --warn-tint: #2a2111;
-  --series-1: #22b8d6;
-  --series-2: #a78bfa;
-  --series-3: #fbbf24;
+  --series-1: #8e9bff;
+  --series-2: #21e6ff;
+  --series-3: #ffc53d;
   --series-4: #4ade80;
   --series-5: #fb7185;
-  --series-6: #94a3b8;
+  --series-6: #a7abc4;
   --err: #f87171;
   --err-tint: #2c1517;
-  --code-bg: #0f151a;
-  --scrim: rgb(0 0 0 / 0.55);
+  --code-bg: #141729;
+  --shell: #0b0d18;
+  --shell-2: #05060d;
+  --shell-hi: #23284a;
+  --on-shell: #ffffff;
+  --on-shell-muted: #b7bad4;
+  --seal: #ffc53d;
+  --scrim: rgb(0 0 0 / 0.6);
   --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
-  --shadow-md: 0 4px 12px rgb(0 0 0 / 0.35), 0 1px 3px rgb(0 0 0 / 0.3);
-  --shadow-lg: 0 12px 32px rgb(0 0 0 / 0.5), 0 2px 6px rgb(0 0 0 / 0.3);
+  --shadow-md: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px rgb(0 0 0 / 0.35);
+  --shadow-lg: 0 2px 6px rgb(0 0 0 / 0.45), 0 16px 40px rgb(0 0 0 / 0.5);
   color-scheme: dark;
 }
 /* end tokens */
@@ -144,11 +175,11 @@
   --s4: 1rem;
   --s5: 1.5rem;
   --s6: 2rem;
-  --radius: 8px;
+  --radius: 10px;
   --radius-sm: 6px;
   --pill: 999px;
   --edge: 1px;
-  --ui: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --ui: 'Hanken Grotesk', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Consolas, monospace;
   --ease: cubic-bezier(0.2, 0, 0, 1);
   --fast: 120ms;
@@ -158,7 +189,6 @@
   font-family: var(--ui);
   font-size: calc(15px * var(--text-scale));
   line-height: 1.5;
-  font-feature-settings: 'cv11', 'ss01';
   color: var(--text);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
@@ -269,23 +299,26 @@ button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
+/* The one primary action: deep ink, as a signature on the sheet. */
 button.primary,
 a.button.primary {
   background: var(--accent-fill);
-  border-color: var(--accent-fill);
+  border-color: var(--accent-edge);
   color: var(--on-accent);
+  font-weight: 650;
 }
 button.primary:hover:not(:disabled),
 a.button.primary:hover {
   background: var(--accent-fill-hover);
-  border-color: var(--accent-fill-hover);
 }
-button.ghost {
+button.ghost,
+a.button.ghost {
   background: transparent;
   border-color: transparent;
   box-shadow: none;
 }
-button.ghost:hover:not(:disabled) {
+button.ghost:hover:not(:disabled),
+a.button.ghost:hover {
   background: var(--hover);
 }
 button.danger {
@@ -296,7 +329,8 @@ button.danger.solid {
   border-color: var(--err);
   color: var(--surface);
 }
-button.icon {
+button.icon,
+a.button.icon {
   width: 2.25rem;
   padding: 0;
 }
@@ -439,11 +473,12 @@ kbd {
   background: var(--surface);
 }
 
+/* A card is a sheet: white on the pale ground, lifted by a soft shadow rather than a frame. */
 .card {
   background: var(--surface);
   border: var(--edge) solid var(--line);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-sm);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
   padding: var(--s4);
 }
 
@@ -586,8 +621,35 @@ progress::-moz-progress-bar {
   border-radius: var(--pill);
 }
 
+/* One sign that a thing opens, everywhere: a chevron after the summary's words that turns when
+   open. A summary that draws its own (`.own-marker`: the plan's rows, an answer's figures) opts
+   out. Low specificity, so a component's own layout of its summary wins. */
 details > summary {
   cursor: pointer;
+}
+:where(details > summary) {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+details > summary::-webkit-details-marker {
+  display: none;
+}
+:where(details > summary:not(.own-marker))::after {
+  content: '';
+  flex: none;
+  width: 0.4rem;
+  height: 0.4rem;
+  margin: 0 0.15rem;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform var(--fast) var(--ease);
+  opacity: 0.75;
+}
+:where(details[open] > summary:not(.own-marker))::after {
+  transform: translateY(1px) rotate(225deg);
 }
 
 .table-wrap {
@@ -706,6 +768,21 @@ th {
 ::selection {
   background: var(--accent-tint);
   color: var(--text);
+}
+textarea,
+input {
+  caret-color: var(--accent);
+}
+/* No word left alone on a paragraph's last line; headings balanced over their lines. */
+p,
+li,
+dd {
+  text-wrap: pretty;
+}
+h1,
+h2,
+h3 {
+  text-wrap: balance;
 }
 
 /* Highlighted code (lib/highlight.ts): classes only, never a style attribute. */

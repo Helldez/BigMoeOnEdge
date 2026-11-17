@@ -11,6 +11,17 @@
   let info = $derived(server.info);
   let ctx = $derived(contextAdvice(info?.model, server.params));
   let dismissed = $state(dismissedContextWarning());
+  // A load's seconds, so a long one reads as progress rather than a hang: counted from what the
+  // server reported and when (the store's), so leaving a screen does not restart the count. This
+  // banner is the one place a load is announced; screens show only its stages.
+  let loading = $derived(info?.state === 'planning' || info?.state === 'loading');
+  let now = $state(Date.now());
+  $effect(() => {
+    if (!loading) return;
+    const id = setInterval(() => (now = Date.now()), 1000);
+    return () => clearInterval(id);
+  });
+  let elapsed = $derived(server.loadBase ? Math.max(0, Math.round(server.loadBase.elapsed + (now - server.loadBase.at) / 1000)) : 0);
   function dismiss(key: string) {
     dismissContextWarning(key);
     dismissed = key;
@@ -25,7 +36,8 @@
   {/if}
   {#if info?.state === 'planning' || info?.state === 'loading'}
     <p class="banner info">
-      <span class="skeleton spin"></span>{info.state === 'planning' ? t('status.planning.long') : t('status.loading.long')}
+      <span class="skeleton spin"></span><span class="grow">{info.state === 'planning' ? t('status.planning.long') : t('status.loading.long')}</span>
+      {#if elapsed > 0}<span class="figure">{t('status.elapsed', { s: elapsed })}</span>{/if}
     </p>
   {:else if info?.calibrating}
     <p class="banner info"><span class="skeleton spin"></span>{t('status.calibrating.long')}</p>

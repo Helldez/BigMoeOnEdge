@@ -58,6 +58,10 @@
   .md :global(p) {
     margin: 0 0 var(--s3);
   }
+  /* Prose at a reading measure; code, tables and images keep the column's full width. */
+  .md :global(:is(p, ul, ol, blockquote, h1, h2, h3)) {
+    max-width: 70ch;
+  }
   .md :global(ul),
   .md :global(ol) {
     padding-left: 1.4rem;
@@ -75,7 +79,7 @@
   .md :global(blockquote) {
     margin: 0 0 var(--s3);
     padding-left: var(--s3);
-    border-left: 3px solid var(--line);
+    border-left: 2px solid var(--line-strong);
     color: var(--muted);
   }
   .md :global(table) {

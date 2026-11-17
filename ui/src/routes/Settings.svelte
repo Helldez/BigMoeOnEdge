@@ -82,4 +82,15 @@
     color: var(--accent-ink);
     border-bottom-color: var(--accent);
   }
+  /* A phone: the five tabs wrap onto two rows, every one in sight, none scrolled away. */
+  @media (max-width: 640px) {
+    .tabs {
+      flex-wrap: wrap;
+      overflow-x: visible;
+      row-gap: 0;
+    }
+    .tabs button {
+      min-height: 44px;
+    }
+  }
 </style>

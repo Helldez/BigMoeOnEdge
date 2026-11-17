@@ -22,6 +22,13 @@ final class Navigator: ObservableObject {
     @Published var screen = Screen.chat
     /// The parameter Settings is to land on, once; nil when no link is pending.
     @Published var settingTarget: String?
+    /// The first run (docs/screens.md, "First run"): the catalog entry it is getting, from its
+    /// Download until the conversation opens on it; and whether the person left it (Skip, or More
+    /// models) for this launch.
+    @Published var setupEntry: String?
+    @Published var setupDismissed = false
+    /// The first run is what the Models screen shows now: its bar says "Get started".
+    @Published var setupShowing = false
     /// Whether the first screen was chosen yet: a first visit with nothing on the device opens on
     /// Models instead of an empty Chat, and only the first.
     var startChosen = false
@@ -56,16 +63,18 @@ struct RootView: View {
                         content(s)
                     }
                     .background(Palette.bg.ignoresSafeArea())
+                    // The screens' own controls in the accent; the bar's, outside this, on the shell.
+                    .tint(Palette.accent)
                     .toolbar {
                         ToolbarItem(placement: .principal) {
-                            HStack(spacing: Grid.s) {
-                                Logo(size: 22)
-                                Text(s.rawValue).font(.ui(17, weight: .semibold)).foregroundStyle(Palette.text)
-                            }
+                            Text(s == .models && nav.setupShowing ? "Get started" : s.rawValue)
+                                .font(.ui(17, weight: .semibold)).foregroundStyle(Palette.onShell)
                         }
                     }
                     .navigationBarTitleDisplayMode(.inline)
+                    .shellBar()
                 }
+                .tint(Palette.onShell)
                 .tabItem { Label(s.rawValue, systemImage: s.icon) }
                 .tag(s)
             }
@@ -102,18 +111,27 @@ struct RootView: View {
         }
     }
 
-    /// The bars in the palette, with Inter for their words and a 1-point line under them: UIKit's
-    /// appearance, which SwiftUI's bars read.
+    /// The bars in the palette, with Hanken Grotesk for their words: UIKit's appearance, which
+    /// SwiftUI's bars read. The top bar is the shell's ink with its words in on-shell (every
+    /// navigation bar, the sheets' too); the tab bar a sheet with a 1-point line over it.
     private static func styleBars() {
         let nav = UINavigationBarAppearance()
         nav.configureWithOpaqueBackground()
-        nav.backgroundColor = UIColor(Palette.surface)
-        nav.shadowColor = UIColor(Palette.line)
-        nav.titleTextAttributes = [.foregroundColor: UIColor(Palette.text), .font: UIFont.ui(17, weight: .semibold)]
-        nav.largeTitleTextAttributes = [.foregroundColor: UIColor(Palette.text), .font: UIFont.ui(32, weight: .bold)]
+        nav.backgroundColor = UIColor(Palette.shell)
+        nav.shadowColor = .clear
+        nav.titleTextAttributes = [.foregroundColor: UIColor(Palette.onShell), .font: UIFont.ui(17, weight: .semibold)]
+        nav.largeTitleTextAttributes = [.foregroundColor: UIColor(Palette.onShell), .font: UIFont.ui(32, weight: .bold)]
+        let plain = UIBarButtonItemAppearance()
+        plain.normal.titleTextAttributes = [.foregroundColor: UIColor(Palette.onShell), .font: UIFont.ui(17)]
+        nav.buttonAppearance = plain
+        nav.backButtonAppearance = plain
+        let done = UIBarButtonItemAppearance()
+        done.normal.titleTextAttributes = [.foregroundColor: UIColor(Palette.onShell), .font: UIFont.ui(17, weight: .semibold)]
+        nav.doneButtonAppearance = done
         UINavigationBar.appearance().standardAppearance = nav
         UINavigationBar.appearance().scrollEdgeAppearance = nav
         UINavigationBar.appearance().compactAppearance = nav
+        UINavigationBar.appearance().tintColor = UIColor(Palette.onShell)
 
         let tab = UITabBarAppearance()
         tab.configureWithOpaqueBackground()
@@ -133,21 +151,58 @@ struct RootView: View {
     }
 }
 
-/// What the engine is doing, in one line, on every screen (docs/screens.md, "The status line").
+extension View {
+    /// A navigation bar on the shell: its background shown always, and the light status bar over it.
+    func shellBar() -> some View { modifier(ShellBar()) }
+}
+
+/// The bar is told it is dark so its status bar and controls are light; the shell is then fixed to
+/// the screen's own scheme, or the bar would resolve the dark scheme's shell in the light one.
+private struct ShellBar: ViewModifier {
+    @Environment(\.colorScheme) private var scheme
+
+    func body(content: Content) -> some View {
+        content
+            .toolbarBackground(Palette.resolved(Palette.shell, scheme), for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+    }
+}
+
+/// What the engine and the open conversation are doing, on every screen (docs/screens.md, "The
+/// status line"; docs/design.md, "The seal"): the logo beside a few plain words from their state,
+/// never a figure. While it works the logo breathes, unless the person asked for less motion.
 struct StatusLine: View {
     @EnvironmentObject private var engine: Engine
+    @EnvironmentObject private var chat: ChatModel
     @EnvironmentObject private var nav: Navigator
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// The load whose context warning was dismissed on this device; one at a time is enough.
     @AppStorage("ctxWarningDismissed") private var ctxDismissed = ""
 
     var body: some View {
+        let said = StatusWords.say(input)
+        let busy = said.mood == .busy && !reduceMotion
         VStack(alignment: .leading, spacing: Grid.s) {
-            HStack(spacing: Grid.s) {
-                StateDot(color: color)
+            HStack(spacing: 10) {
+                // Opacity 1 to 0.45 and back, 1.4 s each way, eased: the web's breathing chip, read off
+                // the clock so it stops the moment the work does.
+                TimelineView(.animation(paused: !busy)) { tl in
+                    let phase = tl.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 2.8) / 2.8
+                    let breath = 0.5 - 0.5 * cos(2 * .pi * phase)
+                    Logo(size: 30)
+                        .opacity(busy ? 1 - 0.55 * breath : said.mood == .sleep ? 0.7 : 1)
+                        .saturation(said.mood == .sleep ? 0.2 : 1)
+                }
+                .frame(width: 30, height: 30)
+                .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(.ui(14, weight: .semibold)).foregroundStyle(Palette.text).lineLimit(1)
+                    Text(said.text).font(.ui(14, weight: .semibold))
+                        .foregroundStyle(said.mood == .alert ? Palette.warn : Palette.muted).lineLimit(1)
                     if let detail { Text(detail).font(.ui(12)).foregroundStyle(Palette.muted).lineLimit(2) }
                 }
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.updatesFrequently)
                 Spacer(minLength: Grid.s)
                 downloads
                 action
@@ -170,41 +225,19 @@ struct StatusLine: View {
             }
         }
         .padding(.horizontal, Grid.m)
-        .padding(.vertical, 10)
-        .background(Palette.surface)
+        .padding(.vertical, 8)
+        .background(Palette.bg)
         .overlay(alignment: .bottom) { Rectangle().fill(Palette.line).frame(height: Grid.line) }
     }
 
-    private var title: String {
-        guard engine.serverUp, let info = engine.info else { return "Engine not running" }
-        switch info.state {
-        case .empty: return "No model loaded"
-        case .planning: return "Planning, then loading…"
-        case .loading: return "Loading model…"
-        case .error: return "Engine error"
-        case .ready:
-            let name = info.model?.name ?? "model"
-            return "\(name) · \(info.generating ? "generating" : "ready")"
-        }
-    }
+    private var input: StatusWords.Input { .of(engine: engine, chat: chat) }
 
+    /// Why the engine is not reachable, when the words alone leave a person stuck: the server runs
+    /// inside this app, so a port another program holds is said here (README, "Run in the
+    /// simulator"). A load's error is on Models, where "See Models" points.
     private var detail: String? {
-        guard engine.serverUp, let info = engine.info else { return engine.serverError.map { firstLine($0) } }
-        if info.state == .error { return firstLine(info.error) }
-        // A model that loaded with streaming off is marked wherever its name is shown.
-        if info.ready, info.model?.streaming == false { return "streaming off: plain mmap" }
-        if engine.shared { return "shared on the network" }
-        return nil
-    }
-
-    private var color: Color {
-        guard engine.serverUp, let info = engine.info else { return Palette.err }
-        switch info.state {
-        case .ready: return info.generating ? Palette.accent : Palette.ok
-        case .error: return Palette.err
-        case .empty: return Palette.muted
-        case .loading, .planning: return Palette.warn
-        }
+        guard !engine.serverUp || engine.info == nil else { return nil }
+        return engine.serverError.map { firstLine($0) }
     }
 
     /// A running download, on every screen: how many and the share done, leading back to Models.
@@ -228,4 +261,20 @@ struct StatusLine: View {
     }
 
     private func firstLine(_ s: String) -> String { s.split(whereSeparator: \.isNewline).first.map(String.init) ?? s }
+}
+
+extension StatusWords.Input {
+    /// The engine's state and the open conversation's, as the words are chosen from them (the web
+    /// UI's: an answer of the open conversation is what "working" means). The status line and the
+    /// welcome read the same.
+    @MainActor
+    static func of(engine: Engine, chat: ChatModel) -> StatusWords.Input {
+        let last = chat.items.last
+        let running = chat.running
+        return StatusWords.Input(
+            reachable: engine.serverUp, engine: engine.serverUp ? engine.info?.state : nil, running: running,
+            flashWaitMs: running ? engine.live.flashWaitMs : 0, wallMs: running ? engine.live.wallMs : 0,
+            lastIsAnswer: last?.kind == .assistant, answerHasText: !(last?.text.isEmpty ?? true),
+            conversationFailed: chat.current?.state == "error", stopped: chat.lastStopped)
+    }
 }

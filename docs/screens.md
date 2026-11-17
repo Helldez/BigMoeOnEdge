@@ -30,16 +30,19 @@ dictionary lacks fails its tests.
   workspace's together under its folder name, then the plain chats by date (today, yesterday, the
   previous 7 and 30 days, older), each row with its title, when it was last updated, and its state
   (working, needs you, stopped with an error) instead of the time while it is not idle; rename and
-  delete on each row, delete asked twice; an entry for Tasks. At its foot, a card with the loaded
-  model and the engine's state in words (it leads to Models), and the way to Models, Plan, Skills,
-  Tasks, Connect apps and Settings. On the desktop it folds to a rail of icons, remembered.
+  delete on each row, delete asked twice; an entry for Tasks, over the conversations it starts. At
+  its foot, a card with the loaded model and the engine's state in words (it leads to Models), and
+  the way to Models, Plan, Skills, Settings and Connect apps (Tasks joins them on the folded rail,
+  which has no list). On the desktop it folds to a rail of icons, remembered.
 - **The screen**, in the middle: the open conversation, or the screen picked in the sidebar, in a
   readable column.
 - **The preview pane**, on the right beside a conversation, for a file the agent produced or
   changed (`GET /api/conversations/<id>/file`): a page or a drawing (HTML, SVG) runs in a sandboxed
   frame apart from the app; Markdown is rendered; code is highlighted; an image is shown; any other
   text is shown as text, cut past 512 KiB with its size said; anything else says what it is and its
-  size. Refresh, full screen, close; its width is dragged (or set with the arrow keys) and
+  size. The file lies as a sheet on the pane, the desk beside the conversation
+  ([design.md](design.md), "The preview"); its name heads the pane, its path beside it only when
+  different. Refresh, full screen, close; its width is dragged (or set with the arrow keys) and
   remembered. Where there is no room beside the conversation (a phone, a narrow window) it covers
   the screen. Opening another conversation closes it.
 - **Keyboard.** Every control is reached and used from the keyboard, with a visible focus ring;
@@ -50,9 +53,11 @@ dictionary lacks fails its tests.
 
 Present on every screen: what the engine is doing, from `GET /api/info` and the `state` events. On
 the desktop it is the model card at the foot of the sidebar (a dot and the state in words, the
-model's name, a running download), with a banner over the screen for what asks for attention: an
-unreachable server, a load under way or failed, the context warning below. On a phone it is the
-line the toolkit gives it.
+model's name, a running download; ready, "private, on this computer"; no figure), with a banner over the screen for what asks for attention: an unreachable server,
+a load under way (with its seconds, the only place a load is announced) or failed, the context
+warning below. On a phone it is in the top bar, a dot and
+the state in one word beside the screen's title, leading to Models; the drawer is not needed to see
+it.
 
 | State | Shown as | What the UI offers |
 |---|---|---|
@@ -92,10 +97,16 @@ conversation with no folder.
   everything after it (`/edit`), and the screen says so before. The model's answer as sanitised
   Markdown (no scripts, forms or styles from the model), code blocks highlighted with a Copy button;
   its reasoning folded above it ("Reasoning", open while it streams). Under a finished answer: Copy,
-  Answer again on the last one (the last question sent again), and, on the local model, one line of
-  figures from the turn's own summary, each rate named by its phase:
-  `decode 1.7 tok/s (9 tok) · prefill 3.3 tok/s (13 tok, 4.0 s) · ctx 22/4096 · cache 54%`, with a
-  tooltip saying what each means. Before the first word: "Reading your message…".
+  Answer again on the last one (the last question sent again), and, on the local model, **the
+  answer's figures** from the turn's own summary as one quiet line after those actions:
+  `tg 12.4 tok/s · pp 140 tok/s` (the writing speed and the prompt-reading speed). It opens to every
+  figure in plain words with a line saying what it measures: Answer speed (against the rate the plan
+  expected, when it predicts one), Found in memory, Waiting for disk, Reading the message, Context
+  used `900 of 16,384 tokens`, Guesses kept under speculation, Stopped; then links to the Plan and to
+  Metrics. A disclosure, never a tooltip: a finger and a keyboard reach it. The answer itself sits on
+  a white sheet with no header: the model's name is in the composer and the model card, not on
+  every answer. Before the first word: "Reading
+  your message…".
 - **Tool calls.** One card each, with the tool's plain title ("Read src/main.cpp"), its state in
   words, the lines an edit added and removed, and on demand what it was given (the command, the
   address, the arguments) and what it answered, an edit as a diff whose `+` and `−` stay in the
@@ -110,14 +121,19 @@ conversation with no folder.
 - **The composer.** The text (Enter sends, Shift+Enter starts a line), and chips: the **agent**,
   where the server offers more than its own (a computer that runs programs; `GET /api/agent`): the
   built-in agent, or OpenCode, Claude Code, Codex or Pi, each saying whether it is installed and
-  which program it needs when it is not; it is chosen before the first message and shown as a plain
-  label after it, another agent needs a folder (the line under the composer says so), and with
+  which program it needs when it is not; it is chosen before the first message and not offered
+  after it, another agent needs a folder (the line under the composer says so), and with
   another agent the model chip is not shown, since that agent uses its own. Then the **folder** (none,
   one of the saved workspaces, or Add a folder: the system's folder dialog in the desktop app, a
   typed path elsewhere), the **mode** (Ask first, Read only, Full access, each with a line saying
   what it allows; Full access warns above the composer while a folder is set), the **model**
-  (the local model, or a saved provider's model, saying that messages then go there), **Reasoning**
-  where the local model has a switch for it, **Image** (below), and **Choose** (below). Send, or
+  (the local model, or a saved provider's model, saying that messages then go there). What changes
+  one message rather than the conversation is behind one **+**: **Reasoning** where the local model
+  has a switch for it, **Attach an image** (below), and **Pick from options** (below, "Choose");
+  one that is on is said in words beside the +. Under a finger every chip is 44 px and the
+  placeholder does not mention keys; at a phone's width the bar is one row: the agent, folder and
+  mode as their icons (their words kept for a screen reader), the model's name (without its file
+  extension) taking the rest, then +, then Send, always last. Send, or
   Stop while a run works. Before the first message the chips are the new conversation's; after it they change the
   open one. With no model loaded and the local model picked, Send is disabled and the line under
   the composer says why and leads to Models.
@@ -142,22 +158,60 @@ conversation with no folder.
   (`context_full`: New conversation, and the setting that raises the context from `ctx_advice`),
   something only the computer that runs the engine may do (`local_only`), a path that is not a
   folder (`not_a_folder`). The text of a message that was refused stays in the composer.
-- **The live line.** While an answer streams on the local model and after: the answer speed, the
-  shares of computing and of waiting for the disk, how often what a token needed was already in
-  memory, each with a tooltip. The full card is in Metrics.
+- **The live line.** While an answer streams on the local model, under that answer, where its
+  figures will land: the live `tg`. When the answer ends its line takes over in the same place. The
+  full card is in Metrics.
+- **The state line.** At the top of a conversation the logo's chip beside what the engine is doing
+  in a few plain words (Thinking…, Writing…, Reading part of the model from the disk… once waiting for
+  the disk takes over 30% of a token, Answered, Stopped, Waiting for your approval below, No model
+  loaded, Loading the model…). On a phone it stays under the top bar.
+- **An empty conversation** opens on the chip on a white sheet over the logo's yellow rule, the
+  engine's state in words (with a model ready: "Private: everything stays on this computer."), "What
+  shall we do?", what the conversation can do (a folder, or none), and, once a model can answer,
+  three questions to try, each sent with one click. While a model loads, the line under the
+  composer says so.
 - **Earlier conversations.** A UI that kept conversations on the device before the server held them
   sends them to the server once (`POST /api/conversations` with their messages), says how many
   moved, and removes its own copy of each once the server has it.
 
 ## First run
 
-With no model on the device and none coming, the first screen is a guided setup instead of an empty
-conversation: what this computer has, in plain words (memory, processor threads, the graphics the
-plan saw); the graphics backend pack to install where one applies (from `GET /api/backends`, with
-progress, then the restart the app does or the person does); the catalog's model that suits the
-memory (the largest that fits in it, else the smallest, with a sentence saying which and why) and
-the others beside it; its download with progress, resumable; then "Load it and start", which loads
-it and opens a new conversation. Skip leads to an empty conversation; Models has everything else.
+With no model on the device and none coming, the first screen is the way to the first private
+answer, in the steps the screen marks as such (1 Pick a model · 2 Download · 3 Start, after a Graphics card step where one applies; the current
+one filled, the done ones checked), the step following the model's state, never a button. Over them
+the logo on a sheet with its yellow rule, "A private AI on this computer" (on a phone, "this
+phone"), one line on what it is ("Big models run here, and nothing you write leaves this computer.
+Setting up is one download."), and the machine in one muted line (memory, processor threads, the
+graphics the plan saw).
+
+0. **Graphics card**, only where a graphics pack applies to this computer and is not installed
+   (`GET /api/backends?refresh=1`, read when the screen opens: a first run is online anyway). It
+   becomes the first step: what the card gives (faster answers than the processor alone), the pack
+   by name with its size, one button to install it, and "Skip: use the processor". The app restarts
+   the engine by itself after the install; a browser says to restart it. Elsewhere a line under the
+   machine says what the graphics are: ready, with the backends in use and nothing to install; a
+   pack installed; or no card found, with where to get a driver (the maker's site) for an NVIDIA or
+   AMD card the engine could not see. The phone apps carry their backends inside and skip it.
+1. **Pick a model**: two catalog entries side by side where the catalog has both, the largest that
+   fits in the memory ("Fits in memory": the fastest answers) and the smallest that does not
+   ("Larger than memory": what streaming from disk is for), each with its size and a sentence, the
+   first picked; with only one kind, the one that suits the memory. No speed is promised: nothing
+   is measured before a model is on disk. The graphics backend pack shows here only where one
+   applies (`GET /api/backends`). One primary button: Download, with the size (Resume, for a
+   partial file).
+2. **Download**: its progress, the time left and the rate, measured over the last 20 seconds of the
+   download's events ("about 12 min left · 9.8 MiB/s"; "Measuring the speed…" until it can say), a
+   line saying the model loads by itself when it ends, and Pause. A paused download stays on this step,
+   reopened as such (the screen picks a running download, then a paused one, before its
+   suggestion): what is already here, Resume, and "Pick another model". A download started from
+   Hugging Face in Models shows here the same way.
+3. **Start**: when the file is on disk the model loads by itself (once per visit) and the screen
+   says so; the conversation opens when the engine reports the model ready, not before. A failed
+   load says why, with Try again.
+
+Under the steps, always: "Already have gguf files? Add their folder" (Models, on adding a folder),
+"More models, or one from Hugging Face", and Skip. The first conversation then offers three
+questions to try, each sent with one click.
 
 ## Models
 
@@ -184,11 +238,16 @@ list, a guided way to add to it, and nothing else.
   launch (`--scan-dir`), listed the same way and loaded in place, with the folders directly inside
   each (a split set in a folder of its own); the server deletes nothing there, and the phone's app
   deletes what it may write. Catalog entries with nothing on the device and nothing started are
-  suggestions, at the bottom of the same list, not a second grid. Files the server says are not
+  suggestions, at the bottom of the same list, not a second grid; an entry whose model and
+  quantization are already on disk under another publisher's file name (the end of the name
+  matches) is not suggested. Files the server says are not
   models (`role`: a projector, a draft head) are listed apart, after the models, with what they are
   and no Load. Where the models directory is, and which scan directories are listed, sits behind a
   "where models live" disclosure.
-- **Nothing here yet.** With no model on the device and none coming, the screen is three steps:
+- **Nothing here yet.** With no model on the device and none coming, the screen opens on "Already
+  have gguf files? Add the folder that holds them", which opens the folders on adding one (the
+  system's folder dialog in the desktop app, a focused path field elsewhere; `#/models/add-folder`
+  links there, as the first-run setup does), then three steps:
   1 Find a model, 2 Check it fits here, 3 Download, then Load; with the Hugging Face field inline,
   the catalog's suggestions as one-click Downloads and the direct link below. A first visit with
   nothing on the device opens on the first-run setup instead ([First run](#first-run)).
@@ -205,7 +264,10 @@ list, a guided way to add to it, and nothing else.
   against what is free, the resident floor against what this process may hold with the loaded model
   given back. Download: one button, the model becomes a catalog entry and its download starts; its
   row in Your models is scrolled into view, carries the progress, and turns to Load when it lands.
-  A token field for a gated or private repository, used for the requests and kept nowhere. The UI
+  A token field for a gated or private repository, used for the requests and kept nowhere.
+- **Loading.** A load started here ends in the conversation once the model is ready (not after a
+  failure); while it runs the screen shows the measuring stages, and the one banner over every
+  screen says what is happening and for how many seconds. The UI
   shows what the server answered, reads no gguf and keeps no threshold of its own.
 - **Any other model.** A direct https link to a gguf (or to any shard of a split set), which the
   server makes a catalog entry downloaded like the others (`POST /api/models/url`); on the phone,
@@ -244,7 +306,8 @@ the same thing and a stage or role added later reaches them all unchanged.
   as they are.
 - **Summary.** The plan's verdict (`summary.sentence`: "Experts stream from flash, with a
   7.1 GiB cache"), the machine line, the lanes (which device computes the prompt and which the
-  tokens) in one line, and three figures: decode speed, expected from `predicted` and, once the
+  tokens) in one line, and three figures side by side under a rule (no box inside the card): answer
+  speed, expected from `predicted` and, once the
   loaded model has answered, measured from `measured`, with the server's comparison
   (`speed_check`: `+26%` against the expected rate while close, `84x` once more than 2x apart) when
   the model runs this plan (`from_last_load`) and the expected figure as a plain line otherwise (the last plan
@@ -255,23 +318,28 @@ the same thing and a stage or role added later reaches them all unchanged.
   in the diagnostic. Apply and Measure again sit together under the figures, the only place they
   are, and Apply lists what it changed, each row linked to its setting. A plan measured with a
   model loaded carries the server's warning: it is sized for a smaller machine.
-- **Memory.** One bar per pool (`memory.pools`): every row the ledger holds, then what is free,
+- **Memory.** One row of 40 cells per pool (`memory.pools`, [design.md](design.md), "The
+  signature"): every row the ledger holds, then what is free,
   against what the process may hold; each row named, sized and marked when locked, and coloured
   by its place from the series palette ([design.md](design.md)), so neighbouring parts stay apart. A row held in
   turn with the cache is a sentence under the bar, not a segment.
-- **Devices.** One row per device the plan saw, the host first among equals: its rate on a prompt
-  as a bar scaled to the fastest device measured, a badge for what it does (`Prompt`, `Tokens`,
+- **Devices.** One row per device the plan saw, the host first among equals: named as the system
+  names it (`description`), its engine id under it; its rate on a prompt as cells scaled to the
+  fastest device measured, a caption over the list saying what the cells measure, the rate in words
+  under them, a badge for what it does (`Prompt`, `Tokens`,
   `Layers`, combined) or why it does nothing (`Not used`, `Wrong results`, `Unusable`), and the
   reason in a sentence. With no device beyond the host, one line says which of the three it is: the
   build carries no backend for one, the backends it carries found none here, or nobody looked.
 - **Decisions, grouped.** The settings the plan decided (open), the ones it left (the person's
   own, or unmeasured), and the notes that are no setting: regime, placement, memory use and each
   of the cost model's notes under its own name, from the server's `label` (folded), each with a
-  count. A row shows the knob's settings label, its value and where it came
-  from (`measured`, `derived`, `policy`, `operator` for a value the person set and the planner left
-  alone, `unprobed`); opening it shows the decision in one short line (`brief`), the full account
+  count. A row shows the knob's settings label, its value and where it came from, in words
+  (Measured, Worked out, By rule, Set by you for a value the person set and the planner left alone,
+  Not measured: `measured`, `derived`, `policy`, `operator`, `unprobed`), and a chevron that says
+  it opens; opening it shows the decision in one short line (`brief`), the full account
   behind Why, and a link that lands on the setting itself (`#/settings/<key>`: its card and fold
-  open, the field focused). The two folded groups say in a line what they hold.
+  open, the field focused). The two folded groups say in a line what they hold. A plan that set
+  nothing says so in a sentence under the heading.
 - **Measuring.** While the probes run (Measure, or an auto load), the stages from `plan_progress`:
   done, running, how many to go. Never a blind wait.
 - **Actions.** Measure again (the probes run again: storage reads, a matmul on every device; on a
@@ -378,8 +446,10 @@ What it is: what the engine measured about its own work, live and recorded: a se
 always there. A calm monitor: four
 figures with their recent history (answer speed, disk reads, memory in use against what is free,
 how often what a token needed was already in memory, with the cache's size), where a token's time
-goes as one bar, then the last answer's account. With no model loaded it says so and leads to
-Models; a model loaded without streaming says which figures it cannot have.
+goes as one bar, then the last answer's account, and what each figure means (a folded list, not
+tooltips). Before any answer it says so, with the rate the plan expects, instead of empty figures.
+With no model loaded it says so and leads to Models; a model loaded without streaming says which
+figures it cannot have.
 
 - **The live card.** For the current or last generation: the rate (the last token's while
   generating, the run's average after), and each token's wall time split into the four terms the

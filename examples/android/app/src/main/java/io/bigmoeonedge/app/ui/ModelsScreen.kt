@@ -150,7 +150,8 @@ fun ModelsScreen(modifier: Modifier = Modifier, onOpenChat: () -> Unit = {}) {
             TopAppBar(
                 title = { Text("Models") },
                 navigationIcon = { Box(Modifier.padding(start = 16.dp)) { BrandMark(wordmark = false) } },
-                actions = { TextButton(shape = Corner, onClick = { requestSharedStorageAccess(context); refreshKey++ }) { Text("Refresh") } },
+                actions = { TextButton(shape = Corner, colors = shellActionColors(), onClick = { requestSharedStorageAccess(context); refreshKey++ }) { Text("Refresh") } },
+                colors = shellTopBarColors(),
             )
         },
         snackbarHost = { SnackbarHost(snackbar) },
@@ -433,12 +434,12 @@ private fun ModelRow(
                 r.state == RowState.LOADED && m != null -> {
                     OutlinedButton(shape = Corner, onClick = { onLoad(m.path) }, enabled = canLoad) { Text("Reload") }
                     OutlinedButton(shape = Corner, onClick = onUnload) { Text("Unload") }
-                    Button(shape = Corner, onClick = onOpenChat) { Text("Go to Chat") }
+                    Button(shape = Corner, colors = primaryButtonColors(), onClick = onOpenChat) { Text("Go to Chat") }
                 }
-                r.state == RowState.ON_DEVICE && m != null -> Button(shape = Corner, onClick = { onLoad(m.path) }, enabled = canLoad) { Text("Load") }
+                r.state == RowState.ON_DEVICE && m != null -> Button(shape = Corner, colors = primaryButtonColors(), onClick = { onLoad(m.path) }, enabled = canLoad) { Text("Load") }
                 r.state == RowState.DOWNLOADING && e != null -> OutlinedButton(shape = Corner, onClick = { onCancel(e) }) { Text("Cancel") }
                 e != null && r.state in setOf(RowState.AVAILABLE, RowState.PARTIAL, RowState.INCOMPLETE) -> {
-                    Button(shape = Corner, onClick = { onDownload(e) }) {
+                    Button(shape = Corner, colors = primaryButtonColors(), onClick = { onDownload(e) }) {
                         Text(if (e.partial) resumeLabel(e.received, e.bytes) else "Download", maxLines = 1, softWrap = false)
                     }
                     if (e.partial) TextButton(shape = Corner, onClick = { onDeletePartial(e) }) { Text("Delete partial") }
@@ -497,7 +498,7 @@ private fun LinkImport(onAdded: suspend (CatalogEntry) -> Unit) {
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
             keyboardActions = KeyboardActions(onGo = { if (canAdd) { focus.clearFocus(); add() } }),
         )
-        Button(shape = Corner, onClick = { add() }, enabled = canAdd, modifier = Modifier.fillMaxWidth()) {
+        Button(shape = Corner, colors = primaryButtonColors(), onClick = { add() }, enabled = canAdd, modifier = Modifier.fillMaxWidth()) {
             Text(if (busy) "Checking the link…" else "Download")
         }
         Hint("A link to one file, or to any shard of a split set (the other shards are fetched beside it). It is added to Your models and downloads like any other.")

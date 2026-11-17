@@ -27,8 +27,8 @@ own license, reproduced here as those licenses require.
 - The web UI's JavaScript runtime, bundled into ui/ in the desktop archive: Svelte (MIT), clsx
   (MIT), marked (MIT; it carries Markdown's BSD-style notice) and DOMPurify, dual-licensed
   MPL-2.0 or Apache-2.0 and used here under the Apache License 2.0.
-- Inter and JetBrains Mono: the fonts of the web UI (ui/public/fonts) and of the Android and iOS
-  apps, each with its licence file. SIL Open Font License, Version 1.1.
+- Hanken Grotesk and JetBrains Mono: the fonts of the web UI (ui/public/fonts) and of the Android
+  and iOS apps, each with its licence file. SIL Open Font License, Version 1.1.
 - Pixelify Sans: docs/assets/fonts, with its licence file. SIL Open Font License, Version 1.1.
 - The NVIDIA CUDA runtime and cuBLAS (libcudart, libcublas, libcublasLt; cudart64_12, cublas64_12
   and cublasLt64_12 on Windows), in the x86_64 Linux and Windows CUDA packs beside the CUDA
@@ -501,10 +501,10 @@ beside this one.
 
 
 ----------------------------------------------------------------------------------------------------
-Inter and JetBrains Mono
+Hanken Grotesk and JetBrains Mono
 ----------------------------------------------------------------------------------------------------
 
-Copyright (c) 2016 The Inter Project Authors (https://github.com/rsms/inter)
+Copyright 2021 The Hanken Grotesk Project Authors (https://github.com/marcologous/hanken-grotesk)
 Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1, whose full text
@@ -612,10 +612,10 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 
 
 ----------------------------------------------------------------------------------------------------
-Inter and JetBrains Mono
+Hanken Grotesk and JetBrains Mono
 ----------------------------------------------------------------------------------------------------
 
-Copyright (c) 2016 The Inter Project Authors (https://github.com/rsms/inter)
+Copyright 2021 The Hanken Grotesk Project Authors (https://github.com/marcologous/hanken-grotesk)
 Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.

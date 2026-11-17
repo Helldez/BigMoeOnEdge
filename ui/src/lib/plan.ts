@@ -72,6 +72,35 @@ export function memorySegments(pool: PlanMemoryPool): MemorySegment[] {
   return out;
 }
 
+/**
+ * The memory bar as cells (docs/design.md, "The signature"): each of `n` cells takes the slot of the
+ * segment it falls in, by largest remainder, so the counts add up to `n` and a part held at all
+ * keeps at least one cell where there is room for it.
+ */
+export function memoryCells(segs: readonly MemorySegment[], n = 40): number[] {
+  if (segs.length === 0 || n <= 0) return [];
+  const exact = segs.map((s) => s.frac * n);
+  const counts = exact.map((x) => Math.floor(x));
+  let left = n - counts.reduce((a, c) => a + c, 0);
+  const order = exact.map((x, i) => ({ i, r: x - Math.floor(x) })).sort((a, b) => b.r - a.r);
+  for (const o of order) {
+    if (left <= 0) break;
+    counts[o.i]++;
+    left--;
+  }
+  // A held part rounded to nothing takes a cell from the largest one.
+  for (let i = 0; i < counts.length; i++) {
+    if (counts[i] === 0 && segs[i].bytes > 0) {
+      const big = counts.indexOf(Math.max(...counts));
+      if (counts[big] > 1) {
+        counts[big]--;
+        counts[i] = 1;
+      }
+    }
+  }
+  return segs.flatMap((s, i) => Array<number>(counts[i]).fill(s.slot));
+}
+
 /** A badge's colour, from a device's role alone: green when it works here, red when it was refused. */
 export function deviceTone(d: PlanDevice): 'ok' | 'err' | '' {
   if (d.status === 'refused' || d.status === 'unusable') return 'err';
