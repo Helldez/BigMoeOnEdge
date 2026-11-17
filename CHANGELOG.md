@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **`GET /health` answers without the API key, as llama-server's does.** With `--api-key` set it
+  answered 401, so a supervisor, a start script or a load balancer that asks it before it holds the
+  key read a ready server as down. `GET` and `HEAD` on `/health` and `/v1/health` now skip the key
+  check; sub-paths, writes and every other route keep it, and the host and origin rules still run
+  first ([server-api.md](docs/server-api.md)).
+
 ## [0.45.0] - 2026-11-18
 
 ### Added

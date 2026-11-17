@@ -92,7 +92,10 @@ AccessDecision check_access(const AccessPolicy & policy, const RequestFacts & r)
     // the API behind it, and a client on the network has no page.
     // Either header carries it: Bearer is how OpenAI clients and the UI send a key, X-Api-Key how
     // Anthropic clients do.
-    if (api && !policy.api_key.empty() && !bearer_matches(r.authorization, policy.api_key) &&
+    // /health answers without it, as llama-server's does: a supervisor or a start script asks it
+    // before it holds the key, and the answer says only whether a model is ready.
+    const bool health = !write && (r.path == "/health" || r.path == "/v1/health");
+    if (api && !health && !policy.api_key.empty() && !bearer_matches(r.authorization, policy.api_key) &&
         !key_matches(r.x_api_key, policy.api_key))
         return {401, "an API key is required: send it as Authorization: Bearer <key> (or X-Api-Key: <key>)", ""};
 

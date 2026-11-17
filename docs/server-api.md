@@ -71,6 +71,9 @@ other software, or other people, on that machine or on a network it was told to 
   ignored; an empty file refuses to start), and is the way to pass one: a command line, and so
   `--api-key KEY`, is visible to every local user in the process list. `--api-key` stays for
   compatibility; the two together are refused.
+- One exception to the key, as llama-server makes it: `GET` and `HEAD` on `/health` and
+  `/v1/health` answer without it, since a supervisor asks before it holds the key and the answer
+  says only whether a model is ready. The host and origin rules below still apply to them.
 - On loopback it answers only to loopback host names, so a DNS-rebinding page cannot reach it
   through a name of its own.
 - A browser request to `/api/*` or `/v1/*` from anywhere but the UI's own page is refused with
@@ -780,11 +783,12 @@ answer timings, its prompt progress, and a handful of endpoints of its own. Thes
 llama-server's shapes (`server/llama_compat.h`), copied as a wire format: nothing of llama-server
 is linked, so a llama.cpp upgrade does not touch them. None of them runs a turn, and none waits for
 one. Each answers `503` `no_model` when it needs a model and none is ready. They are the engine,
-under the same key and origin rules as `/api/*` and `/v1/*`.
+under the same key and origin rules as `/api/*` and `/v1/*`, except that `/health` (and
+`/v1/health`) answers without the key.
 
 | route | answer |
 |---|---|
-| `GET /health` (and `/v1/health`) | `{"status": "ok"}` with a model ready; `503` with `code: "loading"` while one loads or the plan measures, `no_model` with none. |
+| `GET /health` (and `/v1/health`) | answered without the API key (`GET` and `HEAD`), as llama-server does. `{"status": "ok"}` with a model ready; `503` with `code: "loading"` while one loads or the plan measures, `no_model` with none. |
 | `GET /props` | `default_generation_settings` (`n_ctx`, and `params` with `n_predict`, `temperature`, `top_k`, `top_p`, `seed`: the session's sampling), `total_slots: 1`, `model_alias`, `model_path`, `modalities` (`vision`), `build_info`. |
 | `GET /metrics` | Prometheus text under llama-server's names: the counters `llamacpp:prompt_tokens_total` (decoded, the cached part excluded), `prompt_tokens_cached_total`, `prompt_seconds_total`, `tokens_predicted_total`, `tokens_predicted_seconds_total`, `n_tokens_max`, and the gauges `prompt_tokens_seconds` and `predicted_tokens_seconds` (rates over the turns since the previous scrape) and `requests_processing`, `requests_deferred`. Always on: there is no `--metrics` flag. |
 | `GET /slots` | the one slot: `[{"id": 0, "n_ctx": ..., "is_processing": ...}]`. Saving and restoring a slot is not implemented. |
