@@ -291,7 +291,8 @@ fun SetupScreen(modifier: Modifier = Modifier, onOpenChat: () -> Unit, onOpenMod
 private fun Head(ramMib: Long, threads: Int, gpus: List<String>) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Surface(color = tokens.surface, shape = SheetCorner, shadowElevation = SheetElevation) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            // As wide as the logo: the rule fills the sheet, and the sheet does not fill the screen.
+            Column(Modifier.width(IntrinsicSize.Min), horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(
                     painterResource(R.drawable.ic_logo), contentDescription = null, tint = Color.Unspecified,
                     modifier = Modifier.padding(start = 14.dp, end = 14.dp, top = 14.dp, bottom = 11.dp).size(64.dp),
