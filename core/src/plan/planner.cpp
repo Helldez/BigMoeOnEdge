@@ -2011,8 +2011,22 @@ struct SharedDeviceCandidate {
 // The device a whole model held in `resident` bytes of this pool could move to, or none and why.
 SharedDeviceCandidate shared_device_candidate(const Planning & s, uint64_t resident) {
     SharedDeviceCandidate c;
-    const uint64_t air_needed = (uint64_t) ((double) resident * (double) s.pol.fits_air_ratio);
     const bool cheap = reclaim_is_cheap(s.hw.anon_overflow);
+    // The room a move has to leave beside the model where this machine takes pages back cheaply
+    // (PlannerPolicy::fits_air_ratio), measured against what the move is weighed against. Where part of
+    // the model could stream instead, holding it whole is itself the choice that bar guards, and the
+    // move has to clear it for the whole model as residency did. Where nothing could stream, the cores
+    // hold the whole model on every plan, so the bar applies to what the move adds to this pool: its
+    // compute buffer, and the weights as well where the backend copies them into buffers of its own
+    // (they are then this process's memory rather than the file's pages the system reads back). On a
+    // 16 GB laptop a 2B dense model was kept on the cores because 1638 MiB left beside it fell short of
+    // the 2670 MiB it holds, which the cores held all the same.
+    const bool could_stream = s.model.is_moe;
+    const auto air_needed = [&](const ComputeDevice & d, uint64_t compute) {
+        const bool in_place = is_yes(d.host_ptr_verified) && is_yes(d.host_ptr_buffers);
+        const uint64_t added = compute + (in_place ? 0 : resident);
+        return (uint64_t) ((double) (could_stream ? resident : added) * (double) s.pol.fits_air_ratio);
+    };
     // Among several, the one that applies this model's weights fastest on one real layer at decode
     // width: a ranking only, since the timed decode is what decides against the cores.
     const auto layer_rate = [&](const ComputeDevice & d) {
@@ -2039,9 +2053,15 @@ SharedDeviceCandidate shared_device_candidate(const Planning & s, uint64_t resid
             why = "it needs the weights repacked into a layout of its own, and the model loads as mapped";
         else if (compute == 0)
             why = "the compute buffer it would reserve was never projected";
-        else if (resident + compute > s.usable || (cheap && s.usable - resident - compute < air_needed))
+        else if (resident + compute > s.usable)
             why = "its compute buffer of " + u64s(mib(compute)) + " MiB beside the " + u64s(mib(resident)) +
-                  " MiB the model holds leaves too little of the " + u64s(mib(s.usable)) + " MiB usable";
+                  " MiB the model holds is past the " + u64s(mib(s.usable)) + " MiB usable";
+        else if (cheap && s.usable - resident - compute < air_needed(d, compute))
+            why = "its compute buffer of " + u64s(mib(compute)) + " MiB beside the " + u64s(mib(resident)) +
+                  " MiB the model holds leaves " + u64s(mib(s.usable - resident - compute)) + " of the " +
+                  u64s(mib(s.usable)) + " MiB usable, short of the " + u64s(mib(air_needed(d, compute))) +
+                  " MiB this machine's reclaim asks to be left beside " +
+                  (could_stream ? std::string("a model held whole") : std::string("what the move adds"));
         if (!why.empty()) {
             c.refused += (c.refused.empty() ? "" : "; ") + d.name + ": " + why;
             continue;
@@ -2150,11 +2170,15 @@ void choose_shared_device(Planning & s, uint64_t resident) {
     on_device(Source::Policy, "Every layer runs on " + dev.name + " while its speed there is measured.", before);
 }
 
-// The same question for a model with no experts: nothing streams, so whether it is held in memory
-// whole is the only part of the regime that applies.
+// The same question for a model with no experts. Nothing streams, so the cores hold the whole model
+// whatever the regime says of the room beside it, and the question is asked on every regime: the
+// candidate's own room test (shared_device_candidate) decides, and the plan says why where it refuses.
+// Asked only where the model is held well, a 4B dense model on a 16 GB laptop with 6 GB available ran
+// on the cores with no word about the device at all.
 void choose_shared_device_dense(Planning & s) {
     size_budget(s);
-    if (residency_regime(s) == Regime::Fits) choose_shared_device(s, s.host_all);
+    residency_regime(s); // the books the candidate reads: what the model holds here, the projector's side
+    choose_shared_device(s, s.host_all);
 }
 
 // ── the accelerator axis: what may leave the host BEYOND the fitter's placement ─

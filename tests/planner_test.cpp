@@ -3084,6 +3084,41 @@ int main() {
         check(dm.config.n_gpu_layers == 33 && dm.config.device_split.size() == 1,
               "shared device, a dense model measured faster on the device: every layer moves");
 
+        // A dense model the cores hold without the room residency asks beside it: the cores hold it
+        // all the same, so the question is still asked, against what the move adds to this pool.
+        {
+            ModelProfile snug_model = dense;
+            snug_model.knobs = MeasuredKnobs{};
+            HardwareProfile snug = roomy;
+            snug.residency_budget = 8 * GiB; // the model fits, not with as much again beside it
+            HardwareProfile snug_in_place = snug;
+            for (ComputeDevice & d : snug_in_place.devices)
+                if (!d.is_cpu) d.host_ptr_buffers = d.host_ptr_verified = Tri::Yes;
+            const Plan asked =
+                plan_run(base_cfg(), snug_in_place, snug_model, shared, PlanRequest{}, PlannerPolicy::defaults());
+            const Decision * da = find(asked, "shared-device");
+            check(asked.regime == Regime::NotMoe && asked.config.trial.shared_device_side == 0 && da,
+                  "shared device, a dense model short of residency's room, weights read in place: still asked, "
+                  "the cores timed first",
+                  da ? da->reason : "no line");
+            // Copied, the weights become this process's memory: the move adds them, and the bar is on that.
+            const Plan copied =
+                plan_run(base_cfg(), snug, snug_model, shared, PlanRequest{}, PlannerPolicy::defaults());
+            const Decision * dc = find(copied, "shared-device");
+            check(on_cores(copied) && copied.config.trial.shared_device_side == -1 && dc && dc->value == "cpu" &&
+                      dc->reason.find("what the move adds") != std::string::npos,
+                  "shared device, a dense model short of room for a copy of its weights: refused, and said",
+                  dc ? dc->reason : "no line");
+            // Past what this process may hold at all: refused, and said, never silent.
+            HardwareProfile small = snug_in_place;
+            small.residency_budget = 4 * GiB;
+            const Plan over = plan_run(base_cfg(), small, snug_model, shared, PlanRequest{}, PlannerPolicy::defaults());
+            const Decision * dov = find(over, "shared-device");
+            check(on_cores(over) && dov && dov->value == "cpu" && dov->reason.find("past the") != std::string::npos,
+                  "shared device, a dense model past what may be held: refused, and said",
+                  dov ? dov->reason : "no line");
+        }
+
         // Elsewhere nothing changes: a device with memory of its own goes through the fitter, and a
         // model that streams has no whole model to move.
         HardwareProfile big = desktop();
