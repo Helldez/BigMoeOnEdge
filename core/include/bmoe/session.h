@@ -201,7 +201,8 @@ struct GenerateRequest {
     // This request's sampling over the session's (RequestSampling); unset samples as the session does.
     std::optional<RequestSampling> sampling{};
     // Text that ends the answer where it first appears; the answer stops before it (`stop` above is
-    // the caller's cancel flag, not this). While the text
+    // the caller's cancel flag, not this). Matched in the answer only: reasoning written before it is
+    // not searched, or a stop the reasoning contains would end the turn with no answer. While the text
     // generated so far ends partway into one, that part is held back from TokenMetrics::text, so a
     // streamed answer never shows a stop it then takes back.
     std::vector<std::string> stop_text{};
