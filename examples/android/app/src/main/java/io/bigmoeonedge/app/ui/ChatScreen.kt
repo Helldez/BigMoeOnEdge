@@ -321,8 +321,9 @@ private fun EmptyChat(unsupported: Boolean) {
         }
         val status = rememberConversationStatus(greet = true)
         Surface(color = tokens.surface, shape = SheetCorner, shadowElevation = SheetElevation) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                StatusLogo(status.mood, 64.dp, Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 13.dp))
+            // As wide as the logo: the rule fills the sheet, and the sheet does not fill the screen.
+            Column(Modifier.width(IntrinsicSize.Min), horizontalAlignment = Alignment.CenterHorizontally) {
+                StatusLogo(status.mood, 64.dp, Modifier.padding(start = 14.dp, end = 14.dp, top = 14.dp, bottom = 11.dp))
                 Box(Modifier.fillMaxWidth().height(3.dp).background(tokens.seal))
             }
         }
