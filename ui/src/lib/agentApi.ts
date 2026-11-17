@@ -46,6 +46,18 @@ export interface NewConversation {
   items?: { kind: 'user' | 'assistant'; text: string; reasoning?: string }[];
 }
 
+/**
+ * A conversation's system prompt exactly as the model reads it; `tokens` is what it takes of the
+ * context (null with no model ready, or on a provider); `external` when another agent program writes its own.
+ */
+export interface SystemPrompt {
+  text: string;
+  tokens: number | null;
+  external: boolean;
+}
+const isSystemPrompt = (v: unknown): v is SystemPrompt =>
+  isObject(v) && typeof v.text === 'string' && (v.tokens === null || typeof v.tokens === 'number') && typeof v.external === 'boolean';
+
 /** A preview file's bytes, as the server typed them. */
 export interface PreviewFile {
   blob: Blob;
@@ -90,6 +102,9 @@ export const agentApi = {
     const type = res.headers.get('Content-Type') ?? '';
     return { blob: await res.blob(), type };
   },
+
+  /** What the server tells the model before a conversation, read-only (#625). */
+  systemPrompt: (id: string) => request<SystemPrompt>('GET', `api/conversations/${seg(id)}/system`, undefined, isSystemPrompt),
 
   skills: () => request<Skill[]>('GET', 'api/skills', undefined, isListOf<Skill>(isSkill)),
   createSkill: (s: { name: string; description: string; body: string }) => request<unknown>('POST', 'api/skills', s),

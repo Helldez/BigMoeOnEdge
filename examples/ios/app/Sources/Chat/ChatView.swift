@@ -13,6 +13,7 @@ struct ChatView: View {
 
     @State private var showConversations = false
     @State private var editing: ConversationItem?
+    @State private var showSystem = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,8 +27,14 @@ struct ChatView: View {
                     .accessibilityLabel("Conversations")
             }
             ToolbarItem(placement: .navigationBarTrailing) {
-                Button { chat.newChat() } label: { Image(systemName: "square.and.pencil") }
-                    .accessibilityLabel("New chat")
+                HStack {
+                    if chat.current != nil {
+                        Button { showSystem = true } label: { Image(systemName: "info.circle") }
+                            .accessibilityLabel("System prompt")
+                    }
+                    Button { chat.newChat() } label: { Image(systemName: "square.and.pencil") }
+                        .accessibilityLabel("New chat")
+                }
             }
         }
         .sheet(isPresented: $showConversations) {
@@ -35,6 +42,9 @@ struct ChatView: View {
         }
         .sheet(item: $editing) { item in
             EditMessageSheet(item: item)
+        }
+        .sheet(isPresented: $showSystem) {
+            if let id = chat.current?.id { SystemPromptSheet(conversation: id) }
         }
     }
 
@@ -417,6 +427,55 @@ struct ConversationsView: View {
                 TextField("Title", text: $newTitle)
                 Button("Save") { if let c = renaming { chat.rename(c.id, to: newTitle) } }
                 Button("Cancel", role: .cancel) {}
+            }
+        }
+    }
+}
+
+/// What the server tells the model before the conversation, read when opened: the text the next
+/// message sends, so nothing the model reads is hidden (#625). Read-only.
+struct SystemPromptSheet: View {
+    @EnvironmentObject private var engine: Engine
+    @Environment(\.dismiss) private var dismiss
+    let conversation: String
+    @State private var prompt: SystemPrompt?
+    @State private var error = ""
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Grid.s) {
+                    Text("What the engine tells the model before this conversation, exactly as it is sent. Apps that connect through the API send their own.")
+                        .font(.ui(13)).foregroundStyle(Palette.muted)
+                    if !error.isEmpty {
+                        Text(error).font(.ui(13)).foregroundStyle(Palette.warn)
+                    } else if let p = prompt {
+                        if p.external {
+                            Text("This conversation runs another agent program, which writes its own system prompt.").font(.ui(15))
+                        } else if p.text.isEmpty {
+                            Text("None: the model reads the conversation alone.").font(.ui(15))
+                        } else {
+                            Text(p.text).font(.system(size: 13, design: .monospaced)).textSelection(.enabled)
+                            if let n = p.tokens {
+                                Text("\(n) token\(n == 1 ? "" : "s") of the context").font(.ui(13)).foregroundStyle(Palette.muted)
+                            }
+                        }
+                    } else {
+                        ProgressView().frame(maxWidth: .infinity)
+                    }
+                }
+                .padding(Grid.m)
+            }
+            .background(Palette.surface)
+            .navigationTitle("System prompt")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Close") { dismiss() } }
+            }
+        }
+        .task {
+            do { prompt = try await engine.api.systemPrompt(conversation: conversation) } catch {
+                self.error = "Could not read the system prompt: \(error.localizedDescription)"
             }
         }
     }

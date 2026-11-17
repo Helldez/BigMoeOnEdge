@@ -97,6 +97,12 @@ Without a workspace the prompt tells the model to ask the person for a folder ra
 files some other way. The system prompt is the same for every round of a message and the
 conversation is only appended to, so the engine reuses the prompt its KV cache already holds.
 
+The server writes this prompt, so nothing in it is hidden from the person: `GET
+/api/conversations/<id>/system` answers it exactly as the next message sends it, with what it takes
+of the context, and every UI shows it read-only (#625). It is the engine's own text, not a setting:
+a client that wants its own system prompt sends it as a `system` message on the chat endpoints
+(server-api.md), which pass it to the model as the client wrote it.
+
 When a request no longer fits the context (the engine refuses it with `context_full`), the oldest
 long tool result is marked `shortened` and the round is asked again, one result at a time; a notice
 says it once. The person's messages are never dropped: when every result is short and it still does
@@ -310,6 +316,7 @@ All JSON; errors are `{"error", "code"}` as everywhere in the API. Times are Uni
 | `GET /api/conversations` | `[{id, title, workspace, mode, route, agent, state, created, updated, task}]`, newest first; `state` is `idle`, `running`, `waiting` (an approval) or `error` (the last run ended in one) |
 | `POST /api/conversations` | `{workspace?, mode?, route?, agent?, title?, items?}` → the conversation; another `agent` needs a `workspace`. `items`: `[{kind: "user" \| "assistant", text}]`, a conversation the UI kept before the server did |
 | `GET /api/conversations/<id>` | the conversation with its `items` |
+| `GET /api/conversations/<id>/system` | `{text, tokens, external}`: the system prompt the next message sends, exactly as sent (for a client on the network, the one its own run gets: no workspace). `tokens` is what it takes of the context, counted by the loaded model's tokenizer as `/tokenize` counts; `null` with no model ready or on a provider route. `external`: another agent program writes its own, and `text` is empty. `""` under `--chat-only` |
 | `PATCH /api/conversations/<id>` | `{title?, mode?, route?, workspace?, agent?}` → the conversation without items; `409 busy` for `workspace` or `route` while it runs, and for `agent` once it has items |
 | `DELETE /api/conversations/<id>` | `409 busy` while it runs |
 | `POST /api/conversations/<id>/messages` | `{text, think?, images?}` → `202 {item}`; the run goes on in the server and reports on `/api/events`. `409 busy` while one runs. `images`: up to 8 data URLs, kept on the item and shown to the model after the text (`400 no_vision` when the loaded model has no projector, server-api.md "Images") |

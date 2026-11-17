@@ -294,6 +294,22 @@ void register_agent_routes(httplib::Server & svr, const AgentRouteDeps & d) {
         if (hidden_from(req, c)) return refuse_remote(res);
         send_json(res, c);
     });
+    // What the server tells the model before the conversation (#625): read-only, exactly as sent.
+    // `tokens` is what it takes of the context, counted by the loaded model's tokenizer as /tokenize
+    // counts (null with no model ready, or for a conversation answered elsewhere: a provider counts
+    // with its own). Another agent program writes its own prompt, so there is none of ours to show.
+    svr.Get(R"(/api/conversations/([^/]+)/system)", [&d](const httplib::Request & req, httplib::Response & res) {
+        json c;
+        if (!d.agent->conversation(req.matches[1].str(), c))
+            return send_error(res, 404, "no such conversation", "not_found");
+        if (hidden_from(req, c)) return refuse_remote(res);
+        const bool external = c.value("agent", std::string(agent::k_builtin_agent)) != agent::k_builtin_agent;
+        const std::string text = external ? std::string() : d.agent->system_prompt(c, !local(req));
+        json tokens = nullptr;
+        if (!text.empty() && c.value("route", std::string("local")) == "local" && d.host)
+            d.host->with_session([&](const HostedSession & s) { tokens = s.tokenize(text, false, true).size(); });
+        send_json(res, json{{"text", text}, {"tokens", tokens}, {"external", external}});
+    });
     svr.Patch(R"(/api/conversations/([^/]+))", [&d](const httplib::Request & req, httplib::Response & res) {
         const std::string id = req.matches[1].str();
         json body;

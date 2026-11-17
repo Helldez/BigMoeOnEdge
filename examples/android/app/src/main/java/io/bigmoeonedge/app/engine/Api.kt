@@ -113,6 +113,8 @@ class Api(private val baseUrl: String, private val apiKey: String) : Conversatio
         send("POST", "/api/conversations/" + seg(id) + "/edit", ItemReducer.editBody(item, text, images), QUICK_MS)
 
     // A stop answers once the run has stopped: a generation ends at its next token.
+    /** What the server tells the model before conversation [id], read-only (#625): `text`, `tokens` (or null), `external`. */
+    fun systemPrompt(id: String): JSONObject = getJson("/api/conversations/" + seg(id) + "/system", QUICK_MS)
     fun stopConversation(id: String): JSONObject = send("POST", "/api/conversations/" + seg(id) + "/stop", null, SLOW_MS)
 
     private fun seg(s: String) = java.net.URLEncoder.encode(s, "UTF-8").replace("+", "%20")

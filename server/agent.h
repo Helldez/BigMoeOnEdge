@@ -167,6 +167,11 @@ public:
     std::vector<std::pair<Skill, bool>> skills(const std::string & workspace_path,
                                                std::vector<std::string> * warnings = nullptr) const;
 
+    // The system prompt a built-in conversation's next message is given, for a run a local client
+    // starts or a remote one (`remote`: no workspace). The server writes it, so the person can read it
+    // (#625): GET /api/conversations/<id>/system serves exactly this.
+    std::string system_prompt(const json & conv, bool remote) const;
+
     // Run a task now, as the scheduler would. False when it is already running or does not exist.
     Refusal run_task(const std::string & id);
     // A task was added, changed or removed: the scheduler looks again.
@@ -203,7 +208,6 @@ private:
     // The tools a round offers; `mcp` gets the MCP tools among them, by the name the model calls.
     std::vector<ChatTool>
     tools_for(const json & conv, bool remote, std::map<std::string, McpTool> * mcp = nullptr) const;
-    std::string system_prompt(const json & conv, bool remote) const;
 
     // ---- a conversation whose agent is another program (agent_external.cpp) ----
     std::string run_external(Run & run, const std::string & conv_id);

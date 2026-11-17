@@ -434,6 +434,12 @@ static void loop_tests() {
         }
         check(first.messages[0].content == r.messages[0].content && first.messages.size() < r.messages.size(),
               "rounds of one message share the system prompt and only append");
+        // What the person can read is what the model read (#625), and a remote client is shown the prompt
+        // its own run would get: no workspace.
+        check(rig->agent->system_prompt(rig->conv(c), false) == r.messages[0].content,
+              "the system prompt shown is the one sent");
+        check(rig->agent->system_prompt(rig->conv(c), true).find("No workspace") != std::string::npos,
+              "a remote client is shown the prompt of a run without the workspace");
     }
     {
         auto rig = std::make_unique<Rig>();
