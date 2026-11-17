@@ -28,6 +28,9 @@ class Prefs {
   textScale = $state<number>(((v) => (TEXT_SCALES.includes(v as never) ? v : 1))(Number(read('bmoe.textScale'))));
   sidebarCollapsed = $state(read('bmoe.sidebar') === 'collapsed');
   previewWidth = $state<number>(((v) => (v >= PREVIEW_MIN && v <= PREVIEW_MAX ? v : 520))(Number(read('bmoe.previewWidth'))));
+  // Reveal the table's advanced rows in the settings form. A UI preference only: showing a row
+  // never writes an engine value, so an untouched install still lets the plan choose everything.
+  showAdvanced = $state(read('bmoe.advanced') === 'on');
 
   setTheme(v: Theme): void {
     this.theme = v;
@@ -46,6 +49,10 @@ class Prefs {
   setPreviewWidth(v: number): void {
     this.previewWidth = Math.round(Math.min(PREVIEW_MAX, Math.max(PREVIEW_MIN, v)));
     write('bmoe.previewWidth', String(this.previewWidth));
+  }
+  setShowAdvanced(v: boolean): void {
+    this.showAdvanced = v;
+    write('bmoe.advanced', v ? 'on' : 'off');
   }
 
   /** Puts the choices on <html>: the theme as `data-theme` (absent = the system's), the text size. */

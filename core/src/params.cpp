@@ -1223,6 +1223,54 @@ std::vector<ParamDesc> build() {
             [](RunConfig & c) -> KvCacheType & { return c.cache_type_v; });
     }
     {
+        ParamDesc d = row("flash-attn", "Flash attention", G::Memory, L::Advanced,
+                          "Use flash attention: auto (llama.cpp's choice), on, or off. With a quantized value "
+                          "cache llama.cpp turns it on where the backend supports it, so off is only advisory "
+                          "there. Forcing it on is useful with a lossless f16 cache, whose auto path can pick "
+                          "the slower kernel on long prompts.");
+        d.type = ParamType::Choice;
+        d.value_hint = "auto|on|off";
+        d.choices = {{"auto", "Auto"}, {"on", "On"}, {"off", "Off"}};
+        d.get = [](const RunConfig & c) {
+            switch (c.flash_attn) {
+            case RunConfig::FlashAttn::On: return std::string("on");
+            case RunConfig::FlashAttn::Off: return std::string("off");
+            default: return std::string("auto");
+            }
+        };
+        d.set = [](RunConfig & c, const std::string & s, std::string & err) {
+            if (s == "auto") c.flash_attn = RunConfig::FlashAttn::Auto;
+            else if (s == "on") c.flash_attn = RunConfig::FlashAttn::On;
+            else if (s == "off") c.flash_attn = RunConfig::FlashAttn::Off;
+            else {
+                err = "expects auto, on or off, got '" + s + "'";
+                return false;
+            }
+            return true;
+        };
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("offload-kqv", "KV cache on device", G::Memory, L::Advanced,
+                          "Keep the K/Q/V ops and the KV cache on a device that holds layers (llama.cpp's default). "
+                          "Turn off where the link to the device is slower than the compute it saves.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--offload-kqv", "true"}, {"--no-offload-kqv", "false"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.offload_kqv; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("kv-unified", "Unified KV buffer", G::Memory, L::Advanced,
+                          "Share one attention buffer across sequences. llama.cpp's default is off; turning it on "
+                          "can help sequences with a long common prefix.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--kv-unified", "true"}, {"--no-kv-unified", "false"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.kv_unified; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("n-expert-used", "Active experts", G::Lossy, L::Advanced,
                           "Override the experts routed per token (top-k). Lower is faster but changes the "
                           "output. 0 = the model's own value.");
@@ -1400,6 +1448,18 @@ std::vector<ParamDesc> build() {
         d.flag.clear();
         d.switches = {{"--cache-prefill-cold", "true"}, {"--no-cache-prefill-cold", "false"}};
         bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.cache_prefill_cold; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("cache-prefill-floor", "Hold one prefill layer", G::Cache, L::Advanced,
+                          "Size an auto cache so it can hold one whole layer's experts, not only one decode "
+                          "token's working set. A wide prompt routes to nearly every expert of a layer, so "
+                          "without this floor the cache re-reads the layer it is computing. Off restores the "
+                          "token-cycle floor. Output is identical either way.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--cache-prefill-floor", "true"}, {"--no-cache-prefill-floor", "false"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.cache_prefill_floor; });
         t.push_back(d);
     }
     {

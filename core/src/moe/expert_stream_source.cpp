@@ -1,5 +1,7 @@
 #include "expert_stream_source.h"
+#include "bmoe/cache_sizing.h"
 #include "bmoe/log.h"
+#include "bmoe/span_merge.h"
 
 #include "row_stream.h"
 
@@ -99,6 +101,17 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         return false;
     }
 
+    // Prefill-aware floor, from model shape alone: the widest bound layer's whole expert set. A wide
+    // CPU prefill routes to the union of its tokens, so the decode token-cycle floor can leave the
+    // cache unable to keep the layer whose matmul is running. Zero when the option is off.
+    if (cfg.cache_prefill_floor) {
+        std::vector<size_t> per_layer((size_t) n_layer_, 0);
+        for (int il = 0; il < n_layer_; ++il)
+            if (layers_[il].bound) per_layer[(size_t) il] = entry_bytes(il);
+        prefill_floor_bytes_ = bmoe::prefill_layer_floor_bytes(per_layer.data(), n_layer_, (size_t) n_expert_,
+                                                              total_expert_bytes_);
+    }
+
     // Read pool: one reader per shard file, each owning a private fd + bounce per lane so concurrent
     // preads never contend, and the O_DIRECT request + its verify/fallback (per file — a shard set
     // could in principle straddle storage with different O_DIRECT behaviour). The dense-weights
@@ -122,8 +135,11 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         // Hard cap: the whole expert set, further capped by the user's ceiling when set.
         const size_t ceil = (size_t) std::max(0, cfg.cache_ceil_mb) * 1024ull * 1024ull;
         const size_t hard_cap = ceil > 0 ? std::min(ceil, total_expert_bytes_) : total_expert_bytes_;
-        const size_t min_budget =
+        size_t min_budget =
             std::min<size_t>((size_t) MoeStreamConfig::cache_min_mb * 1024ull * 1024ull, hard_cap);
+        // The prefill floor raises only the minimum. A device that can spare less still gets the
+        // token-cycle floor; the budget is clamped to the full set below, so this cannot overcommit.
+        if (prefill_floor_bytes_ > min_budget) min_budget = std::min(prefill_floor_bytes_, hard_cap);
         uint64_t avail = pio::mem_available_bytes();
         // Under anon/pinned the dense weights are ABOUT to move from reclaimable page cache into
         // buffers the kernel cannot take back (dense_.init runs below). At this moment the kernel
@@ -175,8 +191,19 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
                        " (cap %zu MiB)",
                        (unsigned long long) (avail / (1024 * 1024)), floor / (1024 * 1024), cache_max_ / (1024 * 1024),
                        hard_cap / (1024 * 1024));
+            if (prefill_floor_bytes_ > 0)
+                log_printf(LogLevel::Info, "cache auto — prefill floor holds one layer: %zu MiB",
+                           prefill_floor_bytes_ / (1024 * 1024));
         }
     }
+
+    // A hand-set budget below the prefill floor is legal and still lossless; it just re-reads the
+    // layer it is computing during a wide prompt. State the fact rather than overriding the choice.
+    if (prefill_floor_bytes_ > 0 && cache_max_ > 0 && cache_max_ < prefill_floor_bytes_)
+        log_printf(LogLevel::Warn,
+                   "cache %zu MiB is below one prefill layer (%zu MiB): a wide prompt will re-read layers; "
+                   "--cache-mb auto or a larger budget holds it",
+                   cache_max_ / (1024 * 1024), prefill_floor_bytes_ / (1024 * 1024));
 
     if (cache_max_ == 0) {
         // One shared slot per present projection, reused across layers (one layer computes
@@ -969,6 +996,61 @@ void ExpertStreamSource::release_entry_pages(int32_t id) {
         if (a1 > a0) pio::vm_evict((void *) a0, (size_t) (a1 - a0));
     }
 }
+
+// A batch chosen together: the single-entry path above is correct but issues one vm_evict per
+// projection per entry. A wide prefill evicts many entries of one layer at once, and their slices
+// are page-clipped spans of the same buffer, so sorting and folding them cuts the calls to the
+// number of disjoint runs. Batch-mates count as gone in the neighbour check, or the head/tail pages
+// they share would be kept for a "resident" neighbour that this same pass is evicting.
+void ExpertStreamSource::release_entry_pages(const std::vector<int32_t> & ids) {
+    if (ids.empty()) return;
+    std::vector<int32_t> sorted = ids;
+    std::sort(sorted.begin(), sorted.end());
+    std::vector<ByteRange> ranges;
+    {
+        std::lock_guard<std::mutex> lk(io_mtx_);
+        for (int32_t id : ids) {
+            disc_.forget(id);
+            const int il = id / n_expert_, e = id % n_expert_;
+            const auto live = [&](int x) {
+                if (x < 0 || x >= n_expert_) return false;
+                const int32_t xid = il * n_expert_ + x;
+                if (std::binary_search(sorted.begin(), sorted.end(), xid)) return false;
+                return cvalid_[xid] != 0 || spec_remaining_[xid] != 0;
+            };
+            const bool left = live(e - 1), right = live(e + 1);
+            for (int p = 0; p < ExpertLayout::max_slots; ++p) {
+                const uint64_t slice = layers_[il].proj[p].nb2;
+                if (slice == 0) continue;
+                char * s = (char *) lbuf_[p][il] + (uint64_t) e * slice;
+                const uintptr_t head0 = (uintptr_t) s & ~(uintptr_t) (page_ - 1);
+                const uintptr_t body0 =
+                    ((uintptr_t) s + pio::tensor_tail_slack() + page_ - 1) & ~(uintptr_t) (page_ - 1);
+                const uintptr_t body1 = ((uintptr_t) s + slice) & ~(uintptr_t) (page_ - 1);
+                const uintptr_t tail1 =
+                    ((uintptr_t) s + slice + pio::tensor_tail_slack() + page_ - 1) & ~(uintptr_t) (page_ - 1);
+                const uintptr_t a0 = left ? body0 : head0;
+                const uintptr_t a1 = right ? body1 : tail1;
+                if (a1 > a0) ranges.push_back({a0, a1});
+            }
+        }
+    }
+    for (const ByteRange & r : merge_ranges(std::move(ranges)))
+        pio::vm_evict((void *) r.begin, (size_t) (r.end - r.begin));
+}
+
+void ExpertStreamSource::evict_entries(const std::vector<int32_t> & ids) {
+    release_entry_pages(ids);
+    for (int32_t id : ids) {
+        ++evictions_;
+        ever_evicted_[id] = 1;
+        cvalid_[id] = 0;
+        cspec_[id] = 0;
+        cresident_ -= entry_bytes(id / n_expert_);
+        lru_unlink(id);
+    }
+}
+
 const void * ExpertStreamSource::resident_slice(int il, int e, int p, uint64_t & bytes) const {
     bytes = 0;
     if (cache_max_ == 0 || il < 0 || il >= n_layer_ || e < 0 || e >= n_expert_ || p < 0 ||
@@ -1010,45 +1092,61 @@ void ExpertStreamSource::freq_pass_check(int il) {
 
 void ExpertStreamSource::evict_to_budget(bool spare_current) {
     if (cresident_ <= cache_max_) return;
+    // Select every victim first, tracking the ledger locally, then release them in one coalesced
+    // pass. Releasing while walking the LRU issued up to three page syscalls per entry and could
+    // never merge neighbouring slices of the same layer. Selection order is unchanged: the LRU
+    // walk still follows cprev_, and the frequency sweep still takes the lowest scores first.
+    std::vector<int32_t> & victims = evict_victims_;
+    victims.clear();
+    size_t resident = cresident_;
     if (freq_half_life_ <= 0) {
         // LRU: the staged entries sit at the hot end, so the first spared tail ends the sweep.
         if (!(spare_current && cold_batch_)) {
-            while (cresident_ > cache_max_ && ctail_ != -1 && !(spare_current && cstamp_[ctail_] == cgen_))
-                evict_tail();
-            return;
+            for (int32_t id = ctail_; id != -1 && resident > cache_max_;) {
+                if (spare_current && cstamp_[id] == cgen_) break;
+                victims.push_back(id);
+                resident -= entry_bytes(id / n_expert_);
+                id = cprev_[id];
+            }
+        } else {
+            // A cold batch put its own misses at the tail: step over them (its matmul needs them)
+            // to the older entries behind, and stop at the batch's hot block like the plain sweep.
+            for (int32_t id = ctail_; id != -1 && resident > cache_max_;) {
+                const int32_t prev = cprev_[id];
+                if (cstamp_[id] != cgen_) {
+                    victims.push_back(id);
+                    resident -= entry_bytes(id / n_expert_);
+                } else if (cold_gen_[id] != cgen_) {
+                    break;
+                }
+                id = prev;
+            }
         }
-        // A cold batch put its own misses at the tail: step over them (its matmul needs them) to
-        // the older entries behind, and stop at the batch's hot block like the plain sweep does.
-        for (int32_t id = ctail_; id != -1 && cresident_ > cache_max_;) {
-            const int32_t prev = cprev_[id];
-            if (cstamp_[id] != cgen_)
-                evict_entry(id);
-            else if (cold_gen_[id] != cgen_)
-                break;
-            id = prev;
+    } else {
+        // Decayed frequency: the lowest scores go first. A tie (entries not used since a rescale
+        // took their scores to zero, a prefetched entry not yet hit) falls back to LRU order through
+        // the rank. Only as many as the overshoot can need are ordered.
+        std::vector<EvictCand> & cand = evict_cand_;
+        cand.clear();
+        int32_t rank = 0;
+        for (int32_t id = ctail_; id != -1; id = cprev_[id], ++rank)
+            if (!(spare_current && cstamp_[id] == cgen_)) cand.push_back({cfreq_[id], rank, id});
+        if (cand.empty()) return;
+        const auto colder = [](const EvictCand & a, const EvictCand & b) {
+            return a.score < b.score || (a.score == b.score && a.rank < b.rank);
+        };
+        const size_t over = resident - cache_max_;
+        const size_t need = std::min(cand.size(), over / std::max<size_t>(1, min_entry_bytes_) + 1);
+        std::partial_sort(cand.begin(), cand.begin() + (ptrdiff_t) need, cand.end(), colder);
+        for (size_t i = 0; i < cand.size() && resident > cache_max_; ++i) {
+            if (i == need) // the estimate fell short (entries of unequal size): order the rest too
+                std::sort(cand.begin() + (ptrdiff_t) i, cand.end(), colder);
+            const int32_t id = cand[i].id;
+            victims.push_back(id);
+            resident -= entry_bytes(id / n_expert_);
         }
-        return;
     }
-    // Decayed frequency: the lowest scores go first. A tie (entries not used since a rescale took
-    // their scores to zero, a prefetched entry not yet hit) falls back to LRU order through the
-    // rank. Only as many as the overshoot can need are ordered.
-    std::vector<EvictCand> & cand = evict_cand_;
-    cand.clear();
-    int32_t rank = 0;
-    for (int32_t id = ctail_; id != -1; id = cprev_[id], ++rank)
-        if (!(spare_current && cstamp_[id] == cgen_)) cand.push_back({cfreq_[id], rank, id});
-    if (cand.empty()) return;
-    const auto colder = [](const EvictCand & a, const EvictCand & b) {
-        return a.score < b.score || (a.score == b.score && a.rank < b.rank);
-    };
-    const size_t over = cresident_ - cache_max_;
-    const size_t need = std::min(cand.size(), over / std::max<size_t>(1, min_entry_bytes_) + 1);
-    std::partial_sort(cand.begin(), cand.begin() + (ptrdiff_t) need, cand.end(), colder);
-    for (size_t i = 0; i < cand.size() && cresident_ > cache_max_; ++i) {
-        if (i == need) // the estimate fell short (entries of unequal size): order the rest too
-            std::sort(cand.begin() + (ptrdiff_t) i, cand.end(), colder);
-        evict_entry(cand[i].id);
-    }
+    if (!victims.empty()) evict_entries(victims);
 }
 
 void ExpertStreamSource::evict_entry(int32_t id) {

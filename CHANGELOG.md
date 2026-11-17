@@ -4,6 +4,33 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.43.3] - 2026-11-17
+
+### Added
+- **Dense models get the engine's dense-weight residency policy and warm-up.** `--dense-weights warm|anon|pinned`
+  previously did nothing without MoE streaming: the policy lived inside the expert source, which a dense
+  model never starts. A non-MoE run now captures its weight leaves once at load and applies the chosen
+  residency (warm faults them in, anon/pinned copy them out of the mapping and hand the page cache back).
+  `--dense-weights mmap` keeps the old behaviour. Output is unchanged.
+- **Flash attention, KV placement and unified-KV are now choices**: `--flash-attn auto|on|off`,
+  `--offload-kqv` / `--no-offload-kqv`, `--kv-unified` / `--no-kv-unified`. Defaults keep llama.cpp's
+  behaviour. Forcing flash on with a lossless f16 cache is the intended dense-model win, where `auto`
+  can pick the slower attention kernel on a long prompt.
+- **An auto expert cache can now hold a whole prefill layer.** `--cache-prefill-floor` (default on)
+  raises the auto budget's minimum to the widest bound layer's full expert set, so a wide CPU prompt
+  no longer evicts and re-reads the layer whose matmul is running. An explicit `--cache-mb` below the
+  floor warns rather than being overridden; output is identical either way.
+
+### Changed
+- **Eviction coalesces its page-release ranges.** A sweep selects all victims before releasing them
+  and folds their per-projection spans into one `vm_evict` per disjoint run, instead of up to three
+  calls per evicted expert — most visible when a wide prefill evicts many experts of one layer.
+- **`--auto` now picks the swept thread count for dense models too**, not only for streamed ones. A dense
+  model left at the 4-thread default on a many-core host measured 26 tok/s where 16 threads gave 47.5.
+- **`FileReader` reads fully aligned requests straight into the destination**, skipping the bounce
+  and its `memcpy` when file offset, length and buffer are all block-aligned. The gguf-misaligned
+  expert path keeps the bounce; see the blocked item in [roadmap.md](docs/roadmap.md).
+
 ## [0.43.2] - 2026-11-16
 
 ### Changed

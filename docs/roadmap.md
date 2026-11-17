@@ -465,9 +465,10 @@ phone, a Windows machine and a discrete card the archives now carry a CUDA modul
   addresses everywhere while holding a fraction of it.
 - **A prefill-aware cache floor.** Each expert is already read at most once per ubatch (the `seen_`
   guard in the streamer), so the read-once property that wave-partitioned prefill exists to provide
-  is not missing. What is missing is a guarantee that the cache can hold one layer's ubatch working
-  set: the derived floor is the *decode* token cycle, and a wide prefill batch touches many more
-  experts per layer than a token does.
+  is not missing. What was missing was the guarantee that the cache can hold one layer's ubatch
+  working set: the derived floor was the *decode* token cycle, and a wide prefill batch touches many
+  more experts per layer than a token does. `--cache-prefill-floor` (on by default) now raises the
+  auto budget's minimum to the widest layer's full expert set; see [cache-sizing.md](cache-sizing.md).
 - **The prefill device, anywhere but where it was chosen.** `--auto` now picks it: it measures the
   model's matmul at prefill width on the host and on every device, and arms the fastest one that
   reproduces the host's result, wins by a margin and whose slots fit the memory ledger

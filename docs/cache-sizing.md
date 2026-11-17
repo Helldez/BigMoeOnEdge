@@ -8,6 +8,21 @@ the process (this is exactly why Gemma cannot use a 4000 MiB cache on an 11 GB p
 [benchmarks.md](benchmarks.md)). `--cache-mb auto` removes the guess: the engine sizes the cache to
 the device once at load and holds that budget for the whole run.
 
+## The prefill floor: one whole layer, not one token
+
+The 1500 MiB minimum in `auto` is a *decode* figure: one token's worst-case cycle over the whole
+stack. A wide CPU prefill is a different shape. A ubatch of hundreds or thousands of tokens routes
+to the union of all of them, so it touches nearly every expert of each layer as it walks the stack.
+The cache stages one layer at a time, so the budget only has to hold the **widest single layer's**
+full expert set to keep that layer resident while its matmul runs; holding the whole stack is not
+needed.
+
+`--cache-prefill-floor` (on by default) raises the auto budget's minimum to that layer's bytes
+(`entry bytes x n_expert`, capped at the full expert set) before the available-RAM and ceiling
+clamps are applied. It never lowers a budget and never lowers the decode cycle floor. A hand-set
+`--cache-mb` below the layer floor is still honoured — the runtime logs a warning instead, because
+the result is only slower, not different. See the prefill-floor item in [roadmap.md](roadmap.md).
+
 ## The cliff: below one token cycle LRU hits 0 %, not "low"
 
 This section describes LRU (`--cache-half-life 0`). The default eviction since 0.40.2 is decayed

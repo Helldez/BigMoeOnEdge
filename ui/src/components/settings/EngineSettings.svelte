@@ -5,6 +5,7 @@
   import { commandLine } from '../../lib/format';
   import { decisionsByKnob, planDecisions } from '../../lib/plan';
   import { resettableKeys, setByYou, settingsCards } from '../../lib/schema';
+  import { prefs } from '../../stores/prefs.svelte';
   import { router } from '../../stores/router.svelte';
   import { server } from '../../stores/server.svelte';
   import { settings } from '../../stores/settings.svelte';
@@ -21,7 +22,7 @@
   // What the person set is one card of its own, form or not, so it is all in view and resettable;
   // the group cards hold the rest of the form.
   let mine = $derived(setByYou(params, userKeys));
-  let cards = $derived(settingsCards(params, userKeys));
+  let cards = $derived(settingsCards(params, userKeys, prefs.showAdvanced));
   const MINE = '__set_by_you';
 
   // Open cards, keyed by group: every card starts closed, so the page opens on the groups alone.
@@ -80,6 +81,17 @@
 
 <div class="head">
   <p class="muted lead">{t('settings.engine.lead')}</p>
+  <label class="advanced">
+    <input
+      id="show-advanced"
+      type="checkbox"
+      class="switch"
+      role="switch"
+      checked={prefs.showAdvanced}
+      onchange={(e) => prefs.setShowAdvanced(e.currentTarget.checked)}
+    />
+    <span class="muted">{t('settings.advanced')}</span>
+  </label>
   <span class="muted saving" aria-live="polite">{settings.saving ? t('settings.saving') : ''}</span>
   {#if resettable.length > 0}
     {#if confirmReset}
@@ -185,6 +197,13 @@
   .lead {
     flex-basis: 100%;
     margin: 0 0 var(--s2);
+  }
+  .advanced {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
+    font-size: 0.8125rem;
   }
   .saving {
     margin-right: auto;
