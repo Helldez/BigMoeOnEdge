@@ -24,7 +24,9 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace bmoe {
@@ -135,6 +137,22 @@ struct PrefillProgress {
     double seconds = 0.0;
 };
 
+// One request's own sampling, over the session's (SamplingConfig): a field left unset keeps the
+// session's value. A request that sets nothing here samples as the session does. temp <= 0 is greedy.
+// The penalties and the bias are applied before the cutoffs, as llama.cpp's sampler chain applies
+// them; a bias of -INFINITY forbids a token. With speculation armed (SpecConfig) the session decodes
+// greedily, since a draft is accepted by the target's argmax, and a request's sampling is not applied.
+struct RequestSampling {
+    std::optional<float> temp, top_p, min_p;
+    std::optional<int> top_k;
+    std::optional<uint32_t> seed;
+    float repeat_penalty = 1.0f;    // 1: off
+    float frequency_penalty = 0.0f; // 0: off
+    float presence_penalty = 0.0f;  // 0: off
+    int penalty_last_n = 64;        // how many recent tokens the penalties look back over (-1: the context)
+    std::vector<std::pair<int32_t, float>> logit_bias;
+};
+
 // Per-prompt request. clear_kv=true (the default) makes each prompt independent while the
 // expert cache stays warm; clear_kv=false continues the KV cache for multi-turn chat.
 struct GenerateRequest {
@@ -180,6 +198,20 @@ struct GenerateRequest {
     // each piece decoded, on the generating thread. Nullable. A front-end shows it while a long
     // prompt goes in, the stretch of a turn with no token to show.
     std::function<void(const PrefillProgress &)> on_prefill{};
+    // This request's sampling over the session's (RequestSampling); unset samples as the session does.
+    std::optional<RequestSampling> sampling{};
+    // Text that ends the answer where it first appears; the answer stops before it (`stop` above is
+    // the caller's cancel flag, not this). While the text
+    // generated so far ends partway into one, that part is held back from TokenMetrics::text, so a
+    // streamed answer never shows a stop it then takes back.
+    std::vector<std::string> stop_text{};
+    // A GBNF grammar the whole answer must follow (rule `root`), in llama.cpp's grammar language.
+    // Exclusive of `tools` and `json_schema`, which build their own. The model is asked not to
+    // reason first; a token the grammar cannot take fails the turn, as for a response schema.
+    std::string grammar{};
+    // Report the top n_probs candidates and the chosen token's log-probability on every token
+    // (TokenMetrics::top_logprobs). 0: none.
+    int n_probs = 0;
 };
 
 // Teacher-forced quality measurement. The text is fixed, so every cell scores the SAME token

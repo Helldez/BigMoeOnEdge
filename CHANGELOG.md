@@ -69,6 +69,16 @@ Semantic Versioning.
   routes. `/v1/messages/count_tokens` now counts with the loaded model's template and tokenizer
   instead of estimating from the length. Measured with llama.cpp's own server test suite run
   against bmoe-server: the routes above pass its tokenize, health, metrics and template tests.
+- **A request samples as it asks.** The chat endpoint reads `temperature`, `top_p`, `top_k`, `min_p`,
+  `seed`, the penalties (`presence_penalty`, `frequency_penalty`, `repeat_penalty`, `repeat_last_n`),
+  `logit_bias`, `stop`, a GBNF `grammar` and `logprobs`/`top_logprobs` (and llama-server's
+  `n_probs`); Messages reads `temperature`, `top_p`, `top_k` and `stop_sequences` (answering
+  `stop_reason: "stop_sequence"`), Responses `temperature` and `top_p`. They were accepted and not
+  read: a client asking for `stop` got text past it. A field left out keeps the session's setting,
+  and a request that names none decodes exactly as before. A stop is held back from the stream while
+  it forms, so a client never sees one the server then takes back. With speculation armed the
+  session stays greedy (a draft is accepted by the model's argmax) and a request's sampling is read
+  but not applied; `stop`, `grammar` and `logprobs` still are. `n` above 1 is refused with `400`.
 
 ## [0.43.2] - 2026-11-16
 

@@ -1401,11 +1401,20 @@ void register_routes(httplib::Server & svr, App & app) {
         const auto dump = [](const json & j) { return j.dump(-1, ' ', false, json::error_handler_t::replace); };
 
         if (!cr.stream) {
+            // The answer's logprobs come one token at a time, and only a token's own event carries them.
+            json logprobs = json::array();
+            const auto collect = [&](const TokenMetrics & m) {
+                if (m.has_logprobs) logprobs.push_back(logprob_entry(m, cr.turn.top_logprobs));
+                return true;
+            };
             // Waiting for a turn, the only sign of a client that left is its closed connection.
-            ChatOutcome out = app.host.chat(cr.turn, nullptr, [&req] { return !req.is_connection_closed(); });
+            ChatOutcome out =
+                app.host.chat(cr.turn, cr.turn.logprobs ? std::function<bool(const TokenMetrics &)>(collect) : nullptr,
+                              [&req] { return !req.is_connection_closed(); });
             if (out.status != 200) return send_error(res, out.status, out.error, out.code);
             ensure_tool_call_ids(out.result.tool_calls, meta.id);
             json body = completion_json(meta, out.result, finish_reason(out.result, out.n_predict));
+            if (cr.turn.logprobs) body["choices"][0]["logprobs"] = json{{"content", logprobs}};
             body["timings"] = timings_json(out.result.summary);
             return send_json(res, body);
         }
@@ -1458,7 +1467,16 @@ void register_routes(httplib::Server & svr, App & app) {
                         delta["reasoning_content"] = reasoning;
                         extra = json{{"reset", true}};
                     }
-                    if (text_moved || first) chunk(delta, nullptr, extra);
+                    if (m.has_logprobs) {
+                        // A token's logprobs ride on its own chunk, text or none (the parser may hold it).
+                        json c = chunk_json(meta, delta, nullptr);
+                        if (!extra.is_null()) c["bmoe"] = extra;
+                        c["choices"][0]["logprobs"] =
+                            json{{"content", json::array({logprob_entry(m, cr.turn.top_logprobs)})}};
+                        write("data: " + dump(c) + "\n\n");
+                    } else if (text_moved || first) {
+                        chunk(delta, nullptr, extra);
+                    }
                     first = false;
                     sent_text = text;
                     sent_reasoning = reasoning;

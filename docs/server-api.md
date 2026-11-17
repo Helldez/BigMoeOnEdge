@@ -465,10 +465,19 @@ Request fields that are read:
 | `think`, `chat_template_kwargs.enable_thinking`, `reasoning_effort` | thinking on or off, most specific first: this server's own `think` (bool), the template argument llama.cpp clients send, then `reasoning_effort`, where `"none"` turns it off and any other level turns it on. Default: on, unless the person set the `think` parameter (a launch flag or a saved setting), which then holds. The apps' conversations do not use this route and keep `think` off by default; a client that never asks gets the model's own reasoning, as from a llama.cpp server. |
 | `response_format` | `{"type":"json_object"}` requests JSON object output; `{"type":"json_schema","json_schema":{"schema":{...}}}` supplies a schema. Omitted, `null` or `{"type":"text"}` leaves the top-level `json_schema` unchanged; without one, output is ordinary text. See the support boundary below. |
 | `json_schema` | llama.cpp-compatible top-level schema for this request. A JSON object supplies schema keywords; `null` or omission adds no constraint. An empty object defaults to `{"type":"object"}`. |
+| `temperature`, `top_p`, `top_k`, `min_p`, `seed` | this request's sampling. A field left out keeps the session's (the `temp`, `top-k`, `top-p` and `seed` parameters); `temperature: 0` is greedy, `seed: -1` a fresh seed. A request that sets none samples exactly as the session does. Bounds: `temperature` 0 to 100, `top_p` and `min_p` 0 to 1, `top_k` a non-negative integer. |
+| `presence_penalty`, `frequency_penalty`, `repeat_penalty`, `repeat_last_n` | the penalties of llama.cpp's sampler (-2 to 2, -2 to 2, above 0, and the tokens looked back over: default 64, `-1` the whole context), counted over the prompt too. Off by default. |
+| `logit_bias` | `{"<token id>": bias}` (OpenAI's) or `[[id, bias], ...]` (llama-server's); a bias of `false` forbids the token. Ids only: a token named by its text is refused. An id outside the vocabulary is a `400`. |
+| `stop` | a string or a list of them: the answer stops before the first that appears (`finish_reason: "stop"`). While the text ends partway into one, that part is held back from the stream, so a client never sees a stop the server then takes back. Matched on the generated text as written, reasoning and call syntax included. |
+| `grammar` | a GBNF grammar (llama.cpp's grammar language, rule `root`) the whole answer must follow. Not with `tools` or `response_format`, which build their own (`400`). The model is asked not to reason first; a grammar that does not parse is a `400`. |
+| `logprobs`, `top_logprobs` (or llama-server's `n_probs`) | each token's log-probability and up to 20 candidates at its position, from the model's own distribution before sampling, in `choices[0].logprobs.content` (`token`, `logprob`, `bytes`, `top_logprobs` with `id`, `token`, `logprob`, `bytes`). Streamed, each token's chunk carries its own. |
+| `n` | must be 1 (or absent): one choice per request. |
 
-Ignored, because the session fixes them: `model`, `temperature`, `top_p`, `seed` and every
-other sampling field. Sampling is configured with the `temp`, `top-k`, `top-p` and `seed`
-parameters. An audio or file content part is refused with `400` rather than dropped.
+`model` is not read: the loaded model answers. With speculation armed (`mtp`, or the n-gram
+drafter) the session decodes greedily, since a draft is accepted by the model's own argmax: there,
+a request's sampling fields are read and not applied (said once in the log), while `stop`,
+`grammar` and `logprobs` still are. An audio or file content part is refused with `400` rather than
+dropped.
 
 **Images.** A model loaded with its projector reads them (`GET /api/info` says so: `model.vision`,
 and `model.projector` names the file). The projector is the `mmproj` GGUF the model's own conversion
@@ -619,8 +628,7 @@ llama-server's `timings`: `cache_n` (prompt tokens the context held), `prompt_n`
 
 The route answers at `/chat/completions` too, as llama-server's does.
 
-Not implemented: `/v1/completions`, `/v1/embeddings`, `stop`, `n` above 1, and per-request
-sampling.
+Not implemented: `/v1/completions`, `/v1/embeddings`, and `n` above 1.
 
 ### Sizing the context for a client
 
@@ -688,8 +696,9 @@ each agent at the server. What they share:
   and the prompt still matches the KV.
 - **Images** are read as on the chat endpoint (Images, above): inline as base64, on a model loaded
   with its projector. **Files** are refused with `400` rather than dropped.
-- **Ignored**: `model` (the loaded one answers), `temperature`, `top_p`, `top_k` and every other
-  sampling field, as on the chat endpoint, and the fields that only mean something to a hosted
+- **Sampling**: `temperature` and `top_p` on both, and `top_k` on Messages, are this request's, as
+  on the chat endpoint (with its bounds, and its rule under speculation).
+- **Ignored**: `model` (the loaded one answers), and the fields that only mean something to a hosted
   service (prompt caching, metadata, `store`, `include`, `prompt_cache_key`, `parallel_tool_calls`).
 
 ### `POST /v1/messages`
@@ -705,14 +714,16 @@ The Anthropic Messages API. Request fields that are read:
 | `max_tokens` | the budget, read as `max_tokens` on the chat endpoint. Required by the protocol; absent, the `n-predict` parameter. |
 | `thinking` | `{type: "enabled"}` or `"adaptive"` turns thinking on, `"disabled"` off; absent, on unless the person set the `think` parameter. `budget_tokens` and `display` are not read. |
 | `output_config.format` | `{type: "json_schema", schema}`: the answer must match the schema, as `response_format` on the chat endpoint. |
+| `temperature`, `top_p`, `top_k` | this request's sampling, as on the chat endpoint. |
+| `stop_sequences` | the answer stops before the first that appears, as `stop` on the chat endpoint; `stop_reason` is then `stop_sequence` and `stop_sequence` names it. |
 | `stream` | stream the answer as events. |
 
-Also accepted and not read: `stop_sequences` (the engine has no stop strings), `metadata`,
+Also accepted and not read: `metadata`,
 `cache_control`, `context_management`, `output_config.effort`.
 
 Non-streaming response: a `message` with `content` blocks in order, a `thinking` block (with an
 empty `signature`: a local model has none to give), a `text` block, then a `tool_use` block per call
-with its `input` as an object; `stop_reason` `end_turn`, `max_tokens` or `tool_use` (a cancelled
+with its `input` as an object; `stop_reason` `end_turn`, `max_tokens`, `tool_use` or `stop_sequence` (a cancelled
 turn is `end_turn`); `usage` with `input_tokens` (the part of the prompt prefilled for this turn),
 `cache_read_input_tokens` (the part the KV already held) and `output_tokens`; and `bmoe.summary`.
 
@@ -748,6 +759,7 @@ state they name; `store` itself is accepted and not read. Request fields that ar
 | `max_output_tokens` | the budget, read as `max_tokens` on the chat endpoint. |
 | `reasoning.effort` | `"none"` turns thinking off, any other level on; absent, on unless the person set the `think` parameter. |
 | `text.format` | `{type: "json_schema", schema}` or `{type: "json_object"}` constrains the answer, as `response_format` on the chat endpoint. |
+| `temperature`, `top_p` | this request's sampling, as on the chat endpoint. |
 | `stream` | stream the answer as events. |
 
 Non-streaming response: a `response` object with `status` `completed`, or `incomplete` with
