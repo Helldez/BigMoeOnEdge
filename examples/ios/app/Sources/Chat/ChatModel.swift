@@ -21,6 +21,8 @@ final class ChatModel: ObservableObject {
     @Published private(set) var conversations: [ConversationSummary] = []
     /// The open conversation; nil for a new chat not sent yet.
     @Published private(set) var current: ConversationSummary?
+    /// A new chat's system prompt, sent when its first message makes the conversation.
+    @Published private(set) var draftSystem = ""
     @Published private(set) var transcript: Transcript?
     @Published private(set) var loadingConversation = false
     /// A message on its way to the server: Send waits for its answer.
@@ -99,8 +101,13 @@ final class ChatModel: ObservableObject {
 
     // MARK: conversations
 
+    /// The system prompt the person set: the open conversation's, else the new chat's.
+    var system: String { current?.system ?? draftSystem }
+
     func newChat() {
         current = nil
+        // A system prompt is the conversation's own: a new chat starts without one, as llama.cpp's web UI does.
+        draftSystem = ""
         transcript = nil
         decisions = []
         error = nil
@@ -142,6 +149,24 @@ final class ChatModel: ObservableObject {
         }
     }
 
+    /// The person's own system prompt for the open conversation, or the new chat's until its first
+    /// message. Answers whether it was kept; `error` says why when it was not.
+    func setSystem(_ text: String) async -> Bool {
+        guard let id = current?.id else {
+            draftSystem = text
+            return true
+        }
+        do {
+            let c = try await api.setSystemPrompt(id: id, text: text)
+            if current?.id == id { current?.system = c.system }
+            if let i = conversations.firstIndex(where: { $0.id == id }) { conversations[i].system = c.system }
+            return true
+        } catch {
+            self.error = Self.turnError(error)
+            return false
+        }
+    }
+
     func rename(_ id: String, to title: String) {
         Task {
             try? await api.renameConversation(id: id, title: title)
@@ -179,7 +204,8 @@ final class ChatModel: ObservableObject {
                 if let c = current {
                     id = c.id
                 } else {
-                    let made = try await api.createConversation()
+                    let made = try await api.createConversation(system: draftSystem)
+                    draftSystem = ""
                     id = made.summary.id
                     current = made.summary
                     transcript = Transcript(conversation: id, items: made.items)

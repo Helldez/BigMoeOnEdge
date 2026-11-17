@@ -227,4 +227,18 @@ final class ConversationTests: XCTestCase {
         XCTAssertEqual(store.list().count, 1, "nothing is lost on a server that ignores items")
         XCTAssertEqual(server.deleted, ["srv1"], "the empty conversation it made is removed again")
     }
+
+    // The system prompt is shown as the server sent it, with its cost when a model counted it (#625).
+    func testSystemPromptReadsTextTokensAndExternal() throws {
+        let p = SystemPrompt(try JSON(parsing: #"{"text":"You are a coding agent.\n\nBe brief.","own":"Be brief.","tokens":153,"external":false}"#))
+        XCTAssertEqual(p.text, "You are a coding agent.\n\nBe brief.")
+        XCTAssertEqual(p.own, "Be brief.")
+        XCTAssertEqual(p.added, p.text)
+        XCTAssertEqual(SystemPrompt(try JSON(parsing: #"{"text":"Be brief.","own":"Be brief.","tokens":3,"external":false}"#)).added, "")
+        XCTAssertEqual(ConversationSummary(try JSON(parsing: #"{"id":"c1","system":"Be brief."}"#)).system, "Be brief.")
+        XCTAssertEqual(p.tokens, 153)
+        XCTAssertFalse(p.external)
+        XCTAssertNil(SystemPrompt(try JSON(parsing: #"{"text":"x","tokens":null,"external":false}"#)).tokens)
+        XCTAssertTrue(SystemPrompt(try JSON(parsing: #"{"text":"","tokens":null,"external":true}"#)).external)
+    }
 }

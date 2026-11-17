@@ -17,12 +17,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.*
@@ -35,6 +37,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
@@ -89,6 +92,7 @@ fun ChatScreen(modifier: Modifier = Modifier, nav: ChatNav) {
     val scope = rememberCoroutineScope()
     var confirmDelete by remember { mutableStateOf<ConversationSummary?>(null) }
     var renaming by remember { mutableStateOf<ConversationSummary?>(null) }
+    var showSystem by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { Chat.refreshConversations() }
 
     ModalNavigationDrawer(
@@ -172,6 +176,7 @@ fun ChatScreen(modifier: Modifier = Modifier, nav: ChatNav) {
                     IconButton(onClick = { scope.launch { drawer.open() } }) { Icon(Icons.Filled.Menu, contentDescription = "Conversations") }
                 },
                 actions = {
+                    IconButton(onClick = { showSystem = true }) { Icon(Icons.Filled.Info, contentDescription = "System prompt") }
                     if (chat.open != null) {
                         IconButton(onClick = { Chat.newConversation() }) { Icon(Icons.Filled.Add, contentDescription = "New chat") }
                     }
@@ -193,6 +198,7 @@ fun ChatScreen(modifier: Modifier = Modifier, nav: ChatNav) {
             dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } },
         )
     }
+    if (showSystem) SystemPromptDialog(chat.open?.id, chat.system) { showSystem = false }
     renaming?.let { c ->
         var title by remember(c.id) { mutableStateOf(c.title) }
         AlertDialog(
@@ -203,6 +209,79 @@ fun ChatScreen(modifier: Modifier = Modifier, nav: ChatNav) {
             dismissButton = { TextButton(onClick = { renaming = null }) { Text("Cancel") } },
         )
     }
+}
+
+/**
+ * The system prompt of conversation [id] (#625), or of the new chat when [id] is null: the person's
+ * own, written here, and what the model reads before the conversation, exactly as the next message
+ * sends it. Without a folder the person's text is all the model gets, as in llama.cpp's web UI.
+ */
+@Composable
+private fun SystemPromptDialog(id: String?, current: String, onDismiss: () -> Unit) {
+    var prompt by remember(id) { mutableStateOf<io.bigmoeonedge.app.engine.SystemPrompt?>(null) }
+    var own by remember(id) { mutableStateOf(current) }
+    var error by remember(id) { mutableStateOf("") }
+    var saving by remember { mutableStateOf(false) }
+    var reload by remember { mutableStateOf(0) }
+    LaunchedEffect(id, reload) {
+        if (id == null) return@LaunchedEffect
+        Engine.systemPrompt(id).onSuccess {
+            prompt = it
+            own = it.own
+        }.onFailure { error = "Could not read the system prompt: ${it.message}" }
+    }
+    val p = prompt
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("System prompt") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (p?.external == true) {
+                    Text("This conversation runs another agent program, which writes its own system prompt.", fontSize = 13.sp)
+                } else {
+                    Text(
+                        "Instructions the model reads before this conversation. Leave it empty for none.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedTextField(
+                        value = own,
+                        onValueChange = { own = it },
+                        enabled = !saving,
+                        placeholder = { Text("For example: answer briefly, in plain words.") },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 3,
+                        maxLines = 10,
+                    )
+                    if (error.isNotEmpty()) Text(error, fontSize = 13.sp, color = warnColor())
+                    if (p != null && p.added.isNotEmpty()) {
+                        Text("What the model reads, with the folder's agent lines first:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(p.added, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                    }
+                    p?.tokens?.let {
+                        Text("$it token${if (it == 1) "" else "s"} of the context", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            if (p?.external != true) {
+                TextButton(enabled = own != current && !saving, onClick = {
+                    saving = true
+                    error = ""
+                    Chat.setSystem(own) { ok ->
+                        saving = false
+                        when {
+                            !ok -> error = "Could not save the system prompt: ${Chat.state.value.error.orEmpty()}"
+                            id == null -> onDismiss()
+                            else -> reload++
+                        }
+                    }
+                }) { Text("Save") }
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+    )
 }
 
 @Composable

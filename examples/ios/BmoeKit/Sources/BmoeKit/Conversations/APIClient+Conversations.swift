@@ -9,9 +9,10 @@ extension APIClient: ConversationImporting {
         ConversationSummary.list(try await get("/api/conversations", timeout: Self.quick))
     }
 
-    public func createConversation(title: String? = nil) async throws -> ServerConversation {
+    public func createConversation(title: String? = nil, system: String? = nil) async throws -> ServerConversation {
         var body: [String: JSON] = [:]
         if let title, !title.isEmpty { body["title"] = .string(title) }
+        if let system, !system.isEmpty { body["system"] = .string(system) }
         return ServerConversation(try await send("POST", "/api/conversations", .object(body), timeout: Self.quick))
     }
 
@@ -25,6 +26,11 @@ extension APIClient: ConversationImporting {
 
     public func renameConversation(id: String, title: String) async throws {
         _ = try await send("PATCH", "/api/conversations/" + Self.escape(id), ["title": .string(title)], timeout: Self.quick)
+    }
+
+    /// The person's own system prompt for a conversation; "" takes it away. `409 busy` while it runs.
+    public func setSystemPrompt(id: String, text: String) async throws -> ConversationSummary {
+        ConversationSummary(try await send("PATCH", "/api/conversations/" + Self.escape(id), ["system": .string(text)], timeout: Self.quick))
     }
 
     public func deleteConversation(id: String) async throws {

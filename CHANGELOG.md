@@ -6,6 +6,15 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+- **A system prompt of your own, per conversation, on every UI** (#625). A button in the
+  conversation's header (on a new chat too) opens a field for the instructions the model reads before
+  the conversation, as llama.cpp's web UI has: without a folder they are the whole system prompt, with
+  one they follow the agent's lines. Below it, what the model reads exactly as sent and the tokens it
+  takes. On the API it is the conversation's `system` (POST and PATCH `/api/conversations`, at most
+  8 KiB), and `GET /api/conversations/<id>/system` answers the prompt as sent with the person's part
+  as `own`. The web UI and desktop app, Android and iOS.
+
 ### Fixed
 - **A chat without a folder is plain chat again.** A conversation with no workspace still got the
   agent's system prompt ("You are a coding agent…", the mode, the skills, "end with what you did and

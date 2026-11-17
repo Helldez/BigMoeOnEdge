@@ -392,13 +392,15 @@ std::vector<std::pair<Skill, bool>> Agent::skills(const std::string & workspace_
 // ---- requests to the model ----
 
 std::string Agent::system_prompt(const json & conv, bool remote) const {
-    // Plain chat: the model as it is, with nothing the person did not write. A conversation that can
+    // Plain chat: the model as it is, with nothing the person did not write (their own system prompt,
+    // when they set one). A conversation that can
     // reach no folder (none chosen, or a request from beyond loopback, which file tools refuse) is
     // one, like llama.cpp's own web UI, whose chat sends no prompt and no tool until the person adds
     // them: an agent prompt there only spends prefill and thinking on tools the conversation cannot
     // use, and bends every answer into a work report.
+    const std::string own = conv.value("system", std::string());
     const std::string ws = remote ? std::string() : workspace_path(conv);
-    if (!d_.tools || ws.empty()) return "";
+    if (!d_.tools || ws.empty()) return own;
     // Short on purpose: every token here is prefilled on every new conversation, and a small model
     // follows a few plain rules better than many. What each tool does is in its own definition.
     std::string s = "You are a coding agent working for the person at this computer. Today is " + today() +
@@ -421,6 +423,8 @@ std::string Agent::system_prompt(const json & conv, bool remote) const {
          "did and what is left.";
     const std::string project = agents_md(ws);
     if (!project.empty()) s += "\n\nThe workspace's AGENTS.md:\n" + project;
+    // The person's own instructions last, so they read as the latest word on the agent's.
+    if (!own.empty()) s += "\n\n" + own;
     return s;
 }
 

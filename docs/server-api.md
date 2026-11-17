@@ -863,6 +863,15 @@ their state and tools (to a client on loopback; `[]` to one on the network). A s
 chat, sent to the model with no system prompt and no tools, as before the agent, and adding a
 workspace or a task is `409` with `code: "chat_only"`. A UI reads this and shows only what works.
 
+**The system prompt.** A conversation's `system` is the person's own system prompt, set on `POST
+/api/conversations` or `PATCH /api/conversations/<id>` (`""` for none, at most 8 KiB, `409 busy`
+while a run goes): the whole prompt in a conversation with no folder, after the agent's lines in one
+with a folder. `GET /api/conversations/<id>/system` answers what the model reads before the
+conversation, exactly as sent (`text`), the person's part (`own`), and `tokens`, its size counted by
+the loaded model's tokenizer (the count [`/tokenize`](#llama-server-compatibility) gives; `null` with
+no model ready or on a provider route). A client of `/v1/chat/completions`, `/v1/messages`
+(`system`) or `/v1/responses` (`instructions`) sends its own, which reaches the model as written.
+
 **Runs.** `POST /api/conversations/<id>/messages` answers `202 {item}` as soon as the person's item
 is stored; everything after that arrives on `/api/events` (`conversation`, `item`, `delta`) and is
 in the stored conversation. A UI that reconnects reads `GET /api/conversations/<id>`. An approval

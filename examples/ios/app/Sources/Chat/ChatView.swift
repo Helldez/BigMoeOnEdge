@@ -13,6 +13,7 @@ struct ChatView: View {
 
     @State private var showConversations = false
     @State private var editing: ConversationItem?
+    @State private var showSystem = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -27,9 +28,14 @@ struct ChatView: View {
                     .accessibilityLabel("Conversations")
             }
             ToolbarItem(placement: .navigationBarTrailing) {
-                Button { chat.newChat() } label: { Image(systemName: "square.and.pencil") }
-                    .tint(Palette.onShell)
-                    .accessibilityLabel("New chat")
+                HStack {
+                    Button { showSystem = true } label: { Image(systemName: "info.circle") }
+                        .tint(Palette.onShell)
+                        .accessibilityLabel("System prompt")
+                    Button { chat.newChat() } label: { Image(systemName: "square.and.pencil") }
+                        .tint(Palette.onShell)
+                        .accessibilityLabel("New chat")
+                }
             }
         }
         .sheet(isPresented: $showConversations) {
@@ -37,6 +43,9 @@ struct ChatView: View {
         }
         .sheet(item: $editing) { item in
             EditMessageSheet(item: item)
+        }
+        .sheet(isPresented: $showSystem) {
+            SystemPromptSheet(conversation: chat.current?.id, current: chat.system)
         }
     }
 
@@ -444,6 +453,87 @@ struct ConversationsView: View {
                 Button("Cancel", role: .cancel) {}
             }
         }
+    }
+}
+
+/// The conversation's system prompt (#625), or the new chat's when `conversation` is nil: the
+/// person's own, written here, and what the model reads before the conversation, exactly as the next
+/// message sends it. Without a folder the person's text is all the model gets, as in llama.cpp's web UI.
+struct SystemPromptSheet: View {
+    @EnvironmentObject private var engine: Engine
+    @EnvironmentObject private var chat: ChatModel
+    @Environment(\.dismiss) private var dismiss
+    let conversation: String?
+    let current: String
+    @State private var prompt: SystemPrompt?
+    @State private var own = ""
+    @State private var error = ""
+    @State private var saving = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Grid.s) {
+                    if prompt?.external == true {
+                        Text("This conversation runs another agent program, which writes its own system prompt.").font(.ui(15))
+                    } else {
+                        Text("Instructions the model reads before this conversation. Leave it empty for none.")
+                            .font(.ui(13)).foregroundStyle(Palette.muted)
+                        TextEditor(text: $own)
+                            .font(.ui(15))
+                            .frame(minHeight: 140)
+                            .padding(Grid.s / 2)
+                            .overlay(RoundedRectangle(cornerRadius: Grid.radius).stroke(Palette.muted.opacity(0.4)))
+                            .disabled(saving)
+                            .accessibilityLabel("System prompt")
+                        if !error.isEmpty { Text(error).font(.ui(13)).foregroundStyle(Palette.warn) }
+                        if let p = prompt, !p.added.isEmpty {
+                            Text("What the model reads, with the folder's agent lines first:").font(.ui(13)).foregroundStyle(Palette.muted)
+                            Text(p.added).font(.system(size: 13, design: .monospaced)).textSelection(.enabled)
+                        }
+                        if let n = prompt?.tokens {
+                            Text("\(n) token\(n == 1 ? "" : "s") of the context").font(.ui(13)).foregroundStyle(Palette.muted)
+                        }
+                    }
+                }
+                .padding(Grid.m)
+            }
+            .background(Palette.surface)
+            .navigationTitle("System prompt")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
+                if prompt?.external != true {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Save") { Task { await save() } }.disabled(own == current || saving)
+                    }
+                }
+            }
+        }
+        .task { await load() }
+    }
+
+    private func load() async {
+        own = current
+        guard let id = conversation else { return }
+        do {
+            let p = try await engine.api.systemPrompt(conversation: id)
+            prompt = p
+            own = p.own
+        } catch {
+            self.error = "Could not read the system prompt: \(error.localizedDescription)"
+        }
+    }
+
+    private func save() async {
+        saving = true
+        error = ""
+        defer { saving = false }
+        guard await chat.setSystem(own) else {
+            error = "Could not save the system prompt: \(chat.error?.message ?? "")"
+            return
+        }
+        if conversation == nil { dismiss() } else { await load() }
     }
 }
 

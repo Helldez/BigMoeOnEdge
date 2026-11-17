@@ -33,6 +33,8 @@ export interface ConversationSummary {
   updated: WireTime;
   /** The task whose run this conversation is, when it is one. */
   task?: string | null;
+  /** The person's own system prompt ('' for none). */
+  system?: string;
 }
 
 /** `composing`: the model is still writing the call (docs/agent.md, "Items"); it runs once written. */

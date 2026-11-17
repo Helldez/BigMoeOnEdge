@@ -24,7 +24,7 @@ prompt and a project's `AGENTS.md`. A model used to one works with the other.
 - **Conversation.** Held by the server (`<data>/agent/conversations/<id>.json`, written whole to a
   temporary file and renamed, so a crash leaves the previous version), because a run can outlive
   the page that started it: a scheduled task has no page at all, and an approval can wait for a
-  person who closed the tab. A conversation has a title, an optional workspace, a mode, a model
+  person who closed the tab. A conversation has a title, an optional workspace, an optional system prompt of the person's, a mode, a model
   route, an agent (`builtin`, or another coding agent: see "Other agents") and a list of items. Plain chat in the web UI is a conversation with no workspace, and it is sent as plain chat: the
   person's messages alone, with no system prompt and no tools (see "The run"). A
   conversation that was running when the server stopped reads `idle` on the next start, with a
@@ -99,6 +99,15 @@ file tools refuse) sends no system prompt and no tools at all, as llama.cpp's ow
 until the person adds them: an agent prompt there would only spend prefill and the model's thinking
 on tools it cannot use, and bend every answer into a report of work done. The system prompt is the same for every round of a message and the
 conversation is only appended to, so the engine reuses the prompt its KV cache already holds.
+
+A conversation may also carry the person's own system prompt (`system`, up to 8 KiB), as a
+conversation in llama.cpp's web UI does: set when it is made or with a PATCH, never while it runs (a
+run's rounds share one prompt). Without a folder it is the whole system prompt; with one it follows
+the agent's lines and the workspace's `AGENTS.md`, so it reads as the latest word. A new
+conversation starts without one. Nothing the model reads before the conversation is hidden: `GET
+/api/conversations/<id>/system` answers it exactly as the next message sends it, with the person's
+part apart and what it takes of the context, and every UI shows it beside the field that edits the
+person's part (#625). A client of the chat endpoints sends its own as a `system` message, as before.
 
 When a request no longer fits the context (the engine refuses it with `context_full`), the oldest
 long tool result is marked `shortened` and the round is asked again, one result at a time; a notice
@@ -311,9 +320,10 @@ All JSON; errors are `{"error", "code"}` as everywhere in the API. Times are Uni
 | `POST /api/workspaces` | `{path, name?}` → the workspace; `400 not_a_folder` |
 | `DELETE /api/workspaces/<id>` | forgets the folder, touches no file |
 | `GET /api/conversations` | `[{id, title, workspace, mode, route, agent, state, created, updated, task}]`, newest first; `state` is `idle`, `running`, `waiting` (an approval) or `error` (the last run ended in one) |
-| `POST /api/conversations` | `{workspace?, mode?, route?, agent?, title?, items?}` → the conversation; another `agent` needs a `workspace`. `items`: `[{kind: "user" \| "assistant", text}]`, a conversation the UI kept before the server did |
+| `POST /api/conversations` | `{workspace?, mode?, route?, agent?, title?, system?, items?}` → the conversation; another `agent` needs a `workspace`. `items`: `[{kind: "user" \| "assistant", text}]`, a conversation the UI kept before the server did |
 | `GET /api/conversations/<id>` | the conversation with its `items` |
-| `PATCH /api/conversations/<id>` | `{title?, mode?, route?, workspace?, agent?}` → the conversation without items; `409 busy` for `workspace` or `route` while it runs, and for `agent` once it has items |
+| `GET /api/conversations/<id>/system` | `{text, own, tokens, external}`: the system prompt the next message sends, exactly as sent, and `own`, the person's part of it (the conversation's `system`) (for a client on the network, the one its own run gets: no workspace). `tokens` is what it takes of the context, counted by the loaded model's tokenizer as `/tokenize` counts; `null` with no model ready or on a provider route. `external`: another agent program writes its own, and `text` is empty. `""` under `--chat-only` |
+| `PATCH /api/conversations/<id>` | `{title?, mode?, route?, workspace?, agent?, system?}` → the conversation without items; `system` is the person's own system prompt (`""` for none, at most 8 KiB); `409 busy` for `workspace`, `route` or `system` while it runs, and for `agent` once it has items |
 | `DELETE /api/conversations/<id>` | `409 busy` while it runs |
 | `POST /api/conversations/<id>/messages` | `{text, think?, images?}` → `202 {item}`; the run goes on in the server and reports on `/api/events`. `409 busy` while one runs. `images`: up to 8 data URLs, kept on the item and shown to the model after the text (`400 no_vision` when the loaded model has no projector, server-api.md "Images") |
 | `POST /api/conversations/<id>/edit` | `{item, text, think?}`: drops `item` (a `user` item) and everything after it, then sends `text` → `202 {item}` |
