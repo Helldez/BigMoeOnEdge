@@ -12,6 +12,7 @@
 #include "decide/llama_backend.h"
 #include "logits.h"
 #include "prefill_support.h"
+#include "stop_text.h"
 #include "thinking_control.h"
 #include "prefill_path.h"
 #include "llama_log.h"
@@ -138,32 +139,6 @@ position_logprobs(const float * logits, int n_vocab, const llama_vocab * vocab, 
     for (size_t i = 0; i < k; ++i)
         out.top.push_back({ids[i], common_token_to_piece(vocab, ids[i], true), logits[ids[i]] - log_z});
     return out;
-}
-
-// Where the earliest of `stops` begins in `text`, looking only at matches that end at or after
-// `from` (text before it was searched already); npos when none does.
-size_t find_stop(const std::string & text, const std::vector<std::string> & stops, size_t from) {
-    size_t best = std::string::npos;
-    for (const std::string & st : stops) {
-        if (st.empty()) continue;
-        const size_t start = from >= st.size() ? from - st.size() + 1 : 0;
-        const size_t at = text.find(st, start);
-        if (at != std::string::npos && at < best) best = at;
-    }
-    return best;
-}
-
-// How many trailing bytes of `text` begin one of `stops`: what a streamed answer holds back, since
-// the next token may complete the stop.
-size_t stop_prefix_tail(const std::string & text, const std::vector<std::string> & stops) {
-    size_t held = 0;
-    for (const std::string & st : stops)
-        for (size_t k = std::min(st.size() > 0 ? st.size() - 1 : 0, text.size()); k > held; --k)
-            if (text.compare(text.size() - k, k, st, 0, k) == 0) {
-                held = k;
-                break;
-            }
-    return held;
 }
 
 llama_token argmax(const float * logits, int n_vocab) {
@@ -2952,6 +2927,7 @@ struct Session::Impl::Turn {
 
     // ── stop text (GenerateRequest::stop) ──
     bool stop_hit = false;
+    detail::AnswerStart answer_start; // a stop is matched in the answer, never in the reasoning before it
 
     bool sample_next(int32_t row) {
         // A calibration replay takes the first candidate's tokens as long as they last: not sampled, so
@@ -3710,7 +3686,15 @@ struct Session::Impl::Turn {
             // A stop ends the answer where it begins; text that may yet become one is not shown.
             size_t shown = gen.size();
             if (!req.stop_text.empty()) {
-                const size_t at = find_stop(gen, req.stop_text, before);
+                // Only the answer is searched (AnswerStart): the parse that splits the reasoning off says
+                // where it begins, and is asked until it has begun.
+                if (!answer_start.open) {
+                    const ShownView sv = shown_view(gen, /*partial*/ true);
+                    answer_start.note(gen, !sv.content.empty() || sv.tool_calls.empty() ? sv.content : gen);
+                }
+                const size_t floor = answer_start.from;
+                const size_t at =
+                    answer_start.open ? detail::find_stop(gen, req.stop_text, before, floor) : std::string::npos;
                 if (at != std::string::npos) {
                     for (const std::string & st : req.stop_text)
                         if (!st.empty() && gen.compare(at, st.size(), st) == 0) {
@@ -3720,8 +3704,8 @@ struct Session::Impl::Turn {
                     gen.resize(at);
                     shown = at;
                     stop_hit = true;
-                } else {
-                    shown -= stop_prefix_tail(gen, req.stop_text);
+                } else if (answer_start.open) {
+                    shown -= detail::stop_prefix_tail(gen, req.stop_text, floor);
                 }
             }
             if (chat_on) im.kv.push_token(out); // this token is now in the KV

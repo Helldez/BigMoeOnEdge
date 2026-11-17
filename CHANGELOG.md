@@ -57,7 +57,8 @@ Semantic Versioning.
   `stop_reason: "stop_sequence"`), Responses `temperature` and `top_p`. They were accepted and not
   read: a client asking for `stop` got text past it. A field left out keeps the session's setting,
   and a request that names none decodes exactly as before. A stop is held back from the stream while
-  it forms, so a client never sees one the server then takes back. With speculation armed the
+  it forms, so a client never sees one the server then takes back, and it is matched in the answer
+  only: reasoning that happens to contain it does not end the turn with an empty answer. With speculation armed the
   session stays greedy (a draft is accepted by the model's argmax) and a request's sampling is read
   but not applied; `stop`, `grammar` and `logprobs` still are. `n` above 1 is refused with `400`.
 - **A model held in memory runs on an integrated GPU, or on Apple's unified-memory GPU, where it
