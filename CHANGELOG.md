@@ -14,6 +14,12 @@ Semantic Versioning.
   reading stayed: a 62 GiB Qwen3.8-Flash-Next showed as not streaming. The reading is now kept
   against every shard present, and the web UI and the iOS app, like the Android app, say how a
   model runs only once its set is complete and its header read.
+- **"Check it fits here" no longer refuses models that run here.** The Hugging Face check counted
+  every non-expert byte as resident, the embedding tables included, which the plan leaves mapped
+  and reads a row at a time. On Qwen3.8-Flash-Next that is 27-34 GiB of 31-36: the check said
+  "Will not fit" on a 16 GB Mac and on a 12 GB phone where the model runs. It now weighs what the
+  plan holds (2.8-3.8 GiB there), says how much stays on the file, and gives it as
+  `resident_bytes`, which every UI shows as Resident.
 
 ## [0.43.2] - 2026-11-16
 

@@ -203,7 +203,7 @@
             <dt>{t('hf.fact.layers')}</dt>
             <dd>{t('hf.fact.layers.value', { n: f.model.n_layer, moe: f.model.n_moe_layer })}</dd>
             <dt>{t('hf.fact.resident')}</dt>
-            <dd>{formatBytes(f.model.dense_bytes)}</dd>
+            <dd>{formatBytes(f.model.resident_bytes ?? f.model.dense_bytes)}</dd>
             <dt>{t('hf.fact.flash')}</dt>
             <dd>{t('hf.fact.flash.value', { size: formatBytes(f.model.expert_bytes), token: formatBytes(f.model.token_cycle_bytes) })}</dd>
           {/if}

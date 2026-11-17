@@ -118,6 +118,10 @@ bool inspect_remote_model(HttpFetch & net,
     in.present_bytes = present;
     in.disk_free = disk_free;
     in.dense_bytes = m.dense_bytes;
+    {
+        const GroupDemand & emb = m.group(WeightGroup::Embedding);
+        in.mapped_bytes = emb.row_gatherable ? emb.bytes : 0;
+    }
     in.token_cycle = m.token_cycle_bytes;
     in.budget = hw.residency_budget;
     in.readable = header.ok;
@@ -151,6 +155,7 @@ bool inspect_remote_model(HttpFetch & net,
                        {"n_moe_layer", m.n_moe_layer},
                        {"n_embd", m.n_embd},
                        {"dense_bytes", m.dense_bytes},
+                       {"resident_bytes", in.dense_bytes - std::min(in.mapped_bytes, in.dense_bytes)},
                        {"expert_bytes", m.expert_bytes},
                        {"token_cycle_bytes", m.token_cycle_bytes},
                        {"largest_dense_tensor", m.largest_dense_tensor},

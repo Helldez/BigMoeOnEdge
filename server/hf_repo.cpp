@@ -420,10 +420,14 @@ FitVerdict verdict_parts(const FitInputs & in) {
     v.mode = "streams";
     v.fit = "fits";
     v.headline = "Fits here: the experts stream from flash";
-    v.memory = "the experts stream from flash and " + mib(in.dense_bytes) +
-               " stays resident, plus a cache of at least one token cycle (" + mib(in.token_cycle) + ")";
+    // What stays resident is the plan's: the dense weights but the tables it leaves mapped.
+    const uint64_t mapped = std::min(in.mapped_bytes, in.dense_bytes);
+    const uint64_t resident = in.dense_bytes - mapped;
+    v.memory = "the experts stream from flash and " + mib(resident) + " stays resident" +
+               (mapped ? " (the " + mib(mapped) + " of tables read a row at a time stay on the file)" : std::string()) +
+               ", plus a cache of at least one token cycle (" + mib(in.token_cycle) + ")";
     if (budget) {
-        const uint64_t floor = in.dense_bytes + in.token_cycle;
+        const uint64_t floor = resident + in.token_cycle;
         v.memory += floor <= budget ? "; that fits in the " + mib(budget) + " this process may hold" + credit +
                                           ", and the plan sizes the cache from the rest"
                                     : "; that is more than the " + mib(budget) + " this process may hold" + credit +

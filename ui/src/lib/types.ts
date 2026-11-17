@@ -344,6 +344,8 @@ export interface HfFacts {
     n_moe_layer: number;
     n_embd: number;
     dense_bytes: number;
+    /** What stays in memory while the experts stream: the dense bytes less the tables read a row at a time. */
+    resident_bytes?: number;
     expert_bytes: number;
     token_cycle_bytes: number;
     largest_dense_tensor: number;

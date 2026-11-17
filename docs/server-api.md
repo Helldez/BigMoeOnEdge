@@ -1080,7 +1080,7 @@ megabytes of each shard) and parsed by the planner's own model probe, set agains
 {"repo": "...", "revision": "main", "name": "gemma-4-26B-A4B-it-Q4_0.gguf", "quant": "Q4_0",
  "bytes": 14618145824, "files": 1, "complete": true,
  "model": {"readable": true, "arch": "gemma4", "role": "model", "type": "model", "block_count": 30, "is_moe": true, "n_expert": 128, "n_expert_used": 8,
-           "n_layer": 30, "n_moe_layer": 30, "n_embd": 2816, "dense_bytes": 1755954296,
+           "n_layer": 30, "n_moe_layer": 30, "n_embd": 2816, "dense_bytes": 1755954296, "resident_bytes": 1755954296,
            "expert_bytes": 12846366720, "token_cycle_bytes": 802897920, "largest_dense_tensor": 784334848,
            "has_mtp": false, "streamable": true, "refusal": ""},
  "machine": {"residency_budget": 5736517632, "budget_if_loaded": 5736517632, "loaded_model": "", "loaded_held": 0,
@@ -1091,7 +1091,10 @@ megabytes of each shard) and parsed by the planner's own model probe, set agains
              "memory": "the experts stream from flash and 1674 MiB stays resident, plus a cache of at least one token cycle (765 MiB); that fits in the 5470 MiB this process may hold, and the plan sizes the cache from the rest"}}
 ```
 
-`model.readable` false means the header did not parse, and the rest of `model` is empty; a MoE
+`model.resident_bytes` is what stays in memory while the experts stream: `dense_bytes` less the
+tables the graph only reads a row at a time (an embedding table not tied to the head, and a
+per-layer one, which on some models is most of the dense bytes), since the plan leaves them mapped;
+the verdict weighs it, not `dense_bytes`. `model.readable` false means the header did not parse, and the rest of `model` is empty; a MoE
 whose experts this engine does not stream carries the reason in `refusal` and `streamable` false.
 `model.role` is what the file is for, by its header, as `GET /api/models` has it; `type` and
 `block_count` are the header's `general.type` and `<arch>.block_count` it was read from. A file
