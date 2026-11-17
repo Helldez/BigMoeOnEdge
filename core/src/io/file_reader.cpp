@@ -2,6 +2,7 @@
 #include "bmoe/log.h"
 
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -147,6 +148,29 @@ long long FileReader::read(int lane, void * dst, uint64_t off, uint64_t nbytes) 
         const long long moved = (long long) (end - off);
         read_bytes_.fetch_add(moved);
         return moved; // no aligned window here: what was asked for is what was pulled
+    }
+
+    // Fully aligned request: file offset, length and destination are all whole blocks, so there is
+    // no window to round outward and no reason to touch the byte twice. Read straight into the
+    // caller's buffer. The general gguf case cannot take this path: a tensor's file offset is
+    // aligned to general.alignment (32), not to a device block, so an O_DIRECT window spills into
+    // neighbouring experts' cache pages — writing those would fault in pages the residency ledger
+    // never committed (roadmap.md, "Reading a slice straight into the cache"). The bounce below is
+    // what keeps that spill inside one lane's scratch instead.
+    if (off % align_ == 0 && nbytes % align_ == 0 && (uintptr_t) dst % align_ == 0) {
+        const auto ts = clock_t_::now();
+        for (uint64_t a = off; a < off + nbytes;) {
+            const long long got = pio::pread_at(fd, (char *) dst + (a - off), (size_t) (off + nbytes - a), a);
+            if (got <= 0) {
+                log_printf(LogLevel::Error, "pread failed at %llu", (unsigned long long) a);
+                return -1;
+            }
+            a += (uint64_t) got;
+        }
+        const auto te = clock_t_::now();
+        syscall_ns_.fetch_add((long long) std::chrono::duration_cast<std::chrono::nanoseconds>(te - ts).count());
+        read_bytes_.fetch_add((long long) nbytes);
+        return (long long) nbytes;
     }
 
     const uint64_t a0 = off & ~(uint64_t) (align_ - 1);

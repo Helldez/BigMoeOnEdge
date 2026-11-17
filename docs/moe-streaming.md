@@ -66,6 +66,14 @@ calling thread participates as lane 0. On UFS 4.x, 4 lanes roughly triples effec
 bandwidth over serial. Compute threads (`-t`) show a U-shape — 4 is the measured optimum;
 8 regresses badly because ggml's spin-wait contends with the synchronous reads.
 
+A request whose file offset, length and destination are all block-aligned skips the bounce and its
+`memcpy`: `FileReader` reads straight into the destination. Expert slices do not normally qualify —
+gguf aligns tensor data to `general.alignment` (32), so an O_DIRECT window spills into neighbouring
+experts' cache pages and the bounce is what keeps that spill out of the residency ledger (see the
+blocked item in [roadmap.md](roadmap.md)). Aligned reads elsewhere, such as dense-weight loads, do
+take the fast path. Evictions are likewise batched now: a sweep picks all victims first and folds
+their page ranges into one `vm_evict` per disjoint run.
+
 ## The model file's mapping (`--release-mmap`)
 
 llama.cpp maps the gguf and keeps it mapped for the model's lifetime. On Windows that mapping

@@ -203,6 +203,23 @@ makes unnecessary. The warm-up pre-faults the same pages without touching the bu
 full hit rate — a strictly better trade on every model measured (`reserve_gemma_k8.csv` alongside the
 data above).
 
+## Dense models without streaming
+
+The residency policy above was previously reachable only through the expert streamer's dense half, so
+a model with no routed experts kept `--dense-weights` as a no-op and stayed exactly as llama.cpp mapped
+it. It now applies to a non-MoE run too: the session captures the graph's weight leaves once at load
+(the same one-token pass the streamer uses), maps them back to gguf ranges with the public offsets, and
+applies the chosen mode. `warm` faults every weight in before the first answer; `anon` and `pinned` copy
+them out of the mapping and hand the loader's page-cache read-ahead back; `mmap` is unchanged. The
+capture's KV is discarded afterwards, so the first real prompt starts from a clean context.
+
+For a dense model that fits, the practical effect is front-loading first-touch faults and making the
+resident set reclaim-exempt where the platform allows it — the same two mechanisms the >>RAM case
+needed, minus the streaming. Load takes longer and anon/pinned hold real memory, which is why the
+policy stays a choice rather than being forced on. The other dense levers are `--threads` (`--auto`
+now picks the count swept on this machine for dense models too), `--ubatch` for the compute-buffer
+reservation, `--prefill-device` for wide prompts, and `--flash-attn on` with a lossless f16 KV cache.
+
 ## Takeaways
 
 - **The >>RAM cold head is fixed, not inherent.** Dense warm-up front-loads the non-expert working

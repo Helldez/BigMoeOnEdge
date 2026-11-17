@@ -76,6 +76,15 @@ describe('settingsCards', () => {
     expect(keys(c[1].params)).toEqual(['e']);
   });
 
+  it('reveals advanced rows on request, never experimental or debug ones', () => {
+    const c = settingsCards(rows, undefined, true);
+    expect(keys(c[0].params)).toEqual(['a']); // g1: basic only; c is debug
+    expect(keys(c[1].params)).toEqual(['b', 'e', 'f']); // g2: advanced f joins b and e
+    expect(c.some((x) => x.group === 'g3')).toBe(false); // d is experimental
+    // Showing a row writes nothing: an untouched install still has every value from the plan.
+    expect(settingsCards(rows, undefined, false).some((x) => keys(x.params).includes('f'))).toBe(false);
+  });
+
   it('orders cards by the table group order, not by where a group first appears', () => {
     const ordered = [
       spec('x', 'late', 'basic', { group_order: 2 }),

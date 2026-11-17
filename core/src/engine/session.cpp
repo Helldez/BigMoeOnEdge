@@ -54,6 +54,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -320,6 +321,9 @@ struct Session::Impl {
     };
     std::unique_ptr<RegisteredHostMemory> expert_host_registered;
     ExpertStreamSource source;
+    // A non-MoE model has no ExpertStreamSource to own the dense residency policy, so it gets its
+    // own here. Null unless the run asked for warm/anon/pinned without MoE streaming.
+    std::unique_ptr<DenseWeights> dense_only_;
     // Kept per session, not per turn: the reference it measures stalls against is this machine's,
     // and a later turn of a chat is compared with what the earlier ones settled to.
     CacheBrake brake;
@@ -563,6 +567,9 @@ struct Session::Impl {
     bool stage_experts_in_host_buffer(Opening & o);
     bool bind_streaming(Opening & o);
     bool capture_warmup(Opening & o);
+    // Give a non-MoE model the dense residency policy the streamer would own for a MoE one: capture
+    // the graph's weights, bind them to warm/anon/pinned memory, hand the page cache back.
+    bool bind_dense_only(Opening & o);
     bool arm_device_cache(Opening & o);
     bool device_cache_armed = false;
     bool bind_expert_offsets(Opening & o, const GgufOffsets & offs, std::vector<LayerExperts> & layers, int & n_expert);
@@ -1225,6 +1232,14 @@ bool Session::Impl::create_contexts(Opening & o) {
     cparams.n_ubatch = cfg.n_ubatch > 0 ? (uint32_t) cfg.n_ubatch : (uint32_t) cfg.n_batch;
     cparams.type_k = detail::to_ggml_type(cfg.cache_type_k);
     cparams.type_v = detail::to_ggml_type(cfg.cache_type_v);
+    // The cache implementation and placement are run choices, not llama.cpp's defaults: a dense
+    // model that fits can run a lossless f16 cache with flash forced on, where auto may pick the
+    // slow kernel, and a device whose link is slower than its compute can keep the KV on the host.
+    cparams.flash_attn_type = cfg.flash_attn == RunConfig::FlashAttn::On ? LLAMA_FLASH_ATTN_TYPE_ENABLED
+                              : cfg.flash_attn == RunConfig::FlashAttn::Off ? LLAMA_FLASH_ATTN_TYPE_DISABLED
+                                                                           : LLAMA_FLASH_ATTN_TYPE_AUTO;
+    cparams.offload_kqv = cfg.offload_kqv;
+    cparams.kv_unified = cfg.kv_unified;
     // A sliding-window layer keeps its window, not the whole context. llama.cpp's own default is a
     // full-size cache on those layers too (common/, which its server and CLI use, turns it off), and
     // on a model whose layers are mostly windowed that is most of the context's memory spent on cells
@@ -1240,7 +1255,10 @@ bool Session::Impl::create_contexts(Opening & o) {
     // the copy of the experts into a device's host memory.
     // The copy captures on the context the device cache then makes again, which needs no callback.
     const bool copy_capture = !cfg.moe.expert_host_buffer.empty() && !device_cache_armed;
-    if (cfg.moe.enabled || o.compute_trace || prefill || records_unstreamed(cfg) || copy_capture) {
+    // A non-MoE run with a dense residency policy needs the callback for the one capture that lists
+    // its weight leaves; mmap needs nothing and keeps llama.cpp's no-callback path.
+    const bool dense_capture = !cfg.moe.enabled && cfg.moe.dense_weights != DenseWeightsMode::Mmap;
+    if (cfg.moe.enabled || o.compute_trace || prefill || records_unstreamed(cfg) || copy_capture || dense_capture) {
         cparams.cb_eval = &RouterHook::c_eval;
         cparams.cb_eval_user_data = hook.get();
     }
@@ -1455,6 +1473,74 @@ bool Session::Impl::capture_warmup(Opening & o) {
         if (llama_decode(c, warm) != 0) return o.fail("capture warm-up decode failed");
     }
     hook->end_capture();
+    return true;
+}
+
+// A dense model that fits still benefits from the residency policy the engine keeps for the dense
+// half of a streamed one: warm faults every weight in before the first answer, anon/pinned stop a
+// reclaim from re-reading them from flash, and dropping the load's page-cache read-ahead gives that
+// memory back. Without MoE there is no ExpertStreamSource to own DenseWeights, so it lives on the
+// session here. The same capture decode that finds expert tensors finds every other weight leaf;
+// the gguf offsets map those names back to file ranges. Output is unchanged: only where the bytes
+// are held changes, and the tensor pointers are rebound exactly as the streamer rebinds them.
+bool Session::Impl::bind_dense_only(Opening & o) {
+    const SessionConfig & cfg = o.cfg;
+    if (!capture_warmup(o)) return false;
+
+    const GgufOffsets & offs = o.meta().offsets;
+    if (!offs.ok) return o.fail("cannot read gguf offsets: " + cfg.model_path);
+
+    std::vector<DenseTensorRef> dense;
+    std::unordered_map<uint64_t, size_t> at;
+    for (ggml_tensor * t : hook->captured_weight_objects()) {
+        if (!t || !t->data) continue;
+        // A device's own buffer is not ours to rebind, for the same reason the streamer leaves it.
+        // A host buffer wrapping the mapping is caught by the placement check: a layer the first
+        // stage put on a device must keep its bytes where that device can read them.
+        if (t->buffer && !ggml_backend_buffer_is_host(t->buffer)) continue;
+        if (on_other_device(t)) continue;
+        const auto pos = offs.off_by_name.find(t->name);
+        const auto sz = offs.size_by_name.find(t->name);
+        if (pos == offs.off_by_name.end() || sz == offs.size_by_name.end()) continue; // not a file tensor
+        const int file_idx = offs.file_by_name.at(t->name);
+        const uint64_t key = ((uint64_t) (uint32_t) file_idx << 48) ^ pos->second;
+        const auto seen = at.find(key);
+        if (seen != at.end()) {
+            dense[seen->second].aliases.push_back(t); // tied head: one range, two tensors
+            continue;
+        }
+        DenseTensorRef d;
+        d.tensor = t;
+        d.file_off = pos->second;
+        d.size = sz->second;
+        d.file_idx = file_idx;
+        at.emplace(key, dense.size());
+        dense.push_back(std::move(d));
+    }
+
+    // Every tensor is dense when no expert was streamed, so each shard's dense range is the whole
+    // file. A shard's size comes from the opened file, not the gguf header.
+    std::vector<std::vector<std::pair<uint64_t, uint64_t>>> ranges;
+    ranges.reserve(offs.shard_paths.size());
+    for (const std::string & path : offs.shard_paths) {
+        FileReader probe;
+        if (!probe.open(path, 1, false, 1)) return o.fail("cannot open model shard: " + path);
+        ranges.push_back(DenseWeights::byte_ranges({}, probe.file_size()));
+    }
+
+    dense_only_ = std::make_unique<DenseWeights>();
+    dense_only_->set_mapped(cfg.moe.dense_mapped);
+    if (!dense_only_->init(cfg.moe.dense_weights, offs.shard_paths, std::move(ranges), std::move(dense)))
+        return o.fail("dense weight residency init failed");
+
+    // The loader's read-ahead filled the page cache with bytes we now hold ourselves. Hand it back
+    // where the kernel would otherwise swap the model out from under us.
+    if (cfg.moe.dense_weights == DenseWeightsMode::Anonymous || cfg.moe.dense_weights == DenseWeightsMode::Pinned) {
+        for (const std::string & path : offs.shard_paths)
+            pio::drop_file_cache(path.c_str());
+        log_printf(LogLevel::Info, "dense model — page cache handed back (%zu file(s))", offs.shard_paths.size());
+    }
+    clear_memory(ctx.get()); // discard the capture's KV
     return true;
 }
 
@@ -2595,6 +2681,8 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     im.build_sampler(cfg);
     im.install_abort_callback();
     if (!im.init_speculation(o)) return nullptr;
+    if (!cfg.moe.enabled && cfg.moe.dense_weights != DenseWeightsMode::Mmap && !im.bind_dense_only(o))
+        return nullptr;
     if (cfg.moe.enabled && !im.bind_streaming(o)) return nullptr;
     if (records_unstreamed(cfg) && !im.arm_unstreamed_record(o)) return nullptr;
     if (!cfg.moe.expert_host_buffer.empty() && !im.stage_experts_in_host_buffer(o)) return nullptr;
