@@ -18,6 +18,7 @@
 #include "engine_host.h"
 #include "openai_chat.h"
 #include "openai_responses.h"
+#include "llama_compat.h"
 #include "event_bus.h"
 #include "feed.h"
 #include "feed_key.h"
@@ -412,7 +413,11 @@ bool is_messages_path(const std::string & path) {
     return path == "/v1/messages" || path.rfind("/v1/messages/", 0) == 0;
 }
 bool is_responses_path(const std::string & path) {
-    return path == "/v1/responses" || path.rfind("/v1/responses/", 0) == 0;
+    for (const char * p : {"/v1/responses", "/responses"}) {
+        const std::string root = p;
+        if (path == root || path.rfind(root + "/", 0) == 0) return true;
+    }
+    return false;
 }
 
 // The error body the protocol of `path` defines: an Anthropic client and a Responses client each
@@ -1157,6 +1162,141 @@ void agent_turn(App & app,
         });
 }
 
+// The prompt a chat request renders to, in tokens, by the loaded model's own template and
+// tokenizer: the count a turn would decode from an empty context. Images are not counted by the
+// text tokenizer (the projector sizes them), and with no model ready there is no tokenizer: both
+// fall back to the estimate.
+int count_prompt_tokens(App & app, const ChatRequest & turn) {
+    for (const ChatMessage & m : turn.messages)
+        if (!m.images.empty()) return estimate_prompt_tokens(turn);
+    GenerateRequest gr;
+    gr.messages = turn.messages;
+    gr.tools = turn.tools;
+    gr.tool_choice = turn.tool_choice;
+    gr.think = turn.think;
+    gr.json_schema = turn.json_schema;
+    int n = -1;
+    app.host.with_session([&](const HostedSession & s) {
+        std::string prompt, err;
+        if (s.render_chat(gr, prompt, err)) n = (int) s.tokenize(prompt, true, true).size();
+    });
+    return n >= 0 ? n : estimate_prompt_tokens(turn);
+}
+
+// llama-server's own endpoints beside the protocols (llama_compat.h), for the clients written for
+// it: health, properties, metrics, the slot, the tokenizer and the template. Read-only: none of
+// them runs a turn, so none waits in the line.
+void register_llama_routes(httplib::Server & svr, App & app) {
+    svr.Get(R"(/(?:v1/)?health)", [&](const httplib::Request &, httplib::Response & res) {
+        if (app.host.ready()) return send_json(res, json{{"status", "ok"}});
+        if (app.host.model_coming()) return send_error(res, 503, "Loading model", "loading");
+        send_error(res, 503, "no model is loaded", error_code::no_model);
+    });
+
+    svr.Get("/props", [&](const httplib::Request &, httplib::Response & res) {
+        const RunConfig cfg = app.store.api_config();
+        PropsFacts f;
+        f.n_ctx = cfg.n_ctx;
+        app.host.with_session([&](const HostedSession & s) { f.n_ctx = s.n_ctx(); });
+        f.n_predict = cfg.n_predict;
+        f.temperature = cfg.sampling.temp;
+        f.top_k = cfg.sampling.top_k;
+        f.top_p = cfg.sampling.top_p;
+        f.seed = cfg.sampling.seed;
+        f.model_name = app.host.model_name();
+        f.model_path = app.host.model_path();
+        f.vision = app.host.vision();
+        f.build = std::string("bmoe ") + version();
+        send_json(res, props_json(f));
+    });
+
+    svr.Get("/metrics", [&](const httplib::Request &, httplib::Response & res) {
+        res.set_content(app.host.scrape_metrics(), "text/plain; version=0.0.4");
+    });
+
+    svr.Get("/slots", [&](const httplib::Request &, httplib::Response & res) {
+        int n_ctx = 0;
+        if (!app.host.with_session([&](const HostedSession & s) { n_ctx = s.n_ctx(); }))
+            return send_error(res, 503, "no model is loaded", error_code::no_model);
+        send_json(res, slots_json(n_ctx, app.host.generating()));
+    });
+
+    svr.Post("/tokenize", [&](const httplib::Request & req, httplib::Response & res) {
+        json body;
+        if (!parse_body(req, res, body)) return;
+        TokenizeRequest tr;
+        std::string err;
+        if (!parse_tokenize_request(body, tr, err)) return send_error(res, 400, err, "invalid_request");
+        json tokens = json::array();
+        const bool ok = app.host.with_session([&](const HostedSession & s) {
+            for (const int32_t t : s.tokenize(tr.content, tr.add_special, tr.parse_special)) {
+                if (tr.with_pieces)
+                    tokens.push_back({{"id", t}, {"piece", token_piece_json(s.token_piece(t))}});
+                else
+                    tokens.push_back(t);
+            }
+        });
+        if (!ok) return send_error(res, 503, "no model is loaded", error_code::no_model);
+        send_json(res, json{{"tokens", tokens}});
+    });
+
+    svr.Post("/detokenize", [&](const httplib::Request & req, httplib::Response & res) {
+        json body;
+        if (!parse_body(req, res, body)) return;
+        std::vector<int32_t> tokens;
+        std::string err;
+        if (!parse_detokenize_request(body, tokens, err)) return send_error(res, 400, err, "invalid_request");
+        std::string text;
+        bool valid = false;
+        if (!app.host.with_session([&](const HostedSession & s) { valid = s.detokenize(tokens, text); }))
+            return send_error(res, 503, "no model is loaded", error_code::no_model);
+        if (!valid) return send_error(res, 400, "a token id is outside the model's vocabulary", "invalid_request");
+        send_json(res, json{{"content", text}});
+    });
+
+    // The prompt a chat request renders to, as the model's template writes it.
+    svr.Post("/apply-template", [&](const httplib::Request & req, httplib::Response & res) {
+        json body;
+        if (!parse_body(req, res, body)) return;
+        OpenAiChatRequest cr;
+        std::string err;
+        if (!parse_chat_request(body, app.store.api_config(), cr, err))
+            return send_error(res, 400, err, "invalid_request");
+        GenerateRequest gr;
+        gr.messages = cr.turn.messages;
+        gr.tools = cr.turn.tools;
+        gr.tool_choice = cr.turn.tool_choice;
+        gr.think = cr.turn.think;
+        gr.json_schema = cr.turn.json_schema;
+        std::string prompt;
+        bool rendered = false;
+        if (!app.host.with_session([&](const HostedSession & s) { rendered = s.render_chat(gr, prompt, err); }))
+            return send_error(res, 503, "no model is loaded", error_code::no_model);
+        if (!rendered) return send_error(res, 400, engine_message(err), "template_rejected");
+        send_json(res, json{{"prompt", prompt}});
+    });
+
+    // What a request's prompt costs in tokens, without running it.
+    svr.Post(R"(/(?:v1/)?chat/completions/input_tokens)", [&](const httplib::Request & req, httplib::Response & res) {
+        json body;
+        if (!parse_body(req, res, body)) return;
+        OpenAiChatRequest cr;
+        std::string err;
+        if (!parse_chat_request(body, app.store.api_config(), cr, err))
+            return send_error(res, 400, err, "invalid_request");
+        send_json(res, json{{"input_tokens", count_prompt_tokens(app, cr.turn)}});
+    });
+    svr.Post(R"(/(?:v1/)?responses/input_tokens)", [&](const httplib::Request & req, httplib::Response & res) {
+        json body;
+        if (!parse_body(req, res, body)) return;
+        ResponsesRequest rr;
+        std::string err;
+        if (!parse_responses_request(body, app.store.api_config(), rr, err))
+            return send_path_error(req.path, res, 400, err, "invalid_request");
+        send_json(res, json{{"object", "response.input_tokens"}, {"input_tokens", count_prompt_tokens(app, rr.turn)}});
+    });
+}
+
 void register_routes(httplib::Server & svr, App & app) {
     svr.Get("/api/info", [&](const httplib::Request &, httplib::Response & res) { send_json(res, app.host.info()); });
 
@@ -1231,7 +1371,7 @@ void register_routes(httplib::Server & svr, App & app) {
         send_json(res, json{{"ok", true}});
     });
 
-    svr.Get("/v1/models", [&](const httplib::Request &, httplib::Response & res) {
+    svr.Get(R"(/(?:v1/)?models)", [&](const httplib::Request &, httplib::Response & res) {
         json data = json::array();
         const std::string name = app.host.model_name();
         // `modalities` is not OpenAI's field: a client that wants to know whether to send an image
@@ -1244,7 +1384,7 @@ void register_routes(httplib::Server & svr, App & app) {
         send_json(res, json{{"object", "list"}, {"data", data}});
     });
 
-    svr.Post("/v1/chat/completions", [&](const httplib::Request & req, httplib::Response & res) {
+    svr.Post(R"(/(?:v1/)?chat/completions)", [&](const httplib::Request & req, httplib::Response & res) {
         json body;
         if (!parse_body(req, res, body)) return;
         OpenAiChatRequest cr;
@@ -1265,7 +1405,9 @@ void register_routes(httplib::Server & svr, App & app) {
             ChatOutcome out = app.host.chat(cr.turn, nullptr, [&req] { return !req.is_connection_closed(); });
             if (out.status != 200) return send_error(res, out.status, out.error, out.code);
             ensure_tool_call_ids(out.result.tool_calls, meta.id);
-            return send_json(res, completion_json(meta, out.result, finish_reason(out.result, out.n_predict)));
+            json body = completion_json(meta, out.result, finish_reason(out.result, out.n_predict));
+            body["timings"] = timings_json(out.result.summary);
+            return send_json(res, body);
         }
 
         res.set_header("Cache-Control", "no-cache");
@@ -1329,6 +1471,14 @@ void register_routes(httplib::Server & svr, App & app) {
                 [&] {
                     write(": waiting for a turn\n\n");
                     return out_stream.alive();
+                },
+                nullptr,
+                // llama-server's progress chunk: an empty assistant delta carrying where the prompt is.
+                [&](const PrefillProgress & p) {
+                    if (!cr.return_progress || !out_stream.alive()) return;
+                    json c = chunk_json(meta, json{{"role", "assistant"}, {"content", nullptr}}, nullptr);
+                    c["prompt_progress"] = prompt_progress_json(p);
+                    write("data: " + dump(c) + "\n\n");
                 });
             if (out.status != 200) {
                 write("data: " + dump(json{{"error", {{"message", out.error}, {"code", out.code}}}}) + "\n\n");
@@ -1362,8 +1512,12 @@ void register_routes(httplib::Server & svr, App & app) {
                     const json rest = tool_call_events_delta(calls.finish(out.result.tool_calls));
                     if (!rest.is_null()) chunk(rest, nullptr, nullptr);
                 }
-                chunk(json::object(), finish_reason(out.result, out.n_predict),
-                      json{{"summary", summary_json(out.result.summary, out.result.cancelled)}});
+                {
+                    json last = chunk_json(meta, json::object(), finish_reason(out.result, out.n_predict));
+                    last["bmoe"] = json{{"summary", summary_json(out.result.summary, out.result.cancelled)}};
+                    last["timings"] = timings_json(out.result.summary);
+                    write("data: " + dump(last) + "\n\n");
+                }
                 if (cr.include_usage) write("data: " + dump(usage_chunk_json(meta, out.result.summary)) + "\n\n");
             }
             write("data: [DONE]\n\n");
@@ -1391,7 +1545,7 @@ void register_routes(httplib::Server & svr, App & app) {
         agent_turn<AnthropicStream>(app, req, res, ar.turn, ar.stream, meta, message_json, AnthropicStream::ping());
     });
 
-    // An estimate, not a count: the host has no tokenizer outside a turn (estimate_prompt_tokens).
+    // Counted by the loaded model's template and tokenizer; estimated with none ready (count_prompt_tokens).
     svr.Post("/v1/messages/count_tokens", [&](const httplib::Request & req, httplib::Response & res) {
         json body;
         if (!parse_body(req, res, body)) return;
@@ -1399,12 +1553,12 @@ void register_routes(httplib::Server & svr, App & app) {
         std::string err;
         if (!parse_messages_request(body, app.store.api_config(), ar, err))
             return send_path_error(req.path, res, 400, err, "invalid_request");
-        send_json(res, json{{"input_tokens", estimate_prompt_tokens(ar.turn)}});
+        send_json(res, json{{"input_tokens", count_prompt_tokens(app, ar.turn)}});
     });
 
     // The OpenAI Responses API, for Codex CLI (openai_responses.h). Stateless: the whole
     // conversation comes in every request.
-    svr.Post("/v1/responses", [&](const httplib::Request & req, httplib::Response & res) {
+    svr.Post(R"(/(?:v1/)?responses)", [&](const httplib::Request & req, httplib::Response & res) {
         json body;
         if (!parse_body(req, res, body)) return;
         ResponsesRequest rr;
@@ -2067,6 +2221,7 @@ int run(int argc, char ** argv, const Embedding & embedding) {
 
     register_guards(svr, o);
     register_routes(svr, app);
+    register_llama_routes(svr, app);
     register_agent_routes(svr, app.agent_routes);
     if (!ui_dir.empty()) {
         // no-cache means "revalidate", not "never store": the browser keeps the files and asks with

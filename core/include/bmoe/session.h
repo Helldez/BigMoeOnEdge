@@ -125,6 +125,16 @@ struct CalibrationTurn {
     std::vector<int32_t> tokens;
 };
 
+// Where a turn's prefill stands (GenerateRequest::on_prefill). `total` is the whole prompt in
+// tokens, `cached` the part the context already held (reused, not decoded again), `processed` the
+// part decoded so far this turn; `seconds` since the prefill began.
+struct PrefillProgress {
+    int total = 0;
+    int cached = 0;
+    int processed = 0;
+    double seconds = 0.0;
+};
+
 // Per-prompt request. clear_kv=true (the default) makes each prompt independent while the
 // expert cache stays warm; clear_kv=false continues the KV cache for multi-turn chat.
 struct GenerateRequest {
@@ -166,6 +176,10 @@ struct GenerateRequest {
     // The knob trial and the decode's own cost are not fed by it: its windows time a candidate, not
     // the load a person is served.
     CalibrationTurn * calibration = nullptr;
+    // Told where the prompt's prefill stands: once before the first piece (processed 0) and after
+    // each piece decoded, on the generating thread. Nullable. A front-end shows it while a long
+    // prompt goes in, the stretch of a turn with no token to show.
+    std::function<void(const PrefillProgress &)> on_prefill{};
 };
 
 // Teacher-forced quality measurement. The text is fixed, so every cell scores the SAME token
@@ -288,6 +302,21 @@ public:
     // Whether this session reads images: a projector was given at open() and it has a vision
     // encoder. What a front-end asks before offering an image control.
     bool vision() const;
+
+    // The model's tokenizer, outside any turn. Read-only on the vocabulary, so safe beside a running
+    // generate() on another thread, as llama.cpp's own server tokenizes beside its decode loop.
+    // `parse_special` reads control-token text ("<|im_start|>") as the token it names.
+    std::vector<int32_t> tokenize(const std::string & text, bool add_special, bool parse_special) const;
+    // The text of one token, special tokens spelled out. "" for an id outside the vocabulary.
+    std::string token_piece(int32_t token) const;
+    // The text of `tokens`, joined as the model would print them. False for an id outside the
+    // vocabulary, with `text` untouched.
+    bool detokenize(const std::vector<int32_t> & tokens, std::string & text) const;
+    // The prompt generate() would decode for req.messages (with its tools, tool_choice, think and
+    // json_schema), rendered by the model's own template; the engine-held conversation is not read
+    // or changed. False with `error` set when chat mode is off or the template refuses it. Safe
+    // beside a running generate(), like tokenize().
+    bool render_chat(const GenerateRequest & req, std::string & prompt, std::string & error) const;
 
     // Set the expert-cache budget in MiB and evict down to it now. PRECONDITION: no generate() in
     // flight — call it between generations (e.g. from an app's memory-pressure callback). A no-op

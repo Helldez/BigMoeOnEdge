@@ -58,6 +58,17 @@ Semantic Versioning.
   prediction, the rationale (the hit rate is said to be a prior), and where a cache's hit rate
   decides between processors (a device cache's CPU share), a choice priced on misses the linear
   credit overstated.
+### Added
+- **bmoe-server answers the parts of llama.cpp's server that its clients read** (#613). A chat
+  completion carries llama-server's `timings`, and a streamed one asked with `return_progress`
+  reports the prompt's prefill as `prompt_progress` chunks, so a client's progress bar moves through
+  a long prompt (the engine is told after each piece it decodes). New routes, in llama-server's
+  shapes and with nothing of it linked: `/health`, `/props`, `/metrics` (Prometheus, `llamacpp:*`),
+  `/slots`, `/tokenize`, `/detokenize`, `/apply-template`, `/chat/completions/input_tokens` and
+  `/responses/input_tokens`; `/chat/completions`, `/responses` and `/models` answer as their `/v1`
+  routes. `/v1/messages/count_tokens` now counts with the loaded model's template and tokenizer
+  instead of estimating from the length. Measured with llama.cpp's own server test suite run
+  against bmoe-server: the routes above pass its tokenize, health, metrics and template tests.
 
 ## [0.43.2] - 2026-11-16
 
