@@ -4,6 +4,32 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.44.1] - 2026-11-17
+
+### Fixed
+- **A phone's NPU prefill works again, and no longer ends the engine.** Since 0.43 a load that put
+  the prompt on the NPU ended the server (exit 134) in one try out of two, and where it survived, the
+  NPU computed experts it read as the wrong layout; after two failed loads the plan gave the NPU up
+  for that model and prefilled on OpenCL. The Hexagon backend the 0.43 bump brought (llama.cpp #31744)
+  tiles a weight for the NPU at graph time instead of when it is written, and flushes its DSP queue on
+  every write. The device prefill refills its two weight slots from loader threads while the NPU
+  computes, so the graph either read a refill untiled or re-tiled it serially, and two threads used a
+  queue that is not thread-safe. The fork branch now carries a second commit, beside the expert-ready
+  hook: a weight written in whole slices is tiled on the writer's thread, as before 0.43, and a weight
+  write does not touch the queue ([seam.md](docs/seam.md)). It changes nothing off Hexagon.
+- **The Hexagon host buffer is off again.** Upstream made it the backend's default in the same bump,
+  so 0.43 and 0.44.0, which set no Hexagon variable after #542, ran with the host buffer that #544
+  had measured costing decode 7-13% and hanging Gemma 4's load on the NPU. Every front-end now sets
+  `GGML_HEXAGON_HOSTBUF=0` unless the environment names it ([backends.md](docs/backends.md)).
+- **An engine that stops on its own is started again, and a screen that needs it says how.** On
+  Android, after the server ended with an error, the app showed "The engine is not running." on the
+  models list and the first run, with Start engine only at the bottom of Settings: nothing could be
+  loaded or downloaded until it was found. The app now starts the server again after an unexpected
+  exit (at most once a minute, so a crash on start cannot loop), says so on the models list, and puts
+  the reason and a Start engine button where the engine is needed.
+- **The logo's sheet is as wide as the logo on Android**, not the screen, as on the web UI and the
+  iOS app.
+
 ## [0.44.0] - 2026-11-17
 
 ### Added

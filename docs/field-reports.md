@@ -55,6 +55,29 @@ desktop app is not affected: it installs the pack itself.
 
 ## Fixed
 
+### A phone's engine stops while loading a model on the NPU (exit 134), then models cannot be loaded or downloaded
+
+**Seen on** 0.43.0 to 0.44.0, Android, a 12 GB phone with a Snapdragon NPU, MoE models whose prompt
+the plan puts on the NPU (Qwen3.6-35B-A3B Q4_K_M, Ling 3.0 tiny Q8_0).
+
+**How to recognise it.** The engine stops during the first answer with exit 134, and the system's crash
+log shows an abort in `libggml-hexagon.so` (`GGML_ASSERT(rsp.seq == batch_rsp_seq + 1)` or a
+`dspqueue_read` failure). The app then said "The engine is not running." on the models list and the
+first run. After two such loads the prompt runs on OpenCL, several times slower than on 0.42.
+
+**Cause.** Confirmed on the phone: the Hexagon backend of the 0.43 bump flushes its DSP queue on every
+`set_tensor`, from whichever thread calls it, and the NPU prefill's loader threads write the next
+layer's experts while the NPU computes. The queue is not thread-safe, so the two collide. The same bump
+moved tiling to graph time, where a refilled slot was not tiled again. The app did not start a
+stopped engine again, and its Start engine button was only in Settings.
+
+**Fixed in** 0.44.1: a commit on the llama.cpp fork branch tiles a weight as it is written and leaves
+the queue alone on a weight write ([seam.md](seam.md)); the app starts an engine that stopped on its own
+again and shows Start engine where the engine is needed.
+
+**Workaround.** On 0.43-0.44.0, Settings, Start engine, then load again: after two failed loads the
+model prefills on OpenCL and no longer stops.
+
 ### The engine does not start on a phone where another app uses port 8765 (#611)
 
 **Seen on** 0.43.2, Android, with a remote-access app that listens on 8765 running beside the app.

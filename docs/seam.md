@@ -68,7 +68,7 @@ expert matmuls are running — needs a wait point that no public API exposes. Th
 place where BigMoeOnEdge carries a llama.cpp extension.
 
 **What it is.** A single optional hook, ~25 lines, living on the fork branch
-`bmoe/expert-ready-hook` of `Helldez/llama.cpp` as a single commit on top of the upstream
+`bmoe/expert-ready-hook` of `Helldez/llama.cpp` as one commit on top of the upstream
 pin. It adds nothing to the model files and changes no data layout; it is a callback the
 CPU MoE kernel invokes.
 
@@ -113,10 +113,33 @@ is affected, and it fails with a clear runtime error instead of silently falling
 server's default for overlap and the `overlap_available` it reports are read from the backend
 that loaded, not from a build flag.
 
-**Sunset condition.** This fork exists *solely* for this one hook. The moment upstream
-ships an equivalent per-expert readiness/residency callback, the branch is dropped and the
-submodule bumps straight back to `ggml-org/llama.cpp`. It is a tide-me-over until the wait
+**Sunset condition.** This commit exists *solely* for this one hook. The moment upstream
+ships an equivalent per-expert readiness/residency callback, it is dropped, and once section 3b's
+commit is dropped too, the submodule bumps straight back to `ggml-org/llama.cpp`. It is a tide-me-over until the wait
 point is public, not a divergence we intend to maintain.
+
+## 3b. Hexagon weight writes (fork fix)
+
+The device prefill's expert arena (`core/src/moe/device_arena.cpp`, [npu-prefill.md](npu-prefill.md))
+refills two weight slots from loader threads while the NPU computes. It does that through the public
+`ggml_backend_tensor_set`, and until the 0.43 bump that call was all the Hexagon backend needed: it
+tiled the written bytes on the writer's thread. Upstream's runtime repack (llama.cpp #31744) changed
+two things under it, and the fork branch carries one more commit, on top of the hook, that puts them
+back for weights only:
+
+- **Tiling at write.** Upstream tiles a weight at graph time, the whole tensor at once on the graph's
+  thread, and remembers it in the tensor. A refilled slot was either read as raw bytes (wrong numbers)
+  or, re-tiled per graph, serialized the refill behind the NPU. The commit tiles a write that covers
+  whole 2-D slices (a whole weight, or one expert) on the writer's thread, as before; any other write
+  is a plain copy and the graph tiles it as upstream does.
+- **No queue flush on a weight write.** Every `set_tensor` began with a flush of the DSP session, which
+  is not thread-safe. Loader threads flushing it while the graph's thread ran the NPU ended the process
+  (`rsp.seq == batch_rsp_seq + 1` asserted, or `dspqueue_read` failed). No op writes a weight, so a
+  weight write has nothing to wait for; other buffers still flush.
+
+Nothing changes off Hexagon: the commit touches only `ggml/src/ggml-hexagon`. Sunset: when upstream
+tiles on a weight write and leaves the session alone there, or gives a streamer another public way to
+refill a weight buffer between graphs, this commit is dropped at the next bump.
 
 ## The chat glue: llama.cpp `common` (not the streaming seam)
 
@@ -315,12 +338,13 @@ except where noted:
 ## Upgrading llama.cpp
 
 Because the submodule pins the `bmoe/expert-ready-hook` fork branch (section 3), a bump
-rebases that 1-commit branch onto the new upstream tag, re-pushes it, and re-pins:
+rebases that branch's commits (the hook, and the Hexagon weight writes of section 3b) onto the new
+upstream tag, pushes it as a new branch, and re-pins:
 
 ```bash
-# in a Helldez/llama.cpp checkout: rebase the single hook commit onto the new tag
-git fetch upstream && git checkout bmoe/expert-ready-hook
-git rebase <newer-upstream-tag> && git push --force-with-lease origin bmoe/expert-ready-hook
+# in a Helldez/llama.cpp checkout: rebase the fork's commits onto the new tag, as a new branch
+git fetch upstream && git checkout -b bmoe/expert-ready-hook-<ddmm> <current-pin>
+git rebase <newer-upstream-tag> && git push origin bmoe/expert-ready-hook-<ddmm>
 
 # in this repo: move the submodule to the rebased commit, rebuild, run the gates
 cd third_party/llama.cpp && git fetch origin && git checkout <rebased-commit>
@@ -342,8 +366,8 @@ If a future release moves the two hooks (a stable expert-residency API, say) ups
 this seam shrinks further or disappears — `core/` does not change.
 
 Pinned submodule at the time of writing: `Helldez/llama.cpp` branch
-`bmoe/expert-ready-hook-0911`, commit `ac30987`: the single expert-ready-hook commit
-(section 3), in the variant that also answers the CPU registry's `get_proc_address` so a build that
+`bmoe/expert-ready-hook-1711`, commit `fc1a629`: the Hexagon weight-writes commit (section 3b) on
+`ac30987`, the expert-ready-hook commit (section 3), in the variant that also answers the CPU registry's `get_proc_address` so a build that
 loads the CPU backend as a module reaches it, on top of upstream `ggml-org/llama.cpp` tag
 `b12214` (`6590d25` of 2026-11-09, 104 commits past the previous base, `v0.9.0`, `cd959ba` of
 2026-11-04). This base brings the device expert cache's frequency-aware eviction (ClassLRU) and

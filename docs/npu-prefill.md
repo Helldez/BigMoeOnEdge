@@ -154,7 +154,11 @@ layer k out of one slot, loader threads fill the other with layer k+1:
 - **experts** are read from the gguf with `O_DIRECT`, one expert at a time, or copied from the expert
   cache when it holds them (below), and handed to the backend with `ggml_backend_tensor_set` on a
   per-expert view. That call is where the Hexagon backend repacks them into its matrix-engine tiles,
-  so the repack runs in parallel across the loaders;
+  so the repack runs in parallel across the loaders. Upstream moved the repack to graph time in the
+  backend the 0.43 bump brought, a whole tensor at once on the graph's thread, and made every write
+  wait on the DSP's queue; the fork commit described in [seam.md](seam.md) tiles a weight again as it
+  is written, and a weight write no longer touches the queue (two loader threads flushing it while the
+  NPU computed ended the process);
 - **the other layer weights** (attention, norms, shared experts) are already resident on the host,
   so filling them is a copy, not a read.
 
@@ -237,7 +241,8 @@ Per-decision numbers: `bench-data/2026-09-29-prefill-routed/`.
 - **The KV cache and recurrent state** move once, at load, into the device's host buffer type where it
   offers one: memory the CPU reads directly and the device addresses too, so decode and prefill share
   one cache, and a device graph's attention runs on the device. The Hexagon backend offers one only
-  with `GGML_HEXAGON_HOSTBUF=1`, which the app no longer sets: on a 12 GB phone it bought no prefill
+  with `GGML_HEXAGON_HOSTBUF=1`, which upstream made its default in the backend the 0.43 bump brought
+  and every front-end sets back to `0` ([backends.md](backends.md)): on a 12 GB phone it bought no prefill
   (Qwen3.6-35B-A3B, a 1906-token prompt at 137-138 tok/s with it, 137-140 without), cost decode 7-13%
   (an op of every decoded token went to the DSP, #544), and with Gemma 4 26B-A4B the load never
   finished, the DSP never returning from the first layer. Without it the state stays in CPU memory and
@@ -285,14 +290,14 @@ Per-decision numbers: `bench-data/2026-09-29-prefill-routed/`.
   last, where it shadows no system library. A phone without the library simply does not load the
   module. (It must be the phone's library and not a loader in the APK: opened through the Khronos
   loader, the vendor library binds its own `cl*` calls to the loader's exports and the two
-  deadlock at the first platform query, measured on a Snapdragon phone.) The app sets no Hexagon
-  variable: both below are left at the backend's defaults.
+  deadlock at the first platform query, measured on a Snapdragon phone.) Of the Hexagon variables
+  below, the front-ends set one, the host buffer, back to off; polling is left at the backend's default.
 - `--prefill-loaders N` (default 8) sets the threads that fill the slots, apart from `--io-threads`,
   which stays the decode's read lanes. Each loader reads and repacks, and a K-quant repack is
   CPU-heavy: on a Q4_K_M, 4 loaders left the NPU waiting 10.3 s of a 15.1 s prefill, 8 left it 5.0 of
   10.0.
 - On device: `ADSP_LIBRARY_PATH` pointing at the directory with the `libggml-htp-v*.so` skels (fastrpc
-  resolves the one for the phone's NPU through it). `GGML_HEXAGON_HOSTBUF` is left off (above).
+  resolves the one for the phone's NPU through it). `GGML_HEXAGON_HOSTBUF` is set to `0` (above).
   `GGML_HEXAGON_OPPOLL` is left off too. It makes the host poll for the DSP instead of waiting on an
   interrupt, and on Android the backend's zero-timeout poll goes to the blocking queue read, which
   logs an error for every empty poll (#512). Measured on a 12 GB phone with Qwen3.6-35B-A3B Q4_K_M:

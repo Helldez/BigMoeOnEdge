@@ -29,9 +29,13 @@ std::vector<BackendDefault> backend_defaults(const std::string & data_dir) {
                      "compiled kernels kept between runs, in a folder every front-end can write"});
     d.insert(d.end(),
              {
-                 // None for Hexagon: polling (GGML_HEXAGON_OPPOLL) logged a million error rows a load for under
-                 // 1 s of a 16 s prefill, and its host buffer (GGML_HEXAGON_HOSTBUF, a debugging aid upstream)
-                 // cost 7-13% of the decode and hung Gemma 4's load on the NPU (#512, #544; docs/backends.md).
+                 // Hexagon's host buffer is a debugging aid upstream, and llama.cpp turned it on by default in the
+                 // backend the 0.43 bump brought; with it on, a decoded token sent an op to the DSP (decode 7-13%
+                 // slower) and Gemma 4's load hung on the NPU (#512, #544; docs/backends.md). Polling
+                 // (GGML_HEXAGON_OPPOLL) stays at the backend's default, off: it logged a million error rows a
+                 // load for under 1 s of a 16 s prefill.
+                 {"Hexagon", "GGML_HEXAGON_HOSTBUF", "0",
+                  "no host buffer: the KV cache stays in CPU memory and decode sends no op to the DSP"},
                  // Read by ggml's CUDA backend, which is also its ROCm backend (HIP builds the same source). It
                  // enables the backend's generic entry point for pinning memory a process allocated itself
                  // (ggml_backend_register_host_buffer), which the engine asks for by that name whatever the

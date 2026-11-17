@@ -57,9 +57,9 @@ we do not fork llama.cpp. See `docs/architecture.md` and `docs/seam.md`.
 - `ui/`: the web UI (Svelte + TypeScript). Settings are rendered from `GET /api/params`: never
   name an engine parameter in the UI. `catalog/models.json`: the model catalog, as data;
   `catalog/clients.json`: the apps the server can connect, as data.
-- `third_party/llama.cpp` — the pinned submodule: upstream plus one commit, the expert-ready hook
-  `--overlap` needs (the fork branch hard rule 1 describes; `docs/seam.md`). Everything else builds
-  against stock upstream.
+- `third_party/llama.cpp` — the pinned submodule: upstream plus two commits on the fork branch hard
+  rule 1 describes (`docs/seam.md`): the expert-ready hook `--overlap` needs, and the Hexagon backend's
+  weight writes the NPU prefill's streamed slots need. Everything else builds against stock upstream.
 - `tests/` — byte-identity gates. `examples/android/` — the Android app, a client of `bmoe-server`
   (shipped in the APK, run as a child process; no engine logic in Kotlin). `examples/ios/` — the iOS
   app (`app/`: `bmoe_server` run on a thread, since an app there may not start a process, and
@@ -84,8 +84,8 @@ Android CLI: `pwsh scripts/build-android.ps1` (needs the NDK), then build the AP
 
 1. **Never patch llama.cpp in-tree.** Everything goes through the public eval-callback and
    public gguf/model APIs. If a change seems to need a llama.cpp edit, stop and discuss —
-   the fallback is a *separate* 1-commit fork branch on `Helldez/llama.cpp`, never an
-   in-tree diff, and only after agreement. Upgrading llama.cpp must stay a submodule bump.
+   the fallback is a commit on the fork branch on `Helldez/llama.cpp`, one per agreed change
+   (`docs/seam.md` lists them), never an in-tree diff, and only after agreement. Upgrading llama.cpp must stay a submodule bump.
 2. **Repack stays off.** The engine loads memory-mapped (`load_mode = LLAMA_LOAD_MODE_MMAP`) with
    `use_extra_bufts=false`. The streamer rebinds `tensor->data` to the native gguf layout;
    repacking breaks it. This is load-bearing, not a tunable.
