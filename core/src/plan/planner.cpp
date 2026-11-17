@@ -696,6 +696,43 @@ double prompt_gather_seconds(const ComputeDevice & dev, uint64_t off_device) {
     return upload > 0.0 ? (double) off_device / (1024.0 * 1024.0 * 1024.0) / upload : 0.0;
 }
 
+// The request a decision fixed at load is weighed by: the prompt tokens prefilled and the tokens
+// decoded per request, and of the prompt tokens those in prompts longer than `narrow` (0: not asked).
+// The requests this machine's last load recorded (MeasuredKnobs::mix_*), weighed with the default mix
+// as PlannerPolicy::mix_prior_requests more, so a handful of requests does not swing the decision.
+struct RequestMix {
+    double prompt = 0.0, gen = 0.0, long_prompt = 0.0;
+    int served = 0; // requests recorded here
+    std::string words() const {
+        return served > 0 ? u64s((uint64_t) served) + " requests served here, weighed with the default mix"
+                          : std::string("none served yet: the default mix");
+    }
+};
+RequestMix request_mix(const Planning & s, uint32_t narrow) {
+    const MeasuredKnobs & mk = s.model.knobs;
+    RequestMix r;
+    const double prior = (double) s.pol.mix_prior_requests;
+    const double prompt_default = (double) s.pol.mix_prompt_tokens_default;
+    const bool served = mk.mix_requests > 0 && (mk.mix_gen_tokens > 0.0 || mk.mix_wide_prompt_tokens > 0.0);
+    const double n = served ? (double) mk.mix_requests : 0.0;
+    const auto blend = [&](double by_default, double recorded) {
+        return (prior * by_default + n * recorded) / (prior + n);
+    };
+    r.served = served ? mk.mix_requests : 0;
+    r.prompt = blend(prompt_default, mk.mix_wide_prompt_tokens);
+    r.gen = blend((double) s.pol.mix_gen_tokens_default, mk.mix_gen_tokens);
+    if (narrow > 0) {
+        // The long prompts' tokens where a load counted them against this narrow width; else every
+        // recorded prompt token where the mean prompt is itself past it.
+        const bool counted = mk.usage_requests > 0 && mk.width_narrow == (int) narrow;
+        const double recorded = counted                                       ? mk.usage_long_prompt_tokens
+                                : mk.mix_wide_prompt_tokens > (double) narrow ? mk.mix_wide_prompt_tokens
+                                                                              : 0.0;
+        r.long_prompt = blend(prompt_default > (double) narrow ? prompt_default : 0.0, recorded);
+    }
+    return r;
+}
+
 // A side of a decision across loads that failed to open here as often as a plan lets it
 // (MeasuredKnobs::unviable_max): it loses, whatever the other side is priced or measured at.
 bool lost(int failed_opens) {
@@ -1373,12 +1410,16 @@ bool width_across_loads(Planning & s, uint32_t full) {
         (off_wide > 0 && gather_wide <= 0.0))
         return false; // a rate is unmeasured: nothing to price the two widths with
     const double prefill_token = token_bytes / (1024.0 * 1024.0 * 1024.0) / wide_rate;
-    // The requests: this machine's own where a load served any, the default mix before.
-    const bool served = mk.mix_requests > 0 && (mk.mix_gen_tokens > 0.0 || mk.mix_wide_prompt_tokens > 0.0);
-    const double gen = served ? mk.mix_gen_tokens : (double) s.pol.mix_gen_tokens_default;
-    const double prompt = served ? mk.mix_wide_prompt_tokens : (double) s.pol.mix_prompt_tokens_default;
+    // The requests: this machine's own, weighed with the default mix. A prompt of l tokens takes
+    // ceil(l / w) passes, about l / w + 1/2, so a request's passes at a width are one and, for its
+    // long prompts, their tokens over the width less a half for each. The mean prompt would not do:
+    // one 4.6k-token prompt among three short ones is a mean of 1181 tokens, which fits one pass.
+    const RequestMix mix = request_mix(s, narrow);
+    const double gen = mix.gen, prompt = mix.prompt;
+    const double long_share = std::min(1.0, mix.long_prompt / (double) narrow); // of requests, at most
     const auto prefill_s = [&](uint32_t width, double gather) {
-        return prompt > 0.0 ? prompt * prefill_token + std::max(1.0, prompt / (double) width) * gather : 0.0;
+        const double passes = 1.0 + std::max(0.0, mix.long_prompt / (double) width - 0.5 * long_share);
+        return prompt > 0.0 ? prompt * prefill_token + passes * gather : 0.0;
     };
     double pre_wide = prefill_s(full, gather_wide), pre_narrow = prefill_s(narrow, gather_narrow);
     // What the loads served here measured: a side's own figure where both were timed, and where one
@@ -1413,8 +1454,7 @@ bool width_across_loads(Planning & s, uint32_t full) {
                   "a request here is %.0f prompt tokens and %.0f decoded (%s); at the full width it decodes at %.2f "
                   "tok/s and prefills that prompt in %.2f s, at %u tokens at %.2f tok/s and %.2f s (%s), so %.2f s "
                   "a request against %.2f",
-                  prompt, gen, served ? "the requests this machine served" : "none served yet: the default mix",
-                  1.0 / dec_wide, pre_wide, narrow, 1.0 / dec_narrow, pre_narrow,
+                  prompt, gen, mix.words().c_str(), 1.0 / dec_wide, pre_wide, narrow, 1.0 / dec_narrow, pre_narrow,
                   measured ? "both widths' decode measured on loads here"
                   : wd > 0.0 || nd > 0.0
                       ? "priced from the probed rates, corrected by the width measured on a load here"
@@ -2023,11 +2063,8 @@ void choose_shared_device(Planning & s, uint64_t resident) {
     const bool both = on > 0.0 && off > 0.0;
     const double decode_dev = both ? decode_host * on / off : decode_dev_probed;
     const bool wide_probed = s.hw.host_wide_matmul_gibs > 0.0 && dev.wide_matmul_gibs > 0.0;
-    const bool served = mk.mix_requests > 0 && (mk.mix_gen_tokens > 0.0 || mk.mix_wide_prompt_tokens > 0.0);
-    const double gen = served ? mk.mix_gen_tokens : (double) s.pol.mix_gen_tokens_default;
-    const double prompt = !wide_probed ? 0.0
-                          : served     ? mk.mix_wide_prompt_tokens
-                                       : (double) s.pol.mix_prompt_tokens_default;
+    const RequestMix mix = request_mix(s, 0);
+    const double gen = mix.gen, prompt = wide_probed ? mix.prompt : 0.0;
     const double t_cores = gen / decode_host + (prompt > 0.0 ? prompt / s.hw.host_wide_matmul_gibs : 0.0);
     const double t_dev = gen / decode_dev + (prompt > 0.0 ? prompt / dev.wide_matmul_gibs : 0.0);
     char nums[400];
@@ -2035,8 +2072,7 @@ void choose_shared_device(Planning & s, uint64_t resident) {
                   "a request here is %.0f prompt tokens and %.0f decoded (%s); %s decodes at %.2fx the cores' rate "
                   "(%s) and computes a prompt-wide layer at %.2fx, so a request takes %.2fx the time it takes on "
                   "the cores",
-                  prompt, gen, served ? "the requests this machine served" : "none served yet: the default mix",
-                  dev.name.c_str(), decode_dev / decode_host,
+                  prompt, gen, mix.words().c_str(), dev.name.c_str(), decode_dev / decode_host,
                   both ? std::string(measured).c_str() : "probed on one real layer of this model",
                   wide_probed ? dev.wide_matmul_gibs / s.hw.host_wide_matmul_gibs : 0.0, t_dev / t_cores);
     // The cores are the side in force, the placement every load before this rule ran: the device takes

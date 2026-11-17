@@ -906,8 +906,10 @@ upload rate (`prompt_gather_seconds`). That last term is what three rented cards
 one pass and three 2048-token passes of a 4.6k-token prompt: 1.3 s a pass on an 8 GB card with 13 GB
 of the experts off it, 0.44 s on a 12 GB card with 9.5 GB, 25 s on two 16 GB cards with some 50 GB of
 a 284B model's. The request is this machine's own (`MeasuredKnobs::mix_*`, recorded on every load
-that answers one) and, on a first load, `mix_prompt_tokens_default` prompt tokens against
-`mix_gen_tokens_default` decoded (4096 and 300). The load serves the width priced faster and times
+that answers one), weighed with `mix_prompt_tokens_default` prompt tokens against
+`mix_gen_tokens_default` decoded (4096 and 300) as `mix_prior_requests` requests more, so a handful
+of requests does not swing the width; its passes are counted from the tokens of its prompts longer
+than the narrow width, about l / w + 1/2 for a prompt of l tokens, which their mean would hide. The load serves the width priced faster and times
 its decode and its prefill of the prompts longer than the narrow width
 (`MeasuredKnobs::width_narrow`); a side's measurement corrects both prices, both sides' replace
 them, and the width in force gives way only past `min_backend_win`. Decided on the decode alone, as
