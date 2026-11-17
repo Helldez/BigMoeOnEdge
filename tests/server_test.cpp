@@ -2031,6 +2031,33 @@ static void plan_view_tests() {
     v = plan_view(desk, dp);
     check(v["memory"]["pools"].size() == 1, "plan view: a declined placement holds nothing on the device");
 
+    // A laptop whose GPU reads its own memory, the whole model moved there by the shared-device
+    // decision: the GPU runs the prompt and the tokens, the host neither.
+    HardwareProfile lap;
+    lap.backends_looked = true;
+    lap.devices.push_back(device("CPU", true));
+    ComputeDevice igpu = device("Vulkan0");
+    igpu.shares_host_memory = Tri::Yes;
+    lap.devices.push_back(igpu);
+    Plan sp;
+    sp.regime = Regime::Fits;
+    sp.placement.shared_memory_placement = true;
+    sp.config.n_gpu_layers = 49;
+    sp.config.device_split = {{"Vulkan0", 49}};
+    const json sv = plan_view(lap, sp);
+    check(sv["summary"]["lanes"][0]["on"] == json::array({"Vulkan0"}) &&
+              sv["summary"]["lanes"][1]["on"] == json::array({"Vulkan0"}),
+          "plan view: a model moved onto a shared-memory GPU runs its prompt and tokens there");
+    check((*device_named(sv, "Vulkan0"))["badge"] == "Layers, prompt and tokens" &&
+              (*device_named(sv, "CPU"))["badge"] == "Not used",
+          "plan view: the GPU's row says it runs the model, the host's that it does not");
+    sp.config.n_gpu_layers = 0;
+    sp.config.device_split.clear();
+    const json kept = plan_view(lap, sp);
+    check(kept["summary"]["lanes"][1]["on"] == json::array({"CPU"}) &&
+              (*device_named(kept, "Vulkan0"))["badge"] == "Not used",
+          "plan view: on the cores, the shared-memory GPU is not used");
+
     // The cores alone: three answers to "no device", kept apart.
     HardwareProfile cpu;
     cpu.devices.push_back(device("CPU", true));

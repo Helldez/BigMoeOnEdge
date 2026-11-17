@@ -573,6 +573,19 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("trial-shared-device", "Measure the shared-memory device", G::Memory, L::Experimental,
+                          "Time the decode of this load's side of where a model held in memory runs, on a machine "
+                          "whose device reads the host's own memory, to be compared across loads: 1 with every "
+                          "layer on the device (--gpu-layers and --device-split), 0 on the cores. -1 times neither. "
+                          "Changes no output; the plan sets it while the two sides have not both been measured on "
+                          "this machine.");
+        d.value_hint = "N";
+        bounds(d, -1, 1, "side");
+        special(d, "-1", "off");
+        bind_int(d, [](RunConfig & c) -> int & { return c.trial.shared_device_side; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("trial-width", "Measure the graph width", G::Prefill, L::Experimental,
                           "Time this load's side of the graph width, to be compared across loads: 1 the plan's own "
                           "width, 0 the narrower --trial-width-narrow. Times the decode, and the prefill of prompts "

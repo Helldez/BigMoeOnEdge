@@ -13,13 +13,22 @@ namespace bmoe {
 
 namespace {
 
-// Which decision a plan's trial names (0 the device tier, 1 the graph width, -1 none) and its side,
-// in the order record_side_rate reads them: one decision per run.
+// Which decision a plan's trial names (0 the device tier, 1 the graph width, 2 the device cache's CPU
+// share, 3 the shared-memory device, -1 none) and its side, in the order record_side_rate reads them:
+// one decision per run.
+constexpr int k_width_decision = 1;
 int decision_of(const KnobTrialConfig & t) {
-    return t.device_tier >= 0 ? 0 : t.width_side >= 0 ? 1 : t.cpu_share_side >= 0 ? 2 : -1;
+    return t.device_tier >= 0          ? 0
+           : t.width_side >= 0         ? k_width_decision
+           : t.cpu_share_side >= 0     ? 2
+           : t.shared_device_side >= 0 ? 3
+                                       : -1;
 }
 int side_of(const KnobTrialConfig & t) {
-    return t.device_tier >= 0 ? t.device_tier : t.width_side >= 0 ? t.width_side : t.cpu_share_side;
+    return t.device_tier >= 0      ? t.device_tier
+           : t.width_side >= 0     ? t.width_side
+           : t.cpu_share_side >= 0 ? t.cpu_share_side
+                                   : t.shared_device_side;
 }
 
 std::string side_words(const KnobTrialConfig & t, const RunConfig & c) {
@@ -28,6 +37,9 @@ std::string side_words(const KnobTrialConfig & t, const RunConfig & c) {
         return t.cpu_share_side ? "with part of the device cache's misses on the CPU"
                                 : "with every device cache miss "
                                   "uploaded";
+    if (t.shared_device_side >= 0)
+        return t.shared_device_side && !c.device_split.empty() ? "with every layer on " + c.device_split.front().first
+                                                               : std::string("with every layer on the CPU");
     const int width = t.width_side ? c.graph_width() : t.width_narrow;
     return std::string("with the graph ") + (t.width_side ? "at the plan's width" : "narrowed") + " (" +
            std::to_string(width) + " tokens wide)";
@@ -57,6 +69,11 @@ std::vector<KnobTrialConfig> counted_sides(const MeasuredKnobs & k) {
         t.cpu_share_side = s;
         v.push_back(t);
     }
+    for (int s : {1, 0}) {
+        KnobTrialConfig t;
+        t.shared_device_side = s;
+        v.push_back(t);
+    }
     return v;
 }
 
@@ -70,11 +87,13 @@ struct Timed {
 } // namespace
 
 bool side_pending(const Plan & p) {
-    return p.config.trial.device_tier >= 0 || p.config.trial.width_side >= 0 || p.config.trial.cpu_share_side >= 0;
+    const KnobTrialConfig & t = p.config.trial;
+    return t.device_tier >= 0 || t.width_side >= 0 || t.cpu_share_side >= 0 || t.shared_device_side >= 0;
 }
 
 bool servable(const Plan & p) {
-    return p.config.trial.device_tier < 0 && p.config.trial.width_side != 0 && p.config.trial.cpu_share_side != 1;
+    const KnobTrialConfig & t = p.config.trial;
+    return t.device_tier < 0 && t.width_side != 0 && t.cpu_share_side != 1 && t.shared_device_side != 1;
 }
 
 bool calibration_due(const Plan & p,
@@ -163,7 +182,7 @@ CalibrationResult calibrate(const Plan & first,
             for (const Timed & t : timed)
                 if (t.timing.created && decision_of(t.trial) == decision_of(side) &&
                     side_of(t.trial) == 1 - side_of(side) &&
-                    (decision_of(side) == 0 || t.trial.width_narrow == side.width_narrow)) {
+                    (decision_of(side) != k_width_decision || t.trial.width_narrow == side.width_narrow)) {
                     cr.reference_lo = t.timing.step_lo;
                     cr.reference_hi = t.timing.step_hi;
                 }
@@ -184,7 +203,7 @@ CalibrationResult calibrate(const Plan & first,
         if (!timing.created) {
             // One more failure on top of what the record kept for this side.
             KnobTrialConfig at = side;
-            const bool same_width = decision_of(side) == 0 || kept.width_narrow == side.width_narrow;
+            const bool same_width = decision_of(side) != k_width_decision || kept.width_narrow == side.width_narrow;
             const int before_n = same_width ? *unviable_count(at, kept) : 0;
             record_side_unviable(side, r.knobs);
             *unviable_count(side, r.knobs) = before_n + 1;

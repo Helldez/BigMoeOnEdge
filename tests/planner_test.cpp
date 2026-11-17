@@ -2944,6 +2944,159 @@ int main() {
         }
     }
 
+    // ── a model held in memory, on a device that reads that same memory: decided across loads ─
+    // The fitter's placement on such a device is set aside (one pool, counted twice), so what is left
+    // is which engine runs the model faster: the cores timed first, then every layer on the device,
+    // and the plan after keeps the faster by the margin, or the device where the decode is level and
+    // its prompt-wide rate wins.
+    {
+        HardwareProfile roomy = unified();
+        roomy.residency_budget = 64 * GiB;
+        roomy.memory_total = 64 * GiB;
+        roomy.host_wide_matmul_gibs = 100.0;
+        for (ComputeDevice & d : roomy.devices) {
+            if (d.is_cpu) continue;
+            d.usable = Tri::Yes;
+            d.identity_ok = Tri::Yes;
+            d.runs_expert_op = Tri::Yes;
+            d.needs_repack = Tri::No;
+            d.wide_identity_ok = Tri::Yes;
+            d.wide_matmul_gibs = 90.0; // no faster on a prompt than the host
+        }
+        Placement shared;
+        shared.shared_memory_placement = true;
+        shared.device_bytes = 20 * GiB;
+        shared.device_compute_bytes = 400 * MiB;
+        shared.projected_devices = {"accel"};
+        shared.projected_compute_bytes = {400 * MiB};
+        const auto plan_with = [&](double on, double off, const HardwareProfile & h = HardwareProfile{},
+                                   const PlanRequest & r = PlanRequest{}) {
+            ModelProfile m = model;
+            m.knobs.shared_device_tps = on;
+            m.knobs.no_shared_device_tps = off;
+            return plan_run(base_cfg(), h.devices.empty() ? roomy : h, m, shared, r, PlannerPolicy::defaults());
+        };
+        const auto on_device = [&](const Plan & p) {
+            return p.config.n_gpu_layers == (int) model.n_layer + 1 && p.config.device_split.size() == 1 &&
+                   p.config.device_split[0].first == "accel" &&
+                   p.config.device_split[0].second == p.config.n_gpu_layers;
+        };
+        const auto on_cores = [](const Plan & p) {
+            return p.config.n_gpu_layers == 0 && p.config.device_split.empty();
+        };
+
+        const Plan first = plan_with(0.0, 0.0);
+        check(first.regime == Regime::Fits, "shared device: the model is held in memory");
+        check(first.config.trial.shared_device_side == 0 && on_cores(first),
+              "shared device, nothing measured: this load times the cores, nothing moves yet");
+        const Decision * d0 = find(first, "shared-device");
+        check(d0 && d0->value == "cpu" && d0->source == Source::Policy, "shared device: a policy line says so");
+        check(validate(first.config).ok, "shared device, cores timed: a valid config", validate(first.config).error);
+
+        const Plan second = plan_with(0.0, 40.0);
+        check(second.config.trial.shared_device_side == 1 && on_device(second),
+              "shared device, the cores measured: this load times every layer on the device");
+        check(validate(second.config).ok, "shared device, device timed: a valid config", validate(second.config).error);
+
+        const Plan faster = plan_with(54.0, 40.0);
+        const Decision * df = find(faster, "shared-device");
+        check(on_device(faster) && faster.config.trial.shared_device_side == -1,
+              "shared device, faster by the margin: every layer moves, nothing left to time");
+        check(df && df->value == "accel" && df->source == Source::Measured &&
+                  df->reason.find("copied into the device's own buffers") != std::string::npos,
+              "shared device: a measured line naming the device and how its weights are held", df ? df->reason : "");
+        check(validate(faster.config).ok, "shared device, faster: a valid config", validate(faster.config).error);
+
+        check(on_cores(plan_with(41.0, 40.0)), "shared device, level and no faster on a prompt: the cores keep it");
+        check(on_cores(plan_with(30.0, 40.0)), "shared device, slower: the cores keep it");
+
+        HardwareProfile prompts = roomy;
+        for (ComputeDevice & d : prompts.devices)
+            if (!d.is_cpu) d.wide_matmul_gibs = 250.0;
+        check(on_device(plan_with(41.0, 40.0, prompts)),
+              "shared device, level on the decode and faster on a prompt: the device takes it");
+        check(on_cores(plan_with(30.0, 40.0, prompts)),
+              "shared device, slower on the decode: a faster prompt does not buy the move");
+
+        ModelProfile failed = model;
+        failed.knobs.no_shared_device_tps = 40.0;
+        failed.knobs.shared_device_unviable = 1;
+        const Plan f = plan_run(base_cfg(), roomy, failed, shared, PlanRequest{}, PlannerPolicy::defaults());
+        check(on_cores(f) && f.config.trial.shared_device_side == -1,
+              "shared device that failed to load the model: the cores, nothing timed again");
+
+        HardwareProfile wraps = roomy;
+        for (ComputeDevice & d : wraps.devices)
+            if (!d.is_cpu) d.host_ptr_buffers = d.host_ptr_verified = Tri::Yes;
+        const Plan in_place = plan_with(54.0, 40.0, wraps);
+        const Decision * dw = find(in_place, "shared-device");
+        check(dw && dw->reason.find("stay the file's mapping") != std::string::npos,
+              "shared device that reads our memory in place: the line says the weights stay mapped",
+              dw ? dw->reason : "no line");
+
+        HardwareProfile wrong = roomy;
+        for (ComputeDevice & d : wrong.devices)
+            if (!d.is_cpu) d.identity_ok = Tri::No;
+        const Plan w = plan_with(54.0, 40.0, wrong);
+        const Decision * dr = find(w, "shared-device");
+        check(on_cores(w) && w.config.trial.shared_device_side == -1 && dr && dr->source == Source::Derived,
+              "shared device that has not computed the host's results: never timed, never moved");
+
+        HardwareProfile wide_wrong = roomy;
+        for (ComputeDevice & d : wide_wrong.devices)
+            if (!d.is_cpu) d.wide_identity_ok = Tri::No;
+        const Plan ww = plan_with(54.0, 40.0, wide_wrong);
+        check(on_cores(ww) && ww.config.trial.shared_device_side == -1,
+              "shared device right one token wide and wrong on a prompt: never timed, never moved (the prompt "
+              "would run there too)");
+
+        Placement unpriced = shared;
+        unpriced.projected_devices.clear();
+        unpriced.projected_compute_bytes.clear();
+        const Plan up = plan_run(base_cfg(), roomy, model, unpriced, PlanRequest{}, PlannerPolicy::defaults());
+        check(on_cores(up) && up.config.trial.shared_device_side == -1,
+              "shared device with no projected compute buffer: not timed, not moved");
+
+        HardwareProfile tight = roomy;
+        tight.residency_budget = 25 * GiB; // the model fits, its compute buffer and the air beside it do not
+        check(on_cores(plan_with(54.0, 40.0, tight)) &&
+                  plan_with(0.0, 0.0, tight).config.trial.shared_device_side == -1,
+              "shared device without room for its compute buffer: not timed, not moved");
+
+        PlanRequest pinned;
+        pinned.pinned = {"devices"};
+        const Plan pd = plan_with(54.0, 40.0, roomy, pinned);
+        check(on_cores(pd) && !find(pd, "shared-device"), "shared device, devices pinned: left alone");
+
+        // A model with no experts is asked the same question.
+        ModelProfile dense;
+        dense.arch = "llama";
+        dense.ok = true;
+        dense.is_moe = false;
+        dense.n_layer = 32;
+        dense.file_bytes = dense.dense_bytes = 5 * GiB;
+        const Plan dp = plan_run(base_cfg(), roomy, dense, shared, PlanRequest{}, PlannerPolicy::defaults());
+        check(dp.regime == Regime::NotMoe && dp.config.trial.shared_device_side == 0,
+              "shared device, a dense model held in memory: the cores timed first as well");
+        dense.knobs.shared_device_tps = 27.0;
+        dense.knobs.no_shared_device_tps = 21.0;
+        const Plan dm = plan_run(base_cfg(), roomy, dense, shared, PlanRequest{}, PlannerPolicy::defaults());
+        check(dm.config.n_gpu_layers == 33 && dm.config.device_split.size() == 1,
+              "shared device, a dense model measured faster on the device: every layer moves");
+
+        // Elsewhere nothing changes: a device with memory of its own goes through the fitter, and a
+        // model that streams has no whole model to move.
+        HardwareProfile big = desktop();
+        big.residency_budget = 64 * GiB;
+        big.memory_total = 64 * GiB;
+        const Plan disc = plan_run(base_cfg(), big, model, PlanRequest{});
+        check(!find(disc, "shared-device") && disc.config.trial.shared_device_side == -1,
+              "a device with memory of its own: not this question");
+        const Plan streams = plan_run(base_cfg(), unified(), model, shared, PlanRequest{}, PlannerPolicy::defaults());
+        check(streams.regime != Regime::Fits && !find(streams, "shared-device"),
+              "shared device, the model streams: not this question");
+    }
+
     // Informational: the rationale as a user would read it. Printed rather than asserted, because
     // its wording is meant to change as the rules learn; what is asserted is that it exists, names
     // the regime, and tags every decision with where its authority came from.

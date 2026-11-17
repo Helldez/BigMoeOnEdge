@@ -126,6 +126,14 @@ ValidationResult validate(const RunConfig & cfg) {
     if (cfg.trial.cpu_share_side >= 0 && (cfg.trial.device_tier >= 0 || cfg.trial.width_side >= 0))
         return fail("{trial-cpu-share} and {trial-device-cache} or {trial-width} each time a load's decode: one "
                     "at a time");
+    if (cfg.trial.shared_device_side < -1 || cfg.trial.shared_device_side > 1)
+        return fail("{trial-shared-device} is the shared-memory device's side a load measures: -1 (none), 0 or 1");
+    if (cfg.trial.shared_device_side >= 0 &&
+        (cfg.trial.device_tier >= 0 || cfg.trial.width_side >= 0 || cfg.trial.cpu_share_side >= 0))
+        return fail("{trial-shared-device} and {trial-device-cache}, {trial-width} or {trial-cpu-share} each time a "
+                    "load's decode: one at a time");
+    if (cfg.trial.shared_device_side == 1 && cfg.n_gpu_layers == 0)
+        return fail("{trial-shared-device} 1 times the model on a device: it needs {gpu-layers} above 0");
     if (cfg.trial.cpu_share_side >= 0 && cfg.moe.device_cache_mb <= 0)
         return fail("{trial-cpu-share} times a device cache's CPU share: it needs {device-cache-mb}");
     if (cfg.trial.cpu_share_side == 1 && !(cfg.moe.device_cache_cpu_share > 0.0f))

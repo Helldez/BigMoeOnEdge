@@ -2230,7 +2230,7 @@ void Session::Impl::arm_trials() {
         else
             trials.overlap = {cfg.moe.overlap ? 1 : 0, cfg.moe.overlap ? 0 : 1};
     }
-    trials.rate = t.device_tier >= 0 || t.width_side >= 0 || t.cpu_share_side >= 0;
+    trials.rate = t.device_tier >= 0 || t.width_side >= 0 || t.cpu_share_side >= 0 || t.shared_device_side >= 0;
     trials.stage = stage_done;
     next_trial_stage(/*settled*/ false);
 }
@@ -2326,8 +2326,9 @@ void Session::Impl::pause_trial() {
     apply_trial_arm(0);
 }
 
-// The device tier's side, timed; its rate goes in the result, which the front-end keeps, and the
-// plan of a later load reads it against the other side's.
+// The side of a decision across loads this load runs (the device tier, the graph width, the device
+// cache's CPU share or the shared-memory device), timed; its rate goes in the result, which the
+// front-end keeps, and the plan of a later load reads it against the other side's.
 void Session::Impl::rate_step(double seconds, int tokens, uint64_t lookups, uint64_t hits) {
     RateProbe & r = *trials.rate_probe;
     const bool settling = r.settling();
@@ -2340,6 +2341,11 @@ void Session::Impl::rate_step(double seconds, int tokens, uint64_t lookups, uint
         std::snprintf(what, sizeof(what), "%s",
                       cfg.trial.cpu_share_side == 1 ? "with part of the device cache's misses on the CPU"
                                                     : "with every device cache miss uploaded");
+    else if (cfg.trial.shared_device_side >= 0)
+        std::snprintf(what, sizeof(what), "with every layer on %s",
+                      cfg.trial.shared_device_side == 1 && !cfg.device_split.empty()
+                          ? cfg.device_split.front().first.c_str()
+                          : "the CPU");
     else
         std::snprintf(what, sizeof(what), "with the graph %s (%d tokens wide)",
                       cfg.trial.width_side == 1 ? "at the plan's width" : "narrowed",
