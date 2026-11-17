@@ -409,7 +409,8 @@ private fun ModelRow(
                 e?.quant?.ifEmpty { null },
                 gbLabel(size),
                 m?.arch?.ifEmpty { null },
-                m?.takeIf { it.complete }?.let { if (it.streamable) "streams" else "not a MoE this build streams" },
+                // How it runs is the header's to say: nothing while shards are missing or it is unread.
+                m?.takeIf { it.complete && it.arch.isNotEmpty() }?.let { if (it.streamable) "streams" else "not a MoE this build streams" },
                 m?.takeIf { r.state == RowState.INCOMPLETE || r.state == RowState.PARTIAL }?.let { "${it.files.size} of ${it.shards} shards here" }
                     ?: m?.shards?.takeIf { it > 1 }?.let { "$it shards" },
                 m?.name?.takeIf { it != r.title },

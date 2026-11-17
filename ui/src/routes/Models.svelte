@@ -198,10 +198,13 @@
         {#if e?.quant}<span class="badge">{e.quant}</span>{/if}
         <span class="badge {stateClass[r.state]}">{t(`models.state.${r.state}`)}</span>
         {#if m}
-          {#if m.streamable}
-            <span class="badge ok">{t('models.streamable')}</span>
-          {:else}
-            <span class="badge warn" title={t('models.notStreamable.title')}>{t('models.notStreamable')}</span>
+          <!-- How it runs is the header's to say: nothing while shards are missing or it is unread. -->
+          {#if m.complete && m.arch}
+            {#if m.streamable}
+              <span class="badge ok">{t('models.streamable')}</span>
+            {:else}
+              <span class="badge warn" title={t('models.notStreamable.title')}>{t('models.notStreamable')}</span>
+            {/if}
           {/if}
           {#if m.projector}
             <span class="badge" title={t('models.vision.title', { file: m.projector })}>{t('models.vision')}</span>
