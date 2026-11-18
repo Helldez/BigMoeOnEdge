@@ -14,6 +14,7 @@
 #include "bmoe/params.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <limits>
 #include <set>
@@ -426,6 +427,25 @@ int main() {
         c.moe.cache_auto = true;
         check(params_json(c).find("\"default\":\"auto\"") != std::string::npos, "params_json takes caller defaults");
         check(config_json(RunConfig{}).find("\"moe-stream\":false") != std::string::npos, "config_json types bools");
+        // A number or bool row's value goes into the JSON bare, so one whose value is not of its type
+        // (a text field left at the default Int, #651) breaks the whole answer and every settings form
+        // with it.
+        bool typed = true;
+        for (const ParamDesc & d : params()) {
+            const std::string v = d.get(RunConfig{});
+            bool ok = true;
+            if (d.type == ParamType::Bool) {
+                ok = v == "true" || v == "false";
+            } else if (d.type == ParamType::Int || d.type == ParamType::Float) {
+                char * end = nullptr;
+                ok = v == "auto" || (!v.empty() && (std::strtod(v.c_str(), &end), *end == '\0'));
+            }
+            if (!ok) {
+                std::fprintf(stderr, "  %s has the value '%s', not one of its type\n", d.key.c_str(), v.c_str());
+                typed = false;
+            }
+        }
+        check(typed, "params_json writes a number or bool row only with a value of its type");
     }
 
     if (failures) {

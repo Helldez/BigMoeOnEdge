@@ -55,6 +55,18 @@ desktop app is not affected: it installs the pack itself.
 
 ## Fixed
 
+### The settings never open: "the server's answer to api/params is not JSON" (#651)
+
+- **Seen on** 0.44.1 to 0.45.1, every platform and every model: the desktop app (first seen on a
+  Linux handheld), the web UI and the phone apps.
+- **How to recognise it.** The settings screen shows "Could not read the list of settings. Reload
+  the page to try again: the server's answer to api/params is not JSON". Deleting the app's data
+  folder does not change it.
+- **Cause.** Confirmed in the code: the parameter of the device answer check was declared as a
+  number while its value is text, and its empty default was written into the JSON unquoted.
+- **Fixed in** 0.46.0.
+- **Workaround.** None on those versions; 0.44.0 does not have the parameter.
+
 ### A phone's engine stops while loading a model on the NPU (exit 134), then models cannot be loaded or downloaded
 
 **Seen on** 0.43.0 to 0.44.0, Android, a 12 GB phone with a Snapdragon NPU, MoE models whose prompt
