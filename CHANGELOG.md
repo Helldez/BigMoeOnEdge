@@ -14,7 +14,7 @@ Semantic Versioning.
   compute buffers more than the card had, the context could not be made and `bmoe-server` stayed up
   with no model and nothing in its log. Every rule now reads -1 as every layer (the projector's room and the
   card's spare memory with it), so the graph is held to the device's bound
-  and the model loads. Machines whose devices share the host's
+  and the model loads, in 22 s, and decodes at 151 tok/s. Machines whose devices share the host's
   memory (phones, Apple silicon, integrated GPUs) never place layers this way and are unchanged
   ([hardware-planning.md](docs/hardware-planning.md)).
 - **A narrower graph where the whole model then fits the card is found where it is one halving
@@ -28,7 +28,8 @@ Semantic Versioning.
   file's mapping, which it replaces, so every 64 GB machine with a 32 GB expert set refused it and
   uploaded misses at half the rate (Qwen3.8-Flash-Next Q2_0 on three rented cards). The plan now
   charges the copy in their place, and the session hands the mapping's pages back once the tensors
-  point at the copy ([backends.md](docs/backends.md)).
+  point at the copy: decode +7-27% and prefill +8-15% on those cards ([backends.md](docs/backends.md),
+  [bench-data](docs/bench-data/2026-11-18-rented-0.45/README.md)).
 - **A context whose compute buffers do not fit narrows its graph instead of failing the load**, by
   halves down to llama.cpp's own physical batch (or an image's tokens), with a warning in the log.
   And `bmoe-server` says why a load failed, in its log and in `GET /health`, where it answered only
