@@ -609,9 +609,6 @@ struct Session::Impl {
     bool capture_warmup(Opening & o);
     bool arm_device_cache(Opening & o);
     bool device_cache_armed = false;
-    // Free memory on each device with memory of its own, as the model was loaded (before any context),
-    // for growing the device expert cache into what is left (MoeStreamConfig::device_cache_fill).
-    std::vector<std::pair<ggml_backend_dev_t, size_t>> device_free_at_load;
     bool bind_expert_offsets(Opening & o, const GgufOffsets & offs, std::vector<LayerExperts> & layers, int & n_expert);
     void hand_over_dense_weights(const SessionConfig & cfg,
                                  const GgufOffsets & offs,
@@ -1879,15 +1876,16 @@ bool Session::Impl::arm_device_cache(Opening & o) {
     // The speculative driver holds both contexts, and both are made again: it goes first, and is
     // made again over the new ones.
     const bool had_mtp = mtp != nullptr;
-    // What the devices have free with this session's contexts made and no cache yet: against what they
-    // had as the model loaded, it is what one set of contexts takes on each.
-    const auto with_context = cfg.moe.device_cache_fill ? device_free_now() : decltype(device_free_at_load){};
     mtp.reset();
     ctx_dft.reset();
     ctx.reset();
+    // What the devices have free with no context of this session: against what they have once the
+    // contexts are made beside the cache, it is what those contexts and the cache take on each.
+    const auto no_context =
+        cfg.moe.device_cache_fill ? device_free_now() : std::vector<std::pair<ggml_backend_dev_t, size_t>>{};
     device_cache_armed = true;
     if (!create_contexts(o)) return false;
-    if (cfg.moe.device_cache_fill && !fill_device_cache(o, with_context)) return false;
+    if (cfg.moe.device_cache_fill && !fill_device_cache(o, no_context)) return false;
     install_abort_callback();
     return !had_mtp || init_mtp_driver(o);
 }
@@ -1896,31 +1894,47 @@ bool Session::Impl::arm_device_cache(Opening & o) {
 // device_cache_fill). The planned size is a projection: the capacity fitter places whole layers and
 // keeps a margin of its own, and what it never fills stayed free (0.6-2.4 GiB on every 8, 12 and 24
 // GB card measured, the cache 2 GiB of an 8 GB card's 6.4 used). With the cache made, each device's
-// free memory is read again; what is past one set of contexts' worth there (measured: the drop
-// between the model loaded and its contexts made, so a device keeps room for what a context
-// allocates while it computes, which grew by 152 MiB at most on those cards) is the cache's. The
-// smallest such room over the devices is the growth, since llama.cpp splits the cache among them;
-// the experts held on the host bound it, and under one token cycle it buys nothing and costs a
-// context made again. A context that cannot be made at the larger size goes back to the planned one.
+// free memory is read again. What the contexts made beside the cache took there (the drop from no
+// context to the contexts and the cache, less the cache's own part) is kept free once more, for what
+// a context allocates while it computes (152 MiB at most on those cards, through a 4.6k-token
+// prompt), and the rest is the cache's. The contexts made before the cache are no measure of it: with
+// the experts on the host, a wide graph's buffers copy them onto the device and took 3.5 GiB of a
+// 24 GB card where the cache's own contexts take a fraction of that. The cache's part of each device
+// is its share of the drop, which llama.cpp splits by the layers or the free memory; the smallest
+// room over the devices is the growth. The experts on the host bound it, under one token cycle it is
+// not worth a context made again, and a context that cannot be made at the larger size goes back to
+// the planned one.
 bool Session::Impl::fill_device_cache(Opening & o,
-                                      const std::vector<std::pair<ggml_backend_dev_t, size_t>> & with_context) {
+                                      const std::vector<std::pair<ggml_backend_dev_t, size_t>> & no_context) {
     const auto now = device_free_now();
     const auto free_in = [](const std::vector<std::pair<ggml_backend_dev_t, size_t>> & v, ggml_backend_dev_t d) {
         for (const auto & e : v)
             if (e.first == d) return e.second;
         return (size_t) 0;
     };
+    const size_t planned = (size_t) cfg.moe.device_cache_mb << 20;
+    size_t drop_sum = 0;
+    for (const auto & [dev, free] : now) {
+        const size_t before = free_in(no_context, dev);
+        if (before > free) drop_sum += before - free;
+    }
+    if (drop_sum <= planned) return true; // nothing measured past the cache itself: leave it as planned
     size_t grow = SIZE_MAX, reserve = 0;
     for (const auto & [dev, free] : now) {
-        const size_t at_load = free_in(device_free_at_load, dev), with_ctx = free_in(with_context, dev);
-        if (at_load <= with_ctx) continue; // no context of this session on it
-        const size_t one_context = at_load - with_ctx;
-        grow = std::min(grow, free > one_context ? free - one_context : 0);
-        reserve = std::max(reserve, one_context);
+        const size_t before = free_in(no_context, dev);
+        if (before <= free) continue; // no context of this session on it
+        const size_t drop = before - free;
+        const size_t contexts = (size_t) ((double) (drop_sum - planned) * (double) drop / (double) drop_sum);
+        const size_t share = drop > contexts ? drop - contexts : 0; // the cache's part of this device
+        const size_t room = free > contexts ? free - contexts : 0;
+        // The cache grows on every device by its share of the growth: the device with the least room for
+        // its share bounds the whole.
+        const double part = (double) share / (double) planned;
+        if (part > 0.0) grow = std::min(grow, (size_t) ((double) room / part));
+        reserve = std::max(reserve, contexts);
     }
     if (grow == SIZE_MAX) return true; // the cache is on no device measured here
     const auto mib = [](size_t b) { return b >> 20; };
-    const size_t planned = (size_t) cfg.moe.device_cache_mb << 20;
     size_t held = 0; // the experts on the host the cache serves from: past them a slot holds nothing
     {
         std::vector<const ggml_tensor *> seen;
@@ -2865,7 +2879,6 @@ std::unique_ptr<Session> Session::open_placed(const SessionConfig & cfg,
     // The order is load-bearing; each step's comment says what it needs from the ones before.
     if (!im.load_model(o)) return nullptr;
     detail::log_memory_snapshot("model-loaded");
-    if (cfg.moe.device_cache_fill) im.device_free_at_load = device_free_now();
     if (!im.read_model(o)) return nullptr;
     if (!im.build_hook(o)) return nullptr;
     if (!im.create_contexts(o)) return nullptr;
