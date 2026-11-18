@@ -125,7 +125,8 @@ public struct HFFacts: Equatable, Sendable {
         nExpert = m["n_expert"].int(or: 0)
         nExpertUsed = m["n_expert_used"].int(or: 0)
         nLayer = m["n_layer"].int(or: 0)
-        denseBytes = m["dense_bytes"].int64(or: 0)
+        // What stays in memory: the server leaves out the tables read a row at a time.
+        denseBytes = m["resident_bytes"].int64(or: m["dense_bytes"].int64(or: 0))
         expertBytes = m["expert_bytes"].int64(or: 0)
         streamable = m["streamable"].bool(or: false)
         refusal = m["refusal"].string(or: "")
