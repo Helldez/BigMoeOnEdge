@@ -14,6 +14,7 @@
 #include "bmoe/backend_choice.h"
 
 #include "bmoe/params.h"
+#include "bmoe/routing.h"
 
 #include <algorithm>
 #include <cmath>
@@ -406,12 +407,19 @@ void share_of_host(Planning & s) {
 // measured upload rate against the host's compute) had called them a tie and kept the layers.
 
 // The share of a token's routed bytes a cache of `bytes` serves: from this model's own routing where
-// a record of it was replayed (Step 1), else the fraction of the expert set it holds.
-double expert_share_at(const ModelProfile & model, uint64_t bytes, bool * measured) {
-    *measured = model.hit_curve.measured;
-    if (model.hit_curve.measured) return model.hit_curve.hit_share(bytes);
+// a record of it was replayed (Step 1), else from the prior in token cycles (prior_hit_curve), else
+// the fraction of the expert set it holds.
+double expert_share_at(const ModelProfile & model, uint64_t bytes) {
+    if (model.hit_curve.credited()) return model.hit_curve.hit_share(bytes);
     if (model.expert_bytes == 0) return 0.0;
     return std::min(1.0, (double) bytes / (double) model.expert_bytes);
+}
+
+// Where expert_share_at's figure came from, as a rationale says it.
+const char * expert_share_source(const ModelProfile & model) {
+    return model.hit_curve.measured ? "from this model's own routing"
+           : model.hit_curve.prior  ? "the prior in token cycles every model without a record is credited"
+                                    : "the fraction of the expert set it holds";
 }
 
 // Whether every device the fitter put layers on can hold a cache of experts and compute them there,
@@ -673,8 +681,7 @@ CpuSharePrice price_cpu_share(const Planning & s, const ComputeDevice & dev, uin
                 "bytes, and one of them is unmeasured";
         return r;
     }
-    bool measured_share = false;
-    const double hit = expert_share_at(s.model, cache_bytes, &measured_share);
+    const double hit = expert_share_at(s.model, cache_bytes);
     const double gib = (double) routed / (double) (1ull << 30);
     const double miss = (1.0 - hit) * gib;
     if (miss <= 0.0) {
@@ -699,8 +706,7 @@ CpuSharePrice price_cpu_share(const Planning & s, const ComputeDevice & dev, uin
                   "layer: %.1f ms of experts a token uploading every miss, %.1f ms with %.0f%% of the misses on the "
                   "host beside the device and %.1f ms of hops over %u layers",
                   u64s(mib(cache_bytes)).c_str(), 100.0 * hit, (double) routed / (1 << 20),
-                  measured_share ? "from this model's own routing" : "the fraction of the expert set it holds",
-                  dev.name.c_str(), rates.device, rates.host,
+                  expert_share_source(s.model), dev.name.c_str(), rates.device, rates.host,
                   rates.real_layer ? ", both on this model's own expert block" : "", dev.name.c_str(), upload,
                   1e6 * dev.host_hop_seconds, 1e3 * r.t_all, 1e3 * r.t_share, 100.0 * r.share, 1e3 * hops_s, layers);
     r.nums = nums;
@@ -781,16 +787,14 @@ void choose_device_tier(Planning & s) {
                    "needs it again");
         return;
     }
-    bool share_measured = false;
-    const double share = expert_share_at(m, budget, &share_measured);
+    const double share = expert_share_at(m, budget);
     char nums[768];
     std::snprintf(nums, sizeof(nums),
                   "%s computes this model's experts at %.0f GiB/s against the host's %.0f%s; a cache of %s "
                   "serves %.0f%% of a token's routed bytes (%s)",
                   dev->name.c_str(), rates.device, rates.host,
                   rates.real_layer ? ", both measured on this model's own expert block" : "", held.c_str(),
-                  100.0 * share,
-                  share_measured ? "from this model's own routing" : "the fraction of the expert set it holds");
+                  100.0 * share, expert_share_source(m));
     if (rates.device <= rates.host * (1.0 + (double) s.pol.min_backend_win)) {
         s.note("device-cache-mb", "0", Source::Measured,
                "The host computes the experts as fast as the device: they stay where the fitter put them.",
@@ -2246,8 +2250,8 @@ int planned_decode_threads(const Planning & s) {
 // measured compute and what this cost model priced the same configuration at, so the groups keep
 // their relative prices and the ranking still weighs them against each other, and the cache's credit
 // scales by the ratio between the hits measured at that load's budget and the credit there - lowered
-// toward the measurement, never raised past what the replay justified (a linear credit, which is
-// conservative on purpose, moves both ways). A figure answers only for the configuration it was
+// toward the measurement, never raised past what the replay justified (the prior, which is no
+// measurement of this model, moves both ways). A figure answers only for the configuration it was
 // measured under: the same decode thread count and the same placement on the devices.
 void calibrate_decode_cost(Planning & s) {
     const MeasuredKnobs & mk = s.model.knobs;
@@ -2291,7 +2295,7 @@ void calibrate_decode_cost(Planning & s) {
     const uint64_t budget = (uint64_t) (mk.decode_cache_mib * 1024.0 * 1024.0);
     if (mk.decode_hit >= 0.0 && budget > 0 && s.host_expert_bytes > 0 && s.model.is_moe) {
         const HitCurve & curve = s.model.hit_curve;
-        const bool from_curve = curve.measured && s.model.expert_bytes > 0;
+        const bool from_curve = curve.credited() && s.model.expert_bytes > 0;
         const double credited =
             from_curve
                 ? curve.hit_share(
@@ -2299,7 +2303,9 @@ void calibrate_decode_cost(Planning & s) {
                 : std::min(1.0, (double) s.pol.cache_hit_optimism * (double) budget / (double) s.host_expert_bytes);
         if (credited > 0.0) {
             double scale = mk.decode_hit / credited;
-            if (from_curve) scale = std::min(1.0, scale);
+            // A load measuring more than this model's own record replays is the cache warming past what a
+            // short record saw, not a better model of it; the prior is a guess either way.
+            if (curve.measured) scale = std::min(1.0, scale);
             if (scale != 1.0) {
                 s.hit_scale = scale;
                 char b[200];
@@ -3001,6 +3007,22 @@ void note_hit_curve(Planning & s, const Allocation & alloc) {
                    " prompt tokens) at every cache size up to the whole expert set; at " +
                    u64s(mib(alloc.cache_bytes)) + " MiB it serves " + value +
                    " of the decode lookups, where the linear credit would have said " + linear_pct +
+                   (s.hit_scale != 1.0 ? std::string("; scaled to the hits a load measured here (decode-cost)")
+                                       : std::string()));
+    } else if (curve.prior && alloc.cache_bytes > 0 && s.host_model.token_cycle_bytes > 0) {
+        char value[16];
+        std::snprintf(value, sizeof(value), "%.0f%%", 100.0 * alloc.cache_hit_credited);
+        const double cycles = (double) alloc.cache_bytes / (double) s.host_model.token_cycle_bytes;
+        char nums[64];
+        std::snprintf(nums, sizeof(nums), "%.1f", cycles);
+        s.note("cache-hits", value, Source::Policy,
+               "Cache hits are estimated at " + std::string(value) + " until this model's own routing is recorded.",
+               "no routing record of this model" +
+                   (curve.rejected.empty() ? std::string() : " fits (" + curve.rejected + ")") +
+                   ", so the cache is credited the prior every model starts from: hits rise with the cache counted "
+                   "in token cycles (the bytes one token routes through), where the measured models agree, toward "
+                   "a ceiling the cold misses keep; " +
+                   size_brief(alloc.cache_bytes) + " is " + nums + " token cycles here" +
                    (s.hit_scale != 1.0 ? std::string("; scaled to the hits a load measured here (decode-cost)")
                                        : std::string()));
     } else if (!curve.rejected.empty()) {
@@ -3902,6 +3924,14 @@ Plan plan_run(const RunConfig & base,
               const Placement & projected,
               const PlanRequest & req,
               const PlannerPolicy & pol) {
+    // A model with no routing record of its own is priced on the prior curve, so the cache is ranked
+    // and credited by one path whichever it has (bmoe/routing.h).
+    if (!model.hit_curve.credited() && model.is_moe && model.expert_bytes > 0 && model.token_cycle_bytes > 0) {
+        ModelProfile with_prior = model;
+        with_prior.hit_curve = prior_hit_curve(model.expert_bytes, model.token_cycle_bytes);
+        with_prior.hit_curve.rejected = model.hit_curve.rejected;
+        return plan_run(base, hw, with_prior, projected, req, pol);
+    }
     // Which backend drives each card, before anything is weighed on the card: the rules below then
     // see one device per card, the one that will run (bmoe/backend_choice.h).
     if (req.is_pinned("device-list") || req.is_pinned("devices"))

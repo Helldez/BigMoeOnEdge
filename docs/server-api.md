@@ -1225,7 +1225,8 @@ so a stage or a role the server adds reaches every UI with no UI change:
   `s_per_token`; `cache_hit_pct` where there is a cache, the hit rate the cost model credited the
   cache with (`Allocation::cache_hit_credited`), not the cache's share of the experts: read off
   the model's own hit curve when the server kept a routing record for that file (`routing/` in the
-  data folder, one file per model; see `docs/hardware-planning.md`), else the linear credit; and
+  data folder, one file per model; see `docs/hardware-planning.md`), else the prior in token cycles every model without a record
+  starts from (`docs/measured-planning.md`); and
   `s_per_token_worst`, the same token with nothing resident and every byte read again, a bound
   beside the prediction and never divided into it. Each is absent when not predicted.
 - `memory.pools` is the ledger the plan charged: the host's pool (`name` `host`; `cap_bytes`

@@ -28,7 +28,7 @@ uint64_t RoutingTrace::expert_set_bytes() const {
 }
 
 double HitCurve::hit_share(uint64_t cache_bytes) const {
-    if (!measured || points.empty()) return 0.0;
+    if (!credited() || points.empty()) return 0.0;
     if (cache_bytes <= points.front().cache_bytes) return points.front().hit;
     for (size_t i = 1; i < points.size(); ++i) {
         const HitPoint & a = points[i - 1];
@@ -39,6 +39,20 @@ double HitCurve::hit_share(uint64_t cache_bytes) const {
         return a.hit + t * (b.hit - a.hit);
     }
     return points.back().hit;
+}
+
+HitCurve prior_hit_curve(uint64_t expert_bytes, uint64_t token_cycle_bytes, uint32_t points) {
+    HitCurve c;
+    if (expert_bytes == 0 || token_cycle_bytes == 0 || points < 2) return c;
+    c.prior = true;
+    for (uint32_t i = 0; i < points; ++i) {
+        const uint64_t bytes = (uint64_t) ((double) expert_bytes * i / (points - 1));
+        const double cycles = (double) bytes / (double) token_cycle_bytes;
+        const double held = (double) bytes / (double) expert_bytes;
+        const double hit = k_prior_hit_ceiling * (1.0 - std::exp(-cycles / k_prior_hit_cycles));
+        c.points.push_back({bytes, std::min(1.0, std::max(held, hit))});
+    }
+    return c;
 }
 
 // ── text ─────────────────────────────────────────────────────────────────────────────────────
