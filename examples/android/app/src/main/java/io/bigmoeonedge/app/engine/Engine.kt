@@ -3,6 +3,7 @@ package io.bigmoeonedge.app.engine
 import io.bigmoeonedge.app.chat.Chat
 
 import android.content.Context
+import android.os.SystemClock
 import android.content.Intent
 import androidx.core.content.ContextCompat
 import io.bigmoeonedge.app.data.AppPrefs
@@ -394,6 +395,11 @@ data class EngineUi(
     val serverUp: Boolean = false,
     /** Why the server is not up: it has not started yet, it died (with its stderr), it was stopped. */
     val serverError: String? = null,
+    /**
+     * The engine ended on its own (a crash) and this app started it again: said where models are
+     * loaded until the next load begins, since the restarted engine has no model and no error of its own.
+     */
+    val crashNote: String? = null,
     /** How the running server was started: on the network with the key, or on loopback. */
     val shared: Boolean = false,
     /** The port the running server took (ListenPort), once it has: null while it starts. */
@@ -467,6 +473,9 @@ object Engine {
     // The model a restart found loaded, to load again once the next server is up: changing the
     // address or the key is not a person asking to unload. Cleared once used, or by a plain stop.
     @Volatile private var reloadAfterRestart: String? = null
+    // When the engine was last started again after a crash: once a minute at most, so an engine that
+    // dies as it starts stays down with its reason instead of starting over and over.
+    @Volatile private var lastCrashRestart = 0L
 
     val current: EngineUi get() = _state.value
 
@@ -535,16 +544,33 @@ object Engine {
         _state.update { it.copy(serverUp = false, serverError = "The engine was stopped.", info = null, port = null) }
     }
 
+    /**
+     * The server of [launch] ended. Returns whether the service should start a new one: after a crash
+     * nobody asked for, so the engine is back for the next load or download without the person
+     * having to find Start engine in Settings. The new server loads nothing by itself, and a load
+     * that crashed it is not repeated: the plan's record already counts it against that device.
+     */
     @Synchronized
-    internal fun serverExited(launch: Long, code: Int, stderrTail: String) {
-        if (launch != currentLaunch) return // a server already stopped or replaced
+    internal fun serverExited(launch: Long, code: Int, stderrTail: String): Boolean {
+        if (launch != currentLaunch) return false // a server already stopped or replaced
         recorder?.close()
         val why = if (code == 0) "The engine stopped." else "The engine process ended (exit $code)."
         val tail = stderrTail.trim().takeLast(1500)
+        val now = SystemClock.elapsedRealtime()
+        val again = code != 0 && serving && (lastCrashRestart == 0L || now - lastCrashRestart > CRASH_RESTART_GAP_MS)
+        if (again) lastCrashRestart = now
         _state.update {
-            it.copy(serverUp = false, serverError = if (tail.isEmpty()) why else "$why\n$tail", info = null)
+            it.copy(
+                serverUp = false,
+                serverError = if (tail.isEmpty()) why else "$why\n$tail",
+                info = null,
+                crashNote = if (again) "The engine stopped unexpectedly (exit $code) and was started again." else it.crashNote,
+            )
         }
+        return again
     }
+
+    private const val CRASH_RESTART_GAP_MS = 60_000L
 
     // ── the event stream ──
 
@@ -716,6 +742,7 @@ object Engine {
 
     suspend fun load(modelPath: String?): Result<Unit> = call {
         cancelIdleUnload()
+        _state.update { it.copy(crashNote = null) }
         api.load(modelPath)
     }
 

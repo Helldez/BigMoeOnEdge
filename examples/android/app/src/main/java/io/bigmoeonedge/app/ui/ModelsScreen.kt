@@ -160,9 +160,7 @@ fun ModelsScreen(modifier: Modifier = Modifier, onOpenChat: () -> Unit = {}) {
             Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            if (!engine.serverUp) {
-                Text("The engine is not running.", color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
-            }
+            EngineDown(engine)
             if (engine.info?.state == "error") {
                 Text("Last load failed: ${engine.info?.error.orEmpty()}", color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
             }

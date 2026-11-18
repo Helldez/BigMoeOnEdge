@@ -122,3 +122,25 @@ fun SwitchRow(label: String, description: String?, checked: Boolean, enabled: Bo
         Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
     }
 }
+
+/**
+ * Where models are loaded or downloaded, the engine's state when that cannot happen, and the way
+ * back: an engine that is down says why and offers to start, so nobody has to find Start engine in
+ * Settings. While it starts (no reason yet) it says only that; a crash it came back from is said
+ * once, until the next load.
+ */
+@Composable
+fun EngineDown(engine: io.bigmoeonedge.app.engine.EngineUi) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    engine.crashNote?.let { Text(it, color = tokens.muted, fontSize = 13.sp) }
+    if (engine.serverUp) return
+    val why = engine.serverError?.lineSequence()?.firstOrNull()?.take(120)
+    if (why == null) {
+        Text("Starting the engine…", color = tokens.muted, fontSize = 13.sp)
+        return
+    }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(why, color = tokens.err, fontSize = 13.sp, modifier = Modifier.weight(1f))
+        OutlinedButton(shape = Corner, onClick = { io.bigmoeonedge.app.engine.Engine.start(context) }) { Text("Start engine") }
+    }
+}
