@@ -46,16 +46,27 @@ class ServerProcess(private val ctx: Context) {
      * Start the server, always with [apiKey] required: loopback on a phone is reachable by every
      * installed app, and without a key any of them could read a conversation off the event stream.
      * With [share] it listens on every interface too. The key travels in a file only this app can
-     * read (`--api-key-file`), never on the command line. [onExit] runs once, on a thread of its
-     * own, when the process ends.
+     * read (`--api-key-file`), never on the command line. [port] is the one the person chose, 0 for
+     * the server's default; the server moves past it when it is in use and writes the port it took
+     * to [ListenPort.file], which [onListening] is given once it is there. [onExit] runs once, on a
+     * thread of its own, when the process ends.
      */
-    fun start(share: Boolean, apiKey: String, onExit: (code: Int, stderrTail: String) -> Unit) {
+    fun start(
+        share: Boolean,
+        apiKey: String,
+        port: Int,
+        onListening: (port: Int) -> Unit,
+        onExit: (code: Int, stderrTail: String) -> Unit,
+    ) {
         val nativeDir = ctx.applicationInfo.nativeLibraryDir
         val dataDir = dataDir(ctx)
+        // An earlier run's file would name a port that may be another program's by now.
+        val portFile = ListenPort.file(ctx).apply { delete() }
         val argv = mutableListOf(
             ModelManager.serverPath(ctx),
             "--host", if (share) "0.0.0.0" else "127.0.0.1",
-            "--port", PORT.toString(),
+            "--port-fallback",
+            "--port-file", portFile.absolutePath,
             "--data-dir", dataDir.absolutePath,
             "--models-dir", ModelManager.internalModelsDir(ctx).absolutePath,
             "--catalog", stageCatalog(ctx).absolutePath,
@@ -64,6 +75,7 @@ class ServerProcess(private val ctx: Context) {
             // desktop's (docs/agent.md).
             "--chat-only",
         )
+        if (port > 0) argv += listOf("--port", port.toString())
         // The other places a model can sit: the server lists what they hold and loads it in place.
         for (d in ModelManager.scanDirs(ctx)) argv += listOf("--scan-dir", d.absolutePath)
 
@@ -99,6 +111,19 @@ class ServerProcess(private val ctx: Context) {
                 // the stream closes with the process
             }
         }
+        // The port, once the server has bound it: before its slow start-up (the compute backends),
+        // so the app connects and waits in the listen queue rather than guess. Given up when the
+        // process ends first; its exit then says why.
+        thread(name = "bmoe-server-port") {
+            while (p.isAlive) {
+                val bound = ListenPort.read(portFile)
+                if (bound != null) {
+                    if (process === p) onListening(bound)
+                    return@thread
+                }
+                runCatching { Thread.sleep(PORT_POLL_MS) }
+            }
+        }
         thread(name = "bmoe-server-out") {
             try {
                 BufferedReader(InputStreamReader(p.inputStream)).forEachLine { /* the start-up banner */ }
@@ -127,9 +152,8 @@ class ServerProcess(private val ctx: Context) {
     }
 
     companion object {
-        /** The one port the app's server listens on, and the one every address the app shows names. */
-        const val PORT = 8765
-        fun baseUrl() = "http://127.0.0.1:$PORT"
+        /** The app's own server on [port], on loopback whatever else it listens on. */
+        fun baseUrl(port: Int) = "http://127.0.0.1:$port"
 
         /** The server's data directory (its settings.json and the catalog), beside the app's files. */
         fun dataDir(ctx: Context): File = File(ctx.filesDir, "bmoe").apply { mkdirs() }
@@ -163,6 +187,7 @@ class ServerProcess(private val ctx: Context) {
         private const val MODE_OWNER_RW = 0x180 // 0600
         private const val EXIT_GRACE_MS = 3000L
         private const val EXIT_FORCE_MS = 3000L
+        private const val PORT_POLL_MS = 50L
     }
 }
 
@@ -221,7 +246,11 @@ class EngineService : Service() {
         val s = ServerProcess(applicationContext)
         server = s
         try {
-            s.start(share, key) { code, tail -> Engine.serverExited(launch, code, tail) }
+            s.start(
+                share, key, AppPrefs.port(this),
+                onListening = { port -> Engine.serverListening(launch, port) },
+                onExit = { code, tail -> Engine.serverExited(launch, code, tail) },
+            )
         } catch (t: Throwable) {
             server = null
             Engine.serverExited(launch, -1, t.message ?: t.toString())

@@ -46,10 +46,10 @@ endif()
 # feed sets this to its own key's base64.
 set(BMOE_FEED_PUBLIC_KEY "" CACHE STRING "Base64 Ed25519 public key the release feed is verified with (empty: server/feed_key.h's)")
 
-# What the server and the desktop app ask the operating system (platform.h): no engine in it, so
-# the app links it without the engine.
-add_library(bmoe_server_platform STATIC platform.cpp)
-target_link_libraries(bmoe_server_platform PUBLIC bmoe_frontend)
+# What the server and the desktop app ask the operating system (platform.h), and the port the server
+# listens on and reports (listen_port.h): no engine in it, so the app links it without the engine.
+add_library(bmoe_server_platform STATIC platform.cpp listen_port.cpp)
+target_link_libraries(bmoe_server_platform PUBLIC bmoe_frontend PRIVATE cpp-httplib)
 target_include_directories(bmoe_server_platform PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(bmoe_server_platform SYSTEM PUBLIC ${CMAKE_SOURCE_DIR}/third_party/llama.cpp/vendor)
 target_compile_definitions(bmoe_server_platform PRIVATE BMOE_BUILD_TARGET="${BMOE_BUILD_TARGET}")

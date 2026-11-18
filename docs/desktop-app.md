@@ -14,10 +14,12 @@ process, so a driver that ends the engine does not end the window, and it restar
 three times in two minutes before it waits for a person). The server is told the app's process id
 (`--parent-pid`) and stops when the app is gone, however the app ended.
 
-The port comes from the app's preferences, the server's default (8765) when none is set. When that
-port is taken the app tries the next ones, starts the server on the first free one, and says so (a
-notification, and `notice` in `info()`). It waits for `/api/info` to answer, then shows the UI the
-server serves, so the app and a browser show the same thing. The server's output goes to
+The port comes from the app's preferences, the server's default (8765) when none is set. The server
+is started with `--port-fallback` and `--port-file <data>/server.port`: when that port is taken it
+listens on the next free one and writes the port it took, which the app reads (it never probes a
+port itself, so nothing can take the port between a probe and the start), and says so when it moved
+(a notification, and `notice` in `info()`). It waits for `/api/info` to answer there, then shows the
+UI the server serves, so the app and a browser show the same thing. The server's output goes to
 `<data>/logs/server.log` (the run before is kept as `server.log.1`). One copy of the app runs per
 user: a second start brings the first one's window forward and exits.
 

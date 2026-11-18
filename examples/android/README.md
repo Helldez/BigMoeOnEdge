@@ -258,10 +258,12 @@ lands on its row.
 **Serve on the network** is the first card on the page, folded like the rest, with its state in
 its header even when closed: Off, On with the phone's address, or On but not on a network. Switched
 on, the engine listens on every interface, and the card shows the phone's address on its Wi-Fi or
-Ethernet network (`http://<phone IP>:8765`, ready to copy and kept current when the network
+Ethernet network (`http://<phone IP>:<port>`, ready to copy and kept current when the network
 changes), the API key (on its own line in blocks of four, masked, with Show, Copy and New key
-below it) and the base URL a client takes,
-`http://<phone IP>:8765/v1`. Any OpenAI-compatible client then uses it with
+below it), the base URL a client takes, `http://<phone IP>:<port>/v1`, and a **Port** field. The
+port is the server's default (8765) unless the field names another; when another app holds it (a
+remote-access app often does), the server takes the next free one, the address shows the port it
+took, and the field says it moved. Any OpenAI-compatible client then uses it with
 `Authorization: Bearer <key>`: a laptop's coding agent, Open WebUI, a script. Prompts and answers
 cross the network unencrypted, as the card says; use it on a network you trust. A coding agent needs
 a larger Context than a chat: its first request alone is about 10k tokens, so set Context to 16384
@@ -275,9 +277,11 @@ installed app, and an open server would let any of them read a conversation off 
 The app starts it with a random key per launch, written to a file in its private storage that only
 it can read (`--api-key-file`, mode 0600, never on the command line), and sends it on every request;
 shared, the key is the persistent one Settings shows, so a client keeps working across restarts.
-Before it trusts the server on the port, the app checks it is the one it started: that server
-refuses a random key and accepts the launch's. Another program's server on 8765 (an open one, or
-one with a key of its own) is reported as holding the port, and nothing is sent to it. The server
+The app never assumes the port: it starts the server with `--port-fallback` and `--port-file` in its
+private storage, and talks only to the port that file names once the server has bound it
+([server-api.md](../../docs/server-api.md)); the server binds it exclusively, so no other app can
+share it. Before it trusts the server there, the app still checks it is the one it started: that
+server refuses a random key and accepts the launch's. The server
 is stopped and restarted on a background thread, one step at a time, so a restart never races the
 old process for the port and a stop never freezes the screen; a stopped server's late exit report
 changes nothing. The event stream has a watchdog: the server pings every 15 s, and a stream silent

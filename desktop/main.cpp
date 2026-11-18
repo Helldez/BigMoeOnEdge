@@ -118,6 +118,7 @@ public:
           updates_dir_((fs::u8path(data_dir_) / "updates").u8string()),
           log_path_((fs::u8path(data_dir_) / "logs" / "server.log").u8string()),
           key_path_((fs::u8path(data_dir_) / kNetworkKeyFile).u8string()),
+          port_path_((fs::u8path(data_dir_) / kServerPortFile).u8string()),
           sup_(log_path_, [this](int status) { serial_.post([this, status] { on_server_exit(status); }); }) {
         std::string warning;
         prefs_ = load_prefs(prefs_path_, warning);
@@ -178,21 +179,9 @@ private:
     void start_server() {
         if (quitting_) return;
         sup_.stop();
-        const int preferred = prefs().port ? prefs().port : server::kDefaultPort;
-        const int port = pick_port(preferred, port_is_free);
-        if (port == 0) {
-            show_error("No free port",
-                       "Ports " + std::to_string(preferred) + " to " + std::to_string(preferred + kPortTries - 1) +
-                           " are all in use. Choose another port in Settings, or close what uses them.");
-            return;
-        }
-        std::string notice;
-        if (port != preferred)
-            notice = "Port " + std::to_string(preferred) + " is in use, so the server is on port " +
-                     std::to_string(port) + ".";
         {
             std::lock_guard<std::mutex> lk(m_);
-            notice_ = notice;
+            notice_.clear();
         }
         std::string err;
         // The key exists before a server that reads it starts; one that cannot be written keeps the
@@ -204,11 +193,27 @@ private:
         }
         const fs::path exe = fs::u8path(server::platform::executable_dir());
         const ServerLaunch launch =
-            server_launch((exe / os::kServerExecutable).u8string(), os::resources_dir(), opt_.data_dir, port,
-                          server::platform::current_pid(), network ? key_path_ : "", opt_.server_args);
-        if (!sup_.start(launch, port, err)) {
-            if (!quitting_) show_error("The engine's server did not start", err + "\nIts log: " + log_path_);
+            server_launch((exe / os::kServerExecutable).u8string(), os::resources_dir(), opt_.data_dir, prefs().port,
+                          port_path_, server::platform::current_pid(), network ? key_path_ : "", opt_.server_args);
+        int port = 0;
+        if (!sup_.start(launch, port_path_, port, err)) {
+            if (!quitting_)
+                show_error("The engine's server did not start",
+                           err +
+                               "\nIf its port is in use, choose another in Settings or close what uses it.\nIts log: " +
+                               log_path_);
             return;
+        }
+        // The server moved past a port in use: said once, so a client set up for the old one is
+        // pointed at the new one.
+        const int preferred = prefs().port ? prefs().port : server::kDefaultPort;
+        std::string notice;
+        if (port != preferred)
+            notice = "Port " + std::to_string(preferred) + " is in use, so the server is on port " +
+                     std::to_string(port) + ".";
+        {
+            std::lock_guard<std::mutex> lk(m_);
+            notice_ = notice;
         }
         port_ = port;
         const std::string url = origin() + "/";
@@ -372,7 +377,7 @@ private:
 
     webview::webview & w_;
     Options opt_;
-    std::string data_dir_, prefs_path_, updates_dir_, log_path_, key_path_;
+    std::string data_dir_, prefs_path_, updates_dir_, log_path_, key_path_, port_path_;
     std::mutex m_;
     DesktopPrefs prefs_;
     std::string notice_;

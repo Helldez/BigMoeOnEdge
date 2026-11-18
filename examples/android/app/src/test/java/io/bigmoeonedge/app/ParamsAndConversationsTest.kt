@@ -80,8 +80,9 @@ class ParamsAndConversationsTest {
         val a = listOf("127.0.0.1", "169.254.3.4", "192.168.1.23", "fe80::1", "192.168.1.23", "10.0.0.5")
             .map { java.net.InetAddress.getByName(it) }
         assertEquals(listOf("192.168.1.23", "10.0.0.5"), io.bigmoeonedge.app.engine.LanAddress.pick(a))
-        assertEquals("http://192.168.1.23:8765/v1", io.bigmoeonedge.app.engine.LanAddress.url("192.168.1.23"))
-        assertEquals("http://192.168.1.23:8765", io.bigmoeonedge.app.engine.LanAddress.address("192.168.1.23"))
+        // The port the server took, whichever it is: never one the app assumed.
+        assertEquals("http://192.168.1.23:8771/v1", io.bigmoeonedge.app.engine.LanAddress.url("192.168.1.23", 8771))
+        assertEquals("http://192.168.1.23:8771", io.bigmoeonedge.app.engine.LanAddress.address("192.168.1.23", 8771))
     }
 
     @Test

@@ -21,6 +21,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
@@ -35,6 +36,7 @@ import io.bigmoeonedge.app.engine.Engine
 import io.bigmoeonedge.app.engine.ParamSpec
 import io.bigmoeonedge.app.engine.UpdateInfo
 import io.bigmoeonedge.app.engine.LanAddress
+import io.bigmoeonedge.app.engine.ListenPort
 import io.bigmoeonedge.app.engine.PlanDecision
 import io.bigmoeonedge.app.engine.ValueSource
 import io.bigmoeonedge.app.engine.differsFromPlan
@@ -120,7 +122,7 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
             // First, because it is the one setting that reaches past this phone; its header says the state
             // with the card folded.
             val ctx = contextWarning(engine.info?.model.takeIf { engine.serverUp && engine.info?.ready == true }, params)
-            ShareSection(openCards[SHARE_SECTION] == true, { openCards = openCards + (SHARE_SECTION to it) }, ctx) { jump = it }
+            ShareSection(openCards[SHARE_SECTION] == true, { openCards = openCards + (SHARE_SECTION to it) }, engine.port, ctx) { jump = it }
             val lookOpen = openCards[LOOK_SECTION] == true
             FoldCard("Appearance", "", lookOpen, onToggle = { openCards = openCards + (LOOK_SECTION to !lookOpen) }) {
                 Appearance()
@@ -254,11 +256,12 @@ private fun FoldCard(
 
 /**
  * Serve on the network: the switch, and once on, what a client on another device needs (the
- * address, the key, the context a client asks for) and what sharing costs (the traffic is in clear).
- * The header says the state with the card folded, so whether the phone is reachable is never hidden.
+ * address with the port the server took, the key, the context a client asks for), the port the
+ * person prefers, and what sharing costs (the traffic is in clear). The header says the state with
+ * the card folded, so whether the phone is reachable is never hidden.
  */
 @Composable
-private fun ShareSection(open: Boolean, onOpen: (Boolean) -> Unit, ctx: ContextWarning?, onRaise: (String) -> Unit) {
+private fun ShareSection(open: Boolean, onOpen: (Boolean) -> Unit, port: Int?, ctx: ContextWarning?, onRaise: (String) -> Unit) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     var share by remember { mutableStateOf(AppPrefs.shareOnNetwork(context)) }
@@ -280,7 +283,8 @@ private fun ShareSection(open: Boolean, onOpen: (Boolean) -> Unit, ctx: ContextW
             val (text, colour) = when {
                 !share -> "Off" to MaterialTheme.colorScheme.onSurfaceVariant
                 first == null -> "On · not on a network" to warnColor()
-                else -> "On · ${LanAddress.address(first)}" to MaterialTheme.colorScheme.onSurfaceVariant
+                port == null -> "On · starting" to MaterialTheme.colorScheme.onSurfaceVariant
+                else -> "On · ${LanAddress.address(first, port)}" to MaterialTheme.colorScheme.onSurfaceVariant
             }
             Text(text, fontSize = 12.sp, color = colour, maxLines = 1)
         },
@@ -302,8 +306,9 @@ private fun ShareSection(open: Boolean, onOpen: (Boolean) -> Unit, ctx: ContextW
                 fontSize = 12.sp, color = warnColor(),
             )
         }
-        lan.forEach { ip ->
-            val address = LanAddress.address(ip)
+        if (port == null && lan.isNotEmpty()) Hint("The engine is starting; its address appears once it listens.")
+        if (port != null) lan.forEach { ip ->
+            val address = LanAddress.address(ip, port)
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(address, fontFamily = CodeFont, fontSize = 15.sp, modifier = Modifier.weight(1f))
                 TextButton(shape = Corner, onClick = { clipboard.setText(AnnotatedString(address)) }) { Text("Copy") }
@@ -323,7 +328,8 @@ private fun ShareSection(open: Boolean, onOpen: (Boolean) -> Unit, ctx: ContextW
             TextButton(shape = Corner, onClick = { clipboard.setText(AnnotatedString(key)) }) { Text("Copy") }
             TextButton(shape = Corner, onClick = { key = AppPrefs.regenerateApiKey(context); Engine.restart(context) }) { Text("New key") }
         }
-        first?.let { Hint("In a client: base URL ${LanAddress.url(it)}, and the key above.") }
+        if (first != null && port != null) Hint("In a client: base URL ${LanAddress.url(first, port)}, and the key above.")
+        PortField(port)
         // Where the clients are switched on, what they need: said here whether or not the status
         // line's warning was dismissed.
         if (ctx?.short == true) {
@@ -334,6 +340,48 @@ private fun ShareSection(open: Boolean, onOpen: (Boolean) -> Unit, ctx: ContextW
         }
         Text("Prompts and answers cross the network unencrypted: use it on a network you trust.", fontSize = 12.sp, color = warnColor())
     }
+}
+
+/**
+ * The port the person prefers for the server, empty for the server's own default. Applied by
+ * restarting the engine; the server moves past a port another program holds, and the field then says
+ * where it went, so a client set up for the chosen port is pointed at the one in use.
+ */
+@Composable
+private fun PortField(listening: Int?) {
+    val context = LocalContext.current
+    var chosen by remember { mutableStateOf(AppPrefs.port(context)) }
+    var text by remember { mutableStateOf(if (chosen > 0) chosen.toString() else "") }
+    var error by remember { mutableStateOf<String?>(null) }
+    fun commit() {
+        val p = ListenPort.chosen(text)
+        if (p == null) {
+            error = "a port from ${ListenPort.MIN} to ${ListenPort.MAX}, or empty for the default"
+            return
+        }
+        error = null
+        if (p == chosen) return
+        chosen = p
+        AppPrefs.setPort(context, p)
+        Engine.restart(context)
+    }
+    val hint = error ?: when {
+        listening == null -> null
+        chosen > 0 && listening != chosen -> "Port $chosen is in use, so the engine is on $listening."
+        else -> "The engine listens on port $listening. Changing it restarts the engine."
+    }
+    OutlinedTextField(
+        value = text,
+        onValueChange = { text = it; error = null },
+        label = { Text("Port") },
+        placeholder = { Text("Default") },
+        isError = error != null,
+        supportingText = hint?.let { { Text(it) } },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+        keyboardActions = KeyboardActions(onDone = { commit() }),
+        modifier = Modifier.fillMaxWidth().onFocusChanged { if (!it.isFocused) commit() },
+    )
 }
 
 /**

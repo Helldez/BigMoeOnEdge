@@ -416,6 +416,57 @@ private struct CardHeader: View {
     }
 }
 
+/// The port the person prefers for the server, empty for the server's own default. Applied by
+/// restarting the engine; the server moves past a port another program holds, and the field then says
+/// where it went, so a client set up for the chosen port is pointed at the one in use.
+struct PortField: View {
+    @EnvironmentObject private var engine: Engine
+    @EnvironmentObject private var preferences: Preferences
+    @State private var text = ""
+    @State private var error: String?
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Port").font(.ui(13)).foregroundStyle(Palette.muted).padding(.top, 4)
+            TextField("Default", text: $text)
+                .font(.mono(15))
+                .keyboardType(.numberPad)
+                .focused($focused)
+                .onSubmit(commit)
+                .onChange(of: focused) { f in if !f { commit() } }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .overlay(RoundedRectangle(cornerRadius: Grid.radius, style: .continuous)
+                    .strokeBorder(error != nil ? Palette.warn : focused ? Palette.accent : Palette.line, lineWidth: Grid.line))
+            if let hint = error ?? hint {
+                Text(hint).font(.ui(12)).foregroundStyle(error != nil ? Palette.warn : Palette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .onAppear { text = preferences.port > 0 ? String(preferences.port) : "" }
+    }
+
+    private var hint: String? {
+        guard let listening = engine.port else { return nil }
+        if preferences.port > 0, listening != preferences.port {
+            return "Port \(preferences.port) is in use, so the engine is on \(listening)."
+        }
+        return "The engine listens on port \(listening). Changing it restarts the engine."
+    }
+
+    private func commit() {
+        guard let p = ListenPort.chosen(text) else {
+            error = "A port from \(ListenPort.min) to \(ListenPort.max), or empty for the default."
+            return
+        }
+        error = nil
+        guard p != preferences.port else { return }
+        preferences.port = p
+        engine.restart()
+    }
+}
+
 /// Serving the engine to other devices (docs/screens.md): first in Settings, since it is what makes
 /// the phone a server. Its header says the state while the card is closed: whether it serves, and
 /// where. The key is the one kept in the keychain; the addresses are read when the card is drawn.
@@ -427,15 +478,20 @@ struct ShareSection: View {
     @State private var showKey = false
     @State private var copied: String?
 
-    private var urls: [String] { NetworkAddress.all().map { "http://\($0):\(EngineServer.port)" } }
+    /// The addresses with the port the server took: none until it has taken one.
+    private var urls: [String] {
+        guard let port = engine.port else { return [] }
+        return NetworkAddress.all().map { "http://\($0):\(port)" }
+    }
 
     var body: some View {
         let on = preferences.shareOnNetwork
         let urls = on ? urls : []
+        let starting = on && engine.port == nil && !NetworkAddress.all().isEmpty
         VStack(alignment: .leading, spacing: Grid.m) {
             CardHeader(title: "Serve on the network",
-                       detail: !on ? "Off" : urls.first.map { "On · \($0)" } ?? "On · not on a network",
-                       detailColor: on && urls.isEmpty ? Palette.warn : Palette.muted,
+                       detail: !on ? "Off" : starting ? "On · starting" : urls.first.map { "On · \($0)" } ?? "On · not on a network",
+                       detailColor: on && urls.isEmpty && !starting ? Palette.warn : Palette.muted,
                        open: $open)
             if open {
                 Toggle(isOn: Binding(get: { preferences.shareOnNetwork }, set: {
@@ -459,7 +515,10 @@ struct ShareSection: View {
     private func details(_ urls: [String]) -> some View {
         VStack(alignment: .leading, spacing: Grid.s) {
             Text("Address").font(.ui(13)).foregroundStyle(Palette.muted)
-            if urls.isEmpty {
+            if engine.port == nil {
+                Text("The engine is starting; its address appears once it listens.")
+                    .font(.ui(12)).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
+            } else if urls.isEmpty {
                 Text("Not on a Wi-Fi or wired network: no other device can reach the engine until this one joins one.")
                     .font(.ui(12)).foregroundStyle(Palette.warn).fixedSize(horizontal: false, vertical: true)
             }
@@ -500,6 +559,7 @@ struct ShareSection: View {
                         .font(.ui(13, bold: true)).foregroundStyle(Palette.accentInk).buttonStyle(.borderless)
                 }
             }
+            PortField()
             Text("Prompts and answers cross the network unencrypted: use it on a network you trust.")
                 .font(.ui(12)).foregroundStyle(Palette.warn).fixedSize(horizontal: false, vertical: true)
         }
