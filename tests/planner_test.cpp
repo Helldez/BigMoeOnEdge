@@ -1047,7 +1047,8 @@ int main() {
             Placement whole_all = whole;
             whole_all.n_gpu_layers = -1;
             const Plan bounded_all = plan_run(big_ctx, card, model, whole_all, PlanRequest{});
-            check((uint32_t) bounded_all.config.graph_width() == pol.ubatch_max_device,
+            check((uint32_t) bounded_all.config.graph_width() == pol.ubatch_max_device &&
+                      validate(bounded_all.config).ok,
                   "width: every layer as llama.cpp's -1 is a device computing the graph, bounded the same",
                   std::to_string(bounded_all.config.graph_width()));
 

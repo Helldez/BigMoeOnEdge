@@ -12,8 +12,8 @@ Semantic Versioning.
   read it as no layer on a device: the device's bound on a pass did not apply and the graph went as
   wide as the context. On a 24 GB card, Qwen3.6-35B-A3B Q4_K_M at a 16384 context asked 3.8 GiB of
   compute buffers more than the card had, the context could not be made and `bmoe-server` stayed up
-  with no model and nothing in its log. Every rule now reads -1 as every layer (the device split, the
-  projector's room and the card's spare memory with it), so the graph is held to the device's bound
+  with no model and nothing in its log. Every rule now reads -1 as every layer (the projector's room and the
+  card's spare memory with it), so the graph is held to the device's bound
   and the model loads. Machines whose devices share the host's
   memory (phones, Apple silicon, integrated GPUs) never place layers this way and are unchanged
   ([hardware-planning.md](docs/hardware-planning.md)).

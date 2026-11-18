@@ -221,17 +221,15 @@ Placement probe_placement(const char * model_path,
     // The room left for the projector is a cost of the device only where the run will use one: with
     // no layer placed the session opens without devices and the library loads it on the host.
     // -1 is llama.cpp's "every layer", which the fitter leaves where the whole model fits: a layer is
-    // on a device for any count but zero, and with one device it holds every slot (the layers and
-    // the output).
+    // on a device for any count but zero, so the projector's room is that device's either way.
     if (pl.n_gpu_layers != 0) pl.device_projector_bytes = projector_reserved;
     // The fitter writes one layer count per device into tensor_split only when there are several;
-    // with one, every placed layer is that device's.
-    if (pl.n_gpu_layers != 0) {
-        const float all_slots = (float) (model.n_layer + 1);
+    // with one, every placed layer is that device's. A split is a count of layers, which "every layer"
+    // is not: where the fitter left -1 there is none, and the session loads every layer on the devices
+    // llama.cpp chooses (a split must sum to the count it describes, which RunConfig validates).
+    if (pl.n_gpu_layers > 0) {
         for (size_t i = 0; i < devs.size(); ++i) {
-            const float n = devs.size() > 1       ? tensor_split[i]
-                            : pl.n_gpu_layers < 0 ? all_slots
-                                                  : (float) pl.n_gpu_layers;
+            const float n = devs.size() > 1 ? tensor_split[i] : (float) pl.n_gpu_layers;
             if (n > 0.0f) pl.device_split.emplace_back(ggml_backend_dev_name(devs[i]), (uint32_t) n);
         }
     }
