@@ -192,11 +192,19 @@ graphics the plan saw).
    machine says what the graphics are: ready, with the backends in use and nothing to install; a
    pack installed; or no card found, with where to get a driver (the maker's site) for an NVIDIA or
    AMD card the engine could not see. The phone apps carry their backends inside and skip it.
-1. **Pick a model**: two catalog entries side by side where the catalog has both, the largest that
-   fits in the memory ("Fits in memory": the fastest answers) and the smallest that does not
-   ("Larger than memory": what streaming from disk is for), each with its size and a sentence, the
-   first picked; with only one kind, the one that suits the memory. No speed is promised: nothing
-   is measured before a model is on disk. The graphics backend pack shows here only where one
+1. **Pick a model**: first that any gguf model runs here, with two buttons, one for gguf files the
+   person already has and one to find a model on Hugging Face; then, under "Suggested for a first
+   run", every model the catalog ships, the smallest first, by name and size; the largest whose
+   file is no larger than the memory is picked, or the smallest where none is. With one model in
+   the catalog, that one alone. The model picked is checked by the server at once
+   (`POST /api/models/inspect`: its header against this machine, the check the Models screen runs
+   before a Hugging Face download), and the answer stands under the list in the server's words and
+   colour: "Checking <model>…", then one plain sentence (`verdict.summary`, coloured by
+   `verdict.tone`), the disk it needs, and "How it was checked" opening the engine's own line and
+   memory sentence. A card whose model was checked keeps a mark in that colour. No size is turned
+   into a claim on the screen, and no speed is promised: nothing is measured before a model is on
+   disk. Download waits for the answer and stays off where the server says the model cannot be
+   downloaded; a check that could not be made (no connection) says so and holds nothing back. The graphics backend pack shows here only where one
    applies (`GET /api/backends`). One primary button: Download, with the size (Resume, for a
    partial file).
 2. **Download**: its progress, the time left and the rate, measured over the last 20 seconds of the

@@ -6,6 +6,13 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+- **`POST /api/models/inspect`: a catalog entry checked against this machine by its id**, read from
+  the entry's own files, with the model, machine and verdict objects of `/api/hf/inspect`. And the
+  verdict of both carries `summary` and `tone`: the answer in one sentence with no engine term, and
+  the tone it is said in (`ok`, `warn`, `err` or none), for a screen whose reader is not choosing an
+  engine ([server-api.md](docs/server-api.md#post-apimodelsinspect)).
+
 ### Changed
 - **The model catalog offers six models instead of two, from 5 GB to 300 GB.** A small dense
   one that most machines hold whole (Gemma-4-E4B-it Q4_0), a MoE model the
@@ -189,8 +196,12 @@ Semantic Versioning.
   the logo, the engine's state is said in words (thinking, writing, reading part of the model from
   the disk).
 - **The first run leads to the first answer.** It is steps the screen marks: where a graphics pack
-  applies to the computer and is missing, installing it (or choosing the processor); then a model
-  that fits in memory beside a larger one, its download with the time left, and the model loading
+  applies to the computer and is missing, installing it (or choosing the processor); then a model:
+  one the person already has or finds on Hugging Face, by two buttons at the top, or one among all
+  the catalog suggests. The one picked is checked by the server before anything is downloaded
+  (its header against this computer, as the Models screen checks a Hugging Face model), and the
+  answer stands under the list in one plain sentence and its colour; its
+  download with the time left, and the model loading
   by itself. The conversation opens when the model is ready, with three questions to try
   (`docs/screens.md`, "First run"). Where no pack is needed it names the graphics cards the engine
   computes on, which `GET /api/backends` now reports as `graphics` (each local GPU or integrated

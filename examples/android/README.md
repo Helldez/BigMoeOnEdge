@@ -107,9 +107,9 @@ load).
 
 **First run.** When the first listing of a launch finds no model on the phone and none coming, the
 app opens on **Get started** instead of an empty Chat (the web UI's first run): the phone's memory and
-processor threads, then three steps whose number follows the model's state. **Pick a model**: the
-largest catalog model that fits in memory beside the smallest larger than it (or the one suggested,
-alone), and Download (or Resume). **Download**: progress, the time left over a 20 s window ("about
+processor threads, then three steps whose number follows the model's state. **Pick a model**: every
+catalog model, the smallest first, the one picked checked by the server before its download
+(`POST /api/models/inspect`: one plain sentence, in the server's colour), and Download (or Resume). **Download**: progress, the time left over a 20 s window ("about
 12 min left · 8.4 MB/s"), and Pause; a paused download stays on this step, with Resume and Pick
 another model. **Start**: the model loads by itself when the download ends, and
 the conversation opens once the engine reports it ready, with three questions to try. Under it: pick

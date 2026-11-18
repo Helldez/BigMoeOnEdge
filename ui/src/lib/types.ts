@@ -367,9 +367,23 @@ export interface HfFacts {
      *  "not_a_model", "unknown") and the server's line for it; absent from an older server. */
     fit?: string;
     headline?: string;
+    /** The answer in one sentence with no engine term, and the tone it is said in ("ok", "warn",
+     *  "err", or ""): what a first run shows. Absent from an older server. */
+    summary?: string;
+    tone?: string;
     disk: string;
     memory: string;
   };
+}
+
+/** A catalog entry against this machine, before its download (`POST /api/models/inspect`): the
+ *  check `HfFacts` carries, asked by the entry's id. */
+export interface CatalogCheck extends Pick<HfFacts, 'model' | 'machine' | 'verdict'> {
+  id: string;
+  title: string;
+  quant: string;
+  bytes: number;
+  files: number;
 }
 
 /** One repository a search found (`POST /api/hf/search`). */

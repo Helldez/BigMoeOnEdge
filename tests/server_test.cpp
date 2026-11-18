@@ -1937,6 +1937,44 @@ static void hf_tests() {
     check(fit_verdict(f).fit == "no_disk" && !fit_verdict(f).downloadable, "hf: a disk too small comes first");
     f.role = "projector";
     check(fit_verdict(f).fit == "not_a_model", "hf: but a file that is no model says that first");
+
+    // The same answer for a person: a sentence with no engine term, and the tone a UI colours it by.
+    const auto plain = [](const FitVerdict & w) {
+        for (const char * term : {"stream", "flash", "mmap", "resident", "expert", "MiB", "process"})
+            if (w.summary.find(term) != std::string::npos) return false;
+        return !w.summary.empty();
+    };
+    FitInputs s;
+    s.file_bytes = 10ull << 30;
+    s.disk_free = 40ull << 30;
+    s.readable = s.is_moe = s.streamable = true;
+    s.dense_bytes = 1ull << 30;
+    s.token_cycle = 512ull << 20;
+    s.budget = 6ull << 30;
+    v = fit_verdict(s);
+    check(v.tone == "ok" && plain(v) && v.summary.find("larger than the memory free now") != std::string::npos,
+          "summary: a model that streams runs here, and is said to read what it needs from storage");
+    s.budget = 12ull << 30;
+    check(fit_verdict(s).tone == "ok" && fit_verdict(s).summary.find("within the memory") != std::string::npos,
+          "summary: one that is smaller than what is free is said to be within it");
+    s.budget = 1ull << 30;
+    check(fit_verdict(s).tone == "err" && plain(fit_verdict(s)),
+          "summary: a floor past the budget is too large, in red");
+    s.budget = 0;
+    check(fit_verdict(s).tone.empty() && plain(fit_verdict(s)), "summary: an unknown budget claims no tone");
+    s.is_moe = s.streamable = false;
+    s.budget = 12ull << 30;
+    check(fit_verdict(s).tone == "ok" && fit_verdict(s).summary.find("whole in memory") != std::string::npos,
+          "summary: a dense model that fits what is free is the fastest");
+    s.budget = 4ull << 30;
+    check(fit_verdict(s).tone == "warn" && plain(fit_verdict(s)),
+          "summary: a dense model past it is slow, and said so");
+    s.disk_free = 1ull << 30;
+    check(fit_verdict(s).tone == "err" && fit_verdict(s).summary.find("storage") != std::string::npos,
+          "summary: a disk too small comes first here too");
+    s.readable = false;
+    s.disk_free = 40ull << 30;
+    check(fit_verdict(s).tone.empty() && plain(fit_verdict(s)), "summary: an unreadable header claims nothing");
     f.readable = false;
     check(fit_verdict(f).fit == "no_disk", "hf: an unreadable file on a full disk is still refused for the disk");
     f.disk_free = 40ull << 30;

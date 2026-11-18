@@ -16,7 +16,8 @@
   import { readProgress, type Progress } from '../lib/progressEvent';
   import { addSample, humanDuration, rate, secondsLeft, type Sample } from '../lib/eta';
   import { formatBytes, resumeLabel } from '../lib/format';
-  import { libraryRows, recommendedEntry } from '../lib/library';
+  import { libraryRows, recommendedEntry, setupChoices } from '../lib/library';
+  import { checkSentence, checkTone, mayDownload, type CheckState } from '../lib/modelCheck';
   import { href } from '../lib/route';
   import type { CatalogEntry, ModelsResponse } from '../lib/types';
   import { agent } from '../stores/agent.svelte';
@@ -107,15 +108,27 @@
   let rows = $derived(data ? libraryRows(data, data.local, server.downloads, server.info?.model?.path ?? null) : []);
   let row = $derived(chosen ? rows.find((r) => r.entry?.id === chosen.id) : undefined);
   let dl = $derived(chosen ? server.downloads[chosen.id] : undefined);
-  // Side by side, the two first runs this product offers: the largest model that fits in memory
-  // (the fastest answers) and the smallest that does not (what streaming from disk is for). No
-  // speed is promised for either: nothing is measured before a model is on disk.
-  let pair = $derived.by(() => {
-    const offered = (data?.catalog ?? []).filter((e) => !e.added && e.bytes > 0);
-    const fits = offered.filter((e) => e.bytes <= ramBytes).sort((a, b) => b.bytes - a.bytes)[0];
-    const big = offered.filter((e) => e.bytes > ramBytes).sort((a, b) => a.bytes - b.bytes)[0];
-    return fits && big && ramBytes > 0 ? [fits, big] : [];
+  // Every model the catalog ships, the smallest first, the suggested one picked. No speed is
+  // promised for any: nothing is measured before a model is on disk.
+  let choices = $derived(setupChoices(data?.catalog ?? []));
+
+  // What the picked model is on this computer, by the server's check of its header (the one the
+  // Models screen runs before a Hugging Face download): asked when a model becomes the pick, the
+  // suggested one included, and kept for the visit, so going back to a card costs nothing.
+  let checks = $state<Record<string, CheckState>>({});
+  function runCheck(id: string) {
+    if (checks[id]) return;
+    checks[id] = { state: 'pending' };
+    api.inspectEntry(id).then(
+      (check) => (checks[id] = { state: 'done', check }),
+      (e) => (checks[id] = { state: 'failed', why: e instanceof Error ? e.message : String(e) }),
+    );
+  }
+  $effect(() => {
+    const id = step === 1 ? chosen?.id : undefined;
+    if (id) untrack(() => runCheck(id));
   });
+  let check = $derived(chosen ? checks[chosen.id] : undefined);
 
   let loadingNow = $derived(server.info?.state === 'loading' || server.info?.state === 'planning');
   // Where the person is on the path: the step follows the model's state, never a button.
@@ -263,14 +276,21 @@
       <p>{t('setup.noCatalog')} <a href={href('models')}>{t('nav.models')}</a></p>
     {:else if step === 1}
       <h2>{t('setup.pick.title')}</h2>
-      {#if pair.length === 2}
+      <!-- Said before the list, with the two ways around it as buttons: the list is a suggestion,
+           and a person with a gguf of their own must not have to find a link under the sheet. -->
+      <p class="note">{t('setup.pick.any')}</p>
+      <div class="actions">
+        <a class="button" href="{href('models')}/add-folder"><Icon name="folder" size={16} />{t('setup.other.have')}</a>
+        <a class="button" href={href('models')}><Icon name="search" size={16} />{t('setup.other.find')}</a>
+      </div>
+      <h3>{t('setup.pick.suggested')}</h3>
+      {#if choices.length}
         <div class="choices" role="radiogroup" aria-label={t('setup.pick.title')}>
-          {#each pair as e (e.id)}
+          {#each choices as e (e.id)}
             <button type="button" role="radio" aria-checked={chosen.id === e.id} class="choice" onclick={() => (pick = e.id)}>
-              <span class="kind">{e.bytes <= ramBytes ? t('setup.kind.fits') : t('setup.kind.streams')}</span>
               <strong>{e.title}</strong>
               <span class="muted small">{formatBytes(e.bytes)}</span>
-              <span class="small">{e.bytes <= ramBytes ? t('setup.fits') : t('setup.streams')}</span>
+              {#if checks[e.id]?.state === 'done'}<span class="badge {checkTone(checks[e.id])}">{t('setup.check.done')}</span>{/if}
             </button>
           {/each}
         </div>
@@ -278,11 +298,28 @@
         <div class="single">
           <strong>{chosen.title}</strong>
           <span class="muted small">{formatBytes(chosen.bytes)}</span>
-          <span class="small">{chosen.bytes <= ramBytes ? t('setup.fits') : t('setup.streams')}</span>
         </div>
       {/if}
+      <!-- The server's answer for the pick, in its words and its tone. -->
+      <div class="check" aria-live="polite">
+        {#if !check || check.state === 'pending'}
+          <p class="muted"><span class="spinner" aria-hidden="true"></span>{t('setup.check.pending', { name: chosen.title })}</p>
+        {:else if check.state === 'failed'}
+          <p class="verdict">{t('setup.check.failed', { name: chosen.title })}</p>
+          <p class="muted small">{check.why}</p>
+        {:else}
+          {@const v = check.check.verdict}
+          <p class="verdict {checkTone(check)}">{chosen.title}: {checkSentence(check.check)}</p>
+          <p class="small" class:muted={v.downloadable} class:bad={!v.downloadable}>{v.disk}</p>
+          <details>
+            <summary class="small">{t('setup.check.how')}</summary>
+            {#if v.headline}<p class="small">{v.headline}</p>{/if}
+            <p class="muted small">{v.memory}</p>
+          </details>
+        {/if}
+      </div>
       <div class="actions">
-        <button type="button" class="primary" disabled={busy} onclick={() => { repick = false; download(); }}>
+        <button type="button" class="primary" disabled={busy || !mayDownload(check)} onclick={() => { repick = false; download(); }}>
           <Icon name="download" size={16} />{chosen.partial ? resumeLabel(chosen.received ?? 0, chosen.bytes) : t('setup.download.size', { size: formatBytes(chosen.bytes) })}
         </button>
         <span class="muted small">{t('setup.download.help')}</span>
@@ -329,10 +366,13 @@
   </section>
 
   <p class="aside small">
-    <a href="{href('models')}/add-folder">{t('setup.have')}</a>
-    <span aria-hidden="true">·</span>
-    <a href={href('models')}>{t('setup.more')}</a>
-    <span aria-hidden="true">·</span>
+    <!-- The pick step offers these two itself, as buttons. -->
+    {#if step !== 1 || !chosen || graphicsPending}
+      <a href="{href('models')}/add-folder">{t('setup.have')}</a>
+      <span aria-hidden="true">·</span>
+      <a href={href('models')}>{t('setup.more')}</a>
+      <span aria-hidden="true">·</span>
+    {/if}
     <a href="#/chat">{t('setup.skip')}</a>
   </p>
 </div>
@@ -447,10 +487,58 @@
   .choice strong {
     overflow-wrap: anywhere;
   }
-  .kind {
-    font-size: 0.8125rem;
+  .note {
+    margin: 0;
+  }
+  .check {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s1);
+    padding: var(--s3);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+  }
+  .check p {
+    margin: 0;
+  }
+  .verdict {
     font-weight: 650;
-    color: var(--accent-ink);
+    font-size: 1.0625rem;
+  }
+  .verdict.ok {
+    color: var(--ok);
+  }
+  .verdict.warn {
+    color: var(--warn);
+  }
+  .verdict.err,
+  .bad {
+    color: var(--err);
+  }
+  .spinner {
+    display: inline-block;
+    width: 0.9em;
+    height: 0.9em;
+    margin-right: 0.5em;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    vertical-align: -0.1em;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .spinner {
+      animation: none;
+    }
+  }
+  h3 {
+    margin: var(--s2) 0 0;
+    font-size: 0.9375rem;
   }
   .single {
     display: flex;

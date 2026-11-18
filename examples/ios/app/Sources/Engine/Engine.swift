@@ -423,6 +423,7 @@ final class Engine: ObservableObject {
     func hfInspect(_ repo: String, name: String, token: String) async throws -> HFFacts {
         try await api.hfInspect(repo: repo, name: name, token: token)
     }
+    func inspectEntry(_ id: String) async throws -> ModelCheck { try await api.inspectEntry(id: id) }
 
     /// Adds the model to the catalog and starts its download, as the other entries download;
     /// answers the entry's id, whose row the screen scrolls to.

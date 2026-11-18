@@ -3,6 +3,7 @@
 // truncated body fail where it is read, with a message, instead of as an undefined deep inside a
 // component. They check structure, not every field: a field the UI does not read may change freely.
 import type {
+  CatalogCheck,
   Config,
   DecideResult,
   DoneSummary,
@@ -67,11 +68,9 @@ export function isHfSearchResponse(v: unknown): v is HfSearchResponse {
   return isObject(v) && isStr(v.query) && Array.isArray(v.repos) && v.repos.every((r) => isObject(r) && isStr(r.id));
 }
 
-export function isHfFacts(v: unknown): v is HfFacts {
+/** The part a repository's model and a catalog entry share: what the file is, and the verdict. */
+function hasCheck(v: Record<string, unknown>): boolean {
   return (
-    isObject(v) &&
-    isStr(v.name) &&
-    isNum(v.bytes) &&
     isObject(v.model) &&
     isBool(v.model.readable) &&
     isObject(v.verdict) &&
@@ -80,6 +79,14 @@ export function isHfFacts(v: unknown): v is HfFacts {
     isStr(v.verdict.disk) &&
     isStr(v.verdict.memory)
   );
+}
+
+export function isCatalogCheck(v: unknown): v is CatalogCheck {
+  return isObject(v) && isStr(v.id) && isNum(v.bytes) && hasCheck(v);
+}
+
+export function isHfFacts(v: unknown): v is HfFacts {
+  return isObject(v) && isStr(v.name) && isNum(v.bytes) && hasCheck(v);
 }
 
 export function isHfAdded(v: unknown): v is HfAdded {

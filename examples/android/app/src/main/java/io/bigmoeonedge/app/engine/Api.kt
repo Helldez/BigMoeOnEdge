@@ -78,6 +78,9 @@ class Api(private val baseUrl: String, private val apiKey: String) : Conversatio
     fun hfSearch(body: JSONObject): JSONObject = send("POST", "/api/hf/search", body, SLOW_MS)
     fun hfModels(body: JSONObject): JSONObject = send("POST", "/api/hf/models", body, SLOW_MS)
     fun hfInspect(body: JSONObject): JSONObject = send("POST", "/api/hf/inspect", body, SLOW_MS)
+
+    /** A catalog entry's header against this phone, before its download. */
+    fun inspectEntry(id: String): JSONObject = send("POST", "/api/models/inspect", JSONObject().put("id", id), SLOW_MS)
     fun hfAdd(body: JSONObject): JSONObject = send("POST", "/api/hf/add", body, SLOW_MS)
     fun removeAdded(id: String): JSONObject = send("DELETE", "/api/hf/entry/" + java.net.URLEncoder.encode(id, "UTF-8"), null, QUICK_MS)
     fun deletePartial(id: String): JSONObject = send("DELETE", "/api/models/partial/" + java.net.URLEncoder.encode(id, "UTF-8"), null, QUICK_MS)

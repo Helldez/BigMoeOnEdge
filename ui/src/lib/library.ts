@@ -171,3 +171,14 @@ export function recommendedEntry(catalog: readonly CatalogEntry[], ramBytes: num
   if (fits.length) return fits[0];
   return offered.slice().sort((a, b) => a.bytes - b.bytes)[0];
 }
+
+/**
+ * The catalog entries a first run lets the person choose among: every one the catalog ships, the
+ * smallest first. What each is on this machine is the server's check of the one picked
+ * (modelCheck.ts), not a guess made here from its size. Empty with fewer than two: the suggestion
+ * then stands alone.
+ */
+export function setupChoices(catalog: readonly CatalogEntry[]): CatalogEntry[] {
+  const offered = catalog.filter((e) => !e.added && e.bytes > 0);
+  return offered.length < 2 ? [] : offered.sort((a, b) => a.bytes - b.bytes);
+}

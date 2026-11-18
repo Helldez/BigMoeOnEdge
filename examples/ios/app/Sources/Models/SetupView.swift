@@ -22,6 +22,9 @@ struct SetupView: View {
     @State private var actionError: String?
     /// The person asked to pick another model over a paused download, for this visit.
     @State private var repick = false
+    /// What each picked model is on this device, by the server's check of its header: asked when a
+    /// model becomes the pick, the suggested one included, and kept for the visit.
+    @State private var checks: [String: CheckState] = [:]
 
     private var ramBytes: Int64 { (engine.info?.ramTotalMiB ?? 0) * 1024 * 1024 }
     private var catalog: [CatalogEntry] { engine.models.catalog }
@@ -102,21 +105,28 @@ struct SetupView: View {
     @ViewBuilder
     private func pickStep(_ chosen: CatalogEntry) -> some View {
         Text("Pick a model").font(.ui(18, bold: true)).foregroundStyle(Palette.text).accessibilityAddTraits(.isHeader)
-        let pair = Setup.pair(catalog, ramBytes: ramBytes)
-        if pair.count == 2 {
-            // Side by side where they fit, stacked on a narrow phone.
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .top, spacing: Grid.s) { ForEach(pair) { choice($0, selected: $0.id == chosen.id) } }
-                VStack(spacing: Grid.s) { ForEach(pair) { choice($0, selected: $0.id == chosen.id) } }
-            }
+        // Said before the list, with the two ways around it as buttons: the list is a suggestion,
+        // and a gguf the person already has must not hide under the sheet.
+        Text("Any gguf model runs here. Use one you already have, find another, or start from a suggestion.")
+            .font(.ui(14)).foregroundStyle(Palette.text).fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: Grid.s) {
+            Button("Use a .gguf file I already have", action: importFile)
+            Button("Find a model on Hugging Face") { nav.setupDismissed = true }
+        }
+        .buttonStyle(.appSecondary)
+        Text("Suggested for a first run").font(.ui(15, bold: true)).foregroundStyle(Palette.text).accessibilityAddTraits(.isHeader)
+        let choices = Setup.choices(catalog)
+        if !choices.isEmpty {
+            // One under the other: a catalog's worth of them does not fit side by side.
+            VStack(spacing: Grid.s) { ForEach(choices) { choice($0, selected: $0.id == chosen.id) } }
         } else {
             VStack(alignment: .leading, spacing: 4) {
                 Text(chosen.title).font(.ui(16, bold: true)).foregroundStyle(Palette.text)
                 Text(ByteText.gb(chosen.bytes)).font(.ui(13)).foregroundStyle(Palette.muted)
-                Text(Setup.meaning(chosen, ramBytes: ramBytes)).font(.ui(14)).foregroundStyle(Palette.text)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
+        checkPanel(chosen)
+            .task(id: "\(chosen.id) \(engine.serverUp)") { await runCheck(chosen.id) }
         VStack(alignment: .leading, spacing: Grid.s) {
             Button {
                 download(chosen)
@@ -125,7 +135,7 @@ struct SetupView: View {
                     ?? "Download, \(ByteText.gb(chosen.bytes))", systemImage: "arrow.down")
             }
             .buttonStyle(.appPrimary)
-            .disabled(!engine.serverUp)
+            .disabled(!engine.serverUp || !checks[chosen.id].mayDownload)
             Text("It resumes where it stopped if the connection drops.").font(.ui(13)).foregroundStyle(Palette.muted)
         }
         if case let .failed(why) = engine.downloads[chosen.id]?.state {
@@ -138,11 +148,11 @@ struct SetupView: View {
     private func choice(_ e: CatalogEntry, selected: Bool) -> some View {
         Button { pick = e.id } label: {
             VStack(alignment: .leading, spacing: 4) {
-                Text(Setup.kind(e, ramBytes: ramBytes)).font(.ui(13, weight: .semibold)).foregroundStyle(Palette.accentInk)
                 Text(e.title).font(.ui(16, bold: true)).foregroundStyle(Palette.text).fixedSize(horizontal: false, vertical: true)
                 Text(ByteText.gb(e.bytes)).font(.ui(13)).foregroundStyle(Palette.muted)
-                Text(Setup.meaning(e, ramBytes: ramBytes)).font(.ui(13)).foregroundStyle(Palette.text)
-                    .fixedSize(horizontal: false, vertical: true)
+                if case .done = checks[e.id] {
+                    Text("Checked").font(.ui(13, weight: .semibold)).foregroundStyle(checks[e.id]?.tone.color ?? Palette.muted)
+                }
             }
             .multilineTextAlignment(.leading)
             .padding(12)
@@ -154,6 +164,54 @@ struct SetupView: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
+    }
+
+    /// Asks the server once for an entry, when the engine can answer.
+    private func runCheck(_ id: String) async {
+        guard engine.serverUp, checks[id] == nil else { return }
+        checks[id] = .pending
+        do {
+            checks[id] = .done(try await engine.inspectEntry(id))
+        } catch {
+            checks[id] = .failed(error.localizedDescription)
+        }
+    }
+
+    /// The server's answer for the pick, in its words and its tone; how it was checked opens on a tap.
+    @ViewBuilder
+    private func checkPanel(_ e: CatalogEntry) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            switch checks[e.id] {
+            case .none, .pending:
+                HStack(spacing: Grid.s) {
+                    ProgressView()
+                    Text("Checking \(e.title) on this device…").font(.ui(14)).foregroundStyle(Palette.muted)
+                }
+            case let .failed(why):
+                Text("Could not check \(e.title) from here. It can still be downloaded.")
+                    .font(.ui(15, weight: .semibold)).foregroundStyle(Palette.text).fixedSize(horizontal: false, vertical: true)
+                if !why.isEmpty { Text(why).font(.ui(13)).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true) }
+            case let .done(c):
+                Text("\(e.title): \(c.sentence)").font(.ui(15, weight: .semibold))
+                    .foregroundStyle(checks[e.id]?.tone.color ?? Palette.text).fixedSize(horizontal: false, vertical: true)
+                if !c.disk.isEmpty {
+                    Text(c.disk).font(.ui(13)).foregroundStyle(c.downloadable ? Palette.muted : Palette.err)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                DisclosureGroup("How it was checked") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        if !c.headline.isEmpty { Text(c.headline).font(.ui(13)).foregroundStyle(Palette.text) }
+                        if !c.memory.isEmpty { Text(c.memory).font(.ui(13)).foregroundStyle(Palette.muted) }
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .font(.ui(13))
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(RoundedRectangle(cornerRadius: Grid.control, style: .continuous).strokeBorder(Palette.line, lineWidth: Grid.line))
     }
 
     @ViewBuilder
@@ -231,8 +289,9 @@ struct SetupView: View {
 
     private var links: some View {
         VStack(spacing: Grid.s) {
-            Button("Already have a .gguf? Import a file", action: importFile)
-            HStack(spacing: Grid.m) {
+            // The pick step offers these two itself, as buttons.
+            if step != 1 || chosen == nil {
+                Button("Already have a .gguf? Import a file", action: importFile)
                 Button("More models, or one from Hugging Face") { nav.setupDismissed = true }
             }
             Button("Skip for now") {
