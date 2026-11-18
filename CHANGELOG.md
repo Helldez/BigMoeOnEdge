@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.46.0] - 2026-11-18
+
+Everything in 0.45.1, which stayed a pre-release, and the fix below.
+
+### Fixed
+- **The settings open again on every UI** (since 0.44.1, #651). The parameter behind the check of a
+  device's answers (`--trial-device-answer`) is text but was declared with the table's default
+  type, a number, so its empty value went into `GET /api/params` and `GET /api/config` bare
+  (`"default":}`). Neither answer was JSON, and every settings form, on the desktop app, the web UI
+  and the phones, said "the server's answer to api/params is not JSON", on any platform and with
+  any model. The row is now text, and the parameter-table test fails any number or on/off row whose
+  value is not of its type ([field-reports.md](docs/field-reports.md)).
+
 ## [0.45.1] - 2026-11-18
 
 ### Fixed
