@@ -217,15 +217,11 @@ ModelLibrary::~ModelLibrary() {
 }
 
 ModelLibrary::ModelFacts ModelLibrary::probe(const std::string & path) {
-    const fs::path p = fs::u8path(path);
-    std::error_code ec;
-    const uint64_t size = file_size_or_zero(p);
-    const auto mtime = fs::last_write_time(p, ec);
-    const long long mt = ec ? 0 : (long long) mtime.time_since_epoch().count();
+    const std::vector<FileStamp> stamp = model_set_stamp(path);
     {
         std::lock_guard<std::mutex> lk(m_);
         auto it = facts_cache_.find(path);
-        if (it != facts_cache_.end() && it->second.size == size && it->second.mtime == mt) return it->second.facts;
+        if (it != facts_cache_.end() && it->second.stamp == stamp) return it->second.facts;
     }
     // The planner's own reading of the file - the headers of every shard, no tensor bytes - so the
     // listing, the plan and the load agree on what a file is. Streamable means it declares routed
@@ -238,7 +234,7 @@ ModelLibrary::ModelFacts ModelLibrary::probe(const std::string & path) {
     facts.role = file_role_name(file_role(header));
     facts.name = header.name;
     std::lock_guard<std::mutex> lk(m_);
-    facts_cache_[path] = {size, mt, facts};
+    facts_cache_[path] = {stamp, facts};
     return facts;
 }
 
