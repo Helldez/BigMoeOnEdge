@@ -5,6 +5,10 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.*
@@ -12,6 +16,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
@@ -26,10 +31,16 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -40,12 +51,13 @@ import io.bigmoeonedge.app.chat.Chat
 import io.bigmoeonedge.app.chat.ConversationSummary
 import io.bigmoeonedge.app.chat.ImageAttachments
 import io.bigmoeonedge.app.chat.ItemReducer
-import io.bigmoeonedge.app.data.breakdown
+import io.bigmoeonedge.app.chat.Words
 import io.bigmoeonedge.app.engine.ApiException
 import io.bigmoeonedge.app.engine.Decide
 import io.bigmoeonedge.app.engine.Decisions
 import io.bigmoeonedge.app.engine.Engine
 import io.bigmoeonedge.app.engine.contextWarning
+import io.bigmoeonedge.app.engine.planFigures
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -58,10 +70,12 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/** Where the chat's error cards lead: the other screens. */
+/** Where the chat's error cards and an answer's figures lead: the other screens. */
 data class ChatNav(
     val openModels: () -> Unit,
     val openSetting: (String) -> Unit,
+    val openPlan: () -> Unit = {},
+    val openMetrics: () -> Unit = {},
 )
 
 /**
@@ -81,32 +95,48 @@ fun ChatScreen(modifier: Modifier = Modifier, nav: ChatNav) {
     ModalNavigationDrawer(
         drawerState = drawer,
         drawerContent = {
-            ModalDrawerSheet(drawerContainerColor = tokens.surface) {
+            // The drawer is the shell: ink, its words on-shell, the open conversation's row lit.
+            ModalDrawerSheet(drawerContainerColor = tokens.shell, drawerContentColor = tokens.onShell) {
                 Row(
                     Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 16.dp, bottom = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Box(Modifier.weight(1f)) { BrandMark() }
-                    FilledTonalButton(onClick = { Chat.newConversation(); scope.launch { drawer.close() } }, shape = Corner) {
+                    FilledTonalButton(
+                        onClick = { Chat.newConversation(); scope.launch { drawer.close() } }, shape = Corner,
+                        colors = ButtonDefaults.filledTonalButtonColors(containerColor = tokens.shellHi, contentColor = tokens.onShell),
+                    ) {
                         Icon(Icons.Filled.Add, contentDescription = null, Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
                         Text("New chat")
                     }
                 }
-                HorizontalDivider(Modifier.padding(vertical = 8.dp), color = tokens.line)
-                SectionTitle("Conversations", Modifier.padding(horizontal = 28.dp, vertical = 4.dp))
+                HorizontalDivider(Modifier.padding(vertical = 8.dp), color = tokens.shellHi)
+                Text(
+                    "Conversations", style = MaterialTheme.typography.titleSmall, color = tokens.onShellMuted,
+                    modifier = Modifier.padding(horizontal = 28.dp, vertical = 4.dp),
+                )
                 val stamp = remember { SimpleDateFormat("d MMM HH:mm", Locale.getDefault()) }
                 if (chat.conversations.isEmpty()) {
                     Text(
                         "None yet. What you send starts one, kept by the engine on this phone.",
-                        style = MaterialTheme.typography.bodySmall, color = tokens.muted,
+                        style = MaterialTheme.typography.bodySmall, color = tokens.onShellMuted,
                         modifier = Modifier.padding(horizontal = 28.dp, vertical = 8.dp),
                     )
                 }
+                val rowColours = NavigationDrawerItemDefaults.colors(
+                    selectedContainerColor = tokens.shellHi,
+                    unselectedContainerColor = Color.Transparent,
+                    selectedTextColor = tokens.onShell,
+                    unselectedTextColor = tokens.onShell,
+                    selectedBadgeColor = tokens.onShellMuted,
+                    unselectedBadgeColor = tokens.onShellMuted,
+                )
                 LazyColumn(contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)) {
                     items(chat.conversations, key = { it.id }) { c ->
                         var menu by remember { mutableStateOf(false) }
                         NavigationDrawerItem(
+                            colors = rowColours,
                             selected = c.id == chat.open?.id,
                             onClick = { Chat.open(c.id); scope.launch { drawer.close() } },
                             label = {
@@ -114,14 +144,14 @@ fun ChatScreen(modifier: Modifier = Modifier, nav: ChatNav) {
                                     Text(c.title.ifEmpty { "New chat" }, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                         val meta = c.updated.takeIf { it > 0 }?.let { stamp.format(Date(it)) }.orEmpty()
-                                        Text(meta, fontSize = 11.sp, color = tokens.muted, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                                        Text(meta, fontSize = 11.sp, color = tokens.onShellMuted, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                                         ConversationStateChip(c.state)
                                     }
                                 }
                             },
                             badge = {
                                 Box {
-                                    IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More") }
+                                    IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "More", tint = tokens.onShellMuted) }
                                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                                         DropdownMenuItem(text = { Text("Rename") }, leadingIcon = { Icon(Icons.Filled.Edit, null) }, onClick = { menu = false; renaming = c })
                                         DropdownMenuItem(text = { Text("Delete") }, leadingIcon = { Icon(Icons.Filled.Delete, null) }, onClick = { menu = false; confirmDelete = c })
@@ -147,9 +177,9 @@ fun ChatScreen(modifier: Modifier = Modifier, nav: ChatNav) {
                         IconButton(onClick = { Chat.newConversation() }) { Icon(Icons.Filled.Add, contentDescription = "New chat") }
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = tokens.bg),
+                colors = shellTopBarColors(),
             )
-            HorizontalDivider(color = tokens.line)
+            if (chat.items.isNotEmpty() || chat.running || chat.sending) ConversationStatusLine()
             Transcript(Modifier.weight(1f), nav)
             Composer()
         }
@@ -190,6 +220,10 @@ private fun Transcript(modifier: Modifier, nav: ChatNav) {
     val decision by Decisions.state.collectAsStateWithLifecycle()
     // Only the context advice, not every token event: the transcript is the heaviest thing on screen.
     val ctxAdvice by remember { Engine.state.map { contextWarning(it.info?.model, it.params) }.distinctUntilChanged() }.collectAsStateWithLifecycle(null)
+    // The rate the plan predicts for the loaded model, read against each answer's own.
+    val expectedTokS by remember {
+        Engine.state.map { s -> s.plan?.takeIf { it.available && it.error.isEmpty() }?.let { planFigures(it).predictedTokS } }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(null)
     val listState = rememberLazyListState()
     val shown = chat.items
     val againOn = remember(shown) { ItemReducer.answerAgainOn(shown) }
@@ -221,9 +255,7 @@ private fun Transcript(modifier: Modifier, nav: ChatNav) {
         if (chat.opening) {
             LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
         }
-        if (shown.isEmpty() && decision == null && chat.error == null && !chat.sending && !chat.opening) {
-            EmptyChat(chat.unsupported)
-        }
+        val empty = shown.isEmpty() && decision == null && chat.error == null && !chat.sending && !chat.opening
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),
@@ -231,7 +263,10 @@ private fun Transcript(modifier: Modifier, nav: ChatNav) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             items(shown) { item ->
-                ItemView(item, answerAgain = item.id == againOn, running = chat.running || chat.sending)
+                ItemView(
+                    item, answerAgain = item.id == againOn, running = chat.running || chat.sending,
+                    figures = chat.figures[item.id], expectedTokS = expectedTokS, nav = nav,
+                )
             }
             if (working || chat.sending) {
                 item(key = "working") {
@@ -248,6 +283,8 @@ private fun Transcript(modifier: Modifier, nav: ChatNav) {
                 }
             }
         }
+        // Drawn over the (empty) list, so the questions to try take the taps.
+        if (empty) EmptyChat(chat.unsupported)
         if (!followTail && !atBottom && total > 0) {
             val scope = rememberCoroutineScope()
             FilledTonalButton(
@@ -259,24 +296,59 @@ private fun Transcript(modifier: Modifier, nav: ChatNav) {
     }
 }
 
+/**
+ * The empty conversation: the logo on a white sheet over the seal's yellow rule, the status in words
+ * under it (when all is ready, the promise that nothing leaves the phone), and the question.
+ */
 @Composable
 private fun EmptyChat(unsupported: Boolean) {
-    Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center) {
+    val engine by Engine.state.collectAsStateWithLifecycle()
+    val chat by Chat.state.collectAsStateWithLifecycle()
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+    Column(
+        Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).heightIn(min = maxHeight).padding(24.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
         if (unsupported) {
             Text("This engine keeps no conversations.", style = MaterialTheme.typography.titleMedium)
             Text(
                 "The server this app started does not offer conversations. Update the app to a build that carries them.",
-                style = MaterialTheme.typography.bodyMedium, color = tokens.muted,
+                style = MaterialTheme.typography.bodyMedium, color = tokens.muted, textAlign = TextAlign.Center,
             )
             return@Column
         }
-        Text("Ask anything.", style = MaterialTheme.typography.titleLarge)
-        Spacer(Modifier.height(4.dp))
+        val status = rememberConversationStatus(greet = true)
+        Surface(color = tokens.surface, shape = SheetCorner, shadowElevation = SheetElevation) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                StatusLogo(status.mood, 64.dp, Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 13.dp))
+                Box(Modifier.fillMaxWidth().height(3.dp).background(tokens.seal))
+            }
+        }
+        Spacer(Modifier.height(16.dp))
         Text(
-            "The model runs on this phone, and nothing you write leaves it. Load a model from Models, " +
-                "then write below.",
-            style = MaterialTheme.typography.bodyMedium, color = tokens.muted,
+            status.text, style = MaterialTheme.typography.bodyLarge, fontWeight = LabelWeight, color = statusColour(status.mood),
+            textAlign = TextAlign.Center, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
         )
+        Spacer(Modifier.height(20.dp))
+        Text(Words.WELCOME, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+        Spacer(Modifier.height(8.dp))
+        Text(Words.WELCOME_LINE, style = MaterialTheme.typography.bodyLarge, color = tokens.muted, textAlign = TextAlign.Center)
+        // Questions to try, once a model can answer them: each is sent as it reads.
+        if (engine.ready && !chat.sending && !chat.running) {
+            Spacer(Modifier.height(20.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                Words.TRIES.forEach { q ->
+                    Surface(
+                        color = tokens.surface, shape = Corner, border = BorderStroke(1.dp, tokens.line), shadowElevation = 1.dp,
+                        modifier = Modifier.fillMaxWidth().clip(Corner).clickable { Chat.send(q) },
+                    ) {
+                        Text(q, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp))
+                    }
+                }
+            }
+        }
+    }
     }
 }
 
@@ -421,10 +493,12 @@ private fun Composer() {
         }
     }
 
-    Surface(color = tokens.surface, shadowElevation = 2.dp) {
-        Column(Modifier.fillMaxWidth().imePadding()) {
-            HorizontalDivider(color = tokens.line)
-            LiveLine()
+    // A white sheet with a field's edge, lifted off the desk: where the next message is written.
+    Surface(
+        color = tokens.surface, shape = Corner, shadowElevation = SheetElevation, border = BorderStroke(1.dp, tokens.edge),
+        modifier = Modifier.fillMaxWidth().imePadding().padding(horizontal = 12.dp).padding(top = 4.dp, bottom = 10.dp),
+    ) {
+        Column(Modifier.fillMaxWidth()) {
             if (choose) {
                 OutlinedTextField(
                     value = optionsText, onValueChange = { optionsText = it },
@@ -448,6 +522,10 @@ private fun Composer() {
                         }
                     }
                 }
+            }
+            // While a model loads, the composer says when it can be used rather than that nothing is loaded.
+            if (engine.loading) {
+                Text(Words.COMPOSER_LOADING, style = MaterialTheme.typography.bodySmall, color = tokens.muted, modifier = Modifier.padding(horizontal = 16.dp).padding(top = 8.dp))
             }
             if (imageError.isNotEmpty()) {
                 Text(imageError, color = tokens.err, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp).padding(top = 6.dp))
@@ -496,13 +574,22 @@ private fun Composer() {
                         }
                     }
                 }
-                OutlinedTextField(
+                // The sheet is the field's edge: the field itself draws none.
+                TextField(
                     value = prompt,
                     onValueChange = { prompt = it },
                     placeholder = { Text(if (choose) "Question" else "Message") },
                     modifier = Modifier.weight(1f),
                     maxLines = 6,
                     shape = Corner,
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent,
+                        disabledContainerColor = Color.Transparent,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        disabledIndicatorColor = Color.Transparent,
+                    ),
                     trailingIcon = if (prompt.isNotEmpty()) ({
                         IconButton(onClick = { prompt = "" }) { Icon(Icons.Filled.Clear, contentDescription = "Clear") }
                     }) else null,
@@ -512,7 +599,8 @@ private fun Composer() {
                 } else {
                     val options = if (choose) Decide.parseOptions(optionsText) else emptyList()
                     FilledIconButton(
-                        shape = Corner,
+                        shape = CircleShape,
+                        colors = primaryIconButtonColors(),
                         onClick = {
                             // Drop focus so the keyboard retracts: the answer streams into the space it covered.
                             focus.clearFocus()
@@ -559,31 +647,4 @@ private fun readUpTo(input: InputStream, limit: Long): ByteArray {
         left -= n
     }
     return out.toByteArray()
-}
-
-/** The rate and where the time goes, one line, while generating and after; the full card is in Metrics. */
-@Composable
-private fun LiveLine() {
-    val engine by Engine.state.collectAsStateWithLifecycle()
-    val t = engine.live
-    if (t.step == 0 && t.avgTokensPerSecond <= 0) return
-    val b = breakdown(t)
-    val loc = Locale.US
-    val rate = if (b.isAverage) String.format(loc, "%.1f tok/s avg", t.avgTokensPerSecond)
-    else String.format(loc, "%.1f tok/s", t.tokensPerSecond)
-    val parts = mutableListOf(rate)
-    if (b.totalMs > 0) {
-        parts += String.format(loc, "compute %.0f%%", 100.0 * b.computeMs / b.totalMs)
-        parts += String.format(loc, "flash %.0f%%", 100.0 * b.flashWaitMs / b.totalMs)
-    }
-    if (t.cacheHitPct >= 0) parts += String.format(loc, "cache %.0f%%", t.cacheHitPct)
-    engine.cpuTempC?.let { parts += String.format(loc, "%.0f°C", it) }
-    if (engine.generating && t.steps > 0) parts += "${t.step}/${t.steps}"
-    Text(
-        parts.joinToString(" · "),
-        style = FigureStyle, fontSize = 12.sp,
-        color = tokens.muted,
-        modifier = Modifier.padding(horizontal = 16.dp).padding(top = 6.dp),
-        maxLines = 1, overflow = TextOverflow.Ellipsis,
-    )
 }

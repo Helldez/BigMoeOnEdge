@@ -35,8 +35,8 @@ app/
                 the app's own
     Metrics/    the live card, the recorded runs with their Record switch, the engine's log:
                 opened from Settings, where it always is
-    Design/     the visual language (docs/design.md): the tokens, Inter and JetBrains Mono, the
-                boxes, the logo
+    Design/     the visual language (docs/design.md): the tokens, Hanken Grotesk and JetBrains Mono,
+                the sheets, the logo
   MarkdownUI/   the image providers that load nothing, compiled into the vendored MarkdownUI
                 in place of its network ones
   Resources/    the app icon, rendered from the logo by make-icon.swift; Fonts/, the bundled
@@ -49,8 +49,11 @@ BmoeKit/        the client side with no UI: the API client, the event stream, th
 
 The screens follow [docs/screens.md](../../docs/screens.md) as the web UI does: Models is one list
 where the files the server lists and the catalog's entries are merged by file, each row with one
-state and one primary action, and with nothing on the device a first visit opens there on three
-steps; Hugging Face is Find, Pick, Check, Download with the server's verdict as the headline; a
+state and one primary action. With nothing on the device and nothing coming, a first visit opens
+there on the first run (`Models/SetupView.swift`, docs/screens.md "First run"): 1 Pick a model (the
+largest catalog entry that fits in memory beside the smallest larger than it), 2 its download with
+the time left (`ETA` in BmoeKit), 3 the model loads by itself and the conversation opens once the
+engine is ready, with three questions to try; Import a file, More models and Skip stay under it; Hugging Face is Find, Pick, Check, Download with the server's verdict as the headline; a
 direct https link becomes a catalog entry on the server (`POST /api/models/url`, its sizes from a
 `HEAD` the bridge asks) and its files download here like any other entry's. Delete goes through the
 server (`DELETE /api/models/local/<name>`), which removes a split set whole. The status line shows
@@ -83,7 +86,7 @@ chat, with no tools, no workspaces and no tasks. The agent is the desktop's: a s
 phone is not one. The transcript shows the person's messages, the model's answers as Markdown with
 their thinking folded above, and the server's notices. The Markdown is GitHub-flavoured (tables,
 task lists, strikethrough, autolinks), rendered by [MarkdownUI](https://github.com/gonzalezreal/swift-markdown-ui)
-over cmark-gfm in the app's tokens: Inter, JetBrains Mono for code on the second surface, tables
+over cmark-gfm in the app's tokens: Hanken Grotesk, JetBrains Mono for code on the second surface, tables
 with borders in the line token that scroll sideways when wider than the screen, as code blocks do.
 Nothing in an answer runs or fetches: raw HTML is shown as text, an image is not loaded (MarkdownUI
 is built without its NetworkImage dependency; `app/MarkdownUI/` draws images as nothing, their alt
@@ -124,11 +127,27 @@ settings and its conversations in the app's private Application Support.
 
 ### The look
 
-Slate and cyan, light and dark following the system or the Theme in Settings (the tokens are one
-file, `Sources/Design/Theme.swift`, and [docs/design.md](../../docs/design.md) is their source):
-Inter for every word, JetBrains Mono for code, paths and keys, both bundled from their official
-releases with their licences; 8-point rounded boxes with a 1-point line and a soft shadow on cards;
-the system's navigation, tab bars, lists, forms, sheets and menus, tinted. The pixel logo is unchanged.
+Letterhead: ink on paper, light and dark following the system or the Theme in Settings (the tokens
+are one file, `Sources/Design/Theme.swift`, and [docs/design.md](../../docs/design.md) is their
+source). Hanken Grotesk for every word, JetBrains Mono for code, paths and keys, both bundled with
+their SIL OFL licences (Hanken Grotesk as static instances of the official variable font at 400,
+500, 600 and 700). Answers and cards are white sheets with a 6-point corner lifted by a soft
+shadow, controls have a 10-point corner, and the composer is a sheet with a field's strong edge.
+The top bars and the conversations list are the shell's ink, the open conversation raised in it,
+and the person's message is a bubble in the same raised ink. The one primary button of a screen,
+Send among them, is filled with the ink. The pixel logo is unchanged.
+
+The line under the top bar is the logo beside a few plain words from the engine's and the open
+conversation's state ("Thinking…", "Writing…", "Reading part of the model from the disk…",
+"Answered", "No model loaded"…), never a figure; the logo breathes while the engine works, unless
+the system asks for less motion. An empty chat is the welcome: the logo on a sheet over the
+logo's yellow rule, "Private: everything stays on this phone.", "What shall we do?". Under each
+answer this app saw finish is one quiet line, `tg 12.4 tok/s · pp 140 tok/s` (the answer speed and
+the speed the message was read at), which opens to each figure with what it measures (the answer speed against
+what the plan expected; where each token's time went, in whole shares that add up to 100; what
+was found in memory, as "N of every 100 parts"), with the way to Plan and to Metrics; while an answer streams, its live
+`tg` is in the same place. The server keeps no figures, so an answer from an earlier launch has
+none. The words and the figures are BmoeKit's (`TurnFigures`, `StatusWords`), tested there.
 
 The server listens on loopback, on the server's default port (8765) or the next free one when another
 app holds it, with a random key per launch, since every app on the device can reach loopback. The

@@ -1,8 +1,10 @@
 <script lang="ts">
   // Where a message is written (docs/screens.md, "Conversation"): the text, and the chips that say
   // where the agent works (a folder), what it may do there (a mode), and which model answers (the
-  // local one or a saved provider). Enter sends, Shift+Enter starts a new line. The composer names
-  // one engine parameter, `think`, which the chat itself needs (docs/screens.md).
+  // local one or a saved provider). What changes one message rather than the conversation (reason
+  // first, attach an image, pick from options) sits behind one "+" menu, so the bar stays three
+  // choices and Send. Enter sends, Shift+Enter starts a new line. The composer names one engine
+  // parameter, `think`, which the chat itself needs (docs/screens.md).
   import Dialog from '../Dialog.svelte';
   import Icon from '../Icon.svelte';
   import Menu, { type MenuItem } from '../Menu.svelte';
@@ -68,6 +70,28 @@
     !model || !localReady ? t('composer.image.noModel') : !model.vision ? t('composer.image.noVision') : choose ? t('composer.image.choose') : '',
   );
   let blocked = $derived(!external && local && !localReady);
+  // The extras of one message, as switches and an action in the "+" menu.
+  let extras = $derived<MenuItem[]>([
+    ...(canThink ? [{ value: 'think', label: t('composer.think'), description: t('composer.think.hint'), on: thinking }] : []),
+    ...(local
+      ? [{ value: 'image', label: t('composer.image.add'), description: canImage ? t('composer.image.hint') : imageWhyNot, disabled: !canImage }]
+      : []),
+    ...(local && localReady ? [{ value: 'choose', label: t('choose.toggle'), description: t('choose.hint'), on: choose }] : []),
+  ]);
+  function extra(v: string): void {
+    if (v === 'think') think = !thinking;
+    else if (v === 'image') fileInput?.click();
+    else if (v === 'choose') choose = !choose;
+  }
+  // A finger has no Enter key to learn about: the placeholder says so only where there is a keyboard.
+  let coarse = $state(false);
+  $effect(() => {
+    const q = matchMedia('(pointer: coarse), (max-width: 640px)');
+    coarse = q.matches;
+    const on = () => (coarse = q.matches);
+    q.addEventListener('change', on);
+    return () => q.removeEventListener('change', on);
+  });
   let canSend = $derived(
     !blocked &&
       !needsFolder &&
@@ -135,7 +159,8 @@
     { value: 'local', label: model ? model.name : t('route.local'), description: model ? t('route.local.desc') : t('route.local.none') },
     ...agent.providers.flatMap((p) => p.models.map((m) => ({ value: `${p.id}/${m}`, label: m, description: t('route.provider.desc', { name: p.name }) }))),
   ]);
-  let routeLabel = $derived(routeItems.find((r) => r.value === agent.route)?.label ?? agent.route);
+  // The chip says the model's name without the file's extension: the part a person tells models by.
+  let routeLabel = $derived((routeItems.find((r) => r.value === agent.route)?.label ?? agent.route).replace(/\.gguf$/i, ''));
 
 
   async function send() {
@@ -219,7 +244,13 @@
       rows="1"
       bind:this={area}
       use:autosize={text}
-      placeholder={blocked ? t('composer.placeholder.noModel') : choose ? t('choose.question.placeholder') : t('composer.placeholder')}
+      placeholder={blocked
+        ? t('composer.placeholder.noModel')
+        : choose
+          ? t('choose.question.placeholder')
+          : coarse
+            ? t('composer.label')
+            : t('composer.placeholder')}
       bind:value={text}
       onkeydown={onKey}
       onpaste={onPaste}
@@ -242,21 +273,18 @@
       <textarea id="composer-options" class="options" rows="3" placeholder={t('choose.options.placeholder')} bind:value={options}></textarea>
     {/if}
     <div class="bar">
-      {#if agentChoices.length > 1}
-        {#if agentLocked}
-          <span class="chip static" title={t('agent.locked')}><Icon name="spark" size={15} /><span class="chip-text">{agentLabel}</span></span>
-        {:else}
-          <Menu items={agentItems} value={agent.agentId} label={t('agent.label')} onselect={pickAgent}>
-            {#snippet trigger()}
-              <Icon name="spark" size={15} /><span class="chip-text">{agentLabel}</span>
-            {/snippet}
-          </Menu>
-        {/if}
+      <!-- Who does the work is chosen before the first message; after it, the conversation is theirs. -->
+      {#if agentChoices.length > 1 && !agentLocked}
+        <Menu items={agentItems} value={agent.agentId} label={t('agent.label')} onselect={pickAgent}>
+          {#snippet trigger()}
+            <Icon name="spark" size={15} /><span class="chip-text squeeze">{agentLabel}</span>
+          {/snippet}
+        </Menu>
       {/if}
       {#if agent.caps.tools}
       <Menu items={wsItems} value={agent.workspace ?? ''} label={t('workspace.label')} onselect={(v) => agent.setWorkspace(v || null)}>
         {#snippet trigger()}
-          <Icon name="folder" size={15} /><span class="chip-text">{ws ? ws.name : t('workspace.none.short')}</span>
+          <Icon name="folder" size={15} /><span class="chip-text squeeze">{ws ? ws.name : t('workspace.none.short')}</span>
         {/snippet}
         {#snippet footer(close)}
           <button type="button" onclick={() => addFolder(close)}><Icon name="plus" size={15} />{t('workspace.add')}</button>
@@ -264,36 +292,33 @@
       </Menu>
       <Menu items={modeItems} value={agent.mode} label={t('mode.label')} onselect={(v) => agent.setMode(v as Mode)}>
         {#snippet trigger()}
-          <Icon name={agent.mode === 'full' ? 'alert' : agent.mode === 'read_only' ? 'eye' : 'shield'} size={15} /><span class="chip-text">{t(`mode.${agent.mode}`)}</span>
+          <Icon name={agent.mode === 'full' ? 'alert' : agent.mode === 'read_only' ? 'eye' : 'shield'} size={15} /><span class="chip-text squeeze">{t(`mode.${agent.mode}`)}</span>
         {/snippet}
       </Menu>
       {/if}
       {#if !external}
-        <Menu items={routeItems} value={agent.route} label={t('route.label')} onselect={(v) => agent.setRoute(v)}>
+        <span class="route"><Menu items={routeItems} value={agent.route} label={t('route.label')} onselect={(v) => agent.setRoute(v)}>
           {#snippet trigger()}
             <Icon name="chip" size={15} /><span class="chip-text">{routeLabel}</span>
           {/snippet}
+        </Menu></span>
+      {/if}
+      {#if extras.length}
+        <!-- Image is listed whenever the local model is the route, disabled with the reason while it
+             reads no images: the feature is found before it can be used, as on the phones. -->
+        {#if local}<input type="file" accept="image/*" multiple hidden bind:this={fileInput} onchange={pickImages} />{/if}
+        <Menu items={extras} label={t('composer.more')} onselect={extra} switches chevron={false}>
+          {#snippet trigger()}
+            <Icon name="plus" size={16} /><span class="visually-hidden">{t('composer.more')}</span>
+          {/snippet}
         </Menu>
-      {/if}
-      {#if canThink}
-        <button type="button" class="toggle" aria-pressed={thinking} title={t('composer.think.hint')} onclick={() => (think = !thinking)}>
-          <Icon name="brain" size={15} />{t('composer.think')}
-        </button>
-      {/if}
-      {#if local}
-        <!-- Shown whenever the local model is the route, disabled with the reason while it reads no
-             images: the feature is found before it can be used, as on the phones. -->
-        <input type="file" accept="image/*" multiple hidden bind:this={fileInput} onchange={pickImages} />
-        <button type="button" class="toggle" disabled={!canImage} title={canImage ? t('composer.image.hint') : imageWhyNot} onclick={() => fileInput?.click()}>
-          <Icon name="image" size={15} />{t('composer.image')}
-        </button>
-      {/if}
-      {#if local && localReady}
-        <button type="button" class="toggle" aria-pressed={choose} title={t('choose.hint')} onclick={() => (choose = !choose)}>{t('choose.toggle')}</button>
+        {#if choose}<span class="state">{t('choose.on')}</span>{/if}
+        <!-- Said only when this message departs from the setting: a default is not news. -->
+        {#if canThink && think !== null && think !== thinkDefault}<span class="state">{thinking ? t('composer.think') : t('composer.think.off')}</span>{/if}
       {/if}
       <span class="spacer"></span>
       {#if agent.running}
-        <button type="button" class="stop" onclick={() => agent.stop()} title={t('composer.stop')}><Icon name="stop" size={16} />{t('composer.stop')}</button>
+        <button type="button" class="stop" onclick={() => agent.stop()} title={t('composer.stop')}><Icon name="stop" size={16} /><span class="stop-text">{t('composer.stop')}</span></button>
       {:else}
         <button type="submit" class="primary send icon" disabled={!canSend} aria-label={choose ? t('choose.send') : t('composer.send')} title={choose ? t('choose.send') : t('composer.send.hint')}>
           <Icon name="send" size={18} />
@@ -302,7 +327,11 @@
     </div>
   </div>
   {#if blocked}
-    <p class="hint muted small">{t('composer.noModel')} <a href="#/models">{t('nav.models')}</a></p>
+    {#if server.info?.state === 'loading' || server.info?.state === 'planning'}
+      <p class="hint muted small">{t('composer.loading')}</p>
+    {:else}
+      <p class="hint muted small">{t('composer.noModel')} <a href="#/models">{t('nav.models')}</a></p>
+    {/if}
   {/if}
   {#if needsFolder}
     <p class="hint muted small">{t('agent.needsFolder', { name: agentLabel })}</p>
@@ -351,30 +380,23 @@
     border: 1px solid var(--line);
     border-radius: 50%;
   }
-  /* The agent once chosen: shown like a chip, not a control. */
-  .static {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--s1);
-    min-height: 2rem;
-    padding: 0 var(--s2);
-    border: 1px solid var(--line);
-    border-radius: var(--pill);
+  /* A per-message extra that is on: said in words beside the "+", so it is not forgotten. */
+  .state {
     font-size: 0.8125rem;
+    color: var(--accent-ink);
     font-weight: 550;
-    color: var(--muted);
-    max-width: 13rem;
   }
   .composer {
     display: flex;
     flex-direction: column;
     gap: var(--s1);
   }
+  /* The composer: a white sheet, a fine ink edge, lifted like the answers. */
   .box {
     border: var(--edge) solid var(--line-strong);
-    border-radius: calc(var(--radius) + 4px);
+    border-radius: var(--radius);
     background: var(--surface);
-    box-shadow: var(--shadow-sm);
+    box-shadow: var(--shadow-md);
     padding: var(--s2) var(--s2) var(--s2) var(--s2);
     display: flex;
     flex-direction: column;
@@ -405,21 +427,51 @@
     gap: var(--s1);
     flex-wrap: wrap;
   }
-  .toggle {
-    min-height: 2rem;
-    padding: 0 var(--s2);
-    gap: var(--s1);
-    border-radius: var(--pill);
-    font-size: 0.8125rem;
-    box-shadow: none;
-  }
-  .toggle[aria-pressed='true'] {
-    background: var(--accent-tint);
-    border-color: var(--accent);
-    color: var(--accent-ink);
-  }
   .send {
     border-radius: var(--pill);
+  }
+  @media (pointer: coarse), (max-width: 640px) {
+    .send,
+    .stop {
+      min-height: 44px;
+      min-width: 44px;
+    }
+  }
+  /* A phone's width: one row, the model's chip taking what the icons leave, Send always last. */
+  @media (max-width: 640px) {
+    .bar {
+      flex-wrap: nowrap;
+    }
+    .route {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+    }
+    .route :global(.menu-root),
+    .route :global(.chip) {
+      min-width: 0;
+      max-width: 100%;
+    }
+    /* The model's chip grows instead of the gap; without it (another agent) the gap pushes Send. */
+    .route ~ .spacer {
+      flex: 0 0 0;
+    }
+    .state {
+      display: none;
+    }
+    /* Stop keeps its place, last and 44 px, as an icon; its word stays for a screen reader. */
+    .stop {
+      padding: 0;
+      flex: none;
+    }
+    .stop-text {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+    }
   }
   .stop {
     border-radius: var(--pill);

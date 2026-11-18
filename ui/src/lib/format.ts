@@ -1,4 +1,5 @@
 // Display formatting and small string helpers.
+import { t } from './text';
 
 const UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
 
@@ -39,17 +40,12 @@ export function commandLine(args: readonly string[]): string {
 }
 
 /**
- * Decimal gigabytes with one decimal, the unit model repositories quote sizes in. The Android app
- * writes sizes the same way, so a resumable download reads the same number on both.
+ * The label of a catalog row's action when part of it is already on disk: what is there and the
+ * whole, in the binary units every other size on the screen uses, so the button and the progress
+ * bar beside it read the same number.
  */
-export function formatGb(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes < 0) return '?';
-  return `${(bytes / 1e9).toFixed(1)} GB`;
-}
-
-/** The label of a catalog row's action when part of it is already on disk, as both UIs write it. */
 export function resumeLabel(received: number, total: number): string {
-  return `Resume (${formatGb(received).replace(/ GB$/, '')} of ${formatGb(total)})`;
+  return t('models.resume', { got: formatBytes(received), total: formatBytes(total) });
 }
 
 /** Download progress in [0, 1], or null when the total is unknown. */

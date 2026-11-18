@@ -60,7 +60,7 @@ if(CMAKE_Swift_COMPILER_ID STREQUAL "Apple"
 endif()
 
 # What the app carries beside its code: the catalog the server lists, the logo the screens draw,
-# and the faces every word is set in (Inter, JetBrains Mono: static instances of their official
+# and the faces every word is set in (Hanken Grotesk, JetBrains Mono: static instances of their official
 # releases, with their SIL OFL licences beside them). Each from its one place in the repository.
 file(GLOB _fonts CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Resources/Fonts/*.ttf"
                                    "${CMAKE_CURRENT_SOURCE_DIR}/Resources/Fonts/OFL-*.txt")

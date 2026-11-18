@@ -88,6 +88,7 @@ fun PlanScreen(modifier: Modifier = Modifier, onOpenSetting: (key: String) -> Un
             TopAppBar(
                 title = { Text("Plan") },
                 navigationIcon = { Box(Modifier.padding(start = 16.dp)) { BrandMark(wordmark = false) } },
+                colors = shellTopBarColors(),
             )
         },
         snackbarHost = { SnackbarHost(snackbar) },
@@ -178,7 +179,7 @@ fun PlanScreen(modifier: Modifier = Modifier, onOpenSetting: (key: String) -> Un
 
 @Composable
 private fun PrimaryAction(text: String, enabled: Boolean, onClick: () -> Unit) {
-    Button(shape = Corner, onClick = onClick, enabled = enabled, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+    Button(shape = Corner, colors = primaryButtonColors(), onClick = onClick, enabled = enabled, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
         Text(text, fontSize = 16.sp)
     }
 }
@@ -245,7 +246,7 @@ private fun PlanBody(
             Text("Decided, but not a setting this app can hold: ${p.notApplicable.joinToString("; ")}", fontSize = 12.sp, color = MaterialTheme.colorScheme.tertiary)
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(shape = Corner, onClick = onApply, enabled = canApply, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text("Apply plan") }
+            Button(shape = Corner, colors = primaryButtonColors(), onClick = onApply, enabled = canApply, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) { Text("Apply plan") }
             OutlinedButton(shape = Corner, onClick = onMeasure, enabled = canMeasure, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
                 Text(if (measuring) "Measuring..." else "Measure again")
             }

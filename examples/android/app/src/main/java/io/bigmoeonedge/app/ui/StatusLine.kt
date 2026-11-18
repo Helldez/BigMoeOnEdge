@@ -12,6 +12,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.bigmoeonedge.app.chat.Words
 import io.bigmoeonedge.app.data.AppPrefs
 import io.bigmoeonedge.app.data.ModelDownloader
 import io.bigmoeonedge.app.data.downloadSummary
@@ -46,16 +47,17 @@ fun EngineStatusLine(onOpenModels: () -> Unit, onOpenSetting: (String) -> Unit) 
     val toModels = "Choose one" to onOpenModels
     val (text, action) = when {
         !engine.serverUp && engine.networkDenied -> engine.serverError.orEmpty() to toSettings
-        !engine.serverUp -> (engine.serverError?.lineSequence()?.firstOrNull()?.take(120) ?: "Engine not running") to null
-        info == null -> "Connecting…" to null
-        info.state == "planning" -> "Measuring the phone, then loading…" to null
-        info.state == "loading" -> "Loading model…" to null
+        !engine.serverUp -> (engine.serverError?.lineSequence()?.firstOrNull()?.take(120) ?: Words.UNREACHABLE) to null
+        info == null -> Words.CONNECTING to null
+        info.state == "planning" -> Words.MEASURING to null
+        info.state == "loading" -> Words.LOADING to null
         info.state == "error" -> "Engine error: ${info.error.take(120)}" to toModels.copy(first = "Models")
-        info.model == null -> "No model loaded" to toModels
+        info.model == null -> Words.NO_MODEL to toModels
         else -> {
-            // A model running without streaming says so wherever its name is shown.
+            // Words only, no figure: the figures sit under each answer, in Plan and in Metrics. A model
+            // running without streaming says so wherever its name is shown.
             val name = info.model.name + if (info.model.streaming) "" else " (not streamed)"
-            "$name · ${if (info.generating) "generating" else "ready"}" to null
+            "$name · ${if (info.generating) Words.GENERATING else Words.READY} · ${Words.PRIVATE_HERE}" to null
         }
     }
     Surface(color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
@@ -71,7 +73,7 @@ fun EngineStatusLine(onOpenModels: () -> Unit, onOpenSetting: (String) -> Unit) 
     val ctx = contextWarning(info?.model.takeIf { engine.serverUp && info?.ready == true }, engine.params)
     var dismissed by remember { mutableStateOf(AppPrefs.ctxWarningDismissed(context)) }
     if (ctx?.warn == true && ctx.dismissKey != dismissed) {
-        Surface(color = warnColor().copy(alpha = 0.15f), modifier = Modifier.fillMaxWidth()) {
+        Surface(color = tokens.warnTint, modifier = Modifier.fillMaxWidth()) {
             Row(Modifier.padding(horizontal = 16.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(ctx.text(), fontSize = 12.sp, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                 TextButton(shape = Corner, onClick = { onOpenSetting(ctx.key) }, contentPadding = PaddingValues(horizontal = 8.dp)) {

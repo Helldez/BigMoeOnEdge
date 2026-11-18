@@ -98,7 +98,7 @@
   <header>
     <Icon name="file" size={16} />
     <span class="name" title={preview.path}>{name}</span>
-    <span class="path muted">{preview.path}</span>
+    {#if preview.path !== name}<span class="path muted">{preview.path}</span>{/if}
     <span class="spacer"></span>
     <button type="button" class="ghost icon small" title={t('preview.refresh')} aria-label={t('preview.refresh')} onclick={() => preview.refresh()}><Icon name="refresh" size={16} /></button>
     <button type="button" class="ghost icon small" title={preview.fullscreen ? t('preview.exitFull') : t('preview.full')} aria-label={preview.fullscreen ? t('preview.exitFull') : t('preview.full')} aria-pressed={preview.fullscreen} onclick={() => (preview.fullscreen = !preview.fullscreen)}><Icon name="expand" size={16} /></button>
@@ -134,12 +134,13 @@
 </section>
 
 <style>
+  /* The pane is the desk beside the conversation; what the agent made lies on it as a sheet. */
   .pane {
     display: flex;
     flex-direction: column;
     height: 100%;
     min-width: 0;
-    background: var(--surface);
+    background: var(--bg);
     border-left: var(--edge) solid var(--line);
   }
   .pane.full {
@@ -154,7 +155,6 @@
     gap: var(--s2);
     min-height: 3rem;
     padding: 0 var(--s2) 0 var(--s4);
-    border-bottom: var(--edge) solid var(--line);
   }
   .name {
     font-weight: 600;
@@ -175,6 +175,15 @@
     overflow: auto;
     display: flex;
     flex-direction: column;
+    margin: 0 var(--s3) var(--s3);
+    background: var(--surface);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-md);
+  }
+  .full .body {
+    margin: 0;
+    border-radius: 0;
+    box-shadow: none;
   }
   iframe {
     flex: 1;

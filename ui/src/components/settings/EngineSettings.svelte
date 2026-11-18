@@ -210,6 +210,16 @@
   .ghelp {
     flex-basis: 100%;
     font-size: 0.8125rem;
+    order: 2;
+  }
+  /* The card's title takes the row, the count and the opening chevron (app.css) sit at its end,
+     the help line under them. */
+  .group > summary .title {
+    flex: 1;
+  }
+  .group > summary::after {
+    order: 1;
+    align-self: center;
   }
   .cmd {
     width: 100%;

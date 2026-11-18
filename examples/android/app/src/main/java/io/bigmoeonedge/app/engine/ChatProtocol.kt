@@ -97,45 +97,4 @@ object ChatProtocol {
             summary = bmoe?.optJSONObject("summary"),
         )
     }
-
-    /**
-     * The compact figure shown under a finished answer, from the run summary the last chunk
-     * carries: the decode rate and length, the prefill rate with the tokens it read and the time it
-     * took, the context used, the cache hit rate. Each rate names its phase; the same line the web
-     * UI writes (docs/screens.md).
-     */
-    fun turnMetrics(summary: JSONObject, nCtx: Int, cancelled: Boolean): String {
-        val loc = java.util.Locale.US
-        val tokS = summary.optDouble("tok_s", 0.0)
-        val tokens = summary.optInt("tokens", 0)
-        val prefill = summary.optDouble("prefill_s", 0.0)
-        val prefillTps = summary.optDouble("prefill_tps", 0.0)
-        val nPrompt = summary.optInt("n_prompt", -1)
-        val nPast = summary.optInt("n_past", -1)
-        val hit = summary.optDouble("cache_hit_pct", -1.0)
-        val mtpDecodes = summary.optLong("mtp_decodes", 0)
-        val mtpDrafted = summary.optLong("mtp_drafted", 0)
-        val mtpAccepted = summary.optLong("mtp_accepted", 0)
-        val overhead = summary.optDouble("loop_overhead_s_tok", 0.0)
-        return buildString {
-            append(String.format(loc, "decode %.1f tok/s (%d tok)", tokS, tokens))
-            if (prefill > 0) {
-                // The tokens this turn prefilled: with the conversation's leading tokens reused from
-                // the KV cache, that is the new message, not the whole history.
-                val tps = if (prefillTps > 0) prefillTps else if (nPrompt > 0) nPrompt / prefill else 0.0
-                append(String.format(loc, " · prefill %.1f tok/s (", tps))
-                if (nPrompt >= 0) append(String.format(loc, "%d tok, ", nPrompt))
-                append(String.format(loc, "%.1f s)", prefill))
-            }
-            if (nPast >= 0 && nCtx > 0) append(String.format(loc, " · ctx %d/%d", nPast, nCtx))
-            if (hit >= 0) append(String.format(loc, " · cache %.0f%%", hit))
-            // With speculation on, the headline rate leaves out the drafting between decodes: show
-            // what the turn really ran at, and how often the guesses were right.
-            if (mtpDecodes > 0 && mtpDrafted > 0) {
-                if (tokS > 0) append(String.format(loc, " · %.1f real", 1.0 / (1.0 / tokS + overhead)))
-                append(String.format(loc, " · %.0f%% kept", 100.0 * mtpAccepted / mtpDrafted))
-            }
-            if (cancelled) append(" · stopped")
-        }
-    }
 }

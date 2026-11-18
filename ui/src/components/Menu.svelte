@@ -4,6 +4,10 @@
     label: string;
     description?: string;
     tone?: '' | 'warn' | 'err';
+    /** Shown, not pickable: its description says why. */
+    disabled?: boolean;
+    /** In a menu of switches (`switches`), whether this one is on. */
+    on?: boolean;
   }
 </script>
 
@@ -21,6 +25,8 @@
     trigger,
     footer,
     up = true,
+    switches = false,
+    chevron = true,
   }: {
     items: MenuItem[];
     value?: string;
@@ -29,6 +35,9 @@
     trigger: Snippet;
     footer?: Snippet<[() => void]>;
     up?: boolean;
+    /** Items that each turn something on or off, or act, instead of one choice among them. */
+    switches?: boolean;
+    chevron?: boolean;
   } = $props();
 
   let open = $state(false);
@@ -45,7 +54,7 @@
     close();
   }
   function focusItem(delta: number) {
-    const els = [...(root?.querySelectorAll<HTMLElement>('[role="menuitemradio"], .menu-foot button') ?? [])];
+    const els = [...(root?.querySelectorAll<HTMLElement>('.item:not(:disabled), .menu-foot button') ?? [])];
     if (els.length === 0) return;
     const i = els.indexOf(document.activeElement as HTMLElement);
     els[(i + delta + els.length) % els.length].focus();
@@ -87,13 +96,21 @@
     onclick={() => (open = !open)}
   >
     {@render trigger()}
-    <Icon name="chevronDown" size={14} />
+    {#if chevron}<span class="chev"><Icon name="chevronDown" size={14} /></span>{/if}
   </button>
   {#if open}
     <div class="pop" class:up id={id} role="menu" aria-label={label}>
       {#each items as it (it.value)}
-        <button type="button" role="menuitemradio" aria-checked={it.value === value} class="item {it.tone ?? ''}" onclick={() => pick(it.value)}>
-          <span class="check">{#if it.value === value}<Icon name="check" size={16} />{/if}</span>
+        {@const checked = switches ? !!it.on : it.value === value}
+        <button
+          type="button"
+          role={switches ? 'menuitemcheckbox' : 'menuitemradio'}
+          aria-checked={checked}
+          class="item {it.tone ?? ''}"
+          disabled={it.disabled}
+          onclick={() => pick(it.value)}
+        >
+          <span class="check">{#if checked}<Icon name="check" size={16} />{/if}</span>
           <span class="words">
             <span class="label">{it.label}</span>
             {#if it.description}<span class="desc">{it.description}</span>{/if}
@@ -123,6 +140,32 @@
   @media (max-width: 640px) {
     .chip {
       max-width: 9.5rem;
+    }
+  }
+  .chev {
+    display: inline-flex;
+  }
+  /* Under a finger every control is a 44 px target (docs/design.md, "Geometry"). */
+  @media (pointer: coarse), (max-width: 640px) {
+    .chip {
+      min-height: 44px;
+      min-width: 44px;
+      justify-content: center;
+    }
+  }
+  /* On a phone's width a chip may give its words up for its icon (`.squeeze`, the caller's
+     choice): the words stay for a screen reader, and the menu still names each choice. */
+  @media (max-width: 640px) {
+    .chev {
+      display: none;
+    }
+    .chip :global(.squeeze) {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
     }
   }
   .chip :global(.chip-text) {
@@ -165,9 +208,16 @@
     white-space: normal;
     font-weight: 500;
   }
-  .item:hover,
+  .item:hover:not(:disabled),
   .item:focus-visible {
     background: var(--hover);
+  }
+  .item:disabled {
+    opacity: 1;
+    cursor: not-allowed;
+  }
+  .item:disabled .label {
+    color: var(--muted);
   }
   .check {
     width: 1rem;

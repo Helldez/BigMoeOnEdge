@@ -5,6 +5,7 @@
   import { onMount, untrack } from 'svelte';
   import Icon from './components/Icon.svelte';
   import PreviewPane from './components/PreviewPane.svelte';
+  import ModelCard from './components/ModelCard.svelte';
   import Sidebar from './components/Sidebar.svelte';
   import StatusBar from './components/StatusBar.svelte';
   import Connect from './routes/Connect.svelte';
@@ -121,6 +122,7 @@
     <header class="topbar">
       <button type="button" class="ghost icon" aria-label={t('nav.open')} aria-expanded={drawerOpen} onclick={() => (drawerOpen = true)}><Icon name="menu" /></button>
       <span class="top-title">{screenTitle}</span>
+      <ModelCard inline />
       <a class="button ghost icon" href="#/chat" aria-label={t('conversation.new')} title={t('conversation.new')} onclick={() => agent.newConversation()}><Icon name="plus" /></a>
     </header>
     {#if drawerOpen}
@@ -233,14 +235,18 @@
     overflow-y: auto;
     display: block;
   }
+  /* On a phone the shell is the top bar: the same ink, its words in the shell's colours. */
   .topbar {
+    --text: var(--on-shell);
+    --muted: var(--on-shell-muted);
+    --hover: rgb(255 255 255 / 0.1);
     display: flex;
     align-items: center;
     gap: var(--s2);
     min-height: 3rem;
     padding: 0 var(--s2);
-    background: var(--surface);
-    border-bottom: var(--edge) solid var(--line);
+    background: var(--shell);
+    color: var(--text);
   }
   .top-title {
     flex: 1;

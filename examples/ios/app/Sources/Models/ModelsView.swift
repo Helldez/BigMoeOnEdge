@@ -40,6 +40,7 @@ struct ModelsView: View {
         let yours = rows.filter { !$0.suggested }
         let suggested = rows.filter(\.suggested)
         let companions = split.companions
+        let setup = showSetup(yours: yours, companions: companions)
         ScrollViewReader { proxy in
             Page {
                 if let failure {
@@ -47,29 +48,33 @@ struct ModelsView: View {
                         Button("Dismiss") { self.failure = nil }.buttonStyle(.appSecondary)
                     }
                 }
-                if engine.info?.state == .error, let why = engine.info?.error, !why.isEmpty {
-                    Banner(text: "The last load failed: \(why)", color: Palette.err)
-                }
-                LoadStages()
-                loadedElsewhere(rows)
-                if !engine.modelsListed {
-                    Text(engine.serverUp ? "Reading the models…" : "The engine is not running.")
-                        .font(.ui(15)).foregroundStyle(Palette.muted)
-                } else if yours.isEmpty, companions.isEmpty {
-                    firstModel(suggested)
+                if setup {
+                    SetupView(rows: rows, importFile: { importing = true })
                 } else {
-                    SectionTitle("Your models", trailing: "\(yours.count)")
-                    ForEach(yours) { r in row(r).id(r.id) }
-                    if !companions.isEmpty { companionFold(companions) }
-                    if !suggested.isEmpty {
-                        SectionTitle("Suggested")
-                        ForEach(suggested) { r in row(r).id(r.id) }
+                    if engine.info?.state == .error, let why = engine.info?.error, !why.isEmpty {
+                        Banner(text: "The last load failed: \(why)", color: Palette.err)
                     }
-                    SectionTitle("Get another model")
-                    HuggingFaceSection(onAdded: follow)
-                    otherModel
+                    LoadStages()
+                    loadedElsewhere(rows)
+                    if !engine.modelsListed {
+                        Text(engine.serverUp ? "Reading the models…" : "The engine is not running.")
+                            .font(.ui(15)).foregroundStyle(Palette.muted)
+                    } else if yours.isEmpty, companions.isEmpty {
+                        firstModel(suggested)
+                    } else {
+                        SectionTitle("Your models", trailing: "\(yours.count)")
+                        ForEach(yours) { r in row(r).id(r.id) }
+                        if !companions.isEmpty { companionFold(companions) }
+                        if !suggested.isEmpty {
+                            SectionTitle("Suggested")
+                            ForEach(suggested) { r in row(r).id(r.id) }
+                        }
+                        SectionTitle("Get another model")
+                        HuggingFaceSection(onAdded: follow)
+                        otherModel
+                    }
+                    whereModelsLive
                 }
-                whereModelsLive
             }
             .onChange(of: followed) { _ in scroll(proxy, rows) }
             // A download that lands moves from the catalog's row to the file's: follow it there.
@@ -77,6 +82,8 @@ struct ModelsView: View {
         }
         .refreshable { await engine.refreshModels() }
         .task { await engine.refreshModels() }
+        .onAppear { nav.setupShowing = setup }
+        .onChange(of: setup) { nav.setupShowing = $0 }
         .fileImporter(isPresented: $importing, allowedContentTypes: [UTType(filenameExtension: "gguf") ?? .data, .data]) { result in
             guard case let .success(url) = result else { return }
             run("import") { try await engine.importModel(from: url) }
@@ -94,6 +101,13 @@ struct ModelsView: View {
     }
 
     private func follow(_ id: String) { followed = id }
+
+    /// The first run takes the screen while the phone has no model and none is coming, and keeps
+    /// it from its Download until the conversation opens; Skip or More models leave it.
+    private func showSetup(yours: [Library.Row], companions: [LocalModel]) -> Bool {
+        guard engine.modelsListed, !nav.setupDismissed else { return false }
+        return nav.setupEntry != nil || (yours.isEmpty && companions.isEmpty)
+    }
 
     private func scroll(_ proxy: ScrollViewProxy, _ rows: [Library.Row]) {
         guard let followed, let r = rows.first(where: { $0.entry?.id == followed }) else { return }

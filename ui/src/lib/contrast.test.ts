@@ -12,6 +12,11 @@ const TEXT: [string, string][] = [
   ...['bg', 'surface', 'surface-2', 'hover', 'code-bg', 'accent-tint'].map((b): [string, string] => ['accent-ink', b]),
   ['on-accent', 'accent-fill'],
   ['on-accent', 'accent-fill-hover'],
+  // The ink shell and what sits on it: the brand, the conversations, the open one.
+  ['on-shell', 'shell'],
+  ['on-shell-muted', 'shell'],
+  ['on-shell', 'shell-hi'],
+  ['on-shell-muted', 'shell-hi'],
   ['surface', 'err'],
   ...(['ok', 'warn', 'err'] as const).flatMap((c): [string, string][] => [
     [c, `${c}-tint`],
@@ -29,8 +34,9 @@ const UI: [string, string][] = [
   ['focus', 'bg'],
   ['focus', 'surface'],
   ['accent', 'surface-2'],
-  ['accent-fill', 'surface'],
-  ['accent-fill', 'bg'],
+  // The primary button's edge against the sheet and the ground.
+  ['accent-edge', 'surface'],
+  ['accent-edge', 'bg'],
   ...[1, 2, 3, 4, 5, 6].map((i): [string, string] => [`series-${i}`, 'surface']),
 ];
 
