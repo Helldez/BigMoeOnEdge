@@ -41,6 +41,7 @@
 #include "openai_chat.h"
 #include "openai_responses.h"
 #include "plan_view.h"
+#include "request_sampling.h"
 #include "log_file.h"
 #include "service_spec.h"
 #include "settings_store.h"
@@ -53,6 +54,7 @@
 #include "bmoe/planner.h"
 
 #include <atomic>
+#include <cmath>
 #include <condition_variable>
 #include <chrono>
 #include <limits>
@@ -1269,6 +1271,66 @@ static void llama_compat_tests() {
           "a piece that splits a code point goes out as its bytes");
     check(slots_json(4096, true)[0]["is_processing"] == true && props_json(PropsFacts{})["total_slots"] == 1,
           "one slot: the server answers one turn at a time");
+}
+
+static void request_sampling_tests() {
+    const auto parse = [](const json & body, SamplingDialect d, ChatRequest & t, std::string & e) {
+        t = ChatRequest{};
+        return parse_request_sampling(body, d, t, e);
+    };
+    ChatRequest t;
+    std::string err;
+    check(parse(json::object(), SamplingDialect::Chat, t, err) && !t.sampling && t.stop_text.empty() &&
+              t.grammar.empty() && !t.logprobs,
+          "sampling: a request that names nothing samples as the session does");
+    check(parse(json{{"temperature", 0.2}, {"top_p", 0.5}, {"top_k", 7}, {"min_p", 0.1}, {"seed", 9}},
+                SamplingDialect::Chat, t, err) &&
+              t.sampling && *t.sampling->temp == 0.2f && *t.sampling->top_p == 0.5f && *t.sampling->top_k == 7 &&
+              *t.sampling->min_p == 0.1f && *t.sampling->seed == 9u,
+          "sampling: OpenAI's and llama-server's fields, each read");
+    check(parse(json{{"seed", -1}}, SamplingDialect::Chat, t, err) && *t.sampling->seed == SamplingConfig::seed_random,
+          "sampling: seed -1 is a fresh seed, as in llama-server");
+    check(!parse(json{{"temperature", -0.1}}, SamplingDialect::Chat, t, err) &&
+              !parse(json{{"top_p", 1.5}}, SamplingDialect::Chat, t, err) &&
+              !parse(json{{"top_k", 2.5}}, SamplingDialect::Chat, t, err) &&
+              !parse(json{{"presence_penalty", 3}}, SamplingDialect::Chat, t, err) &&
+              !parse(json{{"temperature", "hot"}}, SamplingDialect::Chat, t, err),
+          "sampling: a value out of its range or of the wrong type is refused, not clamped");
+    check(parse(json{{"logit_bias", {{"15", -100}, {"7", false}}}}, SamplingDialect::Chat, t, err) &&
+              t.sampling->logit_bias.size() == 2 &&
+              t.sampling->logit_bias[0] == std::pair<int32_t, float>{15, -100.0f} &&
+              std::isinf(t.sampling->logit_bias[1].second) &&
+              parse(json{{"logit_bias", json::array({json::array({3, 1.5})})}}, SamplingDialect::Chat, t, err) &&
+              t.sampling->logit_bias[0].first == 3 &&
+              !parse(json{{"logit_bias", {{"Hello", 1}}}}, SamplingDialect::Chat, t, err),
+          "sampling: logit_bias by id, as an object or pairs; false forbids; a token's text is refused");
+    check(parse(json{{"stop", "END"}}, SamplingDialect::Chat, t, err) &&
+              t.stop_text == std::vector<std::string>{"END"} &&
+              parse(json{{"stop", {"a", "", "b"}}}, SamplingDialect::Chat, t, err) && t.stop_text.size() == 2 &&
+              !parse(json{{"stop", 3}}, SamplingDialect::Chat, t, err),
+          "sampling: stop is a string or a list of them, empty ones dropped");
+    check(parse(json{{"stop_sequences", {"Human:"}}, {"top_k", 5}}, SamplingDialect::Messages, t, err) &&
+              t.stop_text.size() == 1 && *t.sampling->top_k == 5 &&
+              parse(json{{"stop", {"x"}}, {"seed", 3}}, SamplingDialect::Messages, t, err) && t.stop_text.empty() &&
+              !t.sampling,
+          "sampling: Messages reads Anthropic's names and not OpenAI's");
+    check(parse(json{{"temperature", 0.5}, {"top_k", 5}, {"stop", "x"}}, SamplingDialect::Responses, t, err) &&
+              !t.sampling->top_k && t.stop_text.empty(),
+          "sampling: Responses reads temperature and top_p");
+    check(parse(json{{"logprobs", true}, {"top_logprobs", 3}}, SamplingDialect::Chat, t, err) && t.logprobs &&
+              t.top_logprobs == 3 && parse(json{{"n_probs", 4}}, SamplingDialect::Chat, t, err) && t.logprobs &&
+              t.top_logprobs == 4 && !parse(json{{"top_logprobs", 21}}, SamplingDialect::Chat, t, err),
+          "sampling: logprobs, top_logprobs, and llama-server's n_probs");
+    check(parse(json{{"n", 1}}, SamplingDialect::Chat, t, err) && !parse(json{{"n", 2}}, SamplingDialect::Chat, t, err),
+          "sampling: one choice per request");
+    check(parse(json{{"grammar", "root ::= \"a\""}}, SamplingDialect::Chat, t, err) && !t.grammar.empty(),
+          "sampling: a GBNF grammar is read");
+    OpenAiChatRequest cr;
+    check(!parse_chat_request(json{{"messages", {{{"role", "user"}, {"content", "hi"}}}},
+                                   {"grammar", "root ::= \"a\""},
+                                   {"response_format", {{"type", "json_object"}}}},
+                              RunConfig{}, cr, err),
+          "sampling: a grammar beside a response format is refused");
 }
 
 static void access_tests() {
@@ -2862,6 +2924,7 @@ int main() {
     json_tests();
     access_tests();
     llama_compat_tests();
+    request_sampling_tests();
     file_tests();
     decide_tests();
     model_files_tests();

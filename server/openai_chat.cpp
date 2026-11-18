@@ -1,5 +1,6 @@
 #include "openai_chat.h"
 #include "image_part.h"
+#include "request_sampling.h"
 
 #include <algorithm>
 
@@ -263,7 +264,8 @@ bool parse_chat_request(const json & body, const RunConfig & cfg, OpenAiChatRequ
         err = "the last message must be from the user or a tool: there is nothing to answer otherwise";
         return false;
     }
-    if (!parse_tools(body, turn, err) || !parse_tool_choice(body, turn, err) || !parse_response_format(body, turn, err))
+    if (!parse_tools(body, turn, err) || !parse_tool_choice(body, turn, err) ||
+        !parse_response_format(body, turn, err) || !parse_request_sampling(body, SamplingDialect::Chat, turn, err))
         return false;
 
     turn.n_predict = cfg.n_predict;
@@ -378,6 +380,27 @@ json tool_call_events_delta(const std::vector<ToolCallEvent> & events) {
             calls.push_back({{"index", (int) e.index}, {"function", {{"arguments", e.arguments}}}});
     }
     return calls.empty() ? json(nullptr) : json{{"tool_calls", calls}};
+}
+
+namespace {
+
+json utf8_bytes(const std::string & s) {
+    json b = json::array();
+    for (unsigned char c : s)
+        b.push_back((int) c);
+    return b;
+}
+
+} // namespace
+
+json logprob_entry(const TokenMetrics & m, int top) {
+    json candidates = json::array();
+    for (size_t i = 0; i < m.top_logprobs.size() && (int) i < top; ++i) {
+        const TokenLogprob & c = m.top_logprobs[i];
+        candidates.push_back(
+            {{"id", c.id}, {"token", c.piece}, {"logprob", c.logprob}, {"bytes", utf8_bytes(c.piece)}});
+    }
+    return {{"token", m.piece}, {"logprob", m.logprob}, {"bytes", utf8_bytes(m.piece)}, {"top_logprobs", candidates}};
 }
 
 json usage_chunk_json(const ChatResponseMeta & meta, const RunSummary & s) {

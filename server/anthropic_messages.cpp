@@ -1,5 +1,6 @@
 #include "anthropic_messages.h"
 #include "image_part.h"
+#include "request_sampling.h"
 
 namespace bmoe::server {
 
@@ -336,8 +337,8 @@ bool parse_messages_request(const json & body, const RunConfig & cfg, AnthropicR
     if (!read_token_budget(body, "max_tokens", cfg, given, turn.n_predict, err)) return false;
     turn.think = cfg.think;
     if (!parse_thinking(body, turn, err)) return false;
-    // temperature, top_p, top_k, stop_sequences, metadata, cache_control and context_management are
-    // read by nothing: the engine samples with its own settings, and has no stop strings.
+    if (!parse_request_sampling(body, SamplingDialect::Messages, turn, err)) return false;
+    // metadata, cache_control and context_management are read by nothing.
     out.stream = body.contains("stream") && body["stream"] == json(true);
     return true;
 }
@@ -380,8 +381,8 @@ json message_json(const ChatResponseMeta & meta, const RunResult & r, const std:
             {"role", "assistant"},
             {"model", meta.model},
             {"content", content},
-            {"stop_reason", anthropic_stop_reason(finish)},
-            {"stop_sequence", nullptr},
+            {"stop_reason", r.stop_text.empty() ? anthropic_stop_reason(finish) : "stop_sequence"},
+            {"stop_sequence", r.stop_text.empty() ? json(nullptr) : json(r.stop_text)},
             {"usage", anthropic_usage_json(r.summary)},
             {"bmoe", {{"summary", summary_json(r.summary, r.cancelled)}}}};
 }
@@ -485,7 +486,9 @@ std::string AnthropicStream::finish(const RunResult & r, const std::string & fin
     }
     f += sse_event("message_delta",
                    {{"type", "message_delta"},
-                    {"delta", {{"stop_reason", anthropic_stop_reason(finish)}, {"stop_sequence", nullptr}}},
+                    {"delta",
+                     {{"stop_reason", r.stop_text.empty() ? anthropic_stop_reason(finish) : "stop_sequence"},
+                      {"stop_sequence", r.stop_text.empty() ? json(nullptr) : json(r.stop_text)}}},
                     {"usage", anthropic_usage_json(r.summary)},
                     {"bmoe", {{"summary", summary_json(r.summary, r.cancelled)}}}});
     f += sse_event("message_stop", {{"type", "message_stop"}});
