@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.45.0] - 2026-11-18
 
 ### Added
 - **`POST /api/models/inspect`: a catalog entry checked against this machine by its id**, read from
@@ -14,6 +14,17 @@ Semantic Versioning.
   engine ([server-api.md](docs/server-api.md#post-apimodelsinspect)).
 
 ### Changed
+- **The first run offers every model the catalog suggests, and checks the one picked before its
+  download.** Pick a model showed two entries, each labelled from the file's size against total
+  memory, so a 13.6 GiB model that streams on a 16 GB laptop read "Fits in memory: the fastest
+  answers". It now says first that any gguf model runs here, with two buttons (gguf files the person
+  already has, and Hugging Face), then lists every catalog model by name and size with the same
+  suggestion picked. The one picked is checked by the server at once, its header against this
+  machine as the Models screen checks a Hugging Face model, and the answer stands under the list:
+  one plain sentence in the server's colour, the disk it needs, and "How it was checked" for the
+  engine's own lines. Download waits for the answer and stays off where the server says the model
+  cannot be downloaded; a check that could not be made says so and holds nothing back. On the web UI,
+  the Android app and the iOS app (`docs/screens.md`, "First run").
 - **The model catalog offers six models instead of two, from 5 GB to 300 GB.** A small dense
   one that most machines hold whole (Gemma-4-E4B-it Q4_0), a MoE model the
   size of the two already there (Ornith-1.5-35B-A3B Q4_K_M), and two far past RAM
@@ -21,10 +32,12 @@ Semantic Versioning.
   file is from ggml-org where it publishes one, with its size and SHA-256 from the repository, and
   this build's header check reads every one (`POST /api/hf/inspect`): the MoE models stream, the
   dense one runs whole in memory. The first run still suggests the largest that fits in memory.
+
 ### Fixed
 - **Android: "Choose from options" in the composer's + menu shows a checklist, not a wrench.** The
   entry borrowed Material's `Build` icon, which reads as tools or settings; it now draws Material's
   "checklist", the same picture the iOS composer uses for it.
+
 ## [0.44.1] - 2026-11-18
 
 ### Changed
@@ -196,12 +209,8 @@ Semantic Versioning.
   the logo, the engine's state is said in words (thinking, writing, reading part of the model from
   the disk).
 - **The first run leads to the first answer.** It is steps the screen marks: where a graphics pack
-  applies to the computer and is missing, installing it (or choosing the processor); then a model:
-  one the person already has or finds on Hugging Face, by two buttons at the top, or one among all
-  the catalog suggests. The one picked is checked by the server before anything is downloaded
-  (its header against this computer, as the Models screen checks a Hugging Face model), and the
-  answer stands under the list in one plain sentence and its colour; its
-  download with the time left, and the model loading
+  applies to the computer and is missing, installing it (or choosing the processor); then a model
+  that fits in memory beside a larger one, its download with the time left, and the model loading
   by itself. The conversation opens when the model is ready, with three questions to try
   (`docs/screens.md`, "First run"). Where no pack is needed it names the graphics cards the engine
   computes on, which `GET /api/backends` now reports as `graphics` (each local GPU or integrated
