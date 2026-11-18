@@ -65,6 +65,9 @@ public struct Telemetry: Equatable, Sendable {
         cpuMs = o["cpu_ms"].double(or: 0)
         let temp = o["cpu_temp_c"].double(or: -1)
         if temp > 0 { cpuTempC = temp }
+        // The cache's size travels on every token too, so the live tile can say it before the end.
+        let budget = o["cache_budget_mib"].double(or: -1)
+        if budget > 0 { cacheBudgetMiB = budget }
     }
 
     public mutating func apply(done o: JSON) {

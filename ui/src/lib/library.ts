@@ -53,6 +53,22 @@ function matchesEntry(m: LocalModel, entry: CatalogEntry, modelsDir: string): bo
  * then the entries whose download has begun, then the suggestions. Companion files (a projector,
  * a draft head) are not rows: pass `local` already split (lib/roles.ts).
  */
+/** A file name reduced to what tells models apart: letters and digits, lower case, no extension. */
+function nameKey(file: string): string {
+  return file.replace(/\.gguf$/i, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * Whether a file on disk is the catalog entry's model under another publisher's name: the same
+ * model and quantization ("Qwen_Qwen3.6-35B-A3B-Q4_K_M" for "Qwen3.6-35B-A3B-Q4_K_M"), which a
+ * person would not download twice. Only the end of the name is compared, so a prefix (an owner, a
+ * repository) is allowed and a different quantization is not.
+ */
+export function sameModelOnDisk(entryFile: string, local: readonly LocalModel[]): boolean {
+  const want = nameKey(entryFile);
+  return want !== '' && local.some((m) => m.complete && nameKey(m.name).endsWith(want));
+}
+
 export function libraryRows(
   data: Pick<ModelsResponse, 'models_dir' | 'catalog'>,
   local: readonly LocalModel[],
@@ -94,6 +110,8 @@ export function libraryRows(
       suggested: state === 'available' && !e.added,
       deleteName: null,
     };
+    // A suggestion this machine already has under another name is not offered again.
+    if (row.suggested && sameModelOnDisk(e.file, local)) continue;
     (row.suggested ? suggested : started).push(row);
   }
   return [...rows, ...started, ...suggested];

@@ -113,7 +113,8 @@ export const agentApi = {
   writeConnect: (id: string) =>
     request<ConnectWritten>('POST', `api/connect/${seg(id)}`, undefined, (v): v is ConnectWritten => isObject(v) && typeof v.file === 'string'),
 
-  backends: () => request<Backends>('GET', 'api/backends', undefined, isBackends),
+  /** With `refresh`, the server reads the release feed from the network first (the first run does). */
+  backends: (refresh = false) => request<Backends>('GET', refresh ? 'api/backends?refresh=1' : 'api/backends', undefined, isBackends),
   installBackend: (id: string) => request<unknown>('POST', `api/backends/${seg(id)}/install`),
 
   update: () => request<UpdateInfo>('GET', 'api/update', undefined, isUpdateInfo),

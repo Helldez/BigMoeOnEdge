@@ -1,6 +1,5 @@
 package io.bigmoeonedge.app.ui
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -77,16 +76,15 @@ fun Chip(text: String, colour: Color) {
 }
 
 /**
- * A card: the surface on the page, a 1 dp line and a soft shadow. One place, so every box on every
- * screen has the same edge, corner and elevation.
+ * A card: a sheet on the desk, lifted by a soft shadow with no frame. One place, so every box on
+ * every screen has the same corner and elevation.
  */
 @Composable
 fun BmoeCard(modifier: Modifier = Modifier, padding: Dp = 16.dp, colour: Color = tokens.surface, content: @Composable ColumnScope.() -> Unit) {
     Surface(
         color = colour,
-        shape = Corner,
-        shadowElevation = 1.dp,
-        border = BorderStroke(1.dp, tokens.line),
+        shape = SheetCorner,
+        shadowElevation = SheetElevation,
         modifier = modifier.fillMaxWidth(),
     ) {
         Column(Modifier.padding(padding), verticalArrangement = Arrangement.spacedBy(8.dp), content = content)

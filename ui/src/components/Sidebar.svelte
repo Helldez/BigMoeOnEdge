@@ -26,14 +26,17 @@
   });
   let groups = $derived(groupConversations(agent.conversations, agent.workspaces, now, query));
 
+  // Tasks has its entry over the conversations, where they appear; the folded rail has no list, so
+  // there it joins the screens. The last of an odd count spans the row (Connect apps, the longest).
   const NAV: { route: Route; icon: IconName; key: string }[] = [
     { route: 'models', icon: 'box', key: 'nav.models' },
     { route: 'plan', icon: 'gauge', key: 'nav.plan' },
     { route: 'skills', icon: 'spark', key: 'nav.skills' },
+    { route: 'settings', icon: 'gear', key: 'nav.settings' },
     { route: 'tasks', icon: 'clock', key: 'nav.tasks' },
     { route: 'connect', icon: 'plug', key: 'nav.connect' },
-    { route: 'settings', icon: 'gear', key: 'nav.settings' },
   ];
+  let nav = $derived(collapsed ? NAV : NAV.filter((n) => n.route !== 'tasks'));
 
   function newConversation() {
     agent.newConversation();
@@ -176,7 +179,7 @@
   <div class="foot">
     <ModelCard compact={collapsed} {onNavigate} />
     <ul class="nav" class:rail={collapsed}>
-      {#each NAV as n (n.route)}
+      {#each nav as n (n.route)}
         <li>
           <a href={href(n.route)} onclick={onNavigate} aria-current={router.route === n.route ? 'page' : undefined} title={collapsed ? t(n.key) : undefined}>
             <Icon name={n.icon} size={18} />
@@ -189,13 +192,24 @@
 </nav>
 
 <style>
+  /* The ink shell (docs/design.md, "Letterhead"). Everything inside reads its colours from the
+     shell, so the shared tokens are redefined for it here. */
   .side {
+    --text: var(--on-shell);
+    --muted: var(--on-shell-muted);
+    --hover: rgb(255 255 255 / 0.1);
+    --line: var(--shell-2);
+    --bg: var(--shell-2);
+    --surface: var(--shell);
+    --accent-tint: var(--shell-hi);
+    --accent-ink: var(--on-shell);
+    --focus: var(--seal);
     display: flex;
     flex-direction: column;
     height: 100%;
     min-height: 0;
-    background: var(--surface);
-    border-right: var(--edge) solid var(--line);
+    background: var(--shell);
+    color: var(--text);
     padding: var(--s3) var(--s2) var(--s2);
     gap: var(--s2);
     width: 100%;
@@ -219,9 +233,8 @@
     min-width: 0;
     color: var(--text);
     text-decoration: none;
-    font-weight: 650;
-    font-size: 1rem;
-    letter-spacing: -0.01em;
+    font-weight: 900;
+    font-size: 1.05rem;
   }
   .brand img {
     image-rendering: pixelated;
@@ -237,6 +250,13 @@
   }
   .new {
     justify-content: flex-start;
+    background: transparent;
+    border-color: rgb(255 255 255 / 0.25);
+    color: var(--on-shell);
+    box-shadow: none;
+  }
+  .new:hover:not(:disabled) {
+    background: var(--hover);
   }
   .search {
     display: flex;
@@ -301,7 +321,7 @@
     background: var(--hover);
   }
   .conv.open {
-    background: var(--accent-tint);
+    background: var(--shell-hi);
   }
   .entry {
     display: flex;
@@ -385,6 +405,9 @@
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 2px;
+  }
+  .nav:not(.rail) li:last-child:nth-child(odd) {
+    grid-column: span 2;
   }
   .nav.rail {
     grid-template-columns: 1fr;

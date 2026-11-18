@@ -63,7 +63,8 @@ final class Engine: ObservableObject {
     private var launch = 0
     private var connector: Task<Void, Never>?
     private var restartAfterExit = false
-    /// The conversations' events (`conversation`, `item`, `delta`): the chat's model reads them off
+    /// The conversations' events (`conversation`, `item`, `delta`, and `done` for the figures of the
+    /// turn that ended): the chat's model reads them off
     /// the one event stream rather than holding a second one.
     var conversationEvents: ((String, JSON) -> Void)?
     /// The server was reached (again): what the chat keeps of the server is read anew.
@@ -302,6 +303,8 @@ final class Engine: ObservableObject {
             live = t
             lastDone = o
             recorder.done(o)
+            // The turn's figures belong to the answer it wrote: the chat puts them under it.
+            conversationEvents?("done", o)
             // A finished turn is a new measurement beside the plan the model runs with.
             if info?.model != nil { Task { await refreshPlan() } }
         case "plan_progress":

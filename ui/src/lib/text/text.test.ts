@@ -33,6 +33,7 @@ describe('text', () => {
       ...['bundled', 'user', 'workspace'].map((s) => `skills.source.${s}`),
       ...['once', 'interval', 'daily', 'weekly'].map((k) => `tasks.kind.${k}`),
       ...['you', 'plan', 'default'].map((s) => `param.source.${s}`),
+      ...['measured', 'derived', 'policy', 'operator', 'unprobed'].map((s) => `source.${s}`),
       ...['available', 'downloading', 'partial', 'on_disk', 'loaded', 'incomplete'].map((s) => `models.state.${s}`),
       ...['find', 'pick', 'check', 'download'].map((s) => `hf.step.${s}`),
       ...['compute', 'disk', 'mgmt', 'other'].flatMap((k) => [`metrics.split.${k}`, `metrics.split.${k}.hint`]),

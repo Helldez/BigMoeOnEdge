@@ -114,12 +114,22 @@ bool expert_ready_hook_available();
 // optimise for a machine with no accelerator and never say why. The fields keep the three answers
 // apart: how many came linked, how many were loaded at run time, and whether anyone looked at all.
 // Only meaningful after register_backends().
+// A device on this machine that is a graphics card, discrete or integrated, as its backend
+// describes it: what a person is told the engine can compute on beside the processor.
+struct GraphicsDevice {
+    std::string backend;     // the registered backend that offers it
+    std::string description; // the device's own description (its product name, where the backend gives one)
+};
+
 struct BackendInventory {
     uint32_t linked = 0;            // compiled into this binary
     uint32_t loaded_at_runtime = 0; // found as separate shared libraries beside the executable
     bool looked = false;            // register_backends() ran; false means nobody went to look
     uint32_t placeable = 0; // of those, the ones that could offer a local device (HardwareProfile::backends_placeable)
     std::vector<std::string> names; // every registered backend, for the rationale and the CSV header
+    // The local devices of type GPU or integrated GPU, by what each backend offers, never by its
+    // name; a remote backend's devices are not here.
+    std::vector<GraphicsDevice> graphics;
 
     uint32_t total() const { return linked + loaded_at_runtime; }
 };

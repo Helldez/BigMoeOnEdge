@@ -7,6 +7,8 @@
 #include "feed.h"
 #include "json_util.h"
 
+#include "bmoe/probe.h"
+
 #include <functional>
 #include <string>
 #include <vector>
@@ -58,10 +60,12 @@ std::string archive_listing_refusal(const std::vector<std::string> & names, cons
 // file, a folder or such a link.
 std::string unpacked_tree_refusal(const std::string & dir);
 
-// GET /api/backends: {registered, target, feed, packs, installed, restart_required}. `feed` is
-// null when no verified feed has been read; each pack of this target says whether it applies here
-// and whether it is installed (and at which release).
+// GET /api/backends: {registered, graphics, target, feed, packs, installed, restart_required}.
+// `graphics` is the local graphics cards the registered backends offer ({backend, description});
+// `feed` is null when no verified feed has been read; each pack of this target says whether it
+// applies here and whether it is installed (and at which release).
 json backends_answer(const std::vector<std::string> & registered,
+                     const std::vector<GraphicsDevice> & graphics,
                      const std::string & target,
                      const Feed * feed,
                      const std::vector<InstalledPack> & installed,

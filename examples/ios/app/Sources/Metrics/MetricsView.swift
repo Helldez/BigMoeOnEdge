@@ -64,64 +64,144 @@ struct MetricsView: View {
     }
 }
 
-/// The live card: the current or last generation's rate, each token's wall time split into the four
-/// terms (compute, flash wait, cache management, unattributed), and the run's figures once it ends.
+/// The live card and the last answer's account, in the words the web UI's Metrics page and the
+/// figures under an answer use: the rate now, waiting for the disk and what was found in memory
+/// now; then where each token's time went in the last answer, as whole shares that add up to 100
+/// (the same split as under the answer), and that answer's figures. No raw milliseconds per term:
+/// the split says them.
 struct LiveCard: View {
     @EnvironmentObject private var engine: Engine
 
     var body: some View {
         let t = engine.live
         let b = t.breakdown
-        VStack(alignment: .leading, spacing: Grid.m) {
-            SectionTitle("Live", trailing: t.step == 0 ? nil : b.isAverage ? "run average" : "token \(t.step)")
-            if t.step == 0 {
-                Text("The next answer's figures appear here as it is generated.").font(.ui(15)).foregroundStyle(Palette.muted)
-            } else {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(String(format: "%.2f", t.rate)).font(.ui(40, bold: true)).foregroundStyle(Palette.accentInk)
-                    Text("tok/s").font(.ui(16)).foregroundStyle(Palette.muted)
-                }
-                if engine.info?.model?.streaming == false {
-                    Text("Streaming is off for this model: the engine runs it as plain mmap, so there is no flash term.")
-                        .font(.ui(12)).foregroundStyle(Palette.muted)
-                }
-                term("compute", b.computeMs, Palette.accent)
-                term("flash wait", b.flashWaitMs, Palette.warn)
-                term("cache mgmt", b.mgmtMs, Palette.accentInk)
-                term("unattributed", b.unattributedMs, Palette.muted)
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: Grid.m) {
-                    Figure(value: String(format: "%.0f ms", b.wallMs), label: "per token")
-                    Figure(value: b.cpuBusyPct >= 0 ? String(format: "%.0f%%", b.cpuBusyPct) : "–", label: "CPU busy")
-                    Figure(value: b.faultsPerToken >= 0 ? String(format: "%.1f", b.faultsPerToken) : "–", label: "faults / token")
-                    Figure(value: t.cacheHitPct >= 0 ? String(format: "%.0f%%", t.cacheHitPct) : "–", label: "cache hits")
-                    if t.finished {
-                        Figure(value: t.prefillTps > 0 ? String(format: "%.1f", t.prefillTps) : "–", label: "prefill tok/s")
-                        Figure(value: t.ttftSeconds >= 0 ? String(format: "%.1f s", t.ttftSeconds) : "–", label: "first token")
-                        Figure(value: t.readMiB >= 0 ? ByteText.mib(t.readMiB) : "–", label: "streamed")
-                        Figure(value: t.cacheBudgetMiB > 0
-                            ? "\(ByteText.mib(max(0, t.cacheResidentMiB))) / \(ByteText.mib(t.cacheBudgetMiB))" : "–",
-                            label: "cache resident / budget")
-                        if t.mtpDrafted > 0 {
-                            Figure(value: String(format: "%.0f%%", t.mtpAcceptancePct), label: "guesses kept")
-                            Figure(value: String(format: "%.1f", t.effectiveTokensPerSecond), label: "real tok/s")
+        let done = engine.lastDone.map(TurnSummary.init)
+        VStack(alignment: .leading, spacing: Grid.l) {
+            VStack(alignment: .leading, spacing: Grid.m) {
+                SectionTitle("Live", trailing: t.step == 0 ? nil : b.isAverage ? "run average" : "token \(t.step)")
+                if t.step == 0 {
+                    Text("The next answer's figures appear here as it is generated.").font(.ui(15)).foregroundStyle(Palette.muted)
+                } else {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(String(format: "%.1f", t.rate)).font(.figure(40, bold: true)).foregroundStyle(Palette.accentInk)
+                        Text("tok/s").font(.ui(16)).foregroundStyle(Palette.muted)
+                    }
+                    if let done { Text("Last answer: \(TurnFigures.fixed(done.tokS, 1)) tok/s on average").font(.ui(12)).foregroundStyle(Palette.muted) }
+                    if engine.info?.model?.streaming == false {
+                        Text("This model runs without streaming, so the disk and cache figures are not measured.")
+                            .font(.ui(12)).foregroundStyle(Palette.muted)
+                    }
+                    if !t.finished, t.wallMs > 0 {
+                        Text("Now: waiting for the disk \(Int((100 * t.flashWaitMs / t.wallMs).rounded()))% of each token's time")
+                            .font(.ui(13)).foregroundStyle(Palette.muted)
+                    }
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: Grid.m) {
+                        if !t.finished {
+                            Figure(value: t.cacheHitPct < 0 ? "no cache" : "\(Int(t.cacheHitPct.rounded()))%",
+                                   label: "Found in memory. Now, of the parts each token needs"
+                                       + (t.cacheBudgetMiB > 0 ? " · cache \(ByteText.mib(t.cacheBudgetMiB))" : ""))
                         }
+                        Figure(value: b.cpuBusyPct >= 0 ? String(format: "%.0f%%", b.cpuBusyPct) : "–", label: "CPU busy")
+                        Figure(value: b.faultsPerToken >= 0 ? String(format: "%.1f", b.faultsPerToken) : "–", label: "faults / token")
                     }
                 }
+            }
+            if let done {
+                let split = TurnFigures.timeShares(done)
+                if !split.isEmpty { TimeSplit(shares: split) }
+                lastAnswer(done)
             }
         }
         .card()
     }
 
-    private func term(_ name: String, _ ms: Double, _ color: Color) -> some View {
-        let total = engine.live.breakdown.totalMs
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(name).font(.ui(14)).foregroundStyle(Palette.text)
-                Spacer()
-                Text(String(format: "%.0f ms · %.0f%%", ms, total > 0 ? 100 * ms / total : 0))
-                    .font(.ui(14)).foregroundStyle(Palette.muted).monospacedDigit()
+    /// The last answer's account, as the web UI's: its rows in the figures' words.
+    private func lastAnswer(_ d: TurnSummary) -> some View {
+        let t = engine.live
+        let nCtx = engine.info?.model?.nCtx ?? 0
+        var rows: [(String, String)] = [
+            ("Tokens written", "\(t.step)" + (d.cancelled ? " (stopped)" : "")),
+            ("Answer speed", "\(TurnFigures.fixed(d.tokS, 1)) tok/s"),
+            ("Reading the message", "\(TurnFigures.fixed(d.promptTokS, 1)) tok/s, \(max(0, d.nPrompt)) tokens in \(TurnFigures.fixed(d.prefillS, 1)) s"),
+            ("First word after", t.ttftSeconds >= 0 ? "\(TurnFigures.fixed(t.ttftSeconds, 2)) s" : "–"),
+            ("Context used", nCtx > 0 ? "\(TurnFigures.grouped(max(0, d.nPast))) of \(TurnFigures.grouped(nCtx)) tokens"
+                : TurnFigures.grouped(max(0, d.nPast))),
+            ("Found in memory", d.cacheHitPct < 0 ? "no cache" : "\(Int(d.cacheHitPct.rounded())) of every 100 parts"),
+            ("Read from disk", t.readMiB >= 0 ? ByteText.mib(t.readMiB) : "–"),
+        ]
+        if d.mtpDrafted > 0 { rows.append(("Guesses kept", "\(d.mtpAccepted) of \(d.mtpDrafted) guesses")) }
+        return VStack(alignment: .leading, spacing: Grid.s) {
+            Text("Last answer").font(.ui(16, weight: .semibold)).foregroundStyle(Palette.text)
+            ForEach(rows, id: \.0) { row in
+                // The figures' rule: a long value under its label, left-aligned.
+                Group {
+                    if TurnFigure.valueOnOwnLine(row.1) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(row.0).font(.ui(14)).foregroundStyle(Palette.muted)
+                            Text(row.1).font(.figure(14)).foregroundStyle(Palette.text).fixedSize(horizontal: false, vertical: true)
+                        }
+                    } else {
+                        HStack(alignment: .firstTextBaseline, spacing: Grid.m) {
+                            Text(row.0).font(.ui(14)).foregroundStyle(Palette.muted)
+                            Spacer(minLength: Grid.s)
+                            Text(row.1).font(.figure(14)).foregroundStyle(Palette.text)
+                        }
+                    }
+                }
+                .accessibilityElement(children: .combine)
             }
-            Meter(fraction: total > 0 ? ms / total : 0, color: color, height: 10)
+        }
+    }
+}
+
+/// Where each token's time went in the last answer: one bar of whole shares that add up to 100,
+/// and its legend. The colours are the web's: computing in the accent, the disk in the warning's,
+/// the cache in ok, other in the strong line.
+struct TimeSplit: View {
+    let shares: [TimeShare]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Grid.s) {
+            Text("Last answer: where each token's time went").font(.ui(16, weight: .semibold)).foregroundStyle(Palette.text)
+            GeometryReader { g in
+                HStack(spacing: 2) {
+                    ForEach(shares, id: \.key) { s in
+                        Rectangle().fill(Self.colour(s.key))
+                            .frame(width: max(0, (g.size.width - 2 * CGFloat(shares.count - 1)) * CGFloat(s.pct) / 100))
+                    }
+                }
+            }
+            .frame(height: 12)
+            .background(Palette.surface2)
+            .clipShape(Capsule())
+            .accessibilityElement()
+            .accessibilityLabel(shares.map { "\(Self.name($0.key)) \($0.pct)%" }.joined(separator: ", "))
+            ForEach(shares, id: \.key) { s in
+                HStack(spacing: Grid.s) {
+                    RoundedRectangle(cornerRadius: 3).fill(Self.colour(s.key)).frame(width: 12, height: 12)
+                    Text(Self.name(s.key)).font(.ui(14)).foregroundStyle(Palette.text)
+                    Text("\(s.pct)%").font(.figure(14)).foregroundStyle(Palette.muted)
+                }
+                .accessibilityElement(children: .combine)
+            }
+        }
+    }
+
+    static func name(_ k: TimeShare.Key) -> String {
+        switch k {
+        case .compute: return "Computing"
+        case .disk: return "Waiting for disk"
+        case .mgmt: return "Managing the cache"
+        case .other: return "Other"
+        }
+    }
+
+    static func colour(_ k: TimeShare.Key) -> Color {
+        switch k {
+        case .compute: return Palette.accent
+        case .disk: return Palette.warn
+        case .mgmt: return Palette.ok
+        case .other: return Palette.lineStrong
         }
     }
 }
@@ -167,11 +247,12 @@ struct RecordView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
-                ShareLink(item: url)
+                ShareLink(item: url).tint(Palette.onShell)
                 Button(role: .destructive) {
                     try? FileManager.default.removeItem(at: url)
                     dismiss()
                 } label: { Image(systemName: "trash") }
+                .tint(Palette.onShell)
             }
         }
         .task { file = try? MetricsFile(contentsOf: url) }

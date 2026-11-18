@@ -12,7 +12,7 @@
   import { formatBytes } from '../../lib/format';
   import { readProgress, type Progress } from '../../lib/progressEvent';
   import { server } from '../../stores/server.svelte';
-  import { t } from '../../lib/text';
+  import { t, tp } from '../../lib/text';
 
   let { compact = false }: { compact?: boolean } = $props();
 
@@ -107,13 +107,13 @@
         {#if p.installed}
           <span class="badge ok"><Icon name="check" size={13} />{t('backends.installed.short')}</span>
         {:else}
-          <button type="button" class="primary" disabled={!!installing} onclick={() => install(p.id)}><Icon name="download" size={16} />{t('backends.install')}</button>
+          <button type="button" class:primary={!compact} disabled={!!installing} onclick={() => install(p.id)}><Icon name="download" size={16} />{t('backends.install')}</button>
         {/if}
       </div>
     {/each}
     {#if others.length && !compact}
       <details class="others">
-        <summary class="muted small">{t('backends.others', { n: others.length })}</summary>
+        <summary class="muted small">{tp('backends.others', others.length)}</summary>
         <ul>
           {#each others as p (p.id)}<li class="small">{p.title}</li>{/each}
         </ul>

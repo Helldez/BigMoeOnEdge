@@ -177,9 +177,16 @@ export interface BackendPack {
   applies: boolean;
   installed: boolean;
 }
+/** A local graphics card a registered backend offers, as the device describes itself. */
+export interface GraphicsDevice {
+  backend: string;
+  description: string;
+}
 export interface Backends {
   /** The backends that registered in this server, by name. */
   registered: string[];
+  /** Of their devices, the local graphics cards (discrete or integrated); absent from an older server. */
+  graphics?: GraphicsDevice[];
   packs: BackendPack[];
   /** Why the feed could not be read, when it could not. */
   feed_error?: string;

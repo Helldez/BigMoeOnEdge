@@ -35,6 +35,8 @@ import io.bigmoeonedge.app.data.fmt
 import io.bigmoeonedge.app.data.pearson
 import io.bigmoeonedge.app.data.runTitle
 import io.bigmoeonedge.app.data.shareCsv
+import io.bigmoeonedge.app.chat.TurnFigures
+import io.bigmoeonedge.app.chat.Words
 import io.bigmoeonedge.app.data.breakdown
 import io.bigmoeonedge.app.engine.Engine
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -112,13 +114,14 @@ fun MetricsScreen(modifier: Modifier = Modifier, onBack: (() -> Unit)? = null) {
                 },
                 actions = {
                     if (view == View.FILE) {
-                        TextButton(shape = Corner, onClick = { view = View.CORRELATE }) { Text("Correlate") }
-                        picked?.let { f -> TextButton(shape = Corner, onClick = { shareCsv(context, listOf(f)) }) { Text("Share") } }
+                        TextButton(shape = Corner, colors = shellActionColors(), onClick = { view = View.CORRELATE }) { Text("Correlate") }
+                        picked?.let { f -> TextButton(shape = Corner, colors = shellActionColors(), onClick = { shareCsv(context, listOf(f)) }) { Text("Share") } }
                     }
                     if (view == View.LIST || view == View.FILE || view == View.COMPARE) {
-                        TextButton(shape = Corner, onClick = { view = View.GLOSSARY }) { Text("?") }
+                        TextButton(shape = Corner, colors = shellActionColors(), onClick = { view = View.GLOSSARY }) { Text("?") }
                     }
                 },
+                colors = shellTopBarColors(),
             )
         },
         bottomBar = {
@@ -767,9 +770,11 @@ private fun MultiLineChart(series: List<List<Float?>>, palette: List<Color>, mod
 }
 
 /**
- * The live card: the current (or last) generation's rate and where each token's time went, from
- * the server's token and done events. The same four terms the desktop UI draws: compute, flash
- * wait, cache management and what nobody claims (off-CPU time: zram, preemption, frequency caps).
+ * The live card: the current (or last) generation's rate, from the server's token and done events.
+ * While it writes, what the token now waits for and finds in memory; once done, where each token's
+ * time went in the four terms the desktop UI draws (compute, disk wait, cache management and what
+ * nobody claims: zram, preemption, frequency caps) as whole shares that add up to 100, and what the
+ * last answer found in memory as a count, the same words as the figures under an answer.
  */
 @Composable
 private fun LiveCard() {
@@ -802,24 +807,44 @@ private fun LiveCard() {
                 return@Column
             }
             val b = breakdown(t)
-            val suffix = if (b.isAverage) " avg" else ""
             if (b.wallMs > 0.0) {
                 Text(String.format(loc, "%.0f ms/token  →  %.2f tok/s", b.wallMs, 1000.0 / b.wallMs), fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
             }
-            MeterRow("compute$suffix", b.computeMs, b.totalMs, MaterialTheme.colorScheme.primary)
-            MeterRow("flash wait$suffix", b.flashWaitMs, b.totalMs, MaterialTheme.colorScheme.tertiary)
-            MeterRow("cache mgmt$suffix", b.mgmtMs, b.totalMs, MaterialTheme.colorScheme.secondary)
-            MeterRow("unattributed$suffix", b.unattributedMs, b.totalMs, MaterialTheme.colorScheme.outline)
-            val hit = if (t.cacheHitPct >= 0) String.format(loc, "hit %.0f%%", t.cacheHitPct) else "hit —"
-            val diag = buildString {
-                if (b.cpuBusyPct >= 0.0) {
-                    append(String.format(loc, "CPU %.0f%% busy", b.cpuBusyPct))
-                    if (b.faultsPerToken >= 0.0) append(String.format(loc, "  ·  %.0f faults/tok", b.faultsPerToken))
-                    append("  ·  ")
+            val last = engine.lastDone?.takeIf { done }
+            if (last == null) {
+                // While it writes: what the token now waits for, and what it finds in memory.
+                if (b.wallMs > 0) {
+                    Text(
+                        String.format(loc, "Now: waiting for the disk %.0f%% of each token's time", 100.0 * b.flashWaitMs / b.wallMs),
+                        fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
-                append(hit)
+                if (t.cacheHitPct >= 0) {
+                    Text(String.format(loc, "${Words.CACHE} %.0f%%", t.cacheHitPct), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Now, of the parts each token needs" + if (t.cacheBudgetMib > 0) String.format(loc, " · cache %.0f MiB", t.cacheBudgetMib) else "",
+                        fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else {
+                val split = TurnFigures.timeShares(last)
+                if (split.isNotEmpty()) {
+                    Text("Last answer: where each token's time went", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                    val colours = mapOf(
+                        "compute" to MaterialTheme.colorScheme.primary, "disk" to MaterialTheme.colorScheme.tertiary,
+                        "mgmt" to MaterialTheme.colorScheme.secondary, "other" to MaterialTheme.colorScheme.outline,
+                    )
+                    val labels = mapOf("compute" to "Computing", "disk" to "Waiting for disk", "mgmt" to "Managing the cache", "other" to "Other")
+                    split.forEach { p -> ShareRow(labels.getValue(p.key), p.pct, colours.getValue(p.key)) }
+                }
+                val hit = last.optDouble("cache_hit_pct", -1.0)
+                if (hit >= 0) Text("${Words.CACHE}: ${Math.round(hit)} of every 100 parts", fontSize = 13.sp)
             }
-            Text(diag, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (b.cpuBusyPct >= 0.0) {
+                val diag = String.format(loc, "CPU %.0f%% busy", b.cpuBusyPct) +
+                    if (b.faultsPerToken >= 0.0) String.format(loc, "  ·  %.0f faults/tok", b.faultsPerToken) else ""
+                Text(diag, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             engine.cpuTempC?.let { Text(String.format(loc, "CPU %.1f°C", it), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             if (done) {
                 val prefill = if (t.prefillTps > 0) String.format(loc, "prefill %.1f tok/s", t.prefillTps) else ""
@@ -840,12 +865,12 @@ private fun LiveCard() {
     }
 }
 
+/** One share of a token's time: its name, a bar, and its whole percentage (the shares add up to 100). */
 @Composable
-private fun MeterRow(label: String, value: Double, total: Double, color: Color) {
-    val frac = if (total > 0) (value / total).toFloat().coerceIn(0f, 1f) else 0f
+private fun ShareRow(label: String, pct: Int, color: Color) {
     Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(label, fontSize = 12.sp, modifier = Modifier.width(96.dp))
-        LinearProgressIndicator(progress = { frac }, color = color, modifier = Modifier.weight(1f).height(8.dp))
-        Text(String.format(Locale.US, "%.0f ms", value), fontSize = 12.sp, modifier = Modifier.width(56.dp))
+        Text(label, fontSize = 12.sp, modifier = Modifier.width(112.dp))
+        LinearProgressIndicator(progress = { pct / 100f }, color = color, modifier = Modifier.weight(1f).height(8.dp))
+        Text("$pct%", fontSize = 12.sp, modifier = Modifier.width(40.dp))
     }
 }

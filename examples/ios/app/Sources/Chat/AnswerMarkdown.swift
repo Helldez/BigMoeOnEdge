@@ -18,8 +18,8 @@ struct AnswerMarkdown: View {
 }
 
 extension MarkdownUI.Theme {
-    /// docs/design.md in MarkdownUI's terms: Inter at the chat's 16 points, JetBrains Mono for code
-    /// on the second surface, headings in Inter Bold at the sizes the transcript used before, rules
+    /// docs/design.md in MarkdownUI's terms: Hanken Grotesk at the chat's 16 points, JetBrains Mono
+    /// for code on the second surface, headings in Hanken Grotesk Bold at the sizes the transcript used before, rules
     /// and table borders in the line token.
     static let answer = Theme()
         .text {

@@ -130,7 +130,7 @@
       <input type="password" bind:value={token} autocomplete="off" aria-label={t('hf.token.label')} />
     </label>
   {/if}
-  {#if error}<p class="banner error" role="alert">{error}</p>{/if}
+  {#if error}<p class="banner error" role="alert">{t('hf.failed', { error })}</p>{/if}
 
   {#if hits}
     {#if hits.length === 0}

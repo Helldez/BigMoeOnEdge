@@ -158,6 +158,7 @@ std::string unpacked_tree_refusal(const std::string & dir) {
 }
 
 json backends_answer(const std::vector<std::string> & registered,
+                     const std::vector<GraphicsDevice> & graphics,
                      const std::string & target,
                      const Feed * feed,
                      const std::vector<InstalledPack> & installed,
@@ -184,7 +185,11 @@ json backends_answer(const std::vector<std::string> & registered,
     json inst = json::array();
     for (const InstalledPack & i : installed)
         inst.push_back(json{{"id", i.id}, {"version", i.version}, {"offered", offered.count(i.id) > 0}});
+    json cards = json::array();
+    for (const GraphicsDevice & g : graphics)
+        cards.push_back(json{{"backend", g.backend}, {"description", g.description}});
     return json{{"registered", registered},
+                {"graphics", cards},
                 {"target", target},
                 {"feed", feed ? json{{"version", feed->version}, {"published", feed->published}} : json()},
                 {"packs", packs},

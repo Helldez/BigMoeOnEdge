@@ -103,7 +103,17 @@ where it may write); Forget takes an entry added from a repository or a link off
 leaves its files. Catalog entries with nothing on the phone sit at the bottom as suggestions, and
 files that are not models (a projector, a draft head, by their headers) are listed apart with no
 Load. With nothing on the phone the screen is three steps (find, check it fits, download then
-load), and the app opens on it instead of an empty Chat.
+load).
+
+**First run.** When the first listing of a launch finds no model on the phone and none coming, the
+app opens on **Get started** instead of an empty Chat (the web UI's first run): the phone's memory and
+processor threads, then three steps whose number follows the model's state. **Pick a model**: the
+largest catalog model that fits in memory beside the smallest larger than it (or the one suggested,
+alone), and Download (or Resume). **Download**: progress, the time left over a 20 s window ("about
+12 min left · 8.4 MB/s"), and Pause; a paused download stays on this step, with Resume and Pick
+another model. **Start**: the model loads by itself when the download ends, and
+the conversation opens once the engine reports it ready, with three questions to try. Under it: pick
+a gguf already on the phone, Models, or Skip for now.
 
 The list covers the engine's own directory (the app's internal storage, where in-app downloads and
 imports land) and the other places a model can sit on the phone, which the app hands the server at
@@ -190,7 +200,8 @@ running; a value you set yourself in Settings is never overridden. With nothing 
 measured, it shows the decisions the settings carry from the last applied plan. A model is unloaded after ten
 idle minutes to give the phone its memory back; the next message reloads it.
 
-The status line above the navigation bar, on every screen, says what the engine is doing and shows
+The status line above the navigation bar, on every screen, says in words what the engine is doing
+(the loaded model's name and "Ready · private, on this phone", never a figure) and shows
 the running downloads ("Downloading 42%", or "2 downloads 42%"), which lead to Models. With "Serve
 on the network" on, or once a request was refused for the context, a loaded model whose context is
 below what a coding agent's first request needs gets a warning under it: the context, the server's
@@ -209,18 +220,31 @@ are plain chat, with no tools, no workspaces and no tasks. The agent is the desk
 on a phone is not one. The drawer lists the conversations, newest first, with a mark on one that is
 being answered; a row's menu renames or deletes it.
 
+- **The status line.** At the top of a conversation once it has begun, the logo beside one line of plain words from
+  the engine's and the conversation's state: "Connecting…", "Measuring this phone…", "Loading the
+  model…", "Thinking…", "Writing…", "Reading part of the model from the disk…" (when more than 0.3
+  of the live token's time is the disk's), "Answered", "Stopped", "No model loaded", "Ready". While
+  the engine works the logo breathes, unless the system's animations are off.
+- **The welcome.** An empty conversation shows the logo on a sheet over a yellow rule, the same
+  status words under it ("Private: everything stays on this phone." when all is ready), and "What
+  shall we do?".
 - **The transcript.** Your messages on the right; long-press one to copy it or to edit it and send
-  it again (everything after it is dropped). The model's answers as GitHub-flavoured Markdown
+  it again (everything after it is dropped). The model's answers on white sheets, as GitHub-flavoured Markdown
   (tables bordered and scrolling sideways when wide, drawn by multiplatform-markdown-renderer in
   the app's tokens; images are not loaded and HTML is not run), its thinking folded above them,
   with Copy under each and **Answer again** under the last one, which sends the last question
-  again as it was (the server drops the old answer). A notice says, in words, why
+  again as it was (the server drops the old answer). Under a finished answer, one quiet line says
+  how it ran, `tg 12.4 tok/s · pp 140 tok/s` (the writing speed, then the speed the message was
+  read at), live while it is written; tapping it opens each figure with what it measures (Answer
+  speed against what the plan expected; where each token's time went, as whole shares that add up
+  to 100%; Found in memory, as "81 of every 100 parts"; Reading the message; Context used; Guesses
+  kept) and links to the Plan and to Metrics. A notice says, in words, why
   something did not happen. Stop ends the answer.
 - **The composer.** The prompt, Send, or Stop while an answer is written; the + beside the prompt
   holds **Image** and **Take a photo**, when the loaded model reads images (a projector file beside
   it; otherwise the two say so, disabled), at most 8 in a message, shown as thumbnails above the
-  prompt until sent and on the message after, and **Choose from options** (below). With no model loaded the empty chat says to load one from
-  Models.
+  prompt until sent and on the message after, and **Choose from options** (below). With no model loaded the status line says so, and the
+  engine's line above the navigation bar leads to Models.
 
 The conversations earlier versions kept on the phone are handed to the server once, on the first
 launch that reaches it: each becomes a server conversation with its messages, and the phone's copy
@@ -229,12 +253,14 @@ them keeps nothing and the phone keeps its copy).
 
 ## The look
 
-Slate and cyan, light and dark following the system, Material 3 with an 8 dp corner, 1 dp lines and
-a soft shadow on cards. The colour values sit in one place, `ui/Theme.kt` (`LightTokens`,
-`DarkTokens`), mapped onto Material's colour roles. Text is set in Inter and code in JetBrains Mono,
-static instances bundled in `res/font`, both under the SIL Open Font License (its text is in
-`THIRD_PARTY_LICENSES`, which the APK carries). The pixel logo is the one mark that keeps its own
-style.
+"Letterhead", the web UI's language: words on white sheets (6 dp corners, lifted by a soft shadow,
+no frame) over a cool grey desk, controls with a 10 dp corner, the top bar and the drawer in the ink
+shell, and one ink primary button per screen (Send, Load, Apply plan). Light and dark follow the
+system or the setting. The colour values sit in one place, `ui/Theme.kt` (`LightTokens`,
+`DarkTokens`), mapped onto Material's colour roles. Text is set in Hanken Grotesk (one variable
+file) and code in JetBrains Mono, both bundled in `res/font` under the SIL Open Font License; the APK
+carries Hanken Grotesk's licence from `app/licenses/` and the others in `THIRD_PARTY_LICENSES`. The
+pixel logo is the one mark that keeps its own style.
 
 ## Settings
 
@@ -304,10 +330,11 @@ why. Nothing in the app names a device. See `../../docs/npu-prefill.md`.
 ## Metrics
 
 The Metrics screen, opened from Settings, has the **Record** switch (off by default: one per-token
-CSV file per model loaded while it is on) and shows the live card for the current or last generation (the rate, and each
-token's time split into compute, flash wait, cache management and what nothing claims), then the
-CSV files: view one, share one, correlate its columns, or compare two on one axis. The chat shows
-the same rate in one line above the prompt while an answer streams. The flash term and the threads
+CSV file per model loaded while it is on) and shows the live card for the current or last generation (the rate; while it writes, the share of
+each token's time spent waiting for the disk and what it finds in memory; for the last answer, each
+token's time split into computing, waiting for the disk, managing the cache and what nothing claims,
+as whole shares that add up to 100%), then the CSV files: view one, share one, correlate its
+columns, or compare two on one axis. The chat shows the writing speed under an answer while it streams. The flash term and the threads
 the CPU figures divide by are the server's (`flash_wait_ms`, `compute_threads`, `busy_threads`),
 never read from the settings. The fields are documented in `../../docs/telemetry.md` and in the
 screen's glossary, whose settings half is the engine's parameter table: each setting a file was

@@ -30,6 +30,11 @@ final class ChatModel: ObservableObject {
     @Published private(set) var deciding = false
     /// A line about the conversations moved from this device to the server, once.
     @Published var migrationNote: String?
+    /// The figures of each answer this app saw finish, by its item id, with the context it ran in:
+    /// the line under the answer. The server keeps none, so an answer from before this launch has none.
+    @Published private(set) var figures: [String: (summary: TurnSummary, nCtx: Int)] = [:]
+    /// The last finished turn of the open conversation was stopped.
+    @Published private(set) var lastStopped = false
 
     let engine: Engine
     private var migrated = false
@@ -99,12 +104,14 @@ final class ChatModel: ObservableObject {
         transcript = nil
         decisions = []
         error = nil
+        lastStopped = false
     }
 
     func open(_ id: String) {
         guard id != current?.id else { return }
         decisions = []
         error = nil
+        lastStopped = false
         current = conversations.first { $0.id == id } ?? ConversationSummary(id: id)
         transcript = Transcript(conversation: id)
         Task { await reload(id) }
@@ -164,6 +171,7 @@ final class ChatModel: ObservableObject {
         guard !message.isEmpty || !images.isEmpty, !running, canSend() else { return false }
         sending = true
         error = nil
+        lastStopped = false
         holdBackground()
         defer { sending = false }
         do {
@@ -276,6 +284,13 @@ final class ChatModel: ObservableObject {
             if !conversations.contains(where: \.busy) && !sending { releaseBackground() }
         case "item", "delta":
             transcript?.apply(event: event, data: data)
+        case "done":
+            // The engine's figures for the turn that just ended: the open conversation's newest
+            // answer, while it is the one being written.
+            guard current != nil, let answer = items.last(where: { $0.kind == .assistant }) else { return }
+            let s = TurnSummary(data)
+            figures[answer.id] = (s, engine.info?.model?.nCtx ?? 0)
+            lastStopped = s.cancelled
         default:
             break
         }

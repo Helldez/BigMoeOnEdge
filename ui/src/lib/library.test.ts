@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { downloadSummary, fitTone, libraryRows, recommendedEntry } from './library';
+import { downloadSummary, fitTone, libraryRows, recommendedEntry, sameModelOnDisk } from './library';
 import type { CatalogEntry, DownloadEvent, LocalModel } from './types';
 
 // Made-up names and sizes: nothing here depends on a real model.
@@ -120,8 +120,29 @@ describe('the merged models list', () => {
       {},
       null,
     );
-    expect(rows).toHaveLength(2);
+    // The file is its own row, not the entry's; and the entry, the same model on disk, is not
+    // suggested again.
+    expect(rows).toHaveLength(1);
     expect(rows[0].entry).toBeNull();
+  });
+});
+
+describe('a suggestion already on disk', () => {
+  it('is the same model under a publisher prefix, never another quantization', () => {
+    const have = [local('Owner_Model-35B-A3B-Q4_K_M.gguf'), local('Other-Q2_K.gguf')];
+    expect(sameModelOnDisk('Model-35B-A3B-Q4_K_M.gguf', have)).toBe(true);
+    expect(sameModelOnDisk('Model-35B-A3B-Q4_0.gguf', have)).toBe(false);
+    expect(sameModelOnDisk('Model-35B-A3B-Q4_K_M.gguf', [local('Owner_Model-35B-A3B-Q4_K_M.gguf', { complete: false })])).toBe(false);
+  });
+
+  it('is not suggested again', () => {
+    const rows = libraryRows(
+      { models_dir: '/elsewhere', catalog: [entry('a', 'Model-Q4_K_M.gguf'), entry('b', 'Small-Q4_0.gguf')] },
+      [local('Owner_Model-Q4_K_M.gguf')],
+      {},
+      null,
+    );
+    expect(rows.filter((r) => r.suggested).map((r) => r.entry?.id)).toEqual(['b']);
   });
 });
 

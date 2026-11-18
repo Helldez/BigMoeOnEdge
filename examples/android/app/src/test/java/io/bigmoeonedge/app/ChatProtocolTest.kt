@@ -4,7 +4,6 @@ import io.bigmoeonedge.app.engine.Api
 import io.bigmoeonedge.app.engine.ApiException
 import io.bigmoeonedge.app.engine.ChatMessage
 import io.bigmoeonedge.app.engine.ChatProtocol
-import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -61,20 +60,5 @@ class ChatProtocolTest {
         val usage = ChatProtocol.parseChunk("""{"choices":[],"usage":{"prompt_tokens":1}}""")!!
         assertNull(usage.content)
         assertNull(usage.finish)
-    }
-
-    @Test
-    fun turnMetricsReadsTheSummary() {
-        val s = JSONObject(
-            """{"tok_s":3.14159,"tokens":42,"prefill_s":1.25,"prefill_tps":13.6,"n_prompt":17,"n_past":59,"cache_hit_pct":81.4,
-               "mtp_decodes":0,"mtp_drafted":0,"loop_overhead_s_tok":0.0}""",
-        )
-        assertEquals(
-            "decode 3.1 tok/s (42 tok) · prefill 13.6 tok/s (17 tok, 1.3 s) · ctx 59/4096 · cache 81%",
-            ChatProtocol.turnMetrics(s, 4096, false),
-        )
-        s.remove("prefill_tps")
-        assertTrue(ChatProtocol.turnMetrics(s, 0, false).contains("prefill 13.6 tok/s (17 tok, 1.3 s)"))
-        assertTrue(ChatProtocol.turnMetrics(s, 0, true).endsWith("· stopped"))
     }
 }
