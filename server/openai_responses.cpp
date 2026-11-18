@@ -1,5 +1,6 @@
 #include "openai_responses.h"
 #include "image_part.h"
+#include "request_sampling.h"
 
 namespace bmoe::server {
 
@@ -319,9 +320,9 @@ bool parse_responses_request(const json & body, const RunConfig & cfg, Responses
     turn.think = cfg.think;
     const json reasoning = body.value("reasoning", json());
     if (reasoning.is_object() && string_at(reasoning, "effort")) turn.think = *string_at(reasoning, "effort") != "none";
-    // store, include, parallel_tool_calls, prompt_cache_key, temperature and top_p are read by
-    // nothing: nothing is stored, there is no encrypted reasoning to include, and the engine samples
-    // with its own settings.
+    if (!parse_request_sampling(body, SamplingDialect::Responses, turn, err)) return false;
+    // store, include, parallel_tool_calls and prompt_cache_key are read by nothing: nothing is
+    // stored, and there is no encrypted reasoning to include.
     out.stream = body.contains("stream") && body["stream"] == json(true);
     return true;
 }

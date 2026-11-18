@@ -595,6 +595,10 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
     gr.render_text = true;
     gr.stop = stop;
     gr.on_prefill = on_prefill;
+    gr.sampling = req.sampling;
+    gr.stop_text = req.stop_text;
+    gr.grammar = req.grammar;
+    gr.n_probs = req.logprobs ? std::max(1, req.top_logprobs) : 0;
 
     generating_ = true;
     publish_state();

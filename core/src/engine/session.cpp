@@ -111,6 +111,61 @@ double secs(clock_t_::time_point a, clock_t_::time_point b) {
 // Raised to 1 + draft_max when a very wide draft asks for more, and clamped down to the target's own
 // ubatch so it is never the wider of the two.
 
+// The chosen token's log-probability at a position and the `n` most likely tokens there, most likely
+// first, from the raw logits: the distribution before any sampling stage, as llama.cpp's server
+// reports it.
+struct PositionLogprobs {
+    float chosen = 0.0f;
+    std::vector<TokenLogprob> top;
+};
+PositionLogprobs
+position_logprobs(const float * logits, int n_vocab, const llama_vocab * vocab, llama_token chosen, int n) {
+    PositionLogprobs out;
+    float max_l = -INFINITY;
+    for (int v = 0; v < n_vocab; ++v)
+        max_l = std::max(max_l, logits[v]);
+    double sum = 0.0;
+    for (int v = 0; v < n_vocab; ++v)
+        sum += std::exp((double) logits[v] - max_l);
+    const float log_z = max_l + (float) std::log(sum);
+    if (chosen >= 0 && chosen < n_vocab) out.chosen = logits[chosen] - log_z;
+    std::vector<int32_t> ids((size_t) n_vocab);
+    for (int v = 0; v < n_vocab; ++v)
+        ids[(size_t) v] = v;
+    const size_t k = (size_t) std::min(std::max(n, 0), n_vocab);
+    std::partial_sort(ids.begin(), ids.begin() + (ptrdiff_t) k, ids.end(),
+                      [&](int32_t a, int32_t b) { return logits[a] > logits[b]; });
+    for (size_t i = 0; i < k; ++i)
+        out.top.push_back({ids[i], common_token_to_piece(vocab, ids[i], true), logits[ids[i]] - log_z});
+    return out;
+}
+
+// Where the earliest of `stops` begins in `text`, looking only at matches that end at or after
+// `from` (text before it was searched already); npos when none does.
+size_t find_stop(const std::string & text, const std::vector<std::string> & stops, size_t from) {
+    size_t best = std::string::npos;
+    for (const std::string & st : stops) {
+        if (st.empty()) continue;
+        const size_t start = from >= st.size() ? from - st.size() + 1 : 0;
+        const size_t at = text.find(st, start);
+        if (at != std::string::npos && at < best) best = at;
+    }
+    return best;
+}
+
+// How many trailing bytes of `text` begin one of `stops`: what a streamed answer holds back, since
+// the next token may complete the stop.
+size_t stop_prefix_tail(const std::string & text, const std::vector<std::string> & stops) {
+    size_t held = 0;
+    for (const std::string & st : stops)
+        for (size_t k = std::min(st.size() > 0 ? st.size() - 1 : 0, text.size()); k > held; --k)
+            if (text.compare(text.size() - k, k, st, 0, k) == 0) {
+                held = k;
+                break;
+            }
+    return held;
+}
+
 llama_token argmax(const float * logits, int n_vocab) {
     llama_token best = 0;
     float best_v = logits[0];
@@ -472,6 +527,8 @@ struct Session::Impl {
     // conversation that has held an image runs without a draft until it is cleared (said once).
     bool media_in_conversation = false;
     bool media_spec_logged = false;
+    // A request's own sampling is not applied while speculation is armed (RequestSampling): said once.
+    bool request_sampling_logged = false;
     // What a refused cut of the KV rolls back to (context_checkpoints.h). They describe a prefix of
     // kv, so they go wherever it goes.
     detail::ContextCheckpoints checkpoints;
@@ -2823,6 +2880,78 @@ struct Session::Impl::Turn {
     }
 
     bool structured() const { return !req.json_schema.empty(); }
+    // Held to a grammar that is a contract, not a guide: a response schema or the request's own GBNF.
+    bool constrained() const { return structured() || !req.grammar.empty(); }
+
+    // ── this request's sampling (GenerateRequest::sampling) ──
+    struct SamplerFree {
+        void operator()(llama_sampler * p) const {
+            if (p) llama_sampler_free(p);
+        }
+    };
+    std::unique_ptr<llama_sampler, SamplerFree> turn_chain;
+    bool own_sampling = false; // the request's sampling stands for the session's this turn
+    // The chain this turn samples with; null is argmax.
+    llama_sampler * sampler() const { return own_sampling ? turn_chain.get() : im.smpl; }
+
+    // Build the request's chain over the session's settings, before the first token is sampled. The
+    // penalties look back over the prompt too, as llama.cpp's server feeds them. False for a request
+    // the vocabulary cannot honour.
+    bool arm_sampler() {
+        if (!req.sampling || calib) return true;
+        const RequestSampling & r = *req.sampling;
+        if (im.cfg.spec.enabled()) {
+            if (!im.request_sampling_logged) {
+                im.request_sampling_logged = true;
+                log_printf(LogLevel::Info, "a request's sampling is not applied while speculation is on: a draft "
+                                           "is accepted by the model's own argmax, so the session decodes greedily");
+            }
+            return true;
+        }
+        for (const auto & b : r.logit_bias)
+            if (b.first < 0 || b.first >= im.n_vocab) {
+                rollback_turn();
+                return fail(RunError::InvalidRequest,
+                            "logit_bias names token " + std::to_string(b.first) + ", outside the model's vocabulary");
+            }
+        const SamplingConfig & d = im.cfg.sampling;
+        const float temp = r.temp.value_or(d.temp);
+        const bool penalties = r.repeat_penalty != 1.0f || r.frequency_penalty != 0.0f || r.presence_penalty != 0.0f;
+        own_sampling = true;
+        if (temp <= 0.0f && !penalties && r.logit_bias.empty()) return true; // argmax
+        llama_sampler * c = llama_sampler_chain_init(llama_sampler_chain_default_params());
+        turn_chain.reset(c);
+        if (!r.logit_bias.empty()) {
+            std::vector<llama_logit_bias> bias;
+            for (const auto & b : r.logit_bias)
+                bias.push_back({b.first, b.second});
+            llama_sampler_chain_add(c, llama_sampler_init_logit_bias(im.n_vocab, (int32_t) bias.size(), bias.data()));
+        }
+        const int last_n = r.penalty_last_n < 0 ? im.cfg.n_ctx : r.penalty_last_n;
+        if (penalties)
+            llama_sampler_chain_add(c, llama_sampler_init_penalties(im.n_vocab, last_n, r.repeat_penalty,
+                                                                    r.frequency_penalty, r.presence_penalty));
+        if (temp <= 0.0f) {
+            llama_sampler_chain_add(c, llama_sampler_init_greedy());
+        } else {
+            llama_sampler_chain_add(c, llama_sampler_init_top_k(r.top_k.value_or(d.top_k)));
+            llama_sampler_chain_add(c, llama_sampler_init_top_p(r.top_p.value_or(d.top_p), /*min_keep*/ 1));
+            if (r.min_p.value_or(0.0f) > 0.0f) llama_sampler_chain_add(c, llama_sampler_init_min_p(*r.min_p, 1));
+            llama_sampler_chain_add(c, llama_sampler_init_temp(temp));
+            llama_sampler_chain_add(c, llama_sampler_init_dist(r.seed.value_or(d.seed)));
+        }
+        if (penalties)
+            for (int i = std::max(0, n_prompt - last_n); i < n_prompt; ++i)
+                if (tokens[(size_t) i] >= 0) llama_sampler_accept(c, tokens[(size_t) i]);
+        return true;
+    }
+
+    // ── logprobs (GenerateRequest::n_probs) ──
+    PositionLogprobs tok_probs;                    // for `tok`, taken when it was sampled
+    std::vector<PositionLogprobs> confirmed_probs; // parallel to `confirmed`
+
+    // ── stop text (GenerateRequest::stop) ──
+    bool stop_hit = false;
 
     bool sample_next(int32_t row) {
         // A calibration replay takes the first candidate's tokens as long as they last: not sampled, so
@@ -2835,15 +2964,15 @@ struct Session::Impl::Turn {
         try {
             tok = sample(row);
             if (calib) calib->tokens.push_back((int32_t) tok);
-            if (tok == LLAMA_TOKEN_NULL || (structured() && !grammar.active())) {
+            if (tok == LLAMA_TOKEN_NULL || (constrained() && !grammar.active())) {
                 rollback_turn();
-                return fail(structured() ? RunError::InvalidOutput : RunError::Failed,
+                return fail(constrained() ? RunError::InvalidOutput : RunError::Failed,
                             "the response grammar could not select a valid token");
             }
             return true;
         } catch (const std::exception & e) {
             rollback_turn();
-            return fail(structured() ? RunError::InvalidOutput : RunError::Failed,
+            return fail(constrained() ? RunError::InvalidOutput : RunError::Failed,
                         std::string("sampling failed: ") + e.what());
         }
     }
@@ -2876,6 +3005,11 @@ struct Session::Impl::Turn {
             return fail(RunError::NoVision, "the request carries " + std::to_string(images.size()) +
                                                 " image(s) and this model was loaded without a projector: load it "
                                                 "with {mmproj} (the mmproj file of the same conversion) to read them");
+        if (!req.grammar.empty() && (!chat_on || !req.tools.empty() || structured()))
+            return fail(RunError::InvalidRequest,
+                        !chat_on
+                            ? "a grammar needs chat turns: open the session with {chatml} on"
+                            : "a grammar cannot be combined with tools or a response format, which build their own");
         if (!chat_on) {
             prompt = req.prompt;
             return true;
@@ -2897,7 +3031,9 @@ struct Session::Impl::Turn {
             // prefilled turn resumes after are rendered by llama.cpp's own handler for this
             // template, so no marker for any family is spelled out here. See thinking_control.h.
             common_chat_templates_inputs inputs;
-            prefilled_answer = detail::build_turn_inputs(inputs, im.chat_history, req.think, im.think_ctl);
+            // A grammar holds the answer from its first token, so the model is asked not to reason first.
+            prefilled_answer =
+                detail::build_turn_inputs(inputs, im.chat_history, req.think && req.grammar.empty(), im.think_ctl);
             // The tools go to the template, which writes them in the syntax this model was trained
             // on, and the parser built from the same call reads the model's calls back out.
             if (replace) detail::add_tools(inputs, req.tools, req.tool_choice);
@@ -2908,13 +3044,24 @@ struct Session::Impl::Turn {
             parse_params = detail::build_parse_params(cp);
             message_delimiters = cp.message_delimiters;
             message_delimiters.tokenize(im.vocab);
+            // The request's own grammar stands for the template's: whole, from the answer's first
+            // token, which is where the generation prompt ends.
+            if (!req.grammar.empty()) {
+                cp.grammar = req.grammar;
+                cp.grammar_lazy = false;
+                cp.grammar_triggers.clear();
+                cp.generation_prompt.clear();
+            }
             // An explicit response format also constrains a prefilled answer: the template
             // owns the grammar and its generation prefix, including any reasoning envelope.
             std::string grammar_err;
-            if (!prefilled_answer || structured()) {
+            if (!prefilled_answer || constrained()) {
                 const bool ready = grammar.init(cp, im.vocab, grammar_err);
-                if (structured() && (!ready || !grammar.active())) {
+                if (constrained() && (!ready || !grammar.active())) {
                     undo_history();
+                    // grammar_err speaks of the template's grammar; this one is the request's.
+                    if (!req.grammar.empty())
+                        return fail(RunError::InvalidRequest, "the grammar does not parse as GBNF with a root rule");
                     return fail(RunError::TemplateRejected,
                                 "the template cannot apply the response schema: " +
                                     (grammar_err.empty() ? "no grammar was produced" : grammar_err));
@@ -3318,6 +3465,7 @@ struct Session::Impl::Turn {
         // to the resident reference the gates check); with a sampling chain, draw from the context's
         // last-position logits, which llama_sampler_sample reads at index -1 — the same logits argmax
         // would have read.
+        if (!arm_sampler()) return false;
         return sample_next(-1);
     }
 
@@ -3328,8 +3476,12 @@ struct Session::Impl::Turn {
     // the grammar allows, and with no grammar it is exactly the old path.
     llama_token sample(int32_t row) {
         const float * lg = llama_get_logits_ith(ctx, row);
-        llama_token t = im.smpl ? llama_sampler_sample(im.smpl, ctx, row) : argmax(lg, im.n_vocab);
-        if (!grammar.active()) return t;
+        llama_sampler * chain = sampler();
+        llama_token t = chain ? llama_sampler_sample(chain, ctx, row) : argmax(lg, im.n_vocab);
+        if (!grammar.active()) {
+            if (req.n_probs > 0) tok_probs = position_logprobs(lg, im.n_vocab, im.vocab, t, req.n_probs);
+            return t;
+        }
         if (!grammar.allows(t)) {
             cand.resize((size_t) im.n_vocab);
             for (llama_token v = 0; v < im.n_vocab; ++v)
@@ -3338,8 +3490,8 @@ struct Session::Impl::Turn {
             grammar.constrain(&cur);
             const bool dead_end = std::none_of(cur.data, cur.data + cur.size,
                                                [](const llama_token_data & c) { return std::isfinite(c.logit); });
-            if (!dead_end && im.smpl) {
-                llama_sampler_apply(im.smpl, &cur);
+            if (!dead_end && chain) {
+                llama_sampler_apply(chain, &cur);
                 if (cur.selected >= 0 && (size_t) cur.selected < cur.size &&
                     std::isfinite(cur.data[cur.selected].logit))
                     t = cur.data[cur.selected].id;
@@ -3353,8 +3505,9 @@ struct Session::Impl::Turn {
         // A grammar that takes no token is a broken contract for a response schema: the caller fails
         // the turn. A tool grammar is a guide, not a contract (#334): the unconstrained pick stands,
         // and accept() switches the grammar off with a warning while the parser fallback still holds.
-        if (structured() && !grammar.allows(t)) return LLAMA_TOKEN_NULL;
+        if (constrained() && !grammar.allows(t)) return LLAMA_TOKEN_NULL;
         grammar.accept(t);
+        if (req.n_probs > 0) tok_probs = position_logprobs(lg, im.n_vocab, im.vocab, t, req.n_probs);
         return t;
     }
 
@@ -3457,6 +3610,8 @@ struct Session::Impl::Turn {
     bool accept(Step & s) {
         confirmed.clear();
         confirmed.push_back(tok);
+        confirmed_probs.clear();
+        if (req.n_probs > 0) confirmed_probs.push_back(tok_probs);
         for (int i = 0; i < s.n_draft; ++i) {
             const llama_token want = argmax(llama_get_logits_ith(ctx, i), im.n_vocab);
             if (want != im.draft_buf[i]) break;
@@ -3465,7 +3620,7 @@ struct Session::Impl::Turn {
             if (grammar.active()) {
                 if (!grammar.allows(want)) break;
                 grammar.accept(want);
-                if (structured() && !grammar.active()) {
+                if (constrained() && !grammar.active()) {
                     rollback_turn();
                     return fail(RunError::InvalidOutput, "the response grammar rejected a drafted token");
                 }
@@ -3476,6 +3631,9 @@ struct Session::Impl::Turn {
                 break;
             }
             confirmed.push_back(want);
+            if (req.n_probs > 0)
+                confirmed_probs.push_back(
+                    position_logprobs(llama_get_logits_ith(ctx, i), im.n_vocab, im.vocab, want, req.n_probs));
         }
         if (!spec_on) return true;
         im.mtp_accepted += s.n_acc;
@@ -3546,8 +3704,26 @@ struct Session::Impl::Turn {
             char piece[256];
             int np = llama_token_to_piece(im.vocab, out, piece, sizeof(piece), 0, true);
             std::string delta = np > 0 ? std::string(piece, np) : std::string();
-            if (np < 0 && structured()) delta = common_token_to_piece(im.vocab, out, true);
+            if (np < 0 && constrained()) delta = common_token_to_piece(im.vocab, out, true);
+            const size_t before = gen.size();
             gen += delta;
+            // A stop ends the answer where it begins; text that may yet become one is not shown.
+            size_t shown = gen.size();
+            if (!req.stop_text.empty()) {
+                const size_t at = find_stop(gen, req.stop_text, before);
+                if (at != std::string::npos) {
+                    for (const std::string & st : req.stop_text)
+                        if (!st.empty() && gen.compare(at, st.size(), st) == 0) {
+                            res.stop_text = st;
+                            break;
+                        }
+                    gen.resize(at);
+                    shown = at;
+                    stop_hit = true;
+                } else {
+                    shown -= stop_prefix_tail(gen, req.stop_text);
+                }
+            }
             if (chat_on) im.kv.push_token(out); // this token is now in the KV
             if (spec_on) mtp_ctx.push_back(out);
             ++n_gen;
@@ -3566,7 +3742,7 @@ struct Session::Impl::Turn {
             // Only when someone will read it: the parser cannot resume, so this re-parses everything
             // generated so far on every token, and off the chat path it is a full copy of the same.
             if (req.render_text) {
-                ShownView sv = shown_view(gen, /*partial*/ true);
+                ShownView sv = shown_view(shown == gen.size() ? gen : gen.substr(0, shown), /*partial*/ true);
                 m.text = std::move(sv.content);
                 m.reasoning = std::move(sv.reasoning);
                 m.tool_calls = std::move(sv.tool_calls);
@@ -3576,8 +3752,14 @@ struct Session::Impl::Turn {
                 last_compute_s = m.compute_ms / 1000.0;
             } else
                 tally.record(m, 0.0, 0, 0.0, im.turn, moe.enabled ? &st : nullptr);
+            if (req.n_probs > 0 && e < confirmed_probs.size()) {
+                m.has_logprobs = true;
+                m.logprob = confirmed_probs[e].chosen;
+                m.top_logprobs = confirmed_probs[e].top;
+            }
             if (on_token) on_token(m);
             if (sink) sink->on_token(m);
+            if (stop_hit) break; // what the decode confirmed past the stop is not the answer
         }
     }
 
@@ -3703,11 +3885,11 @@ struct Session::Impl::Turn {
                 im.cost_step(last_compute_s, (int) confirmed.size());
             }
 
-            if (structured() && im.cancelled()) {
+            if (constrained() && im.cancelled()) {
                 res.cancelled = true;
                 break;
             }
-            if (s.eog_hit || (structured() && n_gen >= n_predict)) break;
+            if (s.eog_hit || stop_hit || (constrained() && n_gen >= n_predict)) break;
             // The accepted group is now KV-resident, and the logits at the first unverified position
             // hold the target's own continuation — the next token, arrived at for free. Off the
             // speculative path the row index stays -1, exactly as before: one token, one row.
