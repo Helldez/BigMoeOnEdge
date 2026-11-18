@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **The device expert cache grows into the memory its card has free** (`--device-cache-fill`, set by
+  `--auto`). The planned size is the capacity fitter's projection, whole layers inside a margin of
+  its own, and 0.6-2.4 GiB of every 8, 12 and 24 GB card measured stayed free while it served. Once
+  the contexts are made the session runs one pass as wide as the graph, reads each card's free
+  memory, keeps the backend's pool peak free twice over and grows the cache into the rest, back to
+  the planned size where the larger one does not open. On a 24 GB card held to 8, 12 and 24 GB free,
+  Qwen3.8-Flash-Next Q2_0: decode +13-15%, +5% and unchanged, the same text, 2-4 s more load.
+  Streamed experts, and cards whose memory is the host's, are left as planned
+  ([hardware-planning.md](docs/hardware-planning.md),
+  [bench-data](docs/bench-data/2026-11-18-rented-0.45/README.md)).
+
 ## [0.45.1] - 2026-11-18
 
 ### Fixed

@@ -3700,6 +3700,20 @@ int main() {
                       e->reason.find("left free under one more whole layer") != std::string::npos,
                   "device tier, spare memory: the cache takes the whole layers' experts and the remainder",
                   std::to_string(more.config.moe.device_cache_mb) + " MiB");
+            // The size is the fitter's projection; the session grows it into what the card has free once the
+            // contexts are made (Session::Impl::fill_device_cache). Set where the plan sizes the cache, kept
+            // off where a person set it, and a size set by hand is never grown.
+            check(more.config.moe.device_cache_fill && validate(more.config).ok && e &&
+                      e->reason.find("grows into the memory the device still has free") != std::string::npos,
+                  "device tier: the planned cache grows into the device's free memory at load", e ? e->reason : "none");
+            PlanRequest no_fill;
+            no_fill.pinned.push_back("device-cache-fill");
+            const Plan kept_size = plan_on(slow_cores, spare, no_fill);
+            check(kept_size.config.moe.device_cache_mb > 0 && !kept_size.config.moe.device_cache_fill,
+                  "device tier: a fill pinned off is left off");
+            RunConfig by_hand_size = base_cfg();
+            by_hand_size.moe.device_cache_fill = true;
+            check(!validate(by_hand_size).ok, "device tier: a fill without a cache to grow is refused");
 
             // A small card: every dense part fits and not one whole layer does. The cache is armed
             // all the same, on what the dense part left free; before, the card stayed half empty.

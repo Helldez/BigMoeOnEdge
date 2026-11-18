@@ -81,6 +81,12 @@ struct MoeStreamConfig {
     // its slots from where the streamer put it. On a device that shares the host's memory the upload
     // is a copy within one pool; elsewhere it crosses the device's link. See docs/backends.md.
     int device_cache_mb = 0;
+    // Grow that cache, once the contexts are made, into the memory its device still has free beyond
+    // what one context took there (measured, Session::Impl::fill_device_cache). The size above is a
+    // projection: the capacity fitter places whole layers and keeps a margin of its own, so the
+    // memory it never fills was left free on every card measured (0.6-2.4 GiB on 8, 12 and 24 GB).
+    // The planner sets it where it sizes the cache; a size set by hand is kept as set.
+    bool device_cache_fill = false;
     // Where that cache's misses are uploaded FROM, for experts resident on the host: a copy of them in
     // a buffer of the device's own host buffer type (ggml_backend_dev_host_buffer_type) instead of the
     // file's mapping, the same bytes in the same layout, the expert tensors pointed at it as the

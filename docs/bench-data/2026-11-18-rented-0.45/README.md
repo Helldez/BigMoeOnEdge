@@ -123,6 +123,24 @@ Not changed by #646, still open:
 - Flash-Next against Strata on every box (Strata 1.4-3.5x), above all where the card is small: the
   experts' host copy of #646 is a part of it, not most.
 
+## The device cache grown into the card's free memory (#646 and `--device-cache-fill`)
+
+The memory the fitter's projection leaves free, given to the device expert cache once the contexts
+are made, with the backend's pool measured at the widest pass and kept free twice over. One 24 GB
+card (box C), Qwen3.8-Flash-Next Q2_0 with its experts in RAM, the card held to 8 and 12 GB free by
+a process that allocates the rest; one load each, the same build with `--no-device-cache-fill` as the
+other side.
+
+| Card memory free | Cache planned → grown | Pool peak measured | Peak use while serving | "a" | "code" | 4.6k: decode | prefill |
+|---|---|---:|---:|---:|---:|---:|---:|
+| 8 GB | 1399 → **2347** MiB | 134 MiB | 7.5 of 8.0 GiB | 38.5 → **44.3** | 35.0 → **39.5** | 34.1 → **38.9** | 1226 → 1242 |
+| 12 GB | 4066 → **4816** MiB | 246 MiB | 11.3 of 12.0 GiB | 51.7 → **54.3** | 45.1 → **47.3** | 45.0 → **47.0** | 1486 → 1527 |
+| 24 GB | 15686 → **16684** MiB | 246 MiB | 23.3 of 24.0 GiB | 70.1 → 70.5 | 66.8 → 68.0 | 63.6 → 64.4 | 1702 → 1724 |
+
+Every answer's text is the same with and without the fill, the tool calls pass, and the load takes
+2-4 s more (the measuring pass and the context made again). Qwen3.6-35B-A3B, whole on the card, arms
+no device cache and is unchanged: UD-Q4_K_M 150 tok/s and 6571 prefill, UD-Q4_K_XL 147.3 and 6166.
+
 ## Plan records
 
 Every model on the three boxes also has a `bmoe-planlab` record of its first load (Qwen3.6
