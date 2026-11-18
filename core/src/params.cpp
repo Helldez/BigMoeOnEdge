@@ -482,6 +482,18 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("device-cache-fill", "Fill the device's free memory", G::Cache, L::Experimental,
+                          "EXPERIMENTAL: Grow the device expert cache, once the model and its context are loaded, "
+                          "into the memory the device still has free beyond what one context takes there. --auto "
+                          "sets it where it sizes the cache.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--device-cache-fill", "true"}, {"--no-device-cache-fill", "false"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.device_cache_fill; });
+        d.details = "Lets the graphics card's expert cache use the memory the plan's estimate left free on the card.";
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("device-cache-cpu-share", "Device cache misses on the CPU", G::Cache, L::Experimental,
                           "EXPERIMENTAL: With a device expert cache, the share of its misses the CPU computes from the "
                           "host's copy instead of uploading them to the device, once the cache is full. 0 uploads "

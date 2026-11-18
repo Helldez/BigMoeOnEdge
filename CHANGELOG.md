@@ -6,6 +6,15 @@ Semantic Versioning.
 
 ## [0.45.1] - 2026-11-18
 
+### Added
+- **The device expert cache grows into the memory its card has free** (`--device-cache-fill`, set by
+  `--auto`). The planned size is the capacity fitter's projection, whole layers inside a margin of
+  its own, and 0.6-2.4 GiB of every 8, 12 and 24 GB card measured stayed free while it served. Once
+  the contexts are made the session reads each card's free memory again and grows the cache into
+  what is past one context's worth there, measured, and goes back to the planned size where the
+  larger one does not open. Cards whose memory is the host's are never grown into
+  ([hardware-planning.md](docs/hardware-planning.md)).
+
 ### Fixed
 - **A model that fills a card with memory of its own loads again** (since 0.42.0). Where the whole
   model fits, the capacity fitter leaves llama.cpp's "every layer" (`n_gpu_layers = -1`), and the

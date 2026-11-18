@@ -161,6 +161,8 @@ ValidationResult validate(const RunConfig & cfg) {
     if (!(cfg.moe.device_cache_cpu_share >= 0.0f &&
           cfg.moe.device_cache_cpu_share <= MoeStreamConfig::device_cache_cpu_share_max))
         return fail("{device-cache-cpu-share} is a share of the device cache's misses: from 0 to 1");
+    if (cfg.moe.device_cache_fill && cfg.moe.device_cache_mb <= 0)
+        return fail("{device-cache-fill} grows a device expert cache: it needs {device-cache-mb} above 0");
     if (cfg.moe.device_cache_cpu_share > 0.0f && cfg.moe.device_cache_mb <= 0)
         return fail("{device-cache-cpu-share} splits the misses of a device expert cache: it needs {device-cache-mb}");
     // The host half reads the experts' host copy as the layer runs; over streamed experts that copy is

@@ -1230,7 +1230,17 @@ it serves. The fitter measured a graph without the cache, and with it a wide gra
 experts into the device's compute buffers, so the session treats the planned size as a ceiling: where
 the context cannot be created beside the cache, the cache gives up a quarter at a time down to one
 token cycle (measured why on a 24 GB card with DeepSeek V4.1, where a 15.3 GB cache left 2.4 GB of
-prefill buffers nowhere to go). Where the device is not faster, a fact is missing, or not every dense part fits, the
+prefill buffers nowhere to go). The planned size is also a floor: the fitter's whole layers and its
+own margin (llama.cpp's default, 1 GiB a device) left 0.6-2.4 GiB of every 8, 12 and 24 GB card
+measured free while it served, an 8 GB card's cache 2.0 GiB of its 6.4 GiB used
+([bench-data](bench-data/2026-11-18-rented-0.45/README.md)). So the plan sets `--device-cache-fill`,
+and once the contexts are made the session reads each device's free memory again and grows the cache
+into what is past one set of contexts' worth there: the drop between the model loaded and its
+contexts made, measured, so a device keeps room for what a context allocates while it computes (152
+MiB at most on those cards, through a 4.6k-token prompt). The smallest such room over the devices is
+the growth, since llama.cpp splits the cache among them; the experts on the host bound it, under one
+token cycle it is not worth a context made again, and a context that cannot open at the larger size
+goes back to the planned one. Where the device is not faster, a fact is missing, or not every dense part fits, the
 fitter's placement stands and the plan says which. On a shared pool, or with the caller's own
 placement, it says nothing and changes nothing.
 

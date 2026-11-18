@@ -988,6 +988,11 @@ void choose_device_tier(Planning & s) {
         }
     }
     s.p.config.moe.device_cache_mb = (int) mib(cache_bytes);
+    // The size is the fitter's projection: whole layers' experts and what it reported under one more,
+    // inside a margin of its own. The session grows the cache into what the device has free once the
+    // contexts are made, so the memory the projection over-counts is the cache's too.
+    const bool fill = !s.req.is_pinned("device-cache-fill");
+    if (fill) s.p.config.moe.device_cache_fill = true;
     // A front-end's own default overlap (the server arms it wherever the hook is available) waits for
     // the experts inside the CPU's matmul, which no longer computes them: the session refuses the pair,
     // and a server left with both failed every load. A caller who asked for it never reaches here.
@@ -1005,7 +1010,10 @@ void choose_device_tier(Planning & s) {
                ", in place of whole layers' experts.",
            std::string("the experts used most live on the processor that computes them fastest, as the RAM "
                        "cache holds what flash would read: ") +
-               nums + "; a miss is uploaded from the host");
+               nums + "; a miss is uploaded from the host" +
+               (fill ? std::string("; at load it grows into the memory the device still has free beyond what one "
+                                   "context takes there")
+                     : std::string()));
 }
 
 // Where the device cache's misses come from. A resident expert is a page of the file's mapping,
