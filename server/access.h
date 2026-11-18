@@ -19,7 +19,7 @@ namespace bmoe::server {
 struct AccessPolicy {
     bool loopback = true;          // bound to a loopback address: only loopback host names are answered
     std::set<std::string> origins; // browser origins the API answers to: the UI's own, and --allow-origin
-    std::string api_key;           // required as a bearer token on every API request; empty means none
+    std::string api_key;           // required on every API request but a read of /health; empty means none
 };
 
 // What one request shows. Headers are passed as received; an absent one is "".

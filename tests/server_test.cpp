@@ -1386,6 +1386,23 @@ static void access_tests() {
         check(check_access(keyed, a).status == 401, "and a wrong one there is 401");
         RequestFacts page = req("GET", "/index.html");
         check(check_access(keyed, page).allowed(), "the key gates the API, not the UI's files");
+        check(check_access(keyed, req("GET", "/health")).allowed() &&
+                  check_access(keyed, req("HEAD", "/health")).allowed() &&
+                  check_access(keyed, req("GET", "/v1/health")).allowed() &&
+                  check_access(keyed, req("HEAD", "/v1/health")).allowed(),
+              "/health answers without the key, as llama-server's does");
+        check(check_access(keyed, req("GET", "/props")).status == 401 &&
+                  check_access(keyed, req("GET", "/health/x")).status == 401 &&
+                  check_access(keyed, req("GET", "/v1/health/x")).status == 401 &&
+                  check_access(keyed, req("POST", "/health")).status == 401,
+              "only reads of exactly /health and /v1/health skip the key: other routes, sub-paths and writes keep it");
+        RequestFacts h = req("GET", "/health");
+        h.has_origin = true;
+        h.origin = "http://evil.example";
+        check(check_access(keyed, h).status == 403, "an open /health is still refused to a foreign page");
+        h.has_origin = false;
+        h.sec_fetch_site = "cross-site";
+        check(check_access(keyed, h).status == 403, "and to one that loads it without an Origin, as an image does");
         RequestFacts w = req("PUT", "/api/config");
         w.authorization = "Bearer s3cret";
         check(check_access(keyed, w).status == 415, "the key does not excuse a write from naming JSON");
