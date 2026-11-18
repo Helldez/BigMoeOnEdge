@@ -27,9 +27,10 @@ public:
     ServerSupervisor(std::string log_path, std::function<void(int status)> on_exit);
     ~ServerSupervisor();
 
-    // Starts the server and waits until it answers on `port`. False, with the reason (the end of
-    // its log when it exited), when it did not.
-    bool start(const ServerLaunch & launch, int port, std::string & err);
+    // Starts the server, learns the port it took from `port_file` (the --port-file the launch
+    // names) and waits until it answers there. The port in `port`; false, with the reason (the end
+    // of its log when it exited), when it did not.
+    bool start(const ServerLaunch & launch, const std::string & port_file, int & port, std::string & err);
     // Stops the server, if one runs, and waits for it to be gone.
     void stop();
     bool running() const { return running_; }

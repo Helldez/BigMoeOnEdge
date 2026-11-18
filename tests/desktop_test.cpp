@@ -1,19 +1,15 @@
 // Unit tests for the desktop app's own rules (desktop/app_core.h), with no window and no server:
-// the preferences and their bounds, the port the server is started on, the arguments it gets, which
-// pages the bridge answers, and which file may be run as an update.
+// the preferences and their bounds, the arguments the server is started with, which pages the bridge
+// answers, and which file may be run as an update.
 //
 // Checks are explicit (not <cassert>): the Release build defines NDEBUG, which compiles assert out.
 
 #include "app_core.h"
 
-#include <cpp-httplib/httplib.h>
-
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
-#include <set>
 #include <string>
-#include <thread>
 
 namespace fs = std::filesystem;
 using namespace bmoe::desktop;
@@ -63,36 +59,6 @@ static void prefs_tests() {
     load_prefs(path, warning);
     check(!warning.empty(), "prefs: a broken file is said, and the defaults used");
     fs::remove_all(dir, ec);
-}
-
-static void port_tests() {
-    const std::set<int> taken = {8765, 8766};
-    check(pick_port(8765, [&](int p) { return !taken.count(p); }) == 8767, "port: the next free one after the taken");
-    check(pick_port(8765, [](int) { return true; }) == 8765, "port: the preferred one when free");
-    check(pick_port(8765, [](int) { return false; }) == 0, "port: none free in reach, none");
-    check(pick_port(65535, [](int p) { return p != 65535; }) == 0, "port: never past 65535");
-}
-
-// The check leaves nothing bound: a socket it left listening would share the port with the server
-// started on it, and the connections that land on it would never be answered.
-static void port_check_tests() {
-    int port = 0;
-    {
-        httplib::Server probe;
-        port = probe.bind_to_any_port("127.0.0.1");
-        probe.stop();
-    }
-    check(port > 0, "port check: a free port to try");
-    check(port_is_free(port), "port check: a free port is free");
-    check(port_is_free(port), "port check: still free after a check, so the check bound nothing it kept");
-    httplib::Server held;
-    held.Get("/", [](const httplib::Request &, httplib::Response & res) { res.set_content("x", "text/plain"); });
-    check(held.bind_to_port("127.0.0.1", port), "port check: a server takes the port");
-    std::thread serve([&] { held.listen_after_bind(); });
-    held.wait_until_ready();
-    check(!port_is_free(port), "port check: a port a server answers on is not free");
-    held.stop();
-    serve.join();
 }
 
 static void origin_tests() {
@@ -151,10 +117,16 @@ static void network_key_tests() {
 }
 
 static void launch_tests() {
-    const ServerLaunch l = server_launch("/app/bmoe-server", "", "", 8766, 42, "", {"--models-only"});
+    const ServerLaunch l =
+        server_launch("/app/bmoe-server", "", "", 8766, "/data/server.port", 42, "", {"--models-only"});
     check(l.server_path == "/app/bmoe-server" &&
-              l.args == std::vector<std::string>{"--port", "8766", "--parent-pid", "42", "--models-only"},
-          "launch: the port, the app's pid, then what the person passed");
+              l.args == std::vector<std::string>{"--port", "8766", "--port-fallback", "--port-file",
+                                                 "/data/server.port", "--parent-pid", "42", "--models-only"},
+          "launch: the port preferred, the server free to move past it and to say where, the app's pid, then "
+          "what the person passed");
+    const ServerLaunch d = server_launch("/app/bmoe-server", "", "", 0, "/data/server.port", 0, "", {});
+    check(d.args == std::vector<std::string>{"--port-fallback", "--port-file", "/data/server.port"},
+          "launch: no port chosen names none, so the server's default holds");
     const fs::path res = fs::temp_directory_path() / "bmoe_desktop_test_res";
     std::error_code ec;
     fs::remove_all(res, ec);
@@ -163,13 +135,15 @@ static void launch_tests() {
     fs::create_directories(res / "skills");
     std::ofstream(res / "ui" / "index.html") << "x";
     std::ofstream(res / "catalog" / "models.json") << "{}";
-    const ServerLaunch n = server_launch("/app/bmoe-server", "", "", 8766, 0, "/data/network-key", {});
-    check(n.args ==
-              std::vector<std::string>{"--port", "8766", "--host", "0.0.0.0", "--api-key-file", "/data/network-key"},
+    const ServerLaunch n =
+        server_launch("/app/bmoe-server", "", "", 8766, "/data/server.port", 0, "/data/network-key", {});
+    check(n.args == std::vector<std::string>{"--port", "8766", "--port-fallback", "--port-file", "/data/server.port",
+                                             "--host", "0.0.0.0", "--api-key-file", "/data/network-key"},
           "launch: serving the network listens on every address behind the key's file");
-    const ServerLaunch b = server_launch("/x/bmoe-server", res.u8string(), "/data", 8765, 0, "", {});
-    check(b.args.size() == 10 && b.args[2] == "--data-dir" && b.args[3] == "/data" && b.args[4] == "--ui-dir" &&
-              b.args[6] == "--catalog" && b.args[8] == "--skills-dir",
+    const ServerLaunch b =
+        server_launch("/x/bmoe-server", res.u8string(), "/data", 8765, "/data/server.port", 0, "", {});
+    check(b.args.size() == 13 && b.args[5] == "--data-dir" && b.args[6] == "/data" && b.args[7] == "--ui-dir" &&
+              b.args[9] == "--catalog" && b.args[11] == "--skills-dir",
           "launch: a bundle's UI, catalog and skills, and the data folder the app was given");
     fs::remove_all(res, ec);
     const std::string js = bridge_script();
@@ -183,8 +157,6 @@ static void launch_tests() {
 
 int main() {
     prefs_tests();
-    port_tests();
-    port_check_tests();
     origin_tests();
     update_file_tests();
     network_key_tests();

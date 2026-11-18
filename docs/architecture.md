@@ -55,12 +55,13 @@ server/         bmoe-server: the application framework every UI speaks to (docs/
                 access: who may reach the API (host, origin, key, content type, the local-only
                 routes), pure and tested;
                 platform: the only file with platform #ifs, a library of its own
-                (bmoe_server_platform) the desktop app links too; http_server: the HTTP routes and
+                (bmoe_server_platform) the desktop app links too, with listen_port (the port the
+                server takes, the fallback past ports in use, the port file a launcher reads); http_server: the HTTP routes and
                 run(); the whole is the bmoe_server library, main.cpp the process around it
 desktop/        bmoe-desktop (docs/desktop-app.md): the native window over the system's web view
                 (third_party/webview), bmoe-server as its child process (supervisor), the app's
-                rules apart from any window (app_core: preferences, port, bridge guard, update
-                file), and os.h with one file per system (os_macos.mm, os_windows.cpp,
+                rules apart from any window (app_core: preferences, server arguments, bridge guard,
+                update file), and os.h with one file per system (os_macos.mm, os_windows.cpp,
                 os_linux.cpp): tray, notifications, folder dialog, close-to-tray, one instance
 ui/             the web UI (Svelte + TypeScript); settings rendered from the parameter table
 catalog/        models.json: the curated model catalog, as data; clients.json: the apps the server can

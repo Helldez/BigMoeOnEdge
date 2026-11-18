@@ -100,12 +100,20 @@ if(TARGET bmoe_server_core)
     add_test(NAME feed_and_packs COMMAND bmoe_feed_test)
 endif()
 
-# The desktop app's rules (desktop/app_core.h): preferences, port, server arguments, which pages the
+# The desktop app's rules (desktop/app_core.h): preferences, server arguments, which pages the
 # bridge answers, which file runs as an update. No window, no server.
 if(TARGET bmoe_desktop_core)
     add_executable(bmoe_desktop_test desktop_test.cpp)
-    target_link_libraries(bmoe_desktop_test PRIVATE bmoe_desktop_core cpp-httplib)
+    target_link_libraries(bmoe_desktop_test PRIVATE bmoe_desktop_core)
     add_test(NAME desktop_rules COMMAND bmoe_desktop_test)
+endif()
+
+# The port the server listens on (server/listen_port.h): the fallback past ports in use, the probe
+# for a port something answers on, the port file a launcher reads. Real sockets on loopback.
+if(TARGET bmoe_server_platform)
+    add_executable(bmoe_listen_port_test listen_port_test.cpp)
+    target_link_libraries(bmoe_listen_port_test PRIVATE bmoe_server_platform cpp-httplib)
+    add_test(NAME listen_port COMMAND bmoe_listen_port_test)
 endif()
 
 # bmoe-server's engine host: loads, turns, cancel and unload across threads, and which failures

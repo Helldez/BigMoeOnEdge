@@ -8,13 +8,11 @@ if(NOT TARGET cpp-httplib)
                      ${CMAKE_BINARY_DIR}/vendor/cpp-httplib EXCLUDE_FROM_ALL)
 endif()
 
-# The rules apart from any window (app_core.h), for tests/desktop_test.cpp; httplib for the check
-# of whether a port is free.
+# The rules apart from any window (app_core.h), for tests/desktop_test.cpp.
 add_library(bmoe_desktop_core STATIC app_core.cpp)
 target_include_directories(bmoe_desktop_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(bmoe_desktop_core SYSTEM PUBLIC ${CMAKE_SOURCE_DIR}/third_party/llama.cpp/vendor)
 target_compile_features(bmoe_desktop_core PUBLIC cxx_std_17)
-target_link_libraries(bmoe_desktop_core PRIVATE cpp-httplib)
 
 if(NOT EXISTS "${CMAKE_SOURCE_DIR}/third_party/webview/CMakeLists.txt")
     message(STATUS "bmoe-desktop: third_party/webview is missing (git submodule update --init); not built")

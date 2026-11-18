@@ -1,7 +1,5 @@
 #include "app_core.h"
 
-#include <cpp-httplib/httplib.h>
-
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -135,36 +133,6 @@ std::string network_key(const std::string & path, bool replace, std::string & er
     return key;
 }
 
-bool port_is_free(int port) {
-    constexpr time_t kProbeTimeoutS = 1;
-    // Something answering there (on any address the port is bound on) is a no; so is a port this
-    // process cannot bind, whoever holds it. A connect that times out found nothing answering, as
-    // a refused one did: Windows retries a refused loopback connect for about two seconds before it
-    // says so, past this timeout, so there every free port timed out and was taken for in use.
-    {
-        httplib::Client c("127.0.0.1", port);
-        c.set_connection_timeout(kProbeTimeoutS, 0);
-        c.set_read_timeout(kProbeTimeoutS, 0);
-        const auto res = c.Get("/");
-        if (res) return false;
-        if (res.error() != httplib::Error::Connection && res.error() != httplib::Error::ConnectionTimeout) return false;
-    }
-    httplib::Server s;
-    const bool bound = s.bind_to_port("127.0.0.1", port);
-    // httplib's destructor does not close a socket bound without listen_after_bind(); stop() does.
-    s.stop();
-    return bound;
-}
-
-int pick_port(int preferred, const std::function<bool(int)> & is_free) {
-    for (int i = 0; i < kPortTries; ++i) {
-        const int port = preferred + i;
-        if (port > kMaxPort) break;
-        if (is_free(port)) return port;
-    }
-    return 0;
-}
-
 std::string server_origin(int port) {
     return "http://127.0.0.1:" + std::to_string(port);
 }
@@ -189,13 +157,17 @@ bool is_update_file(const std::string & path, const std::string & updates_dir) {
 ServerLaunch server_launch(const std::string & server_path,
                            const std::string & resources_dir,
                            const std::string & data_dir,
-                           int port,
+                           int preferred_port,
+                           const std::string & port_file,
                            long parent_pid,
                            const std::string & network_key_file,
                            const std::vector<std::string> & extra_args) {
     ServerLaunch l;
     l.server_path = server_path;
-    l.args = {"--port", std::to_string(port)};
+    // The server picks the port, not the app: a port the app probed free could be taken before the
+    // server bound it, and the app would then show another program's page in the window.
+    if (preferred_port > 0) l.args = {"--port", std::to_string(preferred_port)};
+    l.args.insert(l.args.end(), {"--port-fallback", "--port-file", port_file});
     // Every address, so the window (on loopback) and the network both reach it; the server keeps
     // files, commands and keys to loopback whatever it listens on.
     if (!network_key_file.empty())

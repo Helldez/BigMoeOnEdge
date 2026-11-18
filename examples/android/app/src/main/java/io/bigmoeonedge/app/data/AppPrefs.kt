@@ -18,6 +18,13 @@ object AppPrefs {
     fun setShareOnNetwork(ctx: Context, on: Boolean) = prefs(ctx).edit().putBoolean("share", on).apply()
 
     /**
+     * The port the person chose for the server, 0 for the server's own default. A preference, not a
+     * promise: the server moves past it when another program holds it (engine/ListenPort.kt).
+     */
+    fun port(ctx: Context): Int = prefs(ctx).getInt("port", 0)
+    fun setPort(ctx: Context, port: Int) = prefs(ctx).edit().putInt("port", port).apply()
+
+    /**
      * The key clients send as a bearer token when the server is shared. Generated once per install,
      * random, and shown in Settings; a new one is one tap away. Never sent anywhere by the app.
      */
