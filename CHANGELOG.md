@@ -6,11 +6,18 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Changed
+- **The model catalog offers six models instead of two, from 5 GB to 300 GB.** A small dense
+  one that most machines hold whole (Gemma-4-E4B-it Q4_0), a MoE model the
+  size of the two already there (Ornith-1.5-35B-A3B Q4_K_M), and two far past RAM
+  in several files (Qwen3.8-Flash-Next Q2_K, 83 GB; DeepSeek-V4.1-Flash-1017 Q2_K_S, 298 GB). Each
+  file is from ggml-org where it publishes one, with its size and SHA-256 from the repository, and
+  this build's header check reads every one (`POST /api/hf/inspect`): the MoE models stream, the
+  dense one runs whole in memory. The first run still suggests the largest that fits in memory.
 ### Fixed
 - **Android: "Choose from options" in the composer's + menu shows a checklist, not a wrench.** The
   entry borrowed Material's `Build` icon, which reads as tools or settings; it now draws Material's
   "checklist", the same picture the iOS composer uses for it.
-
 ## [0.44.1] - 2026-11-18
 
 ### Changed

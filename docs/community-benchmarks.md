@@ -144,17 +144,19 @@ around it:
 
 Any MoE in any quant is valid, and a different quant of the same model is its own row: expert bytes
 per token change with the quant, so the flash column does too. That comparison is one of the things
-the table is for. What the app catalog ships:
+the table is for. What the app catalog ships (`catalog/models.json`), the MoE models only: the
+small dense one beside them has nothing to stream, so it makes no row here.
 
 | Model | Catalog quant | Size | Download | Notes |
 |---|---|---:|---|---|
-| Qwen3.6-35B-A3B | Q4_K_M | 22.3 GB | [bartowski/Qwen_Qwen3.6-35B-A3B-GGUF](https://huggingface.co/bartowski/Qwen_Qwen3.6-35B-A3B-GGUF) | the README's reference row |
-| Qwen3-30B-A3B | Q4_K_M | 18.5 GB | [unsloth/Qwen3-30B-A3B-GGUF](https://huggingface.co/unsloth/Qwen3-30B-A3B-GGUF) | |
-| Gemma-4-26B-A4B-it | Q4_K_M | 17.0 GB | [bartowski/google_gemma-4-26B-A4B-it-GGUF](https://huggingface.co/bartowski/google_gemma-4-26B-A4B-it-GGUF) | |
-| gpt-oss-120b | Q4_K_M | 62.8 GB | [unsloth/gpt-oss-120b-GGUF](https://huggingface.co/unsloth/gpt-oss-120b-GGUF) | thinking stays off (the default); pass the first shard |
-| DeepSeek V4 Flash 0731 | UD-IQ2_M | 90.9 GB | [unsloth/DeepSeek-V4-Flash-0731-GGUF](https://huggingface.co/unsloth/DeepSeek-V4-Flash-0731-GGUF) | pass the first shard |
-| Qwen3.8-Flash-Next | UD-IQ3_XXS | 82.0 GB | [unsloth/Qwen3.8-Flash-Next-GGUF](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF) | needs engine 0.22.0+; pass the first shard |
-| Qwen3.8-Flash-Next | Q2_K | 80.4 GB | [DevQuasar/Qwen.Qwen3.8-Flash-Next-GGUF](https://huggingface.co/DevQuasar/Qwen.Qwen3.8-Flash-Next-GGUF) | dense side at 2-4 bit (2.4 GB pinned); no imatrix; pass the first shard |
+| Gemma-4-26B-A4B-it | Q4_0 | 14.6 GB | [ggml-org/gemma-4-26B-A4B-it-GGUF](https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF) | |
+| Qwen3.6-35B-A3B | Q4_K_M | 20.4 GB | [ggml-org/Qwen3.6-35B-A3B-GGUF](https://huggingface.co/ggml-org/Qwen3.6-35B-A3B-GGUF) | the README's reference row |
+| Ornith-1.5-35B-A3B | Q4_K_M | 21.7 GB | [ornith-ai/Ornith-1.5-35B-A3B-GGUF](https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF) | |
+| Qwen3.8-Flash-Next | Q2_K | 83.1 GB | [ggml-org/Qwen3.8-Flash-Next-GGUF](https://huggingface.co/ggml-org/Qwen3.8-Flash-Next-GGUF) | pass the first shard |
+| DeepSeek-V4.1-Flash-1017 | Q2_K_S | 298.0 GB | [ggml-org/DeepSeek-V4.1-Flash-1017-GGUF](https://huggingface.co/ggml-org/DeepSeek-V4.1-Flash-1017-GGUF) | pass the first shard |
+
+Rows from earlier runs used other builds (Qwen3-30B-A3B, gpt-oss-120b, DeepSeek V4 Flash, the
+Unsloth and DevQuasar quants of Qwen3.8-Flash-Next); they stay valid rows, a quant being its own row.
 
 ### What makes a row comparable
 
