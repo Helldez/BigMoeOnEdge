@@ -15,7 +15,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -473,7 +472,7 @@ private fun Composer() {
                     DropdownMenu(expanded = more, onDismissRequest = { more = false }) {
                         DropdownMenuItem(
                             text = { Text(if (choose) "Back to a message" else "Choose from options") },
-                            leadingIcon = { Icon(Icons.Filled.Build, null) },
+                            leadingIcon = { Icon(painterResource(R.drawable.ic_checklist), null) },
                             onClick = { choose = !choose; more = false },
                         )
                         HorizontalDivider(color = tokens.line)

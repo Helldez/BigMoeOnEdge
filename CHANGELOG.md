@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **Android: "Choose from options" in the composer's + menu shows a checklist, not a wrench.** The
+  entry borrowed Material's `Build` icon, which reads as tools or settings; it now draws Material's
+  "checklist", the same picture the iOS composer uses for it.
+
 ## [0.43.2] - 2026-11-16
 
 ### Changed
