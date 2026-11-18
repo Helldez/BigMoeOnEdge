@@ -1481,6 +1481,24 @@ void register_routes(httplib::Server & svr, App & app) {
         send_json(res, json{{"ok", true}}, 202);
     });
 
+    // What a catalog entry is on this machine, before its download: the check /api/hf/inspect
+    // makes of a repository's model, asked by the entry's id and read from the entry's own files.
+    svr.Post("/api/models/inspect", [&](const httplib::Request & req, httplib::Response & res) {
+        json body;
+        if (!parse_body(req, res, body)) return;
+        if (!body.contains("id") || !body["id"].is_string())
+            return send_error(res, 400, "id must be a catalog id string", "invalid_request");
+        CatalogEntry e;
+        if (!app.lib.entry(body["id"].get<std::string>(), e))
+            return send_error(res, 404, "no catalog entry has this id", "not_found");
+        json facts;
+        std::string err;
+        if (!inspect_catalog_entry(*app.net, e, app.scratch_dir, app.lib.models_dir(), app.loaded_session(), facts,
+                                   err))
+            return send_error(res, 502, "could not read the header of " + e.title + ": " + err, "upstream");
+        send_json(res, facts);
+    });
+
     svr.Delete(R"(/api/models/download/(.+))", [&](const httplib::Request & req, httplib::Response & res) {
         const bool cancelled = app.lib.cancel_download(req.matches[1].str());
         send_json(res, json{{"ok", cancelled}}, cancelled ? 200 : 404);

@@ -129,6 +129,12 @@ struct FitVerdict {
     // "unknown". Decided here from the facts above, so no client keeps a threshold of its own.
     std::string fit;
     std::string headline;
+    // The same answer for a person who is not choosing an engine: one sentence with no engine
+    // term in it, and the tone it is said in ("ok", "warn", "err", or "" where nothing is claimed),
+    // which a UI maps to a colour and nothing else. A first run shows these two; the headline and
+    // the memory sentence stay behind them, for whoever asks how it was checked.
+    std::string summary;
+    std::string tone;
 };
 FitVerdict fit_verdict(const FitInputs & in);
 

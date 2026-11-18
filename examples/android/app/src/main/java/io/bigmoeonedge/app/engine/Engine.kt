@@ -14,6 +14,7 @@ import io.bigmoeonedge.app.data.HfSearch
 import io.bigmoeonedge.app.data.hfSearchBody
 import io.bigmoeonedge.app.data.hfRequestBody
 import io.bigmoeonedge.app.data.MetricsRecorder
+import io.bigmoeonedge.app.data.ModelCheck
 import io.bigmoeonedge.app.data.Telemetry
 import io.bigmoeonedge.app.data.applyDone
 import io.bigmoeonedge.app.data.applyToken
@@ -800,6 +801,11 @@ object Engine {
 
     suspend fun hfInspect(repo: String, name: String, token: String): Result<HfFacts> = withContext(Dispatchers.IO) {
         catching { HfFacts.of(api.hfInspect(hfRequestBody(repo, name, token))) }
+    }
+
+    /** The server's check of a catalog entry on this phone (data/ModelCheck.kt). */
+    suspend fun inspectEntry(id: String): Result<ModelCheck> = withContext(Dispatchers.IO) {
+        catching { ModelCheck.of(api.inspectEntry(id)) }
     }
 
     /** Adds the model to the catalog and answers its id; the models list is refreshed so the entry shows. */

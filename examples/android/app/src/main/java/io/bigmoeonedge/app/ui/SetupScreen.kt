@@ -33,14 +33,18 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.bigmoeonedge.app.R
 import io.bigmoeonedge.app.chat.Chat
 import io.bigmoeonedge.app.data.CatalogEntry
+import io.bigmoeonedge.app.data.CheckState
 import io.bigmoeonedge.app.data.Eta
 import io.bigmoeonedge.app.data.FileRole
 import io.bigmoeonedge.app.data.ModelDownloader
 import io.bigmoeonedge.app.data.RowState
 import io.bigmoeonedge.app.data.SafImport
 import io.bigmoeonedge.app.data.Setup
+import io.bigmoeonedge.app.data.Tone
+import io.bigmoeonedge.app.data.checkTone
 import io.bigmoeonedge.app.data.gbLabel
 import io.bigmoeonedge.app.data.libraryRows
+import io.bigmoeonedge.app.data.mayDownload
 import io.bigmoeonedge.app.data.resumeLabel
 import io.bigmoeonedge.app.engine.Engine
 import kotlinx.coroutines.Dispatchers
@@ -93,7 +97,10 @@ fun SetupScreen(modifier: Modifier = Modifier, onOpenChat: () -> Unit, onOpenMod
     val chosen: CatalogEntry? = catalog.firstOrNull { it.id == pick } ?: underWay ?: Setup.recommended(catalog, ramBytes)
     val row = chosen?.let { c -> rows.firstOrNull { it.entry?.id == c.id } }
     val dl = chosen?.let { ModelDownloader.entryProgress(context, it, progress) }
-    val pair = remember(catalog, ramBytes) { Setup.pair(catalog, ramBytes) }
+    val choices = remember(catalog) { Setup.choices(catalog) }
+    // What the picked model is on this phone, by the server's check of its header: asked when a model
+    // becomes the pick, the suggested one included, and kept for the visit.
+    val checks = remember { mutableStateMapOf<String, CheckState>() }
     // A paused download stays on the download step, with Resume, unless the person asked to pick again.
     var repick by remember { mutableStateOf(false) }
     val paused = Setup.paused(chosen?.partial == true, row?.state)
@@ -187,14 +194,16 @@ fun SetupScreen(modifier: Modifier = Modifier, onOpenChat: () -> Unit, onOpenMod
                         }
                         step == 1 -> {
                             SheetHeading("Pick a model")
-                            val fitsLine = "Fits in this phone’s memory: the fastest answers."
-                            val streamsLine = "Larger than this phone’s memory: it runs, reading the parts it needs from disk as it goes. Slower, and a bigger model."
-                            if (pair.size == 2) {
-                                pair.forEach { e ->
-                                    val fits = e.bytes <= ramBytes
+                            // Said before the list, with the two ways around it as buttons: the list is a
+                            // suggestion, and a gguf already on the phone must not hide under the sheet.
+                            Text("Any gguf model runs here. Use one you already have, find another, or start from a suggestion.", fontSize = 14.sp)
+                            OutlinedButton(shape = Corner, onClick = { picker.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth()) { Text("Use a gguf file on this phone") }
+                            OutlinedButton(shape = Corner, onClick = onOpenModels, modifier = Modifier.fillMaxWidth()) { Text("Find a model on Hugging Face") }
+                            Text("Suggested for a first run", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                            if (choices.isNotEmpty()) {
+                                choices.forEach { e ->
                                     ChoiceCard(
-                                        kicker = if (fits) "Fits in memory" else "Larger than memory",
-                                        title = e.title, size = gbLabel(e.bytes), line = if (fits) fitsLine else streamsLine,
+                                        title = e.title, size = gbLabel(e.bytes), checked = checks[e.id] as? CheckState.Done,
                                         selected = chosen.id == e.id, onClick = { pick = e.id },
                                     )
                                 }
@@ -202,10 +211,18 @@ fun SetupScreen(modifier: Modifier = Modifier, onOpenChat: () -> Unit, onOpenMod
                                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                     Text(chosen.title, fontWeight = FontWeight.Bold)
                                     Text(gbLabel(chosen.bytes), fontSize = 13.sp, color = tokens.muted)
-                                    if (ramBytes > 0) Text(if (chosen.bytes <= ramBytes) fitsLine else streamsLine, fontSize = 13.sp)
                                 }
                             }
-                            Button(shape = Corner, colors = primaryButtonColors(), enabled = !busy && engine.serverUp, onClick = { download(chosen) }) {
+                            val check = checks[chosen.id]
+                            LaunchedEffect(chosen.id, engine.serverUp) {
+                                if (engine.serverUp && checks[chosen.id] == null) {
+                                    val id = chosen.id
+                                    checks[id] = CheckState.Pending
+                                    checks[id] = Engine.inspectEntry(id).fold({ CheckState.Done(it) }, { CheckState.Failed(it.message ?: "") })
+                                }
+                            }
+                            CheckPanel(chosen.title, check)
+                            Button(shape = Corner, colors = primaryButtonColors(), enabled = !busy && engine.serverUp && mayDownload(check), onClick = { download(chosen) }) {
                                 Text(if (chosen.partial) resumeLabel(chosen.received, chosen.bytes) else "Download, ${gbLabel(chosen.bytes)}")
                             }
                             Text("It resumes where it stopped if the connection drops.", fontSize = 13.sp, color = tokens.muted)
@@ -276,8 +293,9 @@ fun SetupScreen(modifier: Modifier = Modifier, onOpenChat: () -> Unit, onOpenMod
             }
             // The ways around the path, one tap away throughout.
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                TextButton(onClick = { picker.launch(arrayOf("*/*")) }) { Text("Already have a gguf file? Pick it on the phone", fontSize = 13.sp, textAlign = TextAlign.Center) }
-                Row {
+                // The pick step offers these two itself, as buttons.
+                if (step != 1 || chosen == null) {
+                    TextButton(onClick = { picker.launch(arrayOf("*/*")) }) { Text("Already have a gguf file? Pick it on the phone", fontSize = 13.sp, textAlign = TextAlign.Center) }
                     TextButton(onClick = onOpenModels) { Text("More models, or one from Hugging Face", fontSize = 13.sp) }
                 }
                 TextButton(onClick = onOpenChat) { Text("Skip for now", fontSize = 13.sp) }
@@ -350,7 +368,7 @@ private fun SheetHeading(text: String) {
 
 /** One of the two models offered: the selected one has the accent edge and the accent tint. */
 @Composable
-private fun ChoiceCard(kicker: String, title: String, size: String, line: String, selected: Boolean, onClick: () -> Unit) {
+private fun ChoiceCard(title: String, size: String, checked: CheckState.Done?, selected: Boolean, onClick: () -> Unit) {
     Surface(
         color = if (selected) tokens.accentTint else tokens.surface,
         shape = Corner,
@@ -360,10 +378,40 @@ private fun ChoiceCard(kicker: String, title: String, size: String, line: String
             .clickable(role = Role.RadioButton, onClick = onClick),
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(kicker, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = tokens.accentInk)
             Text(title, fontWeight = FontWeight.Bold)
             Text(size, fontSize = 13.sp, color = tokens.muted)
-            Text(line, fontSize = 13.sp)
+            checked?.let { Text("Checked", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = toneColor(checkTone(it))) }
+        }
+    }
+}
+
+/** The server's answer for the pick, in its words and its tone; how it was checked opens on a tap. */
+@Composable
+private fun CheckPanel(title: String, check: CheckState?) {
+    var how by remember(title) { mutableStateOf(false) }
+    Surface(color = tokens.surface, shape = Corner, border = BorderStroke(1.dp, tokens.line), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            when (check) {
+                null, CheckState.Pending -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                    Text("Checking $title on this phone…", fontSize = 14.sp, color = tokens.muted)
+                }
+                is CheckState.Failed -> {
+                    Text("Could not check $title from here. It can still be downloaded.", fontWeight = FontWeight.SemiBold)
+                    if (check.why.isNotEmpty()) Text(check.why, fontSize = 13.sp, color = tokens.muted)
+                }
+                is CheckState.Done -> {
+                    val c = check.check
+                    val tone = checkTone(check)
+                    Text("$title: ${c.sentence}", fontWeight = FontWeight.SemiBold, color = if (tone == Tone.NONE) Color.Unspecified else toneColor(tone))
+                    if (c.disk.isNotEmpty()) Text(c.disk, fontSize = 13.sp, color = if (c.downloadable) tokens.muted else tokens.err)
+                    TextButton(onClick = { how = !how }, contentPadding = PaddingValues(0.dp)) { Text("How it was checked", fontSize = 13.sp) }
+                    if (how) {
+                        if (c.headline.isNotEmpty()) Text(c.headline, fontSize = 13.sp)
+                        if (c.memory.isNotEmpty()) Text(c.memory, fontSize = 13.sp, color = tokens.muted)
+                    }
+                }
+            }
         }
     }
 }

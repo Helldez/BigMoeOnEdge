@@ -56,17 +56,15 @@ std::atomic<unsigned> g_seq{0};
 
 } // namespace
 
-bool inspect_remote_model(HttpFetch & net,
-                          const std::string & endpoint,
-                          const HfRef & ref,
-                          const HfModel & model,
+bool inspect_remote_files(HttpFetch & net,
+                          const std::vector<RemoteFile> & files,
                           const std::string & token,
                           const std::string & scratch_dir,
                           const std::string & models_dir,
                           const LoadedSession & loaded,
                           json & out,
                           std::string & error) {
-    if (model.files.empty()) {
+    if (files.empty()) {
         error = "the model has no files";
         return false;
     }
@@ -87,17 +85,17 @@ bool inspect_remote_model(HttpFetch & net,
 
     // Every shard's header, as truncated files under their own names: the probe resolves the
     // rest of a split set from the first shard's name, as the load does.
-    const fs::path first = dir / fs::u8path(base_name(model.files.front().path));
-    for (size_t i = 0; i < model.files.size(); ++i) {
-        const HfFile & f = model.files[i];
-        if (!fetch_head(net, hf_resolve_url(endpoint, ref, f.path), i == 0 ? k_first_shard_bytes : k_other_shard_bytes,
-                        f.bytes, token, dir / fs::u8path(base_name(f.path)), error))
+    const fs::path first = dir / fs::u8path(files.front().name);
+    for (size_t i = 0; i < files.size(); ++i) {
+        const RemoteFile & f = files[i];
+        if (!fetch_head(net, f.url, i == 0 ? k_first_shard_bytes : k_other_shard_bytes, f.bytes, token,
+                        dir / fs::u8path(f.name), error))
             return false;
     }
     GgufHeaderFacts header = probe_gguf_header(first.u8string().c_str());
-    if (!header.ok && model.files.front().bytes > k_first_shard_bytes) {
-        if (!fetch_head(net, hf_resolve_url(endpoint, ref, model.files.front().path), k_first_shard_retry_bytes,
-                        model.files.front().bytes, token, first, error))
+    // A size that is not known (0) may be past the first guess as well.
+    if (!header.ok && (files.front().bytes == 0 || files.front().bytes > k_first_shard_bytes)) {
+        if (!fetch_head(net, files.front().url, k_first_shard_retry_bytes, files.front().bytes, token, first, error))
             return false;
         header = probe_gguf_header(first.u8string().c_str());
     }
@@ -107,14 +105,15 @@ bool inspect_remote_model(HttpFetch & net,
     const HardwareProfile hw = probe_hardware(nullptr);
     const fs::space_info space = fs::space(fs::u8path(models_dir), ec);
     const uint64_t disk_free = ec ? 0 : (uint64_t) space.available;
-    uint64_t present = 0;
-    for (const HfFile & f : model.files) {
-        const fs::path p = fs::u8path(models_dir) / fs::u8path(base_name(f.path));
+    uint64_t bytes = 0, present = 0;
+    for (const RemoteFile & f : files) {
+        bytes += f.bytes;
+        const fs::path p = fs::u8path(models_dir) / fs::u8path(f.name);
         if (f.bytes > 0 && file_size_or_zero(p) == f.bytes) present += f.bytes;
     }
 
     FitInputs in;
-    in.file_bytes = model.bytes;
+    in.file_bytes = bytes;
     in.present_bytes = present;
     in.disk_free = disk_free;
     in.dense_bytes = m.dense_bytes;
@@ -135,45 +134,79 @@ bool inspect_remote_model(HttpFetch & net,
     in.session_held = loaded.held_bytes;
     const FitVerdict v = fit_verdict(in);
 
-    out = json{
-        {"repo", ref.repo},
-        {"revision", ref.revision},
-        {"name", model.name},
-        {"quant", model.quant},
-        {"bytes", model.bytes},
-        {"files", model.files.size()},
-        {"complete", model.complete()},
-        {"model", json{{"readable", header.ok},
-                       {"arch", header.arch},
-                       {"role", role},
-                       {"type", header.type},
-                       {"block_count", header.n_block},
-                       {"is_moe", in.is_moe},
-                       {"n_expert", header.n_expert},
-                       {"n_expert_used", header.n_expert_used},
-                       {"n_layer", m.n_layer},
-                       {"n_moe_layer", m.n_moe_layer},
-                       {"n_embd", m.n_embd},
-                       {"dense_bytes", m.dense_bytes},
-                       {"resident_bytes", in.dense_bytes - std::min(in.mapped_bytes, in.dense_bytes)},
-                       {"expert_bytes", m.expert_bytes},
-                       {"token_cycle_bytes", m.token_cycle_bytes},
-                       {"largest_dense_tensor", m.largest_dense_tensor},
-                       {"has_mtp", m.has_mtp},
-                       {"streamable", in.streamable},
-                       {"refusal", in.refusal}}},
-        {"machine", json{{"residency_budget", hw.residency_budget},
-                         {"budget_if_loaded", v.budget},
-                         {"loaded_model", loaded.model},
-                         {"loaded_held", loaded.held_bytes},
-                         {"memory_total", hw.memory_total},
-                         {"disk_free", disk_free},
-                         {"present_bytes", present}}},
-        {"verdict", json{{"downloadable", v.downloadable}, {"mode", v.mode}, {"disk", v.disk}, {"memory", v.memory}}}};
-    // The verdict in one code and one line (hf_repo.h: FitVerdict), for a UI to show as they are.
-    out["verdict"]["fit"] = v.fit;
-    out["verdict"]["headline"] = v.headline;
+    out["model"] = json{{"readable", header.ok},
+                        {"arch", header.arch},
+                        {"role", role},
+                        {"type", header.type},
+                        {"block_count", header.n_block},
+                        {"is_moe", in.is_moe},
+                        {"n_expert", header.n_expert},
+                        {"n_expert_used", header.n_expert_used},
+                        {"n_layer", m.n_layer},
+                        {"n_moe_layer", m.n_moe_layer},
+                        {"n_embd", m.n_embd},
+                        {"dense_bytes", m.dense_bytes},
+                        {"resident_bytes", in.dense_bytes - std::min(in.mapped_bytes, in.dense_bytes)},
+                        {"expert_bytes", m.expert_bytes},
+                        {"token_cycle_bytes", m.token_cycle_bytes},
+                        {"largest_dense_tensor", m.largest_dense_tensor},
+                        {"has_mtp", m.has_mtp},
+                        {"streamable", in.streamable},
+                        {"refusal", in.refusal}};
+    out["machine"] = json{{"residency_budget", hw.residency_budget},
+                          {"budget_if_loaded", v.budget},
+                          {"loaded_model", loaded.model},
+                          {"loaded_held", loaded.held_bytes},
+                          {"memory_total", hw.memory_total},
+                          {"disk_free", disk_free},
+                          {"present_bytes", present}};
+    // The verdict as sentences and codes (hf_repo.h: FitVerdict), for a UI to show as they are.
+    out["verdict"] = json{{"downloadable", v.downloadable},
+                          {"mode", v.mode},
+                          {"disk", v.disk},
+                          {"memory", v.memory},
+                          {"fit", v.fit},
+                          {"headline", v.headline},
+                          {"summary", v.summary},
+                          {"tone", v.tone}};
     return true;
+}
+
+bool inspect_catalog_entry(HttpFetch & net,
+                           const CatalogEntry & entry,
+                           const std::string & scratch_dir,
+                           const std::string & models_dir,
+                           const LoadedSession & loaded,
+                           json & out,
+                           std::string & error) {
+    std::vector<RemoteFile> files;
+    uint64_t bytes = 0;
+    for (const CatalogFile & f : entry.files) {
+        files.push_back({f.name, f.url, f.bytes});
+        bytes += f.bytes;
+    }
+    out = json{
+        {"id", entry.id}, {"title", entry.title}, {"quant", entry.quant}, {"bytes", bytes}, {"files", files.size()}};
+    return inspect_remote_files(net, files, "", scratch_dir, models_dir, loaded, out, error);
+}
+
+bool inspect_remote_model(HttpFetch & net,
+                          const std::string & endpoint,
+                          const HfRef & ref,
+                          const HfModel & model,
+                          const std::string & token,
+                          const std::string & scratch_dir,
+                          const std::string & models_dir,
+                          const LoadedSession & loaded,
+                          json & out,
+                          std::string & error) {
+    std::vector<RemoteFile> files;
+    for (const HfFile & f : model.files)
+        files.push_back({base_name(f.path), hf_resolve_url(endpoint, ref, f.path), f.bytes});
+    out = json{
+        {"repo", ref.repo},     {"revision", ref.revision},    {"name", model.name},          {"quant", model.quant},
+        {"bytes", model.bytes}, {"files", model.files.size()}, {"complete", model.complete()}};
+    return inspect_remote_files(net, files, token, scratch_dir, models_dir, loaded, out, error);
 }
 
 } // namespace bmoe::server

@@ -52,16 +52,14 @@ class SetupTest {
     private val catalog = listOf(entry("small", 5), entry("mid", 9), entry("big", 18), entry("huge", 30), entry("mine", 10, added = true))
 
     @Test
-    fun offersTheLargestThatFitsBesideTheSmallestThatDoesNot() {
+    fun offersEveryShippedModelAndSuggestsTheLargestThatFits() {
         val ram = 12_000_000_000L
-        assertEquals(listOf("mid", "big"), Setup.pair(catalog, ram).map { it.id })
+        assertEquals(listOf("small", "mid", "big", "huge"), Setup.choices(catalog.reversed()).map { it.id })
         assertEquals("mid", Setup.recommended(catalog, ram)?.id)
-        // Nothing fits: the smallest is suggested, alone.
+        // Nothing fits: the smallest is suggested, among them all.
         assertEquals("small", Setup.recommended(catalog, 1)?.id)
-        assertEquals(emptyList<CatalogEntry>(), Setup.pair(catalog, 1))
-        // Everything fits, or the memory is unknown: one model, no pair.
-        assertEquals(emptyList<CatalogEntry>(), Setup.pair(catalog, 100_000_000_000L))
-        assertEquals(emptyList<CatalogEntry>(), Setup.pair(catalog, 0))
+        // One model: no list, the suggestion stands alone.
+        assertEquals(emptyList<CatalogEntry>(), Setup.choices(listOf(entry("small", 5), entry("mine", 10, added = true))))
         assertNull(Setup.recommended(listOf(entry("mine", 10, added = true)), 12_000_000_000L))
     }
 

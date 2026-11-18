@@ -1025,6 +1025,31 @@ Models and partial downloads in the old folder stay where they are, and are list
 that folder is among the scan folders. Local-only (`403`, `code: "local_only"`, from the network):
 it names a folder the server writes to.
 
+### `POST /api/models/inspect`
+
+Body `{"id": "<catalog id>"}`. What a catalog entry is on this machine before a byte of it is
+downloaded: the check [`POST /api/hf/inspect`](#post-apihfinspect) makes of a repository's model,
+asked by the entry's id and read from the entry's own files (the first tens of megabytes of each,
+through a range request), so a client never takes a URL apart to ask it.
+
+```json
+{"id": "gemma-4-26b-a4b-it-q4_0", "title": "Gemma-4-26B-A4B-it", "quant": "Q4_0", "bytes": 14618145824, "files": 1,
+ "model": {...}, "machine": {...},
+ "verdict": {"downloadable": true, "mode": "streams", "fit": "fits",
+             "headline": "Fits here: the experts stream from flash",
+             "summary": "Runs here. It is larger than the memory free now, so it reads the parts it needs from storage as it answers.",
+             "tone": "ok", "disk": "...", "memory": "..."}}
+```
+
+`model`, `machine` and `verdict` are those of `/api/hf/inspect`, field for field. The first run of
+every front-end asks this when a model is picked, the suggested one included, and shows
+`verdict.summary` in the colour of `verdict.tone`, with Download held while the answer is on its way
+and where `downloadable` is false. No token goes with the request, whatever the entry: an entry
+added from a link may be on any host, and a repository's token is for the repository alone, so an
+entry of a gated repository is not checked here (`502`). `404` (`code: "not_found"`) for an id no
+entry has, `502` (`code: "upstream"`) when a header could not be fetched: a client then says the
+check could not be made and lets the download go ahead, which has its own checks.
+
 ### `POST /api/models/download`
 
 Body `{"id": "<catalog id>"}`. Starts (or resumes) the download of every file of the entry into
@@ -1169,6 +1194,16 @@ floor is more than this process may hold), `no_disk` (the disk cannot take it), 
 `unknown` (the header did not parse, or it streams and the memory free here could not be read,
 which the headline says). A UI keeps no threshold of its own; it shows the line and
 colours by the code, and a code it does not know gets no colour.
+
+`verdict.summary` and `verdict.tone` are the same answer for a person who is not choosing an
+engine: one sentence with no engine term in it ("Runs here, whole in memory: the fastest answers.",
+"Runs here. It is larger than the memory free now, so it reads the parts it needs from storage as
+it answers.", "Too large for the memory free here now: it may not start, or answer very slowly.",
+"Not enough free storage here to download it."), and the tone it is said in: `ok`, `warn`, `err`,
+or `""` where nothing is claimed (the free memory could not be read, or the header did not parse).
+A first run shows these two, maps the tone to a colour and nothing else, and keeps `headline` and
+`memory` behind them for whoever asks how it was checked. The memory in question is what is free
+when the check is made, so the same model can read differently an hour later.
 
 The memory verdict answers "what happens if I load this", and a load unloads the model loaded now
 first. `residency_budget` is what this process may hold as measured now, with that model still

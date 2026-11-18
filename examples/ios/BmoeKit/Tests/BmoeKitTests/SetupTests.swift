@@ -1,7 +1,7 @@
 import XCTest
 @testable import BmoeKit
 
-/// The first run's pure parts: the time left (the web's `eta.test.ts`), the pair of models offered,
+/// The first run's pure parts: the time left (the web's `eta.test.ts`), the models offered,
 /// the step from the state, the facts line.
 final class SetupTests: XCTestCase {
     func testTheRateOverTheWindowAndTheTimeLeft() {
@@ -36,17 +36,15 @@ final class SetupTests: XCTestCase {
                       "files": [["name": .string("\(id).gguf"), "bytes": .int(gb * 1_000_000_000), "url": "https://example.com/m.gguf"]]])!
     }
 
-    func testThePairIsTheLargestThatFitsAndTheSmallestThatDoesNot() {
+    func testEveryShippedModelIsOfferedAndTheLargestThatFitsSuggested() {
         let catalog = [entry("a", 4), entry("b", 9), entry("c", 20), entry("d", 30), entry("x", 10, added: true)]
         let ram: Int64 = 12_000_000_000
-        XCTAssertEqual(Setup.pair(catalog, ramBytes: ram).map(\.id), ["b", "c"])
+        XCTAssertEqual(Setup.choices(catalog.reversed()).map(\.id), ["a", "b", "c", "d"])
         XCTAssertEqual(Setup.recommended(catalog, ramBytes: ram)?.id, "b")
-        // Nothing fits: the smallest is suggested, and there is no pair.
+        // Nothing fits: the smallest is suggested, among them all.
         XCTAssertEqual(Setup.recommended(catalog, ramBytes: 1), catalogMin(catalog))
-        XCTAssertEqual(Setup.pair(catalog, ramBytes: 1), [])
-        XCTAssertEqual(Setup.pair(catalog, ramBytes: 0), [])
-        XCTAssertEqual(Setup.kind(catalog[1], ramBytes: ram), "Fits in memory")
-        XCTAssertEqual(Setup.kind(catalog[2], ramBytes: ram), "Larger than memory")
+        // One model: no list, the suggestion stands alone.
+        XCTAssertEqual(Setup.choices([entry("a", 4), entry("x", 10, added: true)]), [])
     }
 
     private func catalogMin(_ c: [CatalogEntry]) -> CatalogEntry? { c.first { $0.id == "a" } }

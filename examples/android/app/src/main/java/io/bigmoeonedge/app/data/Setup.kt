@@ -3,7 +3,7 @@ package io.bigmoeonedge.app.data
 /**
  * The first run's choices and where the person is on its path (docs/screens.md, "First run"; the
  * web UI's ui/src/routes/Setup.svelte): the catalog entry suggested for this phone's memory, the
- * two offered side by side, and the step, which follows the model's state and never a button.
+ * ones to choose among, and the step, which follows the model's state and never a button.
  */
 object Setup {
     /** The catalog entries a first run offers: the shipped ones (not added at run time) with a size. */
@@ -17,16 +17,14 @@ object Setup {
     }
 
     /**
-     * Side by side, the two first runs this product offers: the largest model that fits in memory
-     * (the fastest answers) and the smallest that does not (what streaming from disk is for). Empty
-     * unless both exist and the memory is known.
+     * The entries a first run lets the person choose among: every one the catalog ships, the
+     * smallest first. What each is on this phone is the server's check of the one picked
+     * (ModelCheck.kt), not a guess made here from its size. Empty with fewer than two: the
+     * suggestion then stands alone.
      */
-    fun pair(catalog: List<CatalogEntry>, ramBytes: Long): List<CatalogEntry> {
-        if (ramBytes <= 0) return emptyList()
+    fun choices(catalog: List<CatalogEntry>): List<CatalogEntry> {
         val offered = offered(catalog)
-        val fits = offered.filter { it.bytes <= ramBytes }.maxByOrNull { it.bytes }
-        val big = offered.filter { it.bytes > ramBytes }.minByOrNull { it.bytes }
-        return if (fits != null && big != null) listOf(fits, big) else emptyList()
+        return if (offered.size < 2) emptyList() else offered.sortedBy { it.bytes }
     }
 
     /**

@@ -60,15 +60,13 @@ public enum Setup {
         return offered.min { $0.bytes < $1.bytes }
     }
 
-    /// Side by side, the two first runs this product offers: the largest model that fits in memory
-    /// (the fastest answers) and the smallest that does not (what streaming from disk is for).
-    /// Empty unless both exist and the memory is known.
-    public static func pair(_ catalog: [CatalogEntry], ramBytes: Int64) -> [CatalogEntry] {
-        guard ramBytes > 0 else { return [] }
+    /// The entries a first run lets the person choose among: every one the catalog ships, the
+    /// smallest first. What each is on this device is the server's check of the one picked
+    /// (ModelCheck.swift), not a guess made here from its size. Empty with fewer than two: the
+    /// suggestion then stands alone.
+    public static func choices(_ catalog: [CatalogEntry]) -> [CatalogEntry] {
         let offered = offered(catalog)
-        guard let fits = offered.filter({ $0.bytes <= ramBytes }).max(by: { $0.bytes < $1.bytes }),
-              let big = offered.filter({ $0.bytes > ramBytes }).min(by: { $0.bytes < $1.bytes }) else { return [] }
-        return [fits, big]
+        return offered.count < 2 ? [] : offered.sorted { $0.bytes < $1.bytes }
     }
 
     /// Where the person is, from the model's state, never a button: 3 once the chosen model is on
@@ -78,17 +76,6 @@ public enum Setup {
         if loading || state == .onDevice || state == .loaded { return 3 }
         if state == .downloading || (state == .partial && !repick) { return 2 }
         return 1
-    }
-
-    /// Whether the entry fits in memory, and the line that says what that means here.
-    public static func fits(_ e: CatalogEntry, ramBytes: Int64) -> Bool { e.bytes <= ramBytes }
-    public static func kind(_ e: CatalogEntry, ramBytes: Int64) -> String {
-        fits(e, ramBytes: ramBytes) ? "Fits in memory" : "Larger than memory"
-    }
-    public static func meaning(_ e: CatalogEntry, ramBytes: Int64) -> String {
-        fits(e, ramBytes: ramBytes)
-            ? "Fits in this phone’s memory: the fastest answers."
-            : "Larger than this phone’s memory: it runs, reading the parts it needs from disk as it goes. Slower, and a bigger model."
     }
 
     /// The facts the app knows about this device, in one line; what it does not know is left out.

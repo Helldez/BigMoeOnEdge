@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { downloadSummary, fitTone, libraryRows, recommendedEntry, sameModelOnDisk } from './library';
+import { downloadSummary, fitTone, libraryRows, recommendedEntry, sameModelOnDisk, setupChoices } from './library';
 import type { CatalogEntry, DownloadEvent, LocalModel } from './types';
 
 // Made-up names and sizes: nothing here depends on a real model.
@@ -184,5 +184,11 @@ describe('recommendedEntry', () => {
     expect(recommendedEntry([e('small', 14 * GB), e('big', 20 * GB)], 8 * GB)?.id).toBe('small');
     expect(recommendedEntry([e('mine', 1 * GB, true), e('big', 20 * GB)], 8 * GB)?.id).toBe('big');
     expect(recommendedEntry([], 8 * GB)).toBeNull();
+  });
+  it('offers every shipped model to choose among, the smallest first', () => {
+    const catalog = [e('big', 20 * GB), e('small', 4 * GB), e('mine', 1 * GB, true), e('mid', 14 * GB), e('empty', 0)];
+    expect(setupChoices(catalog).map((c) => c.id)).toEqual(['small', 'mid', 'big']);
+    // One model: no list, the suggestion stands alone.
+    expect(setupChoices([e('small', 4 * GB), e('mine', 1 * GB, true)])).toEqual([]);
   });
 });

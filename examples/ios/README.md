@@ -50,8 +50,8 @@ BmoeKit/        the client side with no UI: the API client, the event stream, th
 The screens follow [docs/screens.md](../../docs/screens.md) as the web UI does: Models is one list
 where the files the server lists and the catalog's entries are merged by file, each row with one
 state and one primary action. With nothing on the device and nothing coming, a first visit opens
-there on the first run (`Models/SetupView.swift`, docs/screens.md "First run"): 1 Pick a model (the
-largest catalog entry that fits in memory beside the smallest larger than it), 2 its download with
+there on the first run (`Models/SetupView.swift`, docs/screens.md "First run"): 1 Pick a model (every
+catalog entry, the one picked checked by the server before its download), 2 its download with
 the time left (`ETA` in BmoeKit), 3 the model loads by itself and the conversation opens once the
 engine is ready, with three questions to try; Import a file, More models and Skip stay under it; Hugging Face is Find, Pick, Check, Download with the server's verdict as the headline; a
 direct https link becomes a catalog entry on the server (`POST /api/models/url`, its sizes from a
