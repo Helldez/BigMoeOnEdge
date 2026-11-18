@@ -21,6 +21,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 
 using namespace bmoe;
@@ -1140,12 +1141,12 @@ int main() {
                 // graph (more of the experts on the card, nothing to gather twice), and one whose prompts
                 // are long and answers short takes whichever its passes cost less on.
                 MeasuredKnobs chat_mix;
-                chat_mix.mix_requests = 5;
+                chat_mix.mix_requests = 4000; // enough of one kind to be this machine's mix
                 chat_mix.mix_gen_tokens = 500;
                 const Plan chat_priced = plan_with(chat_mix);
                 dw = find(chat_priced, "ubatch");
                 check(chat_priced.config.n_ubatch == (int) narrow && chat_priced.config.trial.width_side == 0 && dw &&
-                          dw->reason.find("the requests this machine served") != std::string::npos,
+                          dw->reason.find("requests served here") != std::string::npos,
                       "width, a machine that only decodes: the narrow graph, priced", dw ? dw->reason : "none");
                 // Both decodes measured on served loads, no long prompt: the measurements decide, and the
                 // load times nothing more (it still records its requests against the narrow width).
@@ -1180,6 +1181,57 @@ int main() {
                           dw && dw->reason.find("corrected by the width measured") != std::string::npos,
                       "width, one side measured: the price corrected, the same side served, nothing timed again",
                       dw ? dw->reason : "none");
+                // A handful of requests does not swing the width: they are weighed with the default mix,
+                // so the plan stays where it was with nothing served. Measured on two 16 GB cards: four
+                // requests read alone as 1181 prompt tokens, the next load's three short ones as 34, and
+                // the graph went narrow and lost 41% of a 4.6k-token prompt's prefill.
+                MeasuredKnobs few;
+                few.mix_requests = 3;
+                few.mix_gen_tokens = 171;
+                few.mix_wide_prompt_tokens = 34;
+                const Plan few_plan = plan_with(few);
+                dw = find(few_plan, "ubatch");
+                check(few_plan.config.n_ubatch == first.config.n_ubatch && dw &&
+                          dw->reason.find("3 requests served here, weighed with the default mix") != std::string::npos,
+                      "width, three short requests recorded: weighed with the default mix, the width holds",
+                      dw ? dw->reason : "none");
+                // One long prompt among short ones is passes at the narrow width, which their mean hides:
+                // 1181 tokens a request fit one pass, a 4.6k-token prompt every fourth request does not.
+                // With experts left off the card at both widths, the same mean prompt is priced a pass's
+                // gather dearer at the narrow width where a quarter of the prompts are long, and the same
+                // at the full width, which they fit.
+                HardwareProfile slow_gather = no_tier;
+                slow_gather.devices[0].upload_gibs = 0.5;
+                Placement most_off = roomy_layers; // more experts off the card than the narrow graph frees
+                for (uint32_t il = 8; il < 32; ++il)
+                    most_off.host_expert_layers.push_back(il);
+                // The seconds the plan's line gives each width's prefill: "... prefills that prompt in W s,
+                // at N tokens at R tok/s and X s (...".
+                const auto prefill_priced = [&](double long_tokens, double & wide_s, double & narrow_s) {
+                    ModelProfile mm = model;
+                    mm.knobs.mix_requests = 4000;
+                    mm.knobs.mix_gen_tokens = 190;
+                    mm.knobs.mix_wide_prompt_tokens = 1181;
+                    mm.knobs.width_narrow = (int) narrow;
+                    mm.knobs.usage_requests = 4000;
+                    mm.knobs.usage_gen_tokens = 190;
+                    mm.knobs.usage_long_prompt_tokens = long_tokens;
+                    const Plan wp = plan_run(big_ctx, slow_gather, mm, most_off, PlanRequest{}, unbounded);
+                    const Decision * x = find(wp, "ubatch");
+                    wide_s = narrow_s = 0.0;
+                    if (!x) return;
+                    const size_t w = x->reason.find("prefills that prompt in "), n = x->reason.find(" tok/s and ", w);
+                    if (w == std::string::npos || n == std::string::npos) return;
+                    wide_s = std::atof(x->reason.c_str() + w + 24);
+                    narrow_s = std::atof(x->reason.c_str() + n + 11);
+                };
+                double wide_none = 0, narrow_none = 0, wide_long = 0, narrow_long = 0;
+                prefill_priced(0.0, wide_none, narrow_none);
+                prefill_priced(1155.0, wide_long, narrow_long);
+                check(narrow_none > 0.0 && narrow_long > narrow_none * 1.1 && wide_long == wide_none,
+                      "width, the same mean prompt: long prompts are more passes at the narrow width only",
+                      std::to_string(narrow_none) + " " + std::to_string(narrow_long) + " " +
+                          std::to_string(wide_long));
                 // A narrow width other than the one measured: the measurements do not answer it.
                 MeasuredKnobs stale = k;
                 stale.width_narrow = (int) narrow * 2;
@@ -2950,7 +3002,7 @@ int main() {
             ModelProfile m = model;
             m.knobs.shared_device_tps = on;
             m.knobs.no_shared_device_tps = off;
-            m.knobs.mix_requests = 4;
+            m.knobs.mix_requests = 4000;
             m.knobs.mix_gen_tokens = 400;
             return plan_run(base_cfg(), h, m, shared, PlanRequest{}, PlannerPolicy::defaults());
         };
@@ -3062,7 +3114,7 @@ int main() {
               "shared device, a dense model held in memory: priced the same way, the cores timed");
         dense.knobs.shared_device_tps = 27.0;
         dense.knobs.no_shared_device_tps = 21.0;
-        dense.knobs.mix_requests = 4;
+        dense.knobs.mix_requests = 4000;
         dense.knobs.mix_gen_tokens = 400;
         const Plan dm = plan_run(base_cfg(), roomy, dense, shared, PlanRequest{}, PlannerPolicy::defaults());
         check(dm.config.n_gpu_layers == 33 && dm.config.device_split.size() == 1,

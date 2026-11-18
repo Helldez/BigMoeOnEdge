@@ -168,6 +168,13 @@ struct PlannerPolicy {
     // 22-47% (measured on 8, 12 and 2x16 GB cards) would pass as free.
     float mix_prompt_tokens_default = 4096.0f;
     float mix_gen_tokens_default = 300.0f;
+    // How many requests the default mix counts as beside the ones a load recorded. A load's record is
+    // the last session's alone and often a handful of requests, and a decision fixed at load that
+    // followed it swung with it: on two 16 GB cards four requests, one of them 4.6k tokens long, read
+    // as "1181 prompt tokens", the next load's three short ones as "34", and the graph went narrow and
+    // lost 41% of the long prompt's prefill. Weighed in with the default as this many requests, a few
+    // requests move the mix a little and a machine that serves hundreds of one kind is read as that.
+    float mix_prior_requests = 16.0f;
 
     static PlannerPolicy defaults() { return PlannerPolicy(); }
 };

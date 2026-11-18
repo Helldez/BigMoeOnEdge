@@ -32,8 +32,10 @@ Semantic Versioning.
   on two 16 GB cards with a 284B model. A request is now priced at each width as its decoded tokens
   at that width's decode, plus its prompt at the device's prompt-wide rate and, for every pass, the
   upload of the experts that are not on the device, which is what those three cards measured between
-  one pass and three. The request is the machine's own once a load has answered one (the recorded
-  mix), and 4096 prompt tokens against 300 decoded on a first load.
+  one pass and three. The request is the machine's own (the mix its last load recorded, with a long
+  prompt's passes counted from its own length rather than the mean prompt's), weighed with a default
+  of 4096 prompt tokens against 300 decoded that counts as 16 requests, so a few requests do not
+  swing the width from one load to the next.
 - **A model held in memory moves to a device that shares it where a request is priced shorter
   there**, from the rates each processor probed on a real layer one token wide and as wide as a
   prompt, on the first load. It was decided by timing both sides as loads of their own. Once both

@@ -560,10 +560,16 @@ serves the side it prices faster, and lets the served load time that side:
   (`prompt_gather_seconds`), which a narrower graph pays once per pass. The shared-memory device's is
   the same request at the rates each processor probed on a real layer of the model, one token wide
   and as wide as a prompt.
-- **A request is this machine's own.** The prompt tokens prefilled and the tokens decoded per
-  request are recorded on every load that answers one (`MeasuredKnobs::mix_*`). A first load has
-  none and weighs `PlannerPolicy::mix_prompt_tokens_default` against `mix_gen_tokens_default` (4096
-  and 300). On the decode alone, as the width was decided before, a narrow graph won wherever it
+- **A request is this machine's own, weighed with a default.** The prompt tokens prefilled and the
+  tokens decoded per request are recorded on every load that answers one (`MeasuredKnobs::mix_*`),
+  and weighed with `PlannerPolicy::mix_prompt_tokens_default` against `mix_gen_tokens_default` (4096
+  and 300) counted as `mix_prior_requests` requests (16), which is all a first load has
+  (`request_mix`). A record is the last session's alone: on two 16 GB cards four requests, one of
+  them 4.6k tokens long, read alone as 1181 prompt tokens and the next load's three short ones as
+  34, and the graph went narrow. A request's passes at a width are counted from its long prompts'
+  tokens (`usage_long_prompt_tokens`), a prompt of l tokens taking about l / w + 1/2 of them, since
+  the mean prompt hides them: 1181 tokens fit one pass, the 4.6k-token prompt behind that mean
+  takes three. On the decode alone, as the width was decided before, a narrow graph won wherever it
   decoded faster: +40% decode and -40% on a 4.6k-token prompt on an 8 GB card, -28% on a 12 GB one,
   -47% on two 16 GB cards with a 284B model.
 - **A served load measures.** The plan names the side it serves (`KnobTrialConfig::device_tier`,
