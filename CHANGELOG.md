@@ -77,7 +77,10 @@ Semantic Versioning.
   once per model and engine (`--trial-shared-device`, `MeasuredKnobs::shared_device_tps`). A device is
   timed only where it computed the host's results on a real layer of the model and its compute buffer
   fits beside it; the plan says whether its weights stay the file's mapping or are copied into the
-  device's buffers, the same memory either way. The Plan screen shows the device on the prompt and
+  device's buffers, the same memory either way. A model with no experts is asked on every regime, and
+  the room the system's reclaim asks for is weighed against what the move adds (the buffer, and the
+  weights where they are copied), since the cores hold such a model whole on every plan; a refusal
+  always says why, with the figures. The Plan screen shows the device on the prompt and
   tokens lanes when it runs the model. Measured: a 1.7B model decoded 28% faster on a laptop iGPU
   through Vulkan than on its cores (#602), and a MoE held in memory 54 against 40 tok/s on a 16 GB
   unified-memory laptop's GPU (#380), while published runs put an older iGPU 37% behind its cores
