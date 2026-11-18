@@ -123,7 +123,8 @@ live**, at the foot of the screen, names them. The server groups split sets, rea
 architecture, says whether this build streams it and whether the file is a model at all; the app
 reads no gguf itself. Nothing below needs a storage permission except the last option.
 
-1. **Built-in catalog** (both flavors): the models this engine is measured on, one tap each. The
+1. **Built-in catalog** (both flavors): six models from 5 GB to 300 GB, a small dense one that runs
+   whole in memory up to MoE models whose experts stream, one tap each. The
    catalog is the project's one data file, `catalog/models.json`, shipped in the APK and read by
    the server; the app does the transfers itself (a phone has no `curl` for the server to run), in
    a foreground worker that survives the app being killed and resumes an interrupted transfer.
@@ -163,7 +164,7 @@ server deletes the entry's `.part` files, in its models directory only). These a
 UI's words and behaviour too (`docs/server-api.md`, "Models"). A link an older build downloaded on
 its own, with no entry, has no row to resume from, so its **Cancel** deletes its partial file.
 
-### Sharded models (gpt-oss-120b, DeepSeek V4 Flash, Qwen3.8-Flash-Next)
+### Sharded models (gpt-oss-120b, DeepSeek V4 Flash and V4.1 Flash, Qwen3.8-Flash-Next)
 
 Models above Hugging Face's 50 GB per-file limit ship as several shard files
 (`-00001-of-0000N.gguf`). The engine streams a split set natively: the repository listing shows
@@ -171,13 +172,14 @@ the set as one model by its first shard, the shards download one at a time (each
 row shows one progress bar over the set, and the model list offers the set once, by that first
 shard, which is the file the engine opens. For adb-pushed models push every
 shard to the same directory. Mind the space: DeepSeek V4 Flash UD-IQ2_M is ~91 GB on disk,
-Qwen3.8-Flash-Next UD-IQ3_XXS ~82 GB and its Q2_K build ~80 GB.
+Qwen3.8-Flash-Next UD-IQ3_XXS ~82 GB and the catalog's Q2_K build ~83 GB, and the catalog's
+DeepSeek V4.1 Flash Q2_K_S ~298 GB.
 
 Qwen3.8-Flash-Next needs **Dense weights = pinned** (pinned, dma-buf) in Settings. Its dense side is
 4.3 GB and every token walks it: with `anon` the kernel swaps it to zram and single tokens stall
 for 10-20 s, with `mmap` it is refaulted from flash every token. Its 51B n-gram table is held back
-automatically and stays mmap'd whatever the setting. The planner chooses this where it can; the
-catalog's Q2_K build has a 2.4 GB dense side instead, which is ~2 GB the expert cache can have back.
+automatically and stays mmap'd whatever the setting. The planner chooses this where it can. The
+catalog's Q2_K build keeps about as much in memory (4357 MiB by its header), so the same holds.
 
 ## Loading, and the plan
 
