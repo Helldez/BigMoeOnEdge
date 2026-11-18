@@ -99,9 +99,29 @@ Flash-Next 22.6 / 19.4, with every answer's text identical to the release pack's
    C): decode +7-27%, prefill +8-15%. Most of the gap to Strata on this model is elsewhere.
 
 Not changed by #646, still open:
-- Flash-Next on box A: a 2.0 GB device cache with 1.8 GB of the card's memory left free, and a
-  1024-token graph (193 tok/s prefill against Strata's 1023).
-- Flash-Next against Strata on every box (Strata 1.5-3.5x), above all where the card is small.
+- **Flash-Next on box A: a small device cache beside free card memory.** What the card held while
+  serving, from the load's own log:
+
+  | On the 8 GB card | MiB |
+  |---|---:|
+  | dense part of every layer (model buffer) | 3210 |
+  | KV cache, recurrent state, rotation | 374 |
+  | compute buffers (graph 1024 tokens wide) | 477 |
+  | device expert cache: 1576 slots, 6.4% of the 32400 MiB of experts, 3.3 tokens' worth | 2079 |
+  | the CUDA runtime's own | ~260 |
+  | **used / free** | **6400 / 1792** |
+
+  The cache is sized from the capacity fitter's placement: the experts of the whole layers it put
+  on the card (3 layers of 675 MiB) plus the remainder it reports under one more layer (55 MiB).
+  The fitter fills a card in whole layers and leaves llama.cpp's default margin of 1 GiB per
+  device; the rest of the free 1.8 GB is the difference between what it projected and what the
+  load allocated. A cache fills by the expert, not the layer, so that memory could hold about
+  2.7 more layers' worth of experts. Strata on the same card used 7364 MiB. The graph is 1024
+  tokens wide because the device's buffers at the full width are past its share where layers'
+  experts stay on the host; on this card that costs the prompt: 193 tok/s prefill against
+  Strata's 1023.
+- Flash-Next against Strata on every box (Strata 1.4-3.5x), above all where the card is small: the
+  experts' host copy of #646 is a part of it, not most.
 
 ## Plan records
 
