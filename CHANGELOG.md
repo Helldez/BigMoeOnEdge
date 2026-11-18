@@ -111,6 +111,22 @@ Semantic Versioning.
   (`self_path`), and the release workflow now installs each command-line archive the way
   `install.sh` does and fails when the server started through the link registers other backends than
   started beside them.
+### Added
+- **A model held in memory runs on an integrated GPU, or on Apple's unified-memory GPU, where it
+  measured faster there.** On a machine whose device reads the host's own memory the plan set the
+  capacity fitter's placement aside, since it counts that one pool twice, and left every layer on the
+  cores without measuring the device. Where the whole model is held in memory, MoE or dense, that is
+  now a decision across loads like the device tier: one load times the decode on the cores, one with
+  every layer on the device, and the faster stays by the margin, the device's prompt rate deciding
+  where the two decode level. A calibration times both before the first answer, so a machine pays it
+  once per model and engine (`--trial-shared-device`, `MeasuredKnobs::shared_device_tps`). A device is
+  timed only where it computed the host's results on a real layer of the model and its compute buffer
+  fits beside it; the plan says whether its weights stay the file's mapping or are copied into the
+  device's buffers, the same memory either way. The Plan screen shows the device on the prompt and
+  tokens lanes when it runs the model. Measured: a 1.7B model decoded 28% faster on a laptop iGPU
+  through Vulkan than on its cores (#602), and a MoE held in memory 54 against 40 tok/s on a 16 GB
+  unified-memory laptop's GPU (#380), while published runs put an older iGPU 37% behind its cores
+  (#375, [hardware-planning.md](docs/hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it)).
 
 ## [0.43.1] - 2026-11-14
 

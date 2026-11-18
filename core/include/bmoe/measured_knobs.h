@@ -62,6 +62,15 @@ struct MeasuredKnobs {
     // with no miss computed on the host at all, and on a 12 GB card 0.77 took it from 18.5 to 21.2.
     double cpu_share_tps = 0.0;
     double no_cpu_share_tps = 0.0;
+
+    // Where a model held in memory runs on a machine whose devices read the host's own memory, decided
+    // across loads (planner.cpp, choose_shared_device): the decode rate with every layer on the device
+    // and on the cores, in tokens per second, 0 when that side was not measured. Capacity does not
+    // decide it, since the model is in the same memory either way, and no probe of a part of the model
+    // predicts the whole: on one unified-memory laptop the one-token probe read the cores 60% ahead while
+    // the model itself decoded 54 tok/s on the GPU against 40 on the cores.
+    double shared_device_tps = 0.0;
+    double no_shared_device_tps = 0.0;
     // The rate the share is held against at graph width `n_ubatch`: its own timing of every miss
     // uploaded, else the width's timing of the cache at that width (the width is decided on the cache
     // before the share is weighed), else the tier's. One answer for the plan that arms a share and for
@@ -145,6 +154,7 @@ struct MeasuredKnobs {
     int device_cache_unviable = 0, no_device_cache_unviable = 0;
     int cpu_share_unviable = 0, no_cpu_share_unviable = 0;
     int wide_unviable = 0, narrow_unviable = 0;
+    int shared_device_unviable = 0, no_shared_device_unviable = 0;
 
     // What came of each prefill device a load armed for this model, on this machine and engine, one
     // word per device: `verdict` 1 where the session kept it, -1 where its check on this model refused
@@ -204,7 +214,9 @@ struct MeasuredKnobs {
                (wide_prefill_tps > 0.0) + (narrow_prefill_tps > 0.0) + usage_requests + (width_held >= 0) +
                (decode_compute_s > 0.0) + (decode_hit >= 0.0) + mix_requests + (host_prefill_tps > 0.0) +
                (device_cache_unviable > 0) + (no_device_cache_unviable > 0) + (wide_unviable > 0) +
-               (narrow_unviable > 0) + (cpu_share_unviable > 0) + (no_cpu_share_unviable > 0) + (int) prefill.size();
+               (narrow_unviable > 0) + (cpu_share_unviable > 0) + (no_cpu_share_unviable > 0) +
+               (shared_device_tps > 0.0) + (no_shared_device_tps > 0.0) + (shared_device_unviable > 0) +
+               (no_shared_device_unviable > 0) + (int) prefill.size();
     }
 };
 
@@ -224,9 +236,9 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
 // unmeasured, so the record of the load before holds the rest.
 void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKnobs & rec);
 
-// The decode rate of a load that ran the side `trial` names (KnobTrialConfig::device_tier or
-// width_side), put where a plan reads it. One decision per load: the device tier where it names one,
-// else the graph width, so a rate never answers two questions measured under one placement. The
+// The decode rate of a load that ran the side `trial` names (KnobTrialConfig::device_tier, width_side,
+// cpu_share_side or shared_device_side), put where a plan reads it. One decision per load, in that
+// order, so a rate never answers two questions measured under one placement. The
 // session's own timing and a load-time calibration both put a rate here, so the plan reads one
 // mapping whichever measured it. Nothing when `trial` names no side.
 void record_side_rate(const KnobTrialConfig & trial, double tokens_per_second, MeasuredKnobs & rec);

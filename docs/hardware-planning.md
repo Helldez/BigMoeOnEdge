@@ -987,8 +987,9 @@ seen to fire.
 What this does not do: it measures a matmul, not a prefill. The loaders that fill the device's
 slots from flash, and the storage under them, are not in the probe, so on a machine whose storage
 is the bottleneck the real gain is smaller than the ratio. And it does not arm a device where the whole
-model fits and nothing streams, because there the device would need a resident copy of every
-layer, which is the capacity fitter's question and not this one.
+model fits and nothing streams: there the question is where the whole model runs, which the capacity
+fitter answers on a device with memory of its own, and a timed decision answers on one that shares this
+memory ([A model held in memory, on a device that shares it](#a-model-held-in-memory-on-a-device-that-shares-it)).
 
 ## The storage probe
 
@@ -1270,6 +1271,51 @@ block's expert matrices as `mul_mat_id`, top-k per token, and its other matrices
 the file's own bytes, on the host and on every device. A host and a device are always compared on the
 same experiment: the real layer where both ran it, the synthetic GEMV (which also sweeps the thread
 count) otherwise.
+
+### A model held in memory, on a device that shares it
+
+On a machine whose accelerator reads the host's own memory (an integrated GPU, Apple's unified
+memory), the capacity fitter's placement is set aside, because its arithmetic counts that one pool
+twice (`placement-declined`). That settles capacity and nothing else: where the whole model is held
+in memory (`fits`, or a model with no experts that fits), running it on the device frees nothing and
+costs nothing, and what is left is which engine runs it faster. `choose_shared_device` asks that of
+the model itself, as a decision across loads like the device tier
+(`KnobTrialConfig::shared_device_side`, `MeasuredKnobs::shared_device_tps`): one load times the
+decode on the cores, the placement every load had before this rule; one times it with every layer
+and the output head on the device, named in `device_split` so no second backend that drives the same
+silicon takes a share; the plan after keeps the faster by `min_backend_win`. Where the two decode
+level, inside the margin either way, the device's rate on a prompt-wide real layer of the model
+(`wide_matmul_gibs`, with the host's results) decides: a move that costs no decode and no memory and
+prefills faster is a win. A calibration times both sides before the first answer is served, and a
+served load never opens the device side unmeasured (`servable`).
+
+Measured rather than derived, because nothing smaller predicts it. On a 16 GB unified-memory
+laptop the one-token probe read the cores 60% ahead of the GPU (109 GiB/s against 67), while a
+64-expert cut of Qwen3.6-35B-A3B held in memory decoded 54 tok/s on the GPU against 40 on the
+cores, and Granite-3.1-3B-A800M 165-170 against 121-124 (#380). An AMD laptop APU through Vulkan
+decoded a 1.7B model 28% faster on its iGPU than on its cores and prefilled it 1.7-3x faster (#602);
+published runs of other machines go from an older Intel iGPU through OpenCL 37% slower than its
+cores to Max-class unified memory several times faster, where the cores cannot reach the bus the
+GPU does. A rule over any of those figures would be wrong on some of them.
+
+A device is a candidate only where each of these is a fact: it computed the host's results on one
+real layer of this model, one token wide and as wide as a prompt (`identity_ok`, `wide_identity_ok`:
+the prompt runs there too, and on a phone a GPU matched the host one token wide and wrote garbage on a
+prompt), it runs the model's expert matmul in the file's own
+format, it takes the mapped weights without a repack (the invariant above), and the compute buffer
+the fitter projected for it fits beside the model in the same pool with the `fits` exit's air. A
+device that fails any of them is never timed, and the plan names which one failed. Where the
+backend can wrap the file's mapping (`host_ptr_verified`, Metal does) the weights stay the mapping
+and the device reads them in place; where it cannot (Vulkan and OpenCL advertise no such buffer),
+llama.cpp copies them into the device's own buffers, which are this same memory, and leaves the
+mapping's pages for the system to reclaim. Either way the model occupies the pool once, and the
+plan says which. A load that cannot open the model on the device is recorded as not viable and the
+cores keep it, as for every other decision across loads.
+
+Out of its scope: a model that streams. Its experts live in memory the streamer reserved, which no
+device is handed (`note_expert_compute`), so there the device keeps the prompt alone (the prefill
+plan above) and the decode stays on the cores. A device with memory of its own goes through the
+fitter as before.
 
 ## Architecture
 

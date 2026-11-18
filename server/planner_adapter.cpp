@@ -181,6 +181,8 @@ bool PlanOutcome::other_side_measured() const {
     if (t.cpu_share_side >= 0)
         return (t.cpu_share_side == 1 ? k.cpu_share_baseline_tps(basis->facts.plan.config.n_ubatch) : k.cpu_share_tps) >
                0.0;
+    if (t.shared_device_side >= 0)
+        return (t.shared_device_side == 1 ? k.no_shared_device_tps : k.shared_device_tps) > 0.0;
     return k.width_narrow == t.width_narrow && (t.width_side == 1 ? k.narrow_decode_tps : k.wide_decode_tps) > 0.0;
 }
 

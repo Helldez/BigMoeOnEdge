@@ -1218,9 +1218,11 @@ so a stage or a role the server adds reaches every UI with no UI change:
 
 - `summary.sentence` is what the plan decided, in a sentence; `summary.lanes` which device names
   compute the prompt and the tokens (a device holding layers in memory of its own is on the
-  tokens lane beside the host). The prompt lane is the prefill device where one is armed; else the
-  devices holding layers, where the run lets the backends take a wide graph's matmuls
-  (`offloads_wide_matmuls`, the rule the session loads by); else the host.
+  tokens lane beside the host; a device that shares the host's memory and runs the whole model, the
+  plan's `shared-device` decision, is on both lanes alone). The prompt lane is the prefill device
+  where one is armed; else that whole-model device; else the devices holding layers, where the run
+  lets the backends take a wide graph's matmuls (`offloads_wide_matmuls`, the rule the session loads
+  by); else the host.
 - `predicted` is decode as the plan priced it, the figures `bmoe-cli --auto` prints after a run:
   `s_per_token`; `cache_hit_pct` where there is a cache, the hit rate the cost model credited the
   cache with (`Allocation::cache_hit_credited`), not the cache's share of the experts: read off
