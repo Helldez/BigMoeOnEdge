@@ -11,7 +11,7 @@ Semantic Versioning.
   entry borrowed Material's `Build` icon, which reads as tools or settings; it now draws Material's
   "checklist", the same picture the iOS composer uses for it.
 
-## [0.44.1] - 2026-11-17
+## [0.44.1] - 2026-11-18
 
 ### Changed
 - **The plan decides by calculation what a load cannot switch, and no load is opened to try a side.**
