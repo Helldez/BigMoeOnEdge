@@ -10,6 +10,13 @@ Semantic Versioning.
 - **Android: "Choose from options" in the composer's + menu shows a checklist, not a wrench.** The
   entry borrowed Material's `Build` icon, which reads as tools or settings; it now draws Material's
   "checklist", the same picture the iOS composer uses for it.
+- **A split model downloaded shard by shard no longer lists as "runs mapped" until the server
+  restarts.** The listing reads a split set's headers from every shard, and kept that reading
+  against the first shard's size and time alone. Listed while a later shard was still arriving, the
+  set read as unreadable, and when that shard landed the first one had not changed, so the stale
+  reading stayed: a 62 GiB Qwen3.8-Flash-Next showed as not streaming. The reading is now kept
+  against every shard present, and the web UI and the iOS app, like the Android app, say how a
+  model runs only once its set is complete and its header read.
 
 ## [0.43.2] - 2026-11-16
 

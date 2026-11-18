@@ -8,6 +8,7 @@
 
 #include "event_bus.h"
 #include "json_util.h"
+#include "model_files.h"
 
 #include <atomic>
 #include <chrono>
@@ -172,9 +173,10 @@ private:
 
     mutable std::mutex m_;
     std::map<std::string, std::unique_ptr<Job>> jobs_;
+    // A reading kept with the files it read (model_set_stamp): every shard of a split set, since
+    // the reading takes each one's header, so a shard that lands after it was taken retakes it.
     struct FactsCacheEntry {
-        uint64_t size = 0;
-        long long mtime = 0;
+        std::vector<FileStamp> stamp;
         ModelFacts facts;
     };
     std::map<std::string, FactsCacheEntry> facts_cache_;

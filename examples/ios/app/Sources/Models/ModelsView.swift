@@ -178,7 +178,8 @@ struct ModelsView: View {
             HStack(spacing: 6) {
                 if let q = e?.quant, !q.isEmpty { Badge(text: q) }
                 Badge(text: label, color: colour)
-                if let m {
+                // How it runs is the header's to say: nothing while shards are missing or it is unread.
+                if let m, m.complete, !m.arch.isEmpty {
                     Badge(text: m.streamable ? "streams" : "plain mmap", color: m.streamable ? Palette.accent : Palette.warn)
                 }
                 if e?.added == true { Badge(text: "added") }

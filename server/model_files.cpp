@@ -90,15 +90,50 @@ std::vector<ModelFiles> group_model_files(const std::vector<std::string> & names
     return out;
 }
 
+namespace {
+
+// The names of the regular files directly in `where`: what grouping into models starts from.
+std::vector<std::string> file_names_in(const std::filesystem::path & where) {
+    std::vector<std::string> names;
+    std::error_code ec;
+    for (const auto & ent : std::filesystem::directory_iterator(where, ec))
+        if (ent.is_regular_file(ec)) names.push_back(ent.path().filename().u8string());
+    return names;
+}
+
+FileStamp stamp_of(const std::filesystem::path & p) {
+    std::error_code ec;
+    FileStamp s;
+    s.name = p.filename().u8string();
+    const auto size = std::filesystem::file_size(p, ec);
+    s.size = ec ? 0 : (uint64_t) size;
+    const auto mtime = std::filesystem::last_write_time(p, ec);
+    s.mtime = ec ? 0 : (long long) mtime.time_since_epoch().count();
+    return s;
+}
+
+} // namespace
+
+std::vector<FileStamp> model_set_stamp(const std::string & path) {
+    namespace fs = std::filesystem;
+    const fs::path p = fs::u8path(path);
+    const std::string name = p.filename().u8string();
+    for (const ModelFiles & m : group_model_files(file_names_in(p.parent_path()))) {
+        if (m.first != name) continue;
+        std::vector<FileStamp> out;
+        for (const std::string & f : m.files)
+            out.push_back(stamp_of(p.parent_path() / fs::u8path(f)));
+        return out;
+    }
+    // Not the first file of a model the folder makes (a lone shard, a missing file): itself alone.
+    return {stamp_of(p)};
+}
+
 std::vector<ModelFiles> scan_model_files(const std::string & dir) {
     namespace fs = std::filesystem;
     std::vector<ModelFiles> out;
     const auto add_folder = [&out](const fs::path & where, const std::string & folder) {
-        std::vector<std::string> names;
-        std::error_code ec;
-        for (const auto & ent : fs::directory_iterator(where, ec))
-            if (ent.is_regular_file(ec)) names.push_back(ent.path().filename().u8string());
-        for (ModelFiles & m : group_model_files(names)) {
+        for (ModelFiles & m : group_model_files(file_names_in(where))) {
             m.folder = folder;
             out.push_back(std::move(m));
         }
