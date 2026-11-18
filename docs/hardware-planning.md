@@ -885,10 +885,25 @@ tokens grew the cache from 12.4 to 17.6 GB and decode by 7-12%, and cost a 9756-
 24-28% (1560-1668 to 1189-1201 tok/s). The exception is a narrower graph after which the whole model
 fits the device: that wins prefill and decode alike, since every expert is then read from device
 memory and a prompt gathers nothing into a cache. Only a placement can say it, so `probe_and_plan`
-asks the fitter at the width the device's share allows (`device_share_width`) and keeps the narrower
-graph only where every expert is placed on the devices. On the same card, Qwen3.6-35B Q4_K_M at a
+asks the fitter at halves of the probed width, widest first, down to the floor, and keeps the first
+width at which every expert is placed on the devices. The search ends early where a halving moves
+no layer's experts onto the device, since a model that comes no closer will not fit narrower, so a
+model far larger than the card costs one extra fit. On the same card, Qwen3.6-35B Q4_K_M at a
 16384 context: 8192 tokens wide, the whole model fit, and decode went from 137-139 to 155-156 tok/s
-and a 9714-token prefill from 4789 to 5594 tok/s.
+and a 9714-token prefill from 4789 to 5594 tok/s. The device's share of its memory
+(`device_share_width`) was the one width asked before 0.45.1. It is a policy fraction and says
+nothing of what the model leaves free: Strata's UD-Q4_K_XL of the same model, one layer's experts
+larger with its MTP block, left one layer behind the cache at 8192, which was also its share, and fit
+whole at 4096 (decode 133.6 to 147.3 tok/s, a 4.6k prefill 5277 to 6190 tok/s,
+[bench-data](bench-data/2026-11-18-rented-0.45/README.md)).
+
+Where the whole model fits, the fitter leaves llama.cpp's own "every layer" (`n_gpu_layers = -1`) in
+the placement, and every rule reads that as layers on a device, as it reads a count. Until 0.45.1
+the width rules read it as none: on a 24 GB card that Qwen3.6-35B Q4_K_M fills, the device bound
+did not apply, the graph went as wide as the 16384 context, its 3.8 GiB of buffers did not fit the
+card and the context could not be made. The session now narrows the graph by halves where the
+context's buffers do not fit (down to llama.cpp's own physical batch, or an image's tokens), says so
+in its log, and the server says why a load failed in its log and in `/health`.
 
 Where every layer is on a card, the experts do not all fit and the card's buffers are past its share,
 the width is a trade between the answer and the prompt: a narrower graph leaves the experts more of

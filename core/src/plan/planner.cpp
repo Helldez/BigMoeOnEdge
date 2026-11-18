@@ -1011,10 +1011,15 @@ void choose_device_tier(Planning & s) {
 // Where the device cache's misses come from. A resident expert is a page of the file's mapping,
 // ordinary memory, and a device's backend copies ordinary memory through a staging buffer of its
 // own; from a buffer of the backend's own host type it may copy directly (bmoe/hardware_profile.h,
-// `upload_host_buffer_gibs`). The copy of the experts that makes the difference costs their size in
-// RAM again and cannot be paged out, so it is made where the gain was measured on this device, past
-// the margin, and the host holds the copy beside everything else it was already charged for. The
-// experts streamed instead live in the streamer's slots, which this does not move.
+// `upload_host_buffer_gibs`). The copy is made where the gain was measured on this device, past the
+// margin. It takes the place of the experts' pages in the mapping, which host_all already charges:
+// once the tensors point at the copy nothing reads those pages, and the session hands them back
+// (Session::Impl::stage_experts_in_host_buffer), so the host holds the experts once, not twice. What
+// changes is that the copy cannot be paged out, which the regime's margin already covers. Charging
+// both sides refused the copy on every 64 GB machine a 32 GB expert set runs on (three rented cards,
+// Qwen3.8-Flash-Next Q2_0): misses arrived at half the rate, decode 20.7 tok/s on a 12 GB card where
+// a machine with the room for both took the copy and decoded 29-32. The experts streamed instead
+// live in the streamer's slots, which this does not move.
 void choose_expert_staging(Planning & s) {
     MoeStreamConfig & moe = s.p.config.moe;
     if (moe.device_cache_mb <= 0 || s.p.regime != Regime::Fits || s.req.is_pinned("expert-host-buffer")) return;
@@ -1038,17 +1043,20 @@ void choose_expert_staging(Planning & s) {
         return;
     }
     const uint64_t copy = s.host_expert_bytes;
-    if (s.host_all + copy > s.usable) {
+    // The copy in place of the mapped experts host_all counts (see above): the same total, held once.
+    const uint64_t held = s.host_all - std::min(s.host_all, s.host_expert_bytes) + copy;
+    if (held > s.usable) {
         s.note("expert-host-buffer", "false", Source::Derived, "The device cache uploads from the file's mapping.",
-               std::string(rates) + ", but the copy's " + mib_s(copy) + " MiB beside the " + mib_s(s.host_all) +
-                   " MiB the host already holds is past the " + mib_s(s.usable) + " MiB it may");
+               std::string(rates) + ", but with the copy's " + mib_s(copy) + " MiB in place of the mapped experts " +
+                   "the host would hold " + mib_s(held) + " MiB, past the " + mib_s(s.usable) + " MiB it may");
         return;
     }
     moe.expert_host_buffer = dev->name;
     s.note("expert-host-buffer", dev->name, Source::Measured,
            "The experts copied into " + dev->name + "'s own host memory, for the cache's misses.",
-           std::string(rates) + "; the copy takes " + mib_s(copy) + " MiB, inside the " + mib_s(s.usable) +
-               " MiB the host may hold with the " + mib_s(s.host_all) + " MiB it already does");
+           std::string(rates) + "; the copy's " + mib_s(copy) + " MiB takes the place of the experts' pages in " +
+               "the file's mapping, which are handed back, so the host holds " + mib_s(held) + " MiB of the " +
+               mib_s(s.usable) + " it may");
 }
 
 // Who computes the device cache's misses. With every expert on the device the cores compute none, and
@@ -1536,7 +1544,10 @@ bool width_across_loads(Planning & s, uint32_t full) {
 // plan itself arms for the prefill is decided later, and bound_prefill_width holds the graph then.
 bool device_computes_graph(const Planning & s) {
     const bool own = !devices_share_host_memory(s.hw) && s.hw.device_local_memory() > 0;
-    const bool layers = own && s.placement.fitted && s.placement.n_gpu_layers > 0;
+    // n_gpu_layers is -1 where the fitter placed every layer (llama.cpp's "all"), so "a layer on a
+    // device" is any count but zero. Read as > 0, a model that fills a 24 GB card whole was planned
+    // as if no device computed it: its graph went as wide as the context, past the card's memory.
+    const bool layers = own && s.placement.fitted && s.placement.n_gpu_layers != 0;
     const bool cache = s.p.config.moe.device_cache_mb > 0 || s.p.config.trial.device_tier == 1;
     return layers || cache || s.p.config.prefill.enabled();
 }
@@ -1579,7 +1590,7 @@ void choose_graph_width(Planning & s) {
     // context: the full width reserved 11.8 GiB of device buffers, the fitter placed 0 of 41 layers and
     // the decode ran on the host at 12.5 tok/s; at 10240 tokens it placed all 41 and decoded at 75-81.
     const bool device_short = device_memory > 0 && s.placement.fitted && s.placement.device_compute_per_token > 0 &&
-                              (uint32_t) s.placement.n_gpu_layers <= s.model.n_layer;
+                              s.placement.n_gpu_layers >= 0 && (uint32_t) s.placement.n_gpu_layers <= s.model.n_layer;
     // The narrowest graph: llama.cpp's own physical batch, or the most tokens one image takes where
     // its tokens must go in one pass (RunConfig::graph_width_floor).
     // Where a device computes the graph, the image floor is held to the device's bound: the bound wins.
@@ -1769,7 +1780,7 @@ Regime residency_regime(Planning & s) {
     {
         const RunConfig & c = s.p.config;
         const bool devices_wanted =
-            c.device_use == DeviceUse::All || (c.device_use == DeviceUse::Auto && placement.n_gpu_layers > 0);
+            c.device_use == DeviceUse::All || (c.device_use == DeviceUse::Auto && placement.n_gpu_layers != 0);
         s.projector_on_device = s.model.projector_bytes > 0 && devices_wanted;
         s.projector_host = s.projector_on_device && !s.devices_share_host_memory ? 0 : s.model.projector_bytes;
     }

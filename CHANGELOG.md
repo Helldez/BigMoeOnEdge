@@ -7,6 +7,32 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Fixed
+- **A model that fills a card with memory of its own loads again.** Where the whole model fits, the
+  capacity fitter leaves llama.cpp's "every layer" (`n_gpu_layers = -1`), and the graph-width rules
+  read it as no layer on a device: the device's bound on a pass did not apply and the graph went as
+  wide as the context. On a 24 GB card, Qwen3.6-35B-A3B Q4_K_M at a 16384 context asked 3.8 GiB of
+  compute buffers more than the card had, the context could not be made and `bmoe-server` stayed up
+  with no model and nothing in its log. Every rule now reads -1 as every layer (the device split, the
+  projector's room and the card's spare memory with it), so the graph is held to the device's bound
+  and the model loads. Machines whose devices share the host's
+  memory (phones, Apple silicon, integrated GPUs) never place layers this way and are unchanged
+  ([hardware-planning.md](docs/hardware-planning.md)).
+- **A narrower graph where the whole model then fits the card is found where it is one halving
+  away.** The fitter was asked at one width only, the device's share of its memory; it is now asked
+  at halves of the probed width, widest first, until the whole model fits or a halving brings no
+  layer closer. On a 24 GB card, Qwen3.6-35B-A3B UD-Q4_K_XL (the file with its MTP block) fit whole
+  at 4096 tokens where 8192 left a layer's experts behind the cache: decode 133.6 to 147.3 tok/s, a
+  4.6k-token prefill 5277 to 6190.
+- **The experts' copy for a device cache's misses is charged once.** The copy into the device
+  backend's own host memory (`--expert-host-buffer`) was charged beside the experts' pages in the
+  file's mapping, which it replaces, so every 64 GB machine with a 32 GB expert set refused it and
+  uploaded misses at half the rate (Qwen3.8-Flash-Next Q2_0 on three rented cards). The plan now
+  charges the copy in their place, and the session hands the mapping's pages back once the tensors
+  point at the copy ([backends.md](docs/backends.md)).
+- **A context whose compute buffers do not fit narrows its graph instead of failing the load**, by
+  halves down to llama.cpp's own physical batch (or an image's tokens), with a warning in the log.
+  And `bmoe-server` says why a load failed, in its log and in `GET /health`, where it answered only
+  "no model is loaded".
 - **`GET /health` answers without the API key, as llama-server's does.** With `--api-key` set it
   answered 401, so a supervisor, a start script or a load balancer that asks it before it holds the
   key read a ready server as down. `GET` and `HEAD` on `/health` and `/v1/health` now skip the key

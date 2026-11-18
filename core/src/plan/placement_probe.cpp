@@ -220,12 +220,18 @@ Placement probe_placement(const char * model_path,
     pl.n_gpu_layers = n_dev_local ? mparams.n_gpu_layers : 0;
     // The room left for the projector is a cost of the device only where the run will use one: with
     // no layer placed the session opens without devices and the library loads it on the host.
-    if (pl.n_gpu_layers > 0) pl.device_projector_bytes = projector_reserved;
+    // -1 is llama.cpp's "every layer", which the fitter leaves where the whole model fits: a layer is
+    // on a device for any count but zero, and with one device it holds every slot (the layers and
+    // the output).
+    if (pl.n_gpu_layers != 0) pl.device_projector_bytes = projector_reserved;
     // The fitter writes one layer count per device into tensor_split only when there are several;
     // with one, every placed layer is that device's.
-    if (pl.n_gpu_layers > 0) {
+    if (pl.n_gpu_layers != 0) {
+        const float all_slots = (float) (model.n_layer + 1);
         for (size_t i = 0; i < devs.size(); ++i) {
-            const float n = devs.size() > 1 ? tensor_split[i] : (float) pl.n_gpu_layers;
+            const float n = devs.size() > 1       ? tensor_split[i]
+                            : pl.n_gpu_layers < 0 ? all_slots
+                                                  : (float) pl.n_gpu_layers;
             if (n > 0.0f) pl.device_split.emplace_back(ggml_backend_dev_name(devs[i]), (uint32_t) n);
         }
     }
@@ -308,7 +314,7 @@ Placement probe_placement(const char * model_path,
             // The remainder of a card the fitter placed layers on: its free memory, as the fitter
             // read it, less the placement and the margin it was told to leave there (the fitter's
             // own, plus the projector's room on the first device).
-            if (pl.n_gpu_layers > 0 && i < devs.size() && used > 0) {
+            if (pl.n_gpu_layers != 0 && i < devs.size() && used > 0) {
                 const char * name = ggml_backend_dev_name(devs[i]);
                 const bool placed = name && std::any_of(pl.device_split.begin(), pl.device_split.end(),
                                                         [&](const auto & e) { return e.first == name; });

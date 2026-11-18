@@ -14,6 +14,7 @@
 
 #include "bmoe/config.h"
 #include "bmoe/allocate.h"
+#include "bmoe/auto_plan.h"
 #include "bmoe/backend_choice.h"
 #include "bmoe/planner.h"
 #include "bmoe/probe.h"
@@ -1040,6 +1041,59 @@ int main() {
             check(bounded.placement.compute_width == pol.ubatch_max_device,
                   "width: the bounded width's buffers are the ones charged",
                   std::to_string(bounded.placement.compute_width));
+            // Where the whole model fits, the fitter leaves llama.cpp's own "every layer", -1. It is the same
+            // placement: a device computes the graph, and the bound holds. Read as "no layer", the graph
+            // went as wide as the context on a card the model filled, and the context could not be made.
+            Placement whole_all = whole;
+            whole_all.n_gpu_layers = -1;
+            const Plan bounded_all = plan_run(big_ctx, card, model, whole_all, PlanRequest{});
+            check((uint32_t) bounded_all.config.graph_width() == pol.ubatch_max_device,
+                  "width: every layer as llama.cpp's -1 is a device computing the graph, bounded the same",
+                  std::to_string(bounded_all.config.graph_width()));
+
+            // Every layer on the card and one layer's experts behind the cache at the probed width: the
+            // fitter is asked at halves of it, widest first, and the first width that places the whole
+            // model is taken, whatever the device's share of its memory says. Fits read from the facts,
+            // as a re-fit is (AutoPlan::placement_at_width), so no fitter runs here.
+            {
+                RunConfig ctx16 = big_ctx;
+                const uint32_t probed = pol.ubatch_max_device;
+                Placement behind = whole.at_width(probed);
+                behind.device_compute_per_token = 1 * KiB; // its share is the probed width itself
+                behind.device_compute_bytes = (uint64_t) probed * behind.device_compute_per_token;
+                behind.host_expert_layers = {model.n_layer - 1};
+                AutoPlan facts;
+                facts.hw = card;
+                facts.model = model;
+                facts.placement = behind;
+                auto key_at = [&](uint32_t w) {
+                    AutoPlan::FitKey k;
+                    k.width = w;
+                    k.n_ctx = (uint32_t) ctx16.n_ctx;
+                    k.type_k = ctx16.cache_type_k;
+                    k.type_v = ctx16.cache_type_v;
+                    return k;
+                };
+                Placement fits_whole = behind.at_width(probed / 2);
+                fits_whole.host_expert_layers.clear();
+                facts.placement_at_width[key_at(probed / 2)] = fits_whole;
+                const Plan found = replan(facts, ctx16, PlanRequest{}, model.knobs);
+                const Decision * dw = find(found, "ubatch");
+                check(found.config.n_ubatch == (int) (probed / 2) && dw &&
+                          dw->brief.find("whole model fits") != std::string::npos,
+                      "width: a fit one halving under the probed width is found, past the device's share",
+                      dw ? std::to_string(found.config.n_ubatch) + ": " + dw->brief : "no decision");
+                // A halving that brings no layer's experts onto the device ends the search: the wide
+                // graph stands, and no narrower width is asked of the fitter.
+                AutoPlan stuck = facts;
+                stuck.placement_at_width.clear();
+                stuck.placement_at_width[key_at(probed / 2)] = behind.at_width(probed / 2);
+                const Plan kept_wide = replan(stuck, ctx16, PlanRequest{}, model.knobs);
+                check(kept_wide.config.graph_width() == (int) probed && stuck.placement_at_width.size() == 1,
+                      "width: a halving no closer to fitting ends the search at one fit",
+                      std::to_string(kept_wide.config.graph_width()) + ", " +
+                          std::to_string(stuck.placement_at_width.size()) + " fits");
+            }
             // A graph already inside the bound is left as wide as the context.
             RunConfig small_ctx = big_ctx;
             small_ctx.n_ctx = 4096;
@@ -3614,11 +3668,23 @@ int main() {
             const Plan level_hb = plan_on(hb, half, PlanRequest{});
             check(level_hb.config.moe.expert_host_buffer.empty(),
                   "expert host buffer: inside the margin, the mapping stays");
+            // The copy takes the place of the mapped experts the host is already charged for: a host with
+            // room for the model and not for the experts twice still takes it, and says it holds them once.
+            // Charged twice, every 64 GB machine a 32 GB expert set ran on refused the copy and uploaded
+            // its misses at half the rate.
             hb.devices[0].upload_host_buffer_gibs = 48.0;
             hb.residency_budget = model.file_bytes + model.expert_bytes / 2;
             const Plan tight = plan_on(hb, half, PlanRequest{});
-            check(tight.config.moe.expert_host_buffer.empty(),
-                  "expert host buffer: a copy the host cannot hold is not made");
+            const Decision * et = find(tight, "expert-host-buffer");
+            check(tight.regime == Regime::Fits && tight.config.moe.expert_host_buffer == "discrete" && et &&
+                      et->reason.find("takes the place") != std::string::npos,
+                  "expert host buffer: the copy replaces the mapped experts, it is not charged beside them",
+                  et ? et->reason : "no decision");
+            // Short of room for the model itself, nothing is resident to copy from: no copy.
+            hb.residency_budget = model.dense_bytes * 2;
+            const Plan streamed = plan_on(hb, half, PlanRequest{});
+            check(streamed.regime != Regime::Fits && streamed.config.moe.expert_host_buffer.empty(),
+                  "expert host buffer: a host that cannot hold the model makes no copy");
         }
 
         // The cache is sized from the card's free memory, not from the fitter's whole layers: what the

@@ -248,6 +248,9 @@ void EngineHost::start_loader(const RunConfig & effective_in, std::optional<Open
                 state_ = State::Error;
                 error_ = error.empty() ? "the model failed to load" : engine_message(error);
                 model_ = nullptr;
+                // Said in the log too: a server started with a model and nobody at the UI otherwise
+                // shows only "no model is loaded" to the client that asks.
+                log_printf(LogLevel::Error, "the model failed to load: %s", error_.c_str());
             } else {
                 session_ = s;
                 routing_kept_ = 0; // a new session records afresh
@@ -361,6 +364,11 @@ std::string EngineHost::model_name() const {
     if (state_ == State::Loading && !requested_.model_path.empty())
         return std::filesystem::u8path(requested_.model_path).filename().u8string();
     return "";
+}
+
+std::string EngineHost::load_error() const {
+    std::lock_guard<std::mutex> lk(m_);
+    return state_ == State::Error ? error_ : std::string();
 }
 
 bool EngineHost::model_coming() const {

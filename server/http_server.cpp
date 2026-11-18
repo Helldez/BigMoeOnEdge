@@ -983,7 +983,9 @@ void register_llama_routes(httplib::Server & svr, App & app) {
     svr.Get(R"(/(?:v1/)?health)", [&](const httplib::Request &, httplib::Response & res) {
         if (app.host.ready()) return send_json(res, json{{"status", "ok"}});
         if (app.host.model_coming()) return send_error(res, 503, "Loading model", "loading");
-        send_error(res, 503, "no model is loaded", error_code::no_model);
+        const std::string why = app.host.load_error();
+        send_error(res, 503, why.empty() ? std::string("no model is loaded") : "no model is loaded: " + why,
+                   error_code::no_model);
     });
 
     svr.Get("/props", [&](const httplib::Request &, httplib::Response & res) {

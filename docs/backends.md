@@ -118,10 +118,13 @@ memory, and a device's backend copies ordinary memory through a staging buffer o
 backend may offer a host buffer type of its own (`ggml_backend_dev_host_buffer_type`: page-locked
 memory on CUDA, Vulkan and SYCL; none on Metal, OpenCL or RPC), and a copy from it can go straight to
 the device. The isolated device probe times the same upload from both (`upload_gibs`,
-`upload_host_buffer_gibs`), and where the second wins by the planner's margin and the host holds a
-second copy of the experts beside everything else, the plan names the device in
-`--expert-host-buffer`: at load the experts are copied into that buffer type, byte for byte in the
-file's layout, and the expert tensors pointed at the copy as the streamer points them at its slots.
+`upload_host_buffer_gibs`), and where the second wins by the planner's margin and the host holds the
+model, the plan names the device in `--expert-host-buffer`: at load the experts are copied into that
+buffer type, byte for byte in the file's layout, and the expert tensors pointed at the copy as the
+streamer points them at its slots. The copy takes the place of the experts' pages in the file's
+mapping, which are handed back once the tensors point at the copy, so the plan charges the experts
+once. Charged twice (until 0.45.1), the copy was refused on every 64 GB machine a 32 GB expert set
+ran on, and misses arrived at half the rate.
 The capture that finds them runs on the context the device cache then makes again, so the decode
 context carries no callback. Experts streamed from flash live in the streamer's slots, which this
 does not move.
