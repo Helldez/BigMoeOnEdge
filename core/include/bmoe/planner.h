@@ -128,7 +128,10 @@ struct PlannerPolicy {
 
     // ── the cost model's coefficients ───────────────────────────────────────────────
     // How many of a token's expert reads a cache serves, credited as this multiple of the FRACTION
-    // OF THE EXPERT SET IT HOLDS. 1.0 is the neutral reading: hold a tenth, serve a tenth.
+    // OF THE EXPERT SET IT HOLDS. 1.0 is the neutral reading: hold a tenth, serve a tenth. Only where
+    // the model's token cycle is unknown: otherwise a cache is credited this model's own curve, or the
+    // prior in token cycles that five models' curves agree on (prior_hit_curve, bmoe/routing.h), and
+    // the single-point argument below no longer holds.
     //
     // The relationship is really super-linear, because routing has strong temporal locality — the
     // one measurement on record is a cache holding 13% of the set serving 61.9% of the reads — so

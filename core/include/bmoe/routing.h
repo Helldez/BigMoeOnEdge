@@ -106,6 +106,20 @@ inline constexpr uint32_t k_hit_curve_points = 64;
 // streamer's per-expert bytes and the probe's per-tensor sum are the same bytes counted two ways.
 inline constexpr double k_routing_bytes_tolerance = 0.01;
 
+// The hit-rate curve a model is credited before its own routing was recorded: a curve in the cache's
+// size counted in TOKEN CYCLES (the bytes one token routes through), the unit in which the measured
+// curves of different models agree. In the share of the expert set they do not: a cache holding a
+// tenth of the set served 23% of OLMoE's lookups (64 experts, 8 routed) and 62% of Qwen3.6's (256, 8),
+// and at three token cycles every one of the five served 57-74%. Fitted on the replayed curves of five records (Gemma 4
+// 26B-A4B, OLMoE 1B-7B, Qwen3.6 35B-A3B at two quantizations, DeepSeek V4) and checked one model left
+// out at a time against the decode hits thirteen first loads measured: within 0.04 on average, where
+// the share of the set held was off by 0.45. Two constants, not a table, so a model none of those is
+// gets the shape they share rather than one of theirs. Never below the share held, which is what a
+// cache holding all of the set approaches.
+inline constexpr double k_prior_hit_ceiling = 0.92; // what the long-run lookups stay under: cold misses
+inline constexpr double k_prior_hit_cycles = 2.25;  // the cycles a cache needs for 63% of that
+HitCurve prior_hit_curve(uint64_t expert_bytes, uint64_t token_cycle_bytes, uint32_t points = k_hit_curve_points);
+
 // Check that `trace` describes this model routed at `n_expert_used` (the run's effective top-k), and
 // set `model.hit_curve` from it. A trace that does not fit leaves the curve absent with the reason in
 // `model.hit_curve.rejected`, so the plan is the one it would be without a trace.
