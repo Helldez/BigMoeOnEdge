@@ -3,7 +3,7 @@
 // A compute backend may keep a team of worker threads per calling thread: ggml's CPU backend does when
 // it is built with OpenMP, as it is on Linux and Windows. bmoe-cli calls the engine from one thread and
 // has one team, whose workers spin between ops and start the next one at once. A server called it from
-// every thread a request, a load, a plan or a calibration ran on, and each left a team behind: on an
+// every thread a request, a load or a plan ran on, and each left a team behind: on an
 // EPYC with two 24 GB cards, 122 more threads a request. With more workers than cores the runtime stops
 // spinning and parks them between ops, and every op then waits for its workers to wake: the same plan of
 // GLM-4.7 decoded at 9.2 tok/s in the server and 16.4 in the CLI, with 20 cores busy against 60. So the

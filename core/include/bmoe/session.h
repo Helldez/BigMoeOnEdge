@@ -15,7 +15,6 @@
 #pragma once
 
 #include "bmoe/chat.h"
-#include "bmoe/calibrate.h"
 #include "bmoe/config.h"
 #include "bmoe/decide.h"
 #include "bmoe/metrics.h"
@@ -106,27 +105,6 @@ enum class ThinkControl {
 // Stable lowercase name ("template", "prefill", "none") for logs and the telemetry protocol.
 const char * think_control_name(ThinkControl c);
 
-// A load-time calibration's turn (bmoe/calibrate.h, run_calibration_candidate): what it asks of the
-// decode, and what the decode measured. The turn is the ordinary one, every token through the same
-// hook, the same streamer and the same caches, so the rate is the rate a served answer would decode at.
-struct CalibrationTurn {
-    // Token ids the decode takes in order instead of choosing its own, as far as they go: the first
-    // candidate's answer, replayed so every candidate routes the same tokens. Past them, and with
-    // none, the decode chooses as it always does.
-    std::vector<int32_t> replay;
-    // The other side's timed steps, seconds per token (RateProbe::set_reference); 0: none.
-    double reference_lo = 0.0, reference_hi = 0.0;
-
-    // The decode's verdict: its rate (the median timed window, 0 when none was timed), its fastest
-    // and slowest timed step, the windows behind the rate, whether it was cut past the reference, and
-    // every token id it decoded. The turn ends as soon as the rate is known.
-    double tokens_per_second = 0.0;
-    double step_lo = 0.0, step_hi = 0.0;
-    int windows = 0;
-    bool cut = false;
-    std::vector<int32_t> tokens;
-};
-
 // Where a turn's prefill stands (GenerateRequest::on_prefill). `total` is the whole prompt in
 // tokens, `cached` the part the context already held (reused, not decoded again), `processed` the
 // part decoded so far this turn; `seconds` since the prefill began.
@@ -190,10 +168,6 @@ struct GenerateRequest {
     // Optional caller-owned stop flag. It must outlive generate(); the caller may raise it from
     // another thread. Unlike Session::cancel()'s latch, it is never reset by the session.
     const std::atomic<bool> * stop = nullptr;
-    // A calibration candidate's turn (CalibrationTurn), timed and then ended; null for every other.
-    // The knob trial and the decode's own cost are not fed by it: its windows time a candidate, not
-    // the load a person is served.
-    CalibrationTurn * calibration = nullptr;
     // Told where the prompt's prefill stands: once before the first piece (processed 0) and after
     // each piece decoded, on the generating thread. Nullable. A front-end shows it while a long
     // prompt goes in, the stretch of a turn with no token to show.
@@ -371,17 +345,5 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
-
-// The engine's candidate for a load-time calibration (bmoe/calibrate.h, RunCandidate): open `cfg` as
-// a session of its own, decode a short answer to one fixed generic instruction through the model's
-// own chat template, time it, and close it. The first candidate samples with a fixed seed and returns
-// its tokens; a later one replays them (`run.replay`), so both sides route the same tokens and differ
-// only in where the experts run. Speculation is off: a draft's acceptance would time the drafter, not
-// the placement. The decode ends once its rate is known: settled, then the windows a knob trial times
-// (KnobTrialPolicy), cut early once it is past the other side's range by the margin. Nothing it
-// decodes is kept, and nothing it times reaches a served session's record. `stop` (nullable) ends it
-// before a verdict, `aborted` set.
-CandidateTiming
-run_calibration_candidate(const RunConfig & cfg, const CalibrationRun & run, const std::atomic<bool> * stop = nullptr);
 
 } // namespace bmoe

@@ -45,10 +45,10 @@ struct MeasuredKnobs {
     int rounds = 0; // timed windows per candidate behind each verdict
 
     // The device tier, decided across loads rather than inside one: a device expert cache is fixed
-    // when a context is created, so the two placements cannot alternate within an answer. A load that
-    // arms the cache measures its decode rate; the next load runs the experts where the capacity
-    // fitter put them and measures that; the plan after keeps the faster (planner.cpp,
-    // choose_device_tier). Tokens per second, 0 when that side was not measured. A rule could not
+    // when a context is created, so the two placements cannot alternate within an answer. The plan
+    // prices both and names the faster (planner.cpp, choose_device_tier); the load that serves a side
+    // measures its decode rate as it serves, and a plan made after it reads that side at its
+    // measurement. Tokens per second, 0 when that side was not measured. A rule could not
     // tell the two apart: a cache holding a tenth of a 355B model's experts on a PCIe 3 link decoded
     // at 1.6 tok/s where the fitter's placement did 3.9, and a cache on a 12 GB card won 17.5 to 9.9.
     double device_cache_tps = 0.0;
@@ -73,9 +73,7 @@ struct MeasuredKnobs {
     double no_shared_device_tps = 0.0;
     // The rate the share is held against at graph width `n_ubatch`: its own timing of every miss
     // uploaded, else the width's timing of the cache at that width (the width is decided on the cache
-    // before the share is weighed), else the tier's. One answer for the plan that arms a share and for
-    // the front-end that asks whether a load may serve it, so neither takes a share as measured that
-    // the other does not. 0 where no side of the cache was timed.
+    // before the share is weighed), else the tier's. 0 where no side of the cache was timed.
     double cpu_share_baseline_tps(int n_ubatch) const {
         if (no_cpu_share_tps > 0.0) return no_cpu_share_tps;
         const double at_width =
@@ -143,14 +141,15 @@ struct MeasuredKnobs {
     double host_prefill_tps = 0.0;
 
     // Failed opens of each side of a decision across loads, on this machine and engine (the record's
-    // own scope): a calibration's candidate (bmoe/calibrate.h) or a served load that could not load
-    // that configuration, most likely short of device memory. A side with any is the loser in every
-    // plan made on the record, so no served load opens what is known not to open. Kept between loads,
-    // since a served load that met one would otherwise open it again and end with no model; retried
-    // only by a calibration, while the count is under CalibrationPolicy::unviable_retries, because a
-    // failure may be the machine's moment (another program holding the card's memory, a driver's
-    // hiccup). A rate measured for the side clears it. The width's two are for `width_narrow` only,
-    // as its rates are.
+    // own scope): a served load that could not load that configuration, most likely short of device
+    // memory, and opened the plan's other side in its place. Kept between loads, since the next plan
+    // would otherwise name the side again and every load would open it, fail, and fall back. A side
+    // loses in every plan made on the record once it has failed `unviable_max` times: one failure may
+    // be the machine's moment (another program holding the card's memory, a driver's hiccup), so the
+    // side is opened once more, with the other still behind it; two are the side. A rate measured for
+    // the side clears it, and a new engine version starts a new record. The width's two are for
+    // `width_narrow` only, as its rates are.
+    static constexpr int unviable_max = 2;
     int device_cache_unviable = 0, no_device_cache_unviable = 0;
     int cpu_share_unviable = 0, no_cpu_share_unviable = 0;
     int wide_unviable = 0, narrow_unviable = 0;
@@ -238,14 +237,15 @@ void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKno
 
 // The decode rate of a load that ran the side `trial` names (KnobTrialConfig::device_tier, width_side,
 // cpu_share_side or shared_device_side), put where a plan reads it. One decision per load, in that
-// order, so a rate never answers two questions measured under one placement. The
-// session's own timing and a load-time calibration both put a rate here, so the plan reads one
-// mapping whichever measured it. Nothing when `trial` names no side.
+// order, so a rate never answers two questions measured under one placement. Nothing when `trial`
+// names no side.
 void record_side_rate(const KnobTrialConfig & trial, double tokens_per_second, MeasuredKnobs & rec);
 // The same side, one more failed open on its count (MeasuredKnobs::*_unviable).
 void record_side_unviable(const KnobTrialConfig & trial, MeasuredKnobs & rec);
 // The failed-open count of the side `trial` names, null when it names none.
 int * unviable_count(const KnobTrialConfig & trial, MeasuredKnobs & rec);
+// Whether `trial` names a side of a decision across loads: the load serves that side and times it.
+bool names_side(const KnobTrialConfig & trial);
 
 // The record of this machine and engine, or null.
 const MeasuredKnobs * find_measured_knobs(const std::vector<MeasuredKnobs> & records,

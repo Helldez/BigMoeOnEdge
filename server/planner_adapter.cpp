@@ -7,6 +7,7 @@
 #if defined(BMOE_HAVE_PLANNER)
 #include "bmoe/auto_plan.h"
 
+#include <algorithm>
 #include <cstdio>
 #endif
 
@@ -152,38 +153,8 @@ static PlanOutcome outcome_of(const PlanBasis & b) {
 }
 #endif
 
-bool PlanOutcome::side_pending() const {
-    return ok && basis && bmoe::side_pending(basis->facts.plan);
-}
-
-bool PlanOutcome::calibration_due(const MeasuredKnobs & start) const {
-#if !defined(BMOE_HAVE_PLANNER)
-    (void) start;
-    return false;
-#else
-    if (!ok || !basis) return false;
-    const auto rules = [this](const MeasuredKnobs & k) {
-        return replan_rules(basis->facts, basis->cfg, basis->req, k);
-    };
-    // The plan as made where the record has not moved since; the rules again on the record where it has.
-    const bool same = format_measured_knobs({start}) == format_measured_knobs({basis->facts.model.knobs});
-    return bmoe::calibration_due(same ? basis->facts.plan : rules(start), start, rules);
-#endif
-}
-
-bool PlanOutcome::other_side_measured() const {
-    if (!side_pending()) return false;
-    const KnobTrialConfig & t = basis->facts.plan.config.trial;
-    const MeasuredKnobs & k = basis->facts.model.knobs;
-    if (t.device_tier >= 0) return (t.device_tier == 1 ? k.no_device_cache_tps : k.device_cache_tps) > 0.0;
-    // The uploaded side as the planner read it, so a share it armed on a borrowed rate is not served
-    // untimed (the plan's side 1 is then the share itself).
-    if (t.cpu_share_side >= 0)
-        return (t.cpu_share_side == 1 ? k.cpu_share_baseline_tps(basis->facts.plan.config.n_ubatch) : k.cpu_share_tps) >
-               0.0;
-    if (t.shared_device_side >= 0)
-        return (t.shared_device_side == 1 ? k.no_shared_device_tps : k.shared_device_tps) > 0.0;
-    return k.width_narrow == t.width_narrow && (t.width_side == 1 ? k.narrow_decode_tps : k.wide_decode_tps) > 0.0;
+bool PlanOutcome::names_side() const {
+    return ok && basis && bmoe::names_side(basis->facts.plan.config.trial);
 }
 
 PlanOutcome plan_other_side(const PlanOutcome & plan) {
@@ -191,53 +162,24 @@ PlanOutcome plan_other_side(const PlanOutcome & plan) {
     (void) plan;
     return {};
 #else
-    if (!plan.side_pending()) return {};
+    if (!plan.names_side()) return {};
     auto basis = std::make_shared<PlanBasis>(*plan.basis);
+    const KnobTrialConfig named = basis->facts.plan.config.trial;
+    // The side as one that lost: a count at the limit, whatever the record holds, on a copy of it that
+    // goes no further than this plan. The record this machine keeps is not touched here; a failed open
+    // is counted there once, by the load it happened to.
     MeasuredKnobs k = basis->facts.model.knobs;
-    record_side_unviable(basis->facts.plan.config.trial, k);
+    record_side_unviable(named, k);
+    if (int * n = unviable_count(named, k)) *n = (std::max)(*n, MeasuredKnobs::unviable_max);
     basis->facts.plan = replan(basis->facts, basis->cfg, basis->req, k);
-    basis->facts.model.knobs = k;
-    // A side of the other decision pending is no side known to open, unless it is the graph at the
-    // plan's own width, the one the measured side ran with (bmoe/calibrate.h, servable): its load times
-    // that width as it serves.
-    if (!bmoe::servable(basis->facts.plan)) return {};
+    const KnobTrialConfig & now = basis->facts.plan.config.trial;
+    if (now.device_tier == named.device_tier && now.width_side == named.width_side &&
+        now.cpu_share_side == named.cpu_share_side && now.shared_device_side == named.shared_device_side)
+        return {};
     PlanOutcome o = outcome_of(*basis);
     o.hardware = plan.hardware;
     o.basis = std::move(basis);
     return o;
-#endif
-}
-
-CalibrationOutcome calibrate_plan_outcome(const PlanOutcome & plan,
-                                          const MeasuredKnobs & start,
-                                          const RunCandidate & run,
-                                          const PlanStepFn & on_step) {
-    CalibrationOutcome c;
-#if !defined(BMOE_HAVE_PLANNER)
-    (void) plan;
-    (void) start;
-    (void) run;
-    (void) on_step;
-    return c;
-#else
-    if (!plan.ok || !plan.basis) return c;
-    auto basis = std::make_shared<PlanBasis>(*plan.basis);
-    // The record as it stands now: a served answer may have timed a side since the plan was made, and
-    // the plan on it may already ask for less.
-    basis->facts.plan = replan(basis->facts, basis->cfg, basis->req, start);
-    basis->facts.model.knobs = start;
-    std::function<void(const char *, int, int)> step;
-    if (on_step)
-        step = [&on_step](const char * key, int index, int count) { on_step(key, plan_step_label(key), index, count); };
-    const CalibrationResult & r = calibrate_plan(basis->facts, basis->cfg, basis->req, run, step);
-    c.ran = basis->facts.calibrated;
-    c.aborted = r.aborted;
-    c.complete = !bmoe::side_pending(basis->facts.plan);
-    c.knobs = basis->facts.model.knobs;
-    c.plan = outcome_of(*basis);
-    c.plan.hardware = plan.hardware;
-    c.plan.basis = std::move(basis);
-    return c;
 #endif
 }
 

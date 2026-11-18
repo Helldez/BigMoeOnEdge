@@ -702,12 +702,12 @@ struct KnobTrialConfig {
     // The device cache's CPU share, decided across loads (MeasuredKnobs::cpu_share_tps): 1 times the
     // decode with part of the cache's misses computed on the host (moe.device_cache_cpu_share, as the
     // plan priced it), 0 with every miss uploaded; -1 neither. A share is fixed when a context is
-    // created, so the two sides are timed as loads of their own, as the device tier's are.
+    // created, so a side is timed by a load that serves it, as the device tier's are.
     int cpu_share_side = -1;
     // Where a resident model runs on a machine whose devices read the host's own memory, decided across
     // loads (MeasuredKnobs::shared_device_tps): 1 times the decode with every layer on the device the
     // plan named (device_split), 0 with every layer on the cores; -1 neither. Which engine decodes the
-    // model is fixed when it is loaded, so the two sides are timed as loads of their own.
+    // model is fixed when it is loaded, so a side is timed by a load that serves it.
     int shared_device_side = -1;
 
     bool enabled() const {
@@ -881,13 +881,6 @@ struct RunConfig {
     PrefillDeviceConfig prefill; // prefill graphs on an accelerator; off by default
     DecideConfig decide;         // decide()'s prefix-state policy; off by default
     KnobTrialConfig trial;       // lossless knobs measured on the first real request; off by default
-
-    // Load-time calibration (bmoe/calibrate.h): where an automatic plan leaves a decision across
-    // loads pending (the device tier, the graph width), time each side as a short load of its own and
-    // serve the winner, instead of spending whole sessions on the slower side. A front-end that plans
-    // reads it; the engine does not. Off, those decisions are timed across loads as before. They only
-    // arise beside a device with memory of its own, so elsewhere this changes nothing.
-    bool calibrate = true;
 
     // Let llama.cpp's and ggml's DEBUG log lines through to stderr. Off, they are dropped: about
     // 1200 lines of graph bookkeeping per model load, which buried the engine's own output. For

@@ -24,7 +24,6 @@
 #include "feed_key.h"
 #include "hf_repo.h"
 #include "http_fetch.h"
-#include "idle_timer.h"
 #include "server_seams.h"
 #include "json_util.h"
 #include "listen_port.h"
@@ -100,12 +99,6 @@ constexpr std::chrono::seconds kEventPingInterval{15};
 // that reloads takes a new one at once: a client that closed its connection must not hold the old
 // one until the next ping. The same second a waiting chat turn looks with (TurnQueue::enter).
 constexpr std::chrono::seconds kEventLivenessPoll{1};
-// How long the server stays idle after an answer before a load-time calibration starts
-// (docs/measured-planning.md): the model is unloaded for it, and a request that arrives then waits
-// for a reload, so it waits out the gaps a conversation has. A person reads an answer before typing
-// the next message, and an agent runs its tools between turns; a minute covers both commonly enough
-// that the next turn arrives first, and is still short beside a session a calibration saves.
-constexpr std::chrono::seconds kCalibrationIdleDelay{60};
 // How often a server started by an app (--parent-pid) looks for it.
 constexpr std::chrono::seconds kParentPollInterval{1};
 // A client that vanishes without closing (a phone that drops off Wi-Fi) is invisible to the checks
@@ -481,12 +474,6 @@ struct App {
     // measurement and must not replace it.
     PlanOutcome load_plan;
     std::atomic<uint64_t> plan_seq{0};
-    // The load plan left a decision across loads to time, and its calibration has not run: it runs at
-    // the first idle point after an answer (maybe_calibrate). Under plan_m.
-    bool calibration_armed = false;
-    // The plan a calibration starts from: the load's plan as made, its side pending. The plan served
-    // (load_plan) may be the other side, where the pending one has not been proven to open. Under plan_m.
-    PlanOutcome calibration_plan;
 
     // The network, for reading a repository (http_fetch.h), and where its bytes in flight go.
     std::unique_ptr<HttpFetch> net;
@@ -531,51 +518,14 @@ struct App {
         static const ServerSeams none;
         const ServerSeams & seams = embedding.seams ? *embedding.seams : none;
         plan_fn = seams.plan;
-        calibrate_fn = seams.calibrate;
-        turn_ended = seams.turn_ended;
-        if (!calibrate_fn)
-            calibrate_fn = [](const PlanOutcome & p, const MeasuredKnobs & start, const std::atomic<bool> & stop,
-                              const PlanStepFn & on_step) {
-                return calibrate_plan_outcome(
-                    p, start,
-                    [&stop](const RunConfig & cfg, const CalibrationRun & run) {
-                        return run_calibration_candidate(cfg, run, &stop);
-                    },
-                    on_step);
-            };
-        if (seams.calibration_idle_delay.count() > 0) calibration_idle_delay = seams.calibration_idle_delay;
-        // An answer's end starts the wait for the idle point; the next answer starts it again.
-        host.set_turn_end_hook([this] {
-            if (stopping) return;
-            bool armed = false;
-            {
-                std::lock_guard<std::mutex> lk(plan_m);
-                armed = calibration_armed;
-            }
-            if (armed) idle.touch(calibration_idle_delay);
-            if (turn_ended) turn_ended(armed);
-        });
     }
 
-    // The planner and the calibration, the engine's own unless a test put others in (Embedding).
+    // The planner, the engine's own unless a test put another in (Embedding).
     std::function<PlanOutcome(const RunConfig &)> plan_fn;
-    std::function<CalibrationOutcome(
-        const PlanOutcome &, const MeasuredKnobs &, const std::atomic<bool> &, const PlanStepFn &)>
-        calibrate_fn;
-    std::chrono::milliseconds calibration_idle_delay{kCalibrationIdleDelay};
-    std::function<void(bool)> turn_ended; // a test's (ServerSeams::turn_ended)
-    // Waits out the quiet period after an answer, then looks for the idle point (maybe_calibrate).
-    IdleTimer idle{[this] { maybe_calibrate(); }};
 
-    // A calibration step runs on the host's loader thread and reaches into the members declared after
-    // the host (the routing store): the loader is joined while they are all alive, and no turn ending
-    // during the shutdown starts another.
-    ~App() {
-        stopping = true;
-        idle.stop();
-        host.unload();
-    }
-    std::atomic<bool> stopping{false};
+    // A load's fallback (fallback_for) runs on the host's loader thread and reaches into the members
+    // declared after the host (the routing store): the loader is joined while they are all alive.
+    ~App() { host.unload(); }
 
     // Each model's measurements, kept for the next plan of that file (bmoe/model_records.h).
     ModelRecords routing;
@@ -734,9 +684,8 @@ struct App {
     // load of the model the settings name has just been asked for. Otherwise why the request is
     // refused (503 `no_model`). The load is asked for under load_m, so the requests that arrive
     // together ask once and the others find it loading.
-    // A load under way, whoever started it (a person, --autoload, or a calibration the server runs
-    // when idle), is a model coming: the turn waits for it in the host's line, and a calibration stops
-    // for it (EngineHost::load_when_idle). Refusing it would answer 503 for a model seconds from ready.
+    // A load under way, whoever started it (a person or --autoload), is a model coming: the turn waits
+    // for it in the host's line. Refusing it would answer 503 for a model seconds from ready.
     std::string model_for_request() {
         if (host.model_coming()) return "";
         if (!opt.autoload) return "no model is loaded: load one from the Models page";
@@ -759,14 +708,10 @@ struct App {
                 if (on) h.end_planning();
             }
         } end_planning{host};
-        {
-            // Nothing of an earlier load's plan outlives this one, whatever the new plan gives.
-            std::lock_guard<std::mutex> lk(plan_m);
-            calibration_plan = PlanOutcome{};
-            calibration_armed = false;
-        }
-        served_fallback = PlanOutcome{};
-        bool calibrate_first = false;
+        // The plan as made is what the load opens: no load is opened to try a side first. Where the
+        // plan names a side of a decision across loads (the side it priced best, which this load
+        // times as it serves), the other side is what opens if that one does not (fallback_for).
+        PlanOutcome named, other;
         if (auto_plan()) {
             host.unload();
             host.begin_planning();
@@ -775,29 +720,14 @@ struct App {
             PlanOutcome p = measure_plan();
             measuring.unlock();
             if (p.ok) {
-                // A plan that leaves a side of a decision across loads pending names a side that has
-                // not been proven to open here. With calibration on, such a side is opened only as a
-                // calibration's candidate: the load serves the other side where that one has opened
-                // and decoded here before. Otherwise it serves the plan as made, timing its side as
-                // before, with the other side to open instead if this one fails (served_fallback).
-                PlanOutcome served = p;
-                if (p.side_pending()) {
-                    PlanOutcome other = plan_other_side(p);
-                    if (other.ok && store.config().calibrate && p.other_side_measured())
-                        served = std::move(other);
-                    else if (other.ok)
-                        served_fallback = std::move(other);
+                if (p.names_side()) {
+                    other = plan_other_side(p);
+                    if (other.ok) named = p;
                 }
-                store.apply_plan(served.values, served.decisions);
+                store.apply_plan(p.values, p.decisions);
                 std::lock_guard<std::mutex> lk(plan_m);
-                // A decision this plan can only settle by timing it is timed by this load, before the
-                // first answer, as bmoe-cli --auto does: one --auto on every front-end. Once per model and
-                // machine, since the record is kept and the next plan starts decided.
-                calibrate_first = store.config().calibrate && p.basis && p.calibration_due(p.basis->facts.model.knobs);
-                calibration_armed = false;
-                calibration_plan = p;
-                load_plan = served;
-                last_plan = std::move(served);
+                load_plan = p;
+                last_plan = std::move(p);
             }
             publish_config();
         } else {
@@ -805,28 +735,12 @@ struct App {
             // answered as the one this session runs with.
             std::lock_guard<std::mutex> lk(plan_m);
             load_plan = PlanOutcome{};
-            calibration_plan = PlanOutcome{};
-            served_fallback = PlanOutcome{};
-            calibration_armed = false;
         }
         const RunConfig requested = store.config();
         const RunConfig effective = effective_config(requested);
         mark_prefill_unconfirmed(effective);
-        if (calibrate_first) {
-            PlanOutcome lp;
-            {
-                std::lock_guard<std::mutex> lk(plan_m);
-                lp = calibration_plan;
-            }
-            // What the calibration decides it opens; where it leaves the side pending, the load opens that
-            // side as before, with the other side to open if it fails.
-            EngineHost::BeforeOpen step = calibration_step(lp, lp.body.value("model", ""), store.revision(),
-                                                           lp.basis->facts.model.knobs, /*at_load*/ true);
-            if (!served_fallback.ok) return host.load_calibrated(effective, requested, step);
-            return host.load_calibrated(effective, requested, step, fallback_for(served_fallback));
-        }
-        if (!served_fallback.ok) return host.load(effective, requested);
-        return host.load(effective, requested, fallback_for(served_fallback));
+        if (!other.ok) return host.load(effective, requested);
+        return host.load(effective, requested, fallback_for(named, other));
     }
 
     // A load that arms a prefill device says so in the model's record before it opens. The session
@@ -848,32 +762,26 @@ struct App {
         routing.keep_knobs(c.model_path, here.armed_unconfirmed(c.prefill.device));
     }
 
-    // The plan's other side, for a load whose pending side would not open (EngineHost::OpenFallback):
-    // once the other side has opened, its plan becomes the load's, and with calibration on the failure
-    // is kept against the side (MeasuredKnobs::*_unviable), so no later load opens it before a
-    // calibration has tried it again. With calibration off nothing would ever try it again, so nothing
-    // is kept: that load is as it was, the other side opened in its place.
-    PlanOutcome served_fallback; // under load_m
-    EngineHost::OpenFallback fallback_for(const PlanOutcome & other) {
+    // The other side of the plan `named`, for a load whose side would not open (EngineHost::OpenFallback):
+    // once the other side has opened, its plan becomes the load's, and the failure is kept against the
+    // side `named` named (MeasuredKnobs::*_unviable), one more on the count this machine keeps for the
+    // model. The next plan may name the side once more; from MeasuredKnobs::unviable_max failures on,
+    // it loses in every plan.
+    EngineHost::OpenFallback fallback_for(const PlanOutcome & named, const PlanOutcome & other) {
         EngineHost::OpenFallback fb;
         fb.requested = store.config_with_plan(other.values);
         fb.effective = effective_config(fb.requested);
-        PlanOutcome pending;
-        {
-            std::lock_guard<std::mutex> lk(plan_m);
-            pending = calibration_plan;
-        }
-        fb.taken = [this, other, pending](const std::string & error) {
+        fb.taken = [this, other, named](const std::string & error) {
             log_printf(LogLevel::Warn, "the plan's side could not be opened (%s); its other side was loaded instead",
                        error.c_str());
-            const std::string model = pending.body.value("model", "");
-            if (store.config().calibrate && pending.side_pending() && !model.empty() && !pending.hardware.empty()) {
+            const std::string model = named.body.value("model", "");
+            if (named.names_side() && !model.empty() && !named.hardware.empty()) {
                 std::vector<MeasuredKnobs> kept;
                 MeasuredKnobs rec;
                 if (routing.load_knobs(model, kept))
-                    if (const MeasuredKnobs * k = find_measured_knobs(kept, pending.hardware, version())) rec = *k;
-                record_side_unviable(pending.basis->facts.plan.config.trial, rec);
-                rec.hardware = pending.hardware;
+                    if (const MeasuredKnobs * k = find_measured_knobs(kept, named.hardware, version())) rec = *k;
+                record_side_unviable(named.basis->facts.plan.config.trial, rec);
+                rec.hardware = named.hardware;
                 rec.engine = version();
                 routing.keep_knobs(model, rec);
             }
@@ -904,121 +812,6 @@ struct App {
         // mmproj file reads images with nothing set.
         if (effective.mmproj.empty()) effective.mmproj = lib.projector_for(requested.model_path);
         return effective;
-    }
-
-    // Load-time calibration, as a server does it (bmoe/calibrate.h, docs/measured-planning.md). The
-    // first answer is never held for it: the model loads on the plan's own side and serves at once.
-    // Once it is idle after an answer - nothing running, nothing waiting - the model is unloaded, each
-    // side opened as a short candidate and timed, the record kept, and the decided plan loaded, all as
-    // one load the host runs (EngineHost::load_when_idle). A request that arrives meanwhile stops the
-    // candidate in flight and waits for that load, as it waits for any; what was measured until then is
-    // kept, and the served load times the rest as before. One attempt per load of a plan.
-    // The step a calibrated load runs before it opens (EngineHost::BeforeOpen): `lp`'s pending sides
-    // timed from the record `start`, what was measured kept, and the decided plan laid over the settings
-    // as they were at `rev`. A load runs it before its first answer, as bmoe-cli --auto does, and leaves
-    // what it could not decide to the idle point (`at_load`); the idle point's own attempt is its last.
-    EngineHost::BeforeOpen calibration_step(
-        const PlanOutcome & lp, const std::string & model, uint64_t rev, const MeasuredKnobs & start, bool at_load) {
-        return [this, lp, model, rev, start, at_load](RunConfig & effective, RunConfig & req,
-                                                      const EngineHost::BeforeOpenSignals & sig) {
-            const CalibrationOutcome c = calibrate_fn(
-                lp, start, sig.stop, [this](const std::string & step, const std::string & label, int index, int count) {
-                    bus.publish("plan_progress",
-                                json{{"step", step}, {"label", label}, {"index", index}, {"count", count}});
-                });
-            bus.publish("plan_progress", json{{"step", "done"}});
-            if (!c.ran) return;
-            // What was measured is this model's on this machine, whatever happens to the load: kept.
-            MeasuredKnobs rec = c.knobs;
-            rec.hardware = lp.hardware;
-            rec.engine = version();
-            if (!rec.empty()) routing.keep_knobs(model, rec);
-            // Unloaded, shutting down, or anything a person set meanwhile (another model, auto planning
-            // off, a setting): the plan was not made for those settings and is not laid over them, and
-            // the load opens what it was going to. The check and the write are one (apply_plan_if).
-            if (!c.plan.ok || sig.cancelled.load() || stopping || !planner_available()) {
-                log_printf(LogLevel::Info, "calibration: its plan is not applied (%s)",
-                           !c.plan.ok             ? "no plan"
-                           : sig.cancelled.load() ? "the load was cancelled"
-                                                  : "shutting down");
-                return;
-            }
-            // A calibration stopped before it decided leaves a side pending: the side known to open is
-            // served where there is one, as at a load. Where there is none, the plan is not applied:
-            // the load opens the settings it was serving, which opened here, rather than a side no
-            // load has proven, with nothing to fall back to.
-            PlanOutcome p = c.plan;
-            if (p.side_pending() && p.other_side_measured())
-                if (PlanOutcome other = plan_other_side(p); other.ok) p = std::move(other);
-            const bool pending = p.side_pending() && !bmoe::servable(p.basis->facts.plan);
-            {
-                std::lock_guard<std::mutex> lk(plan_m);
-                calibration_plan = c.plan;
-                // What it left pending is the idle point's to try again.
-                calibration_armed = at_load && c.plan.side_pending();
-            }
-            if (pending) {
-                log_printf(LogLevel::Info, "calibration: a side is still pending and none is proven to open; the load "
-                                           "opens the plan it was serving");
-                return;
-            }
-            p.seq = ++plan_seq;
-            if (!store.apply_plan_if(rev, true, p.values, p.decisions)) {
-                log_printf(LogLevel::Info,
-                           "calibration: the settings changed meanwhile; its plan is not laid over them");
-                return;
-            }
-            log_printf(LogLevel::Info, "calibration: the decided plan is applied");
-            {
-                std::lock_guard<std::mutex> lk(plan_m);
-                load_plan = p;
-                last_plan = std::move(p);
-            }
-            publish_config();
-            req = store.config();
-            effective = effective_config(req);
-        };
-    }
-
-    void maybe_calibrate() {
-        if (stopping || !auto_plan()) return; // a person who turned planning off plans by hand
-        std::unique_lock<std::mutex> load(load_m, std::try_to_lock);
-        if (!load) return; // a load is under way: its own plan decides
-        PlanOutcome lp;
-        {
-            std::lock_guard<std::mutex> lk(plan_m);
-            if (!calibration_armed) return;
-            lp = calibration_plan;
-        }
-        // The settings as the calibration starts: the plan it decides is applied only over these.
-        const uint64_t rev = store.revision();
-        const RunConfig requested = store.config();
-        const std::string model = lp.body.value("model", "");
-        if (!requested.calibrate || model.empty() || host.model_path() != model) return;
-        // The record as this machine keeps it now: the answers served since the plan may have timed a
-        // side. Where a calibration from it would open nothing, the model is not unloaded for it.
-        MeasuredKnobs start;
-        {
-            std::vector<MeasuredKnobs> kept;
-            if (routing.load_knobs(model, kept))
-                if (const MeasuredKnobs * k = find_measured_knobs(kept, lp.hardware, version())) start = *k;
-        }
-        if (!lp.calibration_due(start)) {
-            std::lock_guard<std::mutex> lk(plan_m);
-            calibration_armed = false;
-            return;
-        }
-        if (!host.idle()) return; // a turn's end will touch the timer again
-        {
-            std::lock_guard<std::mutex> lk(plan_m);
-            calibration_armed = false;
-        }
-        const EngineHost::BeforeOpen calibrate_step = calibration_step(lp, model, rev, start, /*at_load*/ false);
-        // A turn that slipped in between the look and the start wins: the next idle point tries again.
-        if (!host.load_when_idle(effective_config(requested), requested, calibrate_step)) {
-            std::lock_guard<std::mutex> lk(plan_m);
-            calibration_armed = true;
-        }
     }
 
     // Everything that only means something on a running stream, turned off with it. A default the
@@ -1883,7 +1676,7 @@ void register_routes(httplib::Server & svr, App & app) {
         }
         if (app.host.generating())
             return send_error(res, 409, "busy: a plan measures the machine, and a running generation would skew it");
-        // A load, and the calibration it may run, hold the engine's thread the probes run on.
+        // A load holds the engine's thread the probes run on.
         if (app.host.loading()) return send_error(res, 409, "busy: a model is loading; plan once it is ready");
         std::unique_lock<std::mutex> measuring(app.measure_m, std::try_to_lock);
         if (!measuring) return send_error(res, 409, "busy: a plan is already being measured");
@@ -2287,7 +2080,6 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     // A stop ends what keeps a worker busy first (a generation, every event stream), since the
     // server's stop waits for its workers.
     const auto stop = [&svr, &app] {
-        app.stopping = true;
         app.host.cancel();
         app.agent->shutdown();
         app.updates->cancel();

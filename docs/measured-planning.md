@@ -423,35 +423,35 @@ without a device of their own, an unchanged plan.
   price that can be wrong by half on the one comparison it exists for is a coefficient, not a fact.
   A layer split by capacity waits for the host on every token wherever the device is the faster
   processor; that part needs no price.
-- **Kept by measurement across loads.** The rule is necessary and not sufficient: every miss of the
-  cache crosses the link before the device computes it. On two 24 GB cards over PCIe 3 with GLM-4.7
-  (355B, 32B active), the cache held a tenth of the experts, misses went up at 4.5 GB/s, and decode was
-  1.6 tok/s where the fitter's placement did 3.9. A price would have to know the hit rate the cache
-  reaches and what the host really decodes at, and the one comparison on record is wrong by half on
-  exactly those. A device cache is fixed when a context is created, so the two sides cannot
-  alternate inside one answer as the knob trial's do. They alternate across loads instead
-  (`MeasuredKnobs::device_cache_tps`, `no_device_cache_tps`). A load with nothing measured arms the
-  cache and times its decode (`KnobTrialConfig::device_tier`, a `RateProbe` after the knobs' trials:
-  the median of `2 * rounds + 1` windows, after the longest settle the trial makes, since a device
-  cache fills out of the session's counters). The next load runs the fitter's placement and times it.
-  The plan after keeps the faster, and the cache holds where the two are within `min_backend_win`.
-- **The slower side is not timed where it cannot win.** Timing the fitter's placement costs a whole
-  load at its rate. On a 12 GB card with Qwen3.6-35B the cache decoded at 73.5 tok/s, and the second
-  load then decoded a whole session at 37.8 to time a placement that could never have won. That
-  placement needs no price of a miss, because it pays none: it computes the experts the fitter left on
-  the host at the host's rate and everything else on the devices. Its ceiling (`fitter_decode_ceiling`)
-  adds what a token reads at each processor's probed rate and leaves out crossings and overheads (55
-  tok/s there). A probe can read below the decode: on two 16 GB cards with GLM-4.5-Air the ceiling
-  was 8.5 and the placement decoded at 9.34. So the ceiling is raised by `rate_ceiling_slack`, a
-  quarter, the plan's own accuracy bound. The fitter's placement is timed only where that reach beats
-  the cache's measured rate by `min_backend_win`; elsewhere the second load keeps the cache, and the
-  plan line gives the two figures. On GLM-4.7 over PCIe 3 (cache 1.6 tok/s) and GLM-4.5-Air (cache
-  4.6-5.9), it is still timed, and won.
-  The front-end merges each load's side into the record it keeps for the model and machine. Gate G25e
-  times both sides on the loopback device, byte-identical, with a rate in the record. Where the plan
-  is calibrated at load, both sides are timed before it is served instead, each a short load of its
-  own ([below](#decisions-across-loads-timed-at-load)); the across-loads timing is what a load with
-  calibration off, or one it left incomplete, does.
+- **Priced, then kept by what the loads measure.** The rule is necessary and not sufficient: every
+  miss of the cache crosses the link before the device computes it. On two 24 GB cards over PCIe 3
+  with GLM-4.7 (355B, 32B active), the cache held a tenth of the experts, misses went up at 4.5 GB/s,
+  and decode was 1.6 tok/s where the fitter's placement did 3.9. A device cache is fixed when a
+  context is created, so the two sides cannot alternate inside one answer as the knob trial's do. So
+  both are priced from the rates this machine probed: the cache as every other byte a token reads at
+  the device's dense rate, its hits at the device's expert rate and each miss uploaded and then
+  computed, at the hit share a cache that size reaches (`device_cache_decode_seconds`); the fitter's
+  placement from its ceiling, the experts it left on the host at the host's rate and everything else
+  on the devices, with no miss to pay (`fitter_decode_ceiling`), at the part of it such a placement
+  was measured to reach (`fitter_ceiling_realized`, a half: six loads that ran the placement after
+  its ceiling was computed decoded at 0.17 to 0.81 of it, and at the whole ceiling a 32 GB card's
+  second load left a cache measured at 102 tok/s for a placement that decoded at 46). The load serves the side priced
+  faster and times its own decode as it serves (`KnobTrialConfig::device_tier`, a `RateProbe` after
+  the knobs' trials: the median of `2 * rounds + 1` windows, after the longest settle the trial
+  makes, since a device cache fills out of the session's counters). A side measured stands at its
+  measurement (`MeasuredKnobs::device_cache_tps`, `no_device_cache_tps`), and the other takes over
+  only where its price, or its own measurement, is past that by `min_backend_win`; the cache holds
+  inside it.
+- **No load is opened to try a side.** A side tried on a served load cost that session its rate: on
+  a 12 GB card with Qwen3.6-35B the cache decoded at 73.5 tok/s, and the second load then decoded a
+  whole session at 37.8 to time a placement whose ceiling was 55. Timing both sides as short loads
+  before the first answer instead cost the first load minutes
+  ([below](#decisions-fixed-at-load-priced-served-then-measured)). So a side is served only where
+  the figures say it wins: there the fitter's ceiling is under the cache's measured rate, and the
+  cache stays. On GLM-4.7 over PCIe 3 (cache 1.6 tok/s, ceiling above it) the next load serves the
+  fitter's placement, which won. The front-end merges each load's side into the record it keeps for
+  the model and machine. Gate G25e runs both sides on the loopback device, byte-identical, with a
+  rate in the record.
 - **Not done.** The double reads stay, measured rather than removed: on a model that fits the host,
   the experts are resident and nothing is read. Pipeline parallelism on several devices is not
   weighed. A warm start of the device cache from the record's hottest experts is not built: the first
@@ -524,170 +524,77 @@ the prefill plan); with nothing recorded it decides as it did before. Checked: r
 merge checks in the `knob_trial` test, planner checks for both outcomes and for the unpriced one,
 and gate G24e (a load's record carries its one request).
 
-## Decisions across loads, timed at load
+## Decisions fixed at load: priced, served, then measured
 
-Two decisions in Step 4's neighbourhood are fixed when the model or its context is created, so one
-load cannot try both sides: the device tier (a cache of experts on the card, or the capacity fitter's
-whole layers: `MeasuredKnobs::device_cache_tps`, `no_device_cache_tps`) and the graph width where
-even a graph held to the device bound (`ubatch_max_device`) takes more of the card's memory than its
-share, memory the experts would use (`width_narrow` and its rates,
-[hardware-planning.md](hardware-planning.md#the-widest-graph)). Two more joined them since: the share
-of a device cache's misses the host computes (`cpu_share_tps`), and where a model held in memory runs
+Some decisions are fixed when the model or its context is created, so one load cannot try both
+sides: the device tier (a cache of experts on the card, or the capacity fitter's whole layers:
+`MeasuredKnobs::device_cache_tps`, `no_device_cache_tps`), the graph width where even a graph held
+to the device bound (`ubatch_max_device`) takes more of the card's memory than its share, memory the
+experts would use (`width_narrow` and its rates,
+[hardware-planning.md](hardware-planning.md#the-widest-graph)), and where a model held in memory runs
 on a machine whose device reads that same memory, on the cores or every layer on the device
 (`shared_device_tps`, `no_shared_device_tps`,
-[hardware-planning.md](hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it)): which
-engine decodes a model is fixed when it is loaded. Timed across loads, each side cost a
-whole session of a person's use at whatever rate it decoded. On rented cards a model's second load
-decoded at 37 tok/s instead of 68 on a 12 GB card, and at 35 instead of 84 on a 32 GB one.
+[hardware-planning.md](hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it)).
 
-**What it does.** Where a plan leaves such a side pending, each side is opened as a short candidate
-load of its own and timed before the plan is served, and the plan on the grown record is the one
-served (`bmoe/calibrate.h`):
+Two ways of settling them by timing were built and withdrawn:
 
-- **The planner stays the oracle.** A side is pending exactly when the plan sets one
-  (`KnobTrialConfig::device_tier`, `width_side`, `cpu_share_side` or `shared_device_side`).
-  `calibrate()` runs that candidate, puts its rate in the record with the mapping a session's own
-  timing uses (`record_side_rate`, one decision per load, in that order), and asks the planner again
-  (`replan`: `probe_and_plan`'s planning half on the same facts, the fitter's re-fits at a narrower
-  width included, no probe). A re-fit is asked of the fitter once per width and kept with the facts
-  (`AutoPlan::placement_at_width`): it answers from the same file, devices and context whatever the
-  record says, and asked again between candidates it reloaded GLM-4.7's metadata for a dozen dry runs
-  each time, on a card whose free memory was no longer the one the plan was made on. Every rule above holds as it is: the fitter's placement is still timed
-  only where its ceiling could win, and a side wins only past `min_backend_win`. The tier is decided
-  first, the width then on the winner, and on a device cache the share of its misses computed on the
-  host last ([hardware-planning.md](hardware-planning.md#who-computes-the-device-caches-misses)), as
-  the planner orders them; a configuration already timed is not opened again (the cache side at the
-  plan's width answers the width's wide side too, and the cache's rate with every miss uploaded is
-  the tier's own). The shared-memory device is a decision of its own: it arises only where none of the
-  others does (a device with memory of its own goes through the fitter), its cores side first, the
-  placement every load had before it. At most eight candidates, every side of the four decisions once; a plan that asks past that, or asks
-  for something a short decode cannot measure (the prefill of long prompts a machine has been
-  sending), is served as it stands and its load times the rest as before.
-- **A candidate** is a `Session` of its own (`run_calibration_candidate`), opened, given one fixed
-  generic instruction through the model's own chat template, and closed. Its decode is the ordinary
-  one, every token through the same hook, streamer and caches. The first candidate samples with a
-  fixed seed (greedy prose falls into loops that replay a few experts) and returns its token ids; a
-  later one replays them teacher-forced, so both sides route the same tokens and differ only in where
-  the experts run. Speculation is off: a draft's acceptance would time the drafter. Each candidate logs
-  what its time went to (evening the file cache, opening, timing), and each plan between candidates
-  its own, so a calibration's minutes can be told apart. Every candidate
-  starts from the same system cache of the model's files, so the later side does not load and decode
-  from memory what the first read from the drive. Where the system can keep the whole model cached
-  (its files, the projector and an MTP head take at most half of the memory the system can still
-  give, and a container still lets the process take), the first candidate reads them through once
-  and the ones after find them as it left them: every side starts with all of it cached, as the
-  served load then does. The first candidate decides which of the two holds, for all of them: asked
-  again, a later one would count the model pages the first one's load left as memory the system can
-  give, and start warm where the first started cold. Otherwise the cache of every shard, the projector and an MTP head is handed
-  back where the system takes the advice (`pio::drop_file_cache`), and the dense part, which every
-  token reads whatever the placement, is then read in on every system alike. Each candidate so opens
-  with exactly the dense part cached, where a drop is a no-op (Darwin, Windows) as where it is not.
-  What stays uneven there is the experts a placement loads through the mapping, which the later side
-  may find partly cached; they are not read in, since a model larger than the memory is what this
-  engine exists for. A stop is honoured before each open and as soon as a load returns, as well as at
-  every decoded token.
-- **Bounded by measurement.** The windows are the knob trial's (`KnobTrialPolicy`), and the turn ends
-  once the rate is known. A cache whose hits the session sees settles as the trial does; a device
-  expert cache, filled inside llama.cpp, settles once two windows in a row agree within the margin
-  (`RateProbe::settle_on_rate`), where the session's own timing waits the longest settle. The second
-  side of a decision is cut once a timed window's fastest step is past the first side's range by the
-  margin (`apart_bar`, the knob trial's own test for a candidate apart from its incumbent).
-- **A side that cannot be opened loses, and is tried again only by a calibration.** A candidate, or a
-  served load, that fails to load or to decode a side (out of device memory, most likely) adds one to
-  that side's failed-open count in the record (`unviable=side:n`, scoped like every other measurement
-  to this machine's fingerprint and the engine version). A side with any is the loser in every plan
-  made on the record, so no served load opens what is known not to open. A failure may be the
-  machine's state at that moment (another program holding the card's memory, a driver's hiccup), so
-  a calibration offers the side again while its count is under `k_unviable_retries` (two: a second
-  failure, on another calibration, is taken as the side not fitting this machine with this engine,
-  and each try costs a load that fails), and only when the plan, with that count set aside, would ask
-  for the side at all: a decision a person pinned, or a narrow width that has moved, asks for nothing,
-  and the server does not unload a model for a calibration that would open nothing
-  (`calibration_due`, the rules alone, no probe). A rate measured since clears the count; a record
-  handed on beside the side's old rate does not; a calibration stopped before it reached the side
-  leaves it. A request the session refuses (a context too short for the instruction) counts nothing.
-- **A served load never opens a pending side not proven to open.** With calibration on, a plan whose
-  pending side's other side has opened and decoded here before is served on that other side, and the
-  pending one is opened only as a calibration's candidate. Where neither side is proven (the first
-  load), or calibration is off, the load serves the plan's side and times it as before, and if that
-  open fails the server opens the other side instead of ending with no model
-  (`EngineHost::OpenFallback`, never for a load an unload cancelled). Only an open of the other side
-  says the first failure was the side's: then, with calibration on, it counts against the side; where
-  both fail, the first open's reason is the error and nothing is counted. With calibration off nothing
-  would try the side again, so nothing is counted and those loads stay as they were. An "other side"
-  that leaves a side of the other decision pending is no side known to open, and is not offered,
-  unless that side is the graph at the plan's own width (`servable`): every load of the plan opened
-  with that graph, so the load serves it and times the width as it does. Counting it as unproven made a
-  32 GB card's second load serve the fitter's placement at 42 tok/s beside a cache measured at 103. A
-  calibration stopped with a side still pending and no proven side to serve applies nothing: the load
-  opens the settings it was serving, which opened here.
-- **What is kept, and what is not.** The rates go in the model's `.knobs` record as a served load's
-  do, so the next plan of the file on this machine starts decided. The candidates' output is thrown
-  away, and they write no `decode_compute_s` or `decode_hit`: those are the served configuration's.
-  The winner is then opened fresh, as a plain load, so what is served is byte for byte what the same
-  plan would load without a calibration. With no request served yet, the width weighs the two decode
-  rates alone (`usage_requests` 0). That verdict is provisional: a width decided so names the narrow
-  width on its loads with no side to time (`KnobTrialConfig::width_narrow` alone), and they record the
-  requests they serve; the plan after weighs those, asking for each side's prefill of long prompts if
-  they show up, timed on a served load as before. Only that case records: a width decided on requests
-  already seen (all a load timed across loads ever leaves) carries no width value, records nothing,
-  and stays where it was decided, as it always has. The margin guards the width in force
-  (`MeasuredKnobs::width_held`, what a load that timed no side ran), not the full width: weighing the
-  same rates again on the requests served does not swing the graph back. On two rented 16 GB cards
-  with DeepSeek-V4-Flash the narrow graph was 11% ahead on the decode alone and chosen, then 9% ahead
-  on the requests served, inside the margin, and the next load went back to the full width with 4 GB
-  less device cache.
+- **Timed across served loads**, one side a load. Each side cost a whole session of a person's use
+  at whatever rate it decoded: on rented cards a model's second load decoded at 37 tok/s instead of
+  68 on a 12 GB card, and at 35 instead of 84 on a 32 GB one.
+- **Timed before the first answer**, each side opened as a short candidate load of its own and the
+  winner served (a load-time calibration). Each candidate reopened the model, which on a model
+  larger than memory is most of a load: Qwen3.8-Flash-Next Q2_0 on two 16 GB cards was ready after
+  609 s against 126 s without it (four candidates of ~140 s: ~62 s evening the file cache, ~70 s
+  opening, 3-8 s timing), DeepSeek-V4 UD-IQ2_M after 1094 s against 252 s. It also mislabelled a
+  candidate that named two decisions at once (a narrow graph with a CPU share, filed as the narrow
+  width), after which a 12 GB card served a 2048-token graph on a claim that the full width had
+  failed, and lost 28% of a 4.6k-token prompt's prefill.
 
-**Where it runs.** Everywhere the same: a load whose plan leaves a decision pending calibrates
-before its first answer, and keeps the verdict, so the next load of the model on that machine starts
-decided. `bmoe-cli --auto` does it before it decodes and says so on one line; with nowhere to keep the
-verdict (`--routing-dir ""`) it does not, and says that instead, since every run would pay the
-candidates again. `bmoe-server` does it on the load's own thread before the session opens
-(`EngineHost::load_calibrated`): `/api/info` reads `loading`, `plan_progress` names each candidate, and
-a request that arrives waits for the model and is answered on the decided plan. Before, the server
-served the plan's own side at once and calibrated a minute later, so a machine where that side lost
-served at its rate until it went idle (two 24 GB cards with GLM-4.7: 3.7 tok/s on the cache where the
-fitter's placement decoded at 16). What a load's calibration leaves pending (stopped, or past its
-candidates) is tried again once the server has been idle for `kCalibrationIdleDelay` (a minute,
-`http_server.cpp`) after an answer, nothing running and nothing waiting: it unloads the model, times
-each side, keeps the record and loads the decided plan, as one load (`EngineHost::load_when_idle`). The delay is the gap a
-conversation has: a person reads the answer before typing, an agent runs its tools between turns,
-and each new answer starts the wait again. Meanwhile `/api/info` reads `ready` with `calibrating`
-and the model's name, and `plan_progress` events name each candidate (`step` `calibrate`): the
-server is busy and still takes requests. A request that arrives stops the candidate in flight and
-waits for that load, as it waits for any load the server runs, never refused; what was measured
-until then is kept. A load a person asks for meanwhile supersedes it, and an unload or a shutdown
-ends it: what was measured is kept, and nothing is opened after it. The decided plan is applied only
-if no setting has moved since the calibration began and loads still plan (`apply_plan_if`, the check
-and the write under the settings' one lock), and the load opens the settings the plan was made for;
-another model chosen, auto planning turned off or a setting changed meanwhile leaves the settings as
-the person left them. It does not start at all with auto planning off. One attempt per load of a
-plan, tried again at the next idle point when a turn slipped in as it started. `--no-calibrate` (the `calibrate` parameter) turns it off, and the
-decisions are timed across loads exactly as before.
+**What the plan does instead.** It decides by calculation from the facts the load already probed,
+serves the side it prices faster, and lets the served load time that side:
 
-**Where it does not.** Both decisions exist only beside a device with memory of its own: the tier
-needs one (`device_tier_device`), and the width's trade is declined on a pool shared with the host
-(`devices_share_host_memory`). A phone, a unified-memory Mac and a machine without a graphics card
-never have a side pending, so they never open a candidate; with nothing pending `calibrate()` opens
-nothing and the plan is the one it always was. The Android and iOS apps run their server on the phone, so they never see
-`calibrating` and show no label for it; the web UI does.
+- **Each side has a price.** The device tier's are in Step 4. The graph width's is a request's time
+  at each width: its decoded tokens at the decode each width leaves (the narrower buffers' room goes
+  to the device cache, or to the experts the fitter places on the card), and its prompt at the
+  device's prompt-wide rate plus, per pass, the upload of the experts that are not on the device
+  (`prompt_gather_seconds`), which a narrower graph pays once per pass. The shared-memory device's is
+  the same request at the rates each processor probed on a real layer of the model, one token wide
+  and as wide as a prompt.
+- **A request is this machine's own.** The prompt tokens prefilled and the tokens decoded per
+  request are recorded on every load that answers one (`MeasuredKnobs::mix_*`). A first load has
+  none and weighs `PlannerPolicy::mix_prompt_tokens_default` against `mix_gen_tokens_default` (4096
+  and 300). On the decode alone, as the width was decided before, a narrow graph won wherever it
+  decoded faster: +40% decode and -40% on a 4.6k-token prompt on an 8 GB card, -28% on a 12 GB one,
+  -47% on two 16 GB cards with a 284B model.
+- **A served load measures.** The plan names the side it serves (`KnobTrialConfig::device_tier`,
+  `width_side`, `shared_device_side`) where that side has no decode rate yet, and the session times
+  it once the knob trials have their verdicts and files it with one mapping (`record_side_rate`).
+  One decision's rate a load, the device tier's first. A measured side stands at its measurement; a
+  width measured on one side scales both widths' prices by how far that side ran from it, so the
+  ratio between them stays the price's until both are measured.
+- **The side in force holds inside the margin.** The other side takes over only where it is faster
+  by `min_backend_win`, on its price or its measurement, so the same figures weighed again do not
+  swing a decision from one load to the next (`width_held` records the width a load ran).
+- **A side that cannot be opened.** A load whose side fails to open opens the plan's other side in
+  its place (`EngineHost::OpenFallback`) and the failure is counted against the side
+  (`MeasuredKnobs::*_unviable`). One failure may be the machine's moment (another program holding
+  the card's memory, a driver's hiccup): the plan may name the side once more, the other still
+  behind it. At `MeasuredKnobs::unviable_max` (two) the side loses in every plan made on the record.
+  A rate measured for the side clears the count, and a new engine version starts a new record.
+- **The device cache's CPU share is a person's setting.** It is fixed when the context is created,
+  and no price of it held: where the cache never fills, llama.cpp computes no miss on the host and
+  every MoE layer's host half is pure cost (114 to 68 tok/s on a 32 GB card at a share priced 0.89,
+  18.5 to 21.2 on a 12 GB card at 0.77). Deciding it took a load of its own for each side, so the
+  plan uploads every miss and names the flag.
 
-**Judged by.** The `calibrate` test runs the loop on fake ports: it ends, runs the sides in the
-planner's order, opens nothing the planner does not ask for, treats a candidate that cannot open as
-the losing side, replays the first run's tokens against the other side's range, and stops for an
-aborted run. `planner_test` runs it on the real rules for both decisions and the ceiling's skip.
-Gates G24f (the width, on the host) and G25f (the tier, on the loopback device) run the engine's own
-candidates: no side left pending, both rates in the record, and the winner, opened fresh, equal to
-the resident answer; G24g that a load with the width's trade and no side timed records its requests.
-`engine_host_test` drives the server's idle load with a scripted session, and `server_app_test` the
-whole server over HTTP with the engine and the planner scripted: the calibration starts once idle;
-a request during it, with no `--autoload`, stops it and is answered; a cancel, an unload, another
-model chosen, a load asked for and a final open that fails each end it as above; a served load whose
-side will not open opens the other side and counts the failure; and a side measured before is served
-instead of a pending one not proven.
+What can be switched inside a load is still tried on the served answer: the decode thread count and
+overlap (Step 2).
 
-Owed: a run on a card of each class, the second load's decode against the first's, with the
-candidates' wall time, and the server's idle path against a client that sends turns back to back.
+**Limits.** A price can be wrong, and a side it wrongly puts ahead by the margin is served for one
+load before its measurement corrects it. The prompt's price takes every pass to gather every expert
+that is off the device, which is what three rented cards measured on 2048-token passes; a much
+narrower pass routes fewer. Owed: a run on a card of each class with the first load's time to ready,
+the second load's decode against the first's, and a long prompt's prefill at the width served.
 
 ### A prefill device that did not hold up for a model
 

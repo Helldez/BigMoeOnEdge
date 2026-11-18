@@ -149,18 +149,25 @@ struct PlannerPolicy {
     // noise. Measured 19 against 19 on a phone, which is not a finding.
     float min_backend_win = 0.10f;
 
-    // How far a decode may run past a ceiling the plan computes from probed rates, as a fraction. A
-    // ceiling adds what a token reads at each processor's probed rate and leaves out the crossings,
-    // the misses and every overhead, so it is above what decodes; but a probe's rate can read below
-    // the decode's own. Measured on two 16 GB cards with GLM-4.5-Air: the host's expert rate probed
-    // 23.8 GiB/s, the fitter's placement then decoded at 9.34 tok/s against a ceiling of 8.5 (+10%).
-    // A quarter is the plan's own accuracy bound (a prediction within 25% of the measurement).
-    float rate_ceiling_slack = 0.25f;
+    // How much of its ceiling the capacity fitter's placement is priced at. The ceiling adds what a
+    // token reads at each processor's probed rate and leaves out the crossings between the device and
+    // the host's experts and every per-op cost, so the placement decodes under it, by a part no probe
+    // gives. Measured where a load ran the placement after its ceiling was computed: 46.5 tok/s under
+    // a ceiling of 175 on a 32 GB card, 32.1 under 43.5 and 62.1 under 83 on 12 GB cards, 20.6 under
+    // 39.4, 2.2 under 13.1, 11.3 under 13.9: from 0.17 to 0.81 of it, a half on average. Priced at the
+    // whole ceiling, the placement took the second load from a cache measured at 102 tok/s to decode
+    // it at 46.
+    float fitter_ceiling_realized = 0.5f;
 
-    // The least share of a device cache's misses still uploaded where part of them is computed on the
-    // host (choose_device_cache_cpu_share): a miss computed on the host is not admitted to the cache,
-    // so with every miss there the cache would stop learning which experts turn hot.
-    float device_cache_upload_min = 0.10f;
+    // What a request is weighed as on a machine that has served none of this model yet, in tokens: the
+    // prompt prefilled and the answer decoded. A decision that trades the prompt against the answer
+    // (the graph's width, a device that shares the host's memory) needs both, and a first load has no
+    // record of its own to read them from; every load after it uses the requests this machine served
+    // (MeasuredKnobs::mix_*). A chat or agent turn with a few pages of context and a short answer: a
+    // one-line question alone would weigh the prompt at nothing, and a width that loses a long prompt
+    // 22-47% (measured on 8, 12 and 2x16 GB cards) would pass as free.
+    float mix_prompt_tokens_default = 4096.0f;
+    float mix_gen_tokens_default = 300.0f;
 
     static PlannerPolicy defaults() { return PlannerPolicy(); }
 };

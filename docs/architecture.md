@@ -11,7 +11,7 @@ a single ~25-line hook on a fork branch with an explicit sunset (see below and
 
 ```
 frontend/       what every front-end does the same way: user_dirs (the per-user data folder,
-                and the folder each model's measurements are kept in), so a calibration one ran is
+                and the folder each model's measurements are kept in), so what one measured is
                 the others', and backend_env (what the compute backends read from their environment,
                 one table set before any loads); linked by bmoe-cli, bmoe-server and the desktop app
 cli/            bmoe-cli — parses flags, the only place env vars are read
@@ -20,8 +20,7 @@ server/         bmoe-server: the application framework every UI speaks to (docs/
                 openai_chat (the chat protocol), anthropic_messages and openai_responses (the
                 agent protocols, over agent_protocol's append-only stream), llama_compat (llama.cpp
                 server's timings, prompt progress, metrics and tokenizer routes, as a wire format), image_part (an image as
-                a protocol carries it, inline, to the engine's ChatImage), turn_queue, idle_timer (the
-                quiet period after an answer a load-time calibration waits out, on an injected clock),
+                a protocol carries it, inline, to the engine's ChatImage), turn_queue,
                 server_seams (what a test puts in place of the engine and the planner),
                 settings_store, event_bus, json_util,
                 model_files (which gguf names make one model, the one-level folder scan, and what a
@@ -109,10 +108,6 @@ core/
                     text form, and the hardware fingerprint a verdict is kept against
     model_records.h a model's routing record and verdicts kept on disk between loads, by content
                     fingerprint, in a folder the front-end names: one store for every front-end
-    calibrate.h     load-time calibration: the decisions across loads (device tier, graph width,
-                    the device cache's CPU share, a model held in memory on a shared-memory device)
-                    timed at load, each side a short candidate load, over two ports (Replan,
-                    RunCandidate); the planner names the side, the loop runs it and asks again
     probe.h         the adapters' entry points: what fills the two profiles
     auto_plan.h     probe_and_plan: the one probe-and-plan sequence every front-end calls, the
                     adapters in their order and then the rules; the options are what differs
@@ -166,10 +161,6 @@ core/
                   shared by generate / perplexity / decide
                 knob_trial — the A/B of a lossless knob on the first answer: interleaved windows,
                   the median of per-round ratios, a margin to win (measured-planning.md, Step 2)
-                calibration_run — the engine's candidate for a load-time calibration: a session
-                  opened for one side, one short timed answer (the first sampled, the others
-                  replaying its tokens), closed (measured-planning.md, "Decisions across loads,
-                  timed at load")
                 decide/ — Session::decide() (see decide.md): pure policy over an IDecideBackend
                   port (prompt split, choice scoring, IPrefixCache), plus one llama.cpp adapter
     plan/       the hardware planner (hardware-planning.md). Two halves that must not mix:
@@ -180,8 +171,6 @@ core/
                   and the hottest experts (measured-planning.md, Step 1); pure as the rules
                 measured_knobs - the knob verdicts' text form and the hardware fingerprint (Step 2)
                 model_records - ModelRecords: the routing record and verdicts per model on disk
-                calibrate - load-time calibration's loop: run the side the plan names, record its
-                  rate, plan again; pure as the rules
                 hardware_probe, model_probe, storage_probe, headroom_probe, bandwidth_probe,
                   layer_probe (one real layer of the model, its experts and its dense matrices, on
                   every backend: measured-planning.md, Step 3), gate_probe,
@@ -193,8 +182,9 @@ core/
                 auto_plan - the composition of the two: the probes in the order a plan is
                   measured in, then plan_run(). With the adapters because it starts the backends;
                   it decides nothing, and bmoe-cli --auto and the server's /api/plan both call it.
-                  replan() runs its planning half again on the same facts, which is what a
-                  calibration plans with between candidates (calibrate_plan)
+                  replan() runs its planning half again on the same facts, which is what the
+                  server plans a plan's other side with (the side a load opens when the one the
+                  plan names does not)
     params.cpp  the parameter table's rows (see params.h)
     log.cpp     the log port's default sink and level filter (see log.h)
     metrics/    csv_metrics_sink, route_trace_sink, decode_trace_sink; memory_snapshot (the

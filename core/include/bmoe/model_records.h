@@ -1,7 +1,7 @@
 // What a model measured about itself on this machine, kept between loads: its recorded routing, which
 // the planner prices the cache on (bmoe/routing.h, AutoPlanOptions::routing), and the verdicts of the
 // decisions --auto measures (bmoe/measured_knobs.h). Every front-end keeps them the same way, so an
-// --auto plan is the same whichever one runs it, and a calibration one of them ran is the others' too.
+// --auto plan is the same whichever one runs it, and what one of them measured is the others' too.
 // Where the folder is is the front-end's decision (bmoe-cli and bmoe-server default to the per-user data
 // folder); inside it, one file per model named by the model file's content fingerprint
 // (model_fingerprint in bmoe/probe.h): a file copied or renamed finds its record, another model never

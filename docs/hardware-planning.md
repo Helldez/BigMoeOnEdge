@@ -64,8 +64,7 @@ diverges), then the context halves, the fitter placing again at each length, dow
 `PlannerPolicy::ctx_min_auto` (4096, the fitter's own `--fit-ctx` default) and never under
 `RunConfig::ctx_for_clients` (16384), what the server offers the clients it serves: a coding agent's
 first request alone can be 10k tokens, so the server's own context stays and only a longer one
-nobody set gives way. The rules-only replan a calibration is judged by (`replan_rules`) takes the
-checkpoint step too, and not the context step, which places the model again. The first plan whose cache
+nobody set gives way. The first plan whose cache
 clears its floor is kept; where none does, nothing changes. A value the person set is never moved,
 only named as the lever. The probe opens its
 context as the session does, with sliding-window layers holding their window rather than the whole
@@ -413,10 +412,9 @@ measures the other's recovery. What a front-end decides is in its options: wheth
 read (`--no-probe-io`), whether memory is measured by holding it (`--probe-mem`, never from the
 server), and how it starts itself again to probe a device. The composition lives with the adapters,
 because it starts llama.cpp's backends; it decides nothing, and the rules it ends in stay pure.
-A front-end may also hand it a candidate runner (`AutoPlanOptions::calibrate`): where the plan leaves
-a decision across loads pending, each side is then timed as a short load and the decided plan
-returned, with the record to keep (`bmoe-cli --auto` does; the server calibrates later, once idle,
-through `calibrate_plan` on the facts it kept).
+Nothing in it opens the model to try a side of a decision: what a load cannot switch is decided by
+calculation and timed by the load that serves it
+([measured-planning.md](measured-planning.md#decisions-fixed-at-load-priced-served-then-measured)).
 
 Inside, `plan_run` is a list of named stages over one planning state - the widest graph, the regime,
 the placement, the accelerator axis, the dense policy, the ledger and the prefill device, the cache
@@ -893,23 +891,33 @@ graph only where every expert is placed on the devices. On the same card, Qwen3.
 and a 9714-token prefill from 4789 to 5594 tok/s.
 
 Where every layer is on a card, the experts do not all fit and the card's buffers are past its share,
-the width is a trade the plan cannot price: a narrower graph leaves the experts more of the card (more
-of them placed there, or a larger cache), and prefills a long prompt in more passes. It is measured
-across loads instead (`width_across_loads`, `MeasuredKnobs::width_narrow`). A load times the full
-width, the next the width the card's share allows. Each times its decode, its prefill of the prompts
-longer than the narrow width (the only ones the width changes), and the requests it served. The plan
-after weighs the two by those requests: the tokens a request decodes over each side's decode rate,
-plus its prompt tokens past the narrow width over each side's prefill rate. The narrow graph is taken
-where it is faster by `min_backend_win`. A machine that never sends a long prompt pays nothing for
-the narrow graph. One that does has both sides' prefill of them timed before anything is decided.
-Measured on two 24 GB cards with GLM-4.5-Air: 14.2 tok/s decoded at 16384 tokens wide against 19.4 at
-512, where the wide graph prefilled a 9.5k-token prompt at 610 tok/s and a 512-wide one, in
-llama.cpp, at 104. A width set by hand is left alone and charged in
-full; a slope that was not measured decides nothing. With load-time calibration (on by default) both
-widths' decodes are timed as short candidate loads before the plan is served, and with no request
-seen yet the decode rates alone weigh them, until the loads it serves record their requests: every
-load with the width's trade does, a side timed or not
-([measured-planning.md](measured-planning.md#decisions-across-loads-timed-at-load)).
+the width is a trade between the answer and the prompt: a narrower graph leaves the experts more of
+the card (a larger cache, or more of them placed there), so every decoded token is faster, and it
+prefills a long prompt in more passes, each gathering onto the device the experts that are not held
+there. The plan takes the width whose request is shorter (`width_across_loads`):
+
+    t(w) = prompt tokens x prefill seconds a token + passes(w) x gather seconds a pass
+           + decoded tokens x decode seconds a token (w)
+
+The decode at each width is priced from the probed rates on what that width leaves the experts
+(`device_cache_decode_seconds` with a cache, `fitter_decode_ceiling` without), the prompt's token from
+the device's rate on a prompt-wide layer, and a pass's gather as the experts off the device over the
+upload rate (`prompt_gather_seconds`). That last term is what three rented cards measured between
+one pass and three 2048-token passes of a 4.6k-token prompt: 1.3 s a pass on an 8 GB card with 13 GB
+of the experts off it, 0.44 s on a 12 GB card with 9.5 GB, 25 s on two 16 GB cards with some 50 GB of
+a 284B model's. The request is this machine's own (`MeasuredKnobs::mix_*`, recorded on every load
+that answers one) and, on a first load, `mix_prompt_tokens_default` prompt tokens against
+`mix_gen_tokens_default` decoded (4096 and 300). The load serves the width priced faster and times
+its decode and its prefill of the prompts longer than the narrow width
+(`MeasuredKnobs::width_narrow`); a side's measurement corrects both prices, both sides' replace
+them, and the width in force gives way only past `min_backend_win`. Decided on the decode alone, as
+it was, the narrow graph won wherever it decoded faster: +40% decode and -40% prefill of a
+4.6k-token prompt on an 8 GB card, -28% on a 12 GB one, -47% on two 16 GB cards. Measured on two
+24 GB cards with GLM-4.5-Air: 14.2 tok/s decoded at 16384 tokens wide against 19.4 at 512, where the
+wide graph prefilled a 9.5k-token prompt at 610 tok/s and a 512-wide one, in llama.cpp, at 104. A
+width set by hand is left alone and charged in full; a rate that was not measured decides nothing,
+and the widest graph inside the bounds above stands
+([measured-planning.md](measured-planning.md#decisions-fixed-at-load-priced-served-then-measured)).
 
 Measured on a 12 GB card (RTX 3060 class, 120 GiB of host memory) with Qwen3.8-Flash-Next Q2_0 at a
 16384 context. The graph as wide as the context reserved 6644 MiB of the card for compute buffers.
@@ -1209,52 +1217,32 @@ prefill buffers nowhere to go). Where the device is not faster, a fact is missin
 fitter's placement stands and the plan says which. On a shared pool, or with the caller's own
 placement, it says nothing and changes nothing.
 
-Whether the cache then stays is measured, across loads, because a device faster at the experts is
-not enough: every miss crosses the link first. A load with nothing measured arms the cache and times
-its decode, the next runs the fitter's placement and times that, and the plan after keeps the faster,
-the cache holding within `min_backend_win` ([measured-planning.md](measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache)).
-The fitter's placement is timed only where it could win, since timing it costs a whole load at its
-rate: its ceiling (`fitter_decode_ceiling`: the bytes it computes on the host at the host's probed
-expert rate, the rest at the fastest device's, nothing for crossings or overheads), raised by
-`rate_ceiling_slack` for a probe that reads low, has to beat the cache's measured rate by
-`min_backend_win`. Where it cannot, the second load keeps the cache and the plan says why. With
-load-time calibration (on by default) the "loads" are short candidate loads timed before the plan is
-served, the tier first and the width then on its winner, and a side that cannot be opened loses
-([measured-planning.md](measured-planning.md#decisions-across-loads-timed-at-load)).
+Whether the cache is served is decided by calculation, because a device faster at the experts is
+not enough: every miss crosses the link first. Both sides are priced from the probed rates, the
+cache with its misses uploaded at the hit share its size reaches (`device_cache_decode_seconds`) and
+the fitter's placement from its ceiling (`fitter_decode_ceiling`: the bytes it computes on the host at
+the host's probed expert rate, the rest at the fastest device's, nothing for crossings or overheads),
+at the half of it such placements were measured to reach (`fitter_ceiling_realized`).
+The load serves the side priced faster and times its own decode; a side measured stands at its
+measurement, and the fitter's placement takes over only where it is past the cache by
+`min_backend_win` ([measured-planning.md](measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache)).
+No load is opened to try a side, and a side that cannot be opened twice loses
+([measured-planning.md](measured-planning.md#decisions-fixed-at-load-priced-served-then-measured)).
 
 ### Who computes the device cache's misses
 
 `--device-cache-cpu-share` hands part of a device cache's misses to the host instead of uploading
-them ([backends.md](backends.md)). `choose_device_cache_cpu_share` prices it and the loads decide it.
-The price: a token's experts take the longer of the device's half (the hits, and the misses still
-uploaded then computed) and the host's (its share of the misses at the host's expert rate), plus
-`host_hop_seconds` for each MoE layer whenever the share is above 0. That last term is the fixed
-cost a share adds whatever it computes, a device op, a host op at the decode's thread count and a
-device op again, measured through the scheduler on the device (`measure_host_hop`). The share is
-where the two halves meet, capped by `device_cache_upload_min` so the cache keeps learning, and it is
-only nominated where it beats uploading every miss by `min_backend_win`.
-
-The price cannot see whether the cache fills, and a cache that never fills computes no miss on the
-host and pays the hops anyway. So a nominated share is decided across loads like the device tier and
-the width (`KnobTrialConfig::cpu_share_side`, `MeasuredKnobs::cpu_share_tps`): it is weighed only once
-the tier and the width are decided, a calibration times it as a candidate, the cache's rate with
-every miss uploaded is the tier's own measurement, and the faster stays. A served load never opens a
-share that has not been measured (`servable`). Measured on a rented 32 GB card (RTX 5090 class, PCIe
-4, 48 cores) with Qwen3.8-Flash-Next Q2_0: a hop of 18 us a layer; the price, at an 82% hit share
-read off the expert set the cache holds, nominated 0.89; the calibration timed it at 70.9 tok/s
-against the cache's 103 and every miss stayed uploaded (102.5 served). The same card held down to
-12 GiB free: the share timed 79.9 against 74.9, inside the margin, and stayed off. The share is held
-against the cache on the graph the plan runs, which the width's timing gives where the width was
-decided after the tier: on a 12 GB card on PCIe 3 with 8 cores, the cache decoded at 26.3 tok/s at its
-first width and 31.6 at the 2048-wide graph the width then chose, the share timed 32.2 there, and it
-stayed off (32.5 served; the fitter's placement 21.1). On a 12 GB card
-with a 6-core host (RTX 3060 class, Flash-Next IQ3_S), a share of 0.76-0.78 took the decode from
-18.5 to 21.1-21.2 tok/s (#519), which is the case it is for. On a shared pool there is no device
-cache and nothing is weighed. The share is weighed only where the plan does not stream, and that is read
-off the regime the plan has already decided, not off the starting configuration's `moe.enabled`: the
-server starts streamed and the CLI does not, and reading the starting value gave the same machine two
-plans. On a rented 8 GB card with Qwen3.6-35B-A3B, which fits in RAM, the CLI timed a share and decoded
-at 43.9 tok/s while the server refused it as streamed and decoded at 36.6.
+them ([backends.md](backends.md)). It is a person's setting: the plan uploads every miss
+(`choose_device_cache_cpu_share`) and names the flag. The share is fixed when the context is created,
+so its two sides cannot be switched within a load, and no price of it held, because the price cannot
+see whether the cache fills: a cache that never fills computes no miss on the host and pays a host
+hop on every MoE layer anyway. Measured on a rented 32 GB card (RTX 5090 class, PCIe 4, 48 cores)
+with Qwen3.8-Flash-Next Q2_0: a share priced at 0.89 decoded at 70.9 tok/s against the cache's 103.
+On a 12 GB card with a 6-core host (RTX 3060 class, Flash-Next IQ3_S), a share of 0.76-0.78 took the
+decode from 18.5 to 21.1-21.2 tok/s (#519), which is the case it is for. Deciding it took a load of
+its own for each side, timed before the first answer, and that timing is gone
+([measured-planning.md](measured-planning.md#decisions-fixed-at-load-priced-served-then-measured)).
+Over streamed experts the pair is not gated.
 
 The layers the fitter split (`price_layers_home`, [measured-planning.md](measured-planning.md#step-3-the-cost-of-a-device-measured-on-a-real-layer)):
 where the capacity fitter put the dense part of some layers on a device and left their experts on
@@ -1279,25 +1267,27 @@ memory), the capacity fitter's placement is set aside, because its arithmetic co
 twice (`placement-declined`). That settles capacity and nothing else: where the whole model is held
 in memory (`fits`, or any model with no experts, which the cores hold whole on every plan), running it
 on the device frees nothing and costs only its compute buffer, and what is left is which engine runs
-it faster. `choose_shared_device` asks that of
-the model itself, as a decision across loads like the device tier
-(`KnobTrialConfig::shared_device_side`, `MeasuredKnobs::shared_device_tps`): one load times the
-decode on the cores, the placement every load had before this rule; one times it with every layer
-and the output head on the device, named in `device_split` so no second backend that drives the same
-silicon takes a share; the plan after keeps the faster by `min_backend_win`. Where the two decode
-level, inside the margin either way, the device's rate on a prompt-wide real layer of the model
-(`wide_matmul_gibs`, with the host's results) decides: a move that costs no decode and no memory and
-prefills faster is a win. A calibration times both sides before the first answer is served, and a
-served load never opens the device side unmeasured (`servable`).
+it faster. `choose_shared_device` prices a request of this machine's on each side
+(`MeasuredKnobs::mix_*`, or the default mix on a first load): its decoded tokens at the rate each
+processor applies one real layer of this model one token wide, and its prompt at the rate each
+applies it as wide as a prompt (`wide_matmul_gibs`), both probed with the host's results. The cores
+are the side in force, the placement every load had before this rule; the device takes every layer
+and the output head, named in `device_split` so no second backend that drives the same silicon takes
+a share, where the request is shorter there by `min_backend_win`. The load times the decode of the
+side it serves (`KnobTrialConfig::shared_device_side`, `MeasuredKnobs::shared_device_tps`), and once
+both sides have a decode rate their ratio replaces the probe's. No load is opened to try the device
+([measured-planning.md](measured-planning.md#decisions-fixed-at-load-priced-served-then-measured)).
 
-Measured rather than derived, because nothing smaller predicts it. On a 16 GB unified-memory
+A probe of one layer does not always predict the whole model's decode. On a 16 GB unified-memory
 laptop the one-token probe read the cores 60% ahead of the GPU (109 GiB/s against 67), while a
 64-expert cut of Qwen3.6-35B-A3B held in memory decoded 54 tok/s on the GPU against 40 on the
 cores, and Granite-3.1-3B-A800M 165-170 against 121-124 (#380). An AMD laptop APU through Vulkan
 decoded a 1.7B model 28% faster on its iGPU than on its cores and prefilled it 1.7-3x faster (#602);
 published runs of other machines go from an older Intel iGPU through OpenCL 37% slower than its
 cores to Max-class unified memory several times faster, where the cores cannot reach the bus the
-GPU does. A rule over any of those figures would be wrong on some of them.
+GPU does. Timing both sides as loads of their own caught those and cost every first load the model's
+reopening; priced, a machine whose probe reads the cores ahead on the decode keeps them unless its
+prompts decide it, and a device served once is measured from then on.
 
 A device is a candidate only where each of these is a fact: it computed the host's results on one
 real layer of this model, one token wide and as wide as a prompt (`identity_ok`, `wide_identity_ok`:
@@ -1313,14 +1303,14 @@ weights too, since the cores hold the model whole on every plan. Measured on a 1
 GB usable: a 2B dense model holding 2670 MiB was kept on the cores because the 1638 MiB left beside
 it and the GPU's 1364 MiB buffer fell short of the 2670 the model holds, which the cores held all the
 same; against what the move adds it is a candidate, and a 4B model with 406 MiB left beside a 524 MiB
-buffer is still refused, now with the figures. A device that fails any of them is never timed, and
+buffer is still refused, now with the figures. A device that fails any of them is never served, and
 the plan names which one failed, whatever the regime. Where the
 backend can wrap the file's mapping (`host_ptr_verified`, Metal does) the weights stay the mapping
 and the device reads them in place; where it cannot (Vulkan and OpenCL advertise no such buffer),
 llama.cpp copies them into the device's own buffers, which are this same memory, and leaves the
 mapping's pages for the system to reclaim. Either way the model occupies the pool once, and the
-plan says which. A load that cannot open the model on the device is recorded as not viable and the
-cores keep it, as for every other decision across loads.
+plan says which. A load that cannot open the model on the device opens it on the cores instead and
+the failure is counted against the device, as for every other decision fixed at load.
 
 Out of its scope: a model that streams. Its experts live in memory the streamer reserved, which no
 device is handed (`note_expert_compute`), so there the device keeps the prompt alone (the prefill

@@ -311,7 +311,6 @@ key, under the same security statement.
             "ctx_advice": {"recommended": 16384, "short": true, "param": "ctx-size", "refused": false,
                            "warn": false}},
   "generating": false,
-  "calibrating": false,
   "load_elapsed_s": 12.4
 }
 ```
@@ -324,12 +323,7 @@ it, so the count is the server's, the same on every screen and after a screen ch
 before it loads: tens of seconds on a phone, nothing loaded meanwhile), `loading`, `ready`, `error`
 (the last load failed; `error` says why). A request that needs the model while one is loading or a
 load in auto mode is measuring first, whoever started it, waits for it rather than being refused,
-and is answered with the loaded model's name. A load asked for during a calibration supersedes it. `calibrating` is true while a
-load-time calibration runs ([measured-planning.md](measured-planning.md#decisions-across-loads-timed-at-load)):
-the plan the model was loaded with left a decision to time, and once the server had been idle for a
-minute after an answer it unloaded the model to time each side. `state` reads `ready` and `model`
-names the model meanwhile, since the server still takes requests: one that arrives stops the
-calibration and waits for the model to load again. `plan_progress` events name each candidate.
+and is answered with the loaded model's name.
 `model` is `null` unless `state` is `ready`. `streaming` is whether expert streaming is
 on for the loaded session: with it off the engine is plain llama.cpp on mmap, and the UI must say so.
 Whether a model will stream is only known once it has loaded (a dense model, a plan that declines),
@@ -930,7 +924,7 @@ limit.
 | `backend` | a backend pack's install: `id` (the pack), `kind` (`backend`), `file`, `received`, `total`, `state` (`running`, `done`, `error`, `cancelled`), `error` (with `running`: the step, such as `unpacking`); with `done`, `restart_required` and `in_place` (false when the pack replaces one in use and takes its place at the next start) |
 | `update` | the installer's download: the same fields with `id` `update`, and with `done` its `path` and `version` |
 | `config` | the `GET /api/config` object, after any change |
-| `plan_progress` | a measurement (`GET /api/plan?measure=1`, or an auto load) entering a stage: `step` (`devices`, `model`, `compute`, `storage`, `memory`, `placement`, `rules`), its words `label`, `index` from 0 and `count`; then `{"step": "done"}` when it ends. A load-time calibration reports `step` `calibrate` once per candidate it opens, `index` its place and `count` the most it opens, then `done`. A UI shows `label`; `step` is the protocol |
+| `plan_progress` | a measurement (`GET /api/plan?measure=1`, or an auto load) entering a stage: `step` (`devices`, `model`, `compute`, `storage`, `memory`, `placement`, `rules`), its words `label`, `index` from 0 and `count`; then `{"step": "done"}` when it ends. A UI shows `label`; `step` is the protocol |
 | `conversation` | an agent conversation's `{id, title, state, updated}`, whenever one of those changes ([agent.md](agent.md#events)) |
 | `item` | `{conversation, item}`: an agent item added or changed, whole |
 | `delta` | `{conversation, item, text?, reasoning?, arguments?}`: what a streaming assistant item adds, or (`arguments`) what a `composing` tool call adds to its arguments |
@@ -1212,7 +1206,7 @@ an id that is not an added entry.
 Otherwise the planner's proposal for the configured model on this machine. It runs the planner's
 probes (a second or two of storage reads and a bandwidth run, never the intrusive memory probe)
 without loading the model; `409` while a generation runs, since that would skew the measurement,
-and while a model loads or calibrates, since the probes run on the engine's one thread it holds.
+and while a model loads, since the probes run on the engine's one thread it holds.
 Each compute device beyond the host is first asked in a process of its own (the server started
 again with `--probe-device`), so a driver that ends the process it is used from marks the device
 unusable instead of ending the server; `--no-isolated-probes` runs them in-process.

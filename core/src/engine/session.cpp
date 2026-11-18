@@ -2441,7 +2441,7 @@ void Session::Impl::rate_step(double seconds, int tokens, uint64_t lookups, uint
     if (settling && !r.settling()) log_printf(LogLevel::Info, "knob trial: timing the decode %s", what);
     if (!r.done()) return;
     const double tps = r.tokens_per_second();
-    record_side_rate(cfg.trial, tps, trials.result); // the mapping a load-time calibration reads by too
+    record_side_rate(cfg.trial, tps, trials.result);
     log_printf(LogLevel::Info, "knob trial: %.2f tok/s %s, the median of %d windows", tps, what, r.windows());
     next_trial_stage(/*settled*/ true);
 }
@@ -2824,11 +2824,6 @@ struct Session::Impl::Turn {
     common_chat_msg final_msg;
     bool final_parsed = false;
 
-    // ── a calibration candidate's turn (GenerateRequest::calibration) ──
-    CalibrationTurn * calib = nullptr;
-    std::unique_ptr<RateProbe> calib_probe;
-    uint64_t calib_lookups = 0, calib_hits = 0; // the cache's counters at the last step
-
     // One decode of the loop: the confirmed token and whatever was drafted after it, verified in
     // one batch, and what that decode cost.
     struct Step {
@@ -2845,7 +2840,7 @@ struct Session::Impl::Turn {
 
     Turn(Impl & im_, const GenerateRequest & req_, RunResult & res_)
         : im(im_), req(req_), res(res_), moe(im_.cfg.moe), ctx(im_.ctx.get()), prompt(req_.prompt),
-          chat_on(im_.chat_on), calib(req_.calibration) {}
+          chat_on(im_.chat_on) {}
 
     bool fail(RunError kind, std::string msg) {
         res.ok = false;
@@ -2873,7 +2868,7 @@ struct Session::Impl::Turn {
     // penalties look back over the prompt too, as llama.cpp's server feeds them. False for a request
     // the vocabulary cannot honour.
     bool arm_sampler() {
-        if (!req.sampling || calib) return true;
+        if (!req.sampling) return true;
         const RequestSampling & r = *req.sampling;
         if (im.cfg.spec.enabled()) {
             if (!im.request_sampling_logged) {
@@ -2930,16 +2925,8 @@ struct Session::Impl::Turn {
     detail::AnswerStart answer_start; // a stop is matched in the answer, never in the reasoning before it
 
     bool sample_next(int32_t row) {
-        // A calibration replay takes the first candidate's tokens as long as they last: not sampled, so
-        // the sampling chain's state is not advanced by them either.
-        if (calib && calib->tokens.size() < calib->replay.size()) {
-            tok = (llama_token) calib->replay[calib->tokens.size()];
-            calib->tokens.push_back((int32_t) tok);
-            return true;
-        }
         try {
             tok = sample(row);
-            if (calib) calib->tokens.push_back((int32_t) tok);
             if (tok == LLAMA_TOKEN_NULL || (constrained() && !grammar.active())) {
                 rollback_turn();
                 return fail(constrained() ? RunError::InvalidOutput : RunError::Failed,
@@ -3788,49 +3775,6 @@ struct Session::Impl::Turn {
         tally.prev_io_s = im.source.stats().read_seconds;
     }
 
-    // A calibration candidate's timing: the knob trial's windows (KnobTrialPolicy), settled on the
-    // cache's hits where they are in view and on the rate where they are not (a device expert cache
-    // fills inside llama.cpp), and set against the other side's run where there was one.
-    void begin_calibration() {
-        KnobTrialPolicy pol;
-        pol.window_tokens = im.cfg.trial.window_tokens;
-        const bool device_cache = im.cfg.moe.device_cache_mb > 0;
-        calib_probe = std::make_unique<RateProbe>(/*settle*/ true, /*hits_visible*/ !device_cache, pol);
-        if (device_cache) calib_probe->settle_on_rate();
-        calib_probe->set_reference(calib->reference_lo, calib->reference_hi);
-        if (moe.enabled) {
-            const IExpertSource::Stats st = im.source.stats();
-            calib_lookups = (uint64_t) st.cache_lookups;
-            calib_hits = (uint64_t) st.cache_hits;
-        }
-    }
-
-    // One decode step of a candidate; true once its rate is known.
-    bool calibration_step(double seconds, int tokens) {
-        uint64_t lookups = 0, hits = 0;
-        if (moe.enabled) {
-            const IExpertSource::Stats st = im.source.stats();
-            lookups = (uint64_t) st.cache_lookups - calib_lookups;
-            hits = (uint64_t) st.cache_hits - calib_hits;
-            calib_lookups = (uint64_t) st.cache_lookups;
-            calib_hits = (uint64_t) st.cache_hits;
-        }
-        calib_probe->record(seconds, tokens, lookups, hits);
-        return calib_probe->done();
-    }
-
-    // What the candidate measured, however its decode ended: a rate from the windows it timed even
-    // where the answer ended before the last of them.
-    void end_calibration() {
-        if (!calib || !calib_probe) return;
-        const RateProbe & r = *calib_probe;
-        calib->tokens_per_second = r.done() ? r.tokens_per_second() : r.rate_so_far();
-        calib->step_lo = r.step_lo();
-        calib->step_hi = r.step_hi();
-        calib->windows = r.windows();
-        calib->cut = r.cut();
-    }
-
     // ── greedy generation ──
     // Returns false only on a failure; a cancel ends the loop with res.cancelled set.
     bool decode(const std::function<void(const TokenMetrics &)> & on_token, IMetricsSink * sink) {
@@ -3838,7 +3782,6 @@ struct Session::Impl::Turn {
         if (!begin_decode()) return false;
         // A knob trial in progress takes up where the last turn left it.
         trial_guarded([&] { im.resume_trial(); });
-        if (calib) begin_calibration();
         while (n_gen < n_predict) {
             if (llama_vocab_is_eog(im.vocab, tok)) break;
             Step s;
@@ -3857,10 +3800,7 @@ struct Session::Impl::Turn {
             if (!accept(s)) return false;
             emit(s, on_token, sink);
             brake_cache();
-            if (calib) {
-                // A candidate's turn times the candidate and nothing else, and ends with its verdict.
-                if (calibration_step(secs(s.s0, s.s1) + s.draft_s, (int) confirmed.size())) break;
-            } else if (im.trials.stage != im.stage_done) {
+            if (im.trials.stage != im.stage_done) {
                 // The decode as the knob changes it: the target's and the draft's passes, not the
                 // emission around them, which a person's own client paces.
                 const double step_s = secs(s.s0, s.s1) + s.draft_s;
@@ -4133,7 +4073,6 @@ RunResult Session::generate(const GenerateRequest & req,
     } trial_pause{im};
     if (!turn.prefill()) return res; // a failure, or a cancel already rolled back
     const bool decoded = turn.decode(on_token, sink);
-    turn.end_calibration();
     if (!decoded) return res;
     if (!turn.parse_result()) return res;
     turn.trim_speculative_kv();

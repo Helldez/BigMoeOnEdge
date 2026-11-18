@@ -39,8 +39,6 @@
       <span class="skeleton spin"></span><span class="grow">{info.state === 'planning' ? t('status.planning.long') : t('status.loading.long')}</span>
       {#if elapsed > 0}<span class="figure">{t('status.elapsed', { s: elapsed })}</span>{/if}
     </p>
-  {:else if info?.calibrating}
-    <p class="banner info"><span class="skeleton spin"></span>{t('status.calibrating.long')}</p>
   {:else if info?.state === 'error'}
     <p class="banner error">
       <Icon name="alert" size={16} /><span>{t('status.error.long')}{info.error ? `: ${info.error}` : ''}</span>

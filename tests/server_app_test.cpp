@@ -2,21 +2,14 @@
 // (server_seams.h): the server's own policy on a real listening socket, no model. Started without
 // --autoload, the way the desktop and the apps run it.
 //
-//   * a model named at launch is planned, calibrated before it opens (as bmoe-cli --auto does), and
-//     loaded on the decided plan; a request sent meanwhile waits for it and is answered;
-//   * what a load's calibration leaves pending is calibrated once the server is idle after an answer:
-//     /api/info reads ready with `calibrating`;
-//   * a request during the calibration is answered, not refused: it stops the calibration, which
-//     applies what it decided and loads again;
-//   * one attempt per load: the next answer's end finds nothing armed;
-//   * a cancel stops it and the model loads again; an unload stops it and nothing is opened or
-//     applied; another model chosen meanwhile is not given this model's plan; a load asked for
-//     meanwhile supersedes it; a final open that fails leaves no model named;
-//   * a served load whose pending side will not open opens the plan's other side instead, and the
-//     failure is kept against the side; a side another load already measured is served instead of a
-//     pending one that has not been proven to open.
+//   * a model named at launch is planned and loaded on the plan as made, the side it names included:
+//     one open, no model opened to try a side, none reopened before or after the first answer;
+//   * a load whose named side will not open opens the plan's other side instead, and the failure is
+//     kept against the side, one more each time: a second failure reaches the count a plan drops the
+//     side at (MeasuredKnobs::unviable_max);
+//   * where the other side does not open either, the load ends in error and nothing is kept.
 //
-// Every wait is for an event (a state, a count, a turn's end), never for time to pass.
+// Every wait is for an event (a state, a count), never for time to pass.
 // Checks are explicit (not <cassert>): the Release build defines NDEBUG, which compiles assert out.
 
 #include "listen_port.h"
@@ -103,17 +96,7 @@ struct Script {
     int opened = 0;        // sessions opened
     int open_failures = 0; // opens made to fail
     int fail_next_opens = 0;
-    int calibrations = 0;
-    bool calibrating = false;
-    bool stopped = false; // the last calibration saw its stop
-    bool release = false; // ends the calibration in progress without a stop
-    int turn_ends = 0;
-    bool last_turn_armed = false;
-    // What the next plan's record holds: the pending side's other side measured or not.
-    bool other_measured = false;
-    // Calibrations that end at once with the side still pending, as one stopped before its verdict:
-    // what leaves the idle point something to calibrate.
-    int pending_next = 0;
+    int plans = 0; // plans made
 
     template <class F> bool wait(F pred, std::chrono::milliseconds limit = k_ceiling) {
         std::unique_lock<std::mutex> lk(m);
@@ -154,7 +137,7 @@ bool wait_info(httplib::Client & cli, const std::function<bool(const json &)> & 
 }
 
 bool ready(const json & i) {
-    return i.value("state", "") == "ready" && !i.value("calibrating", true);
+    return i.value("state", "") == "ready";
 }
 
 std::string config_value(httplib::Client & cli, const char * key) {
@@ -184,10 +167,10 @@ int main() {
                                                       "-" + std::to_string(++counter));
     fs::remove_all(dir);
     fs::create_directories(dir / "models");
-    const fs::path model = dir / "models" / "fake.gguf", other = dir / "models" / "other.gguf";
-    for (const fs::path & p : {model, other}) {
-        std::ofstream f(p, std::ios::binary);
-        f << "not a real model " << p.filename().u8string();
+    const fs::path model = dir / "models" / "fake.gguf";
+    {
+        std::ofstream f(model, std::ios::binary);
+        f << "not a real model " << model.filename().u8string();
     }
 
     Script sc;
@@ -205,8 +188,8 @@ int main() {
         sc.changed();
         return std::make_unique<EchoSession>();
     };
-    // A plan that leaves the device tier to time, as one beside a card of its own does; its own value
-    // `trial-device-cache` tells the served plan from the other side's.
+    // A plan that names a side of the device tier, as one beside a card of its own does; its own value
+    // `trial-device-cache` tells the plan as made from the other side's.
     seams.plan = [&](const RunConfig & cfg) {
         PlanOutcome p;
         p.ok = true;
@@ -217,64 +200,14 @@ int main() {
         basis->cfg = cfg;
         basis->facts.plan.config = cfg;
         basis->facts.plan.config.trial.device_tier = 1;
-        {
-            std::lock_guard<std::mutex> lk(sc.m);
-            if (sc.other_measured) basis->facts.model.knobs.no_device_cache_tps = 9.0;
-        }
         p.basis = basis;
+        std::lock_guard<std::mutex> lk(sc.m);
+        ++sc.plans;
         return p;
     };
-    // A calibration that runs until a request stops it or the test releases it, and then decides a
-    // plan that sets `threads` to 5.
-    seams.calibrate = [&](const PlanOutcome & p, const MeasuredKnobs &, const std::atomic<bool> & stop,
-                          const PlanStepFn & on_step) {
-        {
-            std::lock_guard<std::mutex> lk(sc.m);
-            if (sc.pending_next > 0) {
-                --sc.pending_next;
-                CalibrationOutcome c;
-                c.ran = true;
-                c.plan = p;
-                return c;
-            }
-        }
-        {
-            std::lock_guard<std::mutex> lk(sc.m);
-            ++sc.calibrations;
-            sc.calibrating = true;
-            sc.release = false;
-            sc.changed();
-        }
-        if (on_step) on_step("calibrate", "Timing the placements", 0, 4);
-        for (;;) {
-            std::unique_lock<std::mutex> lk(sc.m);
-            if (stop.load() || sc.release) break;
-            sc.cv.wait_for(lk, 1ms);
-        }
-        CalibrationOutcome c;
-        c.ran = true;
-        c.complete = true;
-        c.plan = p;
-        c.plan.values = {{"threads", "5"}};
-        auto decided = std::make_shared<PlanBasis>(*p.basis);
-        decided->facts.plan.config.trial.device_tier = -1;
-        c.plan.basis = decided;
-        std::lock_guard<std::mutex> lk(sc.m);
-        sc.stopped = stop.load();
-        sc.calibrating = false;
-        sc.changed();
-        return c;
-    };
-    seams.calibration_idle_delay = 20ms;
     seams.load_backends = false; // nothing here computes; the start does not wait on the machine's driver
     std::promise<int> port_promise;
     seams.bound = [&](int port) { port_promise.set_value(port); };
-    seams.turn_ended = [&](bool armed) {
-        std::lock_guard<std::mutex> lk(sc.m);
-        ++sc.turn_ends;
-        sc.last_turn_armed = armed;
-        sc.changed();
-    };
 
     Embedding emb;
     emb.seams = &seams;
@@ -337,167 +270,63 @@ int main() {
         std::lock_guard<std::mutex> lk(sc.m);
         return sc.opened;
     };
-    const auto calibrations = [&] {
+    const auto plans = [&] {
         std::lock_guard<std::mutex> lk(sc.m);
-        return sc.calibrations;
+        return sc.plans;
     };
-    // An answer, then the calibration it arms, running.
-    const auto answer_then_calibrating = [&](const std::string & what) {
-        const int before = calibrations();
-        check(chat(cli) == 200, what + ": an answer");
-        check(sc.wait([&] { return sc.calibrations > before && sc.calibrating; }),
-              what + ": idle after it, the pending side is calibrated");
-    };
-    // A load whose own calibration leaves the side pending, for the idle point to calibrate.
-    const auto leave_pending = [&] {
+    const auto knobs = [&] { return read_knobs(dir / "routing"); };
+
+    // ── the model named at launch: planned once, and loaded on the plan as made ──
+    check(wait_info(cli, ready) && opened() == 1 && plans() == 1,
+          "the model named at launch is planned once and opened once");
+    check(config_value(cli, "trial-device-cache") == "1", "it runs the plan as made, the side it names included");
+    check(chat(cli) == 200 && chat(cli) == 200 && opened() == 1 && plans() == 1 &&
+              get_json(cli, "/api/info").value("state", "") == "ready",
+          "the first answers come from that load: no model is opened to try a side, none reopened");
+    check(knobs().find("unviable") == std::string::npos, "a side that opened has no failure kept");
+
+    // A load of the model whose first `fail` opens fail.
+    const auto load_failing = [&](int fail) {
         std::lock_guard<std::mutex> lk(sc.m);
-        sc.pending_next = 1;
-    };
-    const auto load = [&](const fs::path & m) {
-        leave_pending();
-        const int before = opened();
-        check(post(cli, "/api/session/load", {{"model", m.u8string()}}) == 202 &&
-                  sc.wait([&] { return sc.opened > before; }) && wait_info(cli, ready),
-              "a load of " + m.filename().u8string());
+        sc.fail_next_opens = fail;
     };
 
-    // ── the model named at launch: calibrated before it opens, a request meanwhile waits for it ──
-    check(sc.wait([&] { return sc.calibrating; }) && opened() == 0,
-          "the model named at launch is calibrated before it opens");
-    check(get_json(cli, "/api/info").value("state", "") != "ready", "nothing is served meanwhile");
+    // ── a load whose named side will not open opens the other side, and remembers ──
     {
-        httplib::Client waiting(cli.host(), cli.port());
-        waiting.set_read_timeout(k_ceiling);
-        std::future<int> answered = std::async(std::launch::async, [&] { return chat(waiting); });
-        {
-            std::lock_guard<std::mutex> lk(sc.m);
-            sc.release = true;
-            sc.changed();
-        }
-        check(answered.get() == 200 && opened() == 1 && config_value(cli, "threads") == "5",
-              "it opens on the decided plan, and the request sent meanwhile is answered on it");
-        int ends = 0;
-        {
-            std::lock_guard<std::mutex> lk(sc.m);
-            ends = sc.turn_ends;
-        }
-        check(chat(cli) == 200 && sc.wait([&] { return sc.turn_ends > ends; }) && !sc.last_turn_armed &&
-                  calibrations() == 1,
-              "one calibration: an answer's end finds nothing left to time");
-    }
-
-    // ── what a load's calibration left pending: calibrated at the idle point, a request during it ──
-    load(model);
-    answer_then_calibrating("first load");
-    const json during = get_json(cli, "/api/info");
-    check(during.value("state", "") == "ready" && during.value("calibrating", false) && during["model"].is_object(),
-          "during the calibration /api/info reads ready, calibrating, with its model");
-    check(chat(cli) == 200, "a request during the calibration is answered, not refused");
-    check(sc.wait([&] { return !sc.calibrating; }) && sc.stopped, "and it stopped the calibration");
-    check(wait_info(cli, ready) && opened() == 3, "the model is loaded again after it");
-    check(config_value(cli, "threads") == "5", "the decided plan is applied");
-    {
-        int ends = 0;
-        {
-            std::lock_guard<std::mutex> lk(sc.m);
-            ends = sc.turn_ends;
-        }
-        check(chat(cli) == 200 && sc.wait([&] { return sc.turn_ends > ends; }) && !sc.last_turn_armed &&
-                  calibrations() == 2,
-              "one calibration per load: the next answer's end finds nothing armed");
-    }
-
-    // ── a cancel stops it, and the model is loaded again ──
-    load(model);
-    answer_then_calibrating("cancel");
-    {
-        const int before = opened();
-        check(post(cli, "/api/cancel", json::object()) == 200, "a cancel during the calibration");
-        check(sc.wait([&] { return !sc.calibrating; }) && sc.stopped && sc.wait([&] { return sc.opened > before; }) &&
-                  wait_info(cli, ready),
-              "it stops the calibration, and the model loads again");
-    }
-
-    // ── an unload stops it: nothing is opened and nothing applied ──
-    load(model);
-    answer_then_calibrating("unload");
-    {
-        const int before = opened();
-        check(post(cli, "/api/session/unload", json::object()) == 200, "an unload during the calibration");
-        check(sc.wait([&] { return !sc.calibrating; }) && sc.stopped, "it stops the calibration");
-        check(get_json(cli, "/api/info").value("state", "") == "empty" && opened() == before &&
-                  config_value(cli, "threads") != "5",
-              "nothing is opened after it, and its plan is not applied");
-    }
-
-    // ── another model chosen meanwhile: this model's plan is not laid over it ──
-    load(model);
-    answer_then_calibrating("model switch");
-    {
-        check(post(cli, "/api/config", {{"values", {{"model", other.u8string()}}}}, "PUT") == 200,
-              "another model chosen during the calibration");
-        {
-            std::lock_guard<std::mutex> lk(sc.m);
-            sc.release = true;
-            sc.changed();
-        }
-        check(sc.wait([&] { return !sc.calibrating; }) && wait_info(cli, ready), "the calibration ends, a model loads");
-        check(config_value(cli, "threads") != "5" && config_value(cli, "model") == other.u8string(),
-              "its plan is not applied over the settings that now name another model");
-    }
-
-    // ── a load asked for meanwhile supersedes it ──
-    load(model);
-    answer_then_calibrating("load");
-    {
-        const int before = opened();
-        leave_pending();
-        check(post(cli, "/api/session/load", json::object()) == 202,
-              "a load during the calibration is taken, not refused");
-        check(sc.wait([&] { return !sc.calibrating && sc.opened > before; }) && wait_info(cli, ready),
-              "it supersedes the calibration and loads");
-    }
-
-    // ── a final open that fails leaves no model named ──
-    load(model);
-    answer_then_calibrating("failed open");
-    {
-        std::lock_guard<std::mutex> lk(sc.m);
-        sc.fail_next_opens = 1;
-        sc.release = true;
-        sc.changed();
-    }
-    check(wait_info(cli,
-                    [](const json & i) {
-                        return i.value("state", "") == "error" && i["model"].is_null() && !i.value("calibrating", true);
-                    }),
-          "a final open that fails ends in error with no model named");
-
-    // ── a served load whose pending side will not open opens the other side, and remembers ──
-    {
-        {
-            std::lock_guard<std::mutex> lk(sc.m);
-            sc.fail_next_opens = 1;
-        }
+        load_failing(1);
         const int failed = sc.open_failures, before = opened();
-        leave_pending();
         check(post(cli, "/api/session/load", {{"model", model.u8string()}}) == 202, "a load whose side will fail");
-        check(sc.wait([&] { return sc.open_failures > failed && sc.opened > before; }) && wait_info(cli, ready),
-              "the pending side fails to open, and the other side is loaded instead");
+        check(sc.wait([&] { return sc.open_failures > failed && sc.opened > before; }) && wait_info(cli, ready) &&
+                  opened() == before + 1,
+              "the named side fails to open, and the other side is loaded instead");
         check(config_value(cli, "trial-device-cache") != "1", "the plan served is the other side's");
-        check(read_knobs(dir / "routing").find("unviable=device_cache:1") != std::string::npos,
-              "the failure is kept against the side");
+        check(knobs().find("unviable=device_cache:1") != std::string::npos, "the failure is kept against the side");
+        check(chat(cli) == 200, "and the other side answers");
     }
 
-    // ── a side measured before is served instead of a pending one not proven to open ──
+    // ── neither side opens: an error, and nothing more is kept against the side ──
     {
-        {
-            std::lock_guard<std::mutex> lk(sc.m);
-            sc.other_measured = true;
-        }
-        load(model);
-        check(config_value(cli, "trial-device-cache") != "1",
-              "with the other side measured here, the pending side is left to the calibration");
+        load_failing(2);
+        const int failed = sc.open_failures, before = opened();
+        check(post(cli, "/api/session/load", {{"model", model.u8string()}}) == 202, "a load neither side of opens");
+        check(sc.wait([&] {
+            return sc.open_failures >= failed + 2;
+        }) && wait_info(cli, [](const json & i) { return i.value("state", "") == "error" && i["model"].is_null(); }),
+              "it ends in error with no model named");
+        check(opened() == before && knobs().find("unviable=device_cache:1") != std::string::npos,
+              "nothing opened, and the count is as it was: only an open of the other side says the failure was the "
+              "side's");
+    }
+
+    // ── a second failure reaches the count a plan drops the side at ──
+    {
+        load_failing(1);
+        const int failed = sc.open_failures, before = opened();
+        check(post(cli, "/api/session/load", {{"model", model.u8string()}}) == 202, "the side fails a second time");
+        check(sc.wait([&] { return sc.open_failures > failed && sc.opened > before; }) && wait_info(cli, ready),
+              "the other side is loaded again");
+        check(knobs().find("unviable=device_cache:" + std::to_string(MeasuredKnobs::unviable_max)) != std::string::npos,
+              "the second failure is counted on the first: the side has reached the limit");
     }
 
     const bool listening = stop_future.wait_for(k_ceiling) == std::future_status::ready;

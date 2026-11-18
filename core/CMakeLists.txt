@@ -22,7 +22,6 @@ add_library(bmoe_core STATIC
     src/engine/knob_trial.cpp
     src/plan/measured_knobs.cpp
     src/plan/model_records.cpp
-    src/plan/calibrate.cpp
     src/engine/decide/prompt_split.cpp
     src/engine/decide/choice_scorer.cpp
     src/engine/decide/prefix_cache.cpp
@@ -65,7 +64,6 @@ if(BMOE_HAVE_LLAMA)
         src/moe/decide_probe.cpp
         src/moe/device_arena.cpp
         src/engine/session.cpp
-        src/engine/calibration_run.cpp
         src/engine/context_checkpoints.cpp
         src/engine/prompt_stream.cpp
         src/engine/media_input.cpp

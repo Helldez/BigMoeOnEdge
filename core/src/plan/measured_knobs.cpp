@@ -364,7 +364,7 @@ void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKno
                 r.overlap_gain = rec.overlap_gain;
             }
             if (rec.threads > 0 || rec.overlap >= 0) r.rounds = rec.rounds;
-            // A failed-open count only grows from what a load handed on (a calibration starts from the kept
+            // A failed-open count only grows from what a load handed on (a failed open starts from the kept
             // count and adds its own), and is cleared only by a rate measured since: a record handed on
             // carries the side's earlier rate too, which says nothing about the failure after it.
             const auto merge_unviable = [](int & kept, int handed, double kept_rate, double handed_rate) {
@@ -467,6 +467,11 @@ int * unviable_count(const KnobTrialConfig & trial, MeasuredKnobs & rec) {
     if (trial.shared_device_side >= 0)
         return trial.shared_device_side == 1 ? &rec.shared_device_unviable : &rec.no_shared_device_unviable;
     return nullptr;
+}
+
+bool names_side(const KnobTrialConfig & trial) {
+    return trial.device_tier >= 0 || trial.width_side >= 0 || trial.cpu_share_side >= 0 ||
+           trial.shared_device_side >= 0;
 }
 
 void record_side_unviable(const KnobTrialConfig & trial, MeasuredKnobs & rec) {

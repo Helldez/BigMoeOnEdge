@@ -644,9 +644,9 @@ static void print_usage(const char * argv0) {
                 "      --csv PATH          also write per-token metrics as CSV\n"
                 "      --routing-dir DIR   where this model's measurements are kept between runs (its routing,\n"
                 "                          and what --auto timed on this machine): by default the per-user data\n"
-                "                          folder bmoe-server and the app use too, so a calibration one of them\n"
-                "                          ran is the others'. \"\" keeps nothing: --auto then plans from the\n"
-                "                          probes alone every run and does not calibrate\n"
+                "                          folder bmoe-server and the app use too, so what one of them\n"
+                "                          measured is the others'. \"\" keeps nothing: --auto then plans from\n"
+                "                          the probes alone every run\n"
                 "      --route-trace PATH  diagnostics: write the per-step per-layer MoE routing trace\n"
                 "                          (which experts each layer routed, their weight, cache state).\n"
                 "                          Needs --moe-stream; costs speed — not for benchmark runs\n"
@@ -1002,32 +1002,12 @@ int main(int argc, char ** argv) {
         std::vector<MeasuredKnobs> knobs_kept;
         if (routing.load_knobs(knobs_kept)) opt.knobs = &knobs_kept;
         req.measure_knobs = routing.kept();
-        // A decision the plan can only settle by timing both sides is timed here, before the first
-        // answer, each side a short load of its own (bmoe/calibrate.h); said once, since the loads are
-        // the wait a person sees. A plan that is only printed opens nothing, and one with nowhere to
-        // keep the verdict does not calibrate: every run would pay the candidates again for it.
-        const bool calibrate_unkept = cfg.calibrate && !plan_only && !routing.kept();
-        if (cfg.calibrate && !plan_only && routing.kept()) {
-            opt.calibrate = [](const RunConfig & c, const CalibrationRun & run) {
-                return run_calibration_candidate(c, run);
-            };
-            opt.on_step = [](const char * step, int index, int) {
-                if (index == 0 && std::string(step) == k_calibrate_step)
-                    std::fprintf(stderr,
-                                 "bmoe: calibrating: timing each placement this plan could take on this machine "
-                                 "before the first answer (%s skips it)\n",
-                                 flag_spelling("calibrate", "false").c_str());
-            };
-        }
         const AutoPlan planned = probe_and_plan(cfg, req, opt);
         const HardwareProfile & hw = planned.hw;
         const ModelProfile & mp = planned.model;
         const Plan & plan = planned.plan;
         cfg = plan.config;
         routing.hardware = hardware_fingerprint(hw);
-        // What the calibration measured, kept as a served load's verdicts are: the next plan of the file
-        // on this machine starts decided.
-        if (planned.calibrated) routing.keep_knobs(planned.calibration.knobs);
         // A prefill device this run arms is marked unconfirmed for this model before the session opens;
         // what the session makes of it replaces the word (MeasuredKnobs::prefill_verdict), and a run
         // that never gets that far leaves it, so the next plan does not arm the device again.
@@ -1036,9 +1016,6 @@ int main(int argc, char ** argv) {
             if (const MeasuredKnobs * k = find_measured_knobs(knobs_kept, routing.hardware, version())) here = *k;
             routing.keep_knobs(here.armed_unconfirmed(cfg.prefill.device));
         }
-        if (calibrate_unkept && side_pending(plan))
-            std::fprintf(stderr, "bmoe: not calibrating at load: --routing-dir \"\" keeps nothing, so this run "
-                                 "times the plan's own side\n");
         predicted_s_per_token = plan.allocation.seconds_per_token;
         // What the plan credited, from the curve when there was one: the figure its prediction stands on.
         if (plan.allocation.cache_bytes > 0 && plan.allocation.cache_hit_credited > 0)

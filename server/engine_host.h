@@ -111,8 +111,8 @@ public:
     // way.
     std::string load(const RunConfig & effective, const RunConfig & requested);
 
-    // What a load opens when `effective` cannot be opened: the plan's other side, where the plan left
-    // a decision across loads pending (docs/measured-planning.md). Not tried for a load an unload
+    // What a load opens when `effective` cannot be opened: the plan's other side, where the plan names
+    // a side of a decision across loads (docs/measured-planning.md). Not tried for a load an unload
     // cancelled. `taken` hears why the first open failed, on the loader thread, once the fallback has
     // opened; the session then runs `requested`. Where the fallback fails too, the load ends in error
     // with the first open's reason and `taken` is not called.
@@ -120,48 +120,15 @@ public:
         RunConfig effective, requested;
         std::function<void(const std::string & error)> taken;
     };
-    // load() with a fallback. A load started while a calibration runs (load_when_idle) supersedes it:
-    // the calibration is cancelled, as by unload(), and this load goes ahead.
+    // load() with a fallback.
     std::string load(const RunConfig & effective, const RunConfig & requested, std::optional<OpenFallback> fallback);
-
-    // A step a load runs on its own thread between closing the old session and opening the new one,
-    // with the memory the old one held given back: where a server's load-time calibration opens its
-    // candidates (docs/measured-planning.md). It may change the configs the load then opens (the
-    // decided plan's). Two signals, kept apart because they end differently: `stop` is raised when a
-    // turn or a decision arrives (or cancel() is called), and the load then opens what the step
-    // settled, for the turn to run on; `cancelled` is raised by unload() and the host's end, and then
-    // nothing is opened and the step must leave every setting as it found it (stop is raised too).
-    struct BeforeOpenSignals {
-        const std::atomic<bool> & stop;
-        const std::atomic<bool> & cancelled;
-    };
-    using BeforeOpen = std::function<void(RunConfig & effective, RunConfig & requested, const BeforeOpenSignals &)>;
-    // load() with `before_open` run first, started only while the host is idle (idle()): ready, no
-    // turn running, none waiting. Nothing in flight is cancelled. False when it did not start. Until
-    // the new session is open, info() reads "ready" with `calibrating` set and the model that was
-    // loaded: the server is busy and still takes requests, each waiting for the load as for any and
-    // stopping the step first.
-    bool load_when_idle(const RunConfig & effective, const RunConfig & requested, BeforeOpen before_open);
-    // load() with `before_open` run first, for a load a person or a request asked for: where a model's
-    // first load on this machine is calibrated before its first answer, as bmoe-cli --auto calibrates
-    // (docs/measured-planning.md). A turn does not stop the step: it waits for the model, as for any
-    // load, and info() reads "loading" meanwhile. An unload cancels it, and a load supersedes it.
-    std::string load_calibrated(const RunConfig & effective,
-                                const RunConfig & requested,
-                                BeforeOpen before_open,
-                                std::optional<OpenFallback> fallback = std::nullopt);
-    // Ready, with no turn running or waiting for the model.
-    bool idle() const;
-    // Called on the thread of a turn or a decision once it has left the line, whatever its outcome:
-    // where a front-end looks for the idle point after an answer. Set before any turn.
-    void set_turn_end_hook(std::function<void()> hook) { turn_end_ = std::move(hook); }
     void unload();
     void cancel();
 
     json info() const;
     bool ready() const;
     bool loaded_or_loading() const;
-    // A load under way (its calibration included): the engine's thread is taken until it ends.
+    // A load under way: the engine's thread is taken until it ends.
     bool loading() const;
     // A model is or will soon be there: loaded, loading, or a load in auto mode measuring first. What
     // a request waits for rather than being refused.
@@ -237,23 +204,12 @@ private:
     // Likewise the knob trial's verdicts, when a new one came in.
     void keep_knobs(const HostedSession & s);
 
-    // Start the loader thread for `effective`, after any before-open step. The caller holds life_m_
-    // and has set the state to Loading.
-    void start_loader(const RunConfig & effective, BeforeOpen before_open, std::optional<OpenFallback> fallback);
-    // What load() and load_calibrated() share: a person's or a request's load, optionally with a step first.
-    std::string start_load(const RunConfig & effective,
-                           const RunConfig & requested,
-                           std::optional<OpenFallback> fallback,
-                           BeforeOpen before_open);
-    // A turn or a decision arrived: a step before an open stops for it (BeforeOpen).
-    void note_request();
+    // Start the loader thread for `effective`. The caller holds life_m_ and has set the state to Loading.
+    void start_loader(const RunConfig & effective, std::optional<OpenFallback> fallback);
 
-    std::function<void()> turn_end_;
-    // Raised to stop a before-open step, and to skip the open after it; `calibrating_` while one may
-    // run (load_when_idle).
-    std::atomic<bool> before_open_stop_{false};
-    std::atomic<bool> before_open_cancel_{false};
-    std::atomic<bool> calibrating_{false};
+    // Raised by unload() and the host's end: a load under way then opens no fallback, since the
+    // session it would open is not wanted by anyone. Cleared as a load starts.
+    std::atomic<bool> load_cancelled_{false};
 
     std::function<void(const std::string &, const MeasuredKnobs &)> knobs_sink_;
     int knobs_kept_ = 0; // verdicts in the record last handed on; under gen_m_

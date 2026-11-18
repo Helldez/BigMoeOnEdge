@@ -46,12 +46,8 @@ struct KnobTrialPolicy {
 // and `hi`: its slowest step, times its own range (slowest over fastest) or the margin, whichever is
 // wider. The bound is what the reference measured: the margin on a steady machine, its spread on a
 // noisy one. 0 while the reference has no step. KnobTrial judges a candidate against its incumbent
-// by it, and a load-time calibration a side against the other side's run (RateProbe::set_reference).
+// by it.
 double apart_bar(double lo, double hi, double min_win);
-
-// Whether two windows' seconds per token agree within the margin: neither is more than `min_win`
-// slower than the other.
-bool within_margin(double a, double b, double min_win);
 
 class KnobTrial {
 public:
@@ -147,8 +143,8 @@ private:
 // times its incumbent: once the cache has settled, as many windows as one knob's trial times
 // (2 * rounds + 1), and their median, so a window that met a stall elsewhere does not decide it. It
 // is what a placement decided across loads is judged by (MeasuredKnobs::device_cache_tps and
-// no_device_cache_tps): a load runs one side, the next the other, and the plan after keeps the
-// faster. Pure policy, fed one decode step at a time like KnobTrial.
+// no_device_cache_tps): a load times the side it serves, and a plan made after it reads that side at
+// its measurement. Pure policy, fed one decode step at a time like KnobTrial.
 class RateProbe {
 public:
     // `settle`: wait for the cache to settle first. `hits_visible`: false where the cache that warms
@@ -160,34 +156,10 @@ public:
     void record(double seconds, int tokens, uint64_t lookups, uint64_t hits);
     void interrupt();
 
-    // Settle on the rate instead of the waiting, where the cache's hits are out of view: two windows in
-    // a row that agree within the margin (within_margin) have settled, as two that hit alike have where
-    // the hits are in view, and settle_windows_max still bounds it. A load-time calibration opens a
-    // load to time it and nothing else, so it stops when the rate has, rather than after the longest
-    // wait; the session's own timing keeps the longest wait, which costs it nothing but the windows.
-    void settle_on_rate() { settle_on_rate_ = true; }
-    // Time against a reference: the other side of the same decision, whose timed steps ran between
-    // `lo` and `hi` seconds per token. A timed window whose fastest step is past apart_bar() of it
-    // ends the probe there: this side is the slower by more than either the margin or the reference's
-    // own range, and the windows left could not bring it back. done() and cut() are then true, and the
-    // rate is the median of the windows timed.
-    void set_reference(double lo, double hi);
-    bool cut() const { return cut_; }
-    // The fastest and slowest timed step so far, in seconds per token (0 before one): what a later
-    // probe of the other side is set against.
-    double step_lo() const { return step_lo_; }
-    double step_hi() const { return step_hi_; }
-    // The most tokens the probe takes to be done: the warm-up, the longest settle and every window.
-    int tokens_max() const {
-        return pol_.warm_tokens + (pol_.settle_windows_max + windows_wanted()) * pol_.window_tokens;
-    }
-
     bool settling() const { return phase_ == Phase::Settle; }
     bool done() const { return phase_ == Phase::Done; }
     // The median window's tokens per second once done(), 0 before.
     double tokens_per_second() const;
-    // The same over the windows timed so far, done or not: 0 before the first.
-    double rate_so_far() const;
     // The cache's hit rate over the timed windows, -1 where they made no lookup.
     double hit_rate() const { return timed_lookups_ ? (double) timed_hits_ / (double) timed_lookups_ : -1.0; }
     int windows() const { return (int) spt_.size(); }
@@ -208,12 +180,6 @@ private:
     double last_hit_ = -1.0;
     int settle_windows_ = 0;
     uint64_t timed_lookups_ = 0, timed_hits_ = 0;
-    bool settle_on_rate_ = false;
-    double last_spt_ = 0.0;              // the last settle window's seconds per token
-    double ref_lo_ = 0.0, ref_hi_ = 0.0; // the reference's timed steps (set_reference)
-    bool cut_ = false;
-    double win_lo_ = 0.0;                  // the window in progress's fastest step
-    double step_lo_ = 0.0, step_hi_ = 0.0; // over every timed step
 };
 
 } // namespace bmoe
