@@ -12,6 +12,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace bmoe::server {
 
@@ -37,6 +38,15 @@ public:
     virtual RoutingTrace routing_record() const { return {}; }
     // As Session::measured_knobs: the knob trial's verdicts so far. Between turns.
     virtual MeasuredKnobs measured_knobs() const { return {}; }
+    // As Session::tokenize, token_piece, detokenize and render_chat: the model's tokenizer and
+    // template, outside a turn and safe beside one. A scripted session has neither.
+    virtual std::vector<int32_t> tokenize(const std::string &, bool, bool) const { return {}; }
+    virtual std::string token_piece(int32_t) const { return ""; }
+    virtual bool detokenize(const std::vector<int32_t> &, std::string &) const { return false; }
+    virtual bool render_chat(const GenerateRequest &, std::string &, std::string & error) const {
+        error = "this session has no chat template";
+        return false;
+    }
 };
 
 // Opens a session for `cfg`, or returns null and says why in `error`. Called on the loader thread.

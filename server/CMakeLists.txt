@@ -82,6 +82,7 @@ add_library(bmoe_server_core STATIC
     anthropic_messages.cpp
     decide_protocol.cpp
     openai_chat.cpp
+    llama_compat.cpp
     openai_responses.cpp
     image_part.cpp
     turn_queue.cpp

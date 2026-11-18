@@ -2,8 +2,9 @@
 
 `bmoe-server` is the engine behind a local web UI. It keeps one model loaded in one `Session`,
 serves the UI's static files, and exposes a small JSON API plus an OpenAI-compatible chat
-endpoint, so any OpenAI client can use it too, and the Anthropic Messages and OpenAI Responses
-APIs that Claude Code and Codex CLI speak.
+endpoint, so any OpenAI client can use it too, the Anthropic Messages and OpenAI Responses
+APIs that Claude Code and Codex CLI speak, and the parts of llama.cpp's own server that its clients
+read ([llama-server compatibility](#llama-server-compatibility)).
 
 It binds to `127.0.0.1` on port 8765 by default (`--port N` to change it; `--port 0` takes any free
 port and prints the one it took) and, unless started with a key (`--api-key-file` or
@@ -459,6 +460,7 @@ Request fields that are read:
 | `tools` | functions the model may call: `{type: "function", function: {name, description, parameters}}`. Any other tool type is refused with `400`. |
 | `tool_choice` | `"auto"` (default), `"none"`, `"required"`. A named function is honoured as `"required"`: the engine can require a call, not choose which. |
 | `stream`, `stream_options.include_usage` | streaming, and a last chunk with the token counts. |
+| `return_progress` | llama-server's field: while the prompt is prefilled, streamed chunks with an empty assistant delta and `prompt_progress: {total, cache, processed, time_ms}`, one before the first piece and one after each. `cache` is the part the context already held; `processed` reaches `total - cache`. |
 | `max_tokens` / `max_completion_tokens` | default: the `n-predict` parameter (also for `null` and `0`), whose server default `0` means no ceiling but the context. Clamped to that parameter's upper bound; a negative or non-integer value is refused with `400`. It is a ceiling, not a reservation: the answer gets at most what the context has left after the prompt and then stops with `finish_reason: "length"`. Only a conversation that leaves no room at all is refused, with `400`. |
 | `think`, `chat_template_kwargs.enable_thinking`, `reasoning_effort` | thinking on or off, most specific first: this server's own `think` (bool), the template argument llama.cpp clients send, then `reasoning_effort`, where `"none"` turns it off and any other level turns it on. Default: on, unless the person set the `think` parameter (a launch flag or a saved setting), which then holds. The apps' conversations do not use this route and keep `think` off by default; a client that never asks gets the model's own reasoning, as from a llama.cpp server. |
 | `response_format` | `{"type":"json_object"}` requests JSON object output; `{"type":"json_schema","json_schema":{"schema":{...}}}` supplies a schema. Omitted, `null` or `{"type":"text"}` leaves the top-level `json_schema` unchanged; without one, output is ordinary text. See the support boundary below. |
@@ -604,13 +606,18 @@ so this holds for every tool, model and call format; a call opens once its argum
 name is whole by then), keeps the id it opened with, and its arguments are only ever appended to,
 held back to the last whole UTF-8 character. A call no token showed (a template the partial parse
 cannot read) arrives whole after the text, as before. The last choice chunk has `finish_reason` (`stop`, `length`,
-`tool_calls`, or `cancelled`) and `"bmoe": {"summary": {...}}` with the run summary (same keys as
-the `done` event). With `stream_options.include_usage`, one more chunk follows with empty `choices`
+`tool_calls`, or `cancelled`), `"bmoe": {"summary": {...}}` with the run summary (same keys as
+the `done` event) and llama-server's `timings` object. With `stream_options.include_usage`, one more chunk follows with empty `choices`
 and `usage`.
 
 Non-streaming response: a `chat.completion` object with `message.content` (`null` on a turn that
 only calls tools), `message.reasoning_content`, `message.tool_calls`, `usage` and `bmoe.summary`.
-`usage.prompt_tokens` is the whole prompt the answer was conditioned on.
+`usage.prompt_tokens` is the whole prompt the answer was conditioned on. Both forms carry
+llama-server's `timings`: `cache_n` (prompt tokens the context held), `prompt_n`, `prompt_ms`,
+`prompt_per_token_ms`, `prompt_per_second`, `predicted_n`, `predicted_ms`,
+`predicted_per_token_ms`, `predicted_per_second`.
+
+The route answers at `/chat/completions` too, as llama-server's does.
 
 Not implemented: `/v1/completions`, `/v1/embeddings`, `stop`, `n` above 1, and per-request
 sampling.
@@ -639,7 +646,7 @@ leaves a smaller cache and a slower decode on a machine that is short of memory.
 ### `GET /v1/models`
 
 `{"object": "list", "data": [{"id": "<model file name>", "object": "model", "owned_by": "local",
-"modalities": ["text", "image"]}]}` with the loaded model, or an empty list. `modalities` is this
+"modalities": ["text", "image"]}]}` with the loaded model, or an empty list. Also at `/models`. `modalities` is this
 server's addition: `["text"]` without a projector, so a client knows whether to send an image.
 
 ### Agent protocols: what the two below share
@@ -718,10 +725,12 @@ waits its place in line, and after any 15 s of its turn with nothing else to sen
 
 ### `POST /v1/messages/count_tokens`
 
-The same body as `/v1/messages`, answered with `{"input_tokens": N}`. N is an estimate from the
-request's length (about 3 bytes of text per token, on the high side for an agent's prompt of code
-and JSON schemas), not a count: the engine exposes no tokenizer outside a turn. It needs no loaded
-model.
+The same body as `/v1/messages`, answered with `{"input_tokens": N}`. With a model ready, N is the
+prompt the request renders to, by the model's own template, counted by its tokenizer: what a turn
+would decode from an empty context. With no model ready, or for a request carrying images (the
+projector sizes those), it is an estimate from the request's length (about 3 bytes of text per
+token, on the high side for an agent's prompt of code and JSON schemas). Counting never waits for
+a running turn.
 
 ### `POST /v1/responses`
 
@@ -757,6 +766,32 @@ for a call, the arguments in pieces while the model writes them) and `response.o
 and last `response.completed` (or `response.incomplete`) with the response object, its `output`
 and `usage`. While the request waits its place in line, and after any 15 s of its turn with
 nothing else to send, an SSE comment.
+
+## llama-server compatibility
+
+Clients written for llama.cpp's own server (`llama-server`) read more than the OpenAI protocol: its
+answer timings, its prompt progress, and a handful of endpoints of its own. These answer here in
+llama-server's shapes (`server/llama_compat.h`), copied as a wire format: nothing of llama-server
+is linked, so a llama.cpp upgrade does not touch them. None of them runs a turn, and none waits for
+one. Each answers `503` `no_model` when it needs a model and none is ready. They are the engine,
+under the same key and origin rules as `/api/*` and `/v1/*`.
+
+| route | answer |
+|---|---|
+| `GET /health` (and `/v1/health`) | `{"status": "ok"}` with a model ready; `503` with `code: "loading"` while one loads or the plan measures, `no_model` with none. |
+| `GET /props` | `default_generation_settings` (`n_ctx`, and `params` with `n_predict`, `temperature`, `top_k`, `top_p`, `seed`: the session's sampling), `total_slots: 1`, `model_alias`, `model_path`, `modalities` (`vision`), `build_info`. |
+| `GET /metrics` | Prometheus text under llama-server's names: the counters `llamacpp:prompt_tokens_total` (decoded, the cached part excluded), `prompt_tokens_cached_total`, `prompt_seconds_total`, `tokens_predicted_total`, `tokens_predicted_seconds_total`, `n_tokens_max`, and the gauges `prompt_tokens_seconds` and `predicted_tokens_seconds` (rates over the turns since the previous scrape) and `requests_processing`, `requests_deferred`. Always on: there is no `--metrics` flag. |
+| `GET /slots` | the one slot: `[{"id": 0, "n_ctx": ..., "is_processing": ...}]`. Saving and restoring a slot is not implemented. |
+| `POST /tokenize` | `{"content": "...", "add_special": false, "parse_special": true, "with_pieces": false}` (llama-server's defaults) to `{"tokens": [ids]}`, or `[{"id", "piece"}]` with `with_pieces`; a piece that is not whole UTF-8 is its bytes. `content` must be a string. |
+| `POST /detokenize` | `{"tokens": [ids]}` to `{"content": "..."}`, special tokens spelled out. An id outside the vocabulary is a `400`. |
+| `POST /apply-template` | a chat completions body (messages, tools, `think`, `response_format`) to `{"prompt": "..."}`: what a turn would decode, by the model's own template. |
+| `POST /chat/completions/input_tokens` (and `/v1/...`) | a chat completions body to `{"input_tokens": N}`, counted as `count_tokens` counts. |
+| `POST /responses/input_tokens` (and `/v1/...`) | a Responses body to `{"object": "response.input_tokens", "input_tokens": N}`. |
+
+`/chat/completions`, `/responses` and `/models` answer as their `/v1` routes. Not implemented, from
+llama-server: `/completion` and `/v1/completions` (raw text completion), `/infill`, embeddings and
+reranking, LoRA adapters, slot save and restore, serving several models (`/models/load`), and
+parallel slots: this server answers one turn at a time.
 
 ## Decide
 

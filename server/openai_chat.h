@@ -20,7 +20,8 @@ namespace bmoe::server {
 struct OpenAiChatRequest {
     ChatRequest turn;
     bool stream = false;
-    bool include_usage = false; // stream_options.include_usage: a last chunk carrying the token counts
+    bool include_usage = false;   // stream_options.include_usage: a last chunk carrying the token counts
+    bool return_progress = false; // llama-server's field: prompt_progress chunks while the prompt goes in
 };
 
 // Parse a /v1/chat/completions body. `cfg` supplies the defaults a request may leave out

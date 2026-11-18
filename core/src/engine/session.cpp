@@ -640,6 +640,62 @@ ThinkControl Session::think_control() const {
 bool Session::vision() const {
     return impl_->media && impl_->media->vision();
 }
+std::vector<int32_t> Session::tokenize(const std::string & text, bool add_special, bool parse_special) const {
+    std::vector<llama_token> tokens(text.size() + k_tokenize_slack);
+    int n = llama_tokenize(impl_->vocab, text.c_str(), (int) text.size(), tokens.data(), (int) tokens.size(),
+                           add_special, parse_special);
+    if (n < 0) {
+        tokens.resize((size_t) -n);
+        n = llama_tokenize(impl_->vocab, text.c_str(), (int) text.size(), tokens.data(), (int) tokens.size(),
+                           add_special, parse_special);
+    }
+    tokens.resize((size_t) std::max(n, 0));
+    return tokens;
+}
+std::string Session::token_piece(int32_t token) const {
+    if (token < 0 || token >= impl_->n_vocab) return "";
+    char buf[256];
+    const int n = llama_token_to_piece(impl_->vocab, token, buf, (int) sizeof(buf), 0, /*special*/ true);
+    if (n >= 0) return std::string(buf, (size_t) n);
+    std::string big((size_t) -n, '\0');
+    const int m = llama_token_to_piece(impl_->vocab, token, big.data(), (int) big.size(), 0, true);
+    big.resize((size_t) std::max(m, 0));
+    return big;
+}
+bool Session::detokenize(const std::vector<int32_t> & tokens, std::string & text) const {
+    for (const int32_t t : tokens)
+        if (t < 0 || t >= impl_->n_vocab) return false;
+    std::string out(tokens.size() * 8 + 16, '\0');
+    int n = llama_detokenize(impl_->vocab, tokens.data(), (int32_t) tokens.size(), out.data(), (int32_t) out.size(),
+                             /*remove_special*/ false, /*unparse_special*/ true);
+    if (n < 0) {
+        out.resize((size_t) -n);
+        n = llama_detokenize(impl_->vocab, tokens.data(), (int32_t) tokens.size(), out.data(), (int32_t) out.size(),
+                             false, true);
+    }
+    out.resize((size_t) std::max(n, 0));
+    text = std::move(out);
+    return true;
+}
+bool Session::render_chat(const GenerateRequest & req, std::string & prompt, std::string & error) const {
+    const auto & im = *impl_;
+    if (!im.chat_on) {
+        error = "this session was opened without chat turns: there is no template to render";
+        return false;
+    }
+    try {
+        // The same inputs a turn builds (Turn::render_prompt), from the request's messages alone.
+        common_chat_templates_inputs inputs;
+        detail::build_turn_inputs(inputs, detail::to_common_messages(req.messages), req.think, im.think_ctl);
+        detail::add_tools(inputs, req.tools, req.tool_choice);
+        inputs.json_schema = req.json_schema;
+        prompt = common_chat_templates_apply(im.chat_tmpls.get(), inputs).prompt.str();
+    } catch (const std::exception & e) {
+        error = std::string("the chat template rejected the conversation: ") + e.what();
+        return false;
+    }
+    return true;
+}
 void Session::set_cache_budget_mb(int mib) {
     impl_->source.set_cache_budget((size_t) std::max(0, mib) * 1024ull * 1024ull);
 }
@@ -3096,6 +3152,13 @@ struct Session::Impl::Turn {
         const int turn = ++im.checkpoint_turn;
         const detail::ContextCheckpoints::Stops stops{&user_starts, n_prompt, pf_step, (int) llama_n_ubatch(ctx)};
         size_t next_media = 0; // the first span at or after i
+        // Where the prefill stands, for a front-end to show while no token exists yet.
+        const auto progress = [&](int i) {
+            if (req.on_prefill)
+                req.on_prefill(
+                    PrefillProgress{n_prompt, (int) n_common, i - (int) n_common, secs(t_prefill0, clock_t_::now())});
+        };
+        progress((int) n_common);
         for (int i = (int) n_common; i < n_prompt;) {
             while (next_media < tk.stream.media.size() && tk.stream.media[next_media].begin < (size_t) i)
                 ++next_media;
@@ -3154,6 +3217,7 @@ struct Session::Impl::Turn {
                 return fail(RunError::Failed, "prefill decode failed");
             }
             trace_flush();
+            progress(i);
             // The end of an image is a prompt end's equal: it is what costs the most to redo, and the
             // next turn can diverge a few tokens past it (a template drops a past turn's empty think
             // block), where a memory that cannot be cut falls back to the newest checkpoint before the
