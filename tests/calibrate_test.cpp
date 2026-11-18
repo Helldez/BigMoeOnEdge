@@ -374,6 +374,76 @@ int main() {
               "cache every earlier load ran");
     }
 
+    // ── the shared-memory device, the fourth decision: a model held in memory, on the cores or on a
+    // device that reads that same memory. The cores first, the placement every earlier load ran. ──
+    {
+        const auto shared_side = [](int side) {
+            Plan p;
+            p.config.trial.shared_device_side = side;
+            p.config.n_gpu_layers = side == 1 ? 49 : 0;
+            if (side == 1) p.config.device_split = {{"accel", 49}};
+            return p;
+        };
+        const Replan rules = [&](const MeasuredKnobs & k) {
+            if (k.shared_device_unviable) return decided(0);
+            if (k.no_shared_device_tps <= 0.0) return shared_side(0);
+            if (k.shared_device_tps <= 0.0) return shared_side(1);
+            Plan d;
+            if (k.shared_device_tps > k.no_shared_device_tps * 1.05) {
+                d.config.n_gpu_layers = 49;
+                d.config.device_split = {{"accel", 49}};
+            }
+            return d;
+        };
+        const auto on_device = [](const RunConfig & c) { return c.n_gpu_layers > 0; };
+        Runs runs;
+        const CalibrationResult r =
+            calibrate(rules(MeasuredKnobs{}), MeasuredKnobs{}, rules,
+                      table(runs, [&](const RunConfig & c) { return timed(on_device(c) ? 54.0 : 40.0); }));
+        check(r.complete && r.runs == 2 && r.knobs.no_shared_device_tps == 40.0 && r.knobs.shared_device_tps == 54.0,
+              "shared device: the cores, then the device, each timed once");
+        check(r.plan.config.n_gpu_layers == 49 && !side_pending(r.plan), "shared device: the faster device served");
+        check(runs.configs.size() == 2 && !on_device(runs.configs[0]) && on_device(runs.configs[1]) &&
+                  runs.configs[1].trial.shared_device_side == -1,
+              "shared device: the cores' candidate first, and the device's names no side");
+        Runs failed_runs;
+        const CalibrationResult failed =
+            calibrate(rules(MeasuredKnobs{}), MeasuredKnobs{}, rules, table(failed_runs, [&](const RunConfig & c) {
+                          if (on_device(c)) return CandidateTiming{};
+                          return timed(40.0);
+                      }));
+        check(failed.complete && failed.knobs.shared_device_unviable == 1 && failed.plan.config.n_gpu_layers == 0,
+              "shared device: a device load that cannot open loses, and the model stays on the cores");
+        check(servable(shared_side(0)) && !servable(shared_side(1)),
+              "servable: the cores are what every earlier load ran; the device is served only once measured");
+
+        MeasuredKnobs k;
+        KnobTrialConfig t;
+        t.shared_device_side = 1;
+        record_side_rate(t, 54.0, k);
+        t.shared_device_side = 0;
+        record_side_rate(t, 40.0, k);
+        check(k.shared_device_tps == 54.0 && k.no_shared_device_tps == 40.0, "record: the shared device's two sides");
+        k.shared_device_unviable = 1;
+        std::vector<MeasuredKnobs> back;
+        std::string err;
+        k.hardware = "h";
+        k.engine = "e";
+        const bool parsed = parse_measured_knobs(format_measured_knobs({k}), back, err);
+        check(parsed && back.size() == 1 && back[0].shared_device_tps == 54.0 && back[0].no_shared_device_tps == 40.0 &&
+                  back[0].shared_device_unviable == 1,
+              "record: the shared device's rates and failed opens survive the text format");
+        std::vector<MeasuredKnobs> kept{back[0]};
+        MeasuredKnobs later;
+        later.hardware = "h";
+        later.engine = "e";
+        later.shared_device_tps = 56.0;
+        keep_measured_knobs(kept, later);
+        check(kept[0].shared_device_tps == 56.0 && kept[0].no_shared_device_tps == 40.0 &&
+                  kept[0].shared_device_unviable == 0,
+              "record: a later rate replaces its side, keeps the other, and clears the side's failed opens");
+    }
+
     if (failures) {
         std::printf("\n%d check(s) FAILED\n", failures);
         return 1;

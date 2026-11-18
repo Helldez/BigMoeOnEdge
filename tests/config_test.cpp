@@ -155,6 +155,22 @@ int main() {
         expect_fail("trial cpu share out of range", t);
     }
     {
+        // The shared-memory device's side: one decision a load, and side 1 with layers on the device.
+        RunConfig t = ok_base();
+        t.trial.shared_device_side = 0;
+        expect_ok("trial shared device, the cores", t);
+        t.trial.shared_device_side = 1;
+        expect_fail("trial shared device 1 with no layer on a device", t);
+        t.n_gpu_layers = 49;
+        t.device_split = {{"accel", 49}};
+        expect_ok("trial shared device 1, every layer on the device", t);
+        RunConfig two = t;
+        two.trial.device_tier = 0;
+        expect_fail("trial shared device beside the device tier's", two);
+        t.trial.shared_device_side = 2;
+        expect_fail("trial shared device out of range", t);
+    }
+    {
         RunConfig c = ok_moe();
         c.moe.io_threads = MoeStreamConfig::io_threads_max + 1;
         expect_fail("io_threads out of range", c);

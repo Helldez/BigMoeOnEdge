@@ -704,9 +704,15 @@ struct KnobTrialConfig {
     // plan priced it), 0 with every miss uploaded; -1 neither. A share is fixed when a context is
     // created, so the two sides are timed as loads of their own, as the device tier's are.
     int cpu_share_side = -1;
+    // Where a resident model runs on a machine whose devices read the host's own memory, decided across
+    // loads (MeasuredKnobs::shared_device_tps): 1 times the decode with every layer on the device the
+    // plan named (device_split), 0 with every layer on the cores; -1 neither. Which engine decodes the
+    // model is fixed when it is loaded, so the two sides are timed as loads of their own.
+    int shared_device_side = -1;
 
     bool enabled() const {
-        return !threads.empty() || overlap || device_tier >= 0 || width_side >= 0 || cpu_share_side >= 0;
+        return !threads.empty() || overlap || device_tier >= 0 || width_side >= 0 || cpu_share_side >= 0 ||
+               shared_device_side >= 0;
     }
 
     static constexpr int threads_max_candidates = 2;

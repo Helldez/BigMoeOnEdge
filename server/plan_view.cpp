@@ -52,6 +52,21 @@ bool has_layers(const Plan & plan, const ComputeDevice & d) {
     return std::find(pl.projected_devices.begin(), pl.projected_devices.end(), d.name) != pl.projected_devices.end();
 }
 
+// The device the whole model runs on where it reads this machine's own memory (the plan's
+// shared-device decision): every layer on that one device, named alone in the split. It computes the
+// prompt and the tokens both, and the host computes neither.
+bool runs_model(const Plan & plan, const ComputeDevice & d) {
+    const RunConfig & c = plan.config;
+    return !d.is_cpu && !own_memory(d) && c.n_gpu_layers > 0 && c.device_split.size() == 1 &&
+           c.device_split.front().first == d.name;
+}
+
+const ComputeDevice * model_device(const HardwareProfile & hw, const Plan & plan) {
+    for (const ComputeDevice & d : hw.devices)
+        if (runs_model(plan, d)) return &d;
+    return nullptr;
+}
+
 std::string host_name(const HardwareProfile & hw) {
     for (const ComputeDevice & d : hw.devices)
         if (d.is_cpu) return d.name;
@@ -64,6 +79,7 @@ std::string host_name(const HardwareProfile & hw) {
 // device badges.
 std::vector<std::string> prompt_devices(const HardwareProfile & hw, const Plan & plan) {
     if (!plan.config.prefill.device.empty()) return {plan.config.prefill.device};
+    if (const ComputeDevice * d = model_device(hw, plan)) return {d->name};
     std::vector<std::string> out;
     if (offloads_wide_matmuls(plan.config))
         for (const ComputeDevice & d : hw.devices)
@@ -113,8 +129,11 @@ json devices_json(const HardwareProfile & hw, const Plan & plan) {
                                        : 0.0;
         if (d.is_cpu) {
             if (runs_prompt(d.name)) uses.push_back("prompt");
-            uses.push_back("tokens");
+            if (!model_device(hw, plan)) uses.push_back("tokens");
             why = "The host: every rate is measured against it.";
+        } else if (runs_model(plan, d)) {
+            uses = {"layers", "prompt", "tokens"};
+            why = "Runs the whole model: it reads this computer's own memory, and measured faster here.";
         } else if (d.usable == Tri::No) {
             status = "unusable";
             why = d.unusable_reason.empty() ? "Its probe did not come back, so nothing uses it." : d.unusable_reason;
@@ -222,7 +241,8 @@ json memory_json(const HardwareProfile & hw, const Plan & plan) {
 // Which phase runs where: the lanes a person asks about first.
 json lanes_json(const HardwareProfile & hw, const Plan & plan) {
     const std::string host = host_name(hw);
-    json tokens = json::array({host});
+    const ComputeDevice * whole = model_device(hw, plan);
+    json tokens = json::array({whole ? whole->name : host});
     for (const ComputeDevice & d : hw.devices)
         if (has_layers(plan, d)) tokens.push_back(d.name);
     return json::array({json{{"phase", "prompt"}, {"label", "Prompt"}, {"on", prompt_devices(hw, plan)}},
