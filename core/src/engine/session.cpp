@@ -373,6 +373,11 @@ struct Session::Impl {
         // ones the host prefilled, with their seconds.
         int mix_requests = 0;
         double mix_gen = 0.0, mix_wide = 0.0, host_wide_tokens = 0.0, host_wide_seconds = 0.0;
+        // What this load decoded over every turn, and the seconds it took: the rate of the side it
+        // serves, once the probe has timed its windows (note_request_mix).
+        double served_tokens = 0.0, served_seconds = 0.0;
+        bool rate_timed = false; // the probe has timed its windows on this load
+        bool served_rate_said = false;
         int stage = stage_done;
         std::unique_ptr<KnobTrial> cur;
         std::unique_ptr<RateProbe> rate_probe;
@@ -2443,6 +2448,7 @@ void Session::Impl::rate_step(double seconds, int tokens, uint64_t lookups, uint
     const double tps = r.tokens_per_second();
     record_side_rate(cfg.trial, tps, trials.result);
     log_printf(LogLevel::Info, "knob trial: %.2f tok/s %s, the median of %d windows", tps, what, r.windows());
+    trials.rate_timed = true;
     next_trial_stage(/*settled*/ true);
 }
 
@@ -2492,6 +2498,25 @@ void Session::Impl::note_request_mix(const RunSummary & sum) {
     r.mix_gen_tokens = trials.mix_gen / trials.mix_requests;
     r.mix_wide_prompt_tokens = trials.mix_wide / trials.mix_requests;
     if (trials.host_wide_seconds > 0.0) r.host_prefill_tps = trials.host_wide_tokens / trials.host_wide_seconds;
+    // The side this load serves is kept at what the load decoded at, over every turn so far, in place
+    // of the probe's windows. The probe times a few dozen tokens early in the first answer, which is
+    // where a load happens to be then: after a knob trial on one load and from the first token on the
+    // next, with the host's cache cold. Measured on two 16 GB cards with a 284B model: the fitter's
+    // placement was timed at 2.27 tok/s on a load whose answers decoded at 4.1 and 6.5, against a
+    // device cache timed at 3.17 on a load that decoded at 2.8 and 3.6, and the plan after kept the
+    // slower side. Both sides are a whole load's rate, so they are compared like for like.
+    trials.served_tokens += sum.n_generated;
+    trials.served_seconds += sum.gen_seconds;
+    if (trials.rate && trials.rate_timed && trials.served_seconds > 0.0 && trials.served_tokens > 0.0) {
+        const double tps = trials.served_tokens / trials.served_seconds;
+        record_side_rate(cfg.trial, tps, r);
+        if (!trials.served_rate_said) {
+            trials.served_rate_said = true;
+            log_printf(LogLevel::Info,
+                       "knob trial: this load's side is kept at what it decoded at, %.2f tok/s over %.0f tokens so far",
+                       tps, trials.served_tokens);
+        }
+    }
 }
 
 void Session::Impl::trial_step(double seconds, int tokens) {

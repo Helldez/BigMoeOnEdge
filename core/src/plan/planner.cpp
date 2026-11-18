@@ -683,6 +683,35 @@ double device_cache_decode_seconds(const Planning & s, const ComputeDevice & dev
     return rest / gib / dense + hit * routed / gib / experts.device + miss * (1.0 / upload + 1.0 / experts.device);
 }
 
+// What a decoded token waits on storage for the experts the host holds, in seconds. The two prices
+// above are compute: where the experts the host is left with do not fit its memory they are streamed,
+// and a token also reads from flash the routed bytes neither cache serves, at the rate this storage
+// measured at the model's own slice size. `host_expert_bytes` is what the placement leaves on the
+// host and `device_hit` the share of a token's routed bytes a device cache serves (0 without one);
+// the host's RAM cache is what its memory holds of them, and the two caches keep the same hottest
+// experts, so what misses the larger of the two is what flash is read for. Left out, a placement that
+// streams was priced as if it did not: measured on an 8 GB card with a model twice the host's memory,
+// the fitter's placement priced at 11 tok/s decoded at 3.5, and a 284B model on two 16 GB cards at 2.3
+// to 6.5 against 16. 0 where everything fits or the storage rate is unmeasured.
+double host_expert_flash_seconds(const Planning & s, uint64_t host_expert_bytes, double device_hit) {
+    const ModelProfile & m = s.model;
+    const double routed = (double) m.group(WeightGroup::Experts).bytes_per_token;
+    if (routed <= 0.0 || m.expert_bytes == 0 || host_expert_bytes == 0) return 0.0;
+    const uint64_t holdable = budget_bytes(s.hw), margin = margin_bytes(s.hw, s.pol);
+    const uint64_t ram = holdable > margin ? holdable - margin : 0;
+    if (host_expert_bytes <= ram) return 0.0;
+    const uint32_t slice = (uint32_t) m.expert_slice_bytes;
+    const uint32_t lanes = slice ? s.hw.storage.best_lanes(slice) : 0;
+    const double mibs = slice && lanes ? s.hw.storage.rate_at(slice, lanes) : 0.0;
+    if (mibs <= 0.0) return 0.0;
+    // The RAM cache holds `ram` of the host's experts: its share of the whole set's curve.
+    const double scaled = (double) ram * (double) m.expert_bytes / (double) host_expert_bytes;
+    const double ram_hit = std::clamp(expert_share_at(m, (uint64_t) scaled), 0.0, 1.0);
+    const double miss = 1.0 - std::max(ram_hit, std::clamp(device_hit, 0.0, 1.0));
+    const double host_share = std::min(1.0, (double) host_expert_bytes / (double) m.expert_bytes);
+    return miss * routed * host_share / (1024.0 * 1024.0) / mibs;
+}
+
 // What gathering a prompt's experts costs a pass, in seconds: a pass as wide as a prompt routes nearly
 // every expert, so each one computes on the device the experts that are not held there, uploaded from
 // the host at the rate this machine measured. `off_device` is those bytes: everything past the device
@@ -847,10 +876,19 @@ void choose_device_tier(Planning & s) {
         const MeasuredKnobs & mk = s.model.knobs;
         const double win = 1.0 + (double) s.pol.min_backend_win;
         const std::string margin = u64s((uint64_t) (s.pol.min_backend_win * 100.0f + 0.5f)) + "%";
-        const double cache_s = device_cache_decode_seconds(s, *dev, budget);
+        // Each side's compute, and what its host's experts wait on flash for where they stream. With
+        // the cache every expert is the host's; the fitter's placement leaves it the layers it did.
+        const double cache_compute = device_cache_decode_seconds(s, *dev, budget);
+        const double cache_s =
+            cache_compute > 0.0
+                ? cache_compute + host_expert_flash_seconds(s, m.expert_bytes, expert_share_at(m, budget))
+                : 0.0;
         const double cache_priced = cache_s > 0.0 ? 1.0 / cache_s : 0.0;
-        // The fitter's placement at the part of its ceiling such a placement was measured to reach.
-        const double fitter_priced = fitter_decode_ceiling(s) * (double) s.pol.fitter_ceiling_realized;
+        // The fitter's placement's compute at the part of its ceiling such a placement was measured to
+        // reach; its flash reads are not part of that ceiling and are added whole.
+        const double ceiling = fitter_decode_ceiling(s) * (double) s.pol.fitter_ceiling_realized;
+        const double fitter_priced =
+            ceiling > 0.0 ? 1.0 / (1.0 / ceiling + host_expert_flash_seconds(s, s.host_expert_bytes, 0.0)) : 0.0;
         // Each side at its measurement where a load timed it, at its price otherwise.
         const double cache_at = mk.device_cache_tps > 0.0 ? mk.device_cache_tps : cache_priced;
         const double fitter_at = mk.no_device_cache_tps > 0.0 ? mk.no_device_cache_tps : fitter_priced;
@@ -1393,12 +1431,16 @@ bool width_across_loads(Planning & s, uint32_t full) {
         off_narrow = m.expert_bytes - held_narrow;
         dec_wide = device_cache_decode_seconds(s, *dev, held);
         dec_narrow = device_cache_decode_seconds(s, *dev, held_narrow);
+        if (dec_wide > 0.0 && dec_narrow > 0.0) {
+            dec_wide += host_expert_flash_seconds(s, m.expert_bytes, expert_share_at(m, held));
+            dec_narrow += host_expert_flash_seconds(s, m.expert_bytes, expert_share_at(m, held_narrow));
+        }
     } else {
         off_wide = s.host_expert_bytes;
         off_narrow = off_wide > freed ? off_wide - freed : 0;
         const double wide_tps = fitter_decode_ceiling(s, off_wide), narrow_tps = fitter_decode_ceiling(s, off_narrow);
-        dec_wide = wide_tps > 0.0 ? 1.0 / wide_tps : 0.0;
-        dec_narrow = narrow_tps > 0.0 ? 1.0 / narrow_tps : 0.0;
+        dec_wide = wide_tps > 0.0 ? 1.0 / wide_tps + host_expert_flash_seconds(s, off_wide, 0.0) : 0.0;
+        dec_narrow = narrow_tps > 0.0 ? 1.0 / narrow_tps + host_expert_flash_seconds(s, off_narrow, 0.0) : 0.0;
     }
     double token_bytes = 0.0;
     for (size_t g = 0; g < (size_t) WeightGroup::count; ++g)
