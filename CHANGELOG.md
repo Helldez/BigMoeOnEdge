@@ -52,6 +52,19 @@ Semantic Versioning.
   tok/s timed on a load that decoded at 4.1 to 6.5), and the plan settled on a device cache at 2.8.
   The rate is now the load's own over every turn it served.
 
+- **A model the plan moves onto a device that shares the host's memory is compared with the cores
+  once, on the whole model.** The move was let through on probes that each compute a part in
+  isolation (a synthetic matmul, one layer's matrices), and nothing compared the model's own output.
+  The first load that moves a model now decodes one short sequence, at every graph width from one
+  token to a prompt's, on the device and on a host-only instance of the same file, and compares the
+  next-token rows by the rule a prefill device is confirmed by. Confirmed, the verdict is kept for
+  that model, machine and engine and no later load checks again; where the answers differ, or the
+  comparison cannot run, the load serves from the cores and the plan stops proposing that device for
+  the model. It costs 0.2 to 2 s on that one load (a 256M, a 1.7B and a 4B model on a 16 GB
+  Apple-silicon laptop). Its limit, measured there: a device can agree on the sequence and still
+  drift on other inputs. A 256M model fed a raw prompt with no chat template agreed on 92% of the
+  check's rows and on 59% of that prompt's; with the model's template the two wrote the same text.
+
 ### Removed
 - **Load-time calibration** (`--calibrate` / `--no-calibrate`, the `calibrate` parameter, the
   `calibrate` step of `plan_progress` and `calibrating` in `/api/info`). The server no longer unloads

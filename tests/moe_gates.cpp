@@ -89,6 +89,9 @@
 //       record.
 //   G26 the real-layer probe fills every device's facts and agrees with the host on the layer's
 //       matmuls; it is timed, not gated, on the tiny models.
+//   G28 the answer check of a model held whole on a device (KnobTrialConfig::answer_device): answers
+//       that match the cores' are confirmed and the placement serves (a); answers made to differ
+//       reopen the session on the cores, which serve (b); the record carries each word.
 //
 // G15 needs no separate "did it do anything" check of the G10 kind: the tensor is bound to
 // RESERVED address space, so a row the policy fails to fetch is not a slightly wrong weight but
@@ -1911,6 +1914,49 @@ int main(int argc, char ** argv) {
                                 std::printf("[PASS] %s: %.1f tok/s in the record\n", what.c_str(), tps);
                             }
                         }
+                    }
+                }
+            }
+            // G28 — the answer check: a model held whole in memory with every block on the device, its
+            // answers compared with the cores' before the session serves. a) The loopback device computes
+            // what the cores do: the check confirms, the record carries it, and the output is the same
+            // placement's without the check. b) The comparison made to see a differing answer: the
+            // session reopens on the cores, serves their bytes, and the record says differs.
+            {
+                RunConfig whole = base(model);
+                whole.moe.enabled = false;
+                whole.n_gpu_layers = read_gguf_model_info(model.c_str()).n_block;
+                whole.device_split = {{dev, whole.n_gpu_layers}};
+                RunConfig cores = base(model);
+                cores.moe.enabled = false;
+                RunConfig checked = whole;
+                checked.trial.answer_device = dev;
+                RunConfig refused = checked;
+                refused.trial.test_answer_differs = true;
+                std::string s_whole, s_cores;
+                if (!gen(whole, s_whole, err) || !gen(cores, s_cores, err)) {
+                    std::fprintf(stderr, "G28 reference run failed: %s\n", err.c_str());
+                    return 2;
+                }
+                const ValidationResult vc = validate(checked);
+                const RunResult rc = run(checked), rr = run(refused);
+                if (!vc.ok || !rc || !rr) {
+                    std::printf("[FAIL] G28 an answer-check run failed: %s\n", !vc.ok ? vc.error.c_str()
+                                                                               : !rc  ? rc.error.c_str()
+                                                                                      : rr.error.c_str());
+                    ++fails;
+                } else {
+                    fails += check("G28a answers confirmed on the device == the same placement unchecked", s_whole,
+                                   rc.generated_text);
+                    fails += check("G28b answers that differ: served from the cores == all on the cores", s_cores,
+                                   rr.generated_text);
+                    const int wa = rc.knobs.device_answer(dev), wb = rr.knobs.device_answer(dev);
+                    if (wa == 1 && wb == -1 && rc.knobs.verdicts() > 0) {
+                        std::printf("[PASS] G28 the record says confirmed, then differs, for %s\n", dev.c_str());
+                    } else {
+                        std::printf("[FAIL] G28 the record's word for %s: %d after a match, %d after a difference\n",
+                                    dev.c_str(), wa, wb);
+                        ++fails;
                     }
                 }
             }

@@ -709,6 +709,20 @@ struct KnobTrialConfig {
     // plan named (device_split), 0 with every layer on the cores; -1 neither. Which engine decodes the
     // model is fixed when it is loaded, so a side is timed by a load that serves it.
     int shared_device_side = -1;
+    // The device whose answers for this model the load compares with the cores' before it serves
+    // (ggml's name for it, the key the verdict is kept under: MeasuredKnobs::device_answers); empty,
+    // nothing is compared. A plan that moves a whole model onto a device by its own choice asks for
+    // it, because the probes that let the device through each compute a part of a model in isolation
+    // and none of them is this model's output: on a 16 GB Apple-silicon laptop one small vision model
+    // wrote one repeated character with every layer on the GPU and sane text on the cores, where two
+    // other models were correct on the same GPU and every probe passed for all three. The load decodes
+    // a short fixed sequence on the placement as opened and on a host-only instance of the same file,
+    // and a placement that does not pick the cores' next token is not served from: the session reopens
+    // on the cores (engine/device_answer.h). Not a timed side: it measures no rate and switches nothing.
+    std::string answer_device;
+    // TEST ONLY: the comparison sees the device's rows shifted by one token, so a gate reaches the
+    // refusal on a device that computes correctly. Never set by a front-end.
+    bool test_answer_differs = false;
 
     bool enabled() const {
         return !threads.empty() || overlap || device_tier >= 0 || width_side >= 0 || cpu_share_side >= 0 ||

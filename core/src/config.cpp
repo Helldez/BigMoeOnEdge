@@ -134,6 +134,20 @@ ValidationResult validate(const RunConfig & cfg) {
                     "load's decode: one at a time");
     if (cfg.trial.shared_device_side == 1 && cfg.n_gpu_layers == 0)
         return fail("{trial-shared-device} 1 times the model on a device: it needs {gpu-layers} above 0");
+    // The answer check compares a model held whole in memory on a device with the same file on the
+    // cores, and reopens on the cores where they differ: there has to be a device placement to compare,
+    // and nothing in the load that only a device placement can carry.
+    if (!cfg.trial.answer_device.empty()) {
+        if (cfg.n_gpu_layers == 0)
+            return fail("{trial-device-answer} compares the model on a device with the cores: it needs {gpu-layers} "
+                        "above 0");
+        if (cfg.moe.enabled)
+            return fail("{trial-device-answer} compares a model held in memory: it does not combine with "
+                        "{moe-stream}");
+        if (cfg.moe.device_cache_mb > 0 || !cfg.moe.expert_host_buffer.empty() || cfg.prefill.enabled())
+            return fail("{trial-device-answer} reopens the model on the cores where the device's answers differ: it "
+                        "does not combine with {device-cache-mb}, {expert-host-buffer} or {prefill-device}");
+    }
     if (cfg.trial.cpu_share_side >= 0 && cfg.moe.device_cache_mb <= 0)
         return fail("{trial-cpu-share} times a device cache's CPU share: it needs {device-cache-mb}");
     if (cfg.trial.cpu_share_side == 1 && !(cfg.moe.device_cache_cpu_share > 0.0f))

@@ -536,6 +536,13 @@ on a machine whose device reads that same memory, on the cores or every layer on
 (`shared_device_tps`, `no_shared_device_tps`,
 [hardware-planning.md](hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it)).
 
+That last move also carries a word that is not a rate: whether the model's answers on the device
+matched the cores' (`MeasuredKnobs::device_answers`, `device_answer=<device>:<confirmed|differs>`, one
+word per device). The load that moves the model compares them before it serves and reopens on the
+cores where they differ; a plan made on the record keeps the model off a device that differed and
+does not ask a confirmed one to be compared again. A new engine starts a new record and compares
+again.
+
 Two ways of settling them by timing were built and withdrawn:
 
 - **Timed across served loads**, one side a load. Each side cost a whole session of a person's use

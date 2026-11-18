@@ -604,7 +604,8 @@ hardware=<16 hex> engine=<version> threads=<n> threads_tried=<incumbent,candidat
   device_cache_tps=<f> no_device_cache_tps=<f> width_narrow=<n> wide_decode_tps=<f>
   narrow_decode_tps=<f> wide_prefill_tps=<f> narrow_prefill_tps=<f> usage_gen_tokens=<f>
   usage_long_prompt_tokens=<f> usage_requests=<n> ... [unviable=<side:n,...>]
-  [prefill=<device>:<kept|refused|unconfirmed[-n]>[,...]]  (one line)
+  [prefill=<device>:<kept|refused|unconfirmed[-n]>[,...]]
+  [device_answer=<device>:<confirmed|differs>[,...]]  (one line)
 ```
 
 `threads=0` and `overlap=-1` mean not measured, and so does a rate of 0. `prefill=` is what came of
@@ -631,6 +632,20 @@ plan's other side instead (`device_cache`, `no_device_cache`, `wide`, `narrow`; 
 `width_narrow`), as `side:n`, written only when there is one. After one failure the plan may name the
 side once more; from two on it is the losing side in every plan. A rate measured since clears it. A name the reader does
 not know, or a part it cannot read, is skipped.
+
+`device_answer=` is whether this model's answers on a device matched the cores', one word per device
+compared, written only when there is one: the load a plan moved the whole model onto a device with
+compares them before it serves (`--trial-device-answer`,
+[hardware-planning.md](hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it)), with
+one of these lines, the second and third as warnings:
+
+```
+bmoe: device answer: <device> against the CPU on <n> tokens in <n> graphs from 1 to <n> wide, <n> rows compared, top token agrees <p>%, logit NMSE <f>, KL mean <f> max <f>, device <f> s, CPU reference <f> s, <f> s in all - confirmed
+bmoe: device answer: <device> against the CPU on ... - it does not compute this model: the model is reopened on the CPU
+bmoe: device answer: <device>'s answers for this model were not compared with the CPU's (<why>); the model is reopened on the CPU
+```
+
+A load that reopened on the CPU reports the time of both opens as its load time.
 
 Keeping a record merges it into the one already kept for that machine and engine: each measurement it
 carries replaces that one, and the rest stay, so a load that measured one side does not lose the other.

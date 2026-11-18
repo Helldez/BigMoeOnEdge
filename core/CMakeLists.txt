@@ -18,6 +18,7 @@ add_library(bmoe_core STATIC
     src/plan/backend_choice.cpp
     src/plan/routing.cpp
     src/engine/logits.cpp
+    src/engine/logit_agreement.cpp
     src/engine/cache_brake.cpp
     src/engine/knob_trial.cpp
     src/plan/measured_knobs.cpp
@@ -69,6 +70,7 @@ if(BMOE_HAVE_LLAMA)
         src/engine/media_input.cpp
         src/engine/image_probe.cpp
         src/engine/llama_log.cpp
+        src/engine/device_answer.cpp
         src/engine/prefill_device.cpp
         src/engine/prefill_path.cpp
         src/engine/decide/llama_backend.cpp

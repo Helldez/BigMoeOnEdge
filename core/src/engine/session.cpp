@@ -28,6 +28,8 @@
 #include "media_input.h"
 #include "prompt_stream.h"
 #include "knob_trial.h"
+#include "device_answer.h"
+#include "logit_agreement.h"
 #include "../io/platform_io.h"
 #include "../io/mapping_release.h"
 #include "../io/parallel_copy.h"
@@ -293,17 +295,6 @@ dense_bytes_per_layer(const GgufOffsets & offs, const std::vector<LayerExperts> 
 int prefill_piece(const SessionConfig & cfg) {
     return cfg.n_ubatch > 0 ? std::min(cfg.n_ubatch, cfg.n_batch) : cfg.n_batch;
 }
-
-// The text a prefill device is confirmed on (PrefillDeviceConfig::verify). Ordinary prose, so the
-// model's next-token choices are confident in most rows and a device that computes the same model
-// agrees with the host on them; a device whose numerics break the model agrees on almost none.
-constexpr const char * k_verify_text =
-    "The river runs past the old mill and under the stone bridge before it reaches the town. In the "
-    "morning the market opens on the square, and people come from the villages to sell bread, cheese "
-    "and vegetables. Children walk to school along the canal, and the baker has been awake since four. "
-    "By noon the square is full, the church bell rings twelve times, and the cafes put their chairs "
-    "out in the sun. In the afternoon the farmers drive home, the stalls are folded away, and the town "
-    "becomes quiet again until the evening, when the lights come on along the water.";
 
 } // namespace
 
@@ -588,7 +579,8 @@ struct Session::Impl {
 
     // ── open(), one named step at a time, in the order open() calls them (see Opening) ──
     struct Opening;
-    bool load_model(Opening & o);
+    bool load_model(Opening & o, llama_model ** reference = nullptr);
+    detail::DeviceAnswer compare_device_answer(Opening & o);
     bool read_model(Opening & o);
     bool build_hook(Opening & o);
     bool resolve_gate_mirror(GateMirror m, Opening & o);
@@ -1027,7 +1019,11 @@ struct Session::Impl::Opening {
 // so on a discrete one the op falls back to the CPU regardless. See docs/hardware-planning.md
 // for what a working version would have to do instead - wrap our own reservation with
 // `ggml_backend_dev_buffer_from_host_ptr`, which CUDA does not implement and Metal does.
-bool Session::Impl::load_model(Opening & o) {
+//
+// With `reference`, the model is handed to the caller rather than kept, and nothing of the session
+// is touched: the host-only twin a device's answers are compared with (compare_device_answer), loaded
+// by the same rules as the model it stands beside.
+bool Session::Impl::load_model(Opening & o, llama_model ** reference) {
     const SessionConfig & cfg = o.cfg;
     llama_model_params mparams = llama_model_default_params();
     // A device we are not using should not be in the room. Left registered, the scheduler hands it
@@ -1166,6 +1162,10 @@ bool Session::Impl::load_model(Opening & o) {
 
     llama_model * m = llama_model_load_from_file(cfg.model_path.c_str(), mparams);
     if (!m) return o.fail("could not load the model: " + cfg.model_path);
+    if (reference) {
+        *reference = m;
+        return true;
+    }
     model.reset(m);
     if (cfg.spec.is_mtp() && !cfg.spec.mtp_head.empty()) {
         // The head whole and resident, where the plan put it: on the devices the target's layers
@@ -1180,6 +1180,47 @@ bool Session::Impl::load_model(Opening & o) {
         model_dft.reset(h);
     }
     return true;
+}
+
+// The model's answers on the devices its layers were opened on, against the same file on the cores
+// (KnobTrialConfig::answer_device; the comparison is device_answer.h's). Run on the context as
+// created, before anything is armed on it: nothing is recorded, traced or timed yet, so the sequence
+// leaves no mark on what the session measures.
+detail::DeviceAnswer Session::Impl::compare_device_answer(Opening & o) {
+    const SessionConfig & cfg = o.cfg;
+    const SessionConfig host = detail::on_cores(cfg);
+    detail::AnswerReference ref;
+    std::string load_error;
+    ref.load_model = [&]() -> llama_model * {
+        Opening ho{host, load_error, nullptr, nullptr, nullptr};
+        llama_model * m = nullptr;
+        return load_model(ho, &m) ? m : nullptr;
+    };
+    // The types the context was created with, after any fallback (create_contexts).
+    ref.type_k = detail::to_ggml_type(this->cfg.cache_type_k);
+    ref.type_v = detail::to_ggml_type(this->cfg.cache_type_v);
+    ref.n_threads = cfg.n_threads;
+    ref.n_threads_batch = cfg.n_threads_batch > 0 ? cfg.n_threads_batch : cfg.n_threads;
+    const auto t0 = clock_t_::now();
+    const detail::DeviceAnswer a = detail::check_device_answer(ctx.get(), ref, cfg.trial.test_answer_differs);
+    const double check_s = secs(t0, clock_t_::now());
+    const char * dev = cfg.trial.answer_device.c_str();
+    if (a.verdict == detail::DeviceAnswer::Verdict::Unchecked) {
+        log_printf(LogLevel::Warn,
+                   "device answer: %s's answers for this model were not compared with the CPU's (%s%s%s); the "
+                   "model is reopened on the CPU",
+                   dev, a.unchecked.c_str(), load_error.empty() ? "" : ": ", load_error.c_str());
+        return a;
+    }
+    const bool ok = a.verdict == detail::DeviceAnswer::Verdict::Confirmed;
+    log_printf(ok ? LogLevel::Info : LogLevel::Warn,
+               "device answer: %s against the CPU on %d tokens in %d graphs from 1 to %d wide, %d rows compared, "
+               "top token agrees %.0f%%, logit NMSE %.2e, KL mean %.4f max %.4f, device %.2f s, CPU reference "
+               "%.2f s, %.2f s in all - %s",
+               dev, a.tokens, a.pieces, a.wide, a.agreement.rows, a.agreement.agree() * 100.0, a.agreement.nmse(),
+               a.agreement.kld, a.agreement.kld_max, a.device_s, a.host_s, check_s,
+               ok ? "confirmed" : "it does not compute this model: the model is reopened on the CPU");
+    return a;
 }
 
 // The loaded model's own facts, the expert layout read from its tensors, and its chat template.
@@ -2053,37 +2094,23 @@ bool Session::Impl::confirm_prefill_device(Opening & o) {
     const SessionConfig & cfg = o.cfg;
     llama_context * c = ctx.get();
     std::string why;
-    // Sized as llama.cpp's own common_tokenize sizes it: a guess, and once more at the size a
-    // buffer too small is told it needs (returned negated).
-    const int text_len = (int) std::strlen(k_verify_text);
-    std::vector<llama_token> toks((size_t) text_len + 2);
-    int nt = llama_tokenize(vocab, k_verify_text, text_len, toks.data(), (int) toks.size(), /*add_special*/ true,
-                            /*parse_special*/ false);
-    if (nt < 0 && nt != std::numeric_limits<int32_t>::min()) { // INT32_MIN: the count overflowed
-        toks.resize((size_t) -nt);
-        nt = llama_tokenize(vocab, k_verify_text, text_len, toks.data(), (int) toks.size(), true, false);
-    }
     // At least as wide as the narrowest graph the device is handed, so what is confirmed is a
     // placement the device will actually see; bounded by what one graph may return.
     const int want = std::min({std::max(PrefillDeviceConfig::verify_tokens, cfg.prefill.min_tokens),
                                PrefillDeviceConfig::max_outputs, prefill_piece(this->cfg), cfg.n_ctx - 1});
     const int rows = std::min(want, PrefillDeviceConfig::verify_rows);
-    double host_s = 0.0, dev_s = 0.0, agree = 0.0, nmse = 0.0, kld = 0.0, kld_max = 0.0;
+    double host_s = 0.0, dev_s = 0.0;
+    detail::LogitAgreement cmp;
+    // The sequence the whole-model answer check decodes too (device_answer.h): one text, one criterion.
+    const std::vector<llama_token> probe = detail::answer_probe_tokens(vocab, want);
     // A check that cannot run is not a verdict: the device stays as the plan or the caller set it,
     // and the line below says it was not confirmed.
     std::string unchecked;
-    if (nt <= 1) {
+    if (probe.empty()) {
         unchecked = "the confirmation text does not tokenize";
     } else if (want < cfg.prefill.min_tokens) {
         unchecked = "no graph as wide as the narrowest the device is handed fits a confirmation";
     } else {
-        // Repeat the text (without its leading special token) until the probe is as wide as asked.
-        const int body = toks[0] == llama_vocab_bos(vocab) ? 1 : 0;
-        std::vector<llama_token> probe(toks.begin(), toks.begin() + nt);
-        while ((int) probe.size() < want)
-            probe.insert(probe.end(), toks.begin() + body, toks.begin() + nt);
-        probe.resize((size_t) want);
-
         llama_batch b = llama_batch_init(want, 0, 1);
         // The device computes every position; verify_rows spread positions come back to compare,
         // which keeps the output head's product narrow on the host (see verify_rows): all 64 rows
@@ -2131,48 +2158,12 @@ bool Session::Impl::confirm_prefill_device(Opening & o) {
         } else if (rc != 0) {
             why = "the confirmation prefill failed";
         } else {
-            int same = 0;
-            double num = 0.0, den = 0.0;
-            // The KL divergence of the device's next-token distribution from the host's, per row: how far
-            // the whole distribution moved, where agreeing on the top token only says whether a near tie
-            // flipped. Measured on a 12 GB phone's NPU: Qwen3.6-35B-A3B Q4_K_M a mean of 0.004 (rounding,
-            // its two differing rows near ties), Gemma 4 26B-A4B Q4_K_M 0.60 with one row at 13.5 where the
-            // host was 0.999 sure (the backend's expert matmul past the fp16 range, ggml-org/llama.cpp#32198).
-            // Logged beside the verdict, which is still the top-token agreement.
-            const int nv = n_vocab;
-            std::vector<double> lh((size_t) nv), ld((size_t) nv);
-            const auto log_softmax = [nv](const float * x, std::vector<double> & out) {
-                double mx = -INFINITY;
-                for (int v = 0; v < nv; ++v)
-                    mx = std::max(mx, (double) x[v]);
-                double z = 0.0;
-                for (int v = 0; v < nv; ++v)
-                    z += std::exp((double) x[v] - mx);
-                const double lz = mx + std::log(z);
-                for (int v = 0; v < nv; ++v)
-                    out[(size_t) v] = (double) x[v] - lz;
-            };
-            for (int r = 0; r < rows; ++r) {
-                const float * h = host_logits.data() + (size_t) r * n_vocab;
-                const float * d = llama_get_logits_ith(c, at[(size_t) r]);
-                if (argmax(h, n_vocab) == argmax(d, n_vocab)) ++same;
-                for (int v = 0; v < n_vocab; ++v) {
-                    const double e = (double) d[v] - (double) h[v];
-                    num += e * e;
-                    den += (double) h[v] * (double) h[v];
-                }
-                log_softmax(h, lh);
-                log_softmax(d, ld);
-                double kl = 0.0;
-                for (int v = 0; v < nv; ++v)
-                    kl += std::exp(lh[(size_t) v]) * (lh[(size_t) v] - ld[(size_t) v]);
-                kld += kl / rows;
-                kld_max = std::max(kld_max, kl);
-            }
-            agree = (double) same / rows;
-            nmse = den > 0.0 ? num / den : 0.0;
-            if (agree < PrefillDeviceConfig::verify_min_agree)
-                why = "it picked the host's next token in " + std::to_string(same) + " of " + std::to_string(rows) +
+            // Judged as every device check is (logit_agreement.h): the top token's agreement decides,
+            // the distances are logged beside it.
+            for (int r = 0; r < rows; ++r)
+                cmp.add(host_logits.data() + (size_t) r * n_vocab, llama_get_logits_ith(c, at[(size_t) r]), n_vocab);
+            if (!cmp.matches())
+                why = "it picked the host's next token in " + std::to_string(cmp.same) + " of " + std::to_string(rows) +
                       " positions of a " + std::to_string(want) + "-token prefill: it does not compute this model";
         }
         llama_batch_free(b);
@@ -2186,8 +2177,8 @@ bool Session::Impl::confirm_prefill_device(Opening & o) {
     log_printf(LogLevel::Info,
                "prefill-device %s confirmation: %d tokens, %d compared, top token agrees %.0f%%, logit NMSE %.2e, "
                "KL mean %.4f max %.4f, host %.2f s, device %.2f s%s%s",
-               cfg.prefill.device.c_str(), want, rows, agree * 100.0, nmse, kld, kld_max, host_s, dev_s,
-               why.empty() ? "" : " - ", why.c_str());
+               cfg.prefill.device.c_str(), want, rows, cmp.agree() * 100.0, cmp.nmse(), cmp.kld, cmp.kld_max, host_s,
+               dev_s, why.empty() ? "" : " - ", why.c_str());
     if (!why.empty()) {
         prefill_check_refused = true;
         const std::string perr = cfg.prefill.device + " is not kept as the prefill device: " + why;
@@ -2683,11 +2674,57 @@ void Session::Impl::warn_about_load(const SessionConfig & cfg) {
     }
 }
 
+// What a load's answer check came to, for open() to act on once the placement it judged is gone.
+struct Session::AnswerCheck {
+    bool ran = false;
+    detail::DeviceAnswer result;
+};
+
 std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
                                        std::string & error,
                                        IRouteTraceSink * route_trace,
                                        IComputeTraceSink * compute_trace,
                                        IIoTraceSink * io_trace) {
+    using Verdict = detail::DeviceAnswer::Verdict;
+    const std::string & device = cfg.trial.answer_device;
+    const auto t0 = clock_t_::now();
+    AnswerCheck check;
+    std::unique_ptr<Session> self = open_placed(cfg, error, route_trace, compute_trace, io_trace, &check);
+    if (!check.ran) return self;
+    if (check.result.verdict == Verdict::Confirmed) {
+        if (self) self->impl_->trials.result.set_device_answer(device, 1);
+        return self;
+    }
+    // Not confirmed, and the placement is already freed (open_placed returned nothing): the session
+    // serves from the cores. A sequence that differed is a verdict, and is kept. A check that could
+    // not run is not one, and nothing is kept, but the model does not stay on the device either: a
+    // device whose answers for this model were never compared with the cores' is exactly what the
+    // check exists to keep from serving, and "could not compare" has not compared them. The next load
+    // asks again.
+    const double first_s = secs(t0, clock_t_::now());
+    self = open_placed(detail::on_cores(cfg), error, route_trace, compute_trace, io_trace, nullptr);
+    if (!self) {
+        error =
+            "the model was not kept on " + device +
+            (check.result.verdict == Verdict::Differs ? ", whose answers for it differed from the CPU's"
+                                                      : ", whose answers for it could not be compared with the CPU's") +
+            ", and it could not be opened on the CPU either: " + error;
+        return nullptr;
+    }
+    if (check.result.verdict == Verdict::Differs) self->impl_->trials.result.set_device_answer(device, -1);
+    self->impl_->load_seconds += first_s; // the load the caller waited for is both
+    return self;
+}
+
+// One opening of `cfg` as it stands. Where it asks for the device's answers to be compared
+// (KnobTrialConfig::answer_device) and `check` is given, the comparison runs once the context exists,
+// and an answer that is not confirmed ends this opening with nothing: the caller opens the cores.
+std::unique_ptr<Session> Session::open_placed(const SessionConfig & cfg,
+                                              std::string & error,
+                                              IRouteTraceSink * route_trace,
+                                              IComputeTraceSink * compute_trace,
+                                              IIoTraceSink * io_trace,
+                                              AnswerCheck * check) {
     // Create the session first so its Impl destructor owns backend teardown from this point
     // on: any failure below returns nullptr, destroying `self`, which frees the backend once.
     std::unique_ptr<Session> self(new Session());
@@ -2711,6 +2748,15 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     if (!im.read_model(o)) return nullptr;
     if (!im.build_hook(o)) return nullptr;
     if (!im.create_contexts(o)) return nullptr;
+    if (check && !cfg.trial.answer_device.empty()) {
+        check->ran = true;
+        check->result = im.compare_device_answer(o);
+        if (check->result.verdict != detail::DeviceAnswer::Verdict::Confirmed) {
+            error = "the device's answers for this model were not confirmed";
+            return nullptr;
+        }
+        detail::log_memory_snapshot("device-answer-checked");
+    }
     im.build_sampler(cfg);
     im.install_abort_callback();
     if (!im.init_speculation(o)) return nullptr;

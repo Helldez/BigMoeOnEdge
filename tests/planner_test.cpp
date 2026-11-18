@@ -3053,6 +3053,46 @@ int main() {
         check(on_cores(plan_with(54.0, 40.0)),
               "shared device, the decode's gain inside the margin of the whole request: the cores keep it");
 
+        // The probes let the device through; what this model answers there is compared by the load that
+        // moves it, once, and the record's word then decides.
+        check(moved.config.trial.answer_device == "accel" && df &&
+                  df->reason.find("compares its answers") != std::string::npos,
+              "shared device, moved with no word on its answers: the load is asked to compare them",
+              df ? df->reason : "");
+        check(first.config.trial.answer_device.empty(), "shared device, on the cores: nothing to compare");
+        {
+            ModelProfile said = model;
+            said.knobs.set_device_answer("accel", 1);
+            const Plan ok = plan_run(base_cfg(), prompts, said, shared, PlanRequest{}, PlannerPolicy::defaults());
+            const Decision * dk = find(ok, "shared-device");
+            check(on_device(ok) && ok.config.trial.answer_device.empty() && dk &&
+                      dk->reason.find("matched the cores'") != std::string::npos,
+                  "shared device, answers confirmed here: the device, and nothing compared again",
+                  dk ? dk->reason : "");
+            check(validate(ok.config).ok, "shared device, confirmed: a valid config", validate(ok.config).error);
+
+            said.knobs.set_device_answer("accel", -1);
+            const Plan no = plan_run(base_cfg(), prompts, said, shared, PlanRequest{}, PlannerPolicy::defaults());
+            const Decision * dn = find(no, "shared-device");
+            check(on_cores(no) && no.config.trial.answer_device.empty() && no.config.trial.shared_device_side == -1,
+                  "shared device, answers differed here: the cores, nothing compared, no side timed");
+            check(dn && dn->value == "cpu" && dn->source == Source::Measured &&
+                      dn->reason.find("differed from the cores' on this machine") != std::string::npos,
+                  "shared device, answers differed: a measured line that says so", dn ? dn->reason : "no line");
+            // Another device's word is not this one's.
+            said.knobs.device_answers.clear();
+            said.knobs.set_device_answer("other", -1);
+            const Plan el = plan_run(base_cfg(), prompts, said, shared, PlanRequest{}, PlannerPolicy::defaults());
+            check(on_device(el) && el.config.trial.answer_device == "accel",
+                  "shared device, another device's answers differed: this one moves, and is compared");
+
+            PlanRequest held;
+            held.pinned = {"gpu-layers"};
+            const Plan pin = plan_run(base_cfg(), prompts, model, shared, held, PlannerPolicy::defaults());
+            check(pin.config.trial.answer_device.empty() && !find(pin, "shared-device"),
+                  "shared device, the placement pinned by a person: nothing moved, nothing compared");
+        }
+
         ModelProfile failed = model;
         failed.knobs.shared_device_unviable = MeasuredKnobs::unviable_max;
         const Plan f = plan_run(base_cfg(), prompts, failed, shared, PlanRequest{}, PlannerPolicy::defaults());

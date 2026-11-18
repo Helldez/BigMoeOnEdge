@@ -53,6 +53,14 @@ target_link_libraries(bmoe_prompt_stream_test PRIVATE bmoe_core)
 target_include_directories(bmoe_prompt_stream_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/engine)
 add_test(NAME prompt_stream COMMAND bmoe_prompt_stream_test)
 
+# The whole-model answer check's rules (core/src/engine/device_answer.h): how two computations of a
+# model are judged to agree, the graphs the sequence goes through, the configuration a session
+# reopens with. Pure policy, no model; the check itself on a loaded model is gate G28.
+add_executable(bmoe_device_answer_test device_answer_test.cpp)
+target_link_libraries(bmoe_device_answer_test PRIVATE bmoe_core)
+target_include_directories(bmoe_device_answer_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/engine)
+add_test(NAME device_answer COMMAND bmoe_device_answer_test)
+
 # The real Session path must apply request-local grammar to both token selection sites.
 add_executable(bmoe_output_constraint_session_test output_constraint_session_test.cpp)
 target_link_libraries(bmoe_output_constraint_session_test PRIVATE bmoe_core)

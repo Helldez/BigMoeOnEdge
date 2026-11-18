@@ -144,6 +144,8 @@ core/
                 kv_cache_type - the KV cache type to the ggml type llama.cpp's context takes
                 prefill_device - moves layer weights and model state onto a device per graph
                 prefill_path - the prefill device for one session: setup, placement, device decode
+                device_answer - a model open on devices compared with the cores, once per model
+                logit_agreement - the rule two sets of next-token rows are compared by
                 runtime — the one-shot run() wrapper over a Session
                 llama_log — what of llama.cpp's own log reaches stderr: DEBUG dropped unless
                   asked for, a requested cancel's decode errors demoted while it is in flight

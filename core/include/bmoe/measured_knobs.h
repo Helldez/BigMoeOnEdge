@@ -203,6 +203,39 @@ struct MeasuredKnobs {
         return r;
     }
 
+    // Whether this model's answers on a device matched the cores', on this machine and engine, one
+    // word per device: `verdict` 1 where a load compared them and they matched, -1 where they differed;
+    // a device with no word was never compared. The probes a plan reads each compute a part of a model
+    // in isolation (a synthetic matmul, one layer's matrices), and a device can pass every one of them
+    // and still not compute a given model: on a 16 GB Apple-silicon laptop one small vision model wrote
+    // one repeated character with every layer on the GPU and sane text on the cores, where two other
+    // models were correct on the same GPU. So a load whose plan moved the whole model onto a device
+    // decodes a short sequence on both before it serves (KnobTrialConfig::answer_device), and the word
+    // is kept: a plan does not move this model onto a device that differed here, and does not ask a
+    // device that matched to be compared again (planner.cpp, choose_shared_device). A new engine starts
+    // a new record, and compares again.
+    struct AnswerWord {
+        std::string device;
+        int verdict = 0;
+    };
+    std::vector<AnswerWord> device_answers;
+    // 1 matched, -1 differed, 0 never compared.
+    int device_answer(const std::string & device) const {
+        for (const AnswerWord & w : device_answers)
+            if (w.device == device) return w.verdict;
+        return 0;
+    }
+    // Replaces `device`'s word, or adds one. A word that says nothing (0) is not kept.
+    void set_device_answer(const std::string & device, int verdict) {
+        if (device.empty() || verdict == 0) return;
+        for (AnswerWord & w : device_answers)
+            if (w.device == device) {
+                w.verdict = verdict;
+                return;
+            }
+        device_answers.push_back({device, verdict});
+    }
+
     bool empty() const { return verdicts() == 0; }
     // How many measurements this record carries: a front-end keeps a record again when it grows. The
     // requests a width trial has seen count too, so the usage it weighs the two widths by is kept as it
@@ -215,7 +248,7 @@ struct MeasuredKnobs {
                (device_cache_unviable > 0) + (no_device_cache_unviable > 0) + (wide_unviable > 0) +
                (narrow_unviable > 0) + (cpu_share_unviable > 0) + (no_cpu_share_unviable > 0) +
                (shared_device_tps > 0.0) + (no_shared_device_tps > 0.0) + (shared_device_unviable > 0) +
-               (no_shared_device_unviable > 0) + (int) prefill.size();
+               (no_shared_device_unviable > 0) + (int) prefill.size() + (int) device_answers.size();
     }
 };
 

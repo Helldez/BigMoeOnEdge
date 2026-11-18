@@ -534,6 +534,48 @@ int main() {
                                    err) &&
                   pback.size() == 1 && !pback[0].prefill_word("HTP0") && pback[0].prefill_word("GPU0"),
               "record: a prefill word it cannot read is read past, the others hold");
+        // The devices' answer words: written only when there is one, one per device, read back, merged.
+        check(format_measured_knobs({uv}).find("device_answer=") == std::string::npos && uv.device_answer("GPU0") == 0,
+              "record: no device compared, no key, and no word for any");
+        {
+            MeasuredKnobs av = uv;
+            const int before = av.verdicts();
+            av.set_device_answer("GPU0", -1);
+            av.set_device_answer("GPU1", 1);
+            av.set_device_answer("GPU2", 0); // says nothing: not kept
+            av.set_device_answer("", 1);
+            std::vector<MeasuredKnobs> aback;
+            check(av.device_answers.size() == 2 && av.verdicts() == before + 2,
+                  "record: a word per device compared, each one a verdict a front-end keeps");
+            check(format_measured_knobs({av}).find("device_answer=GPU0:differs,GPU1:confirmed") != std::string::npos &&
+                      parse_measured_knobs(format_measured_knobs({av}), aback, err) && aback.size() == 1 &&
+                      aback[0].device_answer("GPU0") == -1 && aback[0].device_answer("GPU1") == 1 &&
+                      aback[0].device_answer("GPU2") == 0,
+                  "record: the answer words read back, each for its own device");
+            // A later load's word replaces that device's and leaves the others; a load that compared
+            // nothing leaves them all.
+            std::vector<MeasuredKnobs> akept = {av};
+            MeasuredKnobs later = uv;
+            later.set_device_answer("GPU0", 1);
+            keep_measured_knobs(akept, later);
+            check(akept[0].device_answer("GPU0") == 1 && akept[0].device_answer("GPU1") == 1 &&
+                      akept[0].device_answers.size() == 2,
+                  "record: a later comparison replaces that device's word only");
+            keep_measured_knobs(akept, uv);
+            check(akept[0].device_answer("GPU0") == 1 && akept[0].device_answer("GPU1") == 1,
+                  "record: a load that compared nothing keeps the words");
+            MeasuredKnobs only;
+            only.hardware = "hw";
+            only.engine = "e";
+            only.set_device_answer("GPU0", -1);
+            check(!only.empty() && only.verdicts() == 1, "record: a word alone is a record worth keeping");
+            check(parse_measured_knobs(
+                      "bmoe-measured-knobs 1\nhardware=a engine=b device_answer=GPU0:perhaps,:confirmed,GPU1:differs\n",
+                      aback, err) &&
+                      aback.size() == 1 && aback[0].device_answer("GPU0") == 0 &&
+                      aback[0].device_answer("GPU1") == -1 && aback[0].device_answers.size() == 1,
+                  "record: an answer word it cannot read is read past, the others hold");
+        }
         std::vector<MeasuredKnobs> ukept = {uv};
         MeasuredKnobs again_failed = uv;
         again_failed.no_device_cache_unviable = 2;

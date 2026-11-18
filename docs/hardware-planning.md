@@ -1291,10 +1291,11 @@ GPU does. Timing both sides as loads of their own caught those and cost every fi
 reopening; priced, a machine whose probe reads the cores ahead on the decode keeps them unless its
 prompts decide it, and a device served once is measured from then on.
 
-A device is a candidate only where each of these is a fact: it computed the host's results on one
-real layer of this model, one token wide and as wide as a prompt (`identity_ok`, `wide_identity_ok`:
-the prompt runs there too, and on a phone a GPU matched the host one token wide and wrote garbage on a
-prompt), it runs the model's expert matmul in the file's own
+A device is a candidate only where each of these is a fact: it computed the host's results in the
+probes, one token wide and as wide as a prompt (`identity_ok`, `wide_identity_ok`: the prompt runs
+there too, and on a phone a GPU matched the host one token wide and wrote garbage on a prompt), its
+answers for this model have not differed from the cores' on this machine (below), it runs the model's
+expert matmul in the file's own
 format, it takes the mapped weights without a repack (the invariant above), and the compute buffer
 the fitter projected for it fits beside the model in the same pool. Where the system takes pages back
 cheaply, the room left must also clear `fits_air_ratio`, measured against what the move is weighed
@@ -1313,6 +1314,41 @@ llama.cpp copies them into the device's own buffers, which are this same memory,
 mapping's pages for the system to reclaim. Either way the model occupies the pool once, and the
 plan says which. A load that cannot open the model on the device opens it on the cores instead and
 the failure is counted against the device, as for every other decision fixed at load.
+
+The probes are a filter, not the guarantee: each computes a part of a model in isolation (a
+synthetic matmul; one layer's matrices where the model has experts; nothing of the model at all where
+it has none), and none of them is the model's output. So the load that moves a model onto the device
+compares the two before it serves (`KnobTrialConfig::answer_device`, `--trial-device-answer`,
+`core/src/engine/device_answer.h`): one fixed text through the model's own tokenizer, decoded on the
+placement as opened and on a host-only instance of the same file (a second, temporary model loaded
+mapped with no layer on any device, and a context no wider than the sequence, both freed before the
+session serves), and the next-token rows of both side by side. The sequence goes through at every
+graph width from one token to eight and then once 64 wide, since a backend picks its kernels by
+width; the criterion is the prefill device's confirmation's
+([measured-planning.md](measured-planning.md#a-prefill-device-that-did-not-hold-up-for-a-model)): the
+device picks the cores' next token in at least nine rows in ten, with the logit NMSE and the KL
+divergence logged beside it. What comes of it is kept per model, machine and engine
+(`MeasuredKnobs::device_answers`, `device_answer=<device>:<confirmed|differs>`):
+
+- **confirmed**: the model stays on the device, and no later load compares again.
+- **differs**: the session frees the device's model and reopens on the cores inside the same load,
+  with a warning that carries the figures, and serves from there; a plan made on the record keeps this
+  model on the cores (`shared-device = cpu`, measured) and asks for nothing.
+- **could not be compared** (the reference would not open, a decode failed): nothing is recorded and
+  the load serves from the cores all the same, since a device whose answers were never compared is
+  what the check exists to keep from serving. The next load asks again.
+
+It costs one short decode on each side and a second open of the file's mapping, at the first load
+that moves the model, once per model, machine and engine: measured on a 16 GB Apple-silicon laptop,
+0.16 s for a 256M model, 0.9 s for a 1.7B one and 2.1 s for a 4B one. A placement a person pinned is
+not compared, and a device with memory of its own is the fitter's, with its own gates.
+
+What it does not see: a device whose error depends on the input. One text is one sample of what a
+model is asked, and the comparison answers for that sample. Measured on the same laptop, SmolVLM-256M
+Q8_0 with every layer on the GPU agrees with the cores on the check's text (the top token in 36 rows
+of 39, logit NMSE 8.5e-4) and on its own chat template (the same 40 tokens as the cores), and on a
+raw prompt that opens with one particular word it does not (the top token in 59% of the rows, NMSE
+1e-1), where the cores' own output is not sensible text either. The check passes that model.
 
 Out of its scope: a model that streams. Its experts live in memory the streamer reserved, which no
 device is handed (`note_expert_compute`), so there the device keeps the prompt alone (the prefill
