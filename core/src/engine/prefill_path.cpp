@@ -169,9 +169,10 @@ bool PrefillPath::open_arena(const PrefillDeviceConfig & cfg,
     }
     if (arena_->has_dense())
         log_printf(LogLevel::Info,
-                   "prefill-device dense arena: layer weights through 2 slots, %.1f MiB; %d converted "
-                   "to a type the device takes (%.1f MiB)",
-                   (double) arena_->dense_slot_bytes() / (1024.0 * 1024.0), arena_->dense_converted(),
+                   "prefill-device dense arena: layer matrices through 2 slots, the rest held, %.1f MiB (%.1f "
+                   "held); %d converted to a type the device takes (%.1f MiB)",
+                   (double) arena_->dense_slot_bytes() / (1024.0 * 1024.0),
+                   (double) arena_->dense_resident_bytes() / (1024.0 * 1024.0), arena_->dense_converted(),
                    (double) arena_->dense_converted_bytes() / (1024.0 * 1024.0));
     log_printf(LogLevel::Info, "prefill-device expert arena: %d layers through %d slot%s of %.1f MiB, %d loaders%s",
                arena_->n_layers(), arena_->n_slots(), arena_->n_slots() == 1 ? "" : "s",

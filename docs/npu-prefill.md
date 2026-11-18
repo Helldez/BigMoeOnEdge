@@ -256,9 +256,13 @@ Per-decision numbers: `bench-data/2026-09-29-prefill-routed/`.
   matmul kernels address: with DMA64 on (the default above Hexagon v79), the Hexagon backend maps
   such a buffer for DMA only, and most of its other kernels refuse it at run time, which aborts the
   graph. Gemma 4 met it first: it broadcasts a per-expert scale with `REPEAT`. The capture pass records every layer weight some op reads other than as the matrix of a
-  `MUL_MAT`/`MUL_MAT_ID` (through views too), and those go to a second pair of slots in plain device
-  memory, in their own type. The matrices keep the `WEIGHTS` slots. No op moves: the scheduler still
-  runs each on the device, now on memory every kernel can read.
+  `MUL_MAT`/`MUL_MAT_ID` (through views too), and those go to plain device memory, in their own type.
+  The matrices keep the `WEIGHTS` slots. No op moves: the scheduler still runs each on the device, now
+  on memory every kernel can read. They are not streamed: every layer's are written once at load and
+  stay (4.4 MiB for Qwen3.6-35B-A3B, norms, biases and convolution kernels). Until 0.44.1 they took
+  turns in two slots like the matrices, and the Hexagon backend of the 0.43 bump flushes its DSP queue
+  on a write to plain memory: the loaders' writes, made while the NPU computed, raced the graph's
+  thread on that queue and ended the process.
 - **Weight types the device refuses.** A "Q4_0" gguf is a mix: the one above keeps its shared experts
   in Q5_0 and four attention projections in Q6_K, which the Hexagon matmul does not take. Left alone
   they ran on the CPU inside every device graph (65 matmuls, 111 splits, 17.6 s instead of 11.2 s).

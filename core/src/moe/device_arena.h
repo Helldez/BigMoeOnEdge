@@ -15,12 +15,13 @@
 // and waits for the current one. The routing itself is not read: at this width it selects nearly
 // every expert, and on the device it is not in host memory to read.
 //
-// The layer's other weights (attention, norms, shared experts) can ride the same two-slot scheme
-// (init_dense). They are resident on the host already, so filling them is a copy, not a read; what
-// they cost the device is two layers of them instead of all of them, which on unified memory is the
-// difference between fitting the device's session and not. They are needed before the layer's
-// routing, so they are paced one layer ahead, at the last node of the previous layer (learned from
-// the capture graph, since no node name is common to every architecture).
+// The layer's other matrices (attention, shared experts) can ride the same two-slot scheme
+// (init_dense; its few weights that are not a matmul's matrix stay on the device instead). They are
+// resident on the host already, so filling them is a copy, not a read; what they cost the device is
+// two layers of them instead of all of them, which on unified memory is the difference between
+// fitting the device's session and not. They are needed before the layer's routing, so they are
+// paced one layer ahead, at the last node of the previous layer (learned from the capture graph,
+// since no node name is common to every architecture).
 //
 // Decode never sees any of this. place(false) hands every expert tensor back to the binding it had
 // (the streamer's), and the slots are not a cache: each graph refills them from layer 0.
@@ -89,8 +90,12 @@ public:
     // `non_matrix` are the weights some op reads other than as a matmul's matrix (RouterHook::
     // non_matrix_weights). A backend may keep a WEIGHTS buffer in a form only its matmul kernels
     // address (Hexagon maps it for DMA only when DMA64 is on, and most other kernels refuse it), so
-    // these ride a second pair of slots marked as plain memory, in their own type. The matrices keep
-    // the WEIGHTS slots, where the backend lays them out for its matmul.
+    // these live in plain device memory, in their own type. They are not streamed: every layer's
+    // are written once, here, and stay. A backend may make a write to plain memory wait for its op
+    // queue (Hexagon flushes it, and that queue is not thread-safe), so the loaders, which write while
+    // a graph runs, must never write one; and they are norms, biases and convolution kernels, a few
+    // MiB in all. The matrices ride the two WEIGHTS slots, where the backend lays them out for its
+    // matmul and a write leaves the queue alone.
     bool init_dense(ggml_backend_dev_t dev,
                     const std::vector<std::vector<ggml_tensor *>> & per_layer,
                     const std::unordered_set<const ggml_tensor *> & non_matrix,
@@ -144,7 +149,8 @@ public:
     double stall_seconds() const { return stall_ns_.load() * 1e-9; }
     size_t slot_bytes() const { return slot_bytes_; }
     int n_slots() const { return n_slots_; }
-    size_t dense_slot_bytes() const { return dense_slot_bytes_; }
+    size_t dense_slot_bytes() const { return dense_slot_bytes_; }         // both slots and the resident buffer
+    size_t dense_resident_bytes() const { return dense_resident_bytes_; } // of which the non-matrix weights
     int dense_converted() const { return dense_converted_; }
     size_t dense_converted_bytes() const { return dense_converted_bytes_; }
     bool has_dense() const { return !dense_.empty(); }
@@ -178,7 +184,8 @@ private:
     };
     struct DenseLayer {
         std::vector<ggml_tensor *> t;    // the model's tensors
-        std::vector<ggml_tensor *> twin; // their places in dense slot il % 2
+        std::vector<ggml_tensor *> twin; // their places: dense slot il % 2, or the resident buffer
+        std::vector<int> streamed;       // which of them a graph writes again (the matrices)
         std::vector<const void *> src;   // host bytes, taken at init: t is rebound while filling
         std::vector<ggml_backend_buffer_t> host_buffer;
         std::vector<void *> host_data, host_extra;
@@ -251,6 +258,7 @@ private:
     // matrices (usage WEIGHTS), data 1 every other layer weight (plain memory).
     ggml_backend_buffer_t dense_slot_[2][2] = {};
     size_t dense_slot_bytes_ = 0;
+    size_t dense_resident_bytes_ = 0;
     int dense_converted_ = 0;
     size_t dense_converted_bytes_ = 0;
     std::vector<int> dense_remaining_;
