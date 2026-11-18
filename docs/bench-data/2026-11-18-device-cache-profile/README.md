@@ -58,5 +58,29 @@ Decode hits over every held-out timeline, as a share of lookups.
   2.2 GB) was measured on plain LRU. What the device cache lacked since then was size, which #647
   addresses.
 
+### The cold start
+
+A cache filled before the first token does help the first tokens after a load, and only those. Hits
+per decoded token on the first held-out prompt of each domain, Qwen3.6-35B-A3B, ClassLRU started
+empty, from the profile, or from a random set:
+
+| Cache | Token after load | empty | from the profile | random |
+|---|---|---:|---:|---:|
+| 10% | 1st | 0.0 | 37.9 | 8.9 |
+| | 2nd | 34.5 | 41.6 | 38.5 |
+| | 3rd-4th | 67.4 | 69.4 | 68.5 |
+| | 5th-8th | 54.3 | 55.1 | 54.6 |
+| | 9th on | equal | equal | equal |
+| 20% | 1st | 0.0 | 63.6 | 18.1 |
+| | 2nd | 34.5 | 54.1 | 45.8 |
+| | 5th-8th | 55.1 | 63.0 | 59.7 |
+| | 17th on | equal | equal | equal |
+
+A token routes 320 experts (40 layers, top-8), so an empty cache is full of what is used within 3-4
+tokens and matches a pre-filled one after 8-16. A server keeps the cache across requests, so only
+the first request after a load starts cold. Filling the slots at load uploads as many bytes as the
+first tokens' misses would, so the gain is a fraction of a second once, and the moe_cache's public
+API cannot fill slots ahead of use.
+
 Not covered: Qwen3.8-Flash-Next (no trace recorded), long multi-turn chats, and a profile per user
 kept across sessions.
