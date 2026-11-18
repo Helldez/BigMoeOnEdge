@@ -13,6 +13,7 @@
 #include "turn_queue.h"
 #include "event_bus.h"
 #include "json_util.h"
+#include "llama_compat.h"
 
 #include "bmoe/config.h"
 #include "bmoe/log.h"
@@ -194,7 +195,17 @@ public:
     ChatOutcome chat(const ChatRequest & req,
                      const std::function<bool(const TokenMetrics &)> & on_token,
                      const std::function<bool()> & still_wanted = nullptr,
-                     const std::atomic<bool> * stop = nullptr);
+                     const std::atomic<bool> * stop = nullptr,
+                     const std::function<void(const PrefillProgress &)> & on_prefill = nullptr);
+
+    // Run `f` on the loaded session's tokenizer and template (HostedSession::tokenize and kin), on
+    // the calling thread and beside any turn: they read the model and change nothing. False, with `f`
+    // not called, when no model is ready. The session cannot be closed while `f` runs.
+    bool with_session(const std::function<void(const HostedSession &)> & f) const;
+    // What /metrics reports (llama_compat.h), its rate window emptied by the read, as a scrape does.
+    std::string scrape_metrics();
+    // Turns waiting their place behind the running one.
+    size_t waiting() const { return turns_.waiting(); }
 
     // Read one decision (bmoe/decide.h) on the calling thread, in the same line as the chat turns:
     // one prefill, no decode. A refused request (no choices, colliding choices, a prompt past
@@ -277,6 +288,7 @@ private:
     RunConfig requested_;
     json model_ = nullptr;
     json last_turn_ = nullptr;
+    ServeTotals totals_; // every answered turn since the server started, for /metrics
     std::thread loader_;
 
     std::mutex gen_m_; // held for a whole generation, and by a load while it swaps the session

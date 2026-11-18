@@ -44,7 +44,8 @@ struct AccessDecision {
     bool allowed() const { return status == 0; }
 };
 
-// /api/* and /v1/*: the engine. Everything else is the UI's static files.
+// /api/*, /v1/* and llama-server's unprefixed paths (/health, /tokenize, ...): the engine.
+// Everything else is the UI's static files.
 bool is_api_path(const std::string & path);
 
 // "127.0.0.1", "localhost", "::1" and "[::1]", with or without a port.

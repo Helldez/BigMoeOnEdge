@@ -35,6 +35,7 @@
 #include "http_fetch.h"
 #include "image_part.h"
 #include "json_util.h"
+#include "llama_compat.h"
 #include "model_delete.h"
 #include "model_files.h"
 #include "openai_chat.h"
@@ -1220,10 +1221,64 @@ static void json_tests() {
           "UTF-8 boundaries reject invalid, overlong, surrogate and out-of-range encodings");
 }
 
+static void llama_compat_tests() {
+    RunSummary s;
+    // A prompt of 80 tokens, 50 of them already in the context, and an answer of 30.
+    s.n_prompt = 30;
+    s.n_past = 110;
+    s.n_generated = 30;
+    s.prefill_seconds = 0.5;
+    s.gen_seconds = 2.0;
+    const json t = timings_json(s);
+    check(t["cache_n"] == 50 && t["prompt_n"] == 30 && t["predicted_n"] == 30 && t["prompt_ms"] == 500.0 &&
+              t["predicted_per_second"] == 15.0 && t["prompt_per_second"] == 60.0,
+          "timings: the cached part of the prompt, and each phase's tokens, time and rate");
+    RunSummary empty;
+    check(timings_json(empty)["predicted_per_second"] == 0.0 && timings_json(empty)["prompt_per_token_ms"] == 0.0,
+          "timings of a turn with nothing timed are zeros, not a division by zero");
+
+    const json p = prompt_progress_json(PrefillProgress{100, 20, 40, 0.25});
+    check(p["total"] == 100 && p["cache"] == 20 && p["processed"] == 40 && p["time_ms"] == 250.0,
+          "prompt_progress is llama-server's object, time in milliseconds");
+
+    ServeTotals tot;
+    tot.add(s);
+    tot.add(s);
+    std::string m = metrics_text(tot, 1, 2);
+    check(m.find("llamacpp:prompt_tokens_total 60\n") != std::string::npos &&
+              m.find("llamacpp:prompt_tokens_cached_total 100\n") != std::string::npos &&
+              m.find("llamacpp:tokens_predicted_total 60\n") != std::string::npos &&
+              m.find("# TYPE llamacpp:requests_deferred gauge\nllamacpp:requests_deferred 2\n") != std::string::npos &&
+              m.find("llamacpp:predicted_tokens_seconds 15\n") != std::string::npos,
+          "metrics: counters sum the turns, gauges are the window's rates and the line's lengths");
+
+    TokenizeRequest tr;
+    std::string err;
+    check(parse_tokenize_request(json{{"content", "hi"}}, tr, err) && tr.content == "hi" && !tr.add_special &&
+              tr.parse_special && !tr.with_pieces,
+          "tokenize: llama-server's defaults (no BOS, special text parsed, ids only)");
+    check(!parse_tokenize_request(json{{"content", json::array({"a", 12})}}, tr, err) &&
+              !parse_tokenize_request(json{{"content", "a"}, {"with_pieces", "yes"}}, tr, err),
+          "tokenize: a mixed content array and a non-boolean flag are refused");
+    std::vector<int32_t> ids;
+    check(parse_detokenize_request(json{{"tokens", {1, 2, 3}}}, ids, err) && ids.size() == 3 &&
+              !parse_detokenize_request(json{{"tokens", {1, -2}}}, ids, err) &&
+              !parse_detokenize_request(json{{"tokens", "1 2"}}, ids, err),
+          "detokenize: an array of non-negative ids, nothing else");
+    check(token_piece_json("ab") == json("ab") && token_piece_json(std::string("\xE4", 1)) == json::array({0xE4}),
+          "a piece that splits a code point goes out as its bytes");
+    check(slots_json(4096, true)[0]["is_processing"] == true && props_json(PropsFacts{})["total_slots"] == 1,
+          "one slot: the server answers one turn at a time");
+}
+
 static void access_tests() {
     check(is_api_path("/api/info") && is_api_path("/v1/chat/completions") && !is_api_path("/") &&
               !is_api_path("/assets/app.js") && !is_api_path("/apix"),
           "the API is /api/* and /v1/*, nothing else");
+    check(is_api_path("/health") && is_api_path("/tokenize") && is_api_path("/chat/completions") &&
+              is_api_path("/chat/completions/input_tokens") && is_api_path("/models") && is_api_path("/metrics") &&
+              !is_api_path("/healthz") && !is_api_path("/modelsx") && !is_api_path("/index.html"),
+          "llama-server's unprefixed paths are the engine, under the same key and origin rules");
     check(is_loopback_host("127.0.0.1") && is_loopback_host("localhost:8765") && is_loopback_host("[::1]:8765") &&
               is_loopback_host("::1") && !is_loopback_host("0.0.0.0") && !is_loopback_host("example.com:8765") &&
               !is_loopback_host("192.168.1.10"),
@@ -2806,6 +2861,7 @@ int main() {
     planning_config_tests();
     json_tests();
     access_tests();
+    llama_compat_tests();
     file_tests();
     decide_tests();
     model_files_tests();
