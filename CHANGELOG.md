@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [0.45.1] - 2026-11-18
+## [Unreleased]
 
 ### Added
 - **The device expert cache grows into the memory its card has free** (`--device-cache-fill`, set by
@@ -17,6 +17,8 @@ Semantic Versioning.
   Streamed experts, and cards whose memory is the host's, are left as planned
   ([hardware-planning.md](docs/hardware-planning.md),
   [bench-data](docs/bench-data/2026-11-18-rented-0.45/README.md)).
+
+## [0.45.1] - 2026-11-18
 
 ### Fixed
 - **A model that fills a card with memory of its own loads again** (since 0.42.0). Where the whole
