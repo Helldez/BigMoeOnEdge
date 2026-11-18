@@ -1893,49 +1893,73 @@ bool Session::Impl::arm_device_cache(Opening & o) {
 // The device cache grown into the memory its devices still have free (MoeStreamConfig::
 // device_cache_fill). The planned size is a projection: the capacity fitter places whole layers and
 // keeps a margin of its own, and what it never fills stayed free (0.6-2.4 GiB on every 8, 12 and 24
-// GB card measured, the cache 2 GiB of an 8 GB card's 6.4 used). With the cache made, each device's
-// free memory is read again. What the contexts made beside the cache took there (the drop from no
-// context to the contexts and the cache, less the cache's own part) is kept free once more, for what
-// a context allocates while it computes (152 MiB at most on those cards, through a 4.6k-token
-// prompt), and the rest is the cache's. The contexts made before the cache are no measure of it: with
-// the experts on the host, a wide graph's buffers copy them onto the device and took 3.5 GiB of a
-// 24 GB card where the cache's own contexts take a fraction of that. The cache's part of each device
-// is its share of the drop, which llama.cpp splits by the layers or the free memory; the smallest
-// room over the devices is the growth. The experts on the host bound it, under one token cycle it is
+// GB card measured, the cache 2 GiB of an 8 GB card's 6.4 used).
+//
+// What a device must keep free once the contexts are made is what they allocate while they compute,
+// beyond the buffers reserved with them: the backend's pool of temporaries. It is measured, not
+// guessed: one pass of a graph as wide as the context's widest, which is the most any request asks of
+// the pool, then the free memory read again. The pool's peak is kept free once more beside itself, and
+// the rest is the cache's. Measured before the pass, a context with the cache took 3.4 GiB of a 24 GB
+// card (its graph's buffers, already reserved), and through a 4.6k-token prompt the pool grew by 152
+// MiB at most on 8, 12 and 24 GB cards: the reserved buffers are no measure of what is left to come.
+//
+// The cache's part of each device is its share of the drop from no context to the contexts and the
+// cache, which llama.cpp splits by the layers or the free memory; the device with the least room for
+// its share bounds the growth. The experts held on the host bound it too, under one token cycle it is
 // not worth a context made again, and a context that cannot be made at the larger size goes back to
-// the planned one.
+// the planned one. Streamed experts are left as planned: a pass as wide as the graph would read most
+// of them from storage, minutes on a model past RAM, at every load.
 bool Session::Impl::fill_device_cache(Opening & o,
                                       const std::vector<std::pair<ggml_backend_dev_t, size_t>> & no_context) {
-    const auto now = device_free_now();
+    const auto mib = [](size_t b) { return b >> 20; };
+    const size_t planned = (size_t) cfg.moe.device_cache_mb << 20;
+    if (cfg.moe.enabled) {
+        log_printf(LogLevel::Info, "device expert cache: %zu MiB as planned; streamed experts are not grown into",
+                   mib(planned));
+        return true;
+    }
     const auto free_in = [](const std::vector<std::pair<ggml_backend_dev_t, size_t>> & v, ggml_backend_dev_t d) {
         for (const auto & e : v)
             if (e.first == d) return e.second;
         return (size_t) 0;
     };
-    const size_t planned = (size_t) cfg.moe.device_cache_mb << 20;
+    const auto made = device_free_now();
+    // The widest pass the context reserves, once: its tokens only fill the pool, and the memory they
+    // leave in the KV is cleared.
+    {
+        const uint32_t width = llama_n_ubatch(ctx.get());
+        llama_token tok = llama_vocab_bos(vocab);
+        if (tok < 0) tok = 0;
+        llama_batch b = llama_batch_init((int32_t) width, 0, 1);
+        const std::vector<llama_token> toks(width, tok);
+        batch_fill(b, toks.data(), (int) width, 0, false);
+        const int rc = llama_decode(ctx.get(), b);
+        llama_batch_free(b);
+        clear_memory(ctx.get());
+        if (rc != 0) {
+            log_printf(LogLevel::Warn, "device expert cache: the measuring pass failed (%d); %zu MiB as planned", rc,
+                       mib(planned));
+            return true;
+        }
+    }
+    const auto now = device_free_now();
     size_t drop_sum = 0;
-    for (const auto & [dev, free] : now) {
+    for (const auto & [dev, free] : made) {
         const size_t before = free_in(no_context, dev);
         if (before > free) drop_sum += before - free;
     }
-    if (drop_sum <= planned) return true; // nothing measured past the cache itself: leave it as planned
-    size_t grow = SIZE_MAX, reserve = 0;
+    size_t grow = SIZE_MAX, pool_max = 0;
     for (const auto & [dev, free] : now) {
-        const size_t before = free_in(no_context, dev);
-        if (before <= free) continue; // no context of this session on it
-        const size_t drop = before - free;
-        const size_t contexts = (size_t) ((double) (drop_sum - planned) * (double) drop / (double) drop_sum);
-        const size_t share = drop > contexts ? drop - contexts : 0; // the cache's part of this device
-        const size_t room = free > contexts ? free - contexts : 0;
-        // The cache grows on every device by its share of the growth: the device with the least room for
-        // its share bounds the whole.
-        const double part = (double) share / (double) planned;
+        const size_t before = free_in(no_context, dev), at_made = free_in(made, dev);
+        if (before <= at_made || drop_sum == 0) continue;                    // no context of this session on it
+        const size_t pool = at_made > free ? at_made - free : 0;             // what the widest pass added
+        const size_t room = free > pool ? free - pool : 0;                   // the pool's peak kept free once more
+        const double part = (double) (before - at_made) / (double) drop_sum; // this device's part of the drop
         if (part > 0.0) grow = std::min(grow, (size_t) ((double) room / part));
-        reserve = std::max(reserve, contexts);
+        pool_max = std::max(pool_max, pool);
     }
     if (grow == SIZE_MAX) return true; // the cache is on no device measured here
-    const auto mib = [](size_t b) { return b >> 20; };
-    size_t held = 0; // the experts on the host the cache serves from: past them a slot holds nothing
+    size_t held = 0;                   // the experts on the host the cache serves from: past them a slot holds nothing
     {
         std::vector<const ggml_tensor *> seen;
         for (const LayerExperts & L : hook->captured())
@@ -1949,15 +1973,15 @@ bool Session::Impl::fill_device_cache(Opening & o,
     const size_t step = std::max<size_t>(n_expert_used > 0 ? source.worst_cycle_bytes(n_expert_used) : 0, 1u << 20);
     if (grow < step) {
         log_printf(LogLevel::Info,
-                   "device expert cache: %zu MiB as planned; the devices keep %zu MiB, one context's worth, free",
-                   mib(planned), mib(reserve));
+                   "device expert cache: %zu MiB as planned; the devices keep %zu MiB free for a %zu MiB pool peak",
+                   mib(planned), mib(pool_max * 2), mib(pool_max));
         return true;
     }
     const size_t grown = (planned + grow) & ~((size_t(1) << 20) - 1);
     log_printf(LogLevel::Info,
-               "device expert cache: %zu MiB planned, grown to %zu MiB into the memory the devices have free beyond "
-               "%zu MiB, one context's worth",
-               mib(planned), mib(grown), mib(reserve));
+               "device expert cache: %zu MiB planned, grown to %zu MiB into the devices' free memory, %zu MiB kept "
+               "free for a %zu MiB pool peak",
+               mib(planned), mib(grown), mib(pool_max * 2), mib(pool_max));
     mtp.reset();
     ctx_dft.reset();
     ctx.reset();
