@@ -1437,6 +1437,24 @@ bool Session::Impl::create_contexts(Opening & o) {
         c = llama_init_from_model(model.get(), cparams);
         if (c) this->cfg.cache_type_v = KvCacheType::F16;
     }
+    // The graph's compute buffers are reserved with the context, and their size is an estimate until
+    // then: priced off a slope the probe measured, on a device whose free memory others share. Where
+    // the reservation fails, the context is the instrument again: the graph halves until it fits, down
+    // to llama.cpp's own physical batch, or the most tokens one image takes in a pass where the run
+    // has images. A narrower graph changes how many passes a prompt takes, never what it computes.
+    if (!c) {
+        const uint32_t image_floor =
+            !cfg.mmproj.empty() && cfg.image_max_tokens > 0 ? (uint32_t) cfg.image_max_tokens : 0;
+        const uint32_t floor_w = std::max(llama_context_default_params().n_ubatch, image_floor);
+        while (!c && cparams.n_ubatch / 2 >= floor_w) {
+            log_printf(LogLevel::Warn,
+                       "the context's compute buffers did not fit at a graph %u tokens wide; retrying at %u",
+                       cparams.n_ubatch, cparams.n_ubatch / 2);
+            cparams.n_ubatch /= 2;
+            c = llama_init_from_model(model.get(), cparams);
+        }
+        if (c) this->cfg.n_ubatch = (int) cparams.n_ubatch;
+    }
     if (!c) return o.fail("failed to create context"); // llama.cpp's own log says why
     ctx.reset(c);
     // Decode and prefill get their own counts. They are different workloads: prefill is compute-bound
@@ -1893,9 +1911,23 @@ bool Session::Impl::stage_experts_in_host_buffer(Opening & o) {
         }
         return spans;
     };
+    // The tensors pointed at the copy, and the mapping's pages they were copied from handed back: the
+    // plan charged the experts once (choose_expert_staging), and nothing reads those pages again. Left
+    // resident, they compete with the pinned copy for the same memory until the kernel reclaims them.
+    // Aligned inward to whole pages, so a page shared with a tensor still read through the mapping
+    // is never dropped (as dense_weights does for its own copy).
+    size_t handed_back = 0;
     const auto point_at = [&](const std::vector<pio::CopySpan> & spans) {
-        for (size_t i = 0; i < experts.size(); ++i)
+        const uintptr_t page = (uintptr_t) pio::vm_page();
+        for (size_t i = 0; i < experts.size(); ++i) {
+            const uintptr_t a0 = ((uintptr_t) spans[i].src + page - 1) & ~(page - 1);
+            const uintptr_t a1 = ((uintptr_t) spans[i].src + spans[i].bytes) & ~(page - 1);
             experts[i]->data = spans[i].dst;
+            if (a1 > a0) {
+                pio::vm_drop_file_pages((void *) a0, (size_t) (a1 - a0));
+                handed_back += (size_t) (a1 - a0);
+            }
+        }
     };
     const auto mib = [](size_t b) { return (double) b / (1024.0 * 1024.0); };
 
@@ -1959,9 +1991,9 @@ bool Session::Impl::stage_experts_in_host_buffer(Opening & o) {
                 point_at(spans);
                 log_printf(LogLevel::Info,
                            "expert host buffer: %zu expert tensors, %.0f MiB, copied and pinned for %s (%.1f s "
-                           "copying, %.1f s pinning)",
+                           "copying, %.1f s pinning); %.0f MiB of the mapping handed back",
                            experts.size(), mib(total), ggml_backend_dev_name(dev), secs(t0, t_copied),
-                           secs(t_copied, clock_t_::now()));
+                           secs(t_copied, clock_t_::now()), mib(handed_back));
                 if (captured_here) clear_memory(ctx.get()); // discard the capture's KV
                 return true;
             }
@@ -1990,9 +2022,10 @@ bool Session::Impl::stage_experts_in_host_buffer(Opening & o) {
     point_at(spans);
     expert_host_buf.reset(buf);
     log_printf(LogLevel::Info,
-               "expert host buffer: %zu expert tensors, %.0f MiB, copied into %s (%.1f s allocating, %.1f s copying)",
+               "expert host buffer: %zu expert tensors, %.0f MiB, copied into %s (%.1f s allocating, %.1f s "
+               "copying); %.0f MiB of the mapping handed back",
                experts.size(), mib(total), ggml_backend_buft_name(buft), secs(t_alloc, t_copy),
-               secs(t_copy, clock_t_::now()));
+               secs(t_copy, clock_t_::now()), mib(handed_back));
     if (captured_here) clear_memory(ctx.get()); // discard the capture's KV
     return true;
 }

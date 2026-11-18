@@ -69,7 +69,7 @@ Plan plan_layout(const AutoPlan & facts, const RunConfig & cfg, const PlanReques
     // its share of the probed width.
     const uint32_t width = (uint32_t) plan.config.n_ubatch;
     if (!req.is_pinned("ubatch") && placement.fitted && !placement.shared_memory_placement &&
-        (placement.n_gpu_layers > 0 || placement.device_compute_per_token > 0) && width > 0 &&
+        (placement.n_gpu_layers != 0 || placement.device_compute_per_token > 0) && width > 0 &&
         width < placement.compute_width) {
         RunConfig narrow = cfg;
         narrow.n_ubatch = (int) width;
@@ -97,37 +97,53 @@ Plan plan_layout(const AutoPlan & facts, const RunConfig & cfg, const PlanReques
     // Every layer on a device of its own and the experts still on the host, behind a device cache: a
     // narrower graph may leave room for the whole model on the device, which serves every expert from
     // device memory and computes a prompt without gathering experts into a cache, so it wins prefill
-    // and decode alike. Only a placement can say whether it fits, so the fitter is asked at the width
-    // the device's share allows, and the narrower graph is kept only where it places everything there.
-    // Measured on a 24 GB card with Qwen3.6-35B Q4_K_M at a 16384 context: 8192 tokens wide, the whole
-    // model fit, and decode went from 137-139 to 155-156 tok/s and a 9714-token prefill from 4789 to
-    // 5594 tok/s. Where it does not fit whole, the wide graph stands (that trade is not priced).
+    // and decode alike. Only a placement can say whether it fits, so the fitter is asked, and the
+    // narrower graph is kept only where it places everything there. Where it does not fit whole at any
+    // width, the wide graph stands (that trade is not priced).
+    //
+    // The widths asked: halves of the probed width, widest first, down to the floor, and the first at
+    // which the fitter places the whole model is taken. The device's share of its memory (a policy
+    // fraction, device_share_width) was the one width asked before, and says nothing of what the model
+    // leaves free: where it equalled the probed width, a fit one halving away was never asked. Measured on 24 GB
+    // cards with Qwen3.6-35B at a 16384 context: Q4_K_M fit whole at 8192 tokens (decode 137-139 ->
+    // 155-156 tok/s, a 9714-token prefill 4789 -> 5594 tok/s); UD-Q4_K_XL, one layer's experts larger
+    // with its MTP block, left one layer behind the cache at 8192, which was also its share, and fit
+    // whole at 4096 (decode 133.6 -> 147.3 tok/s, a 4.6k prefill 5277 -> 6190). The search stops where
+    // a halving moves no layer's experts onto the device: a model that does not come closer to
+    // fitting will not fit narrower, and each width is one fitter call (kept with the facts).
     else if (!req.is_pinned("ubatch") && placement.fitted && !placement.shared_memory_placement &&
              placement.n_gpu_layers != 0 && !placement.host_expert_layers.empty() &&
              (plan.config.n_ubatch == 0 || (uint32_t) plan.config.n_ubatch >= placement.compute_width)) {
-        const uint32_t candidate =
-            device_share_width(placement, hw, PlannerPolicy::defaults(), (uint32_t) cfg.graph_width_floor());
-        if (candidate > 0 && candidate < placement.compute_width) {
-            const Placement & at_width = fitted_at(facts, cfg, model, candidate, "auto-probe-whole");
-            if (at_width.fitted && at_width.host_expert_layers.empty() && at_width.n_gpu_layers != 0) {
-                RunConfig narrow = cfg;
-                narrow.n_ubatch = (int) candidate;
-                plan = plan_run(narrow, hw, model, at_width, req);
-                const std::string w = std::to_string(candidate);
-                for (Decision & d : plan.decisions)
-                    if (d.knob == "ubatch") {
-                        d.value = w;
-                        d.source = Source::Measured;
-                        d.brief = w + " tokens per pass: at this width the whole model fits on the device.";
-                        d.reason = "a graph as wide as the context left the experts on the host behind a device "
-                                   "cache; at " +
-                                   w +
-                                   " tokens the capacity fitter places every layer and every expert on the devices, "
-                                   "which serves every expert from device memory and computes a prompt without "
-                                   "gathering experts into a cache. " +
-                                   flag_spelling("ubatch") + " sets it by hand";
-                    }
+        const uint32_t floor_w = std::max(PlannerPolicy::defaults().ubatch_min, (uint32_t) cfg.graph_width_floor());
+        uint32_t width = placement.compute_width / 2;
+        size_t left = placement.host_expert_layers.size();
+        const Placement * whole = nullptr;
+        for (; width > 0 && width >= floor_w; width /= 2) {
+            const Placement & at = fitted_at(facts, cfg, model, width, "auto-probe-whole");
+            if (!at.fitted || at.n_gpu_layers == 0) break;
+            if (at.host_expert_layers.empty()) {
+                whole = &at;
+                break;
             }
+            if (at.host_expert_layers.size() >= left) break; // no closer: narrower will not fit either
+            left = at.host_expert_layers.size();
+        }
+        if (whole) {
+            RunConfig narrow = cfg;
+            narrow.n_ubatch = (int) width;
+            plan = plan_run(narrow, hw, model, *whole, req);
+            const std::string w = std::to_string(width);
+            for (Decision & d : plan.decisions)
+                if (d.knob == "ubatch") {
+                    d.value = w;
+                    d.source = Source::Measured;
+                    d.brief = w + " tokens per pass: at this width the whole model fits on the device.";
+                    d.reason = "a wider graph left the experts on the host behind a device cache; at " + w +
+                               " tokens the capacity fitter places every layer and every expert on the devices, "
+                               "which serves every expert from device memory and computes a prompt without "
+                               "gathering experts into a cache. " +
+                               flag_spelling("ubatch") + " sets it by hand";
+                }
         }
     }
     return plan;

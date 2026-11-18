@@ -220,9 +220,13 @@ Placement probe_placement(const char * model_path,
     pl.n_gpu_layers = n_dev_local ? mparams.n_gpu_layers : 0;
     // The room left for the projector is a cost of the device only where the run will use one: with
     // no layer placed the session opens without devices and the library loads it on the host.
-    if (pl.n_gpu_layers > 0) pl.device_projector_bytes = projector_reserved;
+    // -1 is llama.cpp's "every layer", which the fitter leaves where the whole model fits: a layer is
+    // on a device for any count but zero, so the projector's room is that device's either way.
+    if (pl.n_gpu_layers != 0) pl.device_projector_bytes = projector_reserved;
     // The fitter writes one layer count per device into tensor_split only when there are several;
-    // with one, every placed layer is that device's.
+    // with one, every placed layer is that device's. A split is a count of layers, which "every layer"
+    // is not: where the fitter left -1 there is none, and the session loads every layer on the devices
+    // llama.cpp chooses (a split must sum to the count it describes, which RunConfig validates).
     if (pl.n_gpu_layers > 0) {
         for (size_t i = 0; i < devs.size(); ++i) {
             const float n = devs.size() > 1 ? tensor_split[i] : (float) pl.n_gpu_layers;
@@ -308,7 +312,7 @@ Placement probe_placement(const char * model_path,
             // The remainder of a card the fitter placed layers on: its free memory, as the fitter
             // read it, less the placement and the margin it was told to leave there (the fitter's
             // own, plus the projector's room on the first device).
-            if (pl.n_gpu_layers > 0 && i < devs.size() && used > 0) {
+            if (pl.n_gpu_layers != 0 && i < devs.size() && used > 0) {
                 const char * name = ggml_backend_dev_name(devs[i]);
                 const bool placed = name && std::any_of(pl.device_split.begin(), pl.device_split.end(),
                                                         [&](const auto & e) { return e.first == name; });

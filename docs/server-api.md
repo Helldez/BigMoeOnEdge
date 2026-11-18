@@ -788,7 +788,7 @@ under the same key and origin rules as `/api/*` and `/v1/*`, except that `/healt
 
 | route | answer |
 |---|---|
-| `GET /health` (and `/v1/health`) | answered without the API key (`GET` and `HEAD`), as llama-server does. `{"status": "ok"}` with a model ready; `503` with `code: "loading"` while one loads or the plan measures, `no_model` with none. |
+| `GET /health` (and `/v1/health`) | answered without the API key (`GET` and `HEAD`), as llama-server does. `{"status": "ok"}` with a model ready; `503` with `code: "loading"` while one loads or the plan measures, `no_model` with none (after a load that failed, its message says why). |
 | `GET /props` | `default_generation_settings` (`n_ctx`, and `params` with `n_predict`, `temperature`, `top_k`, `top_p`, `seed`: the session's sampling), `total_slots: 1`, `model_alias`, `model_path`, `modalities` (`vision`), `build_info`. |
 | `GET /metrics` | Prometheus text under llama-server's names: the counters `llamacpp:prompt_tokens_total` (decoded, the cached part excluded), `prompt_tokens_cached_total`, `prompt_seconds_total`, `tokens_predicted_total`, `tokens_predicted_seconds_total`, `n_tokens_max`, and the gauges `prompt_tokens_seconds` and `predicted_tokens_seconds` (rates over the turns since the previous scrape) and `requests_processing`, `requests_deferred`. Always on: there is no `--metrics` flag. |
 | `GET /slots` | the one slot: `[{"id": 0, "n_ctx": ..., "is_processing": ...}]`. Saving and restoring a slot is not implemented. |

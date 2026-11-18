@@ -133,6 +133,8 @@ public:
     // A model is or will soon be there: loaded, loading, or a load in auto mode measuring first. What
     // a request waits for rather than being refused.
     bool model_coming() const;
+    // Why the last load failed, for a person; empty unless the host is in its error state.
+    std::string load_error() const;
     bool generating() const { return generating_; }
     std::string model_name() const;
     // Whether the loaded model reads images (a projector was paired or named at load).
