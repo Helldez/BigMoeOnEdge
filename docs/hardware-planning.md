@@ -1234,13 +1234,22 @@ prefill buffers nowhere to go). The planned size is also a floor: the fitter's w
 own margin (llama.cpp's default, 1 GiB a device) left 0.6-2.4 GiB of every 8, 12 and 24 GB card
 measured free while it served, an 8 GB card's cache 2.0 GiB of its 6.4 GiB used
 ([bench-data](bench-data/2026-11-18-rented-0.45/README.md)). So the plan sets `--device-cache-fill`,
-and once the contexts are made the session reads each device's free memory again and grows the cache
-into what is past one set of contexts' worth there: the drop between the model loaded and its
-contexts made, measured, so a device keeps room for what a context allocates while it computes (152
-MiB at most on those cards, through a 4.6k-token prompt). The smallest such room over the devices is
-the growth, since llama.cpp splits the cache among them; the experts on the host bound it, under one
-token cycle it is not worth a context made again, and a context that cannot open at the larger size
-goes back to the planned one. Where the device is not faster, a fact is missing, or not every dense part fits, the
+and once the contexts are made beside the cache the session grows it into what the device still has
+free. What a device must keep is what a context allocates while it computes, past the buffers
+reserved with it: the backend's pool of temporaries. It is measured, not guessed: one pass as wide as
+the context's widest graph, the most any request asks of the pool, then the free memory read again;
+the pool's peak is kept free once more and the rest is the cache's. The context's own reserved
+buffers are no measure of it (3.4 GiB of a 24 GB card at an 8192-wide graph, already allocated),
+while the pool's peak measured 134-246 MiB, and through the requests after it the cards never came
+within 500 MiB of full. The cache's part of each device is its share of the drop the contexts and the
+cache caused, which llama.cpp splits by the layers or the free memory; the device with the least room
+for its share bounds the growth. The experts on the host bound it too, under one token cycle it is
+not worth a context made again, and a context that cannot open at the larger size goes back to the
+planned one. Streamed experts are left as planned: a pass that wide would read most of them from
+storage at every load. Measured on one 24 GB card held to 8, 12 and 24 GB free, Qwen3.8-Flash-Next
+Q2_0 with its experts in RAM: the cache grew 1.4 to 2.3, 4.1 to 4.8 and 15.7 to 16.7 GB, decode +13-15%,
++5% and inside the noise, every answer the same text, the load 2-4 s longer
+([bench-data](bench-data/2026-11-18-rented-0.45/README.md)). Where the device is not faster, a fact is missing, or not every dense part fits, the
 fitter's placement stands and the plan says which. On a shared pool, or with the caller's own
 placement, it says nothing and changes nothing.
 
