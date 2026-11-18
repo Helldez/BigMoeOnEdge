@@ -6,6 +6,14 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+- **`scripts/device-cache-replay.py`: a route trace replayed through device expert cache policies**,
+  llama.cpp's ClassLRU ported from `moe_cache`, plain LRU, a static routing-frequency profile, a
+  warm start from it, partial pins and the offline optimum, scored on prompts the profile never saw.
+  On Qwen3.6-35B-A3B and OLMoE, 5-50% of the expert set, no profile beats ClassLRU (static -2 to -37
+  points, a warm start -0.8 to +0.5), so the engine keeps the cache llama.cpp gives it
+  ([bench-data](docs/bench-data/2026-11-18-device-cache-profile/README.md), #648).
+
 ### Fixed
 - **`GET /health` answers without the API key, as llama-server's does.** With `--api-key` set it
   answered 401, so a supervisor, a start script or a load balancer that asks it before it holds the
