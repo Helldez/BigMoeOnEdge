@@ -176,6 +176,10 @@ struct Pricing {
     uint64_t spendable = 0; // what the ranking may spend once those are off the top
     uint64_t locked = 0;    // what is already charged to the lockable total
     uint64_t unspent = 0;   // what the ranking left once every candidate had its turn
+    // The expert cache had a price and stood in the ranking. Where it did and came out with
+    // nothing, that is the ranking's answer (less than one token cycle was left at its turn), not a
+    // lane nobody could price.
+    bool cache_ranked = false;
 };
 
 // A group in a lane, as the ranking sees it.
@@ -538,6 +542,7 @@ void spend_ranking(Pricing & c, std::vector<Candidate> & candidates) {
         GroupPlacement & p = a.at(k.group);
         if (k.curve_piece > 0 && !curve_open) continue;
         if (k.fractional) {
+            c.cache_ranked = true;
             if (remaining < k.floor) {
                 curve_open = false;
                 note(a, "cache-off", size_brief(remaining),
@@ -700,6 +705,14 @@ void bound_cache(Pricing & c) {
         sized = std::min(holdable_cap > taken ? holdable_cap - taken : 0, in.cacheable_bytes) & ~((1ull << 20) - 1);
     }
     a.ledger.holdable_cap = holdable_cap;
+    // Where the ranking priced the cache and gave it nothing, the groups ahead of it took the budget
+    // and what is left is all there is: the ranking's remainder and whatever the ceiling was raised
+    // by for a cache that is locked or offered. Sized from the whole budget instead, as an unpriced
+    // lane is below, the cache stood beside the groups the ranking had just made resident: on a
+    // mapped dense set (nothing reserved ahead of the ranking) a 2752 MiB budget held 5480.
+    const uint64_t raised = holdable_cap - in.budget_bytes;
+    const bool ranked_out = priced == 0 && c.cache_ranked;
+    if (ranked_out) sized = std::min(sized, c.unspent + raised) & ~((1ull << 20) - 1);
     if (cache_may_lock && sized > cache_lock_room) {
         note(a, "cache-lock", size_brief(cache_lock_room),
              in.lock_in_place_bytes_known
@@ -724,7 +737,9 @@ void bound_cache(Pricing & c) {
     // and returns no hits - and a bound that only guards one of the two paths into this number is
     // not a floor.
     const uint64_t floor = model.token_cycle_bytes;
-    if (sized > 0 && sized < floor) {
+    if (ranked_out && sized < floor) {
+        sized = 0; // the ranking said so already, with the figures it had at the cache's turn
+    } else if (sized > 0 && sized < floor) {
         note(a, "cache-off", size_brief(sized),
              "No cache: " + size_brief(sized) + " is left after the dense weights, under the " + size_brief(floor) +
                  " one token reads.",
@@ -743,7 +758,6 @@ void bound_cache(Pricing & c) {
         // answer routes to experts the record never saw and a byte left idle saves nothing at all.
         // Measured on a 16 GB card with 30 GiB of RAM, Qwen3.8-Flash-Next over 1024 tokens: the
         // curve's 15.7 GB cache held 83% and decoded 11.6 tok/s, 22 GB held 96% and decoded 20.7.
-        const uint64_t raised = holdable_cap - in.budget_bytes;
         const uint64_t want = (priced + c.unspent + raised) & ~((1ull << 20) - 1);
         if (want > std::min(priced + raised, sized) && sized > priced + raised)
             note(a, "cache-remainder", size_brief(std::min(want, sized) - priced),
@@ -753,7 +767,7 @@ void bound_cache(Pricing & c) {
                      ", where its curve stops rising; a record is a few hundred tokens, and a longer answer routes to "
                      "experts it never saw, so the memory the ranking left unspent is the cache's too");
         sized = std::min(want, sized);
-    } else if (sized > 0) {
+    } else if (sized > 0 && !ranked_out) {
         note(a, "cache-unpriced", size_brief(sized),
              "The cache gets what is left, " + size_brief(sized) + ": storage speed was not measured.",
              "the expert cache was sized from what remains after the dense policy (" + mibs(sized) +

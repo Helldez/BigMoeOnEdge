@@ -2802,6 +2802,35 @@ int main() {
             tight.reserved_bytes = 3 * GiB - (100 * MiB);
             check(allocate(h, steep, tight, pol).cache_bytes == 0, "with a curve: under the floor there is no cache");
 
+            // Whatever the ranking gave the read-whole groups, the cache has only what is left: at
+            // no budget do the two together hold more than the budget. Where the run's dense mode
+            // reserves nothing ahead of the ranking (a mapped dense set), a ranking that had found
+            // less than one token cycle left turned the cache off, and the bound then sized it from
+            // the whole budget as if the lane had never been priced.
+            for (const ModelProfile * mp : {&model, &steep, &knee}) {
+                uint64_t worst_over = 0, worst_budget = 0, with_cache = 0, without = 0;
+                for (uint64_t budget = GiB; budget <= 12 * GiB; budget += 64 * MiB) {
+                    AllocationInputs mapped;
+                    mapped.budget_bytes = budget;
+                    mapped.cacheable_bytes = model.expert_bytes;
+                    const Allocation a = allocate(h, *mp, mapped, pol);
+                    uint64_t held = a.cache_bytes;
+                    for (const GroupPlacement & g : a.groups)
+                        if (g.group != WeightGroup::Experts && (g.lane == Lane::Resident || g.lane == Lane::Pinned))
+                            held += g.resident_bytes;
+                    ++(a.cache_bytes ? with_cache : without);
+                    if (held > budget && held - budget > worst_over) {
+                        worst_over = held - budget;
+                        worst_budget = budget;
+                    }
+                }
+                check(worst_over == 0 && with_cache > 0 && without > 0,
+                      "the cache and the groups held whole never take more than the budget between them",
+                      std::to_string(worst_over >> 20) + " MiB over at a budget of " +
+                          std::to_string(worst_budget >> 20) + " MiB; " + std::to_string(with_cache) +
+                          " budgets with a cache, " + std::to_string(without) + " without");
+            }
+
             // The host's share: where the first stage placed half the layers' experts on a device, a
             // host cache of C is read as a whole-set cache of 2C.
             AllocationInputs half = in;

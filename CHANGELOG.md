@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **A cache the ranking turned off stays off, instead of being sized from the whole budget.** The
+  allocation ranks the expert cache against the dense groups a token reads whole. Where those
+  groups took the budget and less than one token cycle was left at the cache's turn, the ranking
+  left the cache off, and the bound that follows then read "no size from the ranking" as "this
+  lane was never priced" and gave the cache everything left after the dense reservation. Where the
+  run's dense mode reserves nothing ahead of the ranking (a mapped or warmed dense set) that is the
+  whole budget: the plan held the dense groups and a cache of the same memory, 5480 MiB against a
+  2752 MiB budget in the test that now pins it, with a `cache-off` and a `cache-unpriced` note on
+  the same plan. The cache now has what the ranking left, and under one token cycle it is off;
+  the experts still stream, as on any plan whose cache does not reach the floor.
+
 ## [0.46.1] - 2026-11-19
 
 ### Fixed
