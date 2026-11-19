@@ -98,6 +98,7 @@ add_test(NAME params_table COMMAND bmoe_params_test)
 if(TARGET bmoe_server_core)
     add_executable(bmoe_server_test server_test.cpp)
     target_link_libraries(bmoe_server_test PRIVATE bmoe_server_core)
+    target_compile_definitions(bmoe_server_test PRIVATE BMOE_CATALOG_PATH="${CMAKE_SOURCE_DIR}/catalog/models.json")
     add_test(NAME server_logic COMMAND bmoe_server_test)
 
     # The desktop app's server side: the signed release feed, backend packs, archives that would

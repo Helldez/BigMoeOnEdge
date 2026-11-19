@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.46.1] - 2026-11-19
+
+### Fixed
+- **Qwen3.6-35B-A3B downloads from the catalog again** (since 2026-11-08, on every release, #663, #665).
+  The catalog named its file on the repository's `main` branch, where a new conversion was uploaded
+  (20,542,732,576 bytes instead of 20,419,565,568, another SHA-256), so every download was refused
+  at the end: "downloaded size does not match the catalog". Every catalog file is now named at the
+  commit its size and SHA-256 were taken from (`resolve/<commit>/`), each checked against the
+  repository, and `bmoe_server_test` fails a row that names a branch or carries no SHA-256. Qwen3.6
+  stays the file the published numbers were measured on ([field-reports.md](docs/field-reports.md)).
+
 ## [0.46.0] - 2026-11-18
 
 Everything in 0.45.1, which stayed a pre-release, and the fix below.

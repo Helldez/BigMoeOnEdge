@@ -10,7 +10,7 @@
       "files": [
         {"name": "gemma-4-E4B-it-Q4_0.gguf", "bytes": 4590807392,
          "sha256": "a555b900214b477d8880e7832e0b8925e139b0159640036b09fe472b6f2097f2",
-         "url": "https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_0.gguf?download=true"}
+         "url": "https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/resolve/8903cb408c7df39cde2ed15fac397e6d7be92951/gemma-4-E4B-it-Q4_0.gguf?download=true"}
       ]
     },
     {
@@ -21,7 +21,7 @@
       "files": [
         {"name": "gemma-4-26B-A4B-it-Q4_0.gguf", "bytes": 14618145824,
          "sha256": "d208665ab1cd3a69f7a9a4bc59430e8448c8093d9b06334f566ac59d6d504a03",
-         "url": "https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-Q4_0.gguf?download=true"}
+         "url": "https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF/resolve/1ca99aae748b4b01f609fa51eb23682ee5f00b85/gemma-4-26B-A4B-it-Q4_0.gguf?download=true"}
       ]
     },
     {
@@ -32,7 +32,7 @@
       "files": [
         {"name": "Qwen3.6-35B-A3B-Q4_K_M.gguf", "bytes": 20419565568,
          "sha256": "671e47e0ec53c665d048b98c3ecbfd5236b5ca9c3e02ed19fc8f81f7b85140c7",
-         "url": "https://huggingface.co/ggml-org/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-Q4_K_M.gguf?download=true"}
+         "url": "https://huggingface.co/ggml-org/Qwen3.6-35B-A3B-GGUF/resolve/7878dc9a905c7c9379e5e8d6a1aa9affdd6839c5/Qwen3.6-35B-A3B-Q4_K_M.gguf?download=true"}
       ]
     },
     {
@@ -43,7 +43,7 @@
       "files": [
         {"name": "Ornith-1.5-35B-Q4_K_M.gguf", "bytes": 21713463040,
          "sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
-         "url": "https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF/resolve/main/Ornith-1.5-35B-Q4_K_M.gguf?download=true"}
+         "url": "https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF/resolve/12393612fd4f730ff5aadc23e9b8f9648aa49ceb/Ornith-1.5-35B-Q4_K_M.gguf?download=true"}
       ]
     },
     {
@@ -54,10 +54,10 @@
       "files": [
         {"name": "Qwen3.8-Flash-Next-Q2_K-00001-of-00002.gguf", "bytes": 10945856,
          "sha256": "c6889865707a9a7ab1da0d177b7b0751e8c8d1fb1dae1f8a81577b7e2d23d550",
-         "url": "https://huggingface.co/ggml-org/Qwen3.8-Flash-Next-GGUF/resolve/main/Qwen3.8-Flash-Next-Q2_K-00001-of-00002.gguf?download=true"},
+         "url": "https://huggingface.co/ggml-org/Qwen3.8-Flash-Next-GGUF/resolve/a3e717e66206086bffa2be26abbbf22e84e93f36/Qwen3.8-Flash-Next-Q2_K-00001-of-00002.gguf?download=true"},
         {"name": "Qwen3.8-Flash-Next-Q2_K-00002-of-00002.gguf", "bytes": 83117822784,
          "sha256": "75d1ead63e5f911b5ea6b5dc35280af8707772cc490991c528c1df5301636420",
-         "url": "https://huggingface.co/ggml-org/Qwen3.8-Flash-Next-GGUF/resolve/main/Qwen3.8-Flash-Next-Q2_K-00002-of-00002.gguf?download=true"}
+         "url": "https://huggingface.co/ggml-org/Qwen3.8-Flash-Next-GGUF/resolve/a3e717e66206086bffa2be26abbbf22e84e93f36/Qwen3.8-Flash-Next-Q2_K-00002-of-00002.gguf?download=true"}
       ]
     },
     {
@@ -68,22 +68,22 @@
       "files": [
         {"name": "DeepSeek-V4.1-Flash-1017-Q2_K_S-00001-of-00006.gguf", "bytes": 5778688,
          "sha256": "3e3804c31203832b572e45b635830edeb381e4b4733e17eabd1ea4000f54c934",
-         "url": "https://huggingface.co/ggml-org/DeepSeek-V4.1-Flash-1017-GGUF/resolve/main/DeepSeek-V4.1-Flash-1017-Q2_K_S-00001-of-00006.gguf?download=true"},
+         "url": "https://huggingface.co/ggml-org/DeepSeek-V4.1-Flash-1017-GGUF/resolve/6bc1f89d4b7ae7125ce9a795ea20ef6b5d0e8099/DeepSeek-V4.1-Flash-1017-Q2_K_S-00001-of-00006.gguf?download=true"},
         {"name": "DeepSeek-V4.1-Flash-1017-Q2_K_S-00002-of-00006.gguf", "bytes": 60940618816,
          "sha256": "c22eaf93afe1c66a983d8ef15087ddb881b6d9f7514ecfabf2f6520c46428ff9",
-         "url": "https://huggingface.co/ggml-org/DeepSeek-V4.1-Flash-1017-GGUF/resolve/main/DeepSeek-V4.1-Flash-1017-Q2_K_S-00002-of-00006.gguf?download=true"},
+         "url": "https://huggingface.co/ggml-org/DeepSeek-V4.1-Flash-1017-GGUF/resolve/6bc1f89d4b7ae7125ce9a795ea20ef6b5d0e8099/DeepSeek-V4.1-Flash-1017-Q2_K_S-00002-of-00006.gguf?download=true"},
         {"name": "DeepSeek-V4.1-Flash-1017-Q2_K_S-00003-of-00006.gguf", "bytes": 60940618848,
          "sha256": "440fb6329fa5fea17ad7c439502f360af82319e16f681a981322b2ae39fe89e1",
-         "url": "https://huggingface.co/ggml-org/DeepSeek-V4.1-Flash-1017-GGUF/resolve/main/DeepSeek-V4.1-Flash-1017-Q2_K_S-00003-of-00006.gguf?download=true"},
+         "url": "https://huggingface.co/ggml-org/DeepSeek-V4.1-Flash-1017-GGUF/resolve/6bc1f89d4b7ae7125ce9a795ea20ef6b5d0e8099/DeepSeek-V4.1-Flash-1017-Q2_K_S-00003-of-00006.gguf?download=true"},
         {"name": "DeepSeek-V4.1-Flash-1017-Q2_K_S-00004-of-00006.gguf", "bytes": 56481549184,
          "sha256": "2f1c4d173a6e16cf59a5e76dbd0ccb18706f9e631615e54d30d6096b0952c597",
-         "url": "https://huggingface.co/ggml-org/DeepSeek-V4.1-Flash-1017-GGUF/resolve/main/DeepSeek-V4.1-Flash-1017-Q2_K_S-00004-of-00006.gguf?download=true"},
+         "url": "https://huggingface.co/ggml-org/DeepSeek-V4.1-Flash-1017-GGUF/resolve/6bc1f89d4b7ae7125ce9a795ea20ef6b5d0e8099/DeepSeek-V4.1-Flash-1017-Q2_K_S-00004-of-00006.gguf?download=true"},
         {"name": "DeepSeek-V4.1-Flash-1017-Q2_K_S-00005-of-00006.gguf", "bytes": 110595290592,
          "sha256": "7b04016a36e58ed17c814ebdb5c15406aa96f6a4c41cc6e1ea5579ca592d8a0f",
-         "url": "https://huggingface.co/ggml-org/DeepSeek-V4.1-Flash-1017-GGUF/resolve/main/DeepSeek-V4.1-Flash-1017-Q2_K_S-00005-of-00006.gguf?download=true"},
+         "url": "https://huggingface.co/ggml-org/DeepSeek-V4.1-Flash-1017-GGUF/resolve/6bc1f89d4b7ae7125ce9a795ea20ef6b5d0e8099/DeepSeek-V4.1-Flash-1017-Q2_K_S-00005-of-00006.gguf?download=true"},
         {"name": "DeepSeek-V4.1-Flash-1017-Q2_K_S-00006-of-00006.gguf", "bytes": 9050416192,
          "sha256": "c4754167b34f594b72c0a863118e5e008daadcd5ac666bae4df557e8439c5844",
-         "url": "https://huggingface.co/ggml-org/DeepSeek-V4.1-Flash-1017-GGUF/resolve/main/DeepSeek-V4.1-Flash-1017-Q2_K_S-00006-of-00006.gguf?download=true"}
+         "url": "https://huggingface.co/ggml-org/DeepSeek-V4.1-Flash-1017-GGUF/resolve/6bc1f89d4b7ae7125ce9a795ea20ef6b5d0e8099/DeepSeek-V4.1-Flash-1017-Q2_K_S-00006-of-00006.gguf?download=true"}
       ]
     }
   ]

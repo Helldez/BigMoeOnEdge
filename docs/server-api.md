@@ -997,6 +997,10 @@ app too; `file` and `bytes` are the first file's name and the whole entry's size
 become: `name` a bare file name (no separator, no `.` or `..`, no drive colon), `url` an https
 URL (plain http only under an http mirror named with `--hf-endpoint`), `sha256` a digest when present. An entry with a file that fails this is not listed, and the
 reason is in the server's start-up log; the Android and iOS apps drop such an entry too.
+The shipped catalog names every file at a repository commit (`resolve/<40-hex commit>/`), never at
+a branch: a branch moves when the repository's owner uploads again, and the row's `bytes` and
+`sha256` would then refuse the new file at the end of its download, on every release already out
+(#663). `bmoe_server_test` fails a row that names a branch or carries no `sha256`.
 `received` is what of the entry is already in the models directory, complete files and `.part`
 files alike, and `partial` is true when the entry is `available` with a `.part` on disk: a download
 stopped by a failure, a cancel or a restart of the server (jobs live in memory, the `.part` files do
