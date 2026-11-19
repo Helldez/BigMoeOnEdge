@@ -125,6 +125,17 @@ Semantic Versioning.
   key read a ready server as down. `GET` and `HEAD` on `/health` and `/v1/health` now skip the key
   check; sub-paths, writes and every other route keep it, and the host and origin rules still run
   first ([server-api.md](docs/server-api.md)). By @pt7777 (#630).
+- **A native build in Termux compiles, and pins the dense set where the phone has the store, as the
+  APK does.** Termux's toolchain targets API 24, and its headers mark `AHardwareBuffer_*`, the API 26
+  store behind `--dense-weights pinned`, unavailable below that: `platform_io.cpp` stopped the build
+  with five errors, and with `BMOE_BUILD_TOOLS` so did `bmoe-iobench` and `bmoe-membench`. The calls
+  are now bound weakly, and `platform_io.cpp` asks the device in one place (`__builtin_available`).
+  From API 26 a Termux build pins, and the plan chooses it there as it does in the APK
+  ([android-memory.md](docs/android-memory.md#the-dma-buf-exception-and-what-it-does-not-solve));
+  `--dense-weights anon` keeps the dense set in ordinary memory. Below API 26 the store reads as
+  absent, as on a platform without one. `-Werror=unguarded-availability` makes a call outside that
+  check a build error, and a build whose minimum is 26 or more, as the APK's 29, folds the check to
+  true. The Termux build line is in the README. By @pt7777 (#659).
 
 ## [0.46.1] - 2026-11-19
 

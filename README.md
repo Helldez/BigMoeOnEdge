@@ -260,8 +260,10 @@ build/bin/bmoe-server --open
 
 A llama.cpp backend is a CMake flag passed through: `scripts/build-host.sh -DGGML_VULKAN=ON` (or
 `-DGGML_CUDA=ON`). Tests: `cd build && ctest --output-on-failure` (needs `python3` with `gguf`). Android:
-`scripts/build-android.ps1`, then the APK in [examples/android](examples/android). More:
-[CONTRIBUTING.md](CONTRIBUTING.md).
+`scripts/build-android.ps1`, then the APK in [examples/android](examples/android). On the phone
+itself, in Termux: `pkg install git cmake clang make nodejs-lts`, then the steps above with
+`scripts/build-host.sh -DBMOE_BACKEND_MODULES=OFF`, one CPU library for that phone's cores instead
+of a module per instruction-set tier. More: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Documentation
 

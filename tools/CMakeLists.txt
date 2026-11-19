@@ -22,4 +22,11 @@ target_link_libraries(bmoe-membench PRIVATE Threads::Threads)
 if(ANDROID)
     # AHardwareBuffer_* live in libandroid.so.
     target_link_libraries(bmoe-membench PRIVATE android)
+    # Bound weakly and used behind a check of the device's API level, as in core/CMakeLists.txt. A
+    # source property holds only in the directory that sets it, so this one sets it for its own
+    # compile of platform_io.cpp too.
+    set_property(SOURCE membench.cpp ${CMAKE_SOURCE_DIR}/core/src/io/platform_io.cpp APPEND
+                 PROPERTY COMPILE_DEFINITIONS __ANDROID_UNAVAILABLE_SYMBOLS_ARE_WEAK__)
+    set_property(SOURCE membench.cpp ${CMAKE_SOURCE_DIR}/core/src/io/platform_io.cpp APPEND
+                 PROPERTY COMPILE_OPTIONS -Werror=unguarded-availability)
 endif()
