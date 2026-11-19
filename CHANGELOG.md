@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.46.1] - 2026-11-19
 
 ### Fixed
 - **Qwen3.6-35B-A3B downloads from the catalog again** (since 2026-11-08, on every release, #663, #665).
