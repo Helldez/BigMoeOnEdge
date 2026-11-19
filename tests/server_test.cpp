@@ -52,6 +52,7 @@
 
 #include "bmoe/planner.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <condition_variable>
@@ -2291,6 +2292,41 @@ static void plan_view_tests() {
           "plan view: stage words, and a stage it does not know");
 }
 
+// The shipped catalog names each file at a commit, never at a branch: a branch moves when its
+// owner uploads again, and the catalog's size and SHA-256 then refuse the new file at the end of a
+// download, on every release already out (#663). A commit's file never changes, so its size and
+// digest stay true.
+static void catalog_tests() {
+    std::ifstream in(BMOE_CATALOG_PATH);
+    json cat;
+    try {
+        cat = json::parse(in);
+    } catch (const std::exception & e) {
+        check(false, std::string("catalog: models.json parses: ") + e.what());
+        return;
+    }
+    const auto is_commit = [](const std::string & s) {
+        return s.size() == 40 &&
+               std::all_of(s.begin(), s.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
+    };
+    std::string bad;
+    size_t files = 0;
+    for (const auto & m : cat.value("models", json::array())) {
+        for (const auto & f : m.value("files", json::array())) {
+            ++files;
+            const std::string url = f.value("url", "");
+            static const std::string mark = "/resolve/";
+            const size_t at = url.find(mark);
+            const size_t end = at == std::string::npos ? at : url.find('/', at + mark.size());
+            const std::string rev =
+                end == std::string::npos ? "" : url.substr(at + mark.size(), end - at - mark.size());
+            if (!is_commit(rev) || f.value("sha256", "").size() != 64) bad += " " + f.value("name", "?");
+        }
+    }
+    check(files > 0 && bad.empty(), "catalog: every file is named at a commit and carries its SHA-256" +
+                                        (bad.empty() ? std::string() : ":" + bad));
+}
+
 static void download_tests() {
     namespace fs = std::filesystem;
     check(is_transient_curl_exit(18) && is_transient_curl_exit(56) && is_transient_curl_exit(7) &&
@@ -2934,6 +2970,7 @@ int main() {
     model_files_tests();
     hf_tests();
     plan_view_tests();
+    catalog_tests();
     download_tests();
     event_bus_tests();
     keepalive_tests();

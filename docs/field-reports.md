@@ -55,6 +55,21 @@ desktop app is not affected: it installs the pack itself.
 
 ## Fixed
 
+### Qwen3.6-35B-A3B fails at the end of its download: "downloaded size does not match the catalog" (#663)
+
+- **Seen on** 0.42.0 to 0.46.0, every platform, from 2026-11-08: a Windows desktop with 16 GB.
+- **How to recognise it.** The catalog download of Qwen3.6-35B-A3B reaches 19.1 GiB of 19.0 GiB and
+  stops with "Download failed: downloaded size does not match the catalog; the partial file is
+  kept".
+- **Cause.** Confirmed against the repository: the catalog named the file on the `main` branch, and
+  its owner uploaded a new conversion there on 2026-11-08 (the output head in Q8_0 instead of Q6_K,
+  20,542,732,576 bytes against the catalog's 20,419,565,568, another SHA-256). The download is the
+  new file and the catalog's size refuses it.
+- **Fixed in** the next release: every catalog file is named at the commit its size and SHA-256 were
+  taken from, and a test fails a row that names a branch.
+- **Workaround.** In "From Hugging Face", paste `ggml-org/Qwen3.6-35B-A3B-GGUF` and download its
+  Q4_K_M from there: the listing reads the current file's size and digest.
+
 ### The settings never open: "the server's answer to api/params is not JSON" (#651)
 
 - **Seen on** 0.44.1 to 0.45.1, every platform and every model: the desktop app (first seen on a
