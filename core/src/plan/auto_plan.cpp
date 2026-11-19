@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <filesystem>
 
 namespace bmoe {
@@ -48,6 +49,78 @@ const Placement & fitted_at(
         detail::log_memory_snapshot(snapshot);
     }
     return at->second;
+}
+
+// The widths between the one a share of the device's memory narrowed the graph to and the probed one,
+// each placed by the fitter and weighed by the width rule's own measure (widest_near_fastest): the widest
+// whose decode is within PlannerPolicy::min_backend_win of the fastest is served. `narrowed` is the plan
+// at `narrow` tokens; where no wider plan is placed and priced, it stands.
+//
+// The share (device_share_width) keeps a device's compute buffers to a fraction of its memory, so that
+// the room goes to the experts; it weighs nothing. The buffers grow with the context as well as the
+// width, so at a long context the probed width can take the whole card, the fitter places no layer
+// there, nothing is armed to price, and the share takes the narrowest graph. A prompt then pays the
+// experts' gather in every narrow pass for a cache the narrowing grew by a few percent. Measured on a
+// 12 GB card, a 125B model's 32 GB of experts on the host behind a device cache, at a 262144 context:
+// 512 tokens a pass and a 2.1 GiB cache, and a 227k-token prompt took 790 s, where 1024 tokens leave a
+// 2.1 GiB cache too. Each width is one fitter call, kept with the facts; the price is the probed
+// rates', so the first load is planned as every later one.
+Plan widen_priced(const AutoPlan & facts,
+                  const RunConfig & cfg,
+                  const PlanRequest & req,
+                  const ModelProfile & model,
+                  Plan narrowed,
+                  uint32_t narrow,
+                  uint32_t widest) {
+    const HardwareProfile & hw = facts.hw;
+    const PlannerPolicy pol = PlannerPolicy::defaults();
+    // Each wider plan is made at its width as given: its own width rule would narrow it back to the share.
+    PlanRequest at_width = req;
+    at_width.pinned.push_back("ubatch");
+    std::vector<uint32_t> widths{narrow};
+    std::vector<double> dec{priced_decode_seconds(narrowed, hw, model, req, pol)};
+    std::vector<Plan> plans;
+    for (uint32_t w = narrow * 2; w > narrow && w <= widest; w *= 2) {
+        const Placement & at = fitted_at(facts, cfg, model, w, "auto-probe-wider");
+        if (!at.fitted) break;
+        RunConfig wider = cfg;
+        wider.n_ubatch = (int) w;
+        plans.push_back(plan_run(wider, hw, model, at, at_width));
+        widths.push_back(w);
+        dec.push_back(priced_decode_seconds(plans.back(), hw, model, req, pol));
+    }
+    const int pick = widest_near_fastest(dec, pol.min_backend_win);
+    if (pick < 0 || widths.size() == 1) return narrowed;
+    std::string nums;
+    for (size_t i = 0; i < widths.size(); ++i) {
+        char one[64];
+        if (dec[i] > 0.0)
+            std::snprintf(one, sizeof(one), "%s%u tokens %.2f tok/s", i ? ", " : "", widths[i], 1.0 / dec[i]);
+        else
+            std::snprintf(one, sizeof(one), "%s%u tokens unpriced", i ? ", " : "", widths[i]);
+        nums += one;
+    }
+    const std::string margin = std::to_string((int) (pol.min_backend_win * 100.0f + 0.5f)) + "%";
+    const std::string why = "; each width placed by the fitter and its decode priced from the probed rates: " + nums +
+                            ", so the widest within " + margin + " of the fastest.";
+    if (pick == 0) {
+        for (Decision & d : narrowed.decisions)
+            if (d.knob == "ubatch") d.reason += why;
+        return narrowed;
+    }
+    Plan best = std::move(plans[(size_t) pick - 1]);
+    const std::string w = std::to_string(widths[(size_t) pick]);
+    for (Decision & d : best.decisions)
+        if (d.knob == "ubatch") {
+            d.value = w;
+            d.source = Source::Derived;
+            d.brief = w + " tokens per pass: the widest that decodes within " + margin + " of the fastest.";
+            d.reason = "a graph " + std::to_string(narrow) +
+                       " tokens wide keeps the compute buffers inside their share of memory, and a prompt's every "
+                       "pass gathers onto the device the experts it does not hold" +
+                       why + " " + flag_spelling("ubatch") + " sets it by hand";
+        }
+    return best;
 }
 
 // The rules on the facts a probe gathered (probe_and_plan's planning half): plan_run on the first
@@ -91,6 +164,11 @@ Plan plan_layout(const AutoPlan & facts, const RunConfig & cfg, const PlanReques
                     plan.config.trial.width_side = trial.width_side;
                     plan.config.trial.width_narrow = trial.width_narrow;
                 }
+                // A width the share chose (Source::Policy) was never priced: the wider ones it passed
+                // over are, now that each can be placed. A width the first plan priced (across loads,
+                // with what the loads measured) stands as it decided.
+                if (!kept.knob.empty() && kept.source == Source::Policy)
+                    plan = widen_priced(facts, cfg, req, model, std::move(plan), width, placement.compute_width);
             }
         }
     }

@@ -909,32 +909,49 @@ Where every layer is on a card, the experts do not all fit and the card's buffer
 the width is a trade between the answer and the prompt: a narrower graph leaves the experts more of
 the card (a larger cache, or more of them placed there), so every decoded token is faster, and it
 prefills a long prompt in more passes, each gathering onto the device the experts that are not held
-there. The plan takes the width whose request is shorter (`width_across_loads`):
-
-    t(w) = prompt tokens x prefill seconds a token + passes(w) x gather seconds a pass
-           + decoded tokens x decode seconds a token (w)
-
-The decode at each width is priced from the probed rates on what that width leaves the experts
-(`device_cache_decode_seconds` with a cache, `fitter_decode_ceiling` without), the prompt's token from
-the device's rate on a prompt-wide layer, and a pass's gather as the experts off the device over the
-upload rate (`prompt_gather_seconds`). That last term is what three rented cards measured between
-one pass and three 2048-token passes of a 4.6k-token prompt: 1.3 s a pass on an 8 GB card with 13 GB
-of the experts off it, 0.44 s on a 12 GB card with 9.5 GB, 25 s on two 16 GB cards with some 50 GB of
-a 284B model's. The request is this machine's own (`MeasuredKnobs::mix_*`, recorded on every load
-that answers one), weighed with `mix_prompt_tokens_default` prompt tokens against
-`mix_gen_tokens_default` decoded (4096 and 300) as `mix_prior_requests` requests more, so a handful
-of requests does not swing the width; its passes are counted from the tokens of its prompts longer
-than the narrow width, about l / w + 1/2 for a prompt of l tokens, which their mean would hide. The load serves the width priced faster and times
-its decode and its prefill of the prompts longer than the narrow width
-(`MeasuredKnobs::width_narrow`); a side's measurement corrects both prices, both sides' replace
-them, and the width in force gives way only past `min_backend_win`. Decided on the decode alone, as
-it was, the narrow graph won wherever it decoded faster: +40% decode and -40% prefill of a
-4.6k-token prompt on an 8 GB card, -28% on a 12 GB one, -47% on two 16 GB cards. Measured on two
-24 GB cards with GLM-4.5-Air: 14.2 tok/s decoded at 16384 tokens wide against 19.4 at 512, where the
-wide graph prefilled a 9.5k-token prompt at 610 tok/s and a 512-wide one, in llama.cpp, at 104. A
-width set by hand is left alone and charged in full; a rate that was not measured decides nothing,
-and the widest graph inside the bounds above stands
+there. The plan prices the decode at each halving from the share's width to the full one, from the
+rates this load probed (`device_cache_decode_seconds` with a cache, `fitter_decode_ceiling` at
+`fitter_ceiling_realized` without), and takes the widest whose decode is within `min_backend_win` of
+the fastest (`widest_near_fastest`, `width_across_loads`). The answer keeps its speed, and the prompt
+gets every pass the answer does not pay for. It reads no record of the requests, so a first load is
+planned as every later one; a load that timed a width's decode (`MeasuredKnobs::width_narrow`)
+corrects the prices by how far that width ran from its own. Taken as the narrowest that decodes
+fastest, as it once was, the graph went narrow wherever it decoded a few percent faster: -22% to -47%
+on a 4.6k-token prompt's prefill on 8, 12 and 2x16 GB cards. Taken on a request's time over a mix of
+prompts and answers, as it was until this rule, it depended on a mix a first load cannot know, and on
+the default mix it gave the answer up by a third for a long prompt on a 12 GB card. A width set by hand
+is left alone and charged in full; a rate that was not measured decides nothing, and the widest graph
+inside the bounds above stands
 ([measured-planning.md](measured-planning.md#decisions-fixed-at-load-priced-served-then-measured)).
+
+The same rule weighs the width where the share narrowed it before anything could be priced. A
+device's buffers grow with the context as well as the width (llama.cpp builds the attention's mask,
+and on sparse-attention models the selection, as a row of the context per token of width), so at a
+long context the probed width can take the whole card: the fitter places no layer there, nothing is
+armed to price, and the share takes the narrowest graph whose buffers fit its fraction. Measured on a
+12 GB card (63 GB of host memory) with Qwen3.8-Flash-Next Q2_0, its 32 GB of experts on the host
+behind a device cache: at a 262144 context the share took 512 tokens a pass and a 2.1 GiB cache, and a
+227,833-token prompt prefilled at 289 tok/s (13 minutes to the first token), where 1024 tokens leave
+a 2.1 GiB cache too. So after the plan at the share's width, `probe_and_plan` places each width up to
+the probed one (`widen_priced`, one fitter call each, kept with the facts), plans each at its width and
+prices its decode (`priced_decode_seconds`, on the facts `plan_run` prices on), and serves the widest
+within the margin of the fastest. A plan the fitter left a layer's dense part on the host for is not
+priced (both decode prices read every byte but the experts at a device's rate). On the plan records
+of that card and of a 16 GB card, rebuilt in the hardware simulator (#591), priced decode in tok/s:
+
+| card | context | before | this rule |
+|---|---|---|---|
+| 12 GB | 16384 | 8192 tokens, 48.2 | 4096 tokens, 54.1 |
+| 12 GB | 131072 | 1024, 49.0 | 1024, 49.0 (2048: 44.2, past the margin) |
+| 12 GB | 262144 | 512, 31.8 | 1024, 30.9 |
+| 16 GB | 16384 | 8192, 36.8 | 8192, 36.8 |
+| 16 GB | 131072 | 8192, 26.1 | 4096, 35.1 |
+| 16 GB | 262144 | 512, 35.1 | 1024, 35.0 |
+
+What it does not change: a wider graph's buffers still take the experts' room for the whole session,
+so where the decode falls fast with the width (2048 tokens at 131072 on the 12 GB card) the prompt
+keeps its passes. Lending that room to the prompt while it is read, and back to the cache after, is
+what the trade needs and what llama.cpp's fixed reservation does not allow.
 
 Measured on a 12 GB card (RTX 3060 class, 120 GiB of host memory) with Qwen3.8-Flash-Next Q2_0 at a
 16384 context. The graph as wide as the context reserved 6644 MiB of the card for compute buffers.

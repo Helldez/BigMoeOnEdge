@@ -190,6 +190,24 @@ uint32_t device_share_width(const Placement & placement,
                             const PlannerPolicy & policy,
                             uint32_t floor = 0);
 
+// What a decoded token is priced to cost under `plan` on this machine, in seconds, from the rates it
+// probed: every byte a token reads at the device's rates, the routed experts its device cache serves (or
+// the fitter's layers hold) there and the rest uploaded or computed on the host, as the width rule and
+// the device tier price them. 0 where a rate is unmeasured, no device computes the graph, or the fitter
+// left a layer's dense part on the host (where these prices do not hold): such a plan is not priced.
+double priced_decode_seconds(const Plan & plan,
+                             const HardwareProfile & hw,
+                             const ModelProfile & model,
+                             const PlanRequest & request,
+                             const PlannerPolicy & policy = PlannerPolicy::defaults());
+
+// The graph's width, as one rule wherever widths are weighed: of widths in ascending order and what a
+// decoded token costs at each (0: unpriced, never taken), the index of the widest whose decode is within
+// `margin` of the fastest. A wider graph prefills a long prompt in fewer passes and leaves the experts
+// less of the device, so the answer keeps its speed and the prompt gets every pass the answer does not
+// pay for. -1 where nothing is priced.
+int widest_near_fastest(const std::vector<double> & decode_seconds, float margin);
+
 // As above, with the margins overridden. The four-argument form calls this with the defaults.
 Plan plan_run(const RunConfig & base,
               const HardwareProfile & hw,
