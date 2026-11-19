@@ -1148,35 +1148,44 @@ int main() {
                 const uint32_t share = device_share_width(none, slow, pol);
                 check(share > 0 && share < probed, "width, long context: the share narrows the graph",
                       std::to_string(share));
-                uint32_t on_card = 24;
-                for (uint32_t w = share; w < probed; w *= 2, on_card -= 6)
+                // Each doubling leaves one layer's experts fewer on the card: the decode moves a few percent,
+                // and the widest inside the margin of the fastest is served.
+                uint32_t on_card = 30;
+                for (uint32_t w = share; w < probed; w *= 2, on_card -= 1)
                     facts.placement_at_width[key_at(w)] = fit_at(w, on_card);
                 Placement short_at_probed = fit_at(probed, 0);
                 short_at_probed.n_gpu_layers = (int32_t) model.n_layer - 1; // a layer's dense part left behind
                 facts.placement_at_width[key_at(probed)] = short_at_probed;
-                // Nothing served: the default mix's prompt is past the share's width, and its passes'
-                // gathers outweigh the experts the narrow graph keeps on the card.
                 const Plan wider = replan(facts, ctx16, PlanRequest{}, model.knobs);
                 const Decision * dw = find(wider, "ubatch");
                 check(wider.config.graph_width() > (int) share && wider.config.graph_width() < (int) probed && dw &&
                           dw->source == Source::Derived &&
-                          dw->reason.find("each width placed by the fitter and priced") != std::string::npos &&
+                          dw->reason.find("each width placed by the fitter") != std::string::npos &&
                           dw->reason.find(std::to_string(probed) + " tokens unpriced") != std::string::npos,
-                      "width, long context: a wider graph priced faster on the requests is served, a fit that left "
+                      "width, long context: the widest within the margin of the fastest is served, a fit that left "
                       "a layer behind is not priced",
                       dw ? std::to_string(wider.config.graph_width()) + ": " + dw->reason : "no decision");
                 check(validate(wider.config).ok, "width, long context: a valid config", validate(wider.config).error);
-                // A machine that only decodes: nothing to gather twice, and the share's graph, with the
-                // most experts on the card, stands, the prices said.
+                // Each doubling taking six layers' experts off the card: the decode past the margin at once,
+                // and the share's graph stands, priced.
+                AutoPlan steep = facts;
+                steep.placement_at_width.clear();
+                on_card = 24;
+                for (uint32_t w = share; w < probed; w *= 2, on_card -= 6)
+                    steep.placement_at_width[key_at(w)] = fit_at(w, on_card);
+                steep.placement_at_width[key_at(probed)] = short_at_probed;
+                const Plan narrow = replan(steep, ctx16, PlanRequest{}, model.knobs);
+                dw = find(narrow, "ubatch");
+                check(narrow.config.graph_width() == (int) share && dw && dw->source == Source::Policy &&
+                          dw->reason.find("the widest within 10% of the fastest") != std::string::npos,
+                      "width, long context, each wider graph decoding past the margin: the share's graph stands",
+                      dw ? std::to_string(narrow.config.graph_width()) + ": " + dw->reason : "no decision");
+                // The requests served do not move it.
                 MeasuredKnobs chat;
                 chat.mix_requests = 4000;
                 chat.mix_gen_tokens = 500;
-                const Plan narrow = replan(facts, ctx16, PlanRequest{}, chat);
-                dw = find(narrow, "ubatch");
-                check(narrow.config.graph_width() == (int) share && dw && dw->source == Source::Policy &&
-                          dw->reason.find("no wider graph is faster") != std::string::npos,
-                      "width, long context, a machine that only decodes: the share's graph stands, priced",
-                      dw ? std::to_string(narrow.config.graph_width()) + ": " + dw->reason : "no decision");
+                check(replan(facts, ctx16, PlanRequest{}, chat).config.graph_width() == wider.config.graph_width(),
+                      "width, long context: the requests served do not move it");
                 // A width the caller set is not weighed at all.
                 RunConfig by_hand = ctx16;
                 by_hand.n_ubatch = (int) share;
@@ -1252,14 +1261,16 @@ int main() {
             check(pd && pd->value == "every layer on devices", "placement: the fitter's default reads as every layer",
                   pd ? pd->value : "none");
 
-            // Every layer on the card, experts on the host, buffers past the card's share: the width is
-            // decided across loads (MeasuredKnobs::width_narrow), by the requests this machine serves.
+            // Every layer on the card, experts on the host, buffers past the card's share: the halvings from
+            // the share's width to the full one are priced on the decode, and the widest whose decode is within
+            // the margin of the fastest is served. No record of the requests is read, so the first load is
+            // planned as every later one.
             {
                 HardwareProfile no_tier = card;
-                no_tier.devices[0].identity_ok = Tri::No;     // no device cache: the width alone is weighed
-                no_tier.devices[0].upload_gibs = 24.0;        // what a prompt's pass gathers at
-                no_tier.devices[0].wide_matmul_gibs = 1500.0; // a prompt-wide layer on the card
-                no_tier.host_expert_gibs = 20.0;              // the host and the card on this model's own layer
+                no_tier.devices[0].identity_ok = Tri::No; // no device cache: the width alone is weighed
+                no_tier.devices[0].upload_gibs = 24.0;
+                no_tier.devices[0].wide_matmul_gibs = 1500.0;
+                no_tier.host_expert_gibs = 20.0; // the host and the card on this model's own layer
                 no_tier.host_dense_gibs = 30.0;
                 no_tier.devices[0].expert_gibs = 400.0;
                 no_tier.devices[0].dense_gibs = 400.0;
@@ -1272,155 +1283,74 @@ int main() {
                     mm.knobs = k;
                     return plan_run(big_ctx, no_tier, mm, roomy_layers, PlanRequest{}, unbounded);
                 };
-                // Nothing measured, no request served: both widths are priced from the probed rates
-                // over the default mix, the load serves the one priced faster and times it as it serves.
+                // Nothing measured: up to 8192 tokens the narrower buffers leave room for every expert the
+                // host holds, so those widths decode alike, and the full width leaves them on the host. The
+                // widest of the alike is served.
                 const Plan first = plan_with(MeasuredKnobs{});
                 const Decision * dw = find(first, "ubatch");
-                const bool first_narrow = first.config.n_ubatch == (int) narrow;
-                check(narrow > 0 && narrow < 16384 && first.config.trial.width_narrow == (int) narrow &&
-                          first.config.trial.width_side == (first_narrow ? 0 : 1) && dw &&
-                          dw->source == Source::Derived && dw->reason.find("the default mix") != std::string::npos &&
-                          dw->reason.find("priced from the probed rates") != std::string::npos,
-                      "width, nothing measured: priced on the default mix, the side served is the side timed",
-                      dw ? dw->reason : "none");
+                check(narrow > 0 && narrow < 8192 && first.config.n_ubatch == 8192 &&
+                          first.config.trial.width_narrow == (int) narrow && first.config.trial.width_side == -1 &&
+                          dw && dw->source == Source::Derived &&
+                          dw->reason.find("priced from the probed rates") != std::string::npos &&
+                          dw->reason.find("the widest within 10% of the fastest") != std::string::npos,
+                      "width, nothing measured: the widest that decodes within the margin of the fastest",
+                      dw ? std::to_string(first.config.n_ubatch) + ": " + dw->reason : "none");
                 check(validate(first.config).ok, "width: a valid config", validate(first.config).error);
-                // The mix decides between the same prices: a machine that only decodes takes the narrow
-                // graph (more of the experts on the card, nothing to gather twice), and one whose prompts
-                // are long and answers short takes whichever its passes cost less on.
+                // The requests a machine served do not move it: a chat machine and an agent's plan alike.
                 MeasuredKnobs chat_mix;
-                chat_mix.mix_requests = 4000; // enough of one kind to be this machine's mix
+                chat_mix.mix_requests = 4000;
                 chat_mix.mix_gen_tokens = 500;
-                const Plan chat_priced = plan_with(chat_mix);
-                dw = find(chat_priced, "ubatch");
-                check(chat_priced.config.n_ubatch == (int) narrow && chat_priced.config.trial.width_side == 0 && dw &&
-                          dw->reason.find("requests served here") != std::string::npos,
-                      "width, a machine that only decodes: the narrow graph, priced", dw ? dw->reason : "none");
-                // Both decodes measured on served loads, no long prompt: the measurements decide, and the
-                // load times nothing more (it still records its requests against the narrow width).
-                MeasuredKnobs k = chat_mix;
+                MeasuredKnobs agent_mix = chat_mix;
+                agent_mix.mix_wide_prompt_tokens = 9500;
+                check(plan_with(chat_mix).config.n_ubatch == first.config.n_ubatch &&
+                          plan_with(agent_mix).config.n_ubatch == first.config.n_ubatch,
+                      "width: the requests served do not move it, the first load is planned as every later one");
+                // Both timed widths measured: the full width 27% slower, so the widest in between, priced
+                // by the narrow width's measurement, is served.
+                MeasuredKnobs k;
                 k.width_narrow = (int) narrow;
                 k.wide_decode_tps = 14.2;
                 k.narrow_decode_tps = 19.4;
-                const Plan chat = plan_with(k);
-                dw = find(chat, "ubatch");
-                check(chat.config.n_ubatch == (int) narrow && chat.config.trial.width_side == -1 &&
-                          chat.config.trial.width_narrow == (int) narrow && dw && dw->source == Source::Measured,
-                      "width, both decodes measured, short prompts only: the narrow graph", dw ? dw->reason : "none");
-                // The same decodes on a machine that prefills 9500 tokens a request, both prefills
-                // measured: 500 tokens decoded and 9500 prefilled weigh for the wide graph.
-                k.mix_wide_prompt_tokens = 9500;
-                k.wide_prefill_tps = 610;
-                k.narrow_prefill_tps = 104;
-                const Plan agent = plan_with(k);
-                dw = find(agent, "ubatch");
-                check(agent.config.graph_width() == 16384 && agent.config.trial.width_side == -1 && dw &&
-                          dw->source == Source::Measured,
-                      "width, long prompts measured slower on the narrow graph: the full width wins",
+                const Plan both = plan_with(k);
+                dw = find(both, "ubatch");
+                check(both.config.n_ubatch == 8192 && dw && dw->source == Source::Measured &&
+                          dw->reason.find("19.40 tok/s") != std::string::npos,
+                      "width, both decodes measured: the widest within the margin of the narrow one's",
                       dw ? dw->reason : "none");
-                // One side measured: both prices are scaled by how far that side's ran from it, so the
-                // ratio between the widths stays the price's and no load is opened to time the other.
-                MeasuredKnobs one = chat_mix;
+                // The full width measured as fast: it is served.
+                k.wide_decode_tps = 19.0;
+                check(plan_with(k).config.graph_width() == 16384,
+                      "width, the full width measured within the margin: a prompt runs in one pass");
+                // One width measured: every price scaled by how far it ran from its own.
+                MeasuredKnobs one;
                 one.width_narrow = (int) narrow;
                 one.narrow_decode_tps = 19.4;
                 const Plan scaled = plan_with(one);
                 dw = find(scaled, "ubatch");
-                check(scaled.config.n_ubatch == chat_priced.config.n_ubatch && scaled.config.trial.width_side == -1 &&
-                          dw && dw->reason.find("corrected by the width measured") != std::string::npos,
-                      "width, one side measured: the price corrected, the same side served, nothing timed again",
+                check(scaled.config.n_ubatch == first.config.n_ubatch && dw &&
+                          dw->reason.find("corrected by the width measured") != std::string::npos,
+                      "width, one width measured: the prices corrected, the same width served",
                       dw ? dw->reason : "none");
-                // A handful of requests does not swing the width: they are weighed with the default mix,
-                // so the plan stays where it was with nothing served. Measured on two 16 GB cards: four
-                // requests read alone as 1181 prompt tokens, the next load's three short ones as 34, and
-                // the graph went narrow and lost 41% of a 4.6k-token prompt's prefill.
-                MeasuredKnobs few;
-                few.mix_requests = 3;
-                few.mix_gen_tokens = 171;
-                few.mix_wide_prompt_tokens = 34;
-                const Plan few_plan = plan_with(few);
-                dw = find(few_plan, "ubatch");
-                check(few_plan.config.n_ubatch == first.config.n_ubatch && dw &&
-                          dw->reason.find("3 requests served here, weighed with the default mix") != std::string::npos,
-                      "width, three short requests recorded: weighed with the default mix, the width holds",
-                      dw ? dw->reason : "none");
-                // One long prompt among short ones is passes at the narrow width, which their mean hides:
-                // 1181 tokens a request fit one pass, a 4.6k-token prompt every fourth request does not.
-                // With experts left off the card at both widths, the same mean prompt is priced a pass's
-                // gather dearer at the narrow width where a quarter of the prompts are long, and the same
-                // at the full width, which they fit.
-                HardwareProfile slow_gather = no_tier;
-                slow_gather.devices[0].upload_gibs = 0.5;
-                Placement most_off = roomy_layers; // more experts off the card than the narrow graph frees
-                for (uint32_t il = 8; il < 32; ++il)
-                    most_off.host_expert_layers.push_back(il);
-                // The seconds the plan's line gives each width's prefill: "... prefills that prompt in W s,
-                // at N tokens at R tok/s and X s (...".
-                const auto prefill_priced = [&](double long_tokens, double & wide_s, double & narrow_s) {
-                    ModelProfile mm = model;
-                    mm.knobs.mix_requests = 4000;
-                    mm.knobs.mix_gen_tokens = 190;
-                    mm.knobs.mix_wide_prompt_tokens = 1181;
-                    mm.knobs.width_narrow = (int) narrow;
-                    mm.knobs.usage_requests = 4000;
-                    mm.knobs.usage_gen_tokens = 190;
-                    mm.knobs.usage_long_prompt_tokens = long_tokens;
-                    const Plan wp = plan_run(big_ctx, slow_gather, mm, most_off, PlanRequest{}, unbounded);
-                    const Decision * x = find(wp, "ubatch");
-                    wide_s = narrow_s = 0.0;
-                    if (!x) return;
-                    const size_t w = x->reason.find("prefills that prompt in "), n = x->reason.find(" tok/s and ", w);
-                    if (w == std::string::npos || n == std::string::npos) return;
-                    wide_s = std::atof(x->reason.c_str() + w + 24);
-                    narrow_s = std::atof(x->reason.c_str() + n + 11);
-                };
-                double wide_none = 0, narrow_none = 0, wide_long = 0, narrow_long = 0;
-                prefill_priced(0.0, wide_none, narrow_none);
-                prefill_priced(1155.0, wide_long, narrow_long);
-                check(narrow_none > 0.0 && narrow_long > narrow_none * 1.1 && wide_long == wide_none,
-                      "width, the same mean prompt: long prompts are more passes at the narrow width only",
-                      std::to_string(narrow_none) + " " + std::to_string(narrow_long) + " " +
-                          std::to_string(wide_long));
                 // A narrow width other than the one measured: the measurements do not answer it.
                 MeasuredKnobs stale = k;
                 stale.width_narrow = (int) narrow * 2;
                 const Plan stale_plan = plan_with(stale);
                 dw = find(stale_plan, "ubatch");
-                check(dw && dw->source == Source::Derived, "width, another narrow width: priced afresh");
+                check(dw && dw->source == Source::Derived, "width, another narrow width: priced afresh",
+                      dw ? dw->reason : "none");
                 // A pinned width is the caller's.
                 PlanRequest pin_ub;
                 pin_ub.pinned.push_back("ubatch");
-                ModelProfile mm = model;
-                const Plan pinned_ub = plan_run(big_ctx, no_tier, mm, roomy_layers, pin_ub, unbounded);
+                const Plan pinned_ub = plan_run(big_ctx, no_tier, model, roomy_layers, pin_ub, unbounded);
                 check(pinned_ub.config.trial.width_side == -1 && pinned_ub.config.trial.width_narrow == 0,
                       "width, pinned: nothing weighed, nothing timed");
-
-                // The margin guards the width in force: the full width until a load ran the narrow one
-                // as decided, then that one. The same rates, weighed again, do not swing it.
-                MeasuredKnobs cal = chat_mix;
-                cal.width_narrow = (int) narrow;
-                cal.wide_decode_tps = 14.2;
-                cal.narrow_decode_tps = 14.5; // inside the margin
-                check(plan_with(cal).config.graph_width() == 16384 && plan_with(cal).config.trial.width_side == -1,
-                      "width, the narrow graph inside the margin: the full width holds");
-                MeasuredKnobs held = cal;
-                held.width_held = 0;
-                held.narrow_decode_tps = 14.2;
-                held.wide_decode_tps = 15.0; // the full width 6% ahead
-                const Plan held_plan = plan_with(held);
-                dw = find(held_plan, "ubatch");
-                check(held_plan.config.n_ubatch == (int) narrow && dw &&
-                          dw->reason.find("in force") != std::string::npos,
-                      "width, the narrow graph in force, the full width inside the margin: it holds",
-                      dw ? dw->reason : "none");
-                held.wide_decode_tps = 16.0; // 13% ahead
-                check(plan_with(held).config.graph_width() == 16384,
-                      "width, the narrow graph in force, the full width past the margin: it takes over");
-                // A width that failed to open here as often as a plan lets it loses; once is the
-                // machine's moment, and the price still decides.
-                MeasuredKnobs fails_narrow = chat_mix;
+                // A width that failed to open here as often as a plan lets it loses; once is the machine's
+                // moment, and the price still decides.
+                MeasuredKnobs fails_narrow;
                 fails_narrow.width_narrow = (int) narrow;
                 fails_narrow.narrow_unviable = 1;
-                check(plan_with(fails_narrow).config.n_ubatch == (int) narrow,
-                      "width, the narrow graph failed to open once: still the plan's, on its price");
+                check(plan_with(fails_narrow).config.n_ubatch == first.config.n_ubatch,
+                      "width, the narrow graph failed to open once: still the price's");
                 fails_narrow.narrow_unviable = MeasuredKnobs::unviable_max;
                 const Plan wide_kept = plan_with(fails_narrow);
                 dw = find(wide_kept, "ubatch");
@@ -1433,9 +1363,8 @@ int main() {
                 const Plan narrow_kept = plan_with(fails_wide);
                 check(narrow_kept.config.n_ubatch == (int) narrow && narrow_kept.config.trial.width_side == -1,
                       "width, the full width could not be opened: the narrow graph stands");
-                // Another narrow width: what failed against the old one answers nothing.
                 fails_narrow.width_narrow = (int) narrow * 2;
-                check(plan_with(fails_narrow).config.n_ubatch == (int) narrow,
+                check(plan_with(fails_narrow).config.n_ubatch == first.config.n_ubatch,
                       "width, a failure at another narrow width: priced afresh");
             }
 

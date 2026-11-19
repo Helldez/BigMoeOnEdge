@@ -560,25 +560,20 @@ Two ways of settling them by timing were built and withdrawn:
 **What the plan does instead.** It decides by calculation from the facts the load already probed,
 serves the side it prices faster, and lets the served load time that side:
 
-- **Each side has a price.** The device tier's are in Step 4. The graph width's is a request's time
-  at each width: its decoded tokens at the decode each width leaves (the narrower buffers' room goes
-  to the device cache, or to the experts the fitter places on the card), and its prompt at the
-  device's prompt-wide rate plus, per pass, the upload of the experts that are not on the device
-  (`prompt_gather_seconds`), which a narrower graph pays once per pass. The shared-memory device's is
-  the same request at the rates each processor probed on a real layer of the model, one token wide
-  and as wide as a prompt.
-- **A request is this machine's own, weighed with a default.** The prompt tokens prefilled and the
-  tokens decoded per request are recorded on every load that answers one (`MeasuredKnobs::mix_*`),
-  and weighed with `PlannerPolicy::mix_prompt_tokens_default` against `mix_gen_tokens_default` (4096
-  and 300) counted as `mix_prior_requests` requests (16), which is all a first load has
-  (`request_mix`). A record is the last session's alone: on two 16 GB cards four requests, one of
-  them 4.6k tokens long, read alone as 1181 prompt tokens and the next load's three short ones as
-  34, and the graph went narrow. A request's passes at a width are counted from its long prompts'
-  tokens (`usage_long_prompt_tokens`), a prompt of l tokens taking about l / w + 1/2 of them, since
-  the mean prompt hides them: 1181 tokens fit one pass, the 4.6k-token prompt behind that mean
-  takes three. On the decode alone, as the width was decided before, a narrow graph won wherever it
-  decoded faster: +40% decode and -40% on a 4.6k-token prompt on an 8 GB card, -28% on a 12 GB one,
-  -47% on two 16 GB cards with a 284B model.
+- **Each side has a price.** The device tier's are in Step 4. The graph width's is the decode at each
+  width, from the room its buffers leave the experts (to the device cache, or to the experts the
+  fitter places on the card), and the widest within `min_backend_win` of the fastest is taken: it
+  needs no record of the requests, so the first load decides as every later one
+  ([hardware-planning.md](hardware-planning.md)). The shared-memory device's is a request's time at
+  the rates each processor probed on a real layer of the model, one token wide and as wide as a
+  prompt.
+- **A request is this machine's own, weighed with a default.** Where a request is weighed (the
+  shared-memory device), the prompt tokens prefilled and the tokens decoded per request are recorded
+  on every load that answers one (`MeasuredKnobs::mix_*`), and weighed with
+  `PlannerPolicy::mix_prompt_tokens_default` against `mix_gen_tokens_default` (4096 and 300) counted
+  as `mix_prior_requests` requests (16), which is all a first load has (`request_mix`). A record is
+  the last session's alone: on two 16 GB cards four requests, one of them 4.6k tokens long, read
+  alone as 1181 prompt tokens and the next load's three short ones as 34.
 - **A side that streams pays for flash in its price.** Both sides' prices above are compute. Where
   the experts a placement leaves on the host do not fit its memory, a token also reads from flash
   the routed bytes neither the host's RAM cache nor a device cache serves, at the rate this storage

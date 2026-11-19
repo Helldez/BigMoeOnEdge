@@ -6,19 +6,24 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Changed
+- **The graph's width is the widest that decodes within 10% of the fastest, on the first load**
+  (#653). Where a card is short of room, each halving from the width the card's share of its memory
+  allows to the full one is priced on the decode it leaves (the room its buffers give the device
+  cache, or the experts the fitter places on the card), from the rates the load probed, and the widest
+  within the 10% margin is taken. The answer keeps its speed and a long prompt gets every pass the
+  answer does not pay for. Until now the width was a request's time over a mix of prompts and answers
+  the machine had served (the default mix on a first load), so it moved from load to load and on the
+  default mix gave the answer up by a third for a long prompt.
+
 ### Fixed
 - **A long context no longer prefills at the narrowest graph** (#653). Where a card's compute buffers
-  at the probed width took the whole card (they grow with the context: at 128k and 256k contexts the
-  fitter placed no layer there), the device's share of its memory narrowed the graph to its narrowest
-  and nothing priced it: each of a prompt's 445 passes gathered onto the card every expert it did not
-  hold. On a rented 12 GB card with Qwen3.8-Flash-Next Q2_0 a 227k-token prompt took 790 s (289
-  tok/s, 512 tokens a pass). The plan now places each wider width up to the probed one, prices every
-  plan on the machine's requests with the account the width rule already used for two widths, and
-  serves the faster one past the 10% margin; a placement that leaves a layer's dense part on the host
-  is not priced, and the fitter's placement is priced at the part of its ceiling the device tier
-  credits it. Rebuilt from that card's plan record on the default mix: 512 -> 2048 tokens at 256k,
-  1024 -> 4096 at 128k. A width the first plan priced, or one set by hand, is left as it was
-  ([hardware-planning.md](docs/hardware-planning.md)).
+  at the probed width took the whole card (they grow with the context), the fitter placed no layer
+  there, nothing priced the width, and the share took the narrowest graph: on a rented 12 GB card
+  with Qwen3.8-Flash-Next Q2_0 a 227k-token prompt took 790 s at 512 tokens a pass, where 1024 leave
+  the same cache. Each wider width is now placed by the fitter and weighed by the same rule; a
+  placement that leaves a layer's dense part on the host is not priced. On that card's plan record:
+  512 -> 1024 tokens at 256k ([hardware-planning.md](docs/hardware-planning.md)).
 
 ## [0.46.0] - 2026-11-18
 
