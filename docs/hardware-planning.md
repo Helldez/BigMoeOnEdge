@@ -936,6 +936,31 @@ width set by hand is left alone and charged in full; a rate that was not measure
 and the widest graph inside the bounds above stands
 ([measured-planning.md](measured-planning.md#decisions-fixed-at-load-priced-served-then-measured)).
 
+The same account weighs the width where the share narrowed it before anything could be priced. A
+device's buffers grow with the context as well as the width (the attention's scratch is a row of the
+context per token of width), so at a long context the probed width can take the whole card: the
+fitter places no layer there, nothing is armed to price, and the share takes the narrowest graph whose
+buffers fit its fraction. The plan placed again at that width keeps it. Each of a prompt's passes then
+gathers onto the device every expert it does not hold, for a cache the narrowing grew by a few
+percent. Measured on a 12 GB card (63 GB of host memory) with Qwen3.8-Flash-Next Q2_0 and its 32 GB
+of experts on the host behind a device cache: at a 131072 context the share took 1024 tokens a pass
+and a 4.0 GiB cache, and a 113,843-token prompt prefilled at 498 tok/s; at 262144, 512 tokens and
+2.1 GiB, and a 227,833-token prompt at 289 tok/s (13 minutes to the first token), where Strata on the
+same card read both at 2742-3018 tok/s in passes of about 25k tokens. So after the plan at the share's
+width, `probe_and_plan` places each width up to the probed one (`widen_priced`, one fitter call each,
+kept with the facts), plans each at its width, and prices every plan on the request (`price_request`,
+the account `width_across_loads` weighs its two sides with). The plan whose request is shorter is
+served; the share's width is the one in force and gives way only past `min_backend_win`. A plan the
+fitter left a layer's dense part on the host for is not priced (both decode prices read every byte but
+the experts at a device's rate), and the fitter's placement is priced at the part of its ceiling
+`fitter_ceiling_realized` says such a placement reaches, as the device tier prices it. A width the
+first plan priced itself, with what loads measured, stands as it was decided; a width set by hand is
+never weighed. On the plan records of that card and of a 16 GB card, rebuilt in the hardware
+simulator (#591) on the default mix: 1024 -> 4096 tokens at 131072 (42.1 -> 33.8 s a request), 512 -> 2048 at
+262144 on the 12 GB card (58.9 -> 25.6 s), 512 -> 4096 at 262144 on the 16 GB one (100.9 -> 62.6 s); the
+same machines at a 16384 context and the 16 GB card at 131072, where the first plan priced its width,
+plan as before.
+
 Measured on a 12 GB card (RTX 3060 class, 120 GiB of host memory) with Qwen3.8-Flash-Next Q2_0 at a
 16384 context. The graph as wide as the context reserved 6644 MiB of the card for compute buffers.
 The fitter then left two layers on the host, and with them the dense parts the device tier needs, so

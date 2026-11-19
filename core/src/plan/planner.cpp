@@ -762,6 +762,64 @@ RequestMix request_mix(const Planning & s, uint32_t narrow) {
     return r;
 }
 
+// One width's side of a request, from the rates this machine probed: what a decoded token costs there,
+// and the experts not on the device, which each pass of a prompt gathers onto it. decode_s 0: unpriced.
+struct WidthSide {
+    double decode_s = 0.0;
+    uint64_t off_device = 0;
+};
+// A device cache of `held` bytes on `dev`, every other expert on the host.
+WidthSide cache_side(const Planning & s, const ComputeDevice & dev, uint64_t held) {
+    const ModelProfile & m = s.model;
+    held = std::min<uint64_t>(held, m.expert_bytes);
+    WidthSide w;
+    w.off_device = m.expert_bytes - held;
+    const double dec = device_cache_decode_seconds(s, dev, held);
+    if (dec > 0.0) w.decode_s = dec + host_expert_flash_seconds(s, m.expert_bytes, expert_share_at(m, held));
+    return w;
+}
+// The fitter's whole layers on the devices, `off` bytes of experts left on the host: its ceiling at the
+// part of it such a placement was measured to reach, as the device tier prices the same placement
+// (PlannerPolicy::fitter_ceiling_realized).
+WidthSide fitter_side(const Planning & s, uint64_t off) {
+    WidthSide w;
+    w.off_device = off;
+    const double tps = fitter_decode_ceiling(s, off) * (double) s.pol.fitter_ceiling_realized;
+    if (tps > 0.0) w.decode_s = 1.0 / tps + host_expert_flash_seconds(s, off, 0.0);
+    return w;
+}
+// The device whose rates price a width: the one the device cache is on, or with no cache the first
+// card that holds layers. Null where none can.
+const ComputeDevice * width_device(const Planning & s) {
+    if (s.p.config.moe.device_cache_mb > 0) {
+        std::string why;
+        return device_tier_device(s, why);
+    }
+    for (const ComputeDevice & d : s.hw.devices)
+        if (!d.is_cpu && d.usable != Tri::No && d.has_own_memory()) return &d;
+    return nullptr;
+}
+// What a prompt token costs to compute on `dev` at a prompt's width, every byte a token reads at the
+// rate a wide matmul runs there. 0 where unmeasured.
+double prefill_token_seconds(const Planning & s, const ComputeDevice & dev) {
+    double token_bytes = 0.0;
+    for (size_t g = 0; g < (size_t) WeightGroup::count; ++g)
+        token_bytes += (double) s.model.group((WeightGroup) g).bytes_per_token;
+    const double wide_rate = dev.wide_matmul_gibs > 0.0 ? dev.wide_matmul_gibs : dense_rates(s.hw, dev).device;
+    return wide_rate > 0.0 && token_bytes > 0.0 ? token_bytes / (1024.0 * 1024.0 * 1024.0) / wide_rate : 0.0;
+}
+// A request's prompt at `width`: its tokens computed, and a gather each pass. A prompt of l tokens takes
+// ceil(l / w) passes, about l / w + 1/2, so a request's passes at a width are one and, for its long
+// prompts (those past `narrow`, the narrowest width weighed), their tokens over the width less a half
+// for each. The mean prompt would not do: one 4.6k-token prompt among three short ones is a mean of
+// 1181 tokens, which fits one pass.
+double prompt_seconds(const RequestMix & mix, uint32_t width, uint32_t narrow, double prefill_token, double gather) {
+    if (mix.prompt <= 0.0 || width == 0 || narrow == 0) return 0.0;
+    const double long_share = std::min(1.0, mix.long_prompt / (double) narrow); // of requests, at most
+    const double passes = 1.0 + std::max(0.0, mix.long_prompt / (double) width - 0.5 * long_share);
+    return mix.prompt * prefill_token + passes * gather;
+}
+
 // A side of a decision across loads that failed to open here as often as a plan lets it
 // (MeasuredKnobs::unviable_max): it loses, whatever the other side is priced or measured at.
 bool lost(int failed_opens) {
@@ -1365,6 +1423,40 @@ uint32_t device_share_width(const Placement & placement,
     return w;
 }
 
+RequestPrice price_request(const Plan & plan,
+                           const HardwareProfile & hw,
+                           const ModelProfile & model,
+                           const PlanRequest & request,
+                           uint32_t narrow,
+                           const PlannerPolicy & policy) {
+    RequestPrice r;
+    Plan scratch;
+    Planning s(plan.config, hw, model, plan.placement, request, policy, scratch);
+    share_of_host(s);
+    const Placement & pl = s.placement;
+    if (devices_share_host_memory(hw) || !pl.fitted || model.expert_bytes == 0 || narrow == 0) return r;
+    // Both sides' decode prices read every byte but the experts at a device's dense rate: they hold
+    // where the fitter placed every layer on the devices (llama.cpp's -1, or every block and the
+    // output), and nowhere else. A plan that left a layer's dense part on the host is not priced here.
+    const bool every_layer = pl.n_gpu_layers < 0 || (uint32_t) pl.n_gpu_layers > model.n_layer;
+    if (!every_layer) return r;
+    const ComputeDevice * dev = width_device(s);
+    if (!dev) return r;
+    const WidthSide side = plan.config.moe.device_cache_mb > 0
+                               ? cache_side(s, *dev, (uint64_t) plan.config.moe.device_cache_mb << 20)
+                               : fitter_side(s, s.host_expert_bytes);
+    const double prefill_token = prefill_token_seconds(s, *dev);
+    const double gather = prompt_gather_seconds(*dev, side.off_device);
+    if (side.decode_s <= 0.0 || prefill_token <= 0.0 || (side.off_device > 0 && gather <= 0.0)) return r;
+    const RequestMix mix = request_mix(s, narrow);
+    r.prompt_tokens = mix.prompt;
+    r.gen_tokens = mix.gen;
+    r.mix = mix.words();
+    r.seconds = mix.gen * side.decode_s +
+                prompt_seconds(mix, (uint32_t) plan.config.graph_width(), narrow, prefill_token, gather);
+    return r;
+}
+
 namespace {
 
 // The graph width where the rule above leaves it wide and the devices are short of the room it takes:
@@ -1396,14 +1488,8 @@ bool width_across_loads(Planning & s, uint32_t full) {
         return false;
     const uint32_t narrow = device_share_width(pl, s.hw, s.pol, (uint32_t) p.config.graph_width_floor());
     if (narrow == 0 || narrow >= full) return false;
-    // The device whose rates price the two widths: the one the cache is on, or with no cache the first
-    // card that holds layers.
     const bool cache = p.config.moe.device_cache_mb > 0;
-    std::string why;
-    const ComputeDevice * dev = cache ? device_tier_device(s, why) : nullptr;
-    if (!cache)
-        for (const ComputeDevice & d : s.hw.devices)
-            if (!dev && !d.is_cpu && d.usable != Tri::No && d.has_own_memory()) dev = &d;
+    const ComputeDevice * dev = width_device(s);
     if (!dev) return false;
     const MeasuredKnobs & mk = s.model.knobs;
     const bool same = mk.width_narrow == (int) narrow;
@@ -1430,48 +1516,28 @@ bool width_across_loads(Planning & s, uint32_t full) {
     // where one is armed, and to the experts the fitter places on the devices where none is.
     const uint64_t narrow_buffers = pl.at_width(narrow).device_compute_bytes;
     const uint64_t freed = pl.device_compute_bytes > narrow_buffers ? pl.device_compute_bytes - narrow_buffers : 0;
-    uint64_t off_wide = 0, off_narrow = 0; // the experts not on the devices, which a prompt's pass gathers
-    double dec_wide = 0.0, dec_narrow = 0.0;
+    WidthSide wide_side, narrow_side;
     if (cache) {
         const uint64_t held = std::min<uint64_t>((uint64_t) p.config.moe.device_cache_mb << 20, m.expert_bytes);
-        const uint64_t held_narrow = std::min<uint64_t>(held + freed, m.expert_bytes);
-        off_wide = m.expert_bytes - held;
-        off_narrow = m.expert_bytes - held_narrow;
-        dec_wide = device_cache_decode_seconds(s, *dev, held);
-        dec_narrow = device_cache_decode_seconds(s, *dev, held_narrow);
-        if (dec_wide > 0.0 && dec_narrow > 0.0) {
-            dec_wide += host_expert_flash_seconds(s, m.expert_bytes, expert_share_at(m, held));
-            dec_narrow += host_expert_flash_seconds(s, m.expert_bytes, expert_share_at(m, held_narrow));
-        }
+        wide_side = cache_side(s, *dev, held);
+        narrow_side = cache_side(s, *dev, held + freed);
     } else {
-        off_wide = s.host_expert_bytes;
-        off_narrow = off_wide > freed ? off_wide - freed : 0;
-        const double wide_tps = fitter_decode_ceiling(s, off_wide), narrow_tps = fitter_decode_ceiling(s, off_narrow);
-        dec_wide = wide_tps > 0.0 ? 1.0 / wide_tps + host_expert_flash_seconds(s, off_wide, 0.0) : 0.0;
-        dec_narrow = narrow_tps > 0.0 ? 1.0 / narrow_tps + host_expert_flash_seconds(s, off_narrow, 0.0) : 0.0;
+        const uint64_t off_wide = s.host_expert_bytes;
+        wide_side = fitter_side(s, off_wide);
+        narrow_side = fitter_side(s, off_wide > freed ? off_wide - freed : 0);
     }
-    double token_bytes = 0.0;
-    for (size_t g = 0; g < (size_t) WeightGroup::count; ++g)
-        token_bytes += (double) m.group((WeightGroup) g).bytes_per_token;
-    const double wide_rate = dev->wide_matmul_gibs > 0.0 ? dev->wide_matmul_gibs : dense_rates(s.hw, *dev).device;
-    const double gather_wide = prompt_gather_seconds(*dev, off_wide),
-                 gather_narrow = prompt_gather_seconds(*dev, off_narrow);
-    if (dec_wide <= 0.0 || dec_narrow <= 0.0 || wide_rate <= 0.0 || token_bytes <= 0.0 ||
-        (off_wide > 0 && gather_wide <= 0.0))
+    double dec_wide = wide_side.decode_s, dec_narrow = narrow_side.decode_s;
+    const double prefill_token = prefill_token_seconds(s, *dev);
+    const double gather_wide = prompt_gather_seconds(*dev, wide_side.off_device),
+                 gather_narrow = prompt_gather_seconds(*dev, narrow_side.off_device);
+    if (dec_wide <= 0.0 || dec_narrow <= 0.0 || prefill_token <= 0.0 ||
+        (wide_side.off_device > 0 && gather_wide <= 0.0))
         return false; // a rate is unmeasured: nothing to price the two widths with
-    const double prefill_token = token_bytes / (1024.0 * 1024.0 * 1024.0) / wide_rate;
-    // The requests: this machine's own, weighed with the default mix. A prompt of l tokens takes
-    // ceil(l / w) passes, about l / w + 1/2, so a request's passes at a width are one and, for its
-    // long prompts, their tokens over the width less a half for each. The mean prompt would not do:
-    // one 4.6k-token prompt among three short ones is a mean of 1181 tokens, which fits one pass.
+    // The requests: this machine's own, weighed with the default mix (prompt_seconds).
     const RequestMix mix = request_mix(s, narrow);
     const double gen = mix.gen, prompt = mix.prompt;
-    const double long_share = std::min(1.0, mix.long_prompt / (double) narrow); // of requests, at most
-    const auto prefill_s = [&](uint32_t width, double gather) {
-        const double passes = 1.0 + std::max(0.0, mix.long_prompt / (double) width - 0.5 * long_share);
-        return prompt > 0.0 ? prompt * prefill_token + passes * gather : 0.0;
-    };
-    double pre_wide = prefill_s(full, gather_wide), pre_narrow = prefill_s(narrow, gather_narrow);
+    double pre_wide = prompt_seconds(mix, full, narrow, prefill_token, gather_wide),
+           pre_narrow = prompt_seconds(mix, narrow, narrow, prefill_token, gather_narrow);
     // What the loads served here measured: a side's own figure where both were timed, and where one
     // was, both prices scaled by how far that side's ran from its measurement.
     const double wd = same ? mk.wide_decode_tps : 0.0, nd = same ? mk.narrow_decode_tps : 0.0;

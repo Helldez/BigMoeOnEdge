@@ -1095,6 +1095,98 @@ int main() {
                       std::to_string(kept_wide.config.graph_width()) + ", " +
                           std::to_string(stuck.placement_at_width.size()) + " fits");
             }
+            // A long context on a card short of room: at the probed width the buffers take the card and
+            // the fitter places no layer, so the share narrows the graph. The widths it passed over are
+            // placed by the fitter and priced on the requests (#653): each wider one leaves fewer experts
+            // on the card and gathers the rest fewer times a prompt. Fits read from the facts, as above.
+            {
+                HardwareProfile slow = card;
+                ComputeDevice & g = slow.devices[0];
+                g.identity_ok = Tri::No; // no device cache: the fitter's layers alone are weighed
+                g.upload_gibs = 2.0;     // a pass's gather is dear
+                g.wide_matmul_gibs = 1500.0;
+                g.expert_gibs = 400.0;
+                g.dense_gibs = 400.0;
+                slow.host_expert_gibs = 20.0;
+                slow.host_dense_gibs = 30.0;
+                RunConfig ctx16 = big_ctx;
+                const uint32_t probed = pol.ubatch_max_device;
+                const uint64_t per_tok = 1 * MiB; // a token of width at this context: the attention's scratch
+                Placement none;
+                none.fitted = true;
+                none.n_ctx = (uint32_t) ctx16.n_ctx;
+                none.n_gpu_layers = 0;
+                none.compute_width = probed;
+                none.device_compute_per_token = per_tok;
+                none.device_compute_bytes = (uint64_t) probed * per_tok;
+                none.raw_host_compute_bytes = 64 * MiB;
+                none.host_compute_per_token = 8 * KiB;
+                none.host_expert_layers = model.moe_layers;
+                if (none.host_expert_layers.empty())
+                    for (uint32_t il = 0; il < model.n_layer; ++il)
+                        none.host_expert_layers.push_back(il);
+                AutoPlan facts;
+                facts.hw = slow;
+                facts.model = model;
+                facts.placement = none;
+                auto key_at = [&](uint32_t w) {
+                    AutoPlan::FitKey k;
+                    k.width = w;
+                    k.n_ctx = (uint32_t) ctx16.n_ctx;
+                    k.type_k = ctx16.cache_type_k;
+                    k.type_v = ctx16.cache_type_v;
+                    return k;
+                };
+                // Every layer on the card at each width, its experts on the host past `on_card` layers.
+                auto fit_at = [&](uint32_t w, uint32_t on_card) {
+                    Placement q = none.at_width(w);
+                    q.n_gpu_layers = (int32_t) model.n_layer + 1;
+                    q.host_expert_layers.assign(none.host_expert_layers.begin() + on_card,
+                                                none.host_expert_layers.end());
+                    return q;
+                };
+                const uint32_t share = device_share_width(none, slow, pol);
+                check(share > 0 && share < probed, "width, long context: the share narrows the graph",
+                      std::to_string(share));
+                uint32_t on_card = 24;
+                for (uint32_t w = share; w < probed; w *= 2, on_card -= 6)
+                    facts.placement_at_width[key_at(w)] = fit_at(w, on_card);
+                Placement short_at_probed = fit_at(probed, 0);
+                short_at_probed.n_gpu_layers = (int32_t) model.n_layer - 1; // a layer's dense part left behind
+                facts.placement_at_width[key_at(probed)] = short_at_probed;
+                // Nothing served: the default mix's prompt is past the share's width, and its passes'
+                // gathers outweigh the experts the narrow graph keeps on the card.
+                const Plan wider = replan(facts, ctx16, PlanRequest{}, model.knobs);
+                const Decision * dw = find(wider, "ubatch");
+                check(wider.config.graph_width() > (int) share && wider.config.graph_width() < (int) probed && dw &&
+                          dw->source == Source::Derived &&
+                          dw->reason.find("each width placed by the fitter and priced") != std::string::npos &&
+                          dw->reason.find(std::to_string(probed) + " tokens unpriced") != std::string::npos,
+                      "width, long context: a wider graph priced faster on the requests is served, a fit that left "
+                      "a layer behind is not priced",
+                      dw ? std::to_string(wider.config.graph_width()) + ": " + dw->reason : "no decision");
+                check(validate(wider.config).ok, "width, long context: a valid config", validate(wider.config).error);
+                // A machine that only decodes: nothing to gather twice, and the share's graph, with the
+                // most experts on the card, stands, the prices said.
+                MeasuredKnobs chat;
+                chat.mix_requests = 4000;
+                chat.mix_gen_tokens = 500;
+                const Plan narrow = replan(facts, ctx16, PlanRequest{}, chat);
+                dw = find(narrow, "ubatch");
+                check(narrow.config.graph_width() == (int) share && dw && dw->source == Source::Policy &&
+                          dw->reason.find("no wider graph is faster") != std::string::npos,
+                      "width, long context, a machine that only decodes: the share's graph stands, priced",
+                      dw ? std::to_string(narrow.config.graph_width()) + ": " + dw->reason : "no decision");
+                // A width the caller set is not weighed at all.
+                RunConfig by_hand = ctx16;
+                by_hand.n_ubatch = (int) share;
+                PlanRequest pinned;
+                pinned.pinned = {"ubatch"};
+                const Plan kept = replan(facts, by_hand, pinned, model.knobs);
+                dw = find(kept, "ubatch");
+                check(kept.config.n_ubatch == (int) share && dw && dw->source == Source::Operator,
+                      "width, long context: a pinned width is not priced against wider ones");
+            }
             // A graph already inside the bound is left as wide as the context.
             RunConfig small_ctx = big_ctx;
             small_ctx.n_ctx = 4096;

@@ -190,6 +190,27 @@ uint32_t device_share_width(const Placement & placement,
                             const PlannerPolicy & policy,
                             uint32_t floor = 0);
 
+// What one request is priced to take under `plan` on this machine, from the rates it probed: the
+// prompt's tokens computed and each of its passes gathering onto the device the experts the plan does
+// not hold there, and the answer's tokens decoded at the plan's placement and device cache. The
+// request is this machine's mix (MeasuredKnobs::mix_*) weighed with the default one; its long
+// prompts are counted against `narrow`, the narrowest width weighed. The same price the width rule
+// weighs two widths with, so two plans that differ in their width (and what that width left the
+// experts) are compared on one account. seconds 0 where a rate is unmeasured or no device computes
+// the graph: a price that cannot be computed decides nothing.
+struct RequestPrice {
+    double seconds = 0.0;
+    double prompt_tokens = 0.0;
+    double gen_tokens = 0.0;
+    std::string mix; // whose requests: served here, or the default mix
+};
+RequestPrice price_request(const Plan & plan,
+                           const HardwareProfile & hw,
+                           const ModelProfile & model,
+                           const PlanRequest & request,
+                           uint32_t narrow,
+                           const PlannerPolicy & policy = PlannerPolicy::defaults());
+
 // As above, with the margins overridden. The four-argument form calls this with the defaults.
 Plan plan_run(const RunConfig & base,
               const HardwareProfile & hw,
