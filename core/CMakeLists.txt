@@ -20,6 +20,7 @@ add_library(bmoe_core STATIC
     src/engine/logits.cpp
     src/engine/logit_agreement.cpp
     src/engine/cache_brake.cpp
+    src/engine/context_fallback.cpp
     src/engine/knob_trial.cpp
     src/plan/measured_knobs.cpp
     src/plan/model_records.cpp
