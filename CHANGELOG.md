@@ -69,6 +69,19 @@ Semantic Versioning.
   gates (G28d); it was not run on that laptop ([field-reports.md](docs/field-reports.md)).
 
 ### Fixed
+- **A model larger than a container's memory limit is no longer killed while it loads behind a
+  device expert cache.** Since 0.45.1 the plan copies the experts into the device's own host memory
+  wherever the copy takes the place of their pages in the file's mapping. The engine made the whole
+  copy first and handed the pages back afterwards, and pages only unmapped are still the system's
+  cache, counted against a container's limit until the kernel reclaims them. On a rented 8 GB card
+  under a 42.5 GiB limit, Qwen3.8-Flash-Next Q2_0 (62 GiB, 32.4 GiB of experts) was killed about
+  7 GiB into the copy on every load, with a log that ends after the first context's graph and no
+  message; 0.42.0 to 0.44.1, which refused the copy there, loaded. Now each tensor's pages are
+  handed back as its copy is made, from the mapping and from the file cache: six loads of six, a
+  peak of 37.4 GiB, the copy made in 8 s, decode 24.0 / 20.8 tok/s where 0.42.0 without the copy
+  did 19.2 / 17.1. And a copy larger than the system can give is no longer handed to the backend to
+  allocate as pinned memory: the cache uploads from the mapping instead, and the log says so
+  ([field-reports.md](docs/field-reports.md)).
 - **A read of an expert that fails ends the run in every read mode** (the serial path, which is
   the default). Without `--overlap` a failed read (a storage error, a shard cut
   short, a drive removed) returned to a caller that dropped the result: the entry was already

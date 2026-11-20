@@ -55,6 +55,28 @@ desktop app is not affected: it installs the pack itself.
 
 ## Fixed
 
+### The server ends while loading a large model behind a small card, with no message
+
+- **Seen on** 0.45.1 to 0.46.1, Linux in a container: an 8 GB card, a memory limit of 42.5 GiB, a
+  62 GiB model with 32.4 GiB of experts (Qwen3.8-Flash-Next Q2_0). Every load, from the server and
+  from the CLI (exit 137). 0.42.0, 0.43.2 and 0.44.1 load the same file on the same machine.
+- **How to recognise it.** The log ends right after the first `sched_reserve: reserve took` line:
+  no `MoE cache size` line follows, and no error. The plan has a device expert cache and
+  `expert-host-buffer` set to the card. In a container the group's out-of-memory count goes up.
+- **Cause.** Confirmed on the machine, release by release with the memory sampled: the copy of the
+  experts into the card's host memory. The plan counts it in place of the experts' pages in the
+  file's mapping, rightly, but the engine handed those pages back only once the whole copy was made,
+  and by unmapping them, which leaves them in the system's file cache. Under the limit the copy
+  grew faster than the kernel reclaimed them, and the process was killed about 7 GiB in. Handing
+  them back a tensor at a time from the mapping alone still lost three loads in four.
+- **Fixed in** 0.47.0: each tensor's pages are dropped from the mapping and from the file cache as
+  its copy is made (six loads of six, peak 37.4 GiB), and a copy larger than the system can give is
+  not made at all.
+- **Workaround.** `--expert-host-buffer ""` turns the copy off: the same plan loads, and decodes
+  about a fifth slower on that machine.
+- **Not covered.** Windows has no call to drop a file's pages, so there the second half is the
+  whole fix: the copy is made only where the system can give its size beside the mapped model.
+  Whether the Windows crash at the same log line (#660) is this one is not confirmed.
 ### A model that fits in memory decodes three times slower than llama.cpp on a laptop's integrated GPU
 
 - **Seen on** 0.46.0, in a published benchmark: a Linux laptop with 31 GB of memory and an
