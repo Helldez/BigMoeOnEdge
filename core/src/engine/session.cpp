@@ -1939,23 +1939,40 @@ bool Session::Impl::stage_experts_in_host_buffer(Opening & o) {
         }
         return spans;
     };
-    // The tensors pointed at the copy, and the mapping's pages they were copied from handed back: the
-    // plan charged the experts once (choose_expert_staging), and nothing reads those pages again. Left
-    // resident, they compete with the pinned copy for the same memory until the kernel reclaims them.
-    // Aligned inward to whole pages, so a page shared with a tensor still read through the mapping
-    // is never dropped (as dense_weights does for its own copy).
+    // Each tensor's pages are handed back as soon as its copy is made, from the mapping and from the
+    // system's cache of the file: the plan charged the experts once (choose_expert_staging), and that
+    // has to hold while the copy is being made, not only after it. Copied whole first, the copy grew
+    // at memory speed beside the pages it was read from; and unmapped alone, those pages stayed the
+    // cache's, counted against a container's limit until the kernel reclaimed them, which it did not
+    // do as fast as the copy grew. On a 62 GB model under a 42 GB limit the process was killed 7 GB
+    // into the copy, three loads in four. Nothing reads those pages again, and a second copy (below)
+    // only reads them back from the file. Aligned inward to whole pages, so a page shared with a
+    // tensor still read through the mapping is never dropped (as dense_weights does for its copy).
+    const GgufOffsets & file = o.meta().offsets;
     size_t handed_back = 0;
-    const auto point_at = [&](const std::vector<pio::CopySpan> & spans) {
+    const auto copy_handing_back = [&](const std::vector<pio::CopySpan> & spans) {
         const uintptr_t page = (uintptr_t) pio::vm_page();
-        for (size_t i = 0; i < experts.size(); ++i) {
-            const uintptr_t a0 = ((uintptr_t) spans[i].src + page - 1) & ~(page - 1);
-            const uintptr_t a1 = ((uintptr_t) spans[i].src + spans[i].bytes) & ~(page - 1);
-            experts[i]->data = spans[i].dst;
-            if (a1 > a0) {
-                pio::vm_drop_file_pages((void *) a0, (size_t) (a1 - a0));
-                handed_back += (size_t) (a1 - a0);
-            }
+        handed_back = 0;
+        for (size_t i = 0; i < spans.size(); ++i) {
+            const pio::CopySpan & span = spans[i];
+            pio::copy_spans({span}, copy_threads);
+            const uintptr_t a0 = ((uintptr_t) span.src + page - 1) & ~(page - 1);
+            const uintptr_t a1 = ((uintptr_t) span.src + span.bytes) & ~(page - 1);
+            if (a1 <= a0) continue;
+            pio::vm_drop_file_pages((void *) a0, (size_t) (a1 - a0));
+            handed_back += (size_t) (a1 - a0);
+            const char * name = ggml_get_name(experts[i]);
+            const auto off = file.off_by_name.find(name);
+            const auto shard = file.file_by_name.find(name);
+            if (off == file.off_by_name.end() || shard == file.file_by_name.end()) continue;
+            if (shard->second < 0 || (size_t) shard->second >= file.shard_paths.size()) continue;
+            pio::drop_file_cache_range(file.shard_paths[(size_t) shard->second].c_str(),
+                                       off->second + (uint64_t) (a0 - (uintptr_t) span.src), (uint64_t) (a1 - a0));
         }
+    };
+    const auto point_at = [&](const std::vector<pio::CopySpan> & spans) {
+        for (size_t i = 0; i < experts.size(); ++i)
+            experts[i]->data = spans[i].dst;
     };
     const auto mib = [](size_t b) { return (double) b / (1024.0 * 1024.0); };
 
@@ -1983,23 +2000,27 @@ bool Session::Impl::stage_experts_in_host_buffer(Opening & o) {
         if (p) pio::vm_release(p, page);
         return ok;
     };
-    // Memory allocated here is committed only as the copy writes it (pio::vm_reserve), so a copy larger
-    // than the system can still give would end in the out-of-memory killer, where a backend's own
-    // allocation fails and leaves the mapping in place. So it is taken only where it fits what the
-    // system can give and a container still lets this process take; otherwise the backend's own
-    // allocation answers, as before.
+    // A copy larger than the system can still give, or than a container still lets this process take,
+    // is not made, whoever would allocate it: memory allocated here is committed only as the copy
+    // writes it (pio::vm_reserve) and ends in the out-of-memory killer, and a backend's own allocation
+    // is pinned as it is made, which a system short of memory answers no more gracefully. The cache
+    // then uploads from the mapping, as it does with no copy. Where the room cannot be read, the
+    // backend's own allocation answers, which fails rather than overcommits.
     const auto room = [] {
         uint64_t r = pio::mem_available_bytes();
         const uint64_t contained = pio::cgroup_memory_left();
         if (contained > 0 && (r == 0 || contained < r)) r = contained;
         return r;
     }();
-    const bool fits = room > 0 && (uint64_t) total <= room;
-    if (!fits && do_register)
-        log_printf(
-            LogLevel::Info,
-            "expert host buffer: %.0f MiB is more than the %.0f MiB the system can give; the backend allocates it",
-            mib(total), mib((size_t) room));
+    if (room > 0 && (uint64_t) total > room) {
+        log_printf(LogLevel::Warn,
+                   "expert host buffer: %.0f MiB is more than the %.0f MiB the system can give; the cache uploads "
+                   "from the file's mapping",
+                   mib(total), mib((size_t) room));
+        if (captured_here) clear_memory(ctx.get());
+        return true;
+    }
+    const bool fits = room > 0;
     // Both entry points or neither: memory pinned that could not be unpinned would stay pinned once freed.
     if (fits && do_register && do_unregister && pins()) {
         const size_t page = pio::vm_page();
@@ -2008,7 +2029,7 @@ bool Session::Impl::stage_experts_in_host_buffer(Opening & o) {
         void * p = pio::vm_reserve(size);
         if (p && pio::vm_commit(p, size)) {
             const std::vector<pio::CopySpan> spans = spans_at((uint8_t *) p);
-            pio::copy_spans(spans, copy_threads);
+            copy_handing_back(spans);
             const auto t_copied = clock_t_::now();
             if (do_register(p, size)) {
                 auto held = std::make_unique<RegisteredHostMemory>();
@@ -2046,7 +2067,7 @@ bool Session::Impl::stage_experts_in_host_buffer(Opening & o) {
         return true;
     }
     const std::vector<pio::CopySpan> spans = spans_at((uint8_t *) ggml_backend_buffer_get_base(buf));
-    pio::copy_spans(spans, copy_threads);
+    copy_handing_back(spans);
     point_at(spans);
     expert_host_buf.reset(buf);
     log_printf(LogLevel::Info,

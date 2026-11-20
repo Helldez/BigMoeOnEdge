@@ -211,6 +211,9 @@ void vm_drop_file_pages(void * /*p*/, size_t /*sz*/) {
 void drop_file_cache(const char * /*path*/) {
     // No posix_fadvise; the standby list is the system's to trim.
 }
+void drop_file_cache_range(const char * /*path*/, uint64_t /*offset*/, uint64_t /*size*/) {
+    // As above.
+}
 void vm_drop_anon_pages(void * /*p*/, size_t /*sz*/) {
     // MEM_DECOMMIT would turn the owner's next write into an access violation, and MEM_RESET is only
     // defined for VirtualAlloc'd regions, which a heap allocation need not be. The host build has no
@@ -497,6 +500,17 @@ void drop_file_cache(const char * path) {
     const int fd = ::open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) return;
     posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED); // advice only: a failure keeps the pages
+    ::close(fd);
+#endif
+}
+void drop_file_cache_range(const char * path, uint64_t offset, uint64_t size) {
+#if defined(__APPLE__)
+    (void) path, (void) offset, (void) size; // no posix_fadvise on Darwin
+#else
+    if (size == 0) return;
+    const int fd = ::open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return;
+    posix_fadvise(fd, (off_t) offset, (off_t) size, POSIX_FADV_DONTNEED); // advice only, as above
     ::close(fd);
 #endif
 }

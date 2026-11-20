@@ -256,6 +256,11 @@ void vm_drop_file_pages(void * p, size_t sz);
 // advice (Windows, Darwin: neither has posix_fadvise).
 void drop_file_cache(const char * path);
 
+// The same for one byte range of the file, whole pages inside it only. Where a range has just been
+// unmapped (vm_drop_file_pages), this is what frees its pages now rather than when pressure finds
+// them: unmapped, they are still the cache's and still count against a container's limit.
+void drop_file_cache_range(const char * path, uint64_t offset, uint64_t size);
+
 // Read the byte ranges {offset, size} of a file through the system's cache and discard the bytes:
 // what brings those pages into the cache as a mapping's reads would, on every platform alike, with
 // 64-bit offsets everywhere. In pieces of read_through_piece; `stop` (nullable) ends it between two.
