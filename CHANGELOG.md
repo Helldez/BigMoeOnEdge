@@ -9,6 +9,8 @@ Semantic Versioning.
 ### Added
 - **`--no-overlap`**, the off switch of the overlap row, so a server whose default is on can be
   turned off by flag like any other switch ([settings.md](docs/settings.md)). By @pt7777.
+- **The CUDA pack for Linux on ARM64**: DGX Spark (GB10) and Grace machines get the NVIDIA backend,
+  where the aarch64 archive had Vulkan alone.
 
 ### Changed
 - **A model's hit curve is read from its routing record in half the time.** Every `--auto` plan of
@@ -28,6 +30,17 @@ Semantic Versioning.
   a front-end's default off there with a `[derived]` line that says why; a caller who set `--overlap`
   keeps it, and the plan line says the prompts stay on the cores (#645,
   [hardware-planning.md](docs/hardware-planning.md#two-stages-one-composer)). By @pt7777.
+- **The GPU packs have code for the GPUs llama.cpp's own release covers, no longer a list of ours.**
+  The HIP pack now builds llama.cpp's Linux ROCm target list (23 targets, was 8), which adds the
+  integrated GPUs of the Ryzen mini PCs and laptops (780M, Strix Point, Strix Halo) and RDNA 1; the
+  CUDA pack builds ggml's default architecture list with CUDA 12.9, which adds GB10 (sm_121) and,
+  as code compiled at first start, Maxwell, Pascal and Volta. `scripts/check-gpu-targets.py` fails CI
+  when either drifts from the pinned llama.cpp.
+- **A release builds the GPU modules once per llama.cpp version, beside the archives instead of
+  before them.** The CUDA and HIP modules build in `.github/workflows/gpu-modules.yml`, kept in the
+  Actions cache by main and restored by a release that did not move the submodule; every archive
+  used to wait for the HIP module (65 min) and the x86_64 ones then built CUDA too (70-80 min), 2 h
+  25 min for 0.44.0.
 
 ### Fixed
 - **A read of an expert that fails ends the run in every read mode** (the serial path, which is

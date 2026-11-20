@@ -101,6 +101,9 @@ jobs:
           submodules: recursive
       - name: iOS run-batch status fixtures (no SDK or device)
         run: python3 tests/ios_runs_test.py
+      # The GPU modules cover what the pinned llama.cpp's release covers (gpu-modules.yml).
+      - name: GPU targets follow llama.cpp
+        run: python3 scripts/check-gpu-targets.py
       # WebKitGTK and the indicator library: bmoe-desktop builds where they are found, so this is
       # where its Linux code is compiled on every PR.
       - name: Install deps
