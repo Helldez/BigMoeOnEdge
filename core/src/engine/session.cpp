@@ -3426,8 +3426,7 @@ struct Session::Impl::Turn {
                     res.cancelled = true;
                     return false;
                 }
-                if (im.source.overlap() && im.source.fatal())
-                    return fail(RunError::Failed, "expert stream I/O failed during overlap prefill");
+                if (im.source.fatal()) return fail(RunError::Failed, "expert stream I/O failed during prefill");
                 return fail(RunError::Failed, "prefill decode failed");
             }
             trace_flush();
@@ -3895,8 +3894,7 @@ struct Session::Impl::Turn {
                     res.cancelled = true;
                     break;
                 }
-                if (im.source.overlap() && im.source.fatal())
-                    return fail(RunError::Failed, "expert stream I/O failed during overlap decode");
+                if (im.source.fatal()) return fail(RunError::Failed, "expert stream I/O failed during decode");
                 return fail(RunError::Failed, "decode failed during generation");
             }
             trace_flush(); // outside the s0..s1 bracket: the trace's own writes must not bill wall_ms

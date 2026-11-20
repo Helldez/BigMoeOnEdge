@@ -332,6 +332,7 @@ private:
     void capture_sources(ggml_tensor * t);                      // capture warm-up, every node
     bool arena_eval(ggml_tensor * t, bool ask, bool probe_ask); // device prefill: the arena's pace
     void serve_rows(ggml_tensor * t);                           // row-gathered tables, before a node
+    void rows_failed();                                         // a row read failed: the run ends
     void on_topk(ggml_tensor * t, int il);                      // a routing node, ids materialized
     void record_topk(ggml_tensor * t, int il);                  // the same node, recorded only: no streamer
     // Whether the routing record still wants routing nodes: armed, and not yet full.
