@@ -77,6 +77,7 @@ set_property(TARGET webview_core_headers PROPERTY INTERFACE_SYSTEM_INCLUDE_DIREC
 
 # WIN32: a windowed program, with no console of its own.
 add_executable(bmoe-desktop WIN32 main.cpp supervisor.cpp ${BMOE_DESKTOP_OS_SOURCES})
+bmoe_utf8_process(bmoe-desktop)
 target_link_libraries(bmoe-desktop PRIVATE bmoe_desktop_core bmoe_server_platform cpp-httplib webview::core
                                            ${BMOE_DESKTOP_OS_LIBS})
 target_include_directories(bmoe-desktop PRIVATE ${CMAKE_SOURCE_DIR}/core/include ${CMAKE_SOURCE_DIR}/server)

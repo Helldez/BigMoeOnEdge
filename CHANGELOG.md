@@ -69,6 +69,15 @@ Semantic Versioning.
   gates (G28d); it was not run on that laptop ([field-reports.md](docs/field-reports.md)).
 
 ### Fixed
+- **On Windows, the programs start from a folder whose name is not ASCII** (#677). `bmoe-cli` and
+  `bmoe-server` ended at start (exception `0xc0000409` in `ucrtbase.dll`, no output) when the
+  release sat under such a folder on a system whose code page can spell it, a Japanese folder on a
+  Japanese Windows. The engine asked the system for its own path in the narrow form, which answers
+  in the code page's bytes, and listed the backends beside itself reading those bytes as UTF-8,
+  which throws. The path is now asked for in wide characters and carried as UTF-8, the child a
+  device probe runs is started the same way, and the three executables declare UTF-8 as their code
+  page (Windows 10 1903 and later), so their arguments and the paths llama.cpp opens are UTF-8 too.
+  A test runs the CLI from a folder named in Japanese and accented Latin on every platform.
 - **A model larger than a container's memory limit is no longer killed while it loads behind a
   device expert cache.** Since 0.45.1 the plan copies the experts into the device's own host memory
   wherever the copy takes the place of their pages in the file's mapping. The engine made the whole

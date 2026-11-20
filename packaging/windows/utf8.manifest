@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Makes UTF-8 this process's code page (Windows 10 1903 and later; ignored before): the paths it is
+     given, its arguments and what the C runtime and llama.cpp pass to the system are then one encoding,
+     the one every path in this code base is already written in. See bmoe_utf8_process in CMakeLists.txt. -->
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+    </windowsSettings>
+  </application>
+</assembly>

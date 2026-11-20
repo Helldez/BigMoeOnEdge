@@ -76,9 +76,11 @@ namespace {
 // it cannot be resolved the name as given is still the best answer there is.
 std::string without_links(const std::string & path) {
     if (path.empty()) return path;
+    // UTF-8 in and out, as every path here is: read as the system's own narrow encoding, a path
+    // outside it would not resolve, and one inside it would come back in bytes that are not UTF-8.
     std::error_code ec;
-    const std::filesystem::path real = std::filesystem::canonical(std::filesystem::path(path), ec);
-    return ec ? path : real.string();
+    const std::filesystem::path real = std::filesystem::canonical(std::filesystem::u8path(path), ec);
+    return ec ? path : real.u8string();
 }
 } // namespace
 
@@ -1050,11 +1052,33 @@ bool file_mapped_regions(const char * basename, std::vector<MappedRegion> & out)
 // ── A second process, for work that can end one ─────────────────────────────────────────
 #if defined(_WIN32)
 
+namespace {
+// Between UTF-8, which every path here is written in, and what the system's own calls take.
+std::wstring widen(const std::string & s, UINT code_page) {
+    if (s.empty()) return {};
+    const int n = MultiByteToWideChar(code_page, 0, s.data(), (int) s.size(), nullptr, 0);
+    std::wstring w((size_t) (n > 0 ? n : 0), L'\0');
+    if (n > 0) MultiByteToWideChar(code_page, 0, s.data(), (int) s.size(), w.data(), n);
+    return w;
+}
+std::string narrow_utf8(const wchar_t * w, size_t len) {
+    if (len == 0) return {};
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w, (int) len, nullptr, 0, nullptr, nullptr);
+    std::string s((size_t) (n > 0 ? n : 0), '\0');
+    if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w, (int) len, s.data(), n, nullptr, nullptr);
+    return s;
+}
+} // namespace
+
+// Asked of the system in its own wide characters and returned as UTF-8. Asked in the narrow form, a
+// folder named in the system's code page came back in that code page's bytes, and the first reader
+// that took them for UTF-8 (the listing of the backends beside the executable) threw: a release
+// unpacked under such a folder ended at start (#677).
 std::string self_path() {
-    char buf[4096];
-    const DWORD n = GetModuleFileNameA(nullptr, buf, (DWORD) sizeof(buf));
-    if (n == 0 || n >= sizeof(buf)) return "";
-    return without_links(std::string(buf, n));
+    wchar_t buf[4096];
+    const DWORD n = GetModuleFileNameW(nullptr, buf, (DWORD) (sizeof(buf) / sizeof(buf[0])));
+    if (n == 0 || n >= sizeof(buf) / sizeof(buf[0])) return "";
+    return without_links(narrow_utf8(buf, (size_t) n));
 }
 
 bool can_run_self() {
@@ -1120,18 +1144,20 @@ ChildResult run_self(const std::vector<std::string> & args, double timeout_secon
     append_quoted(cmd, path);
     for (const std::string & a : args)
         append_quoted(cmd, a);
-    std::vector<char> cmdline(cmd.begin() + 1, cmd.end()); // without the leading space
-    cmdline.push_back(0);
+    // The arguments are in the encoding this process was given its own in (its code page, UTF-8
+    // where the executable's manifest says so); the executable's path is UTF-8 whatever that is.
+    std::wstring cmdline = widen(cmd.substr(1), CP_ACP); // without the leading space
+    const std::wstring wpath = widen(path, CP_UTF8);
 
-    STARTUPINFOA si{};
+    STARTUPINFOW si{};
     si.cb = sizeof(si);
     si.dwFlags = STARTF_USESTDHANDLES;
     si.hStdOutput = wr;
     si.hStdError = wr;
     si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
     PROCESS_INFORMATION pi{};
-    const BOOL started = CreateProcessA(path.c_str(), cmdline.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr,
-                                        nullptr, &si, &pi);
+    const BOOL started = CreateProcessW(wpath.c_str(), cmdline.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW,
+                                        nullptr, nullptr, &si, &pi);
     CloseHandle(wr);
     if (!started) {
         CloseHandle(rd);
