@@ -106,6 +106,25 @@ static void replay_matches_script(const char * tag,
     for (size_t i = 1; i < fc.points.size(); ++i)
         fmono = fmono && fc.points[i].hit >= fc.points[i - 1].hit;
     check(fmono, std::string(tag) + ": the decayed-frequency curve is non-decreasing");
+    // Every point is the replay at its size, whether or not the curve replayed it: it stops at the
+    // first size nothing was evicted at, and the sizes past it must be what a replay would have said.
+    for (const int half_life : {0, 8}) {
+        const HitCurve & curve = half_life ? fc : c;
+        bool same = curve.points.size() == k_hit_curve_points + 1;
+        double best = 0.0;
+        uint32_t unbound = 0;
+        for (uint32_t i = 1; same && i <= k_hit_curve_points; ++i) {
+            const ReplayCounts r = replay_cache(t, curve.points[i].cache_bytes, half_life);
+            best = std::max(best, r.decode_hit());
+            unbound += r.evictions == 0;
+            same = curve.points[i].hit == best;
+        }
+        check(same, std::string(tag) + ": every curve point is the replay at its size, half-life " +
+                        std::to_string(half_life));
+        check(unbound > 0 && replay_cache(t, 0, half_life).evictions > 0,
+              std::string(tag) + ": the record leaves part of the set untouched, so some sizes never evict (" +
+                  std::to_string(unbound) + " of " + std::to_string(k_hit_curve_points) + ")");
+    }
 }
 
 int main() {

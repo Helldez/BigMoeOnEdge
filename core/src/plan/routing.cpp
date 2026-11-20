@@ -298,7 +298,11 @@ ReplayCounts replay_cache(const RoutingTrace & t, uint64_t budget, int half_life
     // is the engine's order (its LRU list position) too. A use at pass p adds growth^p to the score
     // instead of decaying every score each pass, rescaled exactly where the engine rescales.
     using Key = std::pair<double, uint64_t>;
-    std::set<std::pair<Key, uint32_t>> order;
+    using Order = std::set<std::pair<Key, uint32_t>>;
+    Order order;
+    // An entry that moves or leaves keeps its node: the replay is a move per routed id, and a
+    // node freed and allocated again for each was most of what a curve cost.
+    std::vector<Order::node_type> spare;
     std::vector<Key> key(n_keys, Key{0.0, 0});
     std::vector<double> score(n_keys, 0.0);
     std::vector<uint8_t> resident(n_keys, 0);
@@ -308,9 +312,20 @@ ReplayCounts replay_cache(const RoutingTrace & t, uint64_t budget, int half_life
     int64_t last_layer = -1;
 
     const auto place = [&](uint32_t k, Key nk) {
-        if (resident[k]) order.erase({key[k], k});
+        Order::node_type node;
+        if (resident[k]) {
+            node = order.extract({key[k], k});
+        } else if (!spare.empty()) {
+            node = std::move(spare.back());
+            spare.pop_back();
+        }
         key[k] = nk;
-        order.insert({nk, k});
+        if (node) {
+            node.value() = {nk, k};
+            order.insert(std::move(node));
+        } else {
+            order.insert({nk, k});
+        }
     };
     for (size_t bi = 0; bi < t.batches.size(); ++bi) {
         const RoutingBatch & b = t.batches[bi];
@@ -357,9 +372,12 @@ ReplayCounts replay_cache(const RoutingTrace & t, uint64_t budget, int half_life
                 ++it;
                 continue;
             }
-            it = order.erase(it);
+            const auto next = std::next(it);
+            spare.push_back(order.extract(it));
+            it = next;
             resident[victim] = 0;
             used -= t.expert_bytes[victim / n_expert];
+            ++r.evictions;
         }
     }
     return r;
@@ -374,9 +392,16 @@ HitCurve hit_curve(const RoutingTrace & t, uint32_t points, int half_life) {
     c.points.push_back({0, 0.0});
     double best = 0.0;
     bool decoded = false;
+    ReplayCounts r;
+    bool bound = true; // the last size replayed evicted something
     for (uint32_t i = 1; i <= points; ++i) {
         const uint64_t size = (uint64_t) ((double) set * (double) i / (double) points);
-        const ReplayCounts r = replay_cache(t, size, half_life);
+        // A budget nothing was evicted under never decided anything, so a larger one replays the
+        // same: a record touches a part of the expert set, and past it the curve is that last point.
+        if (bound) {
+            r = replay_cache(t, size, half_life);
+            bound = r.evictions > 0;
+        }
         decoded = decoded || r.decode_lookups > 0;
         best = std::max(best, r.decode_hit());
         c.points.push_back({size, best});

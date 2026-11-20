@@ -73,6 +73,7 @@ struct ReplayCounts {
     uint64_t decode_lookups = 0;
     uint64_t decode_hits = 0;
     uint64_t read_bytes = 0;
+    uint64_t evictions = 0; // 0: the budget never bound, so every larger budget replays the same
     double hit() const { return lookups ? (double) hits / (double) lookups : 0.0; }
     double decode_hit() const { return decode_lookups ? (double) decode_hits / (double) decode_lookups : 0.0; }
 };
@@ -100,7 +101,9 @@ std::vector<HotExpert> hottest_experts(const RoutingTrace & trace, size_t limit 
 // A trace shorter than this many decoded tokens is not a curve: the first tokens fill an empty cache,
 // and a replay of only those would describe the cold start.
 inline constexpr uint32_t k_routing_min_decode_tokens = 32;
-// Sizes the curve is replayed at. Each replay of a few hundred tokens is well under a millisecond.
+// Sizes the curve is replayed at. A replay is a few milliseconds for a record of a few hundred
+// tokens (measured: 3-4 ms for 128 decoded tokens over 48 blocks, on a desktop core), and the curve
+// stops replaying at the first size nothing was evicted at: every larger one gives the same counts.
 inline constexpr uint32_t k_hit_curve_points = 64;
 // How far the trace's expert set may differ from the file's before it is called another model's: the
 // streamer's per-expert bytes and the probe's per-tensor sum are the same bytes counted two ways.
