@@ -116,7 +116,10 @@ cache size moves, and the cache is lossless.
   `""` turn off, one file per model named by a content fingerprint of the file (`model_fingerprint`). The
   next plan of the file hands it back (`AutoPlanOptions::routing`) and `attach_routing` turns it into
   `ModelProfile::hit_curve`: `hit_share(bytes)`, monotone, over the whole expert set, absent unless
-  the record is this model at this top-k with enough decoded tokens.
+  the record is this model at this top-k with enough decoded tokens. The curve is 64 replays of the
+  record, paid on every plan of the file: 15-139 ms on a desktop core for the archived records of
+  64-128 decoded tokens, growing with the record. It stops replaying at the first size nothing was
+  evicted at, since every larger budget replays the same.
 - The cache then enters the ranking as pieces of the curve's concave hull, and is credited the curve
   at the size it gets, tagged `[measured on this model]`. The predicted-against-measured line sets
   that credit against the decode's own measured hit rate, the figure it prices.

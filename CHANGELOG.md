@@ -6,6 +6,16 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Changed
+- **A model's hit curve is read from its routing record in half the time.** Every `--auto` plan of
+  a model with a record replays the record through the cache at 64 sizes. Measured on a desktop
+  core, the three archived records (64-128 decoded tokens): 36-271 ms a curve before, 15-139 ms
+  now, with every point and every replay count unchanged. Two things: an entry that moves in the
+  replay's order keeps its node instead of being freed and allocated again, and the curve stops
+  replaying at the first size nothing was evicted at, since a larger budget replays the same (25
+  to 33 of the 64 sizes on those records). The comment that called a replay "well under a
+  millisecond" is corrected to what it measures.
+
 ### Fixed
 - **A read of an expert that fails ends the run in every read mode** (the serial path, which is
   the default). Without `--overlap` a failed read (a storage error, a shard cut
