@@ -31,6 +31,11 @@ static void prefs_tests() {
     const DesktopPrefs before = p;
     check(!merge_prefs(p, json{{"port", 80}}, err) && p.port == before.port, "prefs: a privileged port is refused");
     check(!merge_prefs(p, json{{"port", 70000}}, err), "prefs: a port past 65535 is refused");
+    // The start-up question is whether the server serves, asked where no key is needed (#644):
+    // with or without a model, and whatever a keyed server says, an answer is a running server.
+    check(std::string(kServerReadyPath) == "/health", "ready: the app asks the route that needs no key");
+    check(server_is_serving(200) && server_is_serving(503) && server_is_serving(401) && !server_is_serving(0),
+          "ready: any answer is a running server, none is not");
     check(merge_prefs(p, json{{"port", 0}}, err) && p.port == 0, "prefs: port 0 is the server's default");
     check(!merge_prefs(p, json{{"uiScale", 10}}, err) && !merge_prefs(p, json{{"uiScale", 0.5}}, err),
           "prefs: a scale out of bounds is refused");

@@ -89,6 +89,22 @@ desktop app is not affected: it installs the pack itself.
   executables declare UTF-8 as their code page.
 - **Workaround.** Unpack the release under a path of ASCII characters only.
 
+### The desktop app says "The engine's server did not start" with "Serve on network" on (#644)
+
+- **Seen on** 0.44.1, a Windows 10 desktop; the code is the same on every desktop system.
+- **How to recognise it.** The desktop app shows "Starting ...", then after 90 seconds "The
+  engine's server did not start: bmoe-server did not answer on port 8765 in 90 s", every time it
+  is opened, while the server's log shows it started and loaded its backends. It began when "Serve
+  on network" was turned on in Settings.
+- **Cause.** Confirmed by the reporter and in the code: serving on the network puts an API key on
+  every engine route, and the app asked `/api/info` to learn that the server it had started was
+  up, before it holds the key. The server refused the request and the app read a running server
+  as one that never answered.
+- **Fixed in** 0.47.0: the app asks `/health`, the one route that needs no key, and takes any
+  answer as a running server.
+- **Workaround.** Close the app, open `desktop.json` in the app's data folder, set
+  `"serveOnNetwork"` to `false` and start the app again.
+
 ### The server ends while loading a large model behind a small card, with no message
 
 - **Seen on** 0.45.1 to 0.46.1, Linux in a container: an 8 GB card, a memory limit of 42.5 GiB, a

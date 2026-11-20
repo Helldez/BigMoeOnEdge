@@ -50,6 +50,15 @@ bool save_prefs(const std::string & path, const DesktopPrefs & p, std::string & 
 // "http://127.0.0.1:<port>": the server's origin, which every page the bridge answers is on.
 std::string server_origin(int port);
 
+// How the app learns that the server it started is serving. It asks the one route that needs no
+// key under any access policy (the server's `/health`, check_access): serving on the network puts a
+// key on every other route, and the app asks before it holds one, so asking `/api/info` read a
+// running server as one that never started (#644). Any answer is the server's: the port is the one
+// it wrote in its port file, and the status only says whether a model is loaded yet, which is not
+// what is being asked. `http_status` is 0 where nothing answered.
+inline constexpr const char * kServerReadyPath = "/health";
+bool server_is_serving(int http_status);
+
 // Whether `url` is a page of `origin`: the same scheme, host and port, and nothing more. A prefix
 // match would take "http://127.0.0.1:8765.evil" for the server.
 bool same_origin(const std::string & url, const std::string & origin);
