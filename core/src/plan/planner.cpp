@@ -3868,10 +3868,75 @@ std::string margin_pct(const Planning & s) {
     return u64s((uint64_t) (s.pol.min_backend_win * 100.0f + 0.5f)) + "%";
 }
 
+// With layers on a device and no device cache, overlap is what keeps a prompt on the host: it turns
+// off llama.cpp's offload of host-held weights in a wide graph (offloads_wide_matmuls), so every
+// such matmul of a prompt runs on the cores, where serial streaming lets the device take them. The
+// placed layers still compute their own weights on the device; what is lost is the copy of the
+// host's. Measured on a laptop with a discrete GPU and 25 of 41 layers placed: overlap cost 2.1x of
+// the prefill on a 2.7k-token prompt and 4.5x on a 20.7k one, and bought no decode (#645). Read
+// from the guard itself, so the plan names exactly the runs the session takes the offload from.
+bool overlap_keeps_prompts_on_host(const RunConfig & c) {
+    if (!c.moe.overlap || offloads_wide_matmuls(c)) return false;
+    MoeStreamConfig serial = c.moe;
+    serial.overlap = false;
+    return offloads_wide_matmuls(serial, c.n_gpu_layers, c.prefill.enabled());
+}
+
+// The devices holding the run's layers, for a line that names them, and how much faster than the
+// host the fastest of them measured on a wide matmul, where it was measured.
+std::string placed_devices(const RunConfig & c) {
+    std::string out;
+    for (const auto & d : c.device_split)
+        if (d.second > 0) out += (out.empty() ? "" : ", ") + d.first;
+    return out.empty() ? std::string("the device") : out;
+}
+
+std::string placed_wide_ratio(const Planning & s) {
+    const double host = s.hw.host_wide_matmul_gibs;
+    double best = 0.0;
+    for (const auto & split : s.p.config.device_split)
+        for (const ComputeDevice & d : s.hw.devices)
+            if (!d.is_cpu && d.name == split.first && split.second > 0) best = std::max(best, d.wide_matmul_gibs);
+    if (host <= 0.0 || best <= 0.0) return "";
+    char b[96];
+    std::snprintf(b, sizeof(b), "; its wide matmuls measured %.1fx the host's", best / host);
+    return b;
+}
+
 void note_overlap(Planning & s) {
-    if (s.req.is_pinned("overlap")) return;
-    if (s.p.config.moe.device_cache_mb > 0) return; // the device tier decided it, and said so
     RunConfig & c = s.p.config;
+    if (s.req.is_pinned("overlap")) {
+        // The caller's setting stands, and the plan says what it costs them.
+        if (overlap_keeps_prompts_on_host(c)) {
+            const std::string devs = placed_devices(c);
+            s.note("overlap", "on", Source::Operator,
+                   "On, as you set it: prompts run on the host's cores, not on " + devs + ".",
+                   "set by the caller; with layers on " + devs +
+                       ", overlap turns off the offload of the host's weights in a prompt's wide matmuls, so they "
+                       "run on the cores, where serial streaming lets " +
+                       devs + " take them" + placed_wide_ratio(s) + ": pass " + flag_spelling("overlap", "false") +
+                       " for serial streaming");
+        }
+        return;
+    }
+    if (c.moe.device_cache_mb > 0) return; // the device tier decided it, and said so
+    // A front-end's own default overlap (the server arms it wherever the hook is available), with
+    // layers on a device and no cache there: off, so the prompts reach the device. A caller who asked
+    // for it never reaches here.
+    if (overlap_keeps_prompts_on_host(c)) {
+        const std::string devs = placed_devices(c);
+        c.moe.overlap = c.moe.io_two_wave = false;
+        c.trial.overlap = false;
+        s.note("overlap", "off", Source::Derived,
+               "Off: with layers on " + devs + ", overlap keeps prompts on the host.",
+               "overlap turns off the offload of the host's weights in a prompt's wide matmuls, so with layers on " +
+                   devs +
+                   " and no expert cache there every one of them would run on the cores; serial streaming "
+                   "lets " +
+                   devs + " take them" + placed_wide_ratio(s) + ". Pass " + flag_spelling("overlap", "true") +
+                   " to keep it");
+        return;
+    }
     const MeasuredKnobs & mk = s.model.knobs;
     if (mk.overlap >= 0 && overlap_switchable(c)) {
         const bool on = mk.overlap == 1;

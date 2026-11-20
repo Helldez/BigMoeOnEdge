@@ -232,6 +232,7 @@ int main() {
     expect_flag({"--llama-debug"}, [](const RunConfig & c) { return c.llama_debug_log; });
     expect_flag({"--force-cache"}, [](const RunConfig & c) { return c.moe.force_cache; });
     expect_flag({"--overlap"}, [](const RunConfig & c) { return c.moe.overlap; });
+    expect_flag({"--no-overlap"}, [](const RunConfig & c) { return !c.moe.overlap; });
     expect_flag({"--io-two-wave"}, [](const RunConfig & c) { return c.moe.io_two_wave; });
     expect_flag({"--prefetch", "2"}, [](const RunConfig & c) { return c.moe.prefetch_layers == 2; });
     expect_flag({"--prefetch-sync"}, [](const RunConfig & c) { return c.moe.prefetch_sync; });
@@ -363,11 +364,13 @@ int main() {
         check(flag_spelling("ubatch") == "--ubatch", "flag_spelling names the flag that takes a value");
         check(flag_spelling("ctx-size", "4096") == "--ctx-size 4096", "flag_spelling spells a flag with its value");
         check(flag_spelling("overlap", "true") == "--overlap", "flag_spelling prefers the switch that says the value");
+        check(flag_spelling("overlap", "false") == "--no-overlap",
+              "flag_spelling spells the off switch where there is one");
         check(flag_spelling("no-such-knob", "1").empty(), "flag_spelling is empty for a key the table lacks");
         // Every spelling the planner's rationale prints must parse back to the value it names.
         const std::pair<const char *, const char *> named[] = {
             {"ctx-size", "4096"},   {"release-mmap", "true"}, {"dense-on-device", "true"}, {"overlap", "true"},
-            {"moe-stream", "true"}, {"ubatch", "256"},        {"prefill-device", "accel"},
+            {"moe-stream", "true"}, {"ubatch", "256"},        {"prefill-device", "accel"}, {"overlap", "false"},
         };
         for (const auto & kv : named) {
             std::vector<std::string> argv;

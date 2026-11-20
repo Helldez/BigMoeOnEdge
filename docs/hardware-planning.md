@@ -128,6 +128,11 @@ placed layer would land on it. And under `--overlap` the session turns off llama
 host-weight matmuls in wide graphs: a streamed expert is waited for inside the CPU's matmul, and an
 offloaded one is copied to the device before its read has landed (a Metal run printed blank lines).
 Serial streaming keeps the offload, since its experts are in place before the matmul starts.
+So where layers are placed and no device expert cache is armed, `--auto` turns a front-end's default
+overlap off (the server's), with a `[derived]` line that says so: kept, every host-held weight of a
+prompt runs on the cores. On a laptop with a discrete GPU and 25 of 41 layers placed that cost 2.1x
+of the prefill on a 2.7k-token prompt and 4.5x on a 20.7k one, and bought no decode (#645). A
+caller who sets `--overlap` keeps it, and the plan line says the prompts stay on the cores.
 
 A layer's experts are never split between the two. The fitter's partial layer can overflow a share
 of its FFN to the host (`ffn_down` here, `ffn_gate` and `ffn_up` on the device), and the streamer
