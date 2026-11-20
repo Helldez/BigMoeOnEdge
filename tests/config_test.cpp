@@ -181,6 +181,16 @@ int main() {
         RunConfig timed = t;
         timed.trial.shared_device_side = 1;
         expect_ok("trial device answer on a load that times the device's side", timed);
+        RunConfig weighed = timed;
+        weighed.trial.answer_prompt_per_token = 13.65f;
+        expect_ok("trial device answer that also weighs the two sides it decodes", weighed);
+        weighed.trial.answer_prompt_per_token = 0.0f;
+        expect_ok("trial device answer weighed on the decode alone", weighed);
+        weighed.trial.answer_prompt_per_token = KnobTrialConfig::answer_prompt_per_token_max * 2.0f;
+        expect_fail("trial answer mix past its bound", weighed);
+        RunConfig unnamed = ok_base();
+        unnamed.trial.answer_prompt_per_token = 1.0f;
+        expect_fail("trial answer mix with no device to compare", unnamed);
         RunConfig cached = t;
         cached.moe.device_cache_mb = 2048;
         expect_fail("trial device answer beside a device expert cache", cached);

@@ -15,6 +15,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>
 #include <functional>
 #include <limits>
 #include <set>
@@ -336,6 +337,8 @@ int main() {
                 [](const RunConfig & c) { return c.trial.threads == std::vector<int>({12}); });
     expect_flag({"--trial-overlap"}, [](const RunConfig & c) { return c.trial.overlap; });
     expect_flag({"--trial-device-answer", "GPU0"}, [](const RunConfig & c) { return c.trial.answer_device == "GPU0"; });
+    expect_flag({"--trial-answer-mix", "13.5"},
+                [](const RunConfig & c) { return std::fabs(c.trial.answer_prompt_per_token - 13.5f) < 1e-6f; });
     expect_reject({"--trial-threads", "6,"});
     expect_reject({"--trial-threads", "6,,8"});
     expect_reject({"--trial-threads", "x"});

@@ -445,6 +445,13 @@ without a device of their own, an unchanged plan.
   measurement (`MeasuredKnobs::device_cache_tps`, `no_device_cache_tps`), and the other takes over
   only where its price, or its own measurement, is past that by `min_backend_win`; the cache holds
   inside it.
+- **The one side decided inside its first load**: where a model held in memory can run on a device
+  that reads the host's memory, the load that opens it there already decodes it on the device and on
+  the cores to compare their answers, so it times both and keeps the faster
+  ([hardware-planning.md](hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it)).
+  Measured on a 16 GB unified-memory laptop, a 4.3 GiB model: 3.4 s for the comparison and the
+  timing, 37.6 tok/s on the GPU against 23.9 on the cores at the plan's thread count, and the rate
+  the check read for the side that served was the rate the answer then decoded at (37.6).
 - **No load is opened to try a side.** A side tried on a served load cost that session its rate: on
   a 12 GB card with Qwen3.6-35B the cache decoded at 73.5 tok/s, and the second load then decoded a
   whole session at 37.8 to time a placement whose ceiling was 55. Timing both sides as short loads

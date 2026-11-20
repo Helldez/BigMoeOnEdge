@@ -2217,19 +2217,50 @@ void choose_shared_device(Planning & s, uint64_t resident) {
                   "loads of this model on the cores failed on this machine");
         return;
     }
+    // Until a load has timed both sides on this model here, the load decides, on the model itself. The
+    // probes that let the device through each compute a part of a model, and they do not say which side
+    // decodes the whole of it faster: on one unified-memory laptop they read the cores 60% ahead of a
+    // GPU that decoded the model 35% faster, and on a laptop with integrated graphics 74% ahead of one
+    // that decoded it at more than twice their rate. The load that moves the model compares its answers
+    // with the cores' anyway, which decodes it on both; it times the two as it does, keeps the side a
+    // request is shorter on (KnobTrialConfig::answer_prompt_per_token), and records both rates, so
+    // every plan after this one reads a measurement. The device is the side opened because the
+    // comparison needs the placement open; where the cores win the model is reopened on them, once.
+    const bool both = on > 0.0 && off > 0.0;
+    if (!both) {
+        const RequestMix mix = request_mix(s, 0);
+        const double per_token = mix.gen > 0.0 ? mix.prompt / mix.gen : 0.0;
+        char weighed[200];
+        std::snprintf(weighed, sizeof(weighed),
+                      "a request here is %.0f prompt tokens and %.0f decoded (%s), so a prompt-wide graph's time "
+                      "weighs %.1f tokens a decoded one",
+                      mix.prompt, mix.gen, mix.words().c_str(), per_token);
+        on_device(Source::Derived,
+                  "Every layer opens on " + dev.name + ", and the load keeps whichever of it and the CPU is faster.",
+                  "no load has timed this model on both sides here, and no probe of a part of a model says which "
+                  "decodes the whole faster: the load times it one token at a time and as wide as a prompt on " +
+                      dev.name +
+                      " and on the cores, keeps the side a request is shorter on (the cores where they "
+                      "are faster by the " +
+                      margin + " margin, reopening on them) and records both rates; " + weighed);
+        trial.answer_device = dev.name;
+        trial.answer_prompt_per_token =
+            (float) std::min(per_token, (double) KnobTrialConfig::answer_prompt_per_token_max);
+        trial.shared_device_side = 1;
+        return;
+    }
     // A request's time on each side, in the same unit: its decoded tokens at the rate each processor
     // applies a real layer of this model one token wide, and its prompt at the rate each applies it as
     // wide as a prompt, both probed here with the host's results (a token reads the same bytes on
     // either, so the bytes cancel). The decode's ratio is the loads' own once both sides were timed.
     const double decode_host = s.model.is_moe ? s.hw.host_expert_rate() : s.hw.host_dense_rate();
-    const double decode_dev_probed = layer_rate_of(s, dev);
-    if (decode_host <= 0.0 || decode_dev_probed <= 0.0) {
-        on_cores(Source::Unprobed, "The model runs on the CPU: " + dev.name + "'s rate on it was not measured.",
-                 "which processor applies this model's weights faster was not probed for both, so nothing moves");
+    if (decode_host <= 0.0) {
+        on_cores(Source::Unprobed, "The model runs on the CPU: its rate on this model was not measured.",
+                 "the rate the cores apply this model's weights at was not probed, so a prompt's share of a "
+                 "request has no unit to be weighed in, and nothing moves");
         return;
     }
-    const bool both = on > 0.0 && off > 0.0;
-    const double decode_dev = both ? decode_host * on / off : decode_dev_probed;
+    const double decode_dev = decode_host * on / off;
     const bool wide_probed = s.hw.host_wide_matmul_gibs > 0.0 && dev.wide_matmul_gibs > 0.0;
     const RequestMix mix = request_mix(s, 0);
     const double gen = mix.gen, prompt = wide_probed ? mix.prompt : 0.0;
@@ -2240,21 +2271,17 @@ void choose_shared_device(Planning & s, uint64_t resident) {
                   "a request here is %.0f prompt tokens and %.0f decoded (%s); %s decodes at %.2fx the cores' rate "
                   "(%s) and computes a prompt-wide layer at %.2fx, so a request takes %.2fx the time it takes on "
                   "the cores",
-                  prompt, gen, mix.words().c_str(), dev.name.c_str(), decode_dev / decode_host,
-                  both ? std::string(measured).c_str() : "probed on one real layer of this model",
+                  prompt, gen, mix.words().c_str(), dev.name.c_str(), decode_dev / decode_host, measured,
                   wide_probed ? dev.wide_matmul_gibs / s.hw.host_wide_matmul_gibs : 0.0, t_dev / t_cores);
-    // The cores are the side in force, the placement every load before this rule ran: the device takes
-    // over only past them by the margin.
-    const bool device_wins = t_cores > t_dev * (1.0 + m);
-    // The load times the decode of the side it serves, where no load has yet.
-    if ((device_wins ? on : off) <= 0.0) trial.shared_device_side = device_wins ? 1 : 0;
-    const Source src = both ? Source::Measured : Source::Derived;
-    if (device_wins)
-        on_device(src, "Every layer runs on " + dev.name + ", which serves this machine's requests faster.",
-                  std::string(nums) + ", past the " + margin + " margin");
+    // The rule the first load decided by (weigh_answer_sides), so a plan made on its measurements does
+    // not undo it: the device keeps the model unless the cores serve a request faster by the margin.
+    const bool cores_win = t_dev > t_cores * (1.0 + m);
+    if (cores_win)
+        on_cores(Source::Measured, "The model runs on the CPU, which serves this machine's requests faster.",
+                 std::string(nums) + ", past the " + margin + " margin");
     else
-        on_cores(src, "The model runs on the CPU: " + dev.name + " would not serve a request faster.",
-                 std::string(nums) + ", not past the " + margin + " margin");
+        on_device(Source::Measured, "Every layer runs on " + dev.name + ": the CPU would not serve a request faster.",
+                  std::string(nums) + ", which the cores do not beat by the " + margin + " margin");
 }
 
 // The same question for a model with no experts. Nothing streams, so the cores hold the whole model

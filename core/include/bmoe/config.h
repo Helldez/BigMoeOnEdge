@@ -720,6 +720,17 @@ struct KnobTrialConfig {
     // and a placement that does not pick the cores' next token is not served from: the session reopens
     // on the cores (engine/device_answer.h). Not a timed side: it measures no rate and switches nothing.
     std::string answer_device;
+    // Which side then serves, decided by that same load on this model: the comparison decodes the
+    // model on the device and on the cores anyway, so it times both (a token decoded alone, and a
+    // graph as wide as a prompt) and the session keeps the side a request is shorter on, reopening on
+    // the cores where they are faster by the trial's margin. This is the prompt tokens a request
+    // brings per decoded token, the weight of the wide timing against the narrow one; below 0 nothing
+    // is weighed and a device whose answers match keeps the model, as before. A plan asks for it where
+    // no load has measured both sides on this machine: the probes of a part of a model that let the
+    // device through do not say which side decodes the model faster (MeasuredKnobs::shared_device_tps
+    // has the measurements), and the model itself does, at the first load.
+    float answer_prompt_per_token = -1.0f;
+    static constexpr float answer_prompt_per_token_max = 1e6f;
     // TEST ONLY: the comparison sees the device's rows shifted by one token, so a gate reaches the
     // refusal on a device that computes correctly. Never set by a front-end.
     bool test_answer_differs = false;

@@ -581,6 +581,7 @@ struct Session::Impl {
     struct Opening;
     bool load_model(Opening & o, llama_model ** reference = nullptr);
     detail::DeviceAnswer compare_device_answer(Opening & o);
+    detail::AnswerWeighing weigh_device_answer(const detail::DeviceAnswer & a) const;
     bool read_model(Opening & o);
     bool build_hook(Opening & o);
     bool resolve_gate_mirror(GateMirror m, Opening & o);
@@ -1202,7 +1203,8 @@ detail::DeviceAnswer Session::Impl::compare_device_answer(Opening & o) {
     ref.n_threads = cfg.n_threads;
     ref.n_threads_batch = cfg.n_threads_batch > 0 ? cfg.n_threads_batch : cfg.n_threads;
     const auto t0 = clock_t_::now();
-    const detail::DeviceAnswer a = detail::check_device_answer(ctx.get(), ref, cfg.trial.test_answer_differs);
+    const bool timed = cfg.trial.answer_prompt_per_token >= 0.0f;
+    const detail::DeviceAnswer a = detail::check_device_answer(ctx.get(), ref, cfg.trial.test_answer_differs, timed);
     const double check_s = secs(t0, clock_t_::now());
     const char * dev = cfg.trial.answer_device.c_str();
     if (a.verdict == detail::DeviceAnswer::Verdict::Unchecked) {
@@ -1220,7 +1222,31 @@ detail::DeviceAnswer Session::Impl::compare_device_answer(Opening & o) {
                dev, a.tokens, a.pieces, a.wide, a.agreement.rows, a.agreement.agree() * 100.0, a.agreement.nmse(),
                a.agreement.kld, a.agreement.kld_max, a.device_s, a.host_s, check_s,
                ok ? "confirmed" : "it does not compute this model: the model is reopened on the CPU");
+    if (ok && timed) {
+        const detail::AnswerWeighing w = weigh_device_answer(a);
+        if (w.side == detail::AnswerSide::Unweighed)
+            log_printf(LogLevel::Warn, "device answer: the two sides could not be timed on this model; %s keeps it",
+                       dev);
+        else
+            log_printf(LogLevel::Info,
+                       "device answer: this model one token at a time takes %.1f ms on %s and %.1f ms on the CPU "
+                       "(%.1f against %.1f tok/s), a %d-token graph %.0f ms against %.0f; with %.1f prompt tokens a "
+                       "decoded token a request takes %.2fx the CPU's time on %s - %s",
+                       a.device_token_s * 1e3, dev, a.host_token_s * 1e3, 1.0 / a.device_token_s, 1.0 / a.host_token_s,
+                       a.wide, a.device_wide_s * 1e3, a.host_wide_s * 1e3, (double) cfg.trial.answer_prompt_per_token,
+                       w.device_request_s / w.cores_request_s, dev,
+                       w.side == detail::AnswerSide::Cores
+                           ? "the CPU is faster by the margin: the model is reopened on it"
+                           : "the device keeps the model");
+    }
     return a;
+}
+
+// The check's timing, weighed as this load was asked to weigh it (KnobTrialConfig::answer_prompt_per_token)
+// by the margin every decision between two measured sides here uses (KnobTrialPolicy::min_win).
+detail::AnswerWeighing Session::Impl::weigh_device_answer(const detail::DeviceAnswer & a) const {
+    if (cfg.trial.answer_prompt_per_token < 0.0f) return {};
+    return detail::weigh_answer_sides(a, (double) cfg.trial.answer_prompt_per_token, KnobTrialPolicy{}.min_win);
 }
 
 // The loaded model's own facts, the expert layout read from its tensors, and its chat template.
@@ -2713,7 +2739,18 @@ void Session::Impl::warn_about_load(const SessionConfig & cfg) {
 struct Session::AnswerCheck {
     bool ran = false;
     detail::DeviceAnswer result;
+    // The device computes the model and the cores serve a request sooner (weigh_answer_sides).
+    bool cores_faster = false;
 };
+
+namespace {
+// The two sides as the check timed them, kept where a plan reads a side's decode rate: both at once,
+// from one load, so the plan after this one decides on the model's own measurement.
+void keep_answer_rates(const detail::DeviceAnswer & a, MeasuredKnobs & rec) {
+    if (a.device_token_s > 0.0) rec.shared_device_tps = 1.0 / a.device_token_s;
+    if (a.host_token_s > 0.0) rec.no_shared_device_tps = 1.0 / a.host_token_s;
+}
+} // namespace
 
 std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
                                        std::string & error,
@@ -2726,8 +2763,11 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     AnswerCheck check;
     std::unique_ptr<Session> self = open_placed(cfg, error, route_trace, compute_trace, io_trace, &check);
     if (!check.ran) return self;
-    if (check.result.verdict == Verdict::Confirmed) {
-        if (self) self->impl_->trials.result.set_device_answer(device, 1);
+    if (check.result.verdict == Verdict::Confirmed && !check.cores_faster) {
+        if (self) {
+            self->impl_->trials.result.set_device_answer(device, 1);
+            keep_answer_rates(check.result, self->impl_->trials.result);
+        }
         return self;
     }
     // Not confirmed, and the placement is already freed (open_placed returned nothing): the session
@@ -2739,14 +2779,21 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     const double first_s = secs(t0, clock_t_::now());
     self = open_placed(detail::on_cores(cfg), error, route_trace, compute_trace, io_trace, nullptr);
     if (!self) {
-        error =
-            "the model was not kept on " + device +
-            (check.result.verdict == Verdict::Differs ? ", whose answers for it differed from the CPU's"
-                                                      : ", whose answers for it could not be compared with the CPU's") +
-            ", and it could not be opened on the CPU either: " + error;
+        error = "the model was not kept on " + device +
+                (check.cores_faster                         ? ", which the CPU decodes it faster than"
+                 : check.result.verdict == Verdict::Differs ? ", whose answers for it differed from the CPU's"
+                                                            : ", whose answers for it could not be compared with the "
+                                                              "CPU's") +
+                ", and it could not be opened on the CPU either: " + error;
         return nullptr;
     }
     if (check.result.verdict == Verdict::Differs) self->impl_->trials.result.set_device_answer(device, -1);
+    // The device computes the model and the cores are faster: its answers are confirmed all the same,
+    // and both rates are kept, so the next plan opens the cores without opening the device first.
+    if (check.cores_faster) {
+        self->impl_->trials.result.set_device_answer(device, 1);
+        keep_answer_rates(check.result, self->impl_->trials.result);
+    }
     self->impl_->load_seconds += first_s; // the load the caller waited for is both
     return self;
 }
@@ -2788,6 +2835,11 @@ std::unique_ptr<Session> Session::open_placed(const SessionConfig & cfg,
         check->result = im.compare_device_answer(o);
         if (check->result.verdict != detail::DeviceAnswer::Verdict::Confirmed) {
             error = "the device's answers for this model were not confirmed";
+            return nullptr;
+        }
+        if (im.weigh_device_answer(check->result).side == detail::AnswerSide::Cores) {
+            check->cores_faster = true;
+            error = "the cores serve this model's requests faster than the device";
             return nullptr;
         }
         detail::log_memory_snapshot("device-answer-checked");

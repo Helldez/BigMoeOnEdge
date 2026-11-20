@@ -1950,6 +1950,32 @@ int main(int argc, char ** argv) {
                                    rc.generated_text);
                     fails += check("G28b answers that differ: served from the cores == all on the cores", s_cores,
                                    rr.generated_text);
+                    // c) The check also asked to keep the faster side: whichever the loopback device
+                    // and the cores come to here, the session serves one of the two placements' bytes,
+                    // the answers are still confirmed, and both sides' rates are in the record, so the
+                    // plan after this load reads a measurement.
+                    RunConfig weighed = checked;
+                    weighed.trial.answer_prompt_per_token = 0.0f;
+                    const ValidationResult vw = validate(weighed);
+                    const RunResult rw = vw.ok ? run(weighed) : RunResult{};
+                    if (!vw.ok || !rw) {
+                        std::printf("[FAIL] G28c the weighed answer check failed: %s\n",
+                                    !vw.ok ? vw.error.c_str() : rw.error.c_str());
+                        ++fails;
+                    } else if ((rw.generated_text == s_whole || rw.generated_text == s_cores) &&
+                               rw.knobs.device_answer(dev) == 1 && rw.knobs.shared_device_tps > 0.0 &&
+                               rw.knobs.no_shared_device_tps > 0.0) {
+                        std::printf("[PASS] G28c both sides timed on the model: %.1f tok/s on %s, %.1f on the cores, "
+                                    "and one of the two serves\n",
+                                    rw.knobs.shared_device_tps, dev.c_str(), rw.knobs.no_shared_device_tps);
+                    } else {
+                        std::printf("[FAIL] G28c weighed check: word %d, rates %.2f / %.2f, text matches a placement: "
+                                    "%d\n",
+                                    rw.knobs.device_answer(dev), rw.knobs.shared_device_tps,
+                                    rw.knobs.no_shared_device_tps,
+                                    (int) (rw.generated_text == s_whole || rw.generated_text == s_cores));
+                        ++fails;
+                    }
                     const int wa = rc.knobs.device_answer(dev), wb = rr.knobs.device_answer(dev);
                     if (wa == 1 && wb == -1 && rc.knobs.verdicts() > 0) {
                         std::printf("[PASS] G28 the record says confirmed, then differs, for %s\n", dev.c_str());

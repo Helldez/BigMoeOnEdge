@@ -1312,18 +1312,25 @@ memory), the capacity fitter's placement is set aside, because its arithmetic co
 twice (`placement-declined`). That settles capacity and nothing else: where the whole model is held
 in memory (`fits`, or any model with no experts, which the cores hold whole on every plan), running it
 on the device frees nothing and costs only its compute buffer, and what is left is which engine runs
-it faster. `choose_shared_device` prices a request of this machine's on each side
-(`MeasuredKnobs::mix_*`, or the default mix on a first load): its decoded tokens at the rate each
-processor applies one real layer of this model one token wide, and its prompt at the rate each
-applies it as wide as a prompt (`wide_matmul_gibs`), both probed with the host's results. The cores
-are the side in force, the placement every load had before this rule; the device takes every layer
-and the output head, named in `device_split` so no second backend that drives the same silicon takes
-a share, where the request is shorter there by `min_backend_win`. The load times the decode of the
-side it serves (`KnobTrialConfig::shared_device_side`, `MeasuredKnobs::shared_device_tps`), and once
-both sides have a decode rate their ratio replaces the probe's. No load is opened to try the device
+it faster. That is decided by the first load, on the model itself. Until a load has timed both
+sides, `choose_shared_device` opens the device (every layer and the output head, named in
+`device_split` so no second backend that drives the same silicon takes a share) and asks the load to
+keep the faster: the load compares the model's answers on the device with the cores' before it serves
+(below), which decodes the model on both, so it also times the two there, one token at a time as an
+answer is decoded and once as wide as a prompt, and keeps the side a request of this machine's is
+shorter on (`KnobTrialConfig::answer_prompt_per_token`, the prompt tokens a request brings per decoded
+token: `MeasuredKnobs::mix_*`, or the default mix on a first load). The device is the side opened
+because the comparison needs the placement open; the cores take the model, reopened on them once,
+where a request is shorter there by `min_backend_win`. Both rates are kept
+(`MeasuredKnobs::shared_device_tps`, `no_shared_device_tps`), so every plan after that load reads a
+measurement and opens the faster side at once, by the same rule: the device unless the cores are
+faster by the margin. A served load then keeps its own side at what it decoded at
+(`KnobTrialConfig::shared_device_side`). No other load is opened to try a side
 ([measured-planning.md](measured-planning.md#decisions-fixed-at-load-priced-served-then-measured)).
 
-A probe of one layer does not always predict the whole model's decode. On a 16 GB unified-memory
+The probes are not asked, because a probe of one layer does not predict the whole model's decode.
+On a laptop with integrated graphics they read the cores 74% ahead (143 GiB/s against 82) of a GPU
+that decoded a 21 GB model at 40 tok/s, more than twice the cores' rate. On a 16 GB unified-memory
 laptop the one-token probe read the cores 60% ahead of the GPU (109 GiB/s against 67), while a
 64-expert cut of Qwen3.6-35B-A3B held in memory decoded 54 tok/s on the GPU against 40 on the
 cores, and Granite-3.1-3B-A800M 165-170 against 121-124 (#380). An AMD laptop APU through Vulkan

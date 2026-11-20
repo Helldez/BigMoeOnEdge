@@ -3270,12 +3270,12 @@ int main() {
         }
     }
 
-    // ── a model held in memory, on a device that reads that same memory: decided by calculation ─
+    // ── a model held in memory, on a device that reads that same memory: decided by the first load ─
     // The fitter's placement on such a device is set aside (one pool, counted twice), so what is left
-    // is which engine serves this machine's requests faster: a request's decoded tokens and its prompt
-    // at the rates each processor probed on a real layer of the model, one token wide and as wide as
-    // a prompt. The load serves the side priced faster and times its decode; with both decodes
-    // measured their ratio replaces the probe's. No load is opened to try the device.
+    // is which engine serves this machine's requests faster. No probe of a part of a model says that,
+    // so until a load has timed both sides the plan opens the device and asks the load to time the
+    // model on it and on the cores, as it compares their answers, and to keep the faster on a request
+    // (device_answer_test has the load's rule). Once both rates are measured the plan reads them.
     {
         HardwareProfile roomy = unified();
         roomy.residency_budget = 64 * GiB;
@@ -3324,51 +3324,76 @@ int main() {
             return plan_run(base_cfg(), h, m, shared, PlanRequest{}, PlannerPolicy::defaults());
         };
 
-        // Level one token wide and no faster on a prompt: the cores keep the model and time it.
+        // Nothing measured, and probes that read the two sides level: the load decides, on the model.
+        const PlannerPolicy defaults = PlannerPolicy::defaults();
+        const float default_mix = defaults.mix_prompt_tokens_default / defaults.mix_gen_tokens_default;
+        const auto asks_the_load = [&](const Plan & p) {
+            return on_device(p) && p.config.trial.answer_device == "accel" &&
+                   p.config.trial.answer_prompt_per_token >= 0.0f && p.config.trial.shared_device_side == 1;
+        };
         const Plan first = plan_with(0.0, 0.0);
         check(first.regime == Regime::Fits, "shared device: the model is held in memory");
-        check(first.config.trial.shared_device_side == 0 && on_cores(first),
-              "shared device, priced no faster: the cores serve, and time their own decode");
+        check(asks_the_load(first),
+              "shared device, no side timed: the device is opened and the load times both sides and keeps one");
+        check(std::fabs(first.config.trial.answer_prompt_per_token - default_mix) < 1e-3f,
+              "shared device, no side timed: the load weighs a prompt as the default request does",
+              std::to_string(first.config.trial.answer_prompt_per_token));
         const Decision * d0 = find(first, "shared-device");
-        check(d0 && d0->value == "cpu" && d0->source == Source::Derived &&
-                  d0->reason.find("the default mix") != std::string::npos,
-              "shared device: the line prices a request on the default mix", d0 ? d0->reason : "no line");
-        check(validate(first.config).ok, "shared device, on the cores: a valid config", validate(first.config).error);
-        // The cores measured changes nothing: one side's rate moves no ratio, and no load tries the device.
-        const Plan second = plan_with(0.0, 40.0);
-        check(second.config.trial.shared_device_side == -1 && on_cores(second),
-              "shared device, the cores measured: nothing more to time, no load opened on the device");
+        check(d0 && d0->value == "accel" && d0->source == Source::Derived &&
+                  d0->reason.find("the default mix") != std::string::npos &&
+                  d0->reason.find("no probe of a part of a model") != std::string::npos,
+              "shared device: the line says the load decides, and on which request", d0 ? d0->reason : "no line");
+        check(validate(first.config).ok, "shared device, the load decides: a valid config",
+              validate(first.config).error);
+        // One side measured is still no comparison: the load that follows times both.
+        check(asks_the_load(plan_with(0.0, 40.0)) && asks_the_load(plan_with(40.0, 0.0)),
+              "shared device, one side timed: the load is still asked for both");
+        // Probes that read the cores far ahead decide nothing either: they are a part of a model's rate.
+        {
+            HardwareProfile cores_ahead = roomy;
+            cores_ahead.host_expert_gibs = cores_ahead.host_dense_gibs = 143.0;
+            for (ComputeDevice & d : cores_ahead.devices)
+                if (!d.is_cpu) d.expert_gibs = d.dense_gibs = 82.0;
+            check(asks_the_load(plan_with(0.0, 0.0, cores_ahead)),
+                  "shared device, probes read the cores 74% ahead: the model's own timing still decides");
+        }
 
-        // A device that computes a prompt 2.5x faster serves the default request faster, on the first load.
+        // A device that computes a prompt 2.5x faster, for the plans made once both sides are measured.
         HardwareProfile prompts = roomy;
         for (ComputeDevice & d : prompts.devices)
             if (!d.is_cpu) d.wide_matmul_gibs = 2500.0;
         const Plan moved = plan_with(0.0, 0.0, prompts);
         const Decision * df = find(moved, "shared-device");
-        check(on_device(moved) && moved.config.trial.shared_device_side == 1,
-              "shared device, priced faster on a prompt: every layer moves on the first load, timed as it serves");
-        check(df && df->value == "accel" && df->source == Source::Derived &&
+        check(asks_the_load(moved) && df && df->value == "accel" &&
                   df->reason.find("copied into the device's own buffers") != std::string::npos,
               "shared device: a line naming the device and how its weights are held", df ? df->reason : "");
         check(validate(moved.config).ok, "shared device, moved: a valid config", validate(moved.config).error);
-        // The same device on a machine that only decodes: the prompt weighs nothing, the decode is level.
-        check(on_cores(plan_chat(0.0, 0.0, prompts)),
-              "shared device, faster on prompts this machine never sends: the cores keep it");
+        // A machine that only decodes asks the load to weigh the decode alone.
+        {
+            const Plan chat = plan_chat(0.0, 0.0, prompts);
+            check(asks_the_load(chat) && chat.config.trial.answer_prompt_per_token < default_mix / 4.0f,
+                  "shared device, a machine that sends no long prompt: the load weighs little but the decode",
+                  std::to_string(chat.config.trial.answer_prompt_per_token));
+        }
 
         // Both decodes measured: their ratio is the decode's, whatever the probe read.
         const Plan faster = plan_chat(54.0, 40.0, roomy);
         df = find(faster, "shared-device");
         check(on_device(faster) && faster.config.trial.shared_device_side == -1 && df && df->source == Source::Measured,
               "shared device, measured faster on the decode this machine serves: every layer moves");
-        check(on_cores(plan_chat(41.0, 40.0, roomy)), "shared device, level on the decode: the cores keep it");
+        // The rule is the load's: the device keeps the model unless the cores are faster by the margin,
+        // so a plan made on the load's measurements does not undo what the load decided.
+        check(on_device(plan_chat(41.0, 40.0, roomy)) && on_device(plan_chat(38.0, 40.0, roomy)),
+              "shared device, level on the decode: the device keeps it, as the load that timed them did");
         check(on_cores(plan_chat(30.0, 40.0, roomy)), "shared device, slower: the cores keep it");
         check(on_device(plan_with(41.0, 40.0, prompts)),
               "shared device, level on the decode and faster on a prompt: the device takes it");
         check(on_cores(plan_chat(30.0, 40.0, prompts)),
               "shared device, slower on the decode of a machine that only decodes: a faster prompt buys nothing");
-        // A decode 35% faster against a prompt 10% slower, on the default request: inside the margin.
-        check(on_cores(plan_with(54.0, 40.0)),
-              "shared device, the decode's gain inside the margin of the whole request: the cores keep it");
+        // A decode 35% faster against a prompt 10% slower, on the default request: the cores are not
+        // faster by the margin, so the device keeps it.
+        check(on_device(plan_with(54.0, 40.0)),
+              "shared device, the cores not ahead by the margin on the whole request: the device keeps it");
 
         // The probes let the device through; what this model answers there is compared by the load that
         // moves it, once, and the record's word then decides.
@@ -3376,9 +3401,16 @@ int main() {
                   df->reason.find("compares its answers") != std::string::npos,
               "shared device, moved with no word on its answers: the load is asked to compare them",
               df ? df->reason : "");
-        check(first.config.trial.answer_device.empty(), "shared device, on the cores: nothing to compare");
+        {
+            const Plan cores = plan_chat(30.0, 40.0, roomy);
+            check(on_cores(cores) && cores.config.trial.answer_device.empty() &&
+                      cores.config.trial.answer_prompt_per_token < 0.0f,
+                  "shared device, measured on the cores: nothing to compare, nothing to weigh");
+        }
         {
             ModelProfile said = model;
+            said.knobs.shared_device_tps = 41.0; // both sides timed, by the load that confirmed the answers
+            said.knobs.no_shared_device_tps = 40.0;
             said.knobs.set_device_answer("accel", 1);
             const Plan ok = plan_run(base_cfg(), prompts, said, shared, PlanRequest{}, PlannerPolicy::defaults());
             const Decision * dk = find(ok, "shared-device");
@@ -3467,8 +3499,9 @@ int main() {
         dense.n_layer = 32;
         dense.file_bytes = dense.dense_bytes = 5 * GiB;
         const Plan dp = plan_run(base_cfg(), roomy, dense, shared, PlanRequest{}, PlannerPolicy::defaults());
-        check(dp.regime == Regime::NotMoe && dp.config.trial.shared_device_side == 0,
-              "shared device, a dense model held in memory: priced the same way, the cores timed");
+        check(dp.regime == Regime::NotMoe && dp.config.trial.answer_device == "accel" &&
+                  dp.config.trial.answer_prompt_per_token >= 0.0f && dp.config.n_gpu_layers == 33,
+              "shared device, a dense model held in memory: asked the same way, the load times both sides");
         dense.knobs.shared_device_tps = 27.0;
         dense.knobs.no_shared_device_tps = 21.0;
         dense.knobs.mix_requests = 4000;
@@ -3490,9 +3523,10 @@ int main() {
             const Plan asked =
                 plan_run(base_cfg(), snug_in_place, snug_model, shared, PlanRequest{}, PlannerPolicy::defaults());
             const Decision * da = find(asked, "shared-device");
-            check(asked.regime == Regime::NotMoe && asked.config.trial.shared_device_side == 0 && da,
+            check(asked.regime == Regime::NotMoe && asked.config.trial.answer_device == "accel" && da &&
+                      da->value == "accel",
                   "shared device, a dense model short of residency's room, weights read in place: still asked, "
-                  "and priced",
+                  "and the load decides",
                   da ? da->reason : "no line");
             // Copied, the weights become this process's memory: the move adds them, and the bar is on that.
             const Plan copied =
