@@ -10,6 +10,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -720,6 +721,17 @@ struct KnobTrialConfig {
     // and a placement that does not pick the cores' next token is not served from: the session reopens
     // on the cores (engine/device_answer.h). Not a timed side: it measures no rate and switches nothing.
     std::string answer_device;
+    // Which side then serves, decided by that same load on this model: the comparison decodes the
+    // model on the device and on the cores anyway, so it times both (a token decoded alone, and a
+    // graph as wide as a prompt) and the session keeps the side a request is shorter on, reopening on
+    // the cores where they are faster by the trial's margin. This is the prompt tokens a request
+    // brings per decoded token, the weight of the wide timing against the narrow one; below 0 nothing
+    // is weighed and a device whose answers match keeps the model, as before. A plan asks for it where
+    // no load has measured both sides on this machine: the probes of a part of a model that let the
+    // device through do not say which side decodes the model faster (MeasuredKnobs::shared_device_tps
+    // has the measurements), and the model itself does, at the first load.
+    float answer_prompt_per_token = -1.0f;
+    static constexpr float answer_prompt_per_token_max = 1e6f;
     // TEST ONLY: the comparison sees the device's rows shifted by one token, so a gate reaches the
     // refusal on a device that computes correctly. Never set by a front-end.
     bool test_answer_differs = false;
@@ -895,6 +907,16 @@ struct RunConfig {
     PrefillDeviceConfig prefill; // prefill graphs on an accelerator; off by default
     DecideConfig decide;         // decide()'s prefix-state policy; off by default
     KnobTrialConfig trial;       // lossless knobs measured on the first real request; off by default
+
+    // The configuration the session opens instead, where this one names a device whose answers the
+    // load compares with the cores' (trial.answer_device) and the device does not keep the model:
+    // its answers differed, could not be compared, the cores were faster, or it could not be opened.
+    // Empty, that is this same configuration with no layer on a device (the cores hold the model as
+    // it is held here). A plan sets it where the two differ in more than where they compute: a model
+    // it would stream, tried whole on a device that reads the host's memory, falls back to the
+    // streaming plan and not to the same model held whole on the cores. Not a tunable: one plan in
+    // two parts, which no flag spells, so it is not in the parameter table.
+    std::shared_ptr<const RunConfig> fallback;
 
     // Let llama.cpp's and ggml's DEBUG log lines through to stderr. Off, they are dropped: about
     // 1200 lines of graph bookkeeping per model load, which buried the engine's own output. For

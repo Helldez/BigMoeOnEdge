@@ -599,6 +599,21 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("trial-answer-mix", "Keep the faster side of the check", G::Memory, L::Experimental,
+                          "With --trial-device-answer: also time the two sides the check decodes, and serve from "
+                          "the one a request is shorter on, reopening on the cores where they are faster by the "
+                          "trial's margin. F is the prompt tokens a request brings per decoded token, which weighs "
+                          "a prompt-wide graph's time against a single token's. Below 0 nothing is weighed and a "
+                          "device whose answers match keeps the model. The plan sets it where no load has "
+                          "measured both sides on this machine.");
+        d.type = ParamType::Float;
+        d.value_hint = "F";
+        bounds(d, -1.0, KnobTrialConfig::answer_prompt_per_token_max);
+        special(d, "-1", "off");
+        bind_float(d, [](RunConfig & c) -> float & { return c.trial.answer_prompt_per_token; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("trial-width", "Measure the graph width", G::Prefill, L::Experimental,
                           "Time this load's side of the graph width, to be compared across loads: 1 the plan's own "
                           "width, 0 the narrower --trial-width-narrow. Times the decode, and the prefill of prompts "

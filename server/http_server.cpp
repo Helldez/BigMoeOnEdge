@@ -737,7 +737,16 @@ struct App {
             load_plan = PlanOutcome{};
         }
         const RunConfig requested = store.config();
-        const RunConfig effective = effective_config(requested);
+        RunConfig effective = effective_config(requested);
+        // A plan in two parts (RunConfig::fallback): the settings hold the part the load opens, and the
+        // other is rebuilt from the plan's own values, as that part would be applied, and goes with it
+        // to the session, which reopens as it where the device does not keep the model.
+        {
+            std::lock_guard<std::mutex> lk(plan_m);
+            if (load_plan.ok && load_plan.has_fallback && !effective.trial.answer_device.empty())
+                effective.fallback = std::make_shared<const RunConfig>(
+                    effective_config(store.config_with_plan(load_plan.fallback_values)));
+        }
         mark_prefill_unconfirmed(effective);
         if (!other.ok) return host.load(effective, requested);
         return host.load(effective, requested, fallback_for(named, other));

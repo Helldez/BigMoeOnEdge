@@ -338,6 +338,13 @@ endif()
 # device — which is the point: rules meant to hold on hardware we do not own are checked here.
 add_executable(bmoe_planner_test planner_test.cpp)
 target_link_libraries(bmoe_planner_test PRIVATE bmoe_core)
+# The planner's tests are one long main() whose locals (hundreds of whole plans) share one stack frame
+# on a compiler that does not overlap disjoint scopes: past the 1 MiB a Windows executable gets by
+# default it faults on entry, before a line is printed. The size every other platform here gives a
+# main thread.
+if(MSVC)
+    target_link_options(bmoe_planner_test PRIVATE /STACK:8388608)
+endif()
 add_test(NAME planner COMMAND bmoe_planner_test)
 
 # The routing trace the planner prices the cache from: its LRU replay against scripts/route-replay.py

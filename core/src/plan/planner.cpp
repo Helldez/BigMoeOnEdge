@@ -351,6 +351,11 @@ struct Planning {
     uint64_t held_dense() const { return host_dense - std::min(host_dense, host_tables); }
     uint64_t air = 0;
     bool air_short = false;
+    // Set on the second pass of a plan that streams (plan_from): the model is planned as held whole,
+    // to see whether a device that reads this memory may be given it, and this is the room it may
+    // take there with its compute buffer: what the plan that streams it may hold of this pool, its
+    // own ledger's ceiling. 0 on every other pass, where the regime and the margin decide.
+    uint64_t whole_room = 0;
 
     // The model as the allocator sees it: only the host's share of the experts (host_model).
     ModelProfile host_model;
@@ -1887,6 +1892,9 @@ Regime residency_regime(Planning & s) {
     // residency on a model that does not is 0.1 tok/s against 5.0. Until the headroom probe exists,
     // the cheap side of that asymmetry is the right default, and a caller who disagrees drops --auto.
     s.air = s.usable > s.held_all() ? s.usable - s.held_all() : 0;
+    // The pass that plans the model as held whole (whole_room) is asked what that plan is, not
+    // whether to make it: the plan that streams was made first and is what it is weighed against.
+    if (s.whole_room > 0) return Regime::Fits;
     const uint64_t air_needed = (uint64_t) ((double) s.held_all() * (double) s.pol.fits_air_ratio);
     s.air_short = regime == Regime::Fits && reclaim_is_cheap(s.hw.anon_overflow) && s.air < air_needed;
     if (s.air_short) regime = s.held_dense() <= s.usable ? Regime::ExpertsStream : Regime::DenseOversized;
@@ -2126,6 +2134,14 @@ SharedDeviceCandidate shared_device_candidate(const Planning & s, uint64_t resid
             why = "it needs the weights repacked into a layout of its own, and the model loads as mapped";
         else if (compute == 0)
             why = "the compute buffer it would reserve was never projected";
+        else if (s.whole_room > 0 && resident + compute > s.whole_room)
+            // Weighed against the plan that streams: on the device the whole model is this process's
+            // memory, as that plan's cache and dense set are, so it may take what that plan would.
+            why = "the " + u64s(mib(resident)) + " MiB the model holds whole and its compute buffer of " +
+                  u64s(mib(compute)) + " MiB are past the " + u64s(mib(s.whole_room)) +
+                  " MiB the plan that streams it may hold of this memory";
+        else if (s.whole_room > 0)
+            ; // inside what the streaming plan may hold: the margin is already off that ceiling
         else if (resident + compute > s.usable)
             why = "its compute buffer of " + u64s(mib(compute)) + " MiB beside the " + u64s(mib(resident)) +
                   " MiB the model holds is past the " + u64s(mib(s.usable)) + " MiB usable";
@@ -2217,19 +2233,50 @@ void choose_shared_device(Planning & s, uint64_t resident) {
                   "loads of this model on the cores failed on this machine");
         return;
     }
+    // Until a load has timed both sides on this model here, the load decides, on the model itself. The
+    // probes that let the device through each compute a part of a model, and they do not say which side
+    // decodes the whole of it faster: on one unified-memory laptop they read the cores 60% ahead of a
+    // GPU that decoded the model 35% faster, and on a laptop with integrated graphics 74% ahead of one
+    // that decoded it at more than twice their rate. The load that moves the model compares its answers
+    // with the cores' anyway, which decodes it on both; it times the two as it does, keeps the side a
+    // request is shorter on (KnobTrialConfig::answer_prompt_per_token), and records both rates, so
+    // every plan after this one reads a measurement. The device is the side opened because the
+    // comparison needs the placement open; where the cores win the model is reopened on them, once.
+    const bool both = on > 0.0 && off > 0.0;
+    if (!both) {
+        const RequestMix mix = request_mix(s, 0);
+        const double per_token = mix.gen > 0.0 ? mix.prompt / mix.gen : 0.0;
+        char weighed[200];
+        std::snprintf(weighed, sizeof(weighed),
+                      "a request here is %.0f prompt tokens and %.0f decoded (%s), so a prompt-wide graph's time "
+                      "weighs %.1f tokens a decoded one",
+                      mix.prompt, mix.gen, mix.words().c_str(), per_token);
+        on_device(Source::Derived,
+                  "Every layer opens on " + dev.name + ", and the load keeps whichever of it and the CPU is faster.",
+                  "no load has timed this model on both sides here, and no probe of a part of a model says which "
+                  "decodes the whole faster: the load times it one token at a time and as wide as a prompt on " +
+                      dev.name +
+                      " and on the cores, keeps the side a request is shorter on (the cores where they "
+                      "are faster by the " +
+                      margin + " margin, reopening on them) and records both rates; " + weighed);
+        trial.answer_device = dev.name;
+        trial.answer_prompt_per_token =
+            (float) std::min(per_token, (double) KnobTrialConfig::answer_prompt_per_token_max);
+        trial.shared_device_side = 1;
+        return;
+    }
     // A request's time on each side, in the same unit: its decoded tokens at the rate each processor
     // applies a real layer of this model one token wide, and its prompt at the rate each applies it as
     // wide as a prompt, both probed here with the host's results (a token reads the same bytes on
     // either, so the bytes cancel). The decode's ratio is the loads' own once both sides were timed.
     const double decode_host = s.model.is_moe ? s.hw.host_expert_rate() : s.hw.host_dense_rate();
-    const double decode_dev_probed = layer_rate_of(s, dev);
-    if (decode_host <= 0.0 || decode_dev_probed <= 0.0) {
-        on_cores(Source::Unprobed, "The model runs on the CPU: " + dev.name + "'s rate on it was not measured.",
-                 "which processor applies this model's weights faster was not probed for both, so nothing moves");
+    if (decode_host <= 0.0) {
+        on_cores(Source::Unprobed, "The model runs on the CPU: its rate on this model was not measured.",
+                 "the rate the cores apply this model's weights at was not probed, so a prompt's share of a "
+                 "request has no unit to be weighed in, and nothing moves");
         return;
     }
-    const bool both = on > 0.0 && off > 0.0;
-    const double decode_dev = both ? decode_host * on / off : decode_dev_probed;
+    const double decode_dev = decode_host * on / off;
     const bool wide_probed = s.hw.host_wide_matmul_gibs > 0.0 && dev.wide_matmul_gibs > 0.0;
     const RequestMix mix = request_mix(s, 0);
     const double gen = mix.gen, prompt = wide_probed ? mix.prompt : 0.0;
@@ -2240,21 +2287,17 @@ void choose_shared_device(Planning & s, uint64_t resident) {
                   "a request here is %.0f prompt tokens and %.0f decoded (%s); %s decodes at %.2fx the cores' rate "
                   "(%s) and computes a prompt-wide layer at %.2fx, so a request takes %.2fx the time it takes on "
                   "the cores",
-                  prompt, gen, mix.words().c_str(), dev.name.c_str(), decode_dev / decode_host,
-                  both ? std::string(measured).c_str() : "probed on one real layer of this model",
+                  prompt, gen, mix.words().c_str(), dev.name.c_str(), decode_dev / decode_host, measured,
                   wide_probed ? dev.wide_matmul_gibs / s.hw.host_wide_matmul_gibs : 0.0, t_dev / t_cores);
-    // The cores are the side in force, the placement every load before this rule ran: the device takes
-    // over only past them by the margin.
-    const bool device_wins = t_cores > t_dev * (1.0 + m);
-    // The load times the decode of the side it serves, where no load has yet.
-    if ((device_wins ? on : off) <= 0.0) trial.shared_device_side = device_wins ? 1 : 0;
-    const Source src = both ? Source::Measured : Source::Derived;
-    if (device_wins)
-        on_device(src, "Every layer runs on " + dev.name + ", which serves this machine's requests faster.",
-                  std::string(nums) + ", past the " + margin + " margin");
+    // The rule the first load decided by (weigh_answer_sides), so a plan made on its measurements does
+    // not undo it: the device keeps the model unless the cores serve a request faster by the margin.
+    const bool cores_win = t_dev > t_cores * (1.0 + m);
+    if (cores_win)
+        on_cores(Source::Measured, "The model runs on the CPU, which serves this machine's requests faster.",
+                 std::string(nums) + ", past the " + margin + " margin");
     else
-        on_cores(src, "The model runs on the CPU: " + dev.name + " would not serve a request faster.",
-                 std::string(nums) + ", not past the " + margin + " margin");
+        on_device(Source::Measured, "Every layer runs on " + dev.name + ": the CPU would not serve a request faster.",
+                  std::string(nums) + ", which the cores do not beat by the " + margin + " margin");
 }
 
 // The same question for a model with no experts. Nothing streams, so the cores hold the whole model
@@ -4180,9 +4223,11 @@ Plan plan_once(const RunConfig & base,
                const Placement & projected,
                const PlanRequest & req,
                const PlannerPolicy & pol,
-               const Planning::LayersHome * home_from) {
+               const Planning::LayersHome * home_from,
+               uint64_t whole_room = 0) {
     Plan p;
     Planning s(base, hw, model, projected, req, pol, p);
+    s.whole_room = whole_room;
     if (home_from) s.home.considered = false;
 
     // The machine and the model, against each other.
@@ -4288,7 +4333,48 @@ Plan plan_from(const RunConfig & base,
                const PlanRequest & req,
                const PlannerPolicy & pol,
                const Planning::LayersHome * home_from) {
-    return plan_once(base, hw, model, projected, req, pol, home_from);
+    Plan p = plan_once(base, hw, model, projected, req, pol, home_from);
+    // ── a model the plan streams, on a machine whose device reads this same memory ──
+    // llama.cpp would hold such a model whole on the device, and where that fits it can be the faster
+    // run by far: on a laptop with integrated graphics a 21 GB model streamed with an 18 GiB cache
+    // decoded at 12 tok/s, and llama.cpp with every layer on the GPU at 40. Nothing in the plan
+    // above says which is faster, and no probe does (choose_shared_device), so where the model held
+    // whole on the device stays inside what the streaming plan itself may hold of this pool, the
+    // first load is asked: it opens the model there, compares its answers with the cores' and times
+    // both (KnobTrialConfig::answer_device, answer_prompt_per_token), and keeps the device unless the
+    // cores decode the model faster by the margin. The cores' rate there is the model held whole on
+    // them, which is the most a stream on the same cores can reach, so a device the cores do not
+    // beat is one the stream does not beat. Where the device does not keep the model, the session
+    // reopens with the plan above, unchanged (RunConfig::fallback): the stream is what this engine
+    // adds, and it serves wherever holding the model whole is not the faster run.
+    if (p.regime != Regime::ExpertsStream || !p.config.moe.enabled || p.streaming_declined || !model.is_moe) return p;
+    // What the streaming plan may hold of this pool: its ledger's ceiling, the margin already off it.
+    const uint64_t room = p.allocation.ledger.holdable_cap;
+    if (!devices_share_host_memory(hw) || projected.fitted || room == 0) return p;
+    if (req.is_pinned("moe-stream") || req.is_pinned("cache-mb")) return p;
+    Plan whole = plan_once(base, hw, model, projected, req, pol, home_from, room);
+    if (whole.config.n_gpu_layers == 0 || whole.config.device_split.size() != 1 || whole.config.moe.enabled) return p;
+    const std::string dev = whole.config.device_split.front().first;
+    whole.config.fallback = std::make_shared<const RunConfig>(p.config);
+    std::string stream_knobs;
+    for (const Decision & x : p.decisions)
+        if (x.knob == "moe-stream" || x.knob == "cache-mb" || x.knob == "prefill-device" || x.knob == "dense-weights")
+            stream_knobs += (stream_knobs.empty() ? "" : "; ") + x.knob + " " + x.value;
+    Decision d;
+    d.knob = "held-whole";
+    d.value = dev;
+    d.source = Source::Derived;
+    d.brief = "Held whole on " + dev + " if it runs the model faster; otherwise streamed, with a " +
+              size_brief((uint64_t) p.config.moe.cache_mb << 20) + " cache.";
+    d.reason = "this model does not fit beside the room this machine asks for, and the plan that streams it may "
+               "hold " +
+               u64s(mib(room)) + " MiB of this memory, " + u64s(mib(p.allocation.ledger.held)) + " MiB of it with a " +
+               u64s((uint64_t) p.config.moe.cache_mb) + " MiB expert cache. " + dev +
+               " reads this same memory, and the model held whole there with its compute buffer stays inside that, "
+               "so the load decides between the two on the model itself (shared-device says how); where " +
+               dev + " does not keep it, the session reopens as the streaming plan (" + stream_knobs + ")";
+    whole.decisions.push_back(d);
+    return whole;
 }
 
 } // namespace

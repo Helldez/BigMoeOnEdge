@@ -82,6 +82,17 @@ ValidationResult validate(const RunConfig & cfg) {
         r.error = std::move(msg);
         return r;
     };
+    // The other part of the plan is a configuration like any, and the one the session may end on: it
+    // is the same model, it names no part of its own, and it holds up by itself.
+    if (cfg.fallback) {
+        if (cfg.trial.answer_device.empty())
+            return fail("a fallback configuration is what a load reopens with where {trial-device-answer} does not "
+                        "keep the model on its device: it needs a device named there");
+        if (cfg.fallback->fallback) return fail("a fallback configuration has no fallback of its own");
+        if (cfg.fallback->model_path != cfg.model_path) return fail("a fallback configuration is the same model's");
+        const ValidationResult other = validate(*cfg.fallback);
+        if (!other.ok) return fail("the fallback configuration is not valid: " + other.error);
+    }
 
     if (cfg.model_path.empty()) {
         return fail("{model} is required: choose the model file to load");
@@ -137,6 +148,12 @@ ValidationResult validate(const RunConfig & cfg) {
     // The answer check compares a model held whole in memory on a device with the same file on the
     // cores, and reopens on the cores where they differ: there has to be a device placement to compare,
     // and nothing in the load that only a device placement can carry.
+    if (cfg.trial.answer_prompt_per_token >= 0.0f && cfg.trial.answer_device.empty())
+        return fail("{trial-answer-mix} weighs the two sides {trial-device-answer} decodes: it needs a device named "
+                    "there");
+    if (cfg.trial.answer_prompt_per_token > KnobTrialConfig::answer_prompt_per_token_max)
+        return fail("{trial-answer-mix} is the prompt tokens a request brings per decoded token: at most " +
+                    std::to_string((long long) KnobTrialConfig::answer_prompt_per_token_max));
     if (!cfg.trial.answer_device.empty()) {
         if (cfg.n_gpu_layers == 0)
             return fail("{trial-device-answer} compares the model on a device with the cores: it needs {gpu-layers} "

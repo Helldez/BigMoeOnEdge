@@ -41,6 +41,32 @@ Semantic Versioning.
   Actions cache by main and restored by a release that did not move the submodule; every archive
   used to wait for the HIP module (65 min) and the x86_64 ones then built CUDA too (70-80 min), 2 h
   25 min for 0.44.0.
+- **Where a model held in memory can run on a GPU that shares the host's memory, the first load
+  decides which of the two runs it, on the model itself.** The plan used to choose from probes of a
+  part of a model (one layer's matrices), and they do not say which side decodes the whole of it
+  faster: on a laptop with integrated graphics they read the cores 74% ahead of a GPU that decoded
+  a 21 GB model at more than twice the cores' rate, and the model was kept on the cores. The load
+  that opens a model on such a device already decodes it there and on the cores, to compare their
+  answers before it serves; it now times the two as it does (a token alone, and a graph as wide as
+  a prompt), keeps the side a request is shorter on, reopening on the cores where they are faster
+  by the 10% margin, and records both rates, so every later plan opens the faster side at once. On
+  a 16 GB unified-memory laptop with a 4.3 GiB model: 3.4 s on the first load, 37.6 tok/s on the
+  GPU against 23.9 on the cores, and the rate read for the side that served was the rate the
+  answer decoded at. New parameter `--trial-answer-mix`, set by the plan
+  ([hardware-planning.md](docs/hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it)).
+  A model that is streamed is not affected: this is for models the plan holds whole in memory.
+- **A model the plan streams is tried whole on a GPU that shares the host's memory, where the GPU
+  can hold it, and the first load keeps the faster.** On a laptop with 31 GB and integrated
+  graphics, a published benchmark of 0.46.0 measured a 21 GB model at 12 tok/s where llama.cpp with
+  every layer on the same GPU decoded 40: the model fit, but not beside the room that machine asks
+  to be left, so the plan streamed it with an 18.6 GiB cache and decoded on the cores. Now, where
+  the whole model and its compute buffer stay inside what the streaming plan itself may hold, the
+  load opens the model on the device, times it there and on the cores (above), and keeps the device
+  unless the cores are faster by the margin; where the device does not keep it, the session reopens
+  as the streaming plan (`RunConfig::fallback`), which is otherwise unchanged. A model larger than
+  what the process may hold streams as before. The plan shows both parts (`held-whole`). The rule
+  is tested on a machine of that shape in `planner_test` and the reopening on a real session in the
+  gates (G28d); it was not run on that laptop ([field-reports.md](docs/field-reports.md)).
 
 ### Fixed
 - **A read of an expert that fails ends the run in every read mode** (the serial path, which is

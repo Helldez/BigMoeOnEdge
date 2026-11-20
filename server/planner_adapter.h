@@ -38,6 +38,10 @@ struct PlanOutcome {
     std::string error;                         // why there is no plan (no planner, no model)
     json body;                                 // the /api/plan object
     std::map<std::string, std::string> values; // parameters the plan changes, by key
+    // The plan's other part, where it has one (RunConfig::fallback), in the same form: the parameters
+    // that configuration changes from the one the plan was given. Empty where the plan is one part.
+    bool has_fallback = false;
+    std::map<std::string, std::string> fallback_values;
     json decisions = json::array();
     // What the plan's memory ledger charges the run with (Ledger::held): the session's own account
     // of the memory it holds once loaded, which a question about loading another model gives back.
