@@ -32,6 +32,15 @@ Semantic Versioning.
 - **A route-trace CSV with an expert id past the model's experts is refused** instead of being
   replayed: the replay indexes its tables by layer and id, and such a row wrote past them. The
   native format already refused it; an id past 32 bits is refused too, not wrapped.
+- **A prefill device the plan arms no longer costs the cache the wide graph's buffers.** Once such
+  a device is armed the graph is held to the device's bound (8192 tokens), but the ledger had been
+  made before that, at the width the plan had chosen for the host: on a long context the wide
+  graph's compute buffers stayed charged, on the host and again as the device's own row, and the
+  expert cache was sized under them. With a 32768-token context and a graph of 16 KiB a token the
+  ledger charged 512 MiB of buffers where the bounded graph takes 128, and the cache was 384 MiB
+  smaller than with the same device named by `--prefill-device`. The device is now weighed, and
+  the ledger made, with the graph it will run; a test pins that both ways of arming it give the
+  same ledger. Nothing changes where the context is no wider than the bound, or `--ubatch` is set.
 
 ## [0.46.1] - 2026-11-19
 

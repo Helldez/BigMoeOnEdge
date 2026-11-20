@@ -863,7 +863,9 @@ the context on a device. It is no wider than the default, so a device's graph is
 the width the fitter placed against. A device computes the graph where it holds layers, where a
 device expert cache computes the experts there, or where a prefill device takes the prompts; a
 prefill device the plan arms itself is chosen after the width, so the width is held to the bound
-again once it is armed. The image floor does not lift this bound: a cap on an image's tokens past
+again once it is armed, and the device is weighed, and the ledger made, with that bounded graph's
+buffers (`fit_prefill_device`): the plan that arms a device and the caller who names the same one
+get the same ledger. The image floor does not lift this bound: a cap on an image's tokens past
 8192 would widen every prompt's pass on the device, which is the abort the bound exists for. There
 the bound wins, and an image whose tokens attend both ways and do not fit the pass is refused with
 the error that names `--ubatch` and `--image-max-tokens`; the plan's note says so. A device's buffers
