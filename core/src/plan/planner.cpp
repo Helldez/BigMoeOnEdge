@@ -1716,10 +1716,17 @@ void choose_graph_width(Planning & s) {
 // A prefill device the plan armed computes every prompt's pass, as wide as the graph: held to the
 // device's bound like any device that computes the graph (#533). The width rule ran before the device
 // was chosen, so a graph it left wider is narrowed here; narrower only gives memory back.
+// The width that rule holds the graph to, or 0 where it leaves the graph as it is. Asked before the
+// device is armed too (fit_prefill_device), so the device is weighed with the graph it will run.
+uint32_t prefill_width_bound(const Planning & s) {
+    const uint32_t bound = device_pass_bound(s.pol);
+    return s.req.is_pinned("ubatch") || bound == 0 || (uint32_t) s.p.config.graph_width() <= bound ? 0 : bound;
+}
+
 void bound_prefill_width(Planning & s) {
     Plan & p = s.p;
-    const uint32_t bound = device_pass_bound(s.pol);
-    if (s.req.is_pinned("ubatch") || bound == 0 || (uint32_t) p.config.graph_width() <= bound) return;
+    const uint32_t bound = prefill_width_bound(s);
+    if (bound == 0) return;
     const uint32_t was = (uint32_t) p.config.graph_width();
     s.placement = s.placement.at_width(bound);
     p.placement = s.placement;
@@ -1746,6 +1753,15 @@ uint64_t checkpoint_reserve(const RunConfig & c, const Placement & placement) {
     return placement.context_fixed_bytes * (uint64_t) c.ctx_checkpoints;
 }
 
+// The context and the compute buffers a placement leaves on the host (residency_regime says what is
+// counted and why). A function of the placement alone, so a graph narrowed later is charged again.
+uint64_t host_fixed_of(const Placement & placement) {
+    uint64_t host_fixed = placement.raw_host_context_bytes + placement.raw_host_compute_bytes;
+    if (placement.shared_memory_placement) host_fixed += placement.device_context_bytes;
+    if (placement.fitted) host_fixed = std::min(host_fixed, placement.host_resident_bytes);
+    return host_fixed;
+}
+
 // What the host holds against what it may (s.host_all, s.air and the rest), and the regime that puts
 // the run in. Read for a model with no experts too, where the only question it answers is whether the
 // whole model is held in memory.
@@ -1768,9 +1784,7 @@ Regime residency_regime(Planning & s) {
     // a context is the same size on either side of a boundary this machine does not have; the
     // compute buffer is the host's own, since what a device reserves to compute is not what the
     // cores will.
-    uint64_t host_fixed = placement.raw_host_context_bytes + placement.raw_host_compute_bytes;
-    if (placement.shared_memory_placement) host_fixed += placement.device_context_bytes;
-    if (placement.fitted) host_fixed = std::min(host_fixed, placement.host_resident_bytes);
+    const uint64_t host_fixed = host_fixed_of(placement);
     // Context checkpoints are host memory the fitter never saw, and the run fills it as the chat
     // goes: charged up front, at the count the run may keep, so the cache is not sized into it.
     s.checkpoint_bytes = checkpoint_reserve(s.p.config, placement);
@@ -2818,7 +2832,31 @@ Allocation fit_prefill_device(Planning & s,
     // when they are busy, so standing them beside it charges decode, on every token, for memory only
     // a prefill uses. A caller who set it either way has chosen.
     const bool turns = s.req.is_pinned("prefill-slots-on-demand") ? p.config.prefill.slots_on_demand : true;
-    AllocationInputs with = ai;
+    // Weighed with the graph the device will run. Armed, the device computes every pass and the graph
+    // is held to its bound (bound_prefill_width), and a narrower graph reserves smaller buffers, on
+    // the host and as the device's own row. The ledger used to be made at the width the plan had
+    // before, and the bound applied after it: the wide graph's buffers stayed charged and the cache
+    // was sized under them (at a 32768 context, 384 MiB of cache for a graph of 16 KiB a token). So
+    // the placement is the bounded one from here on, and put back on every refusal.
+    const Placement wide = s.placement;
+    const uint64_t wide_fixed = s.host_fixed, wide_all = s.host_all, wide_dense = s.host_dense;
+    if (const uint32_t bound = prefill_width_bound(s)) {
+        s.placement = wide.at_width(bound);
+        s.host_fixed = host_fixed_of(s.placement);
+        const uint64_t freed = wide_fixed > s.host_fixed ? wide_fixed - s.host_fixed : 0;
+        s.host_all = wide_all - std::min(wide_all, freed);
+        s.host_dense = wide_dense - std::min(wide_dense, freed);
+    }
+    const auto refused = [&]() -> const Allocation & {
+        s.placement = wide;
+        s.host_fixed = wide_fixed;
+        s.host_all = wide_all;
+        s.host_dense = wide_dense;
+        return alloc;
+    };
+    AllocationInputs narrow = ai;
+    narrow.fixed_bytes = s.host_fixed;
+    AllocationInputs with = narrow;
     Allocation armed;
     int slots = 0;
     const uint64_t cycle = s.host_model.token_cycle_bytes;
@@ -2831,7 +2869,7 @@ Allocation fit_prefill_device(Planning & s,
     int traded_slots = 0;
     for (int n = slots_by_caller ? p.config.prefill.slots : PrefillDeviceConfig::slots_max;
          n >= PrefillDeviceConfig::slots_min; --n) {
-        with = ai;
+        with = narrow;
         charge_prefill(s, &best, with, n, turns);
         own_short = own_pool(&best) && best.memory_free > 0 && best.memory_free < prefill_need(s.model, n);
         armed = allocate(s.hw, s.host_model, with, s.pol);
@@ -2868,7 +2906,7 @@ Allocation fit_prefill_device(Planning & s,
                best.name + " computes a wide prefill at " + ratio + " the host's rate and has " +
                    u64s(mib(best.memory_free)) + " MiB free of the " + u64s(mib(least)) +
                    " MiB even one layer of this model takes there: refused on memory" + unweighed);
-        return alloc;
+        return refused();
     }
     // The cache is the only thing the device takes: a trade, settled by the price where there is one.
     PrefillTrade trade;
@@ -2895,7 +2933,7 @@ Allocation fit_prefill_device(Planning & s,
                    u64s(mib(alloc.cache_bytes)) + " MiB without the device; " + trade.account +
                    ", so the cache is kept: the device is not cheaper by the " +
                    u64s((uint64_t) (s.pol.min_backend_win * 100.0f + 0.5f)) + "% margin" + unweighed);
-        return alloc;
+        return refused();
     }
     if (slots == 0) {
         s.note("prefill-device", "off", Source::Derived,
@@ -2919,7 +2957,7 @@ Allocation fit_prefill_device(Planning & s,
                     : !fits_held   ? "which does not fit what the process may hold while it decodes"
                                    : "which does not fit what the process may hold while a prompt runs") +
                    unweighed);
-        return alloc;
+        return refused();
     }
     ai = with;
     p.config.prefill.device = best.name;

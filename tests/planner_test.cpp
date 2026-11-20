@@ -2129,6 +2129,45 @@ int main() {
             check((uint32_t) by_caller.config.graph_width() == dev_bound,
                   "width, prefill device named by the caller: the graph is held to the device's bound",
                   std::to_string(by_caller.config.graph_width()));
+            // And the ledger is the bounded graph's. The plan arms the device after the ledger is
+            // sized, and the bound narrows the graph then: the buffers the wide graph would have
+            // taken were still charged, on the host and again as the device's own, and the cache was
+            // sized under them. A device the plan arms and the same device named by the caller run
+            // the same graph, so they hold the same and leave the cache the same.
+            for (const uint64_t per_token : {1 * KiB, 16 * KiB, 48 * KiB}) {
+                Placement steep = probed;
+                steep.host_compute_per_token = per_token;
+                steep.raw_host_compute_bytes = 8192ull * per_token;
+                const Plan armed =
+                    plan_run(long_cfg, machine(1500.0, Tri::Yes), mm, steep, PlanRequest{}, PlannerPolicy::defaults());
+                if (armed.config.prefill.device != "accel" || (uint32_t) armed.config.graph_width() != dev_bound)
+                    continue; // at this slope the memory already held the graph narrower: nothing to compare
+                // The caller's device with the scheme the plan armed: as many slots, in turn with the cache.
+                RunConfig same_scheme = named_dev;
+                same_scheme.prefill.slots = armed.config.prefill.slots;
+                same_scheme.prefill.slots_on_demand = armed.config.prefill.slots_on_demand;
+                PlanRequest pin_scheme = pin_dev;
+                pin_scheme.pinned.push_back("prefill-slots");
+                pin_scheme.pinned.push_back("prefill-slots-on-demand");
+                const Plan named =
+                    plan_run(same_scheme, machine(1500.0, Tri::Yes), mm, steep, pin_scheme, PlannerPolicy::defaults());
+                const LedgerRow * fa = ledger_row(armed, LedgerKind::ContextCompute);
+                const LedgerRow * fn = ledger_row(named, LedgerKind::ContextCompute);
+                const LedgerRow * da = ledger_row(armed, LedgerKind::Device);
+                const LedgerRow * dn2 = ledger_row(named, LedgerKind::Device);
+                const uint64_t at_bound =
+                    armed.placement.raw_host_context_bytes + armed.placement.raw_host_compute_bytes;
+                const std::string at = " at " + std::to_string(per_token >> 10) + " KiB a token";
+                check(fa && fa->bytes == at_bound,
+                      "width, prefill device armed by the plan: the ledger charges the bounded graph's buffers" + at,
+                      (fa ? std::to_string(fa->bytes >> 20) : std::string("no row")) + " MiB charged, " +
+                          std::to_string(at_bound >> 20) + " at the bound");
+                check(fa && fn && da && dn2 && fa->bytes == fn->bytes && da->bytes == dn2->bytes &&
+                          armed.cache_budget_bytes == named.cache_budget_bytes,
+                      "width, prefill device armed by the plan: the same ledger as the device named by the caller" + at,
+                      std::to_string(armed.cache_budget_bytes >> 20) + " MiB of cache against " +
+                          std::to_string(named.cache_budget_bytes >> 20));
+            }
         }
         check(on.config.prefill.best_effort, "prefill: a device the plan armed is never a condition for the load");
         // The expert slots take turns with the cache: it is idle exactly when they are busy, so
