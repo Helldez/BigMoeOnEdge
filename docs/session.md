@@ -119,7 +119,11 @@ boundary via llama's abort callback (installed unconditionally at open, so it wo
 overlap alike). It leaves the model and cache intact; the returned `RunResult` has `cancelled =
 true`. In chat mode a cancel **rolls the turn back** to the reused prefix (dropping this turn's KV
 and un-appending the user message) so prior turns stay usable and the conversation can continue.
-Cancel is distinct from a fatal streaming error, which is sticky and ends the session.
+Cancel is distinct from a fatal streaming error, which is sticky and ends the session: a read of an
+expert or of a row-gathered table that fails stops the graph through the same abort callback, in
+serial and overlap alike, and every later `generate()` fails with "expert stream I/O failed"
+(`tests/expert_read_failure_test.cpp`). The cache then holds entries whose bytes never arrived, so
+the session is closed and opened again rather than continued.
 
 `GenerateRequest::stop` optionally borrows a caller-owned `std::atomic<bool>` until `generate()`
 returns. The decoder's abort callback and the image encoder's eval callback read it alongside the

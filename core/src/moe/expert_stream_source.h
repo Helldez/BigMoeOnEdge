@@ -125,6 +125,7 @@ public:
     // llama_set_abort_callback so a mid-decode I/O failure aborts the graph cleanly
     // instead of computing on a half-read expert.
     bool fatal() const { return fatal_.load(std::memory_order_acquire); }
+    void mark_fatal() override { fatal_.store(true, std::memory_order_release); }
 
     // Explicitly set the cache budget in bytes and evict down to it immediately (clamped to the
     // full expert-set size). PRECONDITION: no decode in flight — the caller must not be inside a

@@ -1366,17 +1366,23 @@ void RouterHook::serve_rows(ggml_tensor * t) {
         ggml_tensor * table = t->src[0];
         ggml_tensor * ids = t->src[1];
         if (table && row_source_->serves(table)) {
-            if (ids && ids->data && ids->type == GGML_TYPE_I32)
-                row_source_->gather(table, (const int32_t *) ids->data, (int) ggml_nelements(ids));
-            else
-                row_source_->materialize(table); // an index we cannot read: take the whole table
+            const bool ok = ids && ids->data && ids->type == GGML_TYPE_I32
+                                ? row_source_->gather(table, (const int32_t *) ids->data, (int) ggml_nelements(ids))
+                                : row_source_->materialize(table); // an index we cannot read: the whole table
+            if (!ok) rows_failed();
         }
         return;
     }
     for (int s = 0; s < GGML_MAX_SRC; ++s) {
         ggml_tensor * src = t->src[s];
-        if (src && row_source_->serves(src)) row_source_->materialize(src);
+        if (src && row_source_->serves(src) && !row_source_->materialize(src)) rows_failed();
     }
+}
+
+// A row read that failed leaves the gather reading whatever the address space holds (IRowSource):
+// the run ends through the expert source's flag, which the session's abort callback already reads.
+void RouterHook::rows_failed() {
+    if (source_) source_->mark_fatal();
 }
 
 // A routing node, observed with its selected ids materialized: rewrite them if a policy asks,

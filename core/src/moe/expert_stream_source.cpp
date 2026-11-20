@@ -1426,6 +1426,15 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
     if (!active_ || il < 0 || il >= n_layer_ || !layers_[il].bound || !ids || n_ids <= 0) return false;
     freq_pass_check(il);
     if (overlap_) return load_layer_async(il, ids, n_ids);
+    // A load that failed is the end of the run, as on the overlap path: the entries it staged are
+    // already counted resident (touch_entry) and their slices were never read, so a later token
+    // would be served them as hits. The session's abort callback reads the flag and stops the graph
+    // this layer's matmul belongs to; nothing downstream reads a slot nobody filled.
+    if (fatal_.load(std::memory_order_acquire)) return false;
+    const auto failed = [&] {
+        fatal_.store(true, std::memory_order_release);
+        return false;
+    };
     LayerExperts & L = layers_[il];
     cgen_++;
     // A wide graph is a prefill; a decode or a speculative verify window is far narrower.
@@ -1492,14 +1501,14 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
         }
         seen_[e] = 1;
         ++n_unique;
-        if (!stage(e)) return false;
+        if (!stage(e)) return failed();
     }
     if (load_all_) {
         for (int e = 0; e < n_expert_; ++e) {
             if (seen_[e]) continue;
             seen_[e] = 1;
             ++n_unique;
-            if (!stage(e)) return false;
+            if (!stage(e)) return failed();
         }
     }
     account_demand(il, n_unique);
@@ -1511,7 +1520,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
     if (io_threads_ <= 1 || njobs <= 1) {
         for (size_t i = 0; i < njobs; ++i) {
             const IoJob & j = jobs_[i];
-            if (!read_slice(0, j)) return false;
+            if (!read_slice(0, j)) return failed();
         }
     } else {
         uint64_t my_gen;
@@ -1529,7 +1538,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
             std::unique_lock<std::mutex> lk(io_mtx_);
             io_cv_done_.wait(lk, [&] { return done_cnt_ == njobs || io_stop_; });
         }
-        if (io_err_.load()) return false;
+        if (io_err_.load()) return failed();
     }
     read_ns_.fetch_add((long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - t0).count());
 

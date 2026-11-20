@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **A read of an expert that fails ends the run in every read mode** (the serial path, which is
+  the default). Without `--overlap` a failed read (a storage error, a shard cut
+  short, a drive removed) returned to a caller that dropped the result: the entry was already
+  counted resident, the layer's matmul ran on a slice nobody had read, the answer was reported as a
+  success, and the entry was served as a hit on later tokens until it was evicted. Only the overlap
+  path stopped the run. The serial path now sets the same sticky failure, the session reports
+  "expert stream I/O failed" in both modes, and a failed read of a row-gathered table ends the run
+  the same way instead of only counting an error. A new gate (`expert_read_failure`) refuses the
+  reads of a real session over the fixture and fails if any mode answers.
+
 ## [0.46.1] - 2026-11-19
 
 ### Fixed

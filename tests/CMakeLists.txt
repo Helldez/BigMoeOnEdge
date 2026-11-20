@@ -18,6 +18,9 @@ target_include_directories(bmoe_moe_gates PRIVATE ${CMAKE_SOURCE_DIR}/core/src/m
 if(UNIX AND NOT ANDROID)
     add_executable(bmoe_startup_pin_fit_test startup_pin_fit_test.cpp startup_pin_platform_io.cpp)
     target_link_libraries(bmoe_startup_pin_fit_test PRIVATE bmoe_core)
+    # The same substitution for one syscall, pread: a real session whose expert reads can be refused.
+    add_executable(bmoe_expert_read_failure_test expert_read_failure_test.cpp expert_read_failure_platform_io.cpp)
+    target_link_libraries(bmoe_expert_read_failure_test PRIVATE bmoe_core)
 endif()
 
 add_executable(bmoe_lock_limits_test lock_limits_test.cpp)
@@ -288,6 +291,12 @@ if(PYTHON3)
     add_test(NAME output_constraint_session COMMAND bmoe_output_constraint_session_test
              "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-qwen3moe.gguf")
     set_tests_properties(output_constraint_session PROPERTIES FIXTURES_REQUIRED TINY_MOE_MODEL_qwen3moe)
+
+    if(TARGET bmoe_expert_read_failure_test)
+        add_test(NAME expert_read_failure COMMAND bmoe_expert_read_failure_test
+                 "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-qwen3moe.gguf")
+        set_tests_properties(expert_read_failure PROPERTIES FIXTURES_REQUIRED TINY_MOE_MODEL_qwen3moe)
+    endif()
 
     if(TARGET bmoe_startup_pin_fit_test)
         add_test(NAME startup_pin_fit COMMAND bmoe_startup_pin_fit_test

@@ -28,6 +28,10 @@ public:
     // Returns false on I/O failure (serial) or if a prior async batch already failed.
     virtual bool load_layer(int il, const int32_t * ids, int n_ids) = 0;
 
+    // A read made beside this source failed (a row of a table it lends the hook, IRowSource): end
+    // the run as a failed load_layer does. Default: a source with no such state has nothing to end.
+    virtual void mark_fatal() {}
+
     // Hint that layer `il` is likely to route `ids` (n_ids of them) on a future token, so the
     // implementation may read them ahead on otherwise-idle lanes. Purely advisory: a correct
     // guess makes the later load_layer(il, …) a cache hit, a wrong guess wastes a read — neither
