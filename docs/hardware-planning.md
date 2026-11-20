@@ -1214,7 +1214,9 @@ on an integrated GPU and only the bandwidth tier is left.
 
 The device tier (`choose_device_tier`, [measured-planning.md](measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache)):
 the experts used most live next to the fastest processor, as RAM holds what flash would read. Where
-every layer's dense part is on devices with memory of their own and a device computes the model's
+every layer's dense part is on devices with memory of their own (`n_gpu_layers` past `n_layer`:
+llama.cpp counts `n_layer + 1` slots, the output last, so `n_layer` of them still leaves the first
+block on the host) and a device computes the model's
 experts faster than the host by `min_backend_win`, the card's free memory past its dense part holds
 a cache of the experts used most, from every layer, computed on the device: every layer's experts
 are kept on the host (resident or streamed, as the regime then says) and the bytes become

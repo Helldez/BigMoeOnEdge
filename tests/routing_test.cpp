@@ -181,6 +181,17 @@ int main() {
         check(!parse_routing_trace("hello\n", bad, err), "text that is not a trace is refused", err);
         check(!parse_routing_trace("# bmoe routing v1\n# n_layer=1 n_expert=4 n_expert_used=1\np 0 1\n", bad, err),
               "a layer without expert bytes is refused, never priced as free", err);
+        // An id past the model's experts, in the route-trace CSV: the replay indexes its tables by
+        // layer and id, so this used to write past them. The preamble may come after the rows.
+        const std::string csv_head = "# route_trace v1\nturn,phase,step,layer,slot,expert,w,x,y\n";
+        const std::string csv_tail = "# n_layer=1 n_expert=4 n_expert_used=1\n# layer=0 expert_bytes=10\n";
+        check(parse_routing_trace(csv_head + "0,1,0,0,0,3,0,0,0\n" + csv_tail, bad, err) && bad.batches.size() == 1,
+              "a route-trace CSV with its ids in range is read", err);
+        check(!parse_routing_trace(csv_head + "0,1,0,0,0,300,0,0,0\n" + csv_tail, bad, err) &&
+                  err.find("out of range") != std::string::npos,
+              "a route-trace CSV row with an id past the experts is refused", err);
+        check(!parse_routing_trace(csv_head + "0,1,0,0,0,4294967297,0,0,0\n" + csv_tail, bad, err),
+              "a route-trace CSV row with an id past 32 bits is refused, not wrapped", err);
     }
 
     // The hottest experts: every routing is a use, ranked by uses, ties by block then id.

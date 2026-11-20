@@ -1287,9 +1287,11 @@ bool Session::Impl::read_model(Opening & o) {
     if (!cfg.mmproj.empty()) {
         std::string merr;
         // On the devices by the rule the model's own placement follows (load_model): a layer placed
-        // on one means they are wanted. The planner prices the projector by the same rule.
+        // on one means they are wanted, and -1 is every layer, which is what the fitter leaves where
+        // the model fits a device whole. The planner prices the projector by the same rule, and the
+        // fitter reserved its room there.
         const bool devices_wanted =
-            cfg.device_use == DeviceUse::All || (cfg.device_use == DeviceUse::Auto && cfg.n_gpu_layers > 0);
+            cfg.device_use == DeviceUse::All || (cfg.device_use == DeviceUse::Auto && cfg.n_gpu_layers != 0);
         media = detail::MediaInput::open(cfg.mmproj, m, cfg.n_threads, devices_wanted, cfg.image_max_tokens,
                                          &cancel_requested, merr);
         if (!media) return o.fail(merr);

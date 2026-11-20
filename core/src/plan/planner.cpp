@@ -781,7 +781,10 @@ void choose_device_tier(Planning & s) {
     // The dense part of every layer must already be on the devices: it is read by every token, so it
     // has the first claim on the fast memory, and the fitter gives it that claim before any expert.
     // A layer whose dense part is left on the host would cross to reach a cache on the device.
-    if ((uint32_t) pl.n_gpu_layers < m.n_layer) {
+    // llama.cpp counts n_layer + 1 slots, the output last, and fills the devices from the top, so
+    // every block is there only from n_layer + 1: at n_layer the first block is still the host's,
+    // which is the count choose_graph_width calls short too.
+    if ((uint32_t) pl.n_gpu_layers <= m.n_layer) {
         s.note("device-cache-mb", "0", Source::Derived,
                "Not every layer's dense part fits on the device: no cache of experts there.",
                "the capacity fitter put " + u64s((uint64_t) pl.n_gpu_layers) + " of " + u64s(m.n_layer + 1) +
@@ -3261,11 +3264,14 @@ std::string context_suggestion(const Placement & placement, uint64_t cycle, uint
     const double keep = 1.0 - (double) shortfall / (double) kv;
     const uint64_t suggest = (uint64_t) ((double) placement.n_ctx * keep);
     // Down to the next power of two: a context is a number a person types, and one that clears the
-    // floor by arithmetic but not in practice would be worse than no suggestion.
+    // floor by arithmetic but not in practice would be worse than no suggestion. Nothing is named
+    // where the arithmetic asks for less than the smallest context worth suggesting: rounding up to
+    // it would name a context that frees less than the cache is short of.
+    if (suggest < k_min_suggested_ctx) return "";
     uint64_t pow2 = k_min_suggested_ctx;
     while (pow2 * 2 <= suggest)
         pow2 *= 2;
-    if (pow2 < k_min_suggested_ctx || pow2 >= (uint64_t) placement.n_ctx) return "";
+    if (pow2 >= (uint64_t) placement.n_ctx) return "";
     return ". The context reserves " + u64s(mib(kv)) + " MiB here and the cache is " + u64s(mib(shortfall)) +
            " MiB short, so " + flag_spelling("ctx-size", u64s(pow2)) +
            " would clear the floor and keep a cache: the first stage shrinks the context only until the model fits, "

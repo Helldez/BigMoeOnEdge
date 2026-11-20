@@ -16,6 +16,22 @@ Semantic Versioning.
   "expert stream I/O failed" in both modes, and a failed read of a row-gathered table ends the run
   the same way instead of only counting an error. A new gate (`expert_read_failure`) refuses the
   reads of a real session over the fixture and fails if any mode answers.
+- **No device expert cache where the first block is still on the host.** llama.cpp counts
+  `n_layer + 1` slots, the output last, and fills the devices from the top, so a placement of
+  exactly `n_layer` leaves block 0 on the host, dense part and all. The device tier took that
+  count as "every layer's dense part is on the device" and armed the cache, which that block then
+  crossed to on every token; the graph-width rule already called the same placement short.
+- **The projector follows the model onto the device where the whole model fits one.** The planner
+  prices it on the device for any placement with layers there, `-1` (every layer) included, and
+  the fitter reserves its room; the session asked for `n_gpu_layers > 0` and loaded it on the
+  cores in exactly that case.
+- **A context suggestion that would not bring the cache back is no longer made.** Where a cache
+  falls under one token cycle the plan may name a shorter `--ctx-size` that would clear the floor;
+  when the arithmetic asked for fewer than 512 tokens it named 512 anyway, which frees less than
+  the cache is short of.
+- **A route-trace CSV with an expert id past the model's experts is refused** instead of being
+  replayed: the replay indexes its tables by layer and id, and such a row wrote past them. The
+  native format already refused it; an id past 32 bits is refused too, not wrapped.
 
 ## [0.46.1] - 2026-11-19
 

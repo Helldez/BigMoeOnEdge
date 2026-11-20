@@ -449,6 +449,46 @@ int main() {
               "tight machine: the reason names the derived floor", c ? c->reason : "no cache-mb decision");
         check(validate(p.config).ok, "tight machine: the plan is a valid config", validate(p.config).error);
 
+        // The reason may name a shorter context that would bring the cache back. Whatever it names
+        // has to do that by the figures of the same sentence: the suggestion is rounded down to a
+        // power of two, and at the smallest one it offers the rounding once went UP past what was
+        // asked, naming a context that frees less than the cache is short of.
+        int suggested = 0, unsuggested = 0;
+        for (uint64_t budget = 3 * GiB + 800 * MiB; budget <= 4 * GiB + 800 * MiB; budget += 16 * MiB) {
+            HardwareProfile sweep = tight;
+            sweep.residency_budget = budget;
+            Placement pl;
+            pl.n_ctx = 4096;
+            pl.raw_host_context_bytes = 440 * MiB;
+            const Plan q = plan_run(base_cfg(), sweep, model, pl, PlanRequest{});
+            const Decision * d = find(q, "cache-mb");
+            if (!d) continue;
+            unsigned long long left = 0, cycle = 0, kv = 0, shortfall = 0, ctx = 0;
+            const size_t at_left = d->reason.find("the "), at_cycle = d->reason.find("token cycle of ");
+            const size_t at_kv = d->reason.find("The context reserves "), at_ctx = d->reason.find("ctx-size ");
+            if (at_kv == std::string::npos || at_ctx == std::string::npos) {
+                unsuggested += q.config.moe.cache_mb == 0;
+                continue;
+            }
+            if (std::sscanf(d->reason.c_str() + at_left, "the %llu MiB left", &left) != 1 ||
+                std::sscanf(d->reason.c_str() + at_cycle, "token cycle of %llu MiB", &cycle) != 1 ||
+                std::sscanf(d->reason.c_str() + at_kv, "The context reserves %llu MiB here and the cache is %llu MiB",
+                            &kv, &shortfall) != 2 ||
+                std::sscanf(d->reason.c_str() + at_ctx, "ctx-size %llu", &ctx) != 1) {
+                check(false, "tight machine, context suggestion: the reason reads as figures", d->reason);
+                continue;
+            }
+            ++suggested;
+            // What the named context frees, against what the cache lacks, a MiB of rounding allowed.
+            const double freed = (double) kv * (1.0 - (double) ctx / 4096.0);
+            check(ctx < 4096 && freed + 1.0 >= (double) shortfall,
+                  "tight machine, context suggestion: the context it names frees what the cache is short of",
+                  d->reason);
+        }
+        check(suggested > 0 && unsuggested > 0,
+              "tight machine, context suggestion: the sweep crosses both a named context and none worth naming",
+              std::to_string(suggested) + " named, " + std::to_string(unsuggested) + " not");
+
         const Allocation & a = p.allocation;
         const GroupPlacement & e = a.at(WeightGroup::Experts);
         check(e.lane == Lane::ExpertStream && e.resident_bytes == 0 && a.cache_bytes == 0,
@@ -3408,6 +3448,18 @@ int main() {
                       dq->reason.find("dense parts are on the host") != std::string::npos,
                   "device tier, partial placement: the plan says the dense parts are not all on the device",
                   dq ? dq->reason : "no decision");
+
+            // One slot short is partial too. llama.cpp counts n_layer + 1 slots, the output last, and
+            // fills the devices from the top: n_layer of them leaves the first block on the host,
+            // dense part and all, so a cache on the device would be crossed to on every token.
+            Placement one_short = reserved;
+            one_short.n_gpu_layers = (int32_t) model.n_layer;
+            const Plan os = plan_run(base_cfg(), card, seeing, one_short, PlanRequest{}, PlannerPolicy::defaults());
+            const Decision * ds = find(os, "device-cache-mb");
+            check(os.config.moe.device_cache_mb == 0 && ds && ds->value == "0" &&
+                      ds->reason.find("dense parts are on the host") != std::string::npos,
+                  "device tier, one slot short: the first block's dense part is on the host, so no tier",
+                  ds ? std::to_string(os.config.moe.device_cache_mb) + " MiB: " + ds->reason : "no decision");
 
             // A device whose memory is the host's: the fitter's placement is set aside, and the
             // projector is a row of the host's ledger, as on a machine with no device at all.

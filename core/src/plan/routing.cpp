@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <list>
@@ -175,7 +176,8 @@ bool parse_route_csv(std::istringstream & in, RoutingTrace & t, std::string & er
         if (f.size() < 9) continue; // the script skips a short row too
         long long turn = 0, phase = 0, step = 0, layer = 0, slot = 0, expert = 0;
         if (!to_i64(f[0], turn) || !to_i64(f[1], phase) || !to_i64(f[2], step) || !to_i64(f[3], layer) ||
-            !to_i64(f[4], slot) || !to_i64(f[5], expert) || layer < 0 || expert < 0) {
+            !to_i64(f[4], slot) || !to_i64(f[5], expert) || layer < 0 || layer > (1 << 20) || expert < 0 ||
+            expert > INT32_MAX) {
             error = "unreadable row: " + line;
             return false;
         }
@@ -267,6 +269,15 @@ bool parse_routing_trace(const std::string & text, RoutingTrace & out, std::stri
             // report hits at every size: a wrong answer that looks like a good one.
             error = "no expert bytes for layer " + std::to_string(b.layer) + " in the preamble";
             return false;
+        }
+        // Checked here, after either format: the CSV's preamble can follow its rows, so the count is
+        // only known once the file is read, and the replay indexes its tables by layer and id.
+        for (int32_t e : b.experts) {
+            if (e < 0 || (t.n_expert && (uint32_t) e >= t.n_expert)) {
+                error = "expert id out of range: " + std::to_string(e) + " on layer " + std::to_string(b.layer) +
+                        " of a trace over " + std::to_string(t.n_expert) + " experts";
+                return false;
+            }
         }
     }
     out = std::move(t);
