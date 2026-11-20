@@ -282,15 +282,21 @@ int main() {
         h.residency_budget = 74 * GiB; // what the issue's host offered after its margin
         h.memory_total = 96 * GiB;
         h.devices.clear();
+        // Held whole beside the table it leaves mapped, the model fits that host: nothing streams.
+        check(plan_run(base_cfg(), h, tabled, PlanRequest{}).regime == Regime::Fits,
+              "mapped table: the model held beside its table fits");
+        // On a host that cannot hold the expert set, the experts stream and the cache gets what the
+        // table would have taken: charged, it would leave the cache under 10 GB of a 40 GB budget.
+        h.residency_budget = 40 * GiB;
         const Plan p = plan_run(base_cfg(), h, tabled, PlanRequest{});
-        check(p.regime == Regime::ExpertsStream, "mapped table: experts stream");
+        check(p.regime == Regime::ExpertsStream, "mapped table: experts stream", regime_name(p.regime));
         check(p.config.moe.dense_mapped == tabled.embedding_tensors, "mapped table: the run leaves the tables mapped");
         const LedgerRow * dense = ledger_row(p, LedgerKind::Dense);
         check(dense && dense->bytes < tabled.group(WeightGroup::Embedding).bytes,
               "mapped table: the ledger's dense row does not carry the table",
               dense ? std::to_string(dense->bytes >> 20) + " MiB" : "no row");
-        check((uint64_t) p.config.moe.cache_mb * MiB >= tabled.expert_bytes,
-              "mapped table: the cache holds the whole expert set", std::to_string(p.config.moe.cache_mb) + " MiB");
+        check((uint64_t) p.config.moe.cache_mb * MiB >= 20 * GiB, "mapped table: the cache is not short by the table",
+              std::to_string(p.config.moe.cache_mb) + " MiB");
         check(p.allocation.ledger.held <= p.allocation.ledger.holdable_cap, "mapped table: what is held fits",
               std::to_string(p.allocation.ledger.held >> 20) + " MiB");
         check(validate(p.config).ok, "mapped table: the plan is a valid config", validate(p.config).error);
@@ -311,6 +317,141 @@ int main() {
 
         const Decision * d = find(p, "dense-weights");
         check(d && d->source == Source::Derived, "phone: dense policy is derived, not defaulted");
+    }
+
+    // ── a table larger than the machine is not a dense set it must hold ─────────────
+    // Shaped after #664: a per-layer table several times the memory this process may hold, beside a
+    // dense set read whole that fits in a fraction of it. The graph gathers the table by row and the
+    // run leaves it mapped, so the experts stream; weighing the regime with the table in it told the
+    // user that not even the dense weights fit.
+    {
+        ModelProfile tabled = model;
+        tabled.embedding_tensors = {"token_embd.weight", "per_layer_token_embd.weight"};
+        tabled.group(WeightGroup::Embedding) = {28 * GiB, 30 * KiB, true, true};
+        tabled.dense_bytes += 28 * GiB - 344 * MiB;
+        tabled.file_bytes += 28 * GiB - 344 * MiB;
+        tabled.largest_dense_tensor = 27 * GiB;
+        const Plan p = plan_run(base_cfg(), phone(), tabled, PlanRequest{});
+        check(p.regime == Regime::ExpertsStream, "table past the machine: experts stream", regime_name(p.regime));
+        check(p.config.moe.dense_mapped == tabled.embedding_tensors,
+              "table past the machine: the run leaves the tables mapped");
+        const Decision * r = find(p, "regime");
+        check(r && r->reason.find("embedding tables the run may leave mapped") != std::string::npos,
+              "table past the machine: the regime says what it left out", r ? r->reason : "no decision");
+
+        // A caller who pinned a list without the tables holds them: the regime weighs them.
+        PlanRequest pinned;
+        pinned.pinned.push_back("dense-mapped");
+        RunConfig held = base_cfg();
+        held.moe.dense_mapped = {"token_embd.weight"};
+        const Plan q = plan_run(held, phone(), tabled, pinned);
+        check(q.regime == Regime::DenseOversized, "table past the machine: a pinned list that holds it is weighed",
+              regime_name(q.regime));
+        // One that names every table leaves them mapped as the plan would.
+        held.moe.dense_mapped = tabled.embedding_tensors;
+        check(plan_run(held, phone(), tabled, pinned).regime == Regime::ExpertsStream,
+              "table past the machine: a pinned list that names every table leaves them out");
+
+        // A dense set past the machine with no table in it is still what the regime says it is.
+        ModelProfile heavy = model;
+        heavy.group(WeightGroup::Attention).bytes += 8 * GiB;
+        heavy.dense_bytes += 8 * GiB;
+        heavy.file_bytes += 8 * GiB;
+        check(plan_run(base_cfg(), phone(), heavy, PlanRequest{}).regime == Regime::DenseOversized,
+              "dense past the machine: still oversized");
+
+        // Over a fitted placement, the tables are taken out as the placement's figure counted them.
+        Placement pl;
+        pl.fitted = true;
+        pl.outcome = "synthetic";
+        pl.n_gpu_layers = 24;
+        pl.n_ctx = 4096;
+        for (uint32_t il = 0; il < 24; ++il)
+            pl.host_expert_layers.push_back(il);
+        pl.host_table_bytes = 14 * GiB;
+        pl.host_resident_bytes = pl.host_table_bytes + 2 * GiB;
+        pl.device_bytes = 8 * GiB;
+        HardwareProfile h = desktop();
+        h.residency_budget = 8 * GiB;
+        check(plan_run(base_cfg(), h, tabled, pl, PlanRequest{}).regime == Regime::ExpertsStream,
+              "table past the machine, placed: experts stream");
+        pl.host_table_bytes = 0; // a fitter's figure with no table in it: all of it is held
+        check(plan_run(base_cfg(), h, tabled, pl, PlanRequest{}).regime == Regime::DenseOversized,
+              "placed, no table counted: the whole figure is weighed");
+    }
+
+    // ── a placement's host figure is where llama.cpp puts each part ─────────────────
+    // n_gpu_layers counts slots from the top, the output first; the input layer (the embedding
+    // tables) never leaves the host. Four blocks of 10/20/30/40, tables 100, head 50, a final norm 5.
+    {
+        ModelProfile m;
+        m.n_layer = 4;
+        m.layer_dense_bytes = {10, 20, 30, 40};
+        m.group(WeightGroup::Embedding).bytes = 100;
+        m.group(WeightGroup::Output).bytes = 50;
+        m.dense_bytes = 100 + 50 + 100 + 5;
+        const auto host = [&](int32_t ngl) { return host_dense_of(m, layer_slots(ngl, m.n_layer)); };
+        check(host(-1).bytes == 105 && host(-1).tables == 100, "slots: every slot leaves the tables and the norm",
+              std::to_string(host(-1).bytes));
+        check(host(5).bytes == 105, "slots: n_layer + 1 is every slot");
+        check(host(4).bytes == 115, "slots: n_layer moves the output and all but the lowest block",
+              std::to_string(host(4).bytes));
+        check(host(2).bytes == 165, "slots: two slots are the output and the top block", std::to_string(host(2).bytes));
+        check(host(0).bytes == m.dense_bytes, "slots: none is the whole dense set");
+        check(layer_slots(4, 4).host_blocks() == 1 && layer_slots(-1, 4).host_blocks() == 0 &&
+                  layer_slots(0, 4).host_blocks() == 4 && !layer_slots(0, 4).output_on_device(),
+              "slots: the blocks the host keeps");
+
+        // Without each block's bytes the blocks are what the tables and the head leave, by count.
+        ModelProfile coarse = m;
+        coarse.layer_dense_bytes.clear();
+        check(host_dense_of(coarse, layer_slots(3, 4)).bytes == 100 + 105 / 2,
+              "slots: a share of the blocks where their bytes are unknown",
+              std::to_string(host_dense_of(coarse, layer_slots(3, 4)).bytes));
+    }
+
+    // ── a placement's tables left mapped are not charged as dense ───────────────────
+    // The model above with a card: every slot on it, the experts on the host, so the host figure
+    // carries the 27 GB per-layer table whole, as llama.cpp keeps it. The run leaves the table mapped;
+    // charged all the same, it would hold the cache short by the table.
+    {
+        ModelProfile tabled = model;
+        tabled.embedding_tensors = {"token_embd.weight", "per_layer_token_embd.weight"};
+        tabled.group(WeightGroup::Embedding) = {27 * GiB, 30 * KiB, true, true};
+        tabled.expert_bytes = 46 * GiB;
+        tabled.group(WeightGroup::Experts) = {46 * GiB, tabled.token_cycle_bytes, false, true};
+        tabled.dense_bytes = 27 * GiB + 2728 * MiB;
+        tabled.file_bytes = tabled.expert_bytes + tabled.dense_bytes;
+        tabled.largest_dense_tensor = 27 * GiB - 512 * MiB;
+        Placement pl;
+        pl.fitted = true;
+        pl.outcome = "synthetic";
+        pl.n_gpu_layers = (int32_t) tabled.n_layer + 1;
+        pl.n_ctx = 4096;
+        for (uint32_t il = 0; il < tabled.n_layer; ++il)
+            pl.host_expert_layers.push_back(il);
+        const HostDense dense = host_dense_of(tabled, layer_slots(pl.n_gpu_layers, tabled.n_layer));
+        pl.host_resident_bytes = dense.bytes + 256 * MiB;
+        pl.raw_host_compute_bytes = 256 * MiB;
+        pl.host_table_bytes = dense.tables;
+        pl.device_bytes = 4 * GiB;
+        HardwareProfile h = desktop();
+        h.residency_budget = 74 * GiB;
+        h.memory_total = 96 * GiB;
+        check(plan_run(base_cfg(), h, tabled, pl, PlanRequest{}).regime == Regime::Fits,
+              "placed table: the model held beside its table fits");
+        h.residency_budget = 40 * GiB;
+        const Plan p = plan_run(base_cfg(), h, tabled, pl, PlanRequest{});
+        check(p.regime == Regime::ExpertsStream, "placed table: experts stream", regime_name(p.regime));
+        check(p.config.moe.dense_mapped == tabled.embedding_tensors, "placed table: the run leaves the tables mapped");
+        const LedgerRow * row = ledger_row(p, LedgerKind::Dense);
+        check(!row || row->bytes < tabled.group(WeightGroup::Embedding).bytes,
+              "placed table: the ledger's dense row does not carry the table",
+              row ? std::to_string(row->bytes >> 20) + " MiB" : "no row");
+        check((uint64_t) p.config.moe.cache_mb * MiB >= 20 * GiB, "placed table: the cache is not short by the table",
+              std::to_string(p.config.moe.cache_mb) + " MiB");
+        check(p.allocation.ledger.held <= p.allocation.ledger.holdable_cap, "placed table: what is held fits",
+              std::to_string(p.allocation.ledger.held >> 20) + " MiB");
     }
 
     // ── a platform that kills instead of reclaiming ─────────────────────────────────

@@ -100,6 +100,18 @@ the same tri-state property: only a known separate pool adds capacity; the bandw
 still decide whether moving compute is worthwhile. This topology correction does not establish
 that an entire automatic run fits or completes under memory pressure.
 
+What the host holds of a placement is read off llama.cpp's own assignment, not a share of the dense
+set by layer count (`layer_slots`, `host_dense_of`): `n_gpu_layers` counts slots from the top, the
+output first and then the blocks downwards, and the input layer, which holds the embedding tables,
+never leaves the host. So the host figure is the blocks below the first device slot (each block's own
+bytes), the tables whole, the output head where it was not moved, and the little outside the blocks
+(the final norm and the like). A share by layer count counted a table the host always holds at the
+fraction of blocks left there: with every slot on a card, none of a 27 GB per-layer table; split,
+part of a table the run leaves mapped, which the ledger then charged and the cache lost. It also put
+one block too many on the device, since the output takes the first slot. With the tables in the host
+figure, the ones the run leaves mapped come out of the dense reservation as they do without a
+placement.
+
 Two outcomes of the first stage end the plan early, and both are stated: if the host residual
 fits in RAM the experts stay resident and nothing streams (the classic `-ot exps=CPU` offload);
 if every layer's experts land on a device, nothing is left for the streamer. A model with no
@@ -363,7 +375,14 @@ and `BMOE_*` env overrides both count as the caller speaking.
    from what it reports for free.
 2. **Classify the regime** — a ratio of the two, never a property of either. The whole model inside
    the residency budget is `fits`; only the dense set is `experts-stream`; not even that is
-   `dense-oversized`.
+   `dense-oversized`. Both are weighed on what the run has to hold: the embedding tables the graph
+   gathers by row are left out, since the run can always leave them mapped (step 4 decides whether it
+   does when the experts stream; held whole, llama.cpp reads a large table's rows as a token asks,
+   and one it reads whole at load is small enough for the margin below the budget). A list the caller
+   pinned (`dense-mapped`) leaves them out only where it names every one. Weighed with the tables, a
+   model whose per-layer table alone is larger than the machine was called `dense-oversized`, and its
+   plan said "not even the dense weights fit", while its dense set held in a quarter of the memory
+   (#664); and a model held whole beside its table streamed for the table's sake.
 3. `fits` **declines streaming and says so**: on that machine reading experts from flash only adds
    reads that resident weights do not need.
 4. **Dense policy**, from what a reclaim costs here. The tables the allocation priced as left
