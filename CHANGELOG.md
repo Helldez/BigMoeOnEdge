@@ -83,6 +83,17 @@ Semantic Versioning.
   none, and that answer is what kept the copy of the experts the cards read from (two 16 GB cards:
   32.6 tok/s measured). A table llama.cpp reads whole at load is one small enough to, which the
   margin below the budget covers.
+- **A prefill device gives the CPU's unused compute reservation back again** (since the llama.cpp
+  bump of #278, #657). After moving the layer weights to the device, the session asks llama.cpp to
+  reserve its compute buffers again, so the CPU keeps only what its own graphs need instead of a
+  reservation for the widest graph with every weight on the CPU, which it never runs. It asked by
+  toggling `llama_set_causal_attn`, and upstream #28751 stopped re-reserving on that: the second
+  reservation silently never happened, with every output unchanged. The request now has one module
+  (`core/src/engine/compute_reservation`), made through a setter llama.cpp still re-reserves on,
+  and a gate (`compute_reservation`) that fails if a bump changes that. Measured on a 16 GB
+  Apple-silicon laptop with a streamed MoE model at ubatch 1024: the CPU's compute buffer goes from
+  651 to 149 MiB, about 500 MiB back to the expert cache and the system; the gap grows with the
+  ubatch.
 
 ## [0.46.1] - 2026-11-19
 
