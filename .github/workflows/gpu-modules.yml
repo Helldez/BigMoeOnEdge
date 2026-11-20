@@ -1,0 +1,244 @@
+# The GPU backends that need a vendor's toolkit, built as modules once per llama.cpp version.
+#
+# The CUDA and HIP modules depend on llama.cpp's sources, the top-level build options and the
+# toolkit, and on nothing else in this repository: a release that did not move the submodule gets
+# the same bytes. They were also the slow part of a release (65 min for HIP, 70-80 for CUDA, in
+# series), so they build here, each in a job of its own, and are kept in the Actions cache under a
+# key made of exactly those inputs. release-host.yml calls this workflow and turns what it hands
+# over into the backend packs.
+#
+# Where a cache is written: only on main. A run for a tag cannot read a cache another tag wrote
+# (GitHub scopes caches by ref; a run reads its own ref's and the default branch's), so main keeps
+# them warm - on every push that changes an input, and twice a week, since an entry unused for
+# seven days is evicted. A release whose key is not cached builds the module itself: slower, never
+# different.
+#
+# Which GPUs each module covers is llama.cpp's decision, not this file's: CUDA builds ggml's own
+# default architecture list (CMAKE_CUDA_ARCHITECTURES unset, as llama.cpp's release does), and HIP
+# the target list of llama.cpp's Linux ROCm release. scripts/check-gpu-targets.py fails CI when
+# either drifts from the pinned submodule.
+name: gpu-modules
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "What to check out; empty for the caller's own commit"
+        type: string
+        default: ''
+  push:
+    branches: [main]
+    paths:
+      - third_party/llama.cpp
+      - CMakeLists.txt
+      - .github/workflows/gpu-modules.yml
+      - scripts/fetch-cuda-redist.py
+  schedule:
+    - cron: '17 3 * * 1,4'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # 12.9 is the first CUDA whose default list in ggml includes 121a (GB10, DGX Spark).
+  CUDA_VERSION: 12.9.1
+  # llama.cpp's Linux ROCm release list (third_party/llama.cpp/.github/workflows/release.yml,
+  # ubuntu-24-rocm), checked by scripts/check-gpu-targets.py: Instinct, RDNA 1-4 and the integrated
+  # GPUs of the Ryzen mini PCs and laptops (gfx1103 780M, gfx1150/1152 Strix Point, gfx1151 Strix Halo).
+  HIP_TARGETS: "gfx908;gfx90a;gfx942;gfx950;gfx1010;gfx1011;gfx1012;gfx1030;gfx1031;gfx1032;gfx1033;gfx1034;gfx1035;gfx1036;gfx1100;gfx1101;gfx1102;gfx1103;gfx1150;gfx1151;gfx1152;gfx1200;gfx1201"
+
+jobs:
+  # The CUDA module, with the NVIDIA runtime and cuBLAS it links. The toolkit is NVIDIA's
+  # redistributable archives (scripts/fetch-cuda-redist.py); with the module cached only the runtime
+  # and cuBLAS are fetched, for the pack.
+  cuda:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The image of the archive the module joins: its glibc and libstdc++ set where it runs.
+          - os: ubuntu-22.04
+            target: linux-x86_64
+            redist: linux-x86_64
+          # NVIDIA's arm64 server toolkit (sbsa): GB10 / DGX Spark and Grace.
+          - os: ubuntu-24.04-arm
+            target: linux-aarch64
+            redist: linux-sbsa
+          # Visual Studio 2022: CUDA 12 accepts host compilers up to 2022 only.
+          - os: windows-2022
+            target: windows-x86_64
+            redist: windows-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      # The key: the toolkit, the pinned llama.cpp commit, and a digest of the files that decide
+      # how the module is configured and built. The top-level CMakeLists' project() line is left
+      # out: it carries the version, which moves with every release and changes nothing here.
+      - name: Cache key
+        id: key
+        shell: bash
+        run: |
+          LLAMA="$(git rev-parse HEAD:third_party/llama.cpp)"
+          INPUTS="$( { sed '/^project(/d' CMakeLists.txt; cat .github/workflows/gpu-modules.yml scripts/fetch-cuda-redist.py; } | tr -d '\r' | sha256sum | cut -c1-16)"
+          echo "key=gpu-cuda-${{ matrix.target }}-$CUDA_VERSION-$LLAMA-$INPUTS" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the module
+        id: cache
+        uses: actions/cache/restore@v5
+        with:
+          path: module
+          key: ${{ steps.key.outputs.key }}
+
+      - name: The llama.cpp submodule
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: git submodule update --init --recursive
+
+      - name: Ninja (Linux)
+        if: steps.cache.outputs.cache-hit != 'true' && runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build
+
+      # nvcc finds the MSVC compiler, its libraries and the Windows SDK through the environment
+      # vcvarsall sets up, which a job step does not start with.
+      - name: The MSVC environment (Windows)
+        if: steps.cache.outputs.cache-hit != 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          cmd /c "`"$vs\VC\Auxiliary\Build\vcvarsall.bat`" x64 >nul && set" | ForEach-Object {
+            if ($_ -match '^([A-Za-z_][A-Za-z0-9_]*)=(.*)$') { Add-Content $env:GITHUB_ENV "$($matches[1])=$($matches[2])" }
+          }
+
+      - name: Fetch the CUDA toolkit
+        shell: bash
+        env:
+          HIT: ${{ steps.cache.outputs.cache-hit }}
+        run: |
+          case "${{ runner.os }}" in Windows) PY=python ;; *) PY=python3 ;; esac
+          COMP=""
+          if [ "$HIT" = "true" ]; then COMP="--component cuda_cudart --component libcublas"; fi
+          CUDA="$RUNNER_TEMP/cuda"
+          $PY scripts/fetch-cuda-redist.py --version "$CUDA_VERSION" --platform "${{ matrix.redist }}" --out "$CUDA" $COMP
+          if [ "${{ runner.os }}" = "Windows" ]; then CUDA="$(cygpath -m "$CUDA")"; fi
+          echo "CUDAToolkit_ROOT=$CUDA" >> "$GITHUB_ENV"
+          echo "CUDA_PATH=$CUDA" >> "$GITHUB_ENV"
+          echo "CUDACXX=$CUDA/bin/nvcc" >> "$GITHUB_ENV"
+          echo "$CUDA/bin" >> "$GITHUB_PATH"
+
+      # The top-level build, so the module is configured exactly as the engine it loads beside;
+      # only its target is built. No CMAKE_CUDA_ARCHITECTURES: ggml's default list.
+      - name: Build the CUDA module
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DBMOE_BUILD_TESTS=OFF -DBMOE_BUILD_CLI=OFF -DBMOE_BUILD_SERVER=OFF -DBMOE_BUILD_DESKTOP=OFF \
+            -DGGML_OPENMP=OFF -DLLAMA_CURL=OFF -DGGML_CUDA=ON
+          cmake --build build -j --target ggml-cuda
+          mkdir -p module
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp build/bin/ggml-cuda.dll module/
+          else
+            cp -P build/bin/libggml-cuda.so* module/
+            strip module/libggml-cuda.so* || true
+            # Resolved as it will be: the pack's own files, and the engine's libraries already
+            # loaded by the program that loads it. The driver's libcuda is the machine's.
+            C="$CUDAToolkit_ROOT"
+            MISSING="$(LD_LIBRARY_PATH="$PWD/build/bin:$C/lib" ldd module/libggml-cuda.so | grep 'not found' | grep -v 'libcuda\.so' || true)"
+            [ -z "$MISSING" ] || { echo "the CUDA module needs libraries the pack does not carry:"; echo "$MISSING"; exit 1; }
+          fi
+          ls -la module
+
+      - name: Keep the module (main only)
+        if: steps.cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v5
+        with:
+          path: module
+          key: ${{ steps.key.outputs.key }}
+
+      # What the pack carries, flat: the module, the runtime and cuBLAS, and their licence.
+      - name: The pack's files
+        shell: bash
+        run: |
+          C="$(cygpath -u "$CUDAToolkit_ROOT" 2>/dev/null || echo "$CUDAToolkit_ROOT")"
+          mkdir -p payload
+          cp -P module/* payload/
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "$C"/bin/cudart64_12.dll "$C"/bin/cublas64_12.dll "$C"/bin/cublasLt64_12.dll payload/
+          else
+            cp -P "$C"/lib/libcudart.so.12* "$C"/lib/libcublas.so.12* "$C"/lib/libcublasLt.so.12* payload/
+          fi
+          cp "$C/LICENSE" payload/LICENSE-CUDA.txt
+          ls -la payload
+          # One tar, not the folder: an artifact stores a link as a copy of its target and drops
+          # the mode bits, which shipped cuBLAS twice (a 1.3 GB pack for a 0.7 GB one).
+          tar cf payload.tar -C payload .
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gpu-cuda-${{ matrix.target }}
+          path: payload.tar
+          if-no-files-found: error
+
+  # The HIP module, built in AMD's ROCm image because the toolkit is gigabytes and the runner has
+  # none. It links ROCm's libraries and does not carry them: a machine whose AMD GPU runs ROCm has
+  # them installed system-wide (/opt/rocm/lib, also in its run path), and on one without, the module
+  # is not loaded. ROCm 7, as llama.cpp's HIP CI: its kernels use the warp-sync builtins older HIP
+  # headers lack, and the module needs that major version installed. Ubuntu 22.04, as the archive.
+  hip:
+    runs-on: ubuntu-22.04
+    container: rocm/dev-ubuntu-22.04:7.2.1
+    steps:
+      - name: Tools
+        run: apt-get update -q && apt-get install -y -q git cmake ninja-build python3 hipblas-dev rocblas-dev zstd
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Cache key
+        id: key
+        shell: bash
+        run: |
+          git config --global --add safe.directory '*'
+          LLAMA="$(git rev-parse HEAD:third_party/llama.cpp)"
+          INPUTS="$( { sed '/^project(/d' CMakeLists.txt; cat .github/workflows/gpu-modules.yml; } | sha256sum | cut -c1-16)"
+          echo "key=gpu-hip-linux-x86_64-rocm7.2.1-$LLAMA-$INPUTS" >> "$GITHUB_OUTPUT"
+      - name: Restore the module
+        id: cache
+        uses: actions/cache/restore@v5
+        with:
+          path: module
+          key: ${{ steps.key.outputs.key }}
+      - name: Build the HIP module
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          git submodule update --init --recursive
+          HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)" cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBMOE_BUILD_TESTS=OFF -DBMOE_BUILD_CLI=OFF -DBMOE_BUILD_SERVER=OFF -DBMOE_BUILD_DESKTOP=OFF \
+            -DGGML_OPENMP=OFF -DLLAMA_CURL=OFF \
+            -DGGML_HIP=ON "-DGPU_TARGETS=$HIP_TARGETS" \
+            -DBMOE_EXTRA_RPATH=/opt/rocm/lib
+          cmake --build build -j --target ggml-hip
+          mkdir -p module && cp -P build/bin/libggml-hip.so module/
+          strip module/libggml-hip.so || true
+          ls -la module
+      - name: Keep the module (main only)
+        if: steps.cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v5
+        with:
+          path: module
+          key: ${{ steps.key.outputs.key }}
+      # As the CUDA job hands its files over: one tar, so the module keeps its mode.
+      - name: The pack's files
+        shell: bash
+        run: tar cf payload.tar -C module .
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gpu-hip-linux-x86_64
+          path: payload.tar
+          if-no-files-found: error
