@@ -2762,7 +2762,26 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     const auto t0 = clock_t_::now();
     AnswerCheck check;
     std::unique_ptr<Session> self = open_placed(cfg, error, route_trace, compute_trace, io_trace, &check);
-    if (!check.ran) return self;
+    if (!check.ran) {
+        if (self || !cfg.fallback || device.empty()) return self;
+        // The model could not be opened on the device at all, most likely for memory: the plan's other
+        // part serves, and the device has lost this model here (a second try at a load that does not
+        // fit is a second failure on a machine already short of room).
+        log_printf(LogLevel::Warn,
+                   "the model could not be opened on %s (%s); the plan's other configuration is opened instead",
+                   device.c_str(), error.c_str());
+        const double first_s = secs(t0, clock_t_::now());
+        const std::string first_error = error;
+        self = open_placed(*cfg.fallback, error, route_trace, compute_trace, io_trace, nullptr);
+        if (!self) {
+            error = "the model could not be opened on " + device + " (" + first_error + "), nor as the plan's other " +
+                    "configuration: " + error;
+            return nullptr;
+        }
+        self->impl_->trials.result.shared_device_unviable = MeasuredKnobs::unviable_max;
+        self->impl_->load_seconds += first_s;
+        return self;
+    }
     if (check.result.verdict == Verdict::Confirmed && !check.cores_faster) {
         if (self) {
             self->impl_->trials.result.set_device_answer(device, 1);
@@ -2777,7 +2796,10 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // check exists to keep from serving, and "could not compare" has not compared them. The next load
     // asks again.
     const double first_s = secs(t0, clock_t_::now());
-    self = open_placed(detail::on_cores(cfg), error, route_trace, compute_trace, io_trace, nullptr);
+    // The plan's own other part where it has one (SessionConfig::fallback), else this same
+    // configuration on the cores.
+    self = open_placed(cfg.fallback ? *cfg.fallback : detail::on_cores(cfg), error, route_trace, compute_trace,
+                       io_trace, nullptr);
     if (!self) {
         error = "the model was not kept on " + device +
                 (check.cores_faster                         ? ", which the CPU decodes it faster than"

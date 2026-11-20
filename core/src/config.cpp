@@ -82,6 +82,17 @@ ValidationResult validate(const RunConfig & cfg) {
         r.error = std::move(msg);
         return r;
     };
+    // The other part of the plan is a configuration like any, and the one the session may end on: it
+    // is the same model, it names no part of its own, and it holds up by itself.
+    if (cfg.fallback) {
+        if (cfg.trial.answer_device.empty())
+            return fail("a fallback configuration is what a load reopens with where {trial-device-answer} does not "
+                        "keep the model on its device: it needs a device named there");
+        if (cfg.fallback->fallback) return fail("a fallback configuration has no fallback of its own");
+        if (cfg.fallback->model_path != cfg.model_path) return fail("a fallback configuration is the same model's");
+        const ValidationResult other = validate(*cfg.fallback);
+        if (!other.ok) return fail("the fallback configuration is not valid: " + other.error);
+    }
 
     if (cfg.model_path.empty()) {
         return fail("{model} is required: choose the model file to load");

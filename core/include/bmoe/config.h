@@ -10,6 +10,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -906,6 +907,16 @@ struct RunConfig {
     PrefillDeviceConfig prefill; // prefill graphs on an accelerator; off by default
     DecideConfig decide;         // decide()'s prefix-state policy; off by default
     KnobTrialConfig trial;       // lossless knobs measured on the first real request; off by default
+
+    // The configuration the session opens instead, where this one names a device whose answers the
+    // load compares with the cores' (trial.answer_device) and the device does not keep the model:
+    // its answers differed, could not be compared, the cores were faster, or it could not be opened.
+    // Empty, that is this same configuration with no layer on a device (the cores hold the model as
+    // it is held here). A plan sets it where the two differ in more than where they compute: a model
+    // it would stream, tried whole on a device that reads the host's memory, falls back to the
+    // streaming plan and not to the same model held whole on the cores. Not a tunable: one plan in
+    // two parts, which no flag spells, so it is not in the parameter table.
+    std::shared_ptr<const RunConfig> fallback;
 
     // Let llama.cpp's and ggml's DEBUG log lines through to stderr. Off, they are dropped: about
     // 1200 lines of graph bookkeeping per model load, which buried the engine's own output. For

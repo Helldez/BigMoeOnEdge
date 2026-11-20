@@ -1328,6 +1328,21 @@ faster by the margin. A served load then keeps its own side at what it decoded a
 (`KnobTrialConfig::shared_device_side`). No other load is opened to try a side
 ([measured-planning.md](measured-planning.md#decisions-fixed-at-load-priced-served-then-measured)).
 
+**A model the plan streams is offered to the device too, where the device can hold it whole.**
+llama.cpp would hold such a model on the device, and where that fits it can be the faster run by
+far, so the stream has to earn its place against it. After the plan that streams is made
+(`plan_from`), the model is planned once more as held whole, and a device that passes every test
+above may take it where the whole model and its compute buffer stay inside what the streaming plan
+itself may hold of this pool (its ledger's ceiling, the margin already off it): then holding it whole
+asks no more of the machine than the plan it replaces. The load decides as above, with one
+difference: the configuration carries the streaming plan as its other part (`RunConfig::fallback`),
+and where the device does not keep the model (its answers differ, the cores are faster by the
+margin, or it cannot be opened) the session reopens as that plan, not as the model held whole on the
+cores. The cores' rate the device is timed against is the model held whole on them, the most a
+stream on the same cores can reach, so a device the cores do not beat is one the stream does not
+beat. The plan says both parts (`held-whole`). A machine where the whole model is past that ceiling
+(a model larger than what the process may hold) streams as before, with nothing asked of the load.
+
 The probes are not asked, because a probe of one layer does not predict the whole model's decode.
 On a laptop with integrated graphics they read the cores 74% ahead (143 GiB/s against 82) of a GPU
 that decoded a 21 GB model at 40 tok/s, more than twice the cores' rate. On a 16 GB unified-memory

@@ -3480,16 +3480,114 @@ int main() {
         check(on_cores(up) && up.config.trial.shared_device_side == -1,
               "shared device with no projected compute buffer: not timed, not moved");
 
+        // The model fits and the room this machine asks beside it does not: the plan streams it, and
+        // the device, which holds it whole inside what that plan may hold, is offered it with the
+        // stream behind (the block below has the rest of that rule).
         HardwareProfile tight = roomy;
-        tight.residency_budget = 25 * GiB; // the model fits, its compute buffer and the air beside it do not
-        check(on_cores(plan_with(54.0, 40.0, tight)) &&
-                  plan_with(0.0, 0.0, tight).config.trial.shared_device_side == -1,
-              "shared device without room for its compute buffer: not timed, not moved");
+        tight.residency_budget = 25 * GiB;
+        {
+            const Plan measured = plan_with(54.0, 40.0, tight), unmeasured = plan_with(0.0, 0.0, tight);
+            check(on_device(measured) && measured.config.fallback && measured.config.fallback->moe.enabled &&
+                      on_device(unmeasured) && unmeasured.config.fallback &&
+                      unmeasured.config.trial.answer_device == "accel",
+                  "shared device without the room residency asks: offered the model, the stream behind it");
+        }
 
         PlanRequest pinned;
         pinned.pinned = {"devices"};
         const Plan pd = plan_with(54.0, 40.0, roomy, pinned);
         check(on_cores(pd) && !find(pd, "shared-device"), "shared device, devices pinned: left alone");
+
+        // ── a model the plan streams, where the device could hold it whole ──────────────────────
+        // The shape of a laptop with integrated graphics: the model does not fit beside the room this
+        // machine asks for, so the plan streams it with a cache nearly as large as its experts. Held
+        // whole on the device it takes no more of the pool than that plan holds, so the first load is
+        // asked, and the streaming plan is what the session reopens with where the device does not
+        // keep the model.
+        {
+            const auto streams = [&](const Plan & p) {
+                return p.config.moe.enabled && p.config.n_gpu_layers == 0 && !p.config.fallback;
+            };
+            HardwareProfile laptop = roomy;
+            laptop.memory_total = 31 * GiB;
+            // No lock ceiling short of the memory itself: the cache is bounded by what may be held.
+            laptop.lockable_bytes = laptop.lock_in_place_bytes = laptop.reclaim_exempt_max = 31 * GiB;
+            laptop.host_expert_gibs = laptop.host_dense_gibs = 143.0; // the probes read the cores far ahead
+            for (ComputeDevice & d : laptop.devices)
+                if (!d.is_cpu) d.expert_gibs = d.dense_gibs = 82.0;
+            uint64_t budget = 0; // the least this process may hold at which the plan asks the load
+            for (uint64_t b = 12 * GiB; b <= 40 * GiB && budget == 0; b += 256 * MiB) {
+                laptop.residency_budget = b;
+                const Plan q = plan_run(base_cfg(), laptop, model, shared, PlanRequest{}, defaults);
+                if (q.config.fallback) budget = b;
+            }
+            laptop.residency_budget = budget;
+            const Plan held = plan_run(base_cfg(), laptop, model, shared, PlanRequest{}, defaults);
+            const Decision * dh = find(held, "held-whole");
+            check(budget > 0 && on_device(held) && !held.config.moe.enabled && held.config.fallback &&
+                      held.config.trial.answer_device == "accel" && held.config.trial.answer_prompt_per_token >= 0.0f,
+                  "streamed, could be held whole on the device: the device is opened and the load decides",
+                  std::to_string(budget >> 20) + " MiB");
+            check(held.config.fallback && held.config.fallback->moe.enabled &&
+                      held.config.fallback->n_gpu_layers == 0 && held.config.fallback->moe.cache_mb > 0 &&
+                      !held.config.fallback->fallback && held.config.fallback->trial.answer_device.empty(),
+                  "streamed, could be held whole: the fallback is the streaming plan, whole and by itself");
+            check(validate(held.config).ok, "streamed, could be held whole: a valid config, fallback included",
+                  validate(held.config).error);
+            check(dh && dh->value == "accel" && dh->reason.find("reopens as the streaming plan") != std::string::npos,
+                  "streamed, could be held whole: the plan says both parts", dh ? dh->reason : "no line");
+            // The room is the streaming plan's own: what it holds of this memory, and no more.
+            {
+                HardwareProfile alone = laptop;
+                alone.devices.resize(1); // no device: the same machine plans the stream
+                const Plan stream = plan_run(base_cfg(), alone, model, Placement{}, PlanRequest{}, defaults);
+                check(streams(stream) && stream.regime == Regime::ExpertsStream,
+                      "streamed, could be held whole: without the device this machine streams the model");
+                const uint64_t whole = model.file_bytes + shared.device_compute_bytes;
+                check(stream.allocation.ledger.holdable_cap > 0 && whole <= stream.allocation.ledger.holdable_cap,
+                      "streamed, could be held whole: whole on the device stays inside what the stream may hold",
+                      std::to_string(whole >> 20) + " MiB against " +
+                          std::to_string(stream.allocation.ledger.holdable_cap >> 20));
+            }
+            // Less memory than that: the stream, as before, with nothing asked of the load.
+            HardwareProfile small = laptop;
+            small.residency_budget = budget - 4 * GiB;
+            check(streams(plan_run(base_cfg(), small, model, shared, PlanRequest{}, defaults)),
+                  "streamed, the whole model past what the stream holds: streamed, and nothing else");
+            // What the first load measured then decides, by the load's own rule.
+            ModelProfile timed = model;
+            timed.knobs.set_device_answer("accel", 1);
+            timed.knobs.shared_device_tps = 40.0;
+            timed.knobs.no_shared_device_tps = 18.0;
+            const Plan kept = plan_run(base_cfg(), laptop, timed, shared, PlanRequest{}, defaults);
+            check(on_device(kept) && kept.config.trial.answer_device.empty() && kept.config.fallback,
+                  "streamed, the device measured faster: held whole on it at once, the stream still behind it");
+            timed.knobs.shared_device_tps = 12.0;
+            timed.knobs.no_shared_device_tps = 18.0;
+            check(streams(plan_run(base_cfg(), laptop, timed, shared, PlanRequest{}, defaults)),
+                  "streamed, the cores measured faster than the device: the stream, not the model whole on the cores");
+            // A device that lost this model here, by its answers or by failing to open, is not asked.
+            ModelProfile refused = model;
+            refused.knobs.set_device_answer("accel", -1);
+            check(streams(plan_run(base_cfg(), laptop, refused, shared, PlanRequest{}, defaults)),
+                  "streamed, the device's answers differed here: the stream");
+            ModelProfile failed = model;
+            failed.knobs.shared_device_unviable = MeasuredKnobs::unviable_max;
+            check(streams(plan_run(base_cfg(), laptop, failed, shared, PlanRequest{}, defaults)),
+                  "streamed, the device could not open the model here: the stream");
+            // A caller who asked for the stream, or a device that has not shown the cores' results, keeps it.
+            PlanRequest asked;
+            asked.pinned = {"moe-stream"};
+            RunConfig streamed_cfg = base_cfg();
+            streamed_cfg.moe.enabled = true;
+            check(streams(plan_run(streamed_cfg, laptop, model, shared, asked, defaults)),
+                  "streamed by the caller: left alone");
+            HardwareProfile unshown = laptop;
+            for (ComputeDevice & d : unshown.devices)
+                if (!d.is_cpu) d.wide_identity_ok = Tri::Unknown;
+            check(streams(plan_run(base_cfg(), unshown, model, shared, PlanRequest{}, defaults)),
+                  "streamed, a device not shown to compute a prompt as the cores do: the stream");
+        }
 
         // A model with no experts is asked the same question.
         ModelProfile dense;

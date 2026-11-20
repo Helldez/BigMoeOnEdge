@@ -191,6 +191,26 @@ int main() {
         RunConfig unnamed = ok_base();
         unnamed.trial.answer_prompt_per_token = 1.0f;
         expect_fail("trial answer mix with no device to compare", unnamed);
+        // The plan's other part (RunConfig::fallback): what the load reopens with where the device
+        // does not keep the model. A configuration of its own, of the same model, with none behind it.
+        RunConfig two = t;
+        two.fallback = std::make_shared<const RunConfig>(ok_moe());
+        expect_ok("a fallback configuration behind a device whose answers are compared", two);
+        RunConfig no_device = ok_base();
+        no_device.fallback = std::make_shared<const RunConfig>(ok_moe());
+        expect_fail("a fallback configuration with no device to fall back from", no_device);
+        RunConfig other_model = ok_moe();
+        other_model.model_path = "another.gguf";
+        two.fallback = std::make_shared<const RunConfig>(other_model);
+        expect_fail("a fallback configuration of another model", two);
+        RunConfig nested = ok_moe();
+        nested.fallback = std::make_shared<const RunConfig>(ok_moe());
+        two.fallback = std::make_shared<const RunConfig>(nested);
+        expect_fail("a fallback configuration with a fallback of its own", two);
+        RunConfig invalid = ok_moe();
+        invalid.n_ctx = 0;
+        two.fallback = std::make_shared<const RunConfig>(invalid);
+        expect_fail("a fallback configuration that is not valid by itself", two);
         RunConfig cached = t;
         cached.moe.device_cache_mb = 2048;
         expect_fail("trial device answer beside a device expert cache", cached);

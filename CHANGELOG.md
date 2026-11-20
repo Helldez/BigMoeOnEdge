@@ -55,6 +55,18 @@ Semantic Versioning.
   answer decoded at. New parameter `--trial-answer-mix`, set by the plan
   ([hardware-planning.md](docs/hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it)).
   A model that is streamed is not affected: this is for models the plan holds whole in memory.
+- **A model the plan streams is tried whole on a GPU that shares the host's memory, where the GPU
+  can hold it, and the first load keeps the faster.** On a laptop with 31 GB and integrated
+  graphics, a published benchmark of 0.46.0 measured a 21 GB model at 12 tok/s where llama.cpp with
+  every layer on the same GPU decoded 40: the model fit, but not beside the room that machine asks
+  to be left, so the plan streamed it with an 18.6 GiB cache and decoded on the cores. Now, where
+  the whole model and its compute buffer stay inside what the streaming plan itself may hold, the
+  load opens the model on the device, times it there and on the cores (above), and keeps the device
+  unless the cores are faster by the margin; where the device does not keep it, the session reopens
+  as the streaming plan (`RunConfig::fallback`), which is otherwise unchanged. A model larger than
+  what the process may hold streams as before. The plan shows both parts (`held-whole`). The rule
+  is tested on a machine of that shape in `planner_test` and the reopening on a real session in the
+  gates (G28d); it was not run on that laptop ([field-reports.md](docs/field-reports.md)).
 
 ### Fixed
 - **A read of an expert that fails ends the run in every read mode** (the serial path, which is

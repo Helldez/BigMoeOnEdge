@@ -55,6 +55,26 @@ desktop app is not affected: it installs the pack itself.
 
 ## Fixed
 
+### A model that fits in memory decodes three times slower than llama.cpp on a laptop's integrated GPU
+
+- **Seen on** 0.46.0, in a published benchmark: a Linux laptop with 31 GB of memory and an
+  integrated GPU through Vulkan, a 21 GB MoE model, five runs a side.
+- **How to recognise it.** `--auto` streams the model with an expert cache nearly as large as its
+  experts (18.6 GiB there) and decodes on the cores: 12 tok/s, a 418-token prompt at 80 tok/s, 24 s
+  to the first token. llama.cpp with every layer on the same GPU: 40 tok/s, about 500 tok/s on the
+  prompt, 10 s. The plan's `placement` line says the device reads the host's memory and its
+  placement was set aside.
+- **Cause.** Read in the code and reproduced in the planner's tests on a machine of that shape; not
+  confirmed on that machine, whose plan output was not published. Two rules. The model fits, but
+  not beside the room this machine asks to be left (`fits_air_ratio`), so the plan streamed it. And
+  a device that shares the host's memory was only weighed for a model already held whole, on probes
+  of one layer, which read the cores 74% ahead of a GPU that decodes the model at twice their rate.
+- **Fixed in** 0.47.0: a model the plan streams is offered to such a device where the device can
+  hold it whole inside what the streaming plan itself may hold, and the first load times the model
+  on the device and on the cores and keeps the faster, with the streaming plan behind it.
+- **Workaround.** `--gpu-layers 99` without `--auto` holds the model whole on the device, as
+  llama.cpp does.
+
 ### Qwen3.6-35B-A3B fails at the end of its download: "downloaded size does not match the catalog" (#663)
 
 - **Seen on** 0.42.0 to 0.46.0, every platform, from 2026-11-08: a Windows desktop with 16 GB.

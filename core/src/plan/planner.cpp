@@ -351,6 +351,11 @@ struct Planning {
     uint64_t held_dense() const { return host_dense - std::min(host_dense, host_tables); }
     uint64_t air = 0;
     bool air_short = false;
+    // Set on the second pass of a plan that streams (plan_from): the model is planned as held whole,
+    // to see whether a device that reads this memory may be given it, and this is the room it may
+    // take there with its compute buffer: what the plan that streams it may hold of this pool, its
+    // own ledger's ceiling. 0 on every other pass, where the regime and the margin decide.
+    uint64_t whole_room = 0;
 
     // The model as the allocator sees it: only the host's share of the experts (host_model).
     ModelProfile host_model;
@@ -1887,6 +1892,9 @@ Regime residency_regime(Planning & s) {
     // residency on a model that does not is 0.1 tok/s against 5.0. Until the headroom probe exists,
     // the cheap side of that asymmetry is the right default, and a caller who disagrees drops --auto.
     s.air = s.usable > s.held_all() ? s.usable - s.held_all() : 0;
+    // The pass that plans the model as held whole (whole_room) is asked what that plan is, not
+    // whether to make it: the plan that streams was made first and is what it is weighed against.
+    if (s.whole_room > 0) return Regime::Fits;
     const uint64_t air_needed = (uint64_t) ((double) s.held_all() * (double) s.pol.fits_air_ratio);
     s.air_short = regime == Regime::Fits && reclaim_is_cheap(s.hw.anon_overflow) && s.air < air_needed;
     if (s.air_short) regime = s.held_dense() <= s.usable ? Regime::ExpertsStream : Regime::DenseOversized;
@@ -2126,6 +2134,14 @@ SharedDeviceCandidate shared_device_candidate(const Planning & s, uint64_t resid
             why = "it needs the weights repacked into a layout of its own, and the model loads as mapped";
         else if (compute == 0)
             why = "the compute buffer it would reserve was never projected";
+        else if (s.whole_room > 0 && resident + compute > s.whole_room)
+            // Weighed against the plan that streams: on the device the whole model is this process's
+            // memory, as that plan's cache and dense set are, so it may take what that plan would.
+            why = "the " + u64s(mib(resident)) + " MiB the model holds whole and its compute buffer of " +
+                  u64s(mib(compute)) + " MiB are past the " + u64s(mib(s.whole_room)) +
+                  " MiB the plan that streams it may hold of this memory";
+        else if (s.whole_room > 0)
+            ; // inside what the streaming plan may hold: the margin is already off that ceiling
         else if (resident + compute > s.usable)
             why = "its compute buffer of " + u64s(mib(compute)) + " MiB beside the " + u64s(mib(resident)) +
                   " MiB the model holds is past the " + u64s(mib(s.usable)) + " MiB usable";
@@ -4207,9 +4223,11 @@ Plan plan_once(const RunConfig & base,
                const Placement & projected,
                const PlanRequest & req,
                const PlannerPolicy & pol,
-               const Planning::LayersHome * home_from) {
+               const Planning::LayersHome * home_from,
+               uint64_t whole_room = 0) {
     Plan p;
     Planning s(base, hw, model, projected, req, pol, p);
+    s.whole_room = whole_room;
     if (home_from) s.home.considered = false;
 
     // The machine and the model, against each other.
@@ -4315,7 +4333,48 @@ Plan plan_from(const RunConfig & base,
                const PlanRequest & req,
                const PlannerPolicy & pol,
                const Planning::LayersHome * home_from) {
-    return plan_once(base, hw, model, projected, req, pol, home_from);
+    Plan p = plan_once(base, hw, model, projected, req, pol, home_from);
+    // ── a model the plan streams, on a machine whose device reads this same memory ──
+    // llama.cpp would hold such a model whole on the device, and where that fits it can be the faster
+    // run by far: on a laptop with integrated graphics a 21 GB model streamed with an 18 GiB cache
+    // decoded at 12 tok/s, and llama.cpp with every layer on the GPU at 40. Nothing in the plan
+    // above says which is faster, and no probe does (choose_shared_device), so where the model held
+    // whole on the device stays inside what the streaming plan itself may hold of this pool, the
+    // first load is asked: it opens the model there, compares its answers with the cores' and times
+    // both (KnobTrialConfig::answer_device, answer_prompt_per_token), and keeps the device unless the
+    // cores decode the model faster by the margin. The cores' rate there is the model held whole on
+    // them, which is the most a stream on the same cores can reach, so a device the cores do not
+    // beat is one the stream does not beat. Where the device does not keep the model, the session
+    // reopens with the plan above, unchanged (RunConfig::fallback): the stream is what this engine
+    // adds, and it serves wherever holding the model whole is not the faster run.
+    if (p.regime != Regime::ExpertsStream || !p.config.moe.enabled || p.streaming_declined || !model.is_moe) return p;
+    // What the streaming plan may hold of this pool: its ledger's ceiling, the margin already off it.
+    const uint64_t room = p.allocation.ledger.holdable_cap;
+    if (!devices_share_host_memory(hw) || projected.fitted || room == 0) return p;
+    if (req.is_pinned("moe-stream") || req.is_pinned("cache-mb")) return p;
+    Plan whole = plan_once(base, hw, model, projected, req, pol, home_from, room);
+    if (whole.config.n_gpu_layers == 0 || whole.config.device_split.size() != 1 || whole.config.moe.enabled) return p;
+    const std::string dev = whole.config.device_split.front().first;
+    whole.config.fallback = std::make_shared<const RunConfig>(p.config);
+    std::string stream_knobs;
+    for (const Decision & x : p.decisions)
+        if (x.knob == "moe-stream" || x.knob == "cache-mb" || x.knob == "prefill-device" || x.knob == "dense-weights")
+            stream_knobs += (stream_knobs.empty() ? "" : "; ") + x.knob + " " + x.value;
+    Decision d;
+    d.knob = "held-whole";
+    d.value = dev;
+    d.source = Source::Derived;
+    d.brief = "Held whole on " + dev + " if it runs the model faster; otherwise streamed, with a " +
+              size_brief((uint64_t) p.config.moe.cache_mb << 20) + " cache.";
+    d.reason = "this model does not fit beside the room this machine asks for, and the plan that streams it may "
+               "hold " +
+               u64s(mib(room)) + " MiB of this memory, " + u64s(mib(p.allocation.ledger.held)) + " MiB of it with a " +
+               u64s((uint64_t) p.config.moe.cache_mb) + " MiB expert cache. " + dev +
+               " reads this same memory, and the model held whole there with its compute buffer stays inside that, "
+               "so the load decides between the two on the model itself (shared-device says how); where " +
+               dev + " does not keep it, the session reopens as the streaming plan (" + stream_knobs + ")";
+    whole.decisions.push_back(d);
+    return whole;
 }
 
 } // namespace

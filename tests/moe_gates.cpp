@@ -1976,6 +1976,41 @@ int main(int argc, char ** argv) {
                                     (int) (rw.generated_text == s_whole || rw.generated_text == s_cores));
                         ++fails;
                     }
+                    // d) The plan in two parts (RunConfig::fallback): the model held whole on the
+                    // device, and the streaming plan behind it. Where the device does not keep the
+                    // model, the session reopens as the stream and serves its bytes, which are the
+                    // resident model's: once because the cores are faster (the loopback device is the
+                    // cores behind a socket), once because its answers were made to differ.
+                    RunConfig stream = base(model);
+                    stream.moe.enabled = true;
+                    for (const bool differs : {false, true}) {
+                        RunConfig two = weighed;
+                        two.trial.test_answer_differs = differs;
+                        two.fallback = std::make_shared<const RunConfig>(stream);
+                        const ValidationResult vt = validate(two);
+                        const RunResult rt2 = vt.ok ? run(two) : RunResult{};
+                        const char * why = differs ? "answers differ" : "the cores faster";
+                        const bool on_device = rt2 && rt2.knobs.device_answer(dev) == 1 && !differs &&
+                                               rt2.knobs.shared_device_tps >= rt2.knobs.no_shared_device_tps;
+                        if (!vt.ok || !rt2) {
+                            std::printf("[FAIL] G28d two-part plan (%s) failed: %s\n", why,
+                                        !vt.ok ? vt.error.c_str() : rt2.error.c_str());
+                            ++fails;
+                        } else if (on_device) {
+                            // The device kept the model here: nothing to reopen, and that is the rule too.
+                            fails += check("G28d two-part plan, the device kept the model == the same placement",
+                                           s_whole, rt2.generated_text);
+                        } else if (rt2.generated_text == s_cores && rt2.summary.moe_read_mib > 0.0) {
+                            std::printf("[PASS] G28d two-part plan, %s: reopened as the stream (%.1f MiB of experts "
+                                        "read), the resident model's bytes\n",
+                                        why, rt2.summary.moe_read_mib);
+                        } else {
+                            std::printf("[FAIL] G28d two-part plan, %s: %.1f MiB of experts read, text matches the "
+                                        "resident model: %d\n",
+                                        why, rt2.summary.moe_read_mib, (int) (rt2.generated_text == s_cores));
+                            ++fails;
+                        }
+                    }
                     const int wa = rc.knobs.device_answer(dev), wb = rr.knobs.device_answer(dev);
                     if (wa == 1 && wb == -1 && rc.knobs.verdicts() > 0) {
                         std::printf("[PASS] G28 the record says confirmed, then differs, for %s\n", dev.c_str());
