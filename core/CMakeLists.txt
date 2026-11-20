@@ -73,6 +73,7 @@ if(BMOE_HAVE_LLAMA)
         src/engine/device_answer.cpp
         src/engine/prefill_device.cpp
         src/engine/prefill_path.cpp
+        src/engine/compute_reservation.cpp
         src/engine/decide/llama_backend.cpp
         src/engine/chat_parse.cpp
         src/engine/chat_messages.cpp

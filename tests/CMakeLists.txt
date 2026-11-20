@@ -69,6 +69,12 @@ add_executable(bmoe_output_constraint_session_test output_constraint_session_tes
 target_link_libraries(bmoe_output_constraint_session_test PRIVATE bmoe_core)
 target_include_directories(bmoe_output_constraint_session_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/engine)
 
+# The request that makes a context reserve its compute buffers again (compute_reservation.h): a
+# llama.cpp behaviour the prefill device depends on, checked on the tiny model every build.
+add_executable(bmoe_compute_reservation_test compute_reservation_test.cpp)
+target_link_libraries(bmoe_compute_reservation_test PRIVATE bmoe_core)
+target_include_directories(bmoe_compute_reservation_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/engine)
+
 # Thinking-control tests (issue #82). Drives bmoe::detail::probe_think_control and the prefill
 # against real vendored templates, so it needs no model and runs unconditionally.
 add_executable(bmoe_think_control_test think_control_test.cpp)
@@ -297,6 +303,10 @@ if(PYTHON3)
                  "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-qwen3moe.gguf")
         set_tests_properties(expert_read_failure PROPERTIES FIXTURES_REQUIRED TINY_MOE_MODEL_qwen3moe)
     endif()
+
+    add_test(NAME compute_reservation COMMAND bmoe_compute_reservation_test
+             "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-qwen3moe.gguf")
+    set_tests_properties(compute_reservation PROPERTIES FIXTURES_REQUIRED TINY_MOE_MODEL_qwen3moe)
 
     if(TARGET bmoe_startup_pin_fit_test)
         add_test(NAME startup_pin_fit COMMAND bmoe_startup_pin_fit_test

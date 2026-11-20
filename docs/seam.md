@@ -305,10 +305,14 @@ except where noted:
   at run time). So the engine marks only the matmul matrices `WEIGHTS` and puts every other layer weight
   (norms, biases, scales), as found from the ops the capture graph applies to it, in plain device
   memory.
-- **Two context knobs.** `n_outputs_max` bounds the logit rows the context reserves, and toggling
-  `llama_set_causal_attn` off and on makes the next decode redo the compute-buffer reservation, which
-  the engine uses once, with the weights on the device, so the CPU does not keep a reservation for a
-  graph it never runs.
+- **Two context knobs.** `n_outputs_max` bounds the logit rows the context reserves, and a change of
+  `llama_set_embeddings`, put back before the next decode, makes that decode redo the compute-buffer
+  reservation (`core/src/engine/compute_reservation`). The engine asks once, with the weights on the
+  device, so the CPU does not keep a reservation for a graph it never runs. Which setter llama.cpp
+  answers with a new reservation is its behaviour, not its API: `llama_set_causal_attn` was the one
+  used until upstream #28751 stopped re-reserving on it, and from the bump of #278 the CPU kept its
+  all-CPU reservation with every output unchanged (#657). The gate `compute_reservation` counts the
+  reservations the request yields, so a bump that changes this fails it.
 - **Concurrent uploads into one buffer.** The arena's loader threads call `ggml_backend_tensor_set`
   on different views of the same slot buffer at once. ggml does not document this as thread-safe; it
   holds for the CPU, RPC and Hexagon backends today because each write touches only its own bytes.
