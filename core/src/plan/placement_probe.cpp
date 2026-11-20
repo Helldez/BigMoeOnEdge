@@ -253,11 +253,10 @@ Placement probe_placement(const char * model_path,
     // placed layer an override moves any of the FFN of is host for all of its experts (below).
     // Anything else went to a device and is not the streamer's to serve.
     const uint32_t n_layer = model.n_layer;
-    const uint32_t on_devices = pl.n_gpu_layers < 0 ? n_layer : std::min<uint32_t>((uint32_t) pl.n_gpu_layers, n_layer);
-    const uint32_t first_device_layer = n_layer - on_devices; // llama.cpp fills devices from the top
+    const LayerSlots slots = layer_slots(pl.n_gpu_layers, n_layer);
 
     std::vector<bool> host(n_layer, false);
-    for (uint32_t il = 0; il < first_device_layer; ++il)
+    for (uint32_t il = 0; il < slots.host_blocks(); ++il)
         host[il] = true;
 
     // A layer's experts never straddle the boundary. The fitter's partial layer can overflow a SHARE
@@ -300,12 +299,13 @@ Placement probe_placement(const char * model_path,
         // fitter's own load mode, and on a CPU-only machine it equals neither the file nor the
         // dense set (measured: 5724 MiB for a 21242 MiB file whose dense set is 2642). What the
         // fitter knows and we do not is the context and compute reservation, and that is what is
-        // taken from it. Dense bytes are pro-rated by the layers still on the host; the embedding
-        // and head are counted as host in full, which over-reserves a little where they offload.
-        const uint64_t dense_on_host =
-            n_layer ? (uint64_t) ((double) model.dense_bytes * (double) (n_layer - on_devices) / (double) n_layer)
-                    : model.dense_bytes;
-        pl.host_resident_bytes = dense_on_host + (uint64_t) cpu.context + (uint64_t) cpu.compute;
+        // taken from it. The dense bytes are where llama.cpp puts them (host_dense_of), not a share
+        // of the whole by layer count: a share counted the embedding tables, which never leave the
+        // host, at the fraction of blocks left here, so every layer on a device counted none of a
+        // table the host holds, and a split counted part of one the run leaves mapped.
+        const HostDense dense = host_dense_of(model, slots);
+        pl.host_resident_bytes = dense.bytes + (uint64_t) cpu.context + (uint64_t) cpu.compute;
+        pl.host_table_bytes = dense.tables;
         for (size_t i = 0; i + 1 < dm.size(); ++i) {
             const uint64_t used = (uint64_t) dm[i].model + (uint64_t) dm[i].context + (uint64_t) dm[i].compute;
             pl.device_bytes += used;

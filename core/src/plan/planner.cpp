@@ -159,6 +159,39 @@ const char * regime_name(Regime r) {
     return "?";
 }
 
+LayerSlots layer_slots(int32_t n_gpu_layers, uint32_t n_layer) {
+    LayerSlots s;
+    s.n_layer = n_layer;
+    const uint32_t slots = n_layer + 1;
+    s.on_device = n_gpu_layers < 0 ? slots : std::min<uint32_t>((uint32_t) n_gpu_layers, slots);
+    return s;
+}
+
+HostDense host_dense_of(const ModelProfile & m, const LayerSlots & slots) {
+    HostDense h;
+    h.tables = m.group(WeightGroup::Embedding).bytes;
+    const uint64_t output = m.group(WeightGroup::Output).bytes;
+    const uint64_t host_blocks = slots.host_blocks();
+    uint64_t blocks = 0, blocks_on_host = 0;
+    if (m.n_layer && m.layer_dense_bytes.size() == m.n_layer) {
+        for (uint32_t il = 0; il < m.n_layer; ++il) {
+            blocks += m.layer_dense_bytes[il];
+            if (il < host_blocks) blocks_on_host += m.layer_dense_bytes[il];
+        }
+    } else {
+        // Without each block's bytes, the blocks are what the parts outside them leave, by count.
+        const uint64_t outside = h.tables + output;
+        blocks = m.dense_bytes > outside ? m.dense_bytes - outside : 0;
+        blocks_on_host = m.n_layer ? (uint64_t) ((double) blocks * (double) host_blocks / (double) m.n_layer) : blocks;
+    }
+    // What is neither a block, a table nor the output head (the final norm and the like) is counted on
+    // the host: the side that can only over-reserve, by bytes too few to move a plan.
+    const uint64_t named = blocks + h.tables + output;
+    const uint64_t rest = m.dense_bytes > named ? m.dense_bytes - named : 0;
+    h.bytes = blocks_on_host + h.tables + (slots.output_on_device() ? 0 : output) + rest;
+    return h;
+}
+
 Placement Placement::at_width(uint32_t width) const {
     Placement q = *this;
     if (compute_width == 0 || width == 0 || width == compute_width) return q;
@@ -309,8 +342,13 @@ struct Planning {
     bool projector_on_device = false;
     uint64_t projector_host = 0;
     uint64_t checkpoint_bytes = 0; // the context checkpoints a chat run will keep (checkpoint_reserve)
-    uint64_t host_all = 0;
-    uint64_t host_dense = 0;
+    uint64_t host_all = 0;         // the host's share of the model, every byte of it
+    uint64_t host_dense = 0;       // of that, all but the experts
+    // Of both, the embedding tables the run may leave in the mapping (mappable_host_tables). What
+    // the regime weighs is what is left: the bytes the run has to hold.
+    uint64_t host_tables = 0;
+    uint64_t held_all() const { return host_all - std::min(host_all, host_tables); }
+    uint64_t held_dense() const { return host_dense - std::min(host_dense, host_tables); }
     uint64_t air = 0;
     bool air_short = false;
 
@@ -458,8 +496,8 @@ TierSplit device_tier_split(const Placement & pl, const ModelProfile & m, uint64
         out.budget = on_devices + spare_sum;
         return out;
     }
-    const uint32_t slots = m.n_layer + 1; // the layers and, last, the output, as llama.cpp fills them
-    const uint32_t ngl = pl.n_gpu_layers < 0 ? slots : std::min<uint32_t>((uint32_t) pl.n_gpu_layers, slots);
+    const LayerSlots ls = layer_slots(pl.n_gpu_layers, m.n_layer);
+    const uint32_t slots = m.n_layer + 1;
     const auto is_moe = [&](uint32_t il) {
         return m.moe_layers.empty() || std::find(m.moe_layers.begin(), m.moe_layers.end(), il) != m.moe_layers.end();
     };
@@ -472,7 +510,7 @@ TierSplit device_tier_split(const Placement & pl, const ModelProfile & m, uint64
         double room = 0.0;
     };
     std::vector<Card> cards(pl.device_split.size());
-    uint32_t at = slots - ngl, n_layers = 0, n_whole = 0;
+    uint32_t at = ls.first_device_slot(), n_layers = 0, n_whole = 0;
     for (size_t i = 0; i < pl.device_split.size(); ++i) {
         Card & c = cards[i];
         for (const auto & sp : pl.device_spare)
@@ -506,7 +544,7 @@ TierSplit device_tier_split(const Placement & pl, const ModelProfile & m, uint64
                                        (double) m.n_layer +
                                    kv_per_layer;
     const double dense_bound = std::max(dense_per_layer, (double) m.largest_layer_dense_bytes + kv_per_layer);
-    const uint32_t first = slots - ngl;
+    const uint32_t first = ls.first_device_slot();
     const bool exact = m.layer_dense_bytes.size() == m.n_layer;
     // The dense part and context of layers [from, from + n), the output's slot not among them.
     const auto dense_of = [&](uint32_t from, uint32_t n) {
@@ -1047,7 +1085,7 @@ void choose_expert_staging(Planning & s) {
     }
     const uint64_t copy = s.host_expert_bytes;
     // The copy in place of the mapped experts host_all counts (see above): the same total, held once.
-    const uint64_t held = s.host_all - std::min(s.host_all, s.host_expert_bytes) + copy;
+    const uint64_t held = s.held_all() - std::min(s.held_all(), s.host_expert_bytes) + copy;
     if (held > s.usable) {
         s.note("expert-host-buffer", "false", Source::Derived, "The device cache uploads from the file's mapping.",
                std::string(rates) + ", but with the copy's " + mib_s(copy) + " MiB in place of the mapped experts " +
@@ -1121,8 +1159,8 @@ void price_layers_home(Planning & s) {
     if (s.p.config.moe.device_cache_mb > 0) return; // the device tier keeps every layer on the device
 
     // The device slots, top down as llama.cpp fills them: the layers and, last, the output.
-    const uint32_t slots = m.n_layer + 1;
-    const uint32_t ngl = pl.n_gpu_layers < 0 ? slots : std::min<uint32_t>((uint32_t) pl.n_gpu_layers, slots);
+    const LayerSlots ls = layer_slots(pl.n_gpu_layers, m.n_layer);
+    const uint32_t slots = m.n_layer + 1, ngl = ls.on_device;
     std::vector<std::pair<std::string, uint32_t>> split = pl.device_split;
     if (split.empty()) {
         for (const ComputeDevice & d : s.hw.devices)
@@ -1141,7 +1179,7 @@ void price_layers_home(Planning & s) {
         bool output = false;
     };
     std::vector<Part> parts;
-    uint32_t at = slots - ngl, dense_only = 0;
+    uint32_t at = ls.first_device_slot(), dense_only = 0;
     for (const auto & e : split) {
         Part q;
         for (const ComputeDevice & d : s.hw.devices)
@@ -1762,6 +1800,24 @@ uint64_t host_fixed_of(const Placement & placement) {
     return host_fixed;
 }
 
+// The embedding tables inside the host's dense set that the run may leave in the mapping rather than
+// hold. The graph gathers a table by row, and the run leaves in the mapping any tensor it is handed by
+// name, under every dense policy (MoeStreamConfig::dense_mapped), so a table is never a set the run
+// must hold whole: whether it is held is the ledger's call (settle_mapped_tables), made later. Counted
+// as the host set counted them: the file's tables without a placement, the placement's own figure
+// with one (Placement::host_table_bytes). A caller who pinned the list decides instead: the tables
+// are left mapped only where the list names every one of them.
+uint64_t mappable_host_tables(const Planning & s) {
+    const ModelProfile & m = s.model;
+    if (m.embedding_tensors.empty()) return 0;
+    if (s.req.is_pinned("dense-mapped")) {
+        const std::vector<std::string> & named = s.p.config.moe.dense_mapped;
+        for (const std::string & t : m.embedding_tensors)
+            if (std::find(named.begin(), named.end(), t) == named.end()) return 0;
+    }
+    return s.placement.fitted ? s.placement.host_table_bytes : m.group(WeightGroup::Embedding).bytes;
+}
+
 // What the host holds against what it may (s.host_all, s.air and the rest), and the regime that puts
 // the run in. Read for a model with no experts too, where the only question it answers is whether the
 // whole model is held in memory.
@@ -1810,9 +1866,18 @@ Regime residency_regime(Planning & s) {
     s.host_dense = placement.fitted ? placement.host_resident_bytes + s.device_on_host + s.checkpoint_bytes
                                     : s.model.dense_bytes + unfitted_fixed;
     s.host_dense += s.projector_host;
-    Regime regime = s.host_all <= s.usable     ? Regime::Fits
-                    : s.host_dense <= s.usable ? Regime::ExpertsStream
-                                               : Regime::DenseOversized;
+    // Both questions are asked of what the run has to hold, so neither counts a table it may leave
+    // mapped. Weighing the dense set with one called a model whose per-layer table alone is larger
+    // than the machine "not even the dense weights fit" while its dense set held in a quarter of the
+    // memory (#664). Weighing the whole model with one streams a model that is held whole beside the
+    // table, which on two 16 GB cards also gives up the copy of the experts a device reads them from
+    // (choose_expert_staging) and with it the decode that load measured. Held whole, the run reads
+    // the rows a token needs from the mapping; a table it reads whole is one llama.cpp keeps small
+    // enough to read at load, which the margin below the budget is there for.
+    s.host_tables = mappable_host_tables(s);
+    Regime regime = s.held_all() <= s.usable     ? Regime::Fits
+                    : s.held_dense() <= s.usable ? Regime::ExpertsStream
+                                                 : Regime::DenseOversized;
 
     // Fitting is not the same as being left alone. Where the machine can take pages back, residency
     // has to clear a second bar: room beyond the model itself, so its weights are not reclaimed and
@@ -1821,10 +1886,10 @@ Regime residency_regime(Planning & s) {
     // by two orders of magnitude: streaming a model that would have fitted costs some reads, while
     // residency on a model that does not is 0.1 tok/s against 5.0. Until the headroom probe exists,
     // the cheap side of that asymmetry is the right default, and a caller who disagrees drops --auto.
-    s.air = s.usable > s.host_all ? s.usable - s.host_all : 0;
-    const uint64_t air_needed = (uint64_t) ((double) s.host_all * (double) s.pol.fits_air_ratio);
+    s.air = s.usable > s.held_all() ? s.usable - s.held_all() : 0;
+    const uint64_t air_needed = (uint64_t) ((double) s.held_all() * (double) s.pol.fits_air_ratio);
     s.air_short = regime == Regime::Fits && reclaim_is_cheap(s.hw.anon_overflow) && s.air < air_needed;
-    if (s.air_short) regime = s.host_dense <= s.usable ? Regime::ExpertsStream : Regime::DenseOversized;
+    if (s.air_short) regime = s.held_dense() <= s.usable ? Regime::ExpertsStream : Regime::DenseOversized;
     return regime;
 }
 
@@ -1908,23 +1973,27 @@ void note_regime(Planning & s) {
     std::string brief;
     switch (s.p.regime) {
     case Regime::Fits:
-        brief = "The whole model (" + size_brief(s.host_all) + ") fits in the " + size_brief(s.usable) + " usable.";
+        brief = "The whole model (" + size_brief(s.held_all()) + ") fits in the " + size_brief(s.usable) + " usable.";
         break;
     case Regime::ExpertsStream:
-        brief = "Experts stream from storage: the model needs " + size_brief(s.host_all) + ", " + size_brief(s.usable) +
-                " is usable.";
+        brief = "Experts stream from storage: the model needs " + size_brief(s.held_all()) + ", " +
+                size_brief(s.usable) + " is usable.";
         break;
     case Regime::DenseOversized:
-        brief =
-            "Even the dense weights (" + size_brief(s.host_dense) + ") exceed the " + size_brief(s.usable) + " usable.";
+        brief = "Even the dense weights (" + size_brief(s.held_dense()) + ") exceed the " + size_brief(s.usable) +
+                " usable.";
         break;
     case Regime::NotMoe:
     case Regime::Unknown:
         brief = "Nothing to stream.";
         break;
     }
+    const uint64_t tables = s.host_dense - s.held_dense();
+    const std::string left_out = tables ? ", of which " + u64s(mib(tables)) +
+                                              " MiB are embedding tables the run may leave mapped, weighed without"
+                                        : "";
     s.note("regime", regime_name(s.p.regime), Source::Derived, brief,
-           "on the host " + u64s(mib(s.host_all)) + " MiB (dense " + u64s(mib(s.host_dense)) + ") against " +
+           "on the host " + u64s(mib(s.host_all)) + " MiB (dense " + u64s(mib(s.host_dense)) + left_out + ") against " +
                u64s(mib(s.usable)) + " MiB usable, which is the " + u64s(mib(s.holdable)) +
                " MiB this process may hold (" + headroom_name(s.hw.holdable_from) + ") less a " + u64s(mib(s.margin)) +
                " MiB margin (" + overflow_name(s.hw.anon_overflow) + ")");
@@ -1932,7 +2001,7 @@ void note_regime(Planning & s) {
     if (s.air_short)
         s.note("residency", "not verified", Source::Derived,
                "Experts stream anyway: the model would fit with only " + size_brief(s.air) + " to spare.",
-               "the host set fits with " + u64s(mib(s.air)) + " MiB to spare against the " + u64s(mib(s.host_all)) +
+               "the host set fits with " + u64s(mib(s.air)) + " MiB to spare against the " + u64s(mib(s.held_all())) +
                    " MiB it would hold, and a reclaim is cheap here (" + overflow_name(s.hw.anon_overflow) +
                    "): a model that fits only just is reclaimed from underneath and refaults its weights one page "
                    "at a time, so the experts stream instead. Run without the planner to keep plain residency");
@@ -2196,7 +2265,7 @@ void choose_shared_device(Planning & s, uint64_t resident) {
 void choose_shared_device_dense(Planning & s) {
     size_budget(s);
     residency_regime(s); // the books the candidate reads: what the model holds here, the projector's side
-    choose_shared_device(s, s.host_all);
+    choose_shared_device(s, s.held_all());
 }
 
 // ── the accelerator axis: what may leave the host BEYOND the fitter's placement ─
@@ -3112,21 +3181,20 @@ void settle_dense_pin(Planning & s, bool pin_candidate, const Allocation & alloc
 }
 
 // The part of the dense reservation the run will never hold: the embedding tables a copying policy
-// is about to be told to leave mapped (settle_mapped_tables, the case where the ranking did not call
-// them resident). The reservation is the dense policy's whole copy, so it carried them; left in, the
-// ledger charges tens of GB nothing holds and the cache is sized short by exactly that. Measured on a
-// 96 GB machine: a 27 GB per-layer table charged as dense held the cache to 92% of an expert set that
-// fits whole beside what the run really holds. Only where the reservation is the file's own count:
-// a fitted placement's host share is the fitter's figure, and whether it counted the tables is not
-// known here, so it is left as charged. Where the runtime already holds back a tensor too large, it
-// may be one of these tables, so it is not taken out twice.
+// is told to leave mapped - by the plan where the ranking did not call them resident
+// (settle_mapped_tables), by a list the caller pinned where it names them all. The reservation is the
+// dense policy's whole copy, so it carried them; left in, the ledger charges tens of GB nothing holds
+// and the cache is sized short by exactly that. Measured on a 96 GB machine: a 27 GB per-layer table
+// charged as dense held the cache to 92% of an expert set that fits whole beside what the run really
+// holds. The same with a placement, whose host figure carries the tables as llama.cpp puts them
+// (host_dense_of). Where the runtime already holds back a tensor too large, it may be one of these
+// tables, so it is not taken out twice.
 uint64_t unheld_table_bytes(const Planning & s, const Allocation & alloc) {
     const RunConfig & c = s.p.config;
-    if (s.placement.fitted || s.req.is_pinned("dense-mapped") || s.model.embedding_tensors.empty()) return 0;
     if (c.moe.dense_weights != DenseWeightsMode::Anonymous && c.moe.dense_weights != DenseWeightsMode::Pinned) return 0;
     const Lane lane = alloc.at(WeightGroup::Embedding).lane;
-    if (lane == Lane::Resident || lane == Lane::Pinned) return 0;
-    uint64_t bytes = s.model.group(WeightGroup::Embedding).bytes;
+    if (!s.req.is_pinned("dense-mapped") && (lane == Lane::Resident || lane == Lane::Pinned)) return 0;
+    uint64_t bytes = mappable_host_tables(s);
     if (s.model.largest_dense_tensor > s.hw.residency_budget)
         bytes = bytes > s.model.largest_dense_tensor ? bytes - s.model.largest_dense_tensor : 0;
     return std::min(bytes, s.p.dense_pending_bytes);
@@ -4082,7 +4150,7 @@ Plan plan_once(const RunConfig & base,
                                                          "them home in, so the fitter's placement stands");
             s.p.decisions.push_back(s.home.decision);
         }
-        choose_shared_device(s, s.host_all);
+        choose_shared_device(s, s.held_all());
         // Resident, the cores still compute whatever the devices do not: the layers the fitter left on
         // the host, or all of them. Leaving the count at its default here ran a 24 GB card's 21 host
         // layers on 4 threads of a 32-core box, at 26 tok/s where 16 threads decoded at 47.5.

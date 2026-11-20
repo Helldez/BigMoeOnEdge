@@ -51,6 +51,38 @@ Semantic Versioning.
   smaller than with the same device named by `--prefill-device`. The device is now weighed, and
   the ledger made, with the graph it will run; a test pins that both ways of arming it give the
   same ledger. Nothing changes where the context is no wider than the bound, or `--ubatch` is set.
+- **A plan no longer says "not even the dense weights fit" when they do** (#664). The regime weighed
+  the dense set with the embedding tables in it, and a table the graph gathers by row is one the run
+  can always leave mapped: on a phone where the process may hold about 17 GiB, Qwen3.8-Flash-Next's
+  per-layer n-gram table alone is larger than that, so the plan's headline and its regime note said
+  the dense weights did not fit while the 4.5 GiB the run holds did. The regime now weighs what the
+  run has to hold: the dense set less the tables, as the host figure counts them with a placement or
+  without one (`Placement::host_table_bytes`); a `dense-mapped` list
+  the caller pinned leaves them out only where it names every table. The regime note says how much
+  it left out. The regime's verdict and its words change, not the cache or the dense policy: the
+  regime gates neither for a model that streams.
+- **With layers on a card, the host's share of the model is counted where llama.cpp puts it.** The
+  capacity fitter's placement took the dense set's share by layer count, and llama.cpp does not
+  divide it that way: the embedding tables (the input layer) never leave the host, and the output
+  takes the first device slot before any block. So with every slot on a card a 27 GB per-layer
+  table the host holds was counted as none; with a split, part of a table the run leaves mapped was
+  charged to the ledger and taken from the cache; and one block too many was read as the device's,
+  its experts missing from the host's. The host figure now adds up the parts as llama.cpp assigns
+  them (`layer_slots`, `host_dense_of`, one rule the planner's device split and the layers it brings
+  home read too), and the tables the run leaves mapped come out of the dense reservation with a
+  placement as without one. Simulated (`bmoe-planlab simulate`), a 4 GB card beside 32 GB of RAM
+  with Qwen3.8-Flash-Next Q2_0 (23 of 49 slots on the card) charged 16.1 GB of dense for 1.5 GB held:
+  its cache goes from 10.1 to 25.9 GB, the decode estimate from 13.7 to 15.9 tok/s. With DeepSeek
+  V4.1 split on a 12 GB card the dense blocks left on the host (3.4 GB) were charged nowhere while the
+  run copied them; they are now.
+- **Whether a model fits whole no longer counts a table the run leaves mapped.** The question is
+  asked of what the run has to hold, with a card or without one: a model held whole beside its
+  per-layer table no longer streams for the table's sake. Without a card this was the rule's only
+  answer (a 64 GB Mac streamed Flash-Next Q2_0, simulated 10.6 tok/s, and now holds it, 11.1); with
+  every layer on a card it was already the answer, by the arithmetic above counting the table as
+  none, and that answer is what kept the copy of the experts the cards read from (two 16 GB cards:
+  32.6 tok/s measured). A table llama.cpp reads whole at load is one small enough to, which the
+  margin below the budget covers.
 
 ## [0.46.1] - 2026-11-19
 
