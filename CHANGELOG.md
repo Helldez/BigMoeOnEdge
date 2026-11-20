@@ -6,6 +6,10 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+- **`--no-overlap`**, the off switch of the overlap row, so a server whose default is on can be
+  turned off by flag like any other switch ([settings.md](docs/settings.md)). By @pt7777.
+
 ### Changed
 - **A model's hit curve is read from its routing record in half the time.** Every `--auto` plan of
   a model with a record replays the record through the cache at 64 sizes. Measured on a desktop
@@ -15,6 +19,15 @@ Semantic Versioning.
   replaying at the first size nothing was evicted at, since a larger budget replays the same (25
   to 33 of the 64 sizes on those records). The comment that called a replay "well under a
   millisecond" is corrected to what it measures.
+- **`--auto` turns the server's default overlap off where layers sit on a device without an expert
+  cache there.** Overlap takes llama.cpp's offload of host-held weights in a wide graph away
+  (`offloads_wide_matmuls`), so with some layers placed and the rest on the host every host-held
+  weight of a prompt ran on the cores. On a laptop with a discrete GPU and 25 of 41 layers placed
+  that cost 2.1x of the prefill on a 2.7k-token prompt and 4.5x on a 20.7k one, and bought no
+  decode. The plan cannot have seen it: the trial needs every layer on the host. Now the plan turns
+  a front-end's default off there with a `[derived]` line that says why; a caller who set `--overlap`
+  keeps it, and the plan line says the prompts stay on the cores (#645,
+  [hardware-planning.md](docs/hardware-planning.md#two-stages-one-composer)). By @pt7777.
 
 ### Fixed
 - **A read of an expert that fails ends the run in every read mode** (the serial path, which is
@@ -94,6 +107,11 @@ Semantic Versioning.
   Apple-silicon laptop with a streamed MoE model at ubatch 1024: the CPU's compute buffer goes from
   651 to 149 MiB, about 500 MiB back to the expert cache and the system; the gap grows with the
   ubatch.
+- **`GET /health` answers without the API key, as llama-server's does.** With `--api-key` set it
+  answered 401, so a supervisor, a start script or a load balancer that asks it before it holds the
+  key read a ready server as down. `GET` and `HEAD` on `/health` and `/v1/health` now skip the key
+  check; sub-paths, writes and every other route keep it, and the host and origin rules still run
+  first ([server-api.md](docs/server-api.md)). By @pt7777 (#630).
 
 ## [0.46.1] - 2026-11-19
 

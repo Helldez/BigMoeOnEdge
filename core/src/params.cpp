@@ -522,10 +522,11 @@ std::vector<ParamDesc> build() {
                           "Output is byte-identical. Needs the fork's expert-ready hook in this build.");
         d.type = ParamType::Bool;
         d.flag.clear();
-        d.switches = {{"--overlap", "true"}};
+        d.switches = {{"--overlap", "true"}, {"--no-overlap", "false"}};
         bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.overlap; });
         d.details = "Reads the next experts while the current ones are computed. Same answer, often faster; the plan "
-                    "keeps it only where it measures faster.";
+                    "keeps it only where it measures faster, and turns it off where layers sit on a device without "
+                    "an expert cache there, since it keeps prompts on the cores.";
         t.push_back(d);
     }
     {

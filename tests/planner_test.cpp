@@ -3208,6 +3208,48 @@ int main() {
             check(p.config.n_gpu_layers == 24 && !p.config.moe.overlap && !p.config.trial.overlap,
                   "layers on a device: overlap is not armed from a verdict nor measured");
             check(validate(p.config).ok, "layers on a device: a valid config", validate(p.config).error);
+
+            // A front-end's default overlap with layers on a device and no cache there: it would take the
+            // offload of the host's weights in a prompt's wide matmuls away (offloads_wide_matmuls), so the
+            // plan turns it off and says why. Measured 2.1x to 4.5x of the prefill on a discrete GPU (#645).
+            pl.device_split = {{"discrete", 24}};
+            RunConfig srv = base_cfg();
+            srv.moe.overlap = true;
+            const Plan d = plan_run(srv, dev, model, pl, PlanRequest{});
+            const Decision * od = find(d, "overlap");
+            check(d.config.n_gpu_layers == 24 && d.config.moe.device_cache_mb == 0 && !d.config.moe.overlap &&
+                      offloads_wide_matmuls(d.config),
+                  "layers on a device, a front-end's default overlap: off, and the prompts' wide matmuls offload");
+            check(od && od->value == "off" && od->source == Source::Derived &&
+                      od->brief == "Off: with layers on discrete, overlap keeps prompts on the host." &&
+                      od->reason.find("pass --overlap") == std::string::npos &&
+                      od->reason.find("Pass --overlap to keep it") != std::string::npos,
+                  "layers on a device, a front-end's default overlap: the plan says why", od ? od->reason : "none");
+            check(validate(d.config).ok, "layers on a device, default overlap off: a valid config",
+                  validate(d.config).error);
+
+            // The caller who pinned it keeps it, and the plan line says what it costs them.
+            PlanRequest pin;
+            pin.pinned = {"overlap"};
+            HardwareProfile wide = dev;
+            wide.host_wide_matmul_gibs = 20.0;
+            wide.devices[0].wide_matmul_gibs = 64.0;
+            const Plan k = plan_run(srv, wide, model, pl, pin);
+            const Decision * kd = find(k, "overlap");
+            check(k.config.n_gpu_layers == 24 && k.config.moe.overlap && !offloads_wide_matmuls(k.config),
+                  "layers on a device, overlap pinned: kept, and the prompts stay on the cores");
+            check(kd && kd->value == "on" && kd->source == Source::Operator &&
+                      kd->brief == "On, as you set it: prompts run on the host's cores, not on discrete." &&
+                      kd->reason.find("measured 3.2x the host's") != std::string::npos &&
+                      kd->reason.find("pass --no-overlap") != std::string::npos,
+                  "layers on a device, overlap pinned: the plan says what it costs", kd ? kd->reason : "none");
+            check(validate(k.config).ok, "layers on a device, overlap pinned: a valid config",
+                  validate(k.config).error);
+
+            // Nothing placed: the default is not this rule's to touch.
+            const Plan h = plan_run(srv, het, model, PlanRequest{});
+            check(h.config.n_gpu_layers == 0 && h.config.moe.overlap,
+                  "every layer on the host: a front-end's default overlap stands");
         }
         {
             // Every core alike: the whole count and half of it are the candidates.
