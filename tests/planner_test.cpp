@@ -1121,6 +1121,21 @@ int main() {
         check((uint32_t) floor.config.n_ubatch == pol.ubatch_min, "width: never narrower than the floor",
               std::to_string(floor.config.n_ubatch));
 
+        // The floor is reached from a context that is not a power of two times it: halving 4092 stops at
+        // 1023, whose half is under the floor, and the width used to stay there with its buffers past
+        // their share.
+        RunConfig odd_ctx = base_cfg();
+        odd_ctx.n_ctx = 4092;
+        const Plan odd = plan_run(odd_ctx, hw, model, wide(4092, 64 * MiB), PlanRequest{});
+        check((uint32_t) odd.config.n_ubatch == pol.ubatch_min,
+              "width: a context that is not a power of two times the floor still narrows to the floor",
+              std::to_string(odd.config.n_ubatch));
+        // And a width whose buffers fit above the floor is not taken lower than it has to be.
+        const Plan odd_fit = plan_run(odd_ctx, hw, model, wide(4092, per_token), PlanRequest{});
+        const uint64_t wo = odd_fit.config.n_ubatch ? (uint64_t) odd_fit.config.n_ubatch : 4092;
+        check(wo * per_token <= cap && (wo == 4092 || wo * 2 * per_token > cap || wo == pol.ubatch_min),
+              "width: from an odd context, the widest whose buffers fit", std::to_string(wo));
+
         // A slope nobody measured decides nothing.
         const Plan blind = plan_run(big_ctx, hw, model, wide(16384, 0), PlanRequest{});
         const Decision * du = find(blind, "ubatch");
