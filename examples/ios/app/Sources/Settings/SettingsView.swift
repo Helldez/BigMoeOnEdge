@@ -315,8 +315,14 @@ struct ParamRow: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .focused($focused)
-                    .onSubmit(commit)
+                    .onSubmit { commit() }
                     .onChange(of: focused) { f in if !f { commit() } }
+                    // Tapping beside the field or leaving the screen keeps the focus, so Return and
+                    // the focus alone lost a typed value; a pause in typing saves it, as the web form does.
+                    .task(id: text) {
+                        try? await Task.sleep(nanoseconds: Self.saveAfterTyping)
+                        if !Task.isCancelled { commit(quiet: true) }
+                    }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
                     .overlay(RoundedRectangle(cornerRadius: Grid.control, style: .continuous).strokeBorder(focused ? Palette.accent : Palette.lineStrong, lineWidth: Grid.line))
@@ -366,9 +372,15 @@ struct ParamRow: View {
         Button(title) { reset() }.font(.ui(13)).foregroundStyle(Palette.accentInk).buttonStyle(.borderless)
     }
 
-    private func commit() {
+    /// A typed value is saved once typing pauses this long: there is no Save to press.
+    private static let saveAfterTyping: UInt64 = 400_000_000
+
+    /// Saves the typed value. A pause in typing (`quiet`) saves only a value that already parses: one
+    /// half typed waits, and Return or leaving the field says why it is refused.
+    private func commit(quiet: Bool = false) {
         guard text != value.display else { return }
         guard let v = spec.value(fromText: text) else {
+            if quiet { return }
             onError("\(spec.label): \"\(text)\" is not a \(spec.kind == .float ? "number" : spec.kind == .int ? "whole number" : "value") here.")
             text = value.display
             return

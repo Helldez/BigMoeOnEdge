@@ -6,6 +6,13 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Changed
+- **Settings offer every setting that changes the answer** (web, Android, iOS alike): Top-k, Top-p
+  and Drop cold experts join Temperature, the context's precision and the active experts. The
+  rule is the group's, in one place (`param_group_shapes_answer`): a Sampling or Quality trades row
+  at the advanced level is in the form, since the plan never sets one. The seed, experimental and
+  debug rows stay flags of the command line ([screens.md](docs/screens.md)).
+
 ### Fixed
 - **A native build in Termux compiles, and pins the dense set where the phone has the store, as the
   APK does.** Termux's toolchain targets API 24, and its headers mark `AHardwareBuffer_*`, the API 26
@@ -43,6 +50,9 @@ Semantic Versioning.
   oggi?<|end_message|>`. Such a turn is now parsed like any other, with the opening handed to the
   parser as llama.cpp does for a continued message. Qwen3.6-35B, Gemma 4 E4B and SmolVLM answer the
   same text as before with thinking on and off ([session.md](docs/session.md)).
+- **A value typed in the Android or iOS settings is saved without pressing Done**: it is saved once
+  typing pauses, as on the web. Before, only Done or leaving the field saved it, and tapping beside
+  the field or going back keeps the focus there, so the value was lost.
 
 ## [0.47.0] - 2026-11-21
 
