@@ -2970,7 +2970,7 @@ struct Session::Impl::Turn {
     bool history_pushed = false;                 // did we append this turn's user message to chat_history?
     bool history_replaced = false;               // did we swap chat_history for the request's messages?
     std::vector<common_chat_msg> history_before; // what a replaced conversation goes back to
-    bool prefilled_answer = false;               // closed the reasoning span in the prompt, so skip reasoning parse
+    bool prefilled_answer = false;               // closed the reasoning span in the prompt (parsed all the same)
     common_chat_parser_params parse_params;
     detail::ToolGrammar grammar;        // the template's grammar, off when it has none
     std::vector<llama_token_data> cand; // the full candidate list, built only when the grammar refuses
@@ -3326,16 +3326,24 @@ struct Session::Impl::Turn {
         // template uses, a call that is still being written is visible (TokenMetrics::tool_calls).
         std::vector<ChatToolCall> tool_calls{};
     };
+    // The empty reasoning span a prefill closed is the prompt's, not the model's: a parse that reads
+    // the prefill back finds it, and it is no reasoning to show.
+    void forget_prefilled_reasoning(common_chat_msg & msg) const {
+        if (prefilled_answer && msg.reasoning_content.find_first_not_of(" \t\r\n") == std::string::npos)
+            msg.reasoning_content.clear();
+    }
     ShownView shown_view(const std::string & raw, bool partial) const {
         if (!chat_on) return {raw, ""};
-        // A prefilled turn resumes mid-answer: the reasoning span and the turn header the parser
-        // anchors on are already in the prompt, not in the stream, so there is nothing to strip —
-        // the raw stream already IS the answer. (If a model reasons anyway despite the closed span,
-        // that reasoning surfaces verbatim rather than being cut out here. Hiding it would only
-        // disguise a model this mechanism does not work on; the honest report is ThinkControl::None.)
-        if (prefilled_answer && !structured()) return {raw, ""};
+        // A prefilled turn resumes mid-answer, and is read by the same parse: llama.cpp hands the
+        // parser the prefill as the generation prompt (continue_final_message), so the turn header it
+        // anchors on is there, and what the format closes the answer with is cut as in any turn. The
+        // raw stream is the answer only where that close is an end-of-generation token; where it is
+        // text (a block that ends with a marker the vocabulary does not stop on), it showed.
         try {
             common_chat_msg msg = common_chat_parse(common_chat_input(raw), partial, parse_params);
+            forget_prefilled_reasoning(msg);
+            if (prefilled_answer && !structured() && detail::parsed_nothing(msg) && !raw.empty() && !partial)
+                return {raw, ""};
             return {msg.content, msg.reasoning_content, detail::from_common_tool_calls(msg.tool_calls)};
         } catch (const std::exception & e) {
             if (structured()) return {}; // never leak an unparsed reasoning/tool envelope as JSON
@@ -4164,9 +4172,10 @@ struct Session::Impl::Turn {
     // keeps the parser's partial content; only a completed answer promises valid JSON.
     bool parse_result() {
         const bool complete = !res.cancelled && n_gen < n_predict;
-        if (chat_on && (!prefilled_answer || structured())) {
+        if (chat_on) {
             try {
                 final_msg = common_chat_parse(common_chat_input(gen), structured() && !complete, parse_params);
+                forget_prefilled_reasoning(final_msg);
                 final_parsed = true;
             } catch (const std::exception & e) {
                 if (structured() && complete) {
