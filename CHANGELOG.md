@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.47.2] - 2026-11-21
+
+### Fixed
+- **A value can be typed in the Android and iOS settings again.** 0.47.1 saved a typed value once
+  typing paused for 400 ms, and the field is rebuilt from the saved value: "0" on the way to "0.5"
+  was saved and put back while the person was still typing, so a number could not be written. The
+  apps no longer save on a pause. A check beside the field saves the value, shown while the text
+  differs from the saved one; Done/Return and leaving the field still save it. The web form is
+  unchanged ([screens.md](docs/screens.md)).
+
 ## [0.47.1] - 2026-11-21
 
 ### Changed
