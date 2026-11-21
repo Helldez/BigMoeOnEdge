@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [0.47.1] - 2026-11-21
+## [Unreleased]
 
 ### Changed
 - **Settings offer every setting that changes the answer** (web, Android, iOS alike): Top-k, Top-p
