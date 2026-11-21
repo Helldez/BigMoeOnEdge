@@ -197,7 +197,7 @@ UpdateService::Reply UpdateService::backends(bool refresh) {
     }
     std::lock_guard<std::mutex> lk(m_);
     json body = backends_answer(cfg_.registered, cfg_.graphics, cfg_.target, feed_.get(),
-                                installed_packs(backends_root()), cfg_.library_loads, restart_required_);
+                                installed_packs(backends_root()), cfg_.library_loads, restart_required_, cfg_.version);
     if (!feed_error.empty()) body["feed_error"] = feed_error;
     return {200, body};
 }
@@ -247,6 +247,12 @@ UpdateService::Reply UpdateService::install_pack(const std::string & id, bool fo
                     json{{"error", "the feed offers no pack '" + id + "' for " + cfg_.target}, {"code", "not_found"}}};
         version = feed_->version;
     }
+    // A pack is its release's: the feed offers the newest one's, and this engine loads only its own.
+    // Not overridden by `force`, which is about the driver, not about what the pack was built for.
+    if (!pack_matches_engine(version, cfg_.version))
+        return {409, json{{"error", "the packs offered are built for " + version + " and this is " + cfg_.version +
+                                        ": update first, then install the pack"},
+                          {"code", "version_mismatch"}}};
     if (!force && !pack_applies(pack, cfg_.library_loads))
         return {409, json{{"error", "none of the libraries this pack needs loads on this machine"},
                           {"code", "not_applicable"}}};

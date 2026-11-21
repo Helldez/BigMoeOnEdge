@@ -1399,7 +1399,11 @@ devices are not local, and the processor's are not graphics); `target` the build
 (`macos-arm64`, ...); `feed` `{version, published}` of the verified feed known, or `null`. `packs`
 is that feed's packs for this target: `{id, title, size, applies, installed, installed_version,
 current}`, `applies` when one of the pack's driver libraries loads here, `current` when the
-installed copy is this feed's file. `installed` lists every pack on disk (`{id, version, offered}`).
+installed copy is this feed's file. `installed` lists every pack on disk (`{id, version, offered,
+loaded}`): `loaded` is false for a pack another release left, which the engine does not load, since a
+backend module is built against one llama.cpp; installing it again replaces it. An install is
+refused (`409`, `code: "version_mismatch"`) while the feed's packs are a newer release's than the
+server: the update comes first.
 `restart_required` is true once a pack was installed since the server started. With `?refresh=1`
 the feed is read from the network first; a feed that cannot be read or does not verify is said in
 `feed_error`, and the rest of the answer stands. Without it, the feed kept from the last read

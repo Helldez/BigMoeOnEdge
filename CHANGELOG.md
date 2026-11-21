@@ -69,6 +69,14 @@ Semantic Versioning.
   gates (G28d); it was not run on that laptop ([field-reports.md](docs/field-reports.md)).
 
 ### Fixed
+- **A backend pack is loaded only by the release it was built for** (#660). Packs live in the data
+  folder, which outlives an update and an uninstall, and the server loaded every pack folder it
+  found. A graphics backend built against an earlier llama.cpp can load and then compute the wrong
+  thing or end the server at its first graph. Now a pack another release left is not loaded: the
+  log names it, `GET /api/backends` lists it with `loaded: false`, and installing it again replaces
+  it. The feed's packs are not installed into an older server either (`409`,
+  `version_mismatch`): the update comes first. A folder put under `<data>/backends/` by hand, with
+  no `pack.json`, is loaded as before ([desktop-app.md](docs/desktop-app.md)).
 - **On Windows, the programs start from a folder whose name is not ASCII** (#677). `bmoe-cli` and
   `bmoe-server` ended at start (exception `0xc0000409` in `ucrtbase.dll`, no output) when the
   release sat under such a folder on a system whose code page can spell it, a Japanese folder on a

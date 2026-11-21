@@ -1908,7 +1908,14 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     const std::string backends_root = (fs::u8path(data_dir) / "backends").u8string();
     for (const std::string & w : finish_pending_packs(backends_root))
         std::fprintf(stderr, "warning: %s\n", w.c_str());
-    const std::vector<std::string> pack_dirs = backend_pack_dirs(backends_root);
+    // Only the packs of this release: one left by an earlier version is not loaded (backend_packs.h).
+    std::vector<std::string> other_release;
+    const std::vector<std::string> pack_dirs = loadable_pack_dirs(backends_root, version(), &other_release);
+    for (const std::string & p : other_release)
+        std::fprintf(stderr,
+                     "warning: backend pack %s is not this release's (%s) and is not loaded: install it again "
+                     "from Settings\n",
+                     p.c_str(), version());
     if (load_backends) {
         platform::prepare_backend_modules(extra_backend_modules(platform::executable_dir(), pack_dirs));
         register_backends(pack_dirs);
