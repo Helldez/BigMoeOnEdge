@@ -27,6 +27,18 @@ int main() {
     check(refine_memory_sharing(Tri::Unknown, Tri::No) == Tri::No,
           "the allocation probe retains its existing separate-memory path");
 
+    // The native answer is asked by backend; a backend with no native answer, or no description to
+    // find the device by, says nothing rather than guessing.
+    check(bmoe::detail::native_memory_sharing(nullptr, "any") == Tri::Unknown, "no backend name means unknown");
+    check(bmoe::detail::native_memory_sharing("MTL", nullptr) == Tri::Unknown, "no description means unknown");
+    check(bmoe::detail::native_memory_sharing("a backend with no native answer", "any device") == Tri::Unknown,
+          "a backend this probe does not ask is left to the device type and the allocation probe");
+#if defined(BMOE_HAVE_OPENCL_MEMORY_PROBE)
+    check(bmoe::detail::opencl_memory_sharing(nullptr) == Tri::Unknown, "OpenCL: no description means unknown");
+    check(bmoe::detail::opencl_memory_sharing("not an OpenCL device") == Tri::Unknown,
+          "OpenCL: a description no device has cannot borrow another device's topology");
+#endif
+
 #if defined(BMOE_HAVE_METAL_MEMORY_PROBE)
     check(bmoe::detail::metal_memory_sharing(nullptr) == Tri::Unknown, "no device description means unknown");
     check(bmoe::detail::metal_memory_sharing("not a native Metal device") == Tri::Unknown,
