@@ -92,6 +92,17 @@ does not establish that identity and leaves the native fact `Unknown`; the exist
 probe can still supply an answer. This is an identity check in the adapter, not a rule that guesses
 a memory topology from a model name.
 
+The same holds for every backend whose ggml device type does not say it (`native_memory_probe`, one
+answer per API). Vulkan, CUDA and SYCL report an integrated device as `IGPU`, which is read as shared
+before anything is measured. Metal and OpenCL report every device as `GPU`: Metal is asked as above,
+and OpenCL answers `CL_DEVICE_HOST_UNIFIED_MEMORY` for the device whose `CL_DEVICE_NAME` is ggml's
+description, through the OpenCL library the backend itself loaded (nothing is linked or loaded for
+it, so a system without OpenCL is unaffected). The allocation delta is what is left where no API
+answers. It reads the host's available-memory figure, which on a phone moves by hundreds of
+megabytes while the system reclaims, and it gave the same integrated GPU of a 12 GB phone both
+answers on consecutive loads: as memory of its own, the capacity fitter's placement of the output
+head there was applied, and its one layer on a device ruled out the NPU prefill.
+
 A direct shared-memory answer takes precedence over a later allocation-delta estimate: available
 memory may rise while the kernel reclaims other pages, so that difference cannot turn a known
 shared pool into separate memory. A native separate-memory answer is not changed into `Unknown`,
@@ -879,7 +890,8 @@ the side that cannot overcommit.
 
 The rule is the widest graph whose buffers stay inside a share of what the process may hold
 (`PlannerPolicy::compute_share_max`, a tenth), found by halving from the context and never below
-`ubatch_min` (or the image floor above). The plan starts from the whole context even where the probe
+`ubatch_min` (or the image floor above): where the next half would fall under that floor, the floor
+itself is taken, so a context that is not a power of two times it (4092 tokens) still reaches it. The plan starts from the whole context even where the probe
 measured a narrower default: the probe projects the buffers at its width and at half of it, both at
 the run's context, so the slope it reads already carries what the attention mask costs a token of
 width at that context, and a wider graph at the same context is priced by extending that line

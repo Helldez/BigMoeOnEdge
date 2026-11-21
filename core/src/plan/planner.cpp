@@ -1381,6 +1381,19 @@ void size_budget(Planning & s) {
 // the widest graph, since its buffers take nothing from anything there.
 } // namespace
 
+// From `top`, halve the graph's width while its buffers are past their share, and stop at `floor`
+// rather than above it: a width that is not a power of two times the floor (a context of 4092
+// tokens) used to stop at the last halving still over it (1023, where 511 is under a 512 floor),
+// with the buffers past their share and the floor never reached.
+namespace {
+template <typename Over> uint32_t narrowed_width(uint32_t top, uint32_t floor, Over over) {
+    uint32_t w = top;
+    while (w > floor && over(w))
+        w = std::max(floor, w / 2);
+    return w;
+}
+} // namespace
+
 uint32_t device_share_width(const Placement & placement,
                             const HardwareProfile & hw,
                             const PlannerPolicy & policy,
@@ -1404,11 +1417,7 @@ uint32_t device_share_width(const Placement & placement,
         }
         return !per_card && (double) q.device_compute_bytes > (double) device_memory * policy.compute_share_max;
     };
-    const uint32_t lo = std::max(policy.ubatch_min, min_width);
-    uint32_t w = full;
-    while (w / 2 >= lo && over(w))
-        w /= 2;
-    return w;
+    return narrowed_width(full, std::max(policy.ubatch_min, min_width), over);
 }
 
 namespace {
@@ -1682,9 +1691,7 @@ void choose_graph_width(Planning & s) {
     // run (PlannerPolicy::ubatch_max_device, `bound` above), whatever its memory allows.
     const std::string images = image_past_bound(p.config, bound);
     const uint32_t top = bound > 0 && full > bound ? bound : full;
-    uint32_t w = top;
-    while (w / 2 >= narrowest && over(w))
-        w /= 2;
+    const uint32_t w = narrowed_width(top, narrowest, over);
     // The width taken: its buffers charged, and the session told it whenever it is not the width the
     // config opens with anyway (at the context the placement settles, which apply_placement adopts).
     RunConfig opened = p.config;
@@ -1741,7 +1748,7 @@ void choose_graph_width(Planning & s) {
                                            : share;
     // Held at the floor an image sets, past the share: said, since the share alone would go narrower.
     const std::string image_floor =
-        narrowest > s.pol.ubatch_min && w / 2 < narrowest && over(w)
+        narrowest > s.pol.ubatch_min && w == narrowest && over(w)
             ? " It stays at least " + u64s(narrowest) + " tokens wide: an image takes up to that many, in one pass."
             : std::string();
     take(w);
