@@ -8,6 +8,8 @@ import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -54,9 +56,6 @@ private const val APP_SECTION = " app"
 private const val SHARE_SECTION = " share"
 private const val LOOK_SECTION = " appearance"
 private const val MINE_SECTION = " mine"
-
-/** A typed value is saved once typing pauses this long, as the web form does: no Save to press. */
-private const val SAVE_AFTER_TYPING_MS = 400L
 
 /**
  * Settings, rendered from the engine's parameter table (`GET /api/params`) and nothing else: one
@@ -548,36 +547,31 @@ private fun ParamRow(
 }
 
 /**
- * A number (or `auto`, where the row accepts it) or free text. Saved once typing pauses, and at once
- * on Done or when the field is left. A pause only saves a value that is already acceptable: a value
- * half typed ("0.", "-") waits, and the reason it is refused is shown on Done or on leaving.
+ * A number (or `auto`, where the row accepts it) or free text. Saved by the check beside the field,
+ * shown while the typed text differs from the saved value, by Done, or when the field is left. Not
+ * on a pause: a pause saved a value still being typed ("0" on the way to "0.5"), and the field,
+ * rebuilt from the saved value, took the text from under the person's fingers.
  */
 @Composable
 private fun NumberOrTextField(spec: ParamSpec, value: Any?, focus: FocusRequester, onSet: (Any?) -> Unit) {
     var text by remember(spec.key, value) { mutableStateOf(paramValueText(value)) }
     var error by remember(spec.key) { mutableStateOf<String?>(null) }
-    fun commit(quiet: Boolean = false) {
+    fun commit() {
         if (text == paramValueText(value)) return
         val v = paramValueFromText(spec, text)
         if (v == null) {
-            if (!quiet) error = "not a ${spec.type}" + if (spec.acceptsAuto) " (or auto)" else ""
+            error = "not a ${spec.type}" + if (spec.acceptsAuto) " (or auto)" else ""
             return
         }
         val n = (v as? Number)?.toDouble()
         if (n != null && ((spec.min != null && n < spec.min) || (spec.max != null && n > spec.max))) {
             // The limits appear only here, when a value is refused; the field otherwise shows what is usual.
-            if (!quiet) error = if (spec.max != null) "between ${paramValueText(spec.min)} and ${paramValueText(spec.max)}"
+            error = if (spec.max != null) "between ${paramValueText(spec.min)} and ${paramValueText(spec.max)}"
             else "at least ${paramValueText(spec.min)}"
             return
         }
         error = null
         onSet(v)
-    }
-    // Compose keeps the focus when the person taps beside the field or leaves the screen, so the
-    // Done key and the focus alone lost a typed value; a pause in typing saves it.
-    LaunchedEffect(text) {
-        delay(SAVE_AFTER_TYPING_MS)
-        commit(quiet = true)
     }
     // Below the field: the problem, else what the value means (= off) and what is usual.
     val hint = error ?: listOfNotNull(spec.specialLabel(value)?.let { "= $it" }, spec.typicalText()).joinToString(" · ").ifEmpty { null }
@@ -588,6 +582,11 @@ private fun NumberOrTextField(spec: ParamSpec, value: Any?, focus: FocusRequeste
         suffix = spec.unit?.let { { Text(it, fontSize = 12.sp) } },
         isError = error != null,
         supportingText = hint?.let { { Text(it) } },
+        // Compose keeps the focus when the person taps beside the field or leaves the screen, so
+        // Done and the focus alone could lose a typed value: the check saves it in one tap.
+        trailingIcon = if (text != paramValueText(value)) {
+            { IconButton(onClick = { commit() }) { Icon(Icons.Filled.Check, contentDescription = "Save") } }
+        } else null,
         singleLine = spec.type != "text",
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
         keyboardActions = KeyboardActions(onDone = { commit() }),

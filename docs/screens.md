@@ -418,9 +418,11 @@ there on every front-end (#465):
   Under a number: its unit, the name of a special value when the field holds one ("= off"), and
   the typical range ("usually 2 to 8"), never the type's limit; the limits appear only when a value
   is refused. The help's first sentence is always shown, the rest and the special values on demand.
-- **No Save button.** A value is saved as it is set: a switch or a menu at once, a typed one when
-  typing pauses (400 ms), or at once on Done/Return or on leaving the field. A pause saves only a
-  value that already parses; one half typed waits, and its reason shows on Done or on leaving.
+- **No Save button for the form.** A value is saved as it is set: a switch or a menu at once. A
+  typed one: on the web when typing pauses (400 ms, a value that already parses); in the apps by
+  the check beside the field, shown while the text differs from the saved value, by Done/Return,
+  or on leaving the field. The apps do not save on a pause: the field is rebuilt from the saved
+  value, so a pause that saved "0" on the way to "0.5" took the text from under the person typing.
 - **Only what a person sets.** A form shows the rows the table marks `form`: every basic row,
   every advanced row of a group that decides the answer rather than its speed (Sampling and Quality
   trades: top-k, top-p, the context's precision, the active experts, cold-expert dropping),

@@ -317,16 +317,18 @@ struct ParamRow: View {
                     .focused($focused)
                     .onSubmit { commit() }
                     .onChange(of: focused) { f in if !f { commit() } }
-                    // Tapping beside the field or leaving the screen keeps the focus, so Return and
-                    // the focus alone lost a typed value; a pause in typing saves it, as the web form does.
-                    .task(id: text) {
-                        try? await Task.sleep(nanoseconds: Self.saveAfterTyping)
-                        if !Task.isCancelled { commit(quiet: true) }
-                    }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
                     .overlay(RoundedRectangle(cornerRadius: Grid.control, style: .continuous).strokeBorder(focused ? Palette.accent : Palette.lineStrong, lineWidth: Grid.line))
                 if let unit = spec.unit { Text(unit).font(.ui(14)).foregroundStyle(Palette.muted) }
+                // Tapping beside the field or leaving the screen keeps the focus, so Return and the
+                // focus alone could lose a typed value: the check saves it in one tap. Not a pause in
+                // typing, which saved a value still being typed ("0" on the way to "0.5").
+                if text != value.display {
+                    Button { commit() } label: { Image(systemName: "checkmark") }
+                        .buttonStyle(.appSecondary)
+                        .accessibilityLabel("Save")
+                }
                 if spec.acceptsAuto && value.string != "auto" {
                     Button("auto") { set(.string("auto")) }.buttonStyle(.appSecondary)
                 }
@@ -372,15 +374,11 @@ struct ParamRow: View {
         Button(title) { reset() }.font(.ui(13)).foregroundStyle(Palette.accentInk).buttonStyle(.borderless)
     }
 
-    /// A typed value is saved once typing pauses this long: there is no Save to press.
-    private static let saveAfterTyping: UInt64 = 400_000_000
-
-    /// Saves the typed value. A pause in typing (`quiet`) saves only a value that already parses: one
-    /// half typed waits, and Return or leaving the field says why it is refused.
-    private func commit(quiet: Bool = false) {
+    /// Saves the typed value: the check, Return, or leaving the field. A value that does not parse is
+    /// refused with the reason.
+    private func commit() {
         guard text != value.display else { return }
         guard let v = spec.value(fromText: text) else {
-            if quiet { return }
             onError("\(spec.label): \"\(text)\" is not a \(spec.kind == .float ? "number" : spec.kind == .int ? "whole number" : "value") here.")
             text = value.display
             return
