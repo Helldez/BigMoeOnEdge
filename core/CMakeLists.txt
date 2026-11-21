@@ -125,6 +125,13 @@ if(BMOE_HAVE_LLAMA)
         # libandroid carries AHardwareBuffer_*, Android's reclaim-exempt allocation behind
         # `--dense-weights pinned` (pio::pinned_alloc; Darwin's needs no extra library).
         target_link_libraries(bmoe_core PUBLIC android)
+        # The API is 26 and up. A build for an older minimum (Termux's toolchain targets 24, where the
+        # header marks the calls unavailable) binds it weakly, and platform_io.cpp asks the device in
+        # one place before any use. The error turns a call without that check into a build failure
+        # instead of a crash on an older device. At a minimum of 26 or more neither changes anything.
+        set_property(SOURCE src/io/platform_io.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+                     __ANDROID_UNAVAILABLE_SYMBOLS_ARE_WEAK__)
+        set_property(SOURCE src/io/platform_io.cpp APPEND PROPERTY COMPILE_OPTIONS -Werror=unguarded-availability)
     endif()
     if(WIN32)
         # QueryWorkingSetEx, behind the dense residency sensor (pio::vm_resident_sample). Newer SDKs
