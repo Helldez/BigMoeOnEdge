@@ -20,7 +20,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -531,21 +530,39 @@ private fun Composer() {
             if (imageError.isNotEmpty()) {
                 Text(imageError, color = tokens.err, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp).padding(top = 6.dp))
             }
+            var more by remember { mutableStateOf(false) }
+            // Whether an image can go: the loaded model reads them (GET /api/info, model.vision).
+            // The entries stay, disabled, with the reason: the feature is learnt by seeing it.
+            val model = engine.info?.model
+            val imageWhy = when {
+                choose -> "An image goes with a message, not with a choice"
+                !engine.ready || model == null -> "No model is loaded: one loaded with its projector file reads images"
+                !model.vision -> "The loaded model does not read images: load one with its projector file"
+                else -> null
+            }
+            // The sheet is the field's edge: the field itself draws none. It has the sheet's whole
+            // width, with the controls on a line below, as the web and iOS composers lay it out: on a
+            // phone, + and Send (or Stop) beside it left the words a third of the screen.
+            TextField(
+                value = prompt,
+                onValueChange = { prompt = it },
+                placeholder = { Text(if (choose) "Question" else "Message") },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp).padding(top = 4.dp),
+                maxLines = 6,
+                shape = Corner,
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = Color.Transparent,
+                    unfocusedContainerColor = Color.Transparent,
+                    disabledContainerColor = Color.Transparent,
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent,
+                    disabledIndicatorColor = Color.Transparent,
+                ),
+            )
             Row(
-                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.Bottom,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                Modifier.fillMaxWidth().padding(start = 4.dp, end = 12.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                var more by remember { mutableStateOf(false) }
-                // Whether an image can go: the loaded model reads them (GET /api/info, model.vision).
-                // The entries stay, disabled, with the reason: the feature is learnt by seeing it.
-                val model = engine.info?.model
-                val imageWhy = when {
-                    choose -> "An image goes with a message, not with a choice"
-                    !engine.ready || model == null -> "No model is loaded: one loaded with its projector file reads images"
-                    !model.vision -> "The loaded model does not read images: load one with its projector file"
-                    else -> null
-                }
                 Box {
                     IconButton(onClick = { more = true }) { Icon(Icons.Filled.Add, contentDescription = "More") }
                     DropdownMenu(expanded = more, onDismissRequest = { more = false }) {
@@ -575,26 +592,7 @@ private fun Composer() {
                         }
                     }
                 }
-                // The sheet is the field's edge: the field itself draws none.
-                TextField(
-                    value = prompt,
-                    onValueChange = { prompt = it },
-                    placeholder = { Text(if (choose) "Question" else "Message") },
-                    modifier = Modifier.weight(1f),
-                    maxLines = 6,
-                    shape = Corner,
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = Color.Transparent,
-                        unfocusedContainerColor = Color.Transparent,
-                        disabledContainerColor = Color.Transparent,
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent,
-                        disabledIndicatorColor = Color.Transparent,
-                    ),
-                    trailingIcon = if (prompt.isNotEmpty()) ({
-                        IconButton(onClick = { prompt = "" }) { Icon(Icons.Filled.Clear, contentDescription = "Clear") }
-                    }) else null,
-                )
+                Spacer(Modifier.weight(1f))
                 if (chat.running) {
                     FilledTonalButton(onClick = { Chat.stop() }, shape = Corner, contentPadding = PaddingValues(horizontal = 16.dp)) { Text("Stop") }
                 } else {

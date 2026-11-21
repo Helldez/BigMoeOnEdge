@@ -16,6 +16,14 @@ Semantic Versioning.
   at 512 the buffers are about half. Not yet run on the phone. Every context that is a power of two times the floor (all 68 plan records on file, 2048 and
   16384) is narrowed exactly as before ([hardware-planning.md](docs/hardware-planning.md)).
 
+## [Unreleased]
+
+### Fixed
+- **The Android composer gives the words the whole width**: the prompt takes the sheet's full width
+  and the + and Send (or Stop) sit on a line under it, as on the web and iOS. Beside it they, and the
+  clear button that appeared once something was typed, left a phone's prompt about a third of the
+  screen. The clear button is gone; neither other composer has one.
+
 ## [0.47.0] - 2026-11-21
 
 ### Added
