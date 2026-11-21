@@ -1,0 +1,8 @@
+# Box A after its runs (not blind): the blind machine with Flash-Next's own routing recorded on the box.
+note=box A after its runs: 3070 8 GB, 31 GB RAM, i5-12400F
+parts=parts.txt
+ram=31G
+cpu=i5-12400f
+storage=3.3
+gpu=rtx3070 slot=pcie4x16
+routing=../plan-records/rtx-8gb-3070-flashnext-125b-q2_0.routing

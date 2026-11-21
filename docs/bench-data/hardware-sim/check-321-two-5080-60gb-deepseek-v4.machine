@@ -1,0 +1,14 @@
+# the #321 report: two 16 GB 5080s, 60 GB RAM, a 16-core desktop; measured 8.72 tok/s on 0.33.3
+# Described by its parts only: every rate comes from the model of parts fitted on the measured machines
+# in parts.txt (bmoe-planlab parts parts.txt shows the fit and how far it misses a machine left out of it).
+note=the #321 report: two 16 GB 5080s, 60 GB RAM, a 16-core desktop; measured 8.72 tok/s on 0.33.3
+parts=parts.txt
+ram=60G
+cpu=ryzen9-9950x3d
+storage=4.3
+gpu=rtx5080
+gpu=rtx5080
+# storage: the drive reads about 4.3 GB/s (the report's probe read 0.96 on a split model's first shard).
+# DeepSeek V4 Flash: 41.9 GiB at 91% measured on this file (#321); the other points are DeepSeek V4.1 Flash runs
+# (12-96 GB cards), placed at the same share of the expert set.
+hitcurve=6.1G:0.69,28G:0.887,41.9G:0.911

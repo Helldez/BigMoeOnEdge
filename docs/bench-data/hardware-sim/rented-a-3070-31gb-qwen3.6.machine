@@ -1,0 +1,8 @@
+# Blind prediction for box A, made before its run.
+note=box A: 3070 8 GB, 31 GB RAM, i5-12400F
+parts=parts.txt
+ram=31G
+cpu=i5-12400f
+storage=3.3
+gpu=rtx3070 slot=pcie4x16
+routing=../plan-records/apple-silicon-16gb-qwen3.6-35b-a3b-q4_k_m-learned.planrec
