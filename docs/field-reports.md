@@ -55,6 +55,24 @@ desktop app is not affected: it installs the pack itself.
 
 ## Fixed
 
+### Windows: every model ends the server at its first message after an update (#660)
+
+- **Seen on** 0.46.0 and 0.46.1, Windows 11 with a graphics card and the CUDA pack installed by an
+  earlier version: a model loads, and the server ends at the first message, with this model and
+  with another.
+- **How to recognise it.** The server's log stops with no error after a load that succeeded.
+  `<data>/backends/` holds a pack folder whose `pack.json` names an older release than the app.
+- **Cause.** Not confirmed on the reporter's machine: uninstalling, deleting what was left and
+  installing again ended it, and the old pack's release was never read. In the code: packs live in
+  the data folder, which outlives an update and an uninstall, and the server loaded every pack
+  folder without reading which release it was built for. A backend module is compiled against one
+  llama.cpp, and ggml's own check of a module does not see every change between two (the bump in
+  0.47.0 renumbers the graph operations under an unchanged module version).
+- **Fixed in** 0.47.0: the server loads only the packs of its own release, names the others in its
+  log and lists them as not loaded, and does not install the feed's packs into an older server.
+- **Workaround.** Delete the folders under `<data>/backends/` and install the pack again from
+  Settings.
+
 ### Windows: the programs end at start from a folder with a non-ASCII name (#677)
 
 - **Seen on** 0.46.1, Windows 11, the release archive unpacked under a folder named in Japanese:
