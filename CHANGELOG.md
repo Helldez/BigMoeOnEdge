@@ -53,6 +53,10 @@ Semantic Versioning.
 - **A value typed in the Android or iOS settings is saved without pressing Done**: it is saved once
   typing pauses, as on the web. Before, only Done or leaving the field saved it, and tapping beside
   the field or going back keeps the focus there, so the value was lost.
+- **The Android composer gives the words the whole width**: the prompt takes the sheet's full width
+  and the + and Send (or Stop) sit on a line under it, as on the web and iOS. Beside it they, and the
+  clear button that appeared once something was typed, left a phone's prompt about a third of the
+  screen. The clear button is gone; neither other composer has one.
 
 ## [0.47.0] - 2026-11-21
 
