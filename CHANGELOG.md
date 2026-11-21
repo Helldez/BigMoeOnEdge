@@ -7,12 +7,30 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- **Models that run a core of their blocks more than once per token stream, on the CPU and through
+  a prefill device**: Inkling 2 Mini (`inkling2_loop`, 26B, 24 blocks run as 48 layers), in the
+  `ggml-org` conversion llama.cpp loads. Nothing names the model: the engine reads off the graph
+  which block's weights each layer computes from and the order the layers run in
+  ([seam.md](docs/seam.md)). Streamed and resident output are the same text on the real file; a
+  fourth tiny model is its byte-identity gate in CI. On a 16 GB laptop, CPU only, the 17.6 GB
+  IQ4_NL file decodes at 10.7-11.9 tok/s under `--auto` against 6.1-7.9 with streaming off. Not
+  run on a graphics card or a phone yet, and not in the app's catalog.
 - **`--no-overlap`**, the off switch of the overlap row, so a server whose default is on can be
   turned off by flag like any other switch ([settings.md](docs/settings.md)). By @pt7777.
 - **The CUDA pack for Linux on ARM64**: DGX Spark (GB10) and Grace machines get the NVIDIA backend,
   where the aarch64 archive had Vulkan alone.
 
 ### Changed
+- **llama.cpp moves to upstream `29b52d3`** (2026-11-20, 386 commits past `b12214`), with the
+  fork's two commits carried over unchanged on `bmoe/expert-ready-hook-2011`. On a 16 GB laptop
+  the three benchmark models decode as before (Qwen3.6-35B 15.3 tok/s on a first load and 17.2-18.4
+  on its record, Gemma 26B 16.6-17.4, Gemma E4B 38.5). A Qwen3.5 `json_object` request with `tools: auto` is no longer refused where
+  upstream now builds its grammar ([server-api.md](docs/server-api.md)).
+- **`--auto` counts a token's demand over the layers the graph runs, not the blocks the file
+  carries** ([hardware-planning.md](docs/hardware-planning.md)). The two are one number on every
+  model before the looped one, whose plans do not change. On Inkling 2 Mini the plan priced half
+  the token: 35 ms predicted against 94 measured, 75 now, and a cache floor of 941 MiB against the
+  1883 a token routes through.
 - **A model's hit curve is read from its routing record in half the time.** Every `--auto` plan of
   a model with a record replays the record through the cache at 64 sizes. Measured on a desktop
   core, the three archived records (64-128 decoded tokens): 36-271 ms a curve before, 15-139 ms
@@ -77,6 +95,11 @@ Semantic Versioning.
   it. The feed's packs are not installed into an older server either (`409`,
   `version_mismatch`): the update comes first. A folder put under `<data>/backends/` by hand, with
   no `pack.json`, is loaded as before ([desktop-app.md](docs/desktop-app.md)).
+- **A model with a sliding window and a recurrent state reuses its context checkpoints.** Its
+  memory reports the recurrent state's one position as its minimum, which the checkpoint rule read
+  as a window that no longer covered the prefix, so no checkpoint was ever restored and every turn
+  read the conversation again. Judged now as llama.cpp's server judges it. No model before Inkling
+  2 has both.
 - **On Windows, the programs start from a folder whose name is not ASCII** (#677). `bmoe-cli` and
   `bmoe-server` ended at start (exception `0xc0000409` in `ucrtbase.dll`, no output) when the
   release sat under such a folder on a system whose code page can spell it, a Japanese folder on a

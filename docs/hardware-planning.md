@@ -515,6 +515,19 @@ names expert tensors that llama.cpp never loads. On Qwen3.6-35B-A3B-Q4_K_M this 
 581 MiB against the 582 MiB the engine computes at load from the tensors it actually bound — an
 independent check that the metadata-only path sees the same model.
 
+It is counted per layer the graph runs, not per block the file carries. A model that runs some of
+its blocks more than once per token routes again at every run, so its token asks for more than one
+set per block. The planner reads the number of layers from llama.cpp's own loader, on a load that
+reads no weight (`probe_engine_layers`), and the number of blocks from the file; where they differ
+every per-token demand of a block (its attention, its dense feed-forward, its routed experts, a
+gate product, a boundary crossing) is multiplied by their ratio, as an average over the blocks,
+since which blocks repeat is the graph's business and no key of the format says it. The plan's
+model line then reads "over 24 of 24 blocks, run as 48 layers per token". A placement is expressed
+in the same count, the one llama.cpp places layers by: the layers past the last block carry no
+weights of their own. Before this the plan of such a model priced half its token (35 ms predicted
+against 94 measured on a 16 GB laptop, 75 after), and its cache floor was half the real one. Gate
+G2v holds the count against a run's routing record.
+
 Because the floor is per-model, it also overrides the generic `cache_min_mb` guard: a budget above
 this model's cycle is not pathological however small it looks, and the plan says so when it forces
 past it.

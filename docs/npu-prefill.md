@@ -149,7 +149,11 @@ leaves the graph alone, was identical.
 
 A model larger than RAM cannot give the NPU a copy of itself. The NPU gets two layer-sized slots
 instead, and every layer's weights are bound to one of them, alternating. While the NPU computes
-layer k out of one slot, loader threads fill the other with layer k+1:
+layer k out of one slot, loader threads fill the other with the layer the graph runs next. That is
+layer k+1 on every model whose blocks run once; a graph that comes back to a block (a looped core)
+is followed in its own order, read off the capture graph, and a block the slots still hold is not
+read again. Where the next layer's slot is the one being computed from, it is read at its own
+routing node instead, as with one slot:
 
 - **experts** are read from the gguf with `O_DIRECT`, one expert at a time, or copied from the expert
   cache when it holds them (below), and handed to the backend with `ggml_backend_tensor_set` on a

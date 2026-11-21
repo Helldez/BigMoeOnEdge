@@ -9,6 +9,7 @@
 #include "tensor_names.h"
 #include "../io/platform_io.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -108,6 +109,8 @@ std::unordered_set<std::string> RouterHook::row_gathered_weights() const {
 
 void RouterHook::begin_capture() {
     capturing_ = true;
+    block_of_.assign((size_t) n_layer_, -1);
+    layer_order_.clear();
     for (auto & L : captured_)
         L = LayerExperts{};
     captured_weights_.clear();
@@ -1285,9 +1288,23 @@ void RouterHook::capture_sources(ggml_tensor * t) {
     // index is that layer's end.
     const int nl = tn::any_node_layer(t->name);
     if (nl >= 0 && nl < (int) last_node_.size()) last_node_[(size_t) nl] = t->name;
+    if (nl >= 0 && nl < n_layer_ && std::find(layer_order_.begin(), layer_order_.end(), nl) == layer_order_.end())
+        layer_order_.push_back(nl);
     for (int s = 0; s < GGML_MAX_SRC; ++s) {
         ggml_tensor * src = t->src[s];
         if (!src || src->name[0] == '\0') continue;
+        // Whose weights this graph layer computes from: the block its weights are named after. A
+        // model may run one block at several depths of its graph (a looped core: each later pass is
+        // a layer of the graph over the first pass's tensors), and such a layer's routing has to ask
+        // for that block's experts. Read off the graph, with or without a streamer: the first block
+        // weight a layer reads says it, and the matrix of its indexed matmul, which is the expert
+        // tensor itself, has the last word.
+        if (nl >= 0 && nl < n_layer_) {
+            const int block = tn::block_layer(src->name);
+            const bool experts = t->op == GGML_OP_MUL_MAT_ID && s == 0;
+            if (block >= 0 && block < n_layer_ && (experts || block_of_[(size_t) nl] < 0))
+                block_of_[(size_t) nl] = block;
+        }
         // Memory-module state, reached through a view. Not a weight: recorded apart.
         ggml_tensor * base = src->view_src ? src->view_src : src;
         if (std::strncmp(base->name, "cache_", 6) == 0) {
@@ -1543,7 +1560,12 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     // One prefix test decides whether any of the three matchers below can possibly fire. The vast
     // majority of a graph's nodes fail it and leave having done nothing else.
     const bool moe_node = tn::is_moe_node(t->name);
-    const int il = moe_node ? tn::node_layer(t->name, tn::k_topk_node) : -1;
+    // Every routing node below is filed under the BLOCK its layer computes from, the index the
+    // streamer loads by: the routed ids, the weights applied to them and the gate's inputs of one
+    // layer have to meet under one number, and on a graph that runs a block at several depths the
+    // layer's own index is another (block_of). The device arena alone is told the graph's layer,
+    // since what it follows is the graph's order (arena_eval).
+    const int il = moe_node ? block_of(tn::node_layer(t->name, tn::k_topk_node)) : -1;
     const bool is_topk = il >= 0;
     // The weight nodes are asked for by a traced run, and by the drop policy, which decides on the
     // weights the matmul will actually apply. Each extra ask is another barrier — a handful per MoE
@@ -1552,6 +1574,7 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     const bool want_weights = trace_on_ || drop_armed();
     const int weight_variant = (moe_node && want_weights) ? tn::weight_node(t->name, wl) : -1;
     const bool is_weights = weight_variant >= 0;
+    if (is_weights) wl = block_of(wl);
     // Which of them is worth a BARRIER is a narrower question than which of them we recognise. The
     // chain's earlier nodes exist only so the terminal one can be identified; once a layer's
     // terminal is known, both consumers — the drop policy's decision point and the trace's
@@ -1570,7 +1593,7 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     // instead. Decode-only either way. The "-" in the pattern is what keeps
     // "ffn_moe_logits_biased-<il>" — a different node — from matching.
     const int gl = (moe_node && (predict_on() || route_ahead_ > 0) && source_ && batch_phase_ == 1)
-                       ? tn::node_layer(t->name, tn::k_logits_node)
+                       ? block_of(tn::node_layer(t->name, tn::k_logits_node))
                        : -1;
     const bool is_logits = gl >= 0;
     // The predictors read both on the host, barrier-less; a layer whose router runs on a device

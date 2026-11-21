@@ -298,7 +298,7 @@ endif()
 
 if(PYTHON3)
     # arch → (fixture id, gguf filename). Each gets a generate fixture + a gate run.
-    foreach(spec "qwen3moe" "gemma4" "nemotron_h_moe")
+    foreach(spec "qwen3moe" "gemma4" "nemotron_h_moe" "inkling2_loop")
         set(_model "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-${spec}.gguf")
         set(_fixture "TINY_MOE_MODEL_${spec}")
 

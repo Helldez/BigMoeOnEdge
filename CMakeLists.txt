@@ -72,7 +72,11 @@ if(MSVC)
 else()
     set(BMOE_WARNING_FLAGS -Wall -Wextra)
     if(BMOE_WARNINGS_AS_ERRORS)
-        list(APPEND BMOE_WARNING_FLAGS -Werror)
+        # A deprecation is upstream's notice, not a defect in this tree: it stays a warning. The
+        # pinned llama.cpp deprecates llama_batch and llama_decode for llama_batch_ext and
+        # llama_process, which the whole decode path is written on; moving it is a change of its
+        # own, measured on its own, and a submodule bump must not have to carry it to build.
+        list(APPEND BMOE_WARNING_FLAGS -Werror -Wno-error=deprecated-declarations)
     endif()
 endif()
 

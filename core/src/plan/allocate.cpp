@@ -874,8 +874,9 @@ void offer_devices(Pricing & c) {
         wanted_device = true;
 
         // The crossings this creates: the boundary is entered and left once per layer that has a
-        // group on each side, and the experts are always on the host today.
-        const uint32_t crossings = 2 * std::max(1u, model.n_moe_layer);
+        // group on each side, every time the token passes it, and the experts are always on the
+        // host today.
+        const uint32_t crossings = 2 * std::max(1u, model.moe_layer_runs());
         if (best->split_seconds <= 0.0) {
             const std::string rates = std::to_string((int) std::lround(best_rates.device)) + " vs " +
                                       std::to_string((int) std::lround(best_rates.host)) + " GiB/s";
