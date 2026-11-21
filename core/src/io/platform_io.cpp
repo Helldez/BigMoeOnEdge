@@ -1452,26 +1452,11 @@ LockLimit memlock_limit() {
 
 #if defined(__ANDROID__)
 
-// A dma-buf is charged to no limit this process can read: gralloc publishes no total, so the
-// answer is "unbounded here" and the caller bounds it by what the process may hold. Locking in
-// place is a different store with a different answer - the vendor caps it at a few pages.
-LockLimit lockable_limit() {
-    return {lock_unbounded, true};
-}
-LockLimit lock_in_place_limit() {
-    return memlock_limit();
-}
-
-size_t pinned_max_bytes() {
-    // The lock path uses a signed 32-bit type: AHardwareBuffer_lock returns EINVAL at exactly 2^31
-    // bytes while 2^31 - 1 succeeds, even though allocation reaches the 32-bit width cap of 4 GiB.
-    // Probing this at runtime would cost a multi-GiB allocation at startup to learn a constant, so
-    // it is stated here and verified by `bmoe-membench --probe-max` instead.
-    return 0x7FFFFFFFu;
-}
-
-bool pinned_alloc(size_t sz, PinnedAlloc * out) {
-    if (!out || sz == 0 || sz > pinned_max_bytes()) return false;
+namespace {
+// AHardwareBuffer is API 26. A build whose minimum is older (Termux's toolchain targets 24) binds it
+// weakly (core/CMakeLists.txt), and the attribute makes a use of these two outside the check in
+// ahwb() a build error.
+__attribute__((availability(android, introduced = 26))) bool ahwb_alloc(size_t sz, PinnedAlloc * out) {
     AHardwareBuffer_Desc d{};
     d.width = (uint32_t) sz; // BLOB: width IS the byte count, and height must be 1
     d.height = 1;
@@ -1495,11 +1480,59 @@ bool pinned_alloc(size_t sz, PinnedAlloc * out) {
     return true;
 }
 
-void pinned_free(PinnedAlloc * a) {
-    if (!a || !a->handle) return;
+__attribute__((availability(android, introduced = 26))) void ahwb_release(PinnedAlloc * a) {
     AHardwareBuffer * buf = (AHardwareBuffer *) a->handle;
     AHardwareBuffer_unlock(buf, nullptr);
     AHardwareBuffer_release(buf);
+}
+
+struct Ahwb {
+    bool (*alloc)(size_t, PinnedAlloc *);
+    void (*release)(PinnedAlloc *);
+};
+
+// The one place that asks the device. Below API 26 there is no such store: null, and every function
+// below answers as the last branch does, the same "absent" the plan reads on a platform without
+// one. Where the minimum is 26 or more, the check folds to true.
+const Ahwb * ahwb() {
+    if (__builtin_available(android 26, *)) {
+        static constexpr Ahwb calls{ahwb_alloc, ahwb_release};
+        return &calls;
+    }
+    return nullptr;
+}
+} // namespace
+
+// A dma-buf is charged to no limit this process can read: gralloc publishes no total, so the
+// answer is "unbounded here" and the caller bounds it by what the process may hold. Locking in
+// place is a different store with a different answer - the vendor caps it at a few pages.
+LockLimit lockable_limit() {
+    if (!ahwb()) return {0, true};
+    return {lock_unbounded, true};
+}
+LockLimit lock_in_place_limit() {
+    return memlock_limit();
+}
+
+size_t pinned_max_bytes() {
+    // The lock path uses a signed 32-bit type: AHardwareBuffer_lock returns EINVAL at exactly 2^31
+    // bytes while 2^31 - 1 succeeds, even though allocation reaches the 32-bit width cap of 4 GiB.
+    // Probing this at runtime would cost a multi-GiB allocation at startup to learn a constant, so
+    // it is stated here and verified by `bmoe-membench --probe-max` instead.
+    if (!ahwb()) return 0;
+    return 0x7FFFFFFFu;
+}
+
+bool pinned_alloc(size_t sz, PinnedAlloc * out) {
+    const Ahwb * calls = ahwb();
+    if (!calls || !out || sz == 0 || sz > pinned_max_bytes()) return false;
+    return calls->alloc(sz, out);
+}
+
+void pinned_free(PinnedAlloc * a) {
+    const Ahwb * calls = ahwb();
+    if (!calls || !a || !a->handle) return; // a handle comes only from pinned_alloc
+    calls->release(a);
     a->base = nullptr;
     a->handle = nullptr;
     a->size = 0;
