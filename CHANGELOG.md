@@ -15,6 +15,13 @@ Semantic Versioning.
   (Qwen3.6-35B 495), and on a 12 GB phone that gave 3.4 GiB to the process no expert cache was left;
   at 512 the buffers are about half. Not yet run on the phone. Every context that is a power of two times the floor (all 68 plan records on file, 2048 and
   16384) is narrowed exactly as before ([hardware-planning.md](docs/hardware-planning.md)).
+- **An answer with thinking off no longer ends in the template's closing marker.** Where a template
+  ignores `enable_thinking`, the engine opens the answer in the prompt, and it then showed the raw
+  stream without llama.cpp's parser, so a format that closes each block with a marker the vocabulary
+  does not stop on left it in the text: Inkling 2 Mini answered `Ciao! Come posso aiutarti
+  oggi?<|end_message|>`. Such a turn is now parsed like any other, with the opening handed to the
+  parser as llama.cpp does for a continued message. Qwen3.6-35B, Gemma 4 E4B and SmolVLM answer the
+  same text as before with thinking on and off ([session.md](docs/session.md)).
 
 ## [0.47.0] - 2026-11-21
 
