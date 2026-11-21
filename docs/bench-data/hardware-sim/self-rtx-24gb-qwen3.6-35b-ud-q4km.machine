@@ -1,0 +1,5 @@
+# The recorded machine rebuilt from its own record: the simulator's check against a real fit.
+note=rtx-24gb-qwen3.6-35b-ud-q4km, rebuilt from its record
+host=../plan-records/rtx-24gb-qwen3.6-35b-ud-q4km.planrec
+device=../plan-records/rtx-24gb-qwen3.6-35b-ud-q4km.planrec
+routing=../plan-records/rtx-24gb-qwen3.6-35b-ud-q4km.planrec

@@ -401,3 +401,12 @@ add_executable(bmoe_knob_trial_test knob_trial_test.cpp)
 target_link_libraries(bmoe_knob_trial_test PRIVATE bmoe_core)
 add_test(NAME knob_trial COMMAND bmoe_knob_trial_test)
 
+
+# A plan's inputs as text, and every machine on record: each file in docs/bench-data/plan-records is
+# what `bmoe-planlab record` wrote on one machine for one model, and must still read and plan
+# (docs/plan-records.md). Pure policy: no model, no llama.cpp, no I/O beyond the files.
+add_executable(bmoe_plan_record_test plan_record_test.cpp ${CMAKE_SOURCE_DIR}/tools/planlab/plan_record.cpp)
+target_include_directories(bmoe_plan_record_test PRIVATE ${CMAKE_SOURCE_DIR}/tools/planlab)
+target_link_libraries(bmoe_plan_record_test PRIVATE bmoe_core)
+add_test(NAME plan_records COMMAND bmoe_plan_record_test ${CMAKE_CURRENT_SOURCE_DIR}/plan-records
+                                  ${CMAKE_SOURCE_DIR}/docs/bench-data/plan-records)

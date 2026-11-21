@@ -1,0 +1,9 @@
+# Box B after its runs (not blind): the blind machine with DeepSeek's own routing recorded on the box.
+note=box B after its runs: two 5060 Ti 16 GB, 60 GB RAM, Ryzen 7 9700X
+parts=parts.txt
+ram=60G
+cpu=ryzen7-9700x
+storage=3.6
+gpu=rtx5060ti-16
+gpu=rtx5060ti-16
+routing=../plan-records/rtx-2x16gb-5060ti-deepseek-v4-ud-iq2m-learned.planrec
