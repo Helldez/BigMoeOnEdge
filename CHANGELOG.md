@@ -22,6 +22,16 @@ Semantic Versioning.
   oggi?<|end_message|>`. Such a turn is now parsed like any other, with the opening handed to the
   parser as llama.cpp does for a continued message. Qwen3.6-35B, Gemma 4 E4B and SmolVLM answer the
   same text as before with thinking on and off ([session.md](docs/session.md)).
+- **An integrated GPU reached through OpenCL is known to share the host's memory, the same on every
+  load.** ggml's OpenCL backend reports every device as a discrete GPU, so the plan measured it: an
+  allocation on the device, against the host's available memory. On a 12 GB phone that figure moves
+  while the system reclaims, and the same GPU read as memory of its own on one load in four. That
+  load applied the capacity fitter's placement of the output head on it, and with a layer on a
+  device the NPU prefill (2.5x the CPU on a prompt) was ruled out. The probe now asks each API that
+  does not report it whether the device shares the host's memory, the way it already asked Metal:
+  OpenCL's `CL_DEVICE_HOST_UNIFIED_MEMORY`, read through the library the backend loaded. A discrete
+  card through OpenCL answers no and is planned as before; Vulkan, CUDA and SYCL already reported it
+  ([hardware-planning.md](docs/hardware-planning.md)).
 
 ## [0.47.0] - 2026-11-21
 
