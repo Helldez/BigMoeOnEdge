@@ -43,7 +43,7 @@ GgufHeaderFacts probe_gguf_header(const char * model_path) {
     return h;
 }
 
-ModelProfile probe_model(const char * model_path) {
+ModelProfile probe_model(const char * model_path, uint32_t engine_layers) {
     ModelProfile m;
     if (!model_path || !*model_path) {
         m.error = "no model path";
@@ -81,10 +81,11 @@ ModelProfile probe_model(const char * model_path) {
     std::map<int, uint64_t> per_layer_expert_bytes;
     std::map<int, uint64_t> per_file_expert_bytes; // by index into the file's shard list
     std::map<int, uint32_t> projections_per_layer;
-    std::map<int, uint64_t> per_layer_dense_bytes; // a block's non-expert tensors
-    std::map<int, uint64_t> expert_bytes_by_type;  // by ggml type id
-    std::set<int> blocks;                          // every block index the file carries, MTP excluded
-    std::set<int> mtp_layers;                      // blocks that carry a multi-token-prediction head
+    std::map<int, uint64_t> per_layer_dense_bytes;       // a block's non-expert tensors
+    std::map<int, uint64_t> expert_bytes_by_type;        // by ggml type id
+    std::set<int> blocks;                                // every block index the file carries, MTP excluded
+    std::set<int> mtp_layers;                            // blocks that carry a multi-token-prediction head
+    uint64_t block_bytes[(int) WeightGroup::count] = {}; // each group's bytes that sit in a block
 
     bool saw_output_weight = false;
     bool saw_token_embd = false;
@@ -148,6 +149,7 @@ ModelProfile probe_model(const char * model_path) {
             g = WeightGroup::DenseFfn;
         }
         m.group(g).bytes += size;
+        if (in_block) block_bytes[(int) g] += size;
 
         if (is_expert) {
             const auto f = meta.offsets.file_by_name.find(name);
@@ -190,11 +192,22 @@ ModelProfile probe_model(const char * model_path) {
         m.expert_bytes += kv.second;
         m.largest_expert_layer_bytes = std::max(m.largest_expert_layer_bytes, kv.second);
     }
-    // By llama.cpp's own layer index: every block the file carries, an MTP block not among them.
-    m.layer_dense_bytes.assign(blocks.size(), 0);
+    // The engine's layers against the file's blocks. They differ on a model whose graph runs some
+    // blocks more than once per token: the engine numbers a layer for every run, and the later ones
+    // carry no weights of their own. Which blocks those are is the graph's business and no key of
+    // the format says it, so a block's demand is counted `runs` times as an average over all of
+    // them: exact for the token's total wherever the blocks are alike, which is every model so far.
+    m.n_block = (uint32_t) blocks.size();
+    m.n_layer = std::max(m.n_block, engine_layers);
+    const auto over_runs = [&m](uint64_t bytes) {
+        return m.n_block ? (uint64_t) ((double) bytes * (double) m.n_layer / (double) m.n_block) : bytes;
+    };
+    // By llama.cpp's own layer index: every block the file carries, an MTP block not among them,
+    // and nothing for a layer that runs another block's weights.
+    m.layer_dense_bytes.assign(m.n_layer, 0);
     for (const auto & kv : per_layer_dense_bytes) {
         m.largest_layer_dense_bytes = std::max(m.largest_layer_dense_bytes, kv.second);
-        if (kv.first >= 0 && (size_t) kv.first < blocks.size()) m.layer_dense_bytes[(size_t) kv.first] = kv.second;
+        if (kv.first >= 0 && (size_t) kv.first < m.n_layer) m.layer_dense_bytes[(size_t) kv.first] = kv.second;
     }
     for (const auto & kv : per_layer_one_expert) {
         // The granule the streamer issues as a read is one expert of one projection; the LARGEST
@@ -204,10 +217,10 @@ ModelProfile probe_model(const char * model_path) {
         if (projs) m.expert_slice_bytes = std::max(m.expert_slice_bytes, kv.second / projs);
         m.token_cycle_bytes += kv.second * m.n_expert_used;
     }
+    m.token_cycle_bytes = over_runs(m.token_cycle_bytes);
 
     m.dense_bytes = m.file_bytes > m.expert_bytes ? m.file_bytes - m.expert_bytes : 0;
     m.is_moe = m.expert_bytes > 0 && m.n_expert > 0 && m.n_expert_used > 0;
-    m.n_layer = (uint32_t) blocks.size();                   // llama.cpp's own layer indices
     m.n_moe_layer = (uint32_t) per_layer_one_expert.size(); // the ones that stream
     for (const auto & kv : per_layer_one_expert)
         m.moe_layers.push_back((uint32_t) kv.first);
@@ -223,9 +236,10 @@ ModelProfile probe_model(const char * model_path) {
     m.tied_output_head = saw_token_embd && !saw_output_weight;
 
     // ── demand per token ────────────────────────────────────────────────────────────
-    // Read whole, unless said otherwise below. Nothing here consults a size or an architecture.
+    // Read whole, unless said otherwise below, and a block's part once per run of the block.
+    // Nothing here consults a size or an architecture.
     for (int i = 0; i < (int) WeightGroup::count; ++i)
-        m.groups[i].bytes_per_token = m.groups[i].bytes;
+        m.groups[i].bytes_per_token = m.groups[i].bytes - block_bytes[i] + over_runs(block_bytes[i]);
 
     // The embedding tables are gathered by row — unless the head is tied to one of them, in which
     // case that table is projected against in FULL every token. The presence of a separate output

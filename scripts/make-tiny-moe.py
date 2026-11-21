@@ -7,7 +7,7 @@ top-k distribution (argsort of random logits) and that llama.cpp loads the model
 MoE. The model is deliberately multi-layer with a few experts so the LRU cache path
 sees real evictions on a small budget.
 
-Three architectures are emitted, selected with --arch:
+Four architectures are emitted, selected with --arch:
 
   qwen3moe  split expert layout — three tensors per layer
             (ffn_gate_exps / ffn_up_exps / ffn_down_exps).
@@ -18,12 +18,17 @@ Three architectures are emitted, selected with --arch:
             (ffn_up_exps / ffn_down_exps, ReLU^2) in a hybrid Mamba2 / attention / MoE
             stack with latent projections, a resident shared expert and a trailing MTP
             block that is never loaded, so the gates cover the up+down streaming path.
+  inkling2_loop  a core of blocks run more than once per token: each later pass is a layer of
+            the graph of its own over the first pass's tensors (fused layout, a recurrent
+            convolution state beside a sliding-window attention), so the gates cover a graph
+            whose layers and blocks are two counts.
 
 Requires: pip install gguf numpy
 
     python scripts/make-tiny-moe.py --arch qwen3moe --out tiny-moe.gguf
     python scripts/make-tiny-moe.py --arch gemma4   --out tiny-moe-gemma4.gguf
     python scripts/make-tiny-moe.py --arch nemotron_h_moe --out tiny-moe-nemotron_h_moe.gguf
+    python scripts/make-tiny-moe.py --arch inkling2_loop --out tiny-moe-inkling2_loop.gguf
 """
 import argparse
 import numpy as np
@@ -380,9 +385,132 @@ def build_nemotron_h_moe(out):
           f"{N_EXPERT} experts (top-{N_EXPERT_USED}), vocab {n_vocab}")
 
 
+# --- inkling2_loop: a core of blocks run more than once per token ----------------------
+# The looped Inkling 2 runs its middle blocks LOOP_COUNT times: each later pass is a layer of the
+# graph of its own (its own KV and convolution state) over the first pass's weights. So a graph
+# layer and the block whose experts it computes from are two numbers, and the streamer has to
+# load a block's experts for every pass that routes to it. The fixture keeps the real model's
+# shape at the smallest size its loader accepts: blocks of LOOP_BLOCK layers, the last of each
+# full-attention and the rest sliding-window, experts in the fused gate+up layout.
+LOOP_LAYERS    = 6
+LOOP_BLOCK     = 2             # attention-residual block size; the loop core is a multiple of it
+LOOP_START     = 2
+LOOP_END       = 4
+LOOP_COUNT     = 2             # the least a fixed loop may have
+LOOP_GATE_RANK = 4
+LOOP_N_REL     = 4             # relative-position bias rows
+LOOP_EXTENT    = 16            # positions the bias spans, full-attention layers
+LOOP_SWA       = 16
+LOOP_CONV      = 2             # short-convolution taps
+LOOP_PAD       = 5             # the embedding is padded past the vocabulary
+
+
+def build_inkling2_loop(out):
+    tokens, scores, toktypes = build_vocab()
+    n_vocab = len(tokens)
+    n_vocab_padded = n_vocab + LOOP_PAD
+    arch = "inkling2_loop"
+    swa = [(i + 1) % LOOP_BLOCK != 0 for i in range(LOOP_LAYERS)]
+    n_q = N_EMBD_HEAD * N_HEAD
+
+    w = gguf.GGUFWriter(out, arch)
+    w.add_name("tiny-moe-inkling2-loop")
+    w.add_context_length(N_CTX)
+    w.add_embedding_length(N_EMBD)
+    w.add_block_count(LOOP_LAYERS)
+    w.add_feed_forward_length(N_FF_EXP)
+    w.add_head_count([N_HEAD] * LOOP_LAYERS)
+    w.add_head_count_kv([N_HEAD_KV] * LOOP_LAYERS)
+    w.add_key_length(N_EMBD_HEAD)
+    w.add_value_length(N_EMBD_HEAD)
+    w.add_layer_norm_rms_eps(RMS_EPS)
+    w.add_expert_count(N_EXPERT)
+    w.add_expert_used_count(N_EXPERT_USED)
+    w.add_expert_feed_forward_length(N_FF_EXP)
+    w.add_sliding_window(LOOP_SWA)
+    w.add_array(f"{arch}.attention.sliding_window_pattern", swa)
+    w.add_uint32(f"{arch}.vocab_size", n_vocab_padded)
+    w.add_uint32(f"{arch}.vocab_size_unpadded", n_vocab)
+    w.add_uint32(f"{arch}.rope.dimension_count", 0)
+    w.add_uint32(f"{arch}.shortconv.l_cache", LOOP_CONV)
+    w.add_uint32(f"{arch}.attn_res.block_size", LOOP_BLOCK)
+    w.add_uint32(f"{arch}.attention.relative_length", LOOP_N_REL)
+    w.add_uint32(f"{arch}.attention.relative_extent", LOOP_EXTENT)
+    w.add_uint32(f"{arch}.attention.log_scale_floor", 64)
+    w.add_float32(f"{arch}.attention.log_scale_alpha", 0.1)
+    w.add_float32(f"{arch}.attention.qk_clip", 8.0)
+    w.add_float32(f"{arch}.attention.relative_clip", 8.0)
+    w.add_float32(f"{arch}.activation.situ_beta", 4.0)
+    w.add_float32(f"{arch}.activation.situ_linear_beta", 25.0)
+    w.add_float32(f"{arch}.expert_weights_scale", 1.0)
+    w.add_uint32(f"{arch}.loop.start", LOOP_START)
+    w.add_uint32(f"{arch}.loop.end", LOOP_END)
+    w.add_uint32(f"{arch}.loop.count", LOOP_COUNT)
+    w.add_uint32(f"{arch}.loop.gate_rank", LOOP_GATE_RANK)
+    w.add_bool(f"{arch}.loop.varying", False)
+    w.add_file_type(gguf.LlamaFileType.ALL_F32)
+    add_tokenizer(w, tokens, scores, toktypes)
+
+    w.add_tensor("token_embd.weight",       rnd(n_vocab_padded, N_EMBD, seed=1))
+    w.add_tensor("token_embd_norm.weight",  1.0 + rnd(N_EMBD, seed=2))
+    w.add_tensor("output.weight",           rnd(n_vocab_padded, N_EMBD, seed=3))
+    w.add_tensor("output_norm.weight",      1.0 + rnd(N_EMBD, seed=4))
+    w.add_tensor("output_res_query.weight", rnd(N_EMBD, seed=5))
+
+    s = 100
+    for i in range(LOOP_LAYERS):
+        p = f"blk.{i}."
+        extent = LOOP_SWA if swa[i] else LOOP_EXTENT
+        w.add_tensor(p + "attn_q.weight",         rnd(n_q, N_EMBD, seed=s + 1))
+        w.add_tensor(p + "attn_k.weight",         rnd(N_EMBD_GQA, N_EMBD, seed=s + 2))
+        w.add_tensor(p + "attn_v.weight",         rnd(N_EMBD_GQA, N_EMBD, seed=s + 3))
+        w.add_tensor(p + "attn_output.weight",    rnd(N_EMBD, n_q, seed=s + 4))
+        w.add_tensor(p + "attn_gate.weight",      rnd(n_q, N_EMBD, seed=s + 5))
+        w.add_tensor(p + "attn_q_clip.weight",    1.0 + rnd(N_HEAD, N_EMBD_HEAD, seed=s + 6))
+        w.add_tensor(p + "attn_sink_proj.weight", rnd(N_HEAD, N_EMBD, seed=s + 7))
+        w.add_tensor(p + "attn_rel.weight",       rnd(LOOP_N_REL * N_HEAD, N_EMBD, seed=s + 8))
+        w.add_tensor(p + "attn_rel_bias.weight",  rnd(extent, LOOP_N_REL, seed=s + 9))
+        w.add_tensor(p + "attn_rel_clip.weight",  1.0 + rnd(N_HEAD, LOOP_N_REL, seed=s + 10))
+        w.add_tensor(p + "attn_k_conv.weight",    rnd(N_EMBD_GQA, LOOP_CONV, seed=s + 11))
+        w.add_tensor(p + "attn_v_conv.weight",    rnd(N_EMBD_GQA, LOOP_CONV, seed=s + 12))
+        w.add_tensor(p + "attn_post_conv.weight", rnd(N_EMBD, LOOP_CONV, seed=s + 13))
+        w.add_tensor(p + "ffn_post_conv.weight",  rnd(N_EMBD, LOOP_CONV, seed=s + 14))
+        if swa[i]:
+            w.add_tensor(p + "attn_norm.weight", 1.0 + rnd(N_EMBD, seed=s + 15))
+        else:
+            w.add_tensor(p + "attn_q_inp_norm.weight",  1.0 + rnd(N_EMBD, seed=s + 16))
+            w.add_tensor(p + "attn_k_inp_norm.weight",  1.0 + rnd(N_EMBD, seed=s + 17))
+            w.add_tensor(p + "attn_v_inp_norm.weight",  1.0 + rnd(N_EMBD, seed=s + 18))
+            w.add_tensor(p + "attn_k_conv_proj.weight", rnd(LOOP_CONV * N_HEAD_KV, N_EMBD, seed=s + 19))
+            w.add_tensor(p + "attn_v_conv_proj.weight", rnd(LOOP_CONV * N_HEAD_KV, N_EMBD, seed=s + 20))
+        if i > 0:
+            w.add_tensor(p + "attn_res_query.weight", rnd(1 if swa[i] else 3, N_EMBD, seed=s + 21))
+        w.add_tensor(p + "ffn_res_query.weight", rnd(N_EMBD, seed=s + 22))
+        w.add_tensor(p + "ffn_norm.weight",      1.0 + rnd(N_EMBD, seed=s + 23))
+        w.add_tensor(p + "ffn_gate_inp.weight",  rnd(N_EXPERT, N_EMBD, seed=s + 24))
+        # experts: dim-2 (numpy axis 0) indexes the expert; gate and up fused along the output
+        w.add_tensor(p + "ffn_gate_up_exps.weight", rnd(N_EXPERT, 2 * N_FF_EXP, N_EMBD, seed=s + 25))
+        w.add_tensor(p + "ffn_down_exps.weight",    rnd(N_EXPERT, N_EMBD, N_FF_EXP, seed=s + 26))
+        if LOOP_START <= i < LOOP_END:
+            w.add_tensor(p + "loop_msg_query.weight", rnd(4, N_EMBD, seed=s + 30))
+            for c, name in enumerate(("q", "k", "v", "ffn")):
+                w.add_tensor(p + f"loop_{name}_ctrl_down.weight",   rnd(LOOP_GATE_RANK, 2 * N_EMBD, seed=s + 31 + 3 * c))
+                w.add_tensor(p + f"loop_{name}_ctrl_gain.weight",   rnd(N_EMBD, LOOP_GATE_RANK, seed=s + 32 + 3 * c))
+                w.add_tensor(p + f"loop_{name}_ctrl_forget.weight", rnd(N_EMBD, LOOP_GATE_RANK, seed=s + 33 + 3 * c))
+        s += 100
+
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file()
+    w.close()
+    slots = LOOP_LAYERS + (LOOP_COUNT - 1) * (LOOP_END - LOOP_START)
+    print(f"wrote {out}: inkling2_loop, {LOOP_LAYERS} blocks run as {slots} graph layers "
+          f"(core [{LOOP_START}, {LOOP_END}) x{LOOP_COUNT}), {N_EXPERT} experts (top-{N_EXPERT_USED})")
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--arch", choices=["qwen3moe", "gemma4", "nemotron_h_moe"], default="qwen3moe")
+    ap.add_argument("--arch", choices=["qwen3moe", "gemma4", "nemotron_h_moe", "inkling2_loop"], default="qwen3moe")
     ap.add_argument("--out", default="tiny-moe.gguf")
     ap.add_argument("--split-max-tensors", type=int, default=0,
                     help="emit a sharded gguf (N tensors per shard, metadata-only first shard)")
@@ -394,6 +522,8 @@ def main():
         build_gemma4(args.out)
     elif args.arch == "nemotron_h_moe":
         build_nemotron_h_moe(args.out)
+    elif args.arch == "inkling2_loop":
+        build_inkling2_loop(args.out)
     else:
         build_qwen3moe(args.out, args.split_max_tensors)
 

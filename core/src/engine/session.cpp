@@ -581,6 +581,7 @@ struct Session::Impl {
     struct Opening;
     bool load_model(Opening & o, llama_model ** reference = nullptr);
     detail::DeviceAnswer compare_device_answer(Opening & o);
+    detail::AnswerWeighing weigh_device_answer(const detail::DeviceAnswer & a) const;
     bool read_model(Opening & o);
     bool build_hook(Opening & o);
     bool resolve_gate_mirror(GateMirror m, Opening & o);
@@ -1202,7 +1203,8 @@ detail::DeviceAnswer Session::Impl::compare_device_answer(Opening & o) {
     ref.n_threads = cfg.n_threads;
     ref.n_threads_batch = cfg.n_threads_batch > 0 ? cfg.n_threads_batch : cfg.n_threads;
     const auto t0 = clock_t_::now();
-    const detail::DeviceAnswer a = detail::check_device_answer(ctx.get(), ref, cfg.trial.test_answer_differs);
+    const bool timed = cfg.trial.answer_prompt_per_token >= 0.0f;
+    const detail::DeviceAnswer a = detail::check_device_answer(ctx.get(), ref, cfg.trial.test_answer_differs, timed);
     const double check_s = secs(t0, clock_t_::now());
     const char * dev = cfg.trial.answer_device.c_str();
     if (a.verdict == detail::DeviceAnswer::Verdict::Unchecked) {
@@ -1220,7 +1222,31 @@ detail::DeviceAnswer Session::Impl::compare_device_answer(Opening & o) {
                dev, a.tokens, a.pieces, a.wide, a.agreement.rows, a.agreement.agree() * 100.0, a.agreement.nmse(),
                a.agreement.kld, a.agreement.kld_max, a.device_s, a.host_s, check_s,
                ok ? "confirmed" : "it does not compute this model: the model is reopened on the CPU");
+    if (ok && timed) {
+        const detail::AnswerWeighing w = weigh_device_answer(a);
+        if (w.side == detail::AnswerSide::Unweighed)
+            log_printf(LogLevel::Warn, "device answer: the two sides could not be timed on this model; %s keeps it",
+                       dev);
+        else
+            log_printf(LogLevel::Info,
+                       "device answer: this model one token at a time takes %.1f ms on %s and %.1f ms on the CPU "
+                       "(%.1f against %.1f tok/s), a %d-token graph %.0f ms against %.0f; with %.1f prompt tokens a "
+                       "decoded token a request takes %.2fx the CPU's time on %s - %s",
+                       a.device_token_s * 1e3, dev, a.host_token_s * 1e3, 1.0 / a.device_token_s, 1.0 / a.host_token_s,
+                       a.wide, a.device_wide_s * 1e3, a.host_wide_s * 1e3, (double) cfg.trial.answer_prompt_per_token,
+                       w.device_request_s / w.cores_request_s, dev,
+                       w.side == detail::AnswerSide::Cores
+                           ? "the CPU is faster by the margin: the model is reopened on it"
+                           : "the device keeps the model");
+    }
     return a;
+}
+
+// The check's timing, weighed as this load was asked to weigh it (KnobTrialConfig::answer_prompt_per_token)
+// by the margin every decision between two measured sides here uses (KnobTrialPolicy::min_win).
+detail::AnswerWeighing Session::Impl::weigh_device_answer(const detail::DeviceAnswer & a) const {
+    if (cfg.trial.answer_prompt_per_token < 0.0f) return {};
+    return detail::weigh_answer_sides(a, (double) cfg.trial.answer_prompt_per_token, KnobTrialPolicy{}.min_win);
 }
 
 // The loaded model's own facts, the expert layout read from its tensors, and its chat template.
@@ -1578,7 +1604,13 @@ bool Session::Impl::init_speculation(Opening & o) {
         mtp_batch_owned = true;
         draft_buf.reserve((size_t) cfg.spec.draft_max);
     }
-    checkpoints.configure(cfg.ctx_checkpoints, cfg.checkpoint_min_step, llama_model_n_swa(model.get()));
+    // The window a checkpoint is judged against is the attention's, and a memory with a recurrent
+    // part reports that part's one position as its minimum, never the window's start: such a model
+    // is judged as one without a window, as llama.cpp's server judges it. A windowed model with a
+    // recurrent state otherwise never found a checkpoint it could restore.
+    const bool recurrent_state = llama_model_is_recurrent(model.get()) || llama_model_is_hybrid(model.get());
+    checkpoints.configure(cfg.ctx_checkpoints, cfg.checkpoint_min_step,
+                          recurrent_state ? 0 : llama_model_n_swa(model.get()));
     checkpoints.set_position_map([this](int64_t n) { return kv.pos_at((size_t) n); });
     if (media) {
         media_batch = llama_batch_init(cfg.n_batch, /*embd*/ 0, /*n_seq_max*/ 1);
@@ -1913,23 +1945,40 @@ bool Session::Impl::stage_experts_in_host_buffer(Opening & o) {
         }
         return spans;
     };
-    // The tensors pointed at the copy, and the mapping's pages they were copied from handed back: the
-    // plan charged the experts once (choose_expert_staging), and nothing reads those pages again. Left
-    // resident, they compete with the pinned copy for the same memory until the kernel reclaims them.
-    // Aligned inward to whole pages, so a page shared with a tensor still read through the mapping
-    // is never dropped (as dense_weights does for its own copy).
+    // Each tensor's pages are handed back as soon as its copy is made, from the mapping and from the
+    // system's cache of the file: the plan charged the experts once (choose_expert_staging), and that
+    // has to hold while the copy is being made, not only after it. Copied whole first, the copy grew
+    // at memory speed beside the pages it was read from; and unmapped alone, those pages stayed the
+    // cache's, counted against a container's limit until the kernel reclaimed them, which it did not
+    // do as fast as the copy grew. On a 62 GB model under a 42 GB limit the process was killed 7 GB
+    // into the copy, three loads in four. Nothing reads those pages again, and a second copy (below)
+    // only reads them back from the file. Aligned inward to whole pages, so a page shared with a
+    // tensor still read through the mapping is never dropped (as dense_weights does for its copy).
+    const GgufOffsets & file = o.meta().offsets;
     size_t handed_back = 0;
-    const auto point_at = [&](const std::vector<pio::CopySpan> & spans) {
+    const auto copy_handing_back = [&](const std::vector<pio::CopySpan> & spans) {
         const uintptr_t page = (uintptr_t) pio::vm_page();
-        for (size_t i = 0; i < experts.size(); ++i) {
-            const uintptr_t a0 = ((uintptr_t) spans[i].src + page - 1) & ~(page - 1);
-            const uintptr_t a1 = ((uintptr_t) spans[i].src + spans[i].bytes) & ~(page - 1);
-            experts[i]->data = spans[i].dst;
-            if (a1 > a0) {
-                pio::vm_drop_file_pages((void *) a0, (size_t) (a1 - a0));
-                handed_back += (size_t) (a1 - a0);
-            }
+        handed_back = 0;
+        for (size_t i = 0; i < spans.size(); ++i) {
+            const pio::CopySpan & span = spans[i];
+            pio::copy_spans({span}, copy_threads);
+            const uintptr_t a0 = ((uintptr_t) span.src + page - 1) & ~(page - 1);
+            const uintptr_t a1 = ((uintptr_t) span.src + span.bytes) & ~(page - 1);
+            if (a1 <= a0) continue;
+            pio::vm_drop_file_pages((void *) a0, (size_t) (a1 - a0));
+            handed_back += (size_t) (a1 - a0);
+            const char * name = ggml_get_name(experts[i]);
+            const auto off = file.off_by_name.find(name);
+            const auto shard = file.file_by_name.find(name);
+            if (off == file.off_by_name.end() || shard == file.file_by_name.end()) continue;
+            if (shard->second < 0 || (size_t) shard->second >= file.shard_paths.size()) continue;
+            pio::drop_file_cache_range(file.shard_paths[(size_t) shard->second].c_str(),
+                                       off->second + (uint64_t) (a0 - (uintptr_t) span.src), (uint64_t) (a1 - a0));
         }
+    };
+    const auto point_at = [&](const std::vector<pio::CopySpan> & spans) {
+        for (size_t i = 0; i < experts.size(); ++i)
+            experts[i]->data = spans[i].dst;
     };
     const auto mib = [](size_t b) { return (double) b / (1024.0 * 1024.0); };
 
@@ -1957,23 +2006,27 @@ bool Session::Impl::stage_experts_in_host_buffer(Opening & o) {
         if (p) pio::vm_release(p, page);
         return ok;
     };
-    // Memory allocated here is committed only as the copy writes it (pio::vm_reserve), so a copy larger
-    // than the system can still give would end in the out-of-memory killer, where a backend's own
-    // allocation fails and leaves the mapping in place. So it is taken only where it fits what the
-    // system can give and a container still lets this process take; otherwise the backend's own
-    // allocation answers, as before.
+    // A copy larger than the system can still give, or than a container still lets this process take,
+    // is not made, whoever would allocate it: memory allocated here is committed only as the copy
+    // writes it (pio::vm_reserve) and ends in the out-of-memory killer, and a backend's own allocation
+    // is pinned as it is made, which a system short of memory answers no more gracefully. The cache
+    // then uploads from the mapping, as it does with no copy. Where the room cannot be read, the
+    // backend's own allocation answers, which fails rather than overcommits.
     const auto room = [] {
         uint64_t r = pio::mem_available_bytes();
         const uint64_t contained = pio::cgroup_memory_left();
         if (contained > 0 && (r == 0 || contained < r)) r = contained;
         return r;
     }();
-    const bool fits = room > 0 && (uint64_t) total <= room;
-    if (!fits && do_register)
-        log_printf(
-            LogLevel::Info,
-            "expert host buffer: %.0f MiB is more than the %.0f MiB the system can give; the backend allocates it",
-            mib(total), mib((size_t) room));
+    if (room > 0 && (uint64_t) total > room) {
+        log_printf(LogLevel::Warn,
+                   "expert host buffer: %.0f MiB is more than the %.0f MiB the system can give; the cache uploads "
+                   "from the file's mapping",
+                   mib(total), mib((size_t) room));
+        if (captured_here) clear_memory(ctx.get());
+        return true;
+    }
+    const bool fits = room > 0;
     // Both entry points or neither: memory pinned that could not be unpinned would stay pinned once freed.
     if (fits && do_register && do_unregister && pins()) {
         const size_t page = pio::vm_page();
@@ -1982,7 +2035,7 @@ bool Session::Impl::stage_experts_in_host_buffer(Opening & o) {
         void * p = pio::vm_reserve(size);
         if (p && pio::vm_commit(p, size)) {
             const std::vector<pio::CopySpan> spans = spans_at((uint8_t *) p);
-            pio::copy_spans(spans, copy_threads);
+            copy_handing_back(spans);
             const auto t_copied = clock_t_::now();
             if (do_register(p, size)) {
                 auto held = std::make_unique<RegisteredHostMemory>();
@@ -2020,7 +2073,7 @@ bool Session::Impl::stage_experts_in_host_buffer(Opening & o) {
         return true;
     }
     const std::vector<pio::CopySpan> spans = spans_at((uint8_t *) ggml_backend_buffer_get_base(buf));
-    pio::copy_spans(spans, copy_threads);
+    copy_handing_back(spans);
     point_at(spans);
     expert_host_buf.reset(buf);
     log_printf(LogLevel::Info,
@@ -2713,7 +2766,18 @@ void Session::Impl::warn_about_load(const SessionConfig & cfg) {
 struct Session::AnswerCheck {
     bool ran = false;
     detail::DeviceAnswer result;
+    // The device computes the model and the cores serve a request sooner (weigh_answer_sides).
+    bool cores_faster = false;
 };
+
+namespace {
+// The two sides as the check timed them, kept where a plan reads a side's decode rate: both at once,
+// from one load, so the plan after this one decides on the model's own measurement.
+void keep_answer_rates(const detail::DeviceAnswer & a, MeasuredKnobs & rec) {
+    if (a.device_token_s > 0.0) rec.shared_device_tps = 1.0 / a.device_token_s;
+    if (a.host_token_s > 0.0) rec.no_shared_device_tps = 1.0 / a.host_token_s;
+}
+} // namespace
 
 std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
                                        std::string & error,
@@ -2725,9 +2789,31 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     const auto t0 = clock_t_::now();
     AnswerCheck check;
     std::unique_ptr<Session> self = open_placed(cfg, error, route_trace, compute_trace, io_trace, &check);
-    if (!check.ran) return self;
-    if (check.result.verdict == Verdict::Confirmed) {
-        if (self) self->impl_->trials.result.set_device_answer(device, 1);
+    if (!check.ran) {
+        if (self || !cfg.fallback || device.empty()) return self;
+        // The model could not be opened on the device at all, most likely for memory: the plan's other
+        // part serves, and the device has lost this model here (a second try at a load that does not
+        // fit is a second failure on a machine already short of room).
+        log_printf(LogLevel::Warn,
+                   "the model could not be opened on %s (%s); the plan's other configuration is opened instead",
+                   device.c_str(), error.c_str());
+        const double first_s = secs(t0, clock_t_::now());
+        const std::string first_error = error;
+        self = open_placed(*cfg.fallback, error, route_trace, compute_trace, io_trace, nullptr);
+        if (!self) {
+            error = "the model could not be opened on " + device + " (" + first_error + "), nor as the plan's other " +
+                    "configuration: " + error;
+            return nullptr;
+        }
+        self->impl_->trials.result.shared_device_unviable = MeasuredKnobs::unviable_max;
+        self->impl_->load_seconds += first_s;
+        return self;
+    }
+    if (check.result.verdict == Verdict::Confirmed && !check.cores_faster) {
+        if (self) {
+            self->impl_->trials.result.set_device_answer(device, 1);
+            keep_answer_rates(check.result, self->impl_->trials.result);
+        }
         return self;
     }
     // Not confirmed, and the placement is already freed (open_placed returned nothing): the session
@@ -2737,16 +2823,26 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // check exists to keep from serving, and "could not compare" has not compared them. The next load
     // asks again.
     const double first_s = secs(t0, clock_t_::now());
-    self = open_placed(detail::on_cores(cfg), error, route_trace, compute_trace, io_trace, nullptr);
+    // The plan's own other part where it has one (SessionConfig::fallback), else this same
+    // configuration on the cores.
+    self = open_placed(cfg.fallback ? *cfg.fallback : detail::on_cores(cfg), error, route_trace, compute_trace,
+                       io_trace, nullptr);
     if (!self) {
-        error =
-            "the model was not kept on " + device +
-            (check.result.verdict == Verdict::Differs ? ", whose answers for it differed from the CPU's"
-                                                      : ", whose answers for it could not be compared with the CPU's") +
-            ", and it could not be opened on the CPU either: " + error;
+        error = "the model was not kept on " + device +
+                (check.cores_faster                         ? ", which the CPU decodes it faster than"
+                 : check.result.verdict == Verdict::Differs ? ", whose answers for it differed from the CPU's"
+                                                            : ", whose answers for it could not be compared with the "
+                                                              "CPU's") +
+                ", and it could not be opened on the CPU either: " + error;
         return nullptr;
     }
     if (check.result.verdict == Verdict::Differs) self->impl_->trials.result.set_device_answer(device, -1);
+    // The device computes the model and the cores are faster: its answers are confirmed all the same,
+    // and both rates are kept, so the next plan opens the cores without opening the device first.
+    if (check.cores_faster) {
+        self->impl_->trials.result.set_device_answer(device, 1);
+        keep_answer_rates(check.result, self->impl_->trials.result);
+    }
     self->impl_->load_seconds += first_s; // the load the caller waited for is both
     return self;
 }
@@ -2788,6 +2884,11 @@ std::unique_ptr<Session> Session::open_placed(const SessionConfig & cfg,
         check->result = im.compare_device_answer(o);
         if (check->result.verdict != detail::DeviceAnswer::Verdict::Confirmed) {
             error = "the device's answers for this model were not confirmed";
+            return nullptr;
+        }
+        if (im.weigh_device_answer(check->result).side == detail::AnswerSide::Cores) {
+            check->cores_faster = true;
+            error = "the cores serve this model's requests faster than the device";
             return nullptr;
         }
         detail::log_memory_snapshot("device-answer-checked");

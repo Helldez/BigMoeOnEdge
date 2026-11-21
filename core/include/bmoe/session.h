@@ -76,8 +76,11 @@ struct SessionConfig {
     // Wide prefill graphs on an accelerator, decode on the CPU. Fixed for the session: the device
     // joins the scheduler at load. See RunConfig::prefill.
     PrefillDeviceConfig prefill;
-    DecideConfig decide;          // decide()'s prefix-state policy. See RunConfig::decide.
-    KnobTrialConfig trial;        // lossless knobs measured on the first decodes. See RunConfig::trial.
+    DecideConfig decide;   // decide()'s prefix-state policy. See RunConfig::decide.
+    KnobTrialConfig trial; // lossless knobs measured on the first decodes. See RunConfig::trial.
+    // What the session opens where the device this one names does not keep the model. See
+    // RunConfig::fallback; empty, the same configuration on the cores.
+    std::shared_ptr<const SessionConfig> fallback;
     bool llama_debug_log = false; // See RunConfig::llama_debug_log.
 };
 

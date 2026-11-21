@@ -158,14 +158,18 @@ static void response_format_checks(common_chat_templates * tmpls,
                                  : choice == ToolChoice::Required ? "required"
                                                                   : "none";
         if (!auto_parser && choice == ToolChoice::Auto) {
-            // This pinned specialized parser marks the response grammar lazy even though it has
-            // no tool trigger. Keep the concrete failure visible: the session must not fall back
-            // to unconstrained generation when a structured response was requested.
+            // A specialized parser may mark the response grammar lazy with no tool trigger to start
+            // it (llama.cpp's Qwen3.5 parser did, up to the pin of 0.46). Where the grammar cannot
+            // be built the failure has to be reported: the session must not fall back to
+            // unconstrained generation when a structured response was requested. Where it can, the
+            // checks below hold for it as for every other choice.
             detail::ToolGrammar g;
             std::string err;
-            check(with_tools.grammar_lazy && !g.init(with_tools, vocab, err) && !g.active() && !err.empty(),
-                  "Qwen3.5 JSON plus tools:auto reports the upstream invalid lazy grammar");
-            continue;
+            if (!g.init(with_tools, vocab, err)) {
+                check(with_tools.grammar_lazy && !g.active() && !err.empty(),
+                      "a response grammar that cannot be built with tools:auto is reported, not dropped");
+                continue;
+            }
         }
         check(accepts(with_tools, typed_answer) && parses(with_tools, typed_answer, typed_answer),
               "JSON remains constrained with offered tools and tool_choice=" + name);

@@ -6,13 +6,46 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Fixed
+- **A native build in Termux compiles, and pins the dense set where the phone has the store, as the
+  APK does.** Termux's toolchain targets API 24, and its headers mark `AHardwareBuffer_*`, the API 26
+  store behind `--dense-weights pinned`, unavailable below that: `platform_io.cpp` stopped the build
+  with five errors, and with `BMOE_BUILD_TOOLS` so did `bmoe-iobench` and `bmoe-membench`. The calls
+  are now bound weakly, and `platform_io.cpp` asks the device in one place (`__builtin_available`).
+  From API 26 a Termux build pins, and the plan chooses it there as it does in the APK
+  ([android-memory.md](docs/android-memory.md#the-dma-buf-exception-and-what-it-does-not-solve));
+  `--dense-weights anon` keeps the dense set in ordinary memory. Below API 26 the store reads as
+  absent, as on a platform without one. `-Werror=unguarded-availability` makes a call outside that
+  check a build error, and a build whose minimum is 26 or more, as the APK's 29, folds the check to
+  true. The Termux build line is in the README. By @pt7777 (#659).
+
+## [0.47.0] - 2026-11-21
+
 ### Added
+- **Models that run a core of their blocks more than once per token stream, on the CPU and through
+  a prefill device**: Inkling 2 Mini (`inkling2_loop`, 26B, 24 blocks run as 48 layers), in the
+  `ggml-org` conversion llama.cpp loads. Nothing names the model: the engine reads off the graph
+  which block's weights each layer computes from and the order the layers run in
+  ([seam.md](docs/seam.md)). Streamed and resident output are the same text on the real file; a
+  fourth tiny model is its byte-identity gate in CI. On a 16 GB laptop, CPU only, the 17.6 GB
+  IQ4_NL file decodes at 10.7-11.9 tok/s under `--auto` against 6.1-7.9 with streaming off. Not
+  run on a graphics card or a phone yet, and not in the app's catalog.
 - **`--no-overlap`**, the off switch of the overlap row, so a server whose default is on can be
   turned off by flag like any other switch ([settings.md](docs/settings.md)). By @pt7777.
 - **The CUDA pack for Linux on ARM64**: DGX Spark (GB10) and Grace machines get the NVIDIA backend,
   where the aarch64 archive had Vulkan alone.
 
 ### Changed
+- **llama.cpp moves to upstream `29b52d3`** (2026-11-20, 386 commits past `b12214`), with the
+  fork's two commits carried over unchanged on `bmoe/expert-ready-hook-2011`. On a 16 GB laptop
+  the three benchmark models decode as before (Qwen3.6-35B 15.3 tok/s on a first load and 17.2-18.4
+  on its record, Gemma 26B 16.6-17.4, Gemma E4B 38.5). A Qwen3.5 `json_object` request with `tools: auto` is no longer refused where
+  upstream now builds its grammar ([server-api.md](docs/server-api.md)).
+- **`--auto` counts a token's demand over the layers the graph runs, not the blocks the file
+  carries** ([hardware-planning.md](docs/hardware-planning.md)). The two are one number on every
+  model before the looped one, whose plans do not change. On Inkling 2 Mini the plan priced half
+  the token: 35 ms predicted against 94 measured, 75 now, and a cache floor of 941 MiB against the
+  1883 a token routes through.
 - **A model's hit curve is read from its routing record in half the time.** Every `--auto` plan of
   a model with a record replays the record through the cache at 64 sizes. Measured on a desktop
   core, the three archived records (64-128 decoded tokens): 36-271 ms a curve before, 15-139 ms
@@ -41,8 +74,69 @@ Semantic Versioning.
   Actions cache by main and restored by a release that did not move the submodule; every archive
   used to wait for the HIP module (65 min) and the x86_64 ones then built CUDA too (70-80 min), 2 h
   25 min for 0.44.0.
+- **Where a model held in memory can run on a GPU that shares the host's memory, the first load
+  decides which of the two runs it, on the model itself.** The plan used to choose from probes of a
+  part of a model (one layer's matrices), and they do not say which side decodes the whole of it
+  faster: on a laptop with integrated graphics they read the cores 74% ahead of a GPU that decoded
+  a 21 GB model at more than twice the cores' rate, and the model was kept on the cores. The load
+  that opens a model on such a device already decodes it there and on the cores, to compare their
+  answers before it serves; it now times the two as it does (a token alone, and a graph as wide as
+  a prompt), keeps the side a request is shorter on, reopening on the cores where they are faster
+  by the 10% margin, and records both rates, so every later plan opens the faster side at once. On
+  a 16 GB unified-memory laptop with a 4.3 GiB model: 3.4 s on the first load, 37.6 tok/s on the
+  GPU against 23.9 on the cores, and the rate read for the side that served was the rate the
+  answer decoded at. New parameter `--trial-answer-mix`, set by the plan
+  ([hardware-planning.md](docs/hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it)).
+  A model that is streamed is not affected: this is for models the plan holds whole in memory.
+- **A model the plan streams is tried whole on a GPU that shares the host's memory, where the GPU
+  can hold it, and the first load keeps the faster.** On a laptop with 31 GB and integrated
+  graphics, a published benchmark of 0.46.0 measured a 21 GB model at 12 tok/s where llama.cpp with
+  every layer on the same GPU decoded 40: the model fit, but not beside the room that machine asks
+  to be left, so the plan streamed it with an 18.6 GiB cache and decoded on the cores. Now, where
+  the whole model and its compute buffer stay inside what the streaming plan itself may hold, the
+  load opens the model on the device, times it there and on the cores (above), and keeps the device
+  unless the cores are faster by the margin; where the device does not keep it, the session reopens
+  as the streaming plan (`RunConfig::fallback`), which is otherwise unchanged. A model larger than
+  what the process may hold streams as before. The plan shows both parts (`held-whole`). The rule
+  is tested on a machine of that shape in `planner_test` and the reopening on a real session in the
+  gates (G28d); it was not run on that laptop ([field-reports.md](docs/field-reports.md)).
 
 ### Fixed
+- **A backend pack is loaded only by the release it was built for** (#660). Packs live in the data
+  folder, which outlives an update and an uninstall, and the server loaded every pack folder it
+  found. A graphics backend built against an earlier llama.cpp can load and then compute the wrong
+  thing or end the server at its first graph. Now a pack another release left is not loaded: the
+  log names it, `GET /api/backends` lists it with `loaded: false`, and installing it again replaces
+  it. The feed's packs are not installed into an older server either (`409`,
+  `version_mismatch`): the update comes first. A folder put under `<data>/backends/` by hand, with
+  no `pack.json`, is loaded as before ([desktop-app.md](docs/desktop-app.md)).
+- **A model with a sliding window and a recurrent state reuses its context checkpoints.** Its
+  memory reports the recurrent state's one position as its minimum, which the checkpoint rule read
+  as a window that no longer covered the prefix, so no checkpoint was ever restored and every turn
+  read the conversation again. Judged now as llama.cpp's server judges it. No model before Inkling
+  2 has both.
+- **On Windows, the programs start from a folder whose name is not ASCII** (#677). `bmoe-cli` and
+  `bmoe-server` ended at start (exception `0xc0000409` in `ucrtbase.dll`, no output) when the
+  release sat under such a folder on a system whose code page can spell it, a Japanese folder on a
+  Japanese Windows. The engine asked the system for its own path in the narrow form, which answers
+  in the code page's bytes, and listed the backends beside itself reading those bytes as UTF-8,
+  which throws. The path is now asked for in wide characters and carried as UTF-8, the child a
+  device probe runs is started the same way, and the three executables declare UTF-8 as their code
+  page (Windows 10 1903 and later), so their arguments and the paths llama.cpp opens are UTF-8 too.
+  A test runs the CLI from a folder named in Japanese and accented Latin on every platform.
+- **A model larger than a container's memory limit is no longer killed while it loads behind a
+  device expert cache.** Since 0.45.1 the plan copies the experts into the device's own host memory
+  wherever the copy takes the place of their pages in the file's mapping. The engine made the whole
+  copy first and handed the pages back afterwards, and pages only unmapped are still the system's
+  cache, counted against a container's limit until the kernel reclaims them. On a rented 8 GB card
+  under a 42.5 GiB limit, Qwen3.8-Flash-Next Q2_0 (62 GiB, 32.4 GiB of experts) was killed about
+  7 GiB into the copy on every load, with a log that ends after the first context's graph and no
+  message; 0.42.0 to 0.44.1, which refused the copy there, loaded. Now each tensor's pages are
+  handed back as its copy is made, from the mapping and from the file cache: six loads of six, a
+  peak of 37.4 GiB, the copy made in 8 s, decode 24.0 / 20.8 tok/s where 0.42.0 without the copy
+  did 19.2 / 17.1. And a copy larger than the system can give is no longer handed to the backend to
+  allocate as pinned memory: the cache uploads from the mapping instead, and the log says so
+  ([field-reports.md](docs/field-reports.md)).
 - **A read of an expert that fails ends the run in every read mode** (the serial path, which is
   the default). Without `--overlap` a failed read (a storage error, a shard cut
   short, a drive removed) returned to a caller that dropped the result: the entry was already
@@ -125,17 +219,12 @@ Semantic Versioning.
   key read a ready server as down. `GET` and `HEAD` on `/health` and `/v1/health` now skip the key
   check; sub-paths, writes and every other route keep it, and the host and origin rules still run
   first ([server-api.md](docs/server-api.md)). By @pt7777 (#630).
-- **A native build in Termux compiles, and pins the dense set where the phone has the store, as the
-  APK does.** Termux's toolchain targets API 24, and its headers mark `AHardwareBuffer_*`, the API 26
-  store behind `--dense-weights pinned`, unavailable below that: `platform_io.cpp` stopped the build
-  with five errors, and with `BMOE_BUILD_TOOLS` so did `bmoe-iobench` and `bmoe-membench`. The calls
-  are now bound weakly, and `platform_io.cpp` asks the device in one place (`__builtin_available`).
-  From API 26 a Termux build pins, and the plan chooses it there as it does in the APK
-  ([android-memory.md](docs/android-memory.md#the-dma-buf-exception-and-what-it-does-not-solve));
-  `--dense-weights anon` keeps the dense set in ordinary memory. Below API 26 the store reads as
-  absent, as on a platform without one. `-Werror=unguarded-availability` makes a call outside that
-  check a build error, and a build whose minimum is 26 or more, as the APK's 29, folds the check to
-  true. The Termux build line is in the README. By @pt7777 (#659).
+- **The desktop app starts with "Serve on network" on** (since the app shipped, #644). Serving on
+  the network puts a key on every engine route, and the app asked `/api/info` to learn that the
+  server it had started was up, before it holds the key: the answer was a refusal, and after 90 s
+  the app said "The engine's server did not start" over a server that was running. It now asks
+  `/health`, the one route that needs no key, and takes any answer as a running server
+  ([desktop-app.md](docs/desktop-app.md)).
 
 ## [0.46.1] - 2026-11-19
 

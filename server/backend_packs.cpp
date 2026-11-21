@@ -87,6 +87,27 @@ std::vector<InstalledPack> installed_packs(const std::string & backends_root) {
     return out;
 }
 
+bool pack_matches_engine(const std::string & pack_version, const std::string & engine_version) {
+    return !pack_version.empty() && pack_version == engine_version;
+}
+
+std::vector<std::string> loadable_pack_dirs(const std::string & backends_root,
+                                            const std::string & engine_version,
+                                            std::vector<std::string> * skipped) {
+    std::vector<std::string> out;
+    for (const std::string & dir : backend_pack_dirs(backends_root)) {
+        InstalledPack p;
+        if (read_pack_marker(dir, p) && !pack_matches_engine(p.version, engine_version)) {
+            if (skipped)
+                skipped->push_back(fs::u8path(dir).filename().u8string() + " (" +
+                                   (p.version.empty() ? "no release named" : p.version) + ")");
+            continue;
+        }
+        out.push_back(dir);
+    }
+    return out;
+}
+
 std::string archive_entry_refusal(const std::string & raw) {
     if (raw.empty()) return "an entry with no name";
     if (raw.find('\0') != std::string::npos) return "an entry whose name holds a NUL";
@@ -163,7 +184,8 @@ json backends_answer(const std::vector<std::string> & registered,
                      const Feed * feed,
                      const std::vector<InstalledPack> & installed,
                      const LibraryProbe & loads,
-                     bool restart_required) {
+                     bool restart_required,
+                     const std::string & engine_version) {
     json packs = json::array();
     std::set<std::string> offered;
     if (feed)
@@ -184,7 +206,10 @@ json backends_answer(const std::vector<std::string> & registered,
         }
     json inst = json::array();
     for (const InstalledPack & i : installed)
-        inst.push_back(json{{"id", i.id}, {"version", i.version}, {"offered", offered.count(i.id) > 0}});
+        inst.push_back(json{{"id", i.id},
+                            {"version", i.version},
+                            {"offered", offered.count(i.id) > 0},
+                            {"loaded", pack_matches_engine(i.version, engine_version)}});
     json cards = json::array();
     for (const GraphicsDevice & g : graphics)
         cards.push_back(json{{"backend", g.backend}, {"description", g.description}});

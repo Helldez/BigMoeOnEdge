@@ -55,6 +55,98 @@ desktop app is not affected: it installs the pack itself.
 
 ## Fixed
 
+### Windows: every model ends the server at its first message after an update (#660)
+
+- **Seen on** 0.46.0 and 0.46.1, Windows 11 with a graphics card and the CUDA pack installed by an
+  earlier version: a model loads, and the server ends at the first message, with this model and
+  with another.
+- **How to recognise it.** The server's log stops with no error after a load that succeeded.
+  `<data>/backends/` holds a pack folder whose `pack.json` names an older release than the app.
+- **Cause.** Not confirmed on the reporter's machine: uninstalling, deleting what was left and
+  installing again ended it, and the old pack's release was never read. In the code: packs live in
+  the data folder, which outlives an update and an uninstall, and the server loaded every pack
+  folder without reading which release it was built for. A backend module is compiled against one
+  llama.cpp, and ggml's own check of a module does not see every change between two (the bump in
+  0.47.0 renumbers the graph operations under an unchanged module version).
+- **Fixed in** 0.47.0: the server loads only the packs of its own release, names the others in its
+  log and lists them as not loaded, and does not install the feed's packs into an older server.
+- **Workaround.** Delete the folders under `<data>/backends/` and install the pack again from
+  Settings.
+
+### Windows: the programs end at start from a folder with a non-ASCII name (#677)
+
+- **Seen on** 0.46.1, Windows 11, the release archive unpacked under a folder named in Japanese:
+  `bmoe-cli.exe` and `bmoe-server.exe` end at once, with any model or none.
+- **How to recognise it.** No output. The Event Viewer shows an application error in
+  `ucrtbase.dll` with exception code `0xc0000409`, and the executable's path has characters outside
+  ASCII. From a folder named in ASCII the same files run.
+- **Cause.** Confirmed in the code, not on a Windows machine: the engine asked for its own path with
+  the narrow system call, which answers in the system's code page, and the listing of the backends
+  beside the executable read that answer as UTF-8. Bytes of another code page are not valid UTF-8,
+  the conversion throws, and nothing catches it. A folder the code page cannot spell at all did not
+  end the program: its backends were not found.
+- **Fixed in** 0.47.0: the path is asked for in wide characters and kept as UTF-8, and the
+  executables declare UTF-8 as their code page.
+- **Workaround.** Unpack the release under a path of ASCII characters only.
+
+### The desktop app says "The engine's server did not start" with "Serve on network" on (#644)
+
+- **Seen on** 0.44.1, a Windows 10 desktop; the code is the same on every desktop system.
+- **How to recognise it.** The desktop app shows "Starting ...", then after 90 seconds "The
+  engine's server did not start: bmoe-server did not answer on port 8765 in 90 s", every time it
+  is opened, while the server's log shows it started and loaded its backends. It began when "Serve
+  on network" was turned on in Settings.
+- **Cause.** Confirmed by the reporter and in the code: serving on the network puts an API key on
+  every engine route, and the app asked `/api/info` to learn that the server it had started was
+  up, before it holds the key. The server refused the request and the app read a running server
+  as one that never answered.
+- **Fixed in** 0.47.0: the app asks `/health`, the one route that needs no key, and takes any
+  answer as a running server.
+- **Workaround.** Close the app, open `desktop.json` in the app's data folder, set
+  `"serveOnNetwork"` to `false` and start the app again.
+
+### The server ends while loading a large model behind a small card, with no message
+
+- **Seen on** 0.45.1 to 0.46.1, Linux in a container: an 8 GB card, a memory limit of 42.5 GiB, a
+  62 GiB model with 32.4 GiB of experts (Qwen3.8-Flash-Next Q2_0). Every load, from the server and
+  from the CLI (exit 137). 0.42.0, 0.43.2 and 0.44.1 load the same file on the same machine.
+- **How to recognise it.** The log ends right after the first `sched_reserve: reserve took` line:
+  no `MoE cache size` line follows, and no error. The plan has a device expert cache and
+  `expert-host-buffer` set to the card. In a container the group's out-of-memory count goes up.
+- **Cause.** Confirmed on the machine, release by release with the memory sampled: the copy of the
+  experts into the card's host memory. The plan counts it in place of the experts' pages in the
+  file's mapping, rightly, but the engine handed those pages back only once the whole copy was made,
+  and by unmapping them, which leaves them in the system's file cache. Under the limit the copy
+  grew faster than the kernel reclaimed them, and the process was killed about 7 GiB in. Handing
+  them back a tensor at a time from the mapping alone still lost three loads in four.
+- **Fixed in** 0.47.0: each tensor's pages are dropped from the mapping and from the file cache as
+  its copy is made (six loads of six, peak 37.4 GiB), and a copy larger than the system can give is
+  not made at all.
+- **Workaround.** `--expert-host-buffer ""` turns the copy off: the same plan loads, and decodes
+  about a fifth slower on that machine.
+- **Not covered.** Windows has no call to drop a file's pages, so there the second half is the
+  whole fix: the copy is made only where the system can give its size beside the mapped model.
+  Whether the Windows crash at the same log line (#660) is this one is not confirmed.
+### A model that fits in memory decodes three times slower than llama.cpp on a laptop's integrated GPU
+
+- **Seen on** 0.46.0, in a published benchmark: a Linux laptop with 31 GB of memory and an
+  integrated GPU through Vulkan, a 21 GB MoE model, five runs a side.
+- **How to recognise it.** `--auto` streams the model with an expert cache nearly as large as its
+  experts (18.6 GiB there) and decodes on the cores: 12 tok/s, a 418-token prompt at 80 tok/s, 24 s
+  to the first token. llama.cpp with every layer on the same GPU: 40 tok/s, about 500 tok/s on the
+  prompt, 10 s. The plan's `placement` line says the device reads the host's memory and its
+  placement was set aside.
+- **Cause.** Read in the code and reproduced in the planner's tests on a machine of that shape; not
+  confirmed on that machine, whose plan output was not published. Two rules. The model fits, but
+  not beside the room this machine asks to be left (`fits_air_ratio`), so the plan streamed it. And
+  a device that shares the host's memory was only weighed for a model already held whole, on probes
+  of one layer, which read the cores 74% ahead of a GPU that decodes the model at twice their rate.
+- **Fixed in** 0.47.0: a model the plan streams is offered to such a device where the device can
+  hold it whole inside what the streaming plan itself may hold, and the first load times the model
+  on the device and on the cores and keeps the faster, with the streaming plan behind it.
+- **Workaround.** `--gpu-layers 99` without `--auto` holds the model whole on the device, as
+  llama.cpp does.
+
 ### Qwen3.6-35B-A3B fails at the end of its download: "downloaded size does not match the catalog" (#663)
 
 - **Seen on** 0.42.0 to 0.46.0, every platform, from 2026-11-08: a Windows desktop with 16 GB.

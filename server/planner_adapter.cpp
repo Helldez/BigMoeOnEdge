@@ -119,6 +119,15 @@ static PlanOutcome outcome_of(const PlanBasis & b) {
             values[d.key] = param_string_to_value(d, v);
         }
     }
+    // The plan's other part travels the same way, so the load can hand both to the session: the
+    // parameter table carries a configuration, and a configuration's other part is one more.
+    if (plan.config.fallback) {
+        o.has_fallback = true;
+        for (const ParamDesc & d : params()) {
+            const std::string v = d.get(*plan.config.fallback);
+            if (v != d.get(cfg)) o.fallback_values[d.key] = v;
+        }
+    }
     // The arguments that reproduce the plan, as the plan itself renders them from the parameter
     // table. Nothing is parsed back here: a decision the table cannot hold is named below instead.
     json not_applicable = json::array();

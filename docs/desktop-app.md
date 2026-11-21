@@ -18,7 +18,8 @@ The port comes from the app's preferences, the server's default (8765) when none
 is started with `--port-fallback` and `--port-file <data>/server.port`: when that port is taken it
 listens on the next free one and writes the port it took, which the app reads (it never probes a
 port itself, so nothing can take the port between a probe and the start), and says so when it moved
-(a notification, and `notice` in `info()`). It waits for `/api/info` to answer there, then shows the
+(a notification, and `notice` in `info()`). It waits for `/health` to answer there (the one route
+that needs no key, so the wait is the same when the server is served on the network), then shows the
 UI the server serves, so the app and a browser show the same thing. The server's output goes to
 `<data>/logs/server.log` (the run before is kept as `server.log.1`). One copy of the app runs per
 user: a second start brings the first one's window forward and exits.
@@ -192,6 +193,12 @@ pack replaced while its libraries are loaded (Windows) is put in place at the ne
 comes once the pack is in place and says the server must restart; the app restarts it. The engine
 loads backends from the executable's folder and from each folder under `<data>/backends/`
 (`docs/backends.md`), so a read-only install (an AppImage, an app bundle) takes packs too.
+
+A pack is its release's. The data folder outlives an update and an uninstall, and a backend module
+is compiled against one llama.cpp: a pack an earlier version installed is not loaded (the server's
+log names it, and `GET /api/backends` lists it with `loaded: false`) until it is installed again,
+and the feed's packs are not installed into an older server. A folder under `<data>/backends/` with
+no `pack.json`, put there by hand, is loaded as it is.
 
 Pack archives are flat (their files at the top), so `bmoe-cli`, which loads modules from its own
 folder only, takes one when it is extracted there by hand.

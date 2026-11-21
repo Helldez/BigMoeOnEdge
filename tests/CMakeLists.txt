@@ -28,6 +28,24 @@ target_link_libraries(bmoe_lock_limits_test PRIVATE bmoe_core)
 target_include_directories(bmoe_lock_limits_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/io)
 add_test(NAME lock_limits COMMAND bmoe_lock_limits_test)
 
+# A release unpacked under a folder whose name is not ASCII (#677): the programs find the backends
+# beside themselves through that path. The whole output folder is copied, since the libraries the
+# CLI loads sit in it, and the CLI is asked to probe a device that does not exist: it loads the
+# backends first, and says so only if it got that far.
+if(TARGET bmoe-cli)
+    set(BMOE_NON_ASCII_BIN "${CMAKE_BINARY_DIR}/bin-日本語-ünï")
+    add_test(NAME non_ascii_install_path_setup
+             COMMAND ${CMAKE_COMMAND} -E copy_directory $<TARGET_FILE_DIR:bmoe-cli> "${BMOE_NON_ASCII_BIN}")
+    add_test(NAME non_ascii_install_path
+             COMMAND "${BMOE_NON_ASCII_BIN}/$<TARGET_FILE_NAME:bmoe-cli>" --probe-device no-such-device)
+    add_test(NAME non_ascii_install_path_cleanup
+             COMMAND ${CMAKE_COMMAND} -E remove_directory "${BMOE_NON_ASCII_BIN}")
+    set_tests_properties(non_ascii_install_path_setup PROPERTIES FIXTURES_SETUP non_ascii_bin)
+    set_tests_properties(non_ascii_install_path_cleanup PROPERTIES FIXTURES_CLEANUP non_ascii_bin)
+    set_tests_properties(non_ascii_install_path PROPERTIES FIXTURES_REQUIRED non_ascii_bin
+                         PASS_REGULAR_EXPRESSION "no such device to probe")
+endif()
+
 # Reasoning-parser wiring regression (issue #49). Needs no model — it drives the extracted
 # bmoe::detail::build_parse_params directly — so it runs unconditionally, unlike the gates below.
 add_executable(bmoe_chat_parse_test chat_parse_test.cpp)
@@ -280,7 +298,7 @@ endif()
 
 if(PYTHON3)
     # arch → (fixture id, gguf filename). Each gets a generate fixture + a gate run.
-    foreach(spec "qwen3moe" "gemma4" "nemotron_h_moe")
+    foreach(spec "qwen3moe" "gemma4" "nemotron_h_moe" "inkling2_loop")
         set(_model "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-${spec}.gguf")
         set(_fixture "TINY_MOE_MODEL_${spec}")
 
@@ -338,6 +356,13 @@ endif()
 # device — which is the point: rules meant to hold on hardware we do not own are checked here.
 add_executable(bmoe_planner_test planner_test.cpp)
 target_link_libraries(bmoe_planner_test PRIVATE bmoe_core)
+# The planner's tests are one long main() whose locals (hundreds of whole plans) share one stack frame
+# on a compiler that does not overlap disjoint scopes: past the 1 MiB a Windows executable gets by
+# default it faults on entry, before a line is printed. The size every other platform here gives a
+# main thread.
+if(MSVC)
+    target_link_options(bmoe_planner_test PRIVATE /STACK:8388608)
+endif()
 add_test(NAME planner COMMAND bmoe_planner_test)
 
 # The routing trace the planner prices the cache from: its LRU replay against scripts/route-replay.py

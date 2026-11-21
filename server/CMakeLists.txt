@@ -157,6 +157,7 @@ endif()
 
 add_executable(bmoe-server main.cpp)
 target_link_libraries(bmoe-server PRIVATE bmoe_server)
+bmoe_utf8_process(bmoe-server)
 
 # Beside the libraries, so the build tree runs without touching PATH.
 set_target_properties(bmoe-server PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)

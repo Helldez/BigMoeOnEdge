@@ -278,7 +278,7 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     if (opt.isolated_probe_args)
         probe_devices_isolated(r.hw, self_process_runner(opt.isolated_probe_args, opt.isolated_probe_seconds));
     starting(); // model
-    r.model = probe_model(path);
+    r.model = probe_model(path, probe_engine_layers(path));
     // The head of a file of its own is a file like the model: its size is what placing it costs.
     if (!cfg.spec.mtp_head.empty()) {
         std::error_code ec;

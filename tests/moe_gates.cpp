@@ -123,6 +123,7 @@
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <limits>
 #include <string>
 #include <thread>
 #include <vector>
@@ -585,6 +586,38 @@ int main(int argc, char ** argv) {
             ++fails;
         } else {
             std::printf("[PASS] G2r' the record stops at its bound, is off at 0, and changes no output\n");
+        }
+        // G2v — the plan counts a token's routed layers, and the bytes it routes through, as the
+        // engine routes them. The profile a plan is made from (the file, with the engine's own layer
+        // count) against the record of this run: a model whose graph runs a block more than once
+        // routes at every run, and a plan that counted its blocks would price half the token.
+        {
+            const ModelProfile planned = probe_model(model.c_str(), probe_engine_layers(model.c_str()));
+            uint64_t routings = 0, bytes = 0;
+            for (const RoutingBatch & b : rec.batches) {
+                if (!b.decode) continue;
+                ++routings;
+                if (b.layer < rec.expert_bytes.size()) bytes += (uint64_t) b.experts.size() * rec.expert_bytes[b.layer];
+            }
+            const uint64_t tokens = rec.decode_tokens;
+            const uint64_t want_bytes = planned.token_cycle_bytes * tokens;
+            // The profile averages the runs over the blocks, so it may be a byte per token short.
+            const bool bytes_ok = bytes >= want_bytes && bytes - want_bytes <= tokens;
+            if (!planned.ok || tokens == 0 || routings != (uint64_t) planned.moe_layer_runs() * tokens || !bytes_ok) {
+                std::printf(
+                    "[FAIL] G2v the plan's token is the engine's: %llu routings and %llu bytes over %llu decoded "
+                    "tokens, planned %u routings and %llu bytes a token (%u layers over %u blocks)\n",
+                    (unsigned long long) routings, (unsigned long long) bytes, (unsigned long long) tokens,
+                    planned.moe_layer_runs(), (unsigned long long) planned.token_cycle_bytes, planned.n_layer,
+                    planned.n_block);
+                ++fails;
+            } else {
+                std::printf(
+                    "[PASS] G2v the plan's token is the engine's: %u routings and %llu bytes a token (%u layers "
+                    "over %u blocks)\n",
+                    planned.moe_layer_runs(), (unsigned long long) planned.token_cycle_bytes, planned.n_layer,
+                    planned.n_block);
+            }
         }
     }
     // G2u — a run that does not stream records its routing only when asked to, and the record is the
@@ -1402,6 +1435,13 @@ int main(int argc, char ** argv) {
             // same bytes as the first: a graph that outran its loads reads less, since the drained
             // queue is dropped.
             double arena_mib_ref = -1.0;
+            // A model whose graph runs a block more than once comes back to experts the slots held
+            // earlier. Two slots still hold them where the loop is as long as the slots are many, and
+            // one slot never does: it reads a block again at every return, so there it must read MORE
+            // than the reference, and a count equal to it would mean a return computed on what the
+            // slot held.
+            const ModelProfile arena_mp = probe_model(model.c_str(), probe_engine_layers(model.c_str()));
+            const bool revisits = arena_mp.n_layer > arena_mp.n_block;
             for (const Variant & v : variants) {
                 RunConfig c = pdev;
                 c.moe.enabled = true;
@@ -1415,6 +1455,11 @@ int main(int argc, char ** argv) {
                 c.prefill.slots = v.slots;
                 c.prefill.slots_on_demand = v.on_demand;
                 std::unique_ptr<Session> vs = Session::open(session_config_from(c), open_err);
+                if (!vs && v.sabotage) {
+                    // The load's own comparison with the host refused the device: caught, and sooner.
+                    std::printf("[PASS] %s: caught at the load (%s)\n", v.name, open_err.c_str());
+                    continue;
+                }
                 if (!vs) {
                     std::fprintf(stderr, "%s open failed: %s\n", v.name, open_err.c_str());
                     return 2;
@@ -1445,7 +1490,10 @@ int main(int argc, char ** argv) {
                 const double cached = rr.summary.prefill_device_cache_mib;
                 const double mib = rr.summary.prefill_device_read_mib + cached;
                 if (arena_mib_ref < 0.0) arena_mib_ref = mib;
-                const bool mib_ok = v.routed ? (mib > 0.0 && mib < arena_mib_ref) : mib == arena_mib_ref;
+                const bool again = revisits && v.slots == 1;
+                const bool mib_ok = v.routed ? (mib > 0.0 && mib < arena_mib_ref)
+                                    : again  ? mib > arena_mib_ref
+                                             : mib == arena_mib_ref;
                 if (mib <= 0.0 || !mib_ok || rr.summary.prefill_device_nodes <= 0) {
                     std::printf("[FAIL] %s: the arena read %.3f MiB (expected %.3f), the device computed %lld nodes\n",
                                 v.name, mib, arena_mib_ref, rr.summary.prefill_device_nodes);
@@ -1615,9 +1663,12 @@ int main(int argc, char ** argv) {
                 return 2;
             }
             // The choices go through a wide prefill here and one row at a time there (G18 c): the
-            // same distribution, to within the kernels' batch-shape rounding.
+            // same distribution, to within the kernels' batch-shape rounding. The logits are 32-bit
+            // floats, so that rounding is bounded by one float's: two models here agree bit for bit,
+            // and the two that do not are 4e-12 and 8e-9 apart, the wider on a graph that runs
+            // blocks more than once. A wrong row or a stale state is orders of magnitude outside it.
             fails += check_close("G18c decide(whole prefill) == perplexity(choices)", pr.choice_logp,
-                                 whole[0].choice_logp, 1e-9);
+                                 whole[0].choice_logp, (double) std::numeric_limits<float>::epsilon());
 
             // f) off by default: the same session (decide not enabled) refuses, without harm.
             const DecideResult off = s->decide(q1);
@@ -1950,6 +2001,67 @@ int main(int argc, char ** argv) {
                                    rc.generated_text);
                     fails += check("G28b answers that differ: served from the cores == all on the cores", s_cores,
                                    rr.generated_text);
+                    // c) The check also asked to keep the faster side: whichever the loopback device
+                    // and the cores come to here, the session serves one of the two placements' bytes,
+                    // the answers are still confirmed, and both sides' rates are in the record, so the
+                    // plan after this load reads a measurement.
+                    RunConfig weighed = checked;
+                    weighed.trial.answer_prompt_per_token = 0.0f;
+                    const ValidationResult vw = validate(weighed);
+                    const RunResult rw = vw.ok ? run(weighed) : RunResult{};
+                    if (!vw.ok || !rw) {
+                        std::printf("[FAIL] G28c the weighed answer check failed: %s\n",
+                                    !vw.ok ? vw.error.c_str() : rw.error.c_str());
+                        ++fails;
+                    } else if ((rw.generated_text == s_whole || rw.generated_text == s_cores) &&
+                               rw.knobs.device_answer(dev) == 1 && rw.knobs.shared_device_tps > 0.0 &&
+                               rw.knobs.no_shared_device_tps > 0.0) {
+                        std::printf("[PASS] G28c both sides timed on the model: %.1f tok/s on %s, %.1f on the cores, "
+                                    "and one of the two serves\n",
+                                    rw.knobs.shared_device_tps, dev.c_str(), rw.knobs.no_shared_device_tps);
+                    } else {
+                        std::printf("[FAIL] G28c weighed check: word %d, rates %.2f / %.2f, text matches a placement: "
+                                    "%d\n",
+                                    rw.knobs.device_answer(dev), rw.knobs.shared_device_tps,
+                                    rw.knobs.no_shared_device_tps,
+                                    (int) (rw.generated_text == s_whole || rw.generated_text == s_cores));
+                        ++fails;
+                    }
+                    // d) The plan in two parts (RunConfig::fallback): the model held whole on the
+                    // device, and the streaming plan behind it. Where the device does not keep the
+                    // model, the session reopens as the stream and serves its bytes, which are the
+                    // resident model's: once because the cores are faster (the loopback device is the
+                    // cores behind a socket), once because its answers were made to differ.
+                    RunConfig stream = base(model);
+                    stream.moe.enabled = true;
+                    for (const bool differs : {false, true}) {
+                        RunConfig two = weighed;
+                        two.trial.test_answer_differs = differs;
+                        two.fallback = std::make_shared<const RunConfig>(stream);
+                        const ValidationResult vt = validate(two);
+                        const RunResult rt2 = vt.ok ? run(two) : RunResult{};
+                        const char * why = differs ? "answers differ" : "the cores faster";
+                        const bool on_device = rt2 && rt2.knobs.device_answer(dev) == 1 && !differs &&
+                                               rt2.knobs.shared_device_tps >= rt2.knobs.no_shared_device_tps;
+                        if (!vt.ok || !rt2) {
+                            std::printf("[FAIL] G28d two-part plan (%s) failed: %s\n", why,
+                                        !vt.ok ? vt.error.c_str() : rt2.error.c_str());
+                            ++fails;
+                        } else if (on_device) {
+                            // The device kept the model here: nothing to reopen, and that is the rule too.
+                            fails += check("G28d two-part plan, the device kept the model == the same placement",
+                                           s_whole, rt2.generated_text);
+                        } else if (rt2.generated_text == s_cores && rt2.summary.moe_read_mib > 0.0) {
+                            std::printf("[PASS] G28d two-part plan, %s: reopened as the stream (%.1f MiB of experts "
+                                        "read), the resident model's bytes\n",
+                                        why, rt2.summary.moe_read_mib);
+                        } else {
+                            std::printf("[FAIL] G28d two-part plan, %s: %.1f MiB of experts read, text matches the "
+                                        "resident model: %d\n",
+                                        why, rt2.summary.moe_read_mib, (int) (rt2.generated_text == s_cores));
+                            ++fails;
+                        }
+                    }
                     const int wa = rc.knobs.device_answer(dev), wb = rr.knobs.device_answer(dev);
                     if (wa == 1 && wb == -1 && rc.knobs.verdicts() > 0) {
                         std::printf("[PASS] G28 the record says confirmed, then differs, for %s\n", dev.c_str());

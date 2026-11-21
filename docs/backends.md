@@ -10,7 +10,7 @@ The same facts cut by operating system, next to the rest of what each platform h
 
 ## What the pinned llama.cpp carries
 
-Read from `ggml/src/` and `ggml/CMakeLists.txt` of the pinned submodule (`ac30987`, read again at that bump: same backends, same columns). A bump can
+Read from `ggml/src/` and `ggml/CMakeLists.txt` of the pinned submodule (`09e3dc4`, read again at that bump: same backends, same columns). A bump can
 add or remove rows; redo the reading rather than trusting this table.
 
 The last three columns come from reading the sources, not from running them: the type each backend
@@ -126,6 +126,11 @@ streamer points them at its slots. The copy takes the place of the experts' page
 mapping, which are handed back once the tensors point at the copy, so the plan charges the experts
 once. Charged twice (until 0.45.1), the copy was refused on every 64 GB machine a 32 GB expert set
 ran on, and misses arrived at half the rate.
+That has to hold while the copy is made, so each tensor's pages are handed back as soon as its copy
+is, from the mapping and, where the system has the call, from its cache of the file: unmapped
+alone they still count against a container's limit, and under one the copy outran the kernel's
+reclaim (0.45.1 to 0.46.1, [field-reports.md](field-reports.md)). A copy larger than the system can
+give is not made: the cache uploads from the mapping.
 The capture that finds them runs on the context the device cache then makes again, so the decode
 context carries no callback. Experts streamed from flash live in the streamer's slots, which this
 does not move.

@@ -557,10 +557,11 @@ unsupported keywords do not gain a guarantee merely because they appear in the r
 JSON syntax and a schema cannot guarantee that the generated values are factually correct.
 
 Thinking and speculative decoding use the existing template grammar path. Tool combinations
-are template-dependent: the pinned Qwen3.5 specialized parser produces an invalid lazy grammar
-for a response schema with offered tools and `tool_choice: "auto"`; that request returns `400`
-with `code: "template_rejected"` before inference. The differential Qwen3 parser accepts this
-combination and produces a JSON answer. Both tested parsers give JSON precedence over required
+are template-dependent. A response schema with offered tools and `tool_choice: "auto"` produces a
+JSON answer with both tested parsers (the differential Qwen3 one and the specialized Qwen3.5 one,
+whose grammar llama.cpp could not build before the pin of 0.47.0: that request returned `400` with
+`code: "template_rejected"`, as any template whose grammar cannot be built still does, before
+inference). Both tested parsers give JSON precedence over required
 tool calls, so a response schema with `tool_choice: "required"` (including a named-function choice)
 is explicitly refused with `400` / `invalid_request`, instead of silently ignoring the requirement.
 These cases are covered by vendored-template regressions; tools are not universally disabled.
@@ -1399,7 +1400,11 @@ devices are not local, and the processor's are not graphics); `target` the build
 (`macos-arm64`, ...); `feed` `{version, published}` of the verified feed known, or `null`. `packs`
 is that feed's packs for this target: `{id, title, size, applies, installed, installed_version,
 current}`, `applies` when one of the pack's driver libraries loads here, `current` when the
-installed copy is this feed's file. `installed` lists every pack on disk (`{id, version, offered}`).
+installed copy is this feed's file. `installed` lists every pack on disk (`{id, version, offered,
+loaded}`): `loaded` is false for a pack another release left, which the engine does not load, since a
+backend module is built against one llama.cpp; installing it again replaces it. An install is
+refused (`409`, `code: "version_mismatch"`) while the feed's packs are a newer release's than the
+server: the update comes first.
 `restart_required` is true once a pack was installed since the server started. With `?refresh=1`
 the feed is read from the network first; a feed that cannot be read or does not verify is said in
 `feed_error`, and the rest of the answer stands. Without it, the feed kept from the last read

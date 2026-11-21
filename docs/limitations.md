@@ -46,7 +46,11 @@ serial path, and only a single ~25-line hook (with an explicit sunset) for the o
   (`lfm2moe` has a `leading_dense_block_count`): those blocks name no expert tensors, so they
   are never streamed.
 - **The forward expert predictors assume adjacent MoE blocks.** `--predict-log`'s stale predictor,
-  `--predict-prefetch` and `--route-ahead` predict layer `il+1` from layer `il`. `nemotron_h_moe`
+  `--predict-prefetch` and `--route-ahead` predict layer `il+1` from layer `il`. On a model whose
+  graph runs a core of blocks more than once (`inkling2_loop`) the layer after `il` is not always
+  `il+1`, so at the loop's edges they predict for a layer that does not come next: the prefetch
+  stays byte-identical and wastes those reads, and route-ahead, lossy by design, has not been
+  measured there. `nemotron_h_moe`
   never puts two MoE blocks next to each other (every one sits between Mamba2 or attention
   blocks), so on it they have nothing to target: they stay byte-identical and harmless, and do
   nothing. The probe also ranks the router's raw logits, so on architectures that add a

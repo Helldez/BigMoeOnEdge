@@ -515,6 +515,19 @@ names expert tensors that llama.cpp never loads. On Qwen3.6-35B-A3B-Q4_K_M this 
 581 MiB against the 582 MiB the engine computes at load from the tensors it actually bound — an
 independent check that the metadata-only path sees the same model.
 
+It is counted per layer the graph runs, not per block the file carries. A model that runs some of
+its blocks more than once per token routes again at every run, so its token asks for more than one
+set per block. The planner reads the number of layers from llama.cpp's own loader, on a load that
+reads no weight (`probe_engine_layers`), and the number of blocks from the file; where they differ
+every per-token demand of a block (its attention, its dense feed-forward, its routed experts, a
+gate product, a boundary crossing) is multiplied by their ratio, as an average over the blocks,
+since which blocks repeat is the graph's business and no key of the format says it. The plan's
+model line then reads "over 24 of 24 blocks, run as 48 layers per token". A placement is expressed
+in the same count, the one llama.cpp places layers by: the layers past the last block carry no
+weights of their own. Before this the plan of such a model priced half its token (35 ms predicted
+against 94 measured on a 16 GB laptop, 75 after), and its cache floor was half the real one. Gate
+G2v holds the count against a run's routing record.
+
 Because the floor is per-model, it also overrides the generic `cache_min_mb` guard: a budget above
 this model's cycle is not pathological however small it looks, and the plan says so when it forces
 past it.
@@ -1312,18 +1325,40 @@ memory), the capacity fitter's placement is set aside, because its arithmetic co
 twice (`placement-declined`). That settles capacity and nothing else: where the whole model is held
 in memory (`fits`, or any model with no experts, which the cores hold whole on every plan), running it
 on the device frees nothing and costs only its compute buffer, and what is left is which engine runs
-it faster. `choose_shared_device` prices a request of this machine's on each side
-(`MeasuredKnobs::mix_*`, or the default mix on a first load): its decoded tokens at the rate each
-processor applies one real layer of this model one token wide, and its prompt at the rate each
-applies it as wide as a prompt (`wide_matmul_gibs`), both probed with the host's results. The cores
-are the side in force, the placement every load had before this rule; the device takes every layer
-and the output head, named in `device_split` so no second backend that drives the same silicon takes
-a share, where the request is shorter there by `min_backend_win`. The load times the decode of the
-side it serves (`KnobTrialConfig::shared_device_side`, `MeasuredKnobs::shared_device_tps`), and once
-both sides have a decode rate their ratio replaces the probe's. No load is opened to try the device
+it faster. That is decided by the first load, on the model itself. Until a load has timed both
+sides, `choose_shared_device` opens the device (every layer and the output head, named in
+`device_split` so no second backend that drives the same silicon takes a share) and asks the load to
+keep the faster: the load compares the model's answers on the device with the cores' before it serves
+(below), which decodes the model on both, so it also times the two there, one token at a time as an
+answer is decoded and once as wide as a prompt, and keeps the side a request of this machine's is
+shorter on (`KnobTrialConfig::answer_prompt_per_token`, the prompt tokens a request brings per decoded
+token: `MeasuredKnobs::mix_*`, or the default mix on a first load). The device is the side opened
+because the comparison needs the placement open; the cores take the model, reopened on them once,
+where a request is shorter there by `min_backend_win`. Both rates are kept
+(`MeasuredKnobs::shared_device_tps`, `no_shared_device_tps`), so every plan after that load reads a
+measurement and opens the faster side at once, by the same rule: the device unless the cores are
+faster by the margin. A served load then keeps its own side at what it decoded at
+(`KnobTrialConfig::shared_device_side`). No other load is opened to try a side
 ([measured-planning.md](measured-planning.md#decisions-fixed-at-load-priced-served-then-measured)).
 
-A probe of one layer does not always predict the whole model's decode. On a 16 GB unified-memory
+**A model the plan streams is offered to the device too, where the device can hold it whole.**
+llama.cpp would hold such a model on the device, and where that fits it can be the faster run by
+far, so the stream has to earn its place against it. After the plan that streams is made
+(`plan_from`), the model is planned once more as held whole, and a device that passes every test
+above may take it where the whole model and its compute buffer stay inside what the streaming plan
+itself may hold of this pool (its ledger's ceiling, the margin already off it): then holding it whole
+asks no more of the machine than the plan it replaces. The load decides as above, with one
+difference: the configuration carries the streaming plan as its other part (`RunConfig::fallback`),
+and where the device does not keep the model (its answers differ, the cores are faster by the
+margin, or it cannot be opened) the session reopens as that plan, not as the model held whole on the
+cores. The cores' rate the device is timed against is the model held whole on them, the most a
+stream on the same cores can reach, so a device the cores do not beat is one the stream does not
+beat. The plan says both parts (`held-whole`). A machine where the whole model is past that ceiling
+(a model larger than what the process may hold) streams as before, with nothing asked of the load.
+
+The probes are not asked, because a probe of one layer does not predict the whole model's decode.
+On a laptop with integrated graphics they read the cores 74% ahead (143 GiB/s against 82) of a GPU
+that decoded a 21 GB model at 40 tok/s, more than twice the cores' rate. On a 16 GB unified-memory
 laptop the one-token probe read the cores 60% ahead of the GPU (109 GiB/s against 67), while a
 64-expert cut of Qwen3.6-35B-A3B held in memory decoded 54 tok/s on the GPU against 40 on the
 cores, and Granite-3.1-3B-A800M 165-170 against 121-124 (#380). An AMD laptop APU through Vulkan
