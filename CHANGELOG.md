@@ -7,6 +7,14 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Fixed
+- **`--auto` narrows the graph down to its floor from any context, not only from a power of two
+  times it.** The width is halved from the context while its compute buffers are past their share
+  of memory, and the halving stopped where the next half would fall under the floor (512 tokens):
+  from a 4092-token context that is 1023, with its buffers still past the share. It now takes the
+  floor there. Inkling 2 Mini at a 4092-token context projects 1662 MiB of buffers at 1023 tokens
+  (Qwen3.6-35B 495), and on a 12 GB phone that gave 3.4 GiB to the process no expert cache was left;
+  at 512 the buffers are about half. Not yet run on the phone. Every context that is a power of two times the floor (all 68 plan records on file, 2048 and
+  16384) is narrowed exactly as before ([hardware-planning.md](docs/hardware-planning.md)).
 - **An answer with thinking off no longer ends in the template's closing marker.** Where a template
   ignores `enable_thinking`, the engine opens the answer in the prompt, and it then showed the raw
   stream without llama.cpp's parser, so a format that closes each block with a marker the vocabulary

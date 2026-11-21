@@ -879,7 +879,8 @@ the side that cannot overcommit.
 
 The rule is the widest graph whose buffers stay inside a share of what the process may hold
 (`PlannerPolicy::compute_share_max`, a tenth), found by halving from the context and never below
-`ubatch_min` (or the image floor above). The plan starts from the whole context even where the probe
+`ubatch_min` (or the image floor above): where the next half would fall under that floor, the floor
+itself is taken, so a context that is not a power of two times it (4092 tokens) still reaches it. The plan starts from the whole context even where the probe
 measured a narrower default: the probe projects the buffers at its width and at half of it, both at
 the run's context, so the slope it reads already carries what the attention mask costs a token of
 width at that context, and a wider graph at the same context is priced by extending that line
