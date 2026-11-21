@@ -55,6 +55,9 @@ private const val SHARE_SECTION = " share"
 private const val LOOK_SECTION = " appearance"
 private const val MINE_SECTION = " mine"
 
+/** A typed value is saved once typing pauses this long, as the web form does: no Save to press. */
+private const val SAVE_AFTER_TYPING_MS = 400L
+
 /**
  * Settings, rendered from the engine's parameter table (`GET /api/params`) and nothing else: one
  * card per group in the table's order listing the rows the table offers a form (docs/screens.md,
@@ -544,27 +547,37 @@ private fun ParamRow(
     }
 }
 
-/** A number (or `auto`, where the row accepts it) or free text; committed when the field is left. */
+/**
+ * A number (or `auto`, where the row accepts it) or free text. Saved once typing pauses, and at once
+ * on Done or when the field is left. A pause only saves a value that is already acceptable: a value
+ * half typed ("0.", "-") waits, and the reason it is refused is shown on Done or on leaving.
+ */
 @Composable
 private fun NumberOrTextField(spec: ParamSpec, value: Any?, focus: FocusRequester, onSet: (Any?) -> Unit) {
     var text by remember(spec.key, value) { mutableStateOf(paramValueText(value)) }
     var error by remember(spec.key) { mutableStateOf<String?>(null) }
-    fun commit() {
+    fun commit(quiet: Boolean = false) {
         if (text == paramValueText(value)) return
         val v = paramValueFromText(spec, text)
         if (v == null) {
-            error = "not a ${spec.type}" + if (spec.acceptsAuto) " (or auto)" else ""
+            if (!quiet) error = "not a ${spec.type}" + if (spec.acceptsAuto) " (or auto)" else ""
             return
         }
         val n = (v as? Number)?.toDouble()
         if (n != null && ((spec.min != null && n < spec.min) || (spec.max != null && n > spec.max))) {
             // The limits appear only here, when a value is refused; the field otherwise shows what is usual.
-            error = if (spec.max != null) "between ${paramValueText(spec.min)} and ${paramValueText(spec.max)}"
+            if (!quiet) error = if (spec.max != null) "between ${paramValueText(spec.min)} and ${paramValueText(spec.max)}"
             else "at least ${paramValueText(spec.min)}"
             return
         }
         error = null
         onSet(v)
+    }
+    // Compose keeps the focus when the person taps beside the field or leaves the screen, so the
+    // Done key and the focus alone lost a typed value; a pause in typing saves it.
+    LaunchedEffect(text) {
+        delay(SAVE_AFTER_TYPING_MS)
+        commit(quiet = true)
     }
     // Below the field: the problem, else what the value means (= off) and what is usual.
     val hint = error ?: listOfNotNull(spec.specialLabel(value)?.let { "= $it" }, spec.typicalText()).joinToString(" · ").ifEmpty { null }

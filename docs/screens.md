@@ -418,10 +418,14 @@ there on every front-end (#465):
   Under a number: its unit, the name of a special value when the field holds one ("= off"), and
   the typical range ("usually 2 to 8"), never the type's limit; the limits appear only when a value
   is refused. The help's first sentence is always shown, the rest and the special values on demand.
-- **Only what a person sets.** A form shows the rows the table marks `form`: every basic row, and
-  the few deeper ones a person picks rather than the plan (which devices, speculative drafts, the
-  context's precision, the active experts). The rest stay flags of the command line, set by the
-  plan. No level filter and no search: every card starts closed, with its row count.
+- **No Save button.** A value is saved as it is set: a switch or a menu at once, a typed one when
+  typing pauses (400 ms), or at once on Done/Return or on leaving the field. A pause saves only a
+  value that already parses; one half typed waits, and its reason shows on Done or on leaving.
+- **Only what a person sets.** A form shows the rows the table marks `form`: every basic row,
+  every advanced row of a group that decides the answer rather than its speed (Sampling and Quality
+  trades: top-k, top-p, the context's precision, the active experts, cold-expert dropping),
+  and the few deeper ones a person picks rather than the plan (which devices, speculative drafts).
+  The rest stay flags of the command line, set by the plan. No level filter and no search: every card starts closed, with its row count.
 - **Set by you.** First among the cards, shown while there is any: every value the person set, in
   or out of the form, in table order, each with its way back (to the plan's value or the default).
   A row the person set lives there and leaves its group, so each row appears once; a reset sends it

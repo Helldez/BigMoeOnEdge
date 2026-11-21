@@ -113,6 +113,11 @@ int main() {
         check(unique_keys, "keys are unique");
         check(unique_flags, "flags and switches are unique across the table");
     }
+    // What decides the answer is the person's to set, since the plan never does: a group that shapes
+    // it offers its advanced rows, less a row that opts out (the seed replays a run, it is no choice).
+    check(find_param("top-k")->form && find_param("drop-cold-experts")->form,
+          "an advanced row that shapes the answer is in the form");
+    check(!find_param("seed")->form, "seed stays a flag of the command line");
     const RunConfig defaults;
     for (const ParamDesc & d : params()) {
         check(d.get && d.set, d.key + ": has accessors");
