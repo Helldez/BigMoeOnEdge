@@ -123,6 +123,7 @@
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <limits>
 #include <string>
 #include <thread>
 #include <vector>
@@ -585,6 +586,38 @@ int main(int argc, char ** argv) {
             ++fails;
         } else {
             std::printf("[PASS] G2r' the record stops at its bound, is off at 0, and changes no output\n");
+        }
+        // G2v — the plan counts a token's routed layers, and the bytes it routes through, as the
+        // engine routes them. The profile a plan is made from (the file, with the engine's own layer
+        // count) against the record of this run: a model whose graph runs a block more than once
+        // routes at every run, and a plan that counted its blocks would price half the token.
+        {
+            const ModelProfile planned = probe_model(model.c_str(), probe_engine_layers(model.c_str()));
+            uint64_t routings = 0, bytes = 0;
+            for (const RoutingBatch & b : rec.batches) {
+                if (!b.decode) continue;
+                ++routings;
+                if (b.layer < rec.expert_bytes.size()) bytes += (uint64_t) b.experts.size() * rec.expert_bytes[b.layer];
+            }
+            const uint64_t tokens = rec.decode_tokens;
+            const uint64_t want_bytes = planned.token_cycle_bytes * tokens;
+            // The profile averages the runs over the blocks, so it may be a byte per token short.
+            const bool bytes_ok = bytes >= want_bytes && bytes - want_bytes <= tokens;
+            if (!planned.ok || tokens == 0 || routings != (uint64_t) planned.moe_layer_runs() * tokens || !bytes_ok) {
+                std::printf(
+                    "[FAIL] G2v the plan's token is the engine's: %llu routings and %llu bytes over %llu decoded "
+                    "tokens, planned %u routings and %llu bytes a token (%u layers over %u blocks)\n",
+                    (unsigned long long) routings, (unsigned long long) bytes, (unsigned long long) tokens,
+                    planned.moe_layer_runs(), (unsigned long long) planned.token_cycle_bytes, planned.n_layer,
+                    planned.n_block);
+                ++fails;
+            } else {
+                std::printf(
+                    "[PASS] G2v the plan's token is the engine's: %u routings and %llu bytes a token (%u layers "
+                    "over %u blocks)\n",
+                    planned.moe_layer_runs(), (unsigned long long) planned.token_cycle_bytes, planned.n_layer,
+                    planned.n_block);
+            }
         }
     }
     // G2u — a run that does not stream records its routing only when asked to, and the record is the
@@ -1402,6 +1435,13 @@ int main(int argc, char ** argv) {
             // same bytes as the first: a graph that outran its loads reads less, since the drained
             // queue is dropped.
             double arena_mib_ref = -1.0;
+            // A model whose graph runs a block more than once comes back to experts the slots held
+            // earlier. Two slots still hold them where the loop is as long as the slots are many, and
+            // one slot never does: it reads a block again at every return, so there it must read MORE
+            // than the reference, and a count equal to it would mean a return computed on what the
+            // slot held.
+            const ModelProfile arena_mp = probe_model(model.c_str(), probe_engine_layers(model.c_str()));
+            const bool revisits = arena_mp.n_layer > arena_mp.n_block;
             for (const Variant & v : variants) {
                 RunConfig c = pdev;
                 c.moe.enabled = true;
@@ -1415,6 +1455,11 @@ int main(int argc, char ** argv) {
                 c.prefill.slots = v.slots;
                 c.prefill.slots_on_demand = v.on_demand;
                 std::unique_ptr<Session> vs = Session::open(session_config_from(c), open_err);
+                if (!vs && v.sabotage) {
+                    // The load's own comparison with the host refused the device: caught, and sooner.
+                    std::printf("[PASS] %s: caught at the load (%s)\n", v.name, open_err.c_str());
+                    continue;
+                }
                 if (!vs) {
                     std::fprintf(stderr, "%s open failed: %s\n", v.name, open_err.c_str());
                     return 2;
@@ -1445,7 +1490,10 @@ int main(int argc, char ** argv) {
                 const double cached = rr.summary.prefill_device_cache_mib;
                 const double mib = rr.summary.prefill_device_read_mib + cached;
                 if (arena_mib_ref < 0.0) arena_mib_ref = mib;
-                const bool mib_ok = v.routed ? (mib > 0.0 && mib < arena_mib_ref) : mib == arena_mib_ref;
+                const bool again = revisits && v.slots == 1;
+                const bool mib_ok = v.routed ? (mib > 0.0 && mib < arena_mib_ref)
+                                    : again  ? mib > arena_mib_ref
+                                             : mib == arena_mib_ref;
                 if (mib <= 0.0 || !mib_ok || rr.summary.prefill_device_nodes <= 0) {
                     std::printf("[FAIL] %s: the arena read %.3f MiB (expected %.3f), the device computed %lld nodes\n",
                                 v.name, mib, arena_mib_ref, rr.summary.prefill_device_nodes);
@@ -1615,9 +1663,12 @@ int main(int argc, char ** argv) {
                 return 2;
             }
             // The choices go through a wide prefill here and one row at a time there (G18 c): the
-            // same distribution, to within the kernels' batch-shape rounding.
+            // same distribution, to within the kernels' batch-shape rounding. The logits are 32-bit
+            // floats, so that rounding is bounded by one float's: two models here agree bit for bit,
+            // and the two that do not are 4e-12 and 8e-9 apart, the wider on a graph that runs
+            // blocks more than once. A wrong row or a stale state is orders of magnitude outside it.
             fails += check_close("G18c decide(whole prefill) == perplexity(choices)", pr.choice_logp,
-                                 whole[0].choice_logp, 1e-9);
+                                 whole[0].choice_logp, (double) std::numeric_limits<float>::epsilon());
 
             // f) off by default: the same session (decide not enabled) refuses, without harm.
             const DecideResult off = s->decide(q1);

@@ -1082,8 +1082,13 @@ int main(int argc, char ** argv) {
                              d.probed_out_of_process ? ", probed in a process of its own" : "");
             }
             if (mp.ok) {
-                std::fprintf(stderr, "plan: model %s, %u experts top-%u over %u of %u blocks\n", mp.arch.c_str(),
-                             mp.n_expert, mp.n_expert_used, mp.n_moe_layer, mp.n_layer);
+                // A model whose graph runs some blocks more than once has more layers than blocks,
+                // and the per-token column below is counted over the layers.
+                char runs[64] = "";
+                if (mp.n_layer != mp.n_block)
+                    std::snprintf(runs, sizeof(runs), ", run as %u layers per token", mp.n_layer);
+                std::fprintf(stderr, "plan: model %s, %u experts top-%u over %u of %u blocks%s\n", mp.arch.c_str(),
+                             mp.n_expert, mp.n_expert_used, mp.n_moe_layer, mp.n_block, runs);
                 for (int gi = 0; gi < (int) WeightGroup::count; ++gi) {
                     const GroupDemand & d = mp.groups[gi];
                     if (d.bytes == 0) continue;

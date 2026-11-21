@@ -169,6 +169,9 @@ bool PrefillPath::open_arena(const PrefillDeviceConfig & cfg,
         err = "prefill device " + cfg.device + " dense arena: " + perr;
         return false;
     }
+    // The slots follow the graph's own order of layers, which the capture read: a model that runs a
+    // block more than once comes back to it.
+    arena_->set_graph_order(hook_->layer_order(), hook_->layer_blocks());
     if (arena_->has_dense())
         log_printf(LogLevel::Info,
                    "prefill-device dense arena: layer matrices through 2 slots, the rest held, %.1f MiB (%.1f "

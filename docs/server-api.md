@@ -557,10 +557,11 @@ unsupported keywords do not gain a guarantee merely because they appear in the r
 JSON syntax and a schema cannot guarantee that the generated values are factually correct.
 
 Thinking and speculative decoding use the existing template grammar path. Tool combinations
-are template-dependent: the pinned Qwen3.5 specialized parser produces an invalid lazy grammar
-for a response schema with offered tools and `tool_choice: "auto"`; that request returns `400`
-with `code: "template_rejected"` before inference. The differential Qwen3 parser accepts this
-combination and produces a JSON answer. Both tested parsers give JSON precedence over required
+are template-dependent. A response schema with offered tools and `tool_choice: "auto"` produces a
+JSON answer with both tested parsers (the differential Qwen3 one and the specialized Qwen3.5 one,
+whose grammar llama.cpp could not build before the pin of 0.47.0: that request returned `400` with
+`code: "template_rejected"`, as any template whose grammar cannot be built still does, before
+inference). Both tested parsers give JSON precedence over required
 tool calls, so a response schema with `tool_choice: "required"` (including a named-function choice)
 is explicitly refused with `400` / `invalid_request`, instead of silently ignoring the requirement.
 These cases are covered by vendored-template regressions; tools are not universally disabled.

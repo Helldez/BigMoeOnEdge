@@ -50,7 +50,9 @@ struct GroupDemand {
     uint64_t bytes = 0; // total size of the group in the file, MTP blocks excluded
 
     // Bytes one decoded token must obtain, from wherever they live. For Experts this is already
-    // the top-k share, not the whole expert set: it is the demand, not the footprint.
+    // the top-k share, not the whole expert set: it is the demand, not the footprint. A block the
+    // graph runs more than once per token is read that many times, so on such a model a group's
+    // demand can exceed its size.
     uint64_t bytes_per_token = 0;
 
     // The graph only ever gathers ROWS from this group, so a resident copy buys residency for
@@ -107,7 +109,14 @@ struct ModelProfile {
     // experts. An architecture with leading dense blocks (lfm2moe, bailingmoe3) has fewer of the
     // second than the first, so a pro-rata or a placement computed against the wrong one is
     // silently wrong on exactly the architectures that motivated the distinction.
-    uint32_t n_layer = 0;     // blocks in the file: llama.cpp's own layer indices
+    //
+    // A third count joins them where a model runs some of its blocks more than once per token (a
+    // looped core): the engine then numbers more layers than the file carries blocks, the later ones
+    // running an earlier block's weights. `n_layer` is the engine's count, since a placement and a
+    // context's memory are counted in it; `n_block` is the file's, since the weights are. The two
+    // are equal on a model whose graph runs each block once, and nothing reads which model that is.
+    uint32_t n_layer = 0;     // layers the engine numbers: llama.cpp's own layer indices
+    uint32_t n_block = 0;     // of those, the ones the file carries weights for
     uint32_t n_moe_layer = 0; // of those, the ones carrying expert tensors — the ones that stream
     // Which blocks those are, ascending, in llama.cpp's indices: what a placement expressed in
     // blocks (n_gpu_layers, an override pattern) is read against, so a count of "layers on the
@@ -164,6 +173,7 @@ struct ModelProfile {
     uint64_t largest_layer_dense_bytes = 0;
     // Each block's non-expert bytes, by layer (`n_layer` long where the file was read, else empty). A
     // plan that moves layers between devices charges the ones it moves, not an average or a bound.
+    // A layer that runs another block's weights carries none of its own, and is 0 here.
     std::vector<uint64_t> layer_dense_bytes;
 
     // The same bytes again, decomposed by access shape. `groups[...].bytes` sums to `file_bytes`,
@@ -189,6 +199,9 @@ struct ModelProfile {
     // factors are not uniform: a fused gate_up projection is twice the stride of a split one, and
     // an architecture with leading dense blocks has layers that demand nothing. A product would be
     // wrong on both, and wrong in the direction that under-sizes the floor.
+    //
+    // Counted per layer the graph runs, not per block the file carries: each run of a block routes
+    // on its own, so a block run three times can ask for three sets.
     uint64_t token_cycle_bytes = 0;
 
     // The quantization the expert tensors carry, as a ggml type id, or -1 when unknown. Kept as an
@@ -232,6 +245,11 @@ struct ModelProfile {
 
     // Bytes a token must obtain if NOTHING is resident: the ceiling the plan works down from.
     uint64_t bytes_per_token() const;
+
+    // How many expert-carrying layers one token passes through: `n_moe_layer` where each block runs
+    // once, more where the graph runs blocks again. What a per-token cost paid once per routed layer
+    // (a gate product, a boundary crossing) is multiplied by.
+    uint32_t moe_layer_runs() const;
 };
 
 } // namespace bmoe

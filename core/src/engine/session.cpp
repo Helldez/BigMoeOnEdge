@@ -1604,7 +1604,13 @@ bool Session::Impl::init_speculation(Opening & o) {
         mtp_batch_owned = true;
         draft_buf.reserve((size_t) cfg.spec.draft_max);
     }
-    checkpoints.configure(cfg.ctx_checkpoints, cfg.checkpoint_min_step, llama_model_n_swa(model.get()));
+    // The window a checkpoint is judged against is the attention's, and a memory with a recurrent
+    // part reports that part's one position as its minimum, never the window's start: such a model
+    // is judged as one without a window, as llama.cpp's server judges it. A windowed model with a
+    // recurrent state otherwise never found a checkpoint it could restore.
+    const bool recurrent_state = llama_model_is_recurrent(model.get()) || llama_model_is_hybrid(model.get());
+    checkpoints.configure(cfg.ctx_checkpoints, cfg.checkpoint_min_step,
+                          recurrent_state ? 0 : llama_model_n_swa(model.get()));
     checkpoints.set_position_map([this](int64_t n) { return kv.pos_at((size_t) n); });
     if (media) {
         media_batch = llama_batch_init(cfg.n_batch, /*embd*/ 0, /*n_seq_max*/ 1);

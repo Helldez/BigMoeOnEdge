@@ -34,7 +34,18 @@ HardwareProfile probe_hardware(const char * model_path);
 // The model, from its gguf metadata and tensor shapes alone: no tensor data is read and the model
 // is never loaded. Returns ok=false when the file cannot be parsed, which every planning rule then
 // declines on.
-ModelProfile probe_model(const char * model_path);
+//
+// `engine_layers` is how many layers the engine numbers for this model (probe_engine_layers), for a
+// caller that plans a run. A model whose graph runs some blocks more than once per token has more
+// of them than the file has blocks, and its per-token demand is counted over the layers. Without
+// it (0) every block is counted once, which is what the file alone says: enough to describe a file,
+// not to plan a run of it.
+ModelProfile probe_model(const char * model_path, uint32_t engine_layers = 0);
+
+// How many layers the engine numbers for this model: llama.cpp's own count, read from the file's
+// metadata by its loader with no weight loaded. It is the coordinate a placement is expressed in
+// and the count a context's memory is held for. 0 when the file does not load.
+uint32_t probe_engine_layers(const char * model_path);
 
 // The file's header alone: its architecture and expert counts, with ok=false when it is not a
 // gguf that parses. A MoE whose expert layout probe_model refuses to plan still reads here, so a
