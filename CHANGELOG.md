@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.47.1] - 2026-11-21
+
+### Changed
+- **Settings offer every setting that changes the answer** (web, Android, iOS alike): Top-k, Top-p
+  and Drop cold experts join Temperature, the context's precision and the active experts. The
+  rule is the group's, in one place (`param_group_shapes_answer`): a Sampling or Quality trades row
+  at the advanced level is in the form, since the plan never sets one. The seed, experimental and
+  debug rows stay flags of the command line ([screens.md](docs/screens.md)).
+
+### Fixed
+- **A value typed in the Android or iOS settings is saved without pressing Done**: it is saved once
+  typing pauses, as on the web. Before, only Done or leaving the field saved it, and tapping beside
+  the field or going back keeps the focus there, so the value was lost.
+
 ## [0.47.0] - 2026-11-21
 
 ### Added

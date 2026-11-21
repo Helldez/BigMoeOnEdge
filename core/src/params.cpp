@@ -161,7 +161,7 @@ ParamDesc row(const char * key, const char * label, ParamGroup group, ParamLevel
     d.label = label;
     d.group = group;
     d.level = level;
-    d.form = level == ParamLevel::Basic;
+    d.form = level == ParamLevel::Basic || (level == ParamLevel::Advanced && param_group_shapes_answer(group));
     d.help = std::move(help);
     d.flag = std::string("--") + key;
     return d;
@@ -430,6 +430,9 @@ std::vector<ParamDesc> build() {
         ParamDesc d = row("seed", "Seed", G::Sampling, L::Advanced,
                           "RNG seed for sampling. " + std::to_string(SamplingConfig::seed_random) +
                               " draws a random seed per run.");
+        // Picks which answer of the same distribution comes out, not how good it is: a value to
+        // replay a run with, typed on a command line, not a choice a form asks a person to make.
+        d.form = false;
         d.value_hint = "N";
         at_least(d, 0);
         special(d, std::to_string(SamplingConfig::seed_random), "random per run");
@@ -1228,7 +1231,6 @@ std::vector<ParamDesc> build() {
             d.short_flag = short_flag;
             d.value_hint = "TYPE";
             d.lossy = true;
-            d.form = true;
             d.details = details;
             bind_choice<KvCacheType>(d, field, kv_types);
             t.push_back(d);
@@ -1253,7 +1255,6 @@ std::vector<ParamDesc> build() {
         ParamDesc d = row("n-expert-used", "Active experts", G::Lossy, L::Advanced,
                           "Override the experts routed per token (top-k). Lower is faster but changes the "
                           "output. 0 = the model's own value.");
-        d.form = true;
         d.value_hint = "N";
         d.lossy = true;
         bounds(d, 0, RunConfig::n_expert_used_max, "experts");
@@ -1273,6 +1274,8 @@ std::vector<ParamDesc> build() {
         bounds(d, 0.0, MoeStreamConfig::drop_cold_frac_max);
         special(d, "0", "off");
         bind_float(d, [](RunConfig & c) -> float & { return c.moe.drop_cold_frac; });
+        d.details = "Skips a little-used expert that is not in RAM instead of waiting for storage: faster on a slow "
+                    "drive, but the answers change and a rerun may differ. 0 keeps every expert.";
         t.push_back(d);
     }
     {
@@ -1633,6 +1636,10 @@ const char * param_group_help(ParamGroup g) {
         return "Tests, probes and A/B baselines; never a speed setting.";
     }
     return "";
+}
+
+bool param_group_shapes_answer(ParamGroup g) {
+    return g == ParamGroup::Sampling || g == ParamGroup::Lossy;
 }
 
 bool param_group_read_only(ParamGroup g) {
