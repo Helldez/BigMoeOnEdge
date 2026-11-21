@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **An answer with thinking off no longer ends in the template's closing marker.** Where a template
+  ignores `enable_thinking`, the engine opens the answer in the prompt, and it then showed the raw
+  stream without llama.cpp's parser, so a format that closes each block with a marker the vocabulary
+  does not stop on left it in the text: Inkling 2 Mini answered `Ciao! Come posso aiutarti
+  oggi?<|end_message|>`. Such a turn is now parsed like any other, with the opening handed to the
+  parser as llama.cpp does for a continued message. Qwen3.6-35B, Gemma 4 E4B and SmolVLM answer the
+  same text as before with thinking on and off ([session.md](docs/session.md)).
+
 ## [0.47.0] - 2026-11-21
 
 ### Added

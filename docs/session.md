@@ -110,7 +110,10 @@ out of the raw stream and carries it in its own field (`TokenMetrics`/`RunResult
 `delta_reasoning` on `BMOE_PROGRESS`, `reasoning` on `BMOE_DONE`) rather than dropping it. The answer text stays free of
 it either way, so the byte-identity gates are unaffected; a caller that wants to show the thinking
 reads the separate field. The parser wiring lives in `core/src/engine/chat_parse.cpp`
-(see [seam.md](seam.md)).
+(see [seam.md](seam.md)). A turn whose answer was opened in the prompt (thinking off on a template
+that ignores the flag, `thinking_control.cpp`) goes through the same parse: llama.cpp hands the parser
+that opening as the generation prompt, so whatever the format closes an answer with is cut there too,
+where the vocabulary does not stop on it.
 
 ## Cancel
 
