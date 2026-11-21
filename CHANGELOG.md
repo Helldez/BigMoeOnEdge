@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.47.0] - 2026-11-21
 
 ### Added
 - **Models that run a core of their blocks more than once per token stream, on the CPU and through
@@ -204,6 +204,12 @@ Semantic Versioning.
   key read a ready server as down. `GET` and `HEAD` on `/health` and `/v1/health` now skip the key
   check; sub-paths, writes and every other route keep it, and the host and origin rules still run
   first ([server-api.md](docs/server-api.md)). By @pt7777 (#630).
+- **The desktop app starts with "Serve on network" on** (since the app shipped, #644). Serving on
+  the network puts a key on every engine route, and the app asked `/api/info` to learn that the
+  server it had started was up, before it holds the key: the answer was a refusal, and after 90 s
+  the app said "The engine's server did not start" over a server that was running. It now asks
+  `/health`, the one route that needs no key, and takes any answer as a running server
+  ([desktop-app.md](docs/desktop-app.md)).
 
 ## [0.46.1] - 2026-11-19
 

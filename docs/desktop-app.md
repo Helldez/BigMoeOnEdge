@@ -18,7 +18,8 @@ The port comes from the app's preferences, the server's default (8765) when none
 is started with `--port-fallback` and `--port-file <data>/server.port`: when that port is taken it
 listens on the next free one and writes the port it took, which the app reads (it never probes a
 port itself, so nothing can take the port between a probe and the start), and says so when it moved
-(a notification, and `notice` in `info()`). It waits for `/api/info` to answer there, then shows the
+(a notification, and `notice` in `info()`). It waits for `/health` to answer there (the one route
+that needs no key, so the wait is the same when the server is served on the network), then shows the
 UI the server serves, so the app and a browser show the same thing. The server's output goes to
 `<data>/logs/server.log` (the run before is kept as `server.log.1`). One copy of the app runs per
 user: a second start brings the first one's window forward and exits.
