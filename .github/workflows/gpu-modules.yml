@@ -33,6 +33,13 @@ on:
       - CMakeLists.txt
       - .github/workflows/gpu-modules.yml
       - scripts/fetch-cuda-redist.py
+  # A pull request that moves an input builds the modules too, writing no cache: the PR CI builds
+  # none, and v0.47.0 went out without CUDA packs after a bump that passed it (nvml.h).
+  pull_request:
+    paths:
+      - third_party/llama.cpp
+      - .github/workflows/gpu-modules.yml
+      - scripts/fetch-cuda-redist.py
   schedule:
     - cron: '17 3 * * 1,4'
   workflow_dispatch:
