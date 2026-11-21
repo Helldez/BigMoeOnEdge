@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.47.1] - 2026-11-21
+
+### Fixed
+- **The CUDA packs are built again** (Linux x86_64, Linux ARM64, Windows). v0.47.0 was published
+  without them: the llama.cpp it moved to includes `nvml.h` in its CUDA backend, and the toolkit the
+  release workflow fetches from NVIDIA's redistributable archives carried no NVML header, so all
+  three builds failed at compile time and the release went out with Vulkan only. The fetch now takes
+  `cuda_nvml_dev` as well; nothing else in the pack changes, since the backend opens the driver's
+  NVML at run time. The pull-request CI built no CUDA module, which is why the bump passed it: a
+  pull request that moves the llama.cpp submodule or the toolkit fetch now builds the GPU modules too.
+
 ## [0.47.0] - 2026-11-21
 
 ### Added
