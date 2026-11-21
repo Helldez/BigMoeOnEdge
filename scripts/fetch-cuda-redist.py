@@ -9,7 +9,8 @@ the manifest, downloads the components named, refuses one whose digest is not th
 unpacks them into one directory laid out as the toolkit installs (bin, include, lib), which CMake
 finds through CUDAToolkit_ROOT. The same script serves Linux and Windows, needs no installer and
 no administrator rights, and fetches only what the build reads: the compiler, the runtime, the
-C++ core libraries and cuBLAS. Standard library only.
+C++ core libraries, cuBLAS and the NVML header (ggml-cuda includes nvml.h and opens the driver's
+NVML at run time, so only the header is needed). Standard library only.
 """
 
 import argparse
@@ -24,7 +25,7 @@ import urllib.request
 import zipfile
 
 BASE = "https://developer.download.nvidia.com/compute/cuda/redist/"
-COMPONENTS = ["cuda_nvcc", "cuda_cudart", "cuda_cccl", "libcublas"]
+COMPONENTS = ["cuda_nvcc", "cuda_cudart", "cuda_cccl", "libcublas", "cuda_nvml_dev"]
 
 
 def fetch(url, dst):

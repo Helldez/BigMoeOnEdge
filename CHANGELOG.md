@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.47.1] - 2026-11-21
 
 ### Changed
 - **Settings offer every setting that changes the answer** (web, Android, iOS alike): Top-k, Top-p
@@ -14,6 +14,13 @@ Semantic Versioning.
   debug rows stay flags of the command line ([screens.md](docs/screens.md)).
 
 ### Fixed
+- **The CUDA packs are built again** (Linux x86_64, Linux ARM64, Windows). v0.47.0 was published
+  without them: the llama.cpp it moved to includes `nvml.h` in its CUDA backend, and the toolkit the
+  release workflow fetches from NVIDIA's redistributable archives carried no NVML header, so all
+  three builds failed at compile time and the release went out with Vulkan only. The fetch now takes
+  `cuda_nvml_dev` as well; nothing else in the pack changes, since the backend opens the driver's
+  NVML at run time. The pull-request CI built no CUDA module, which is why the bump passed it: a
+  pull request that moves the llama.cpp submodule or the toolkit fetch now builds the GPU modules too.
 - **`--auto` narrows the graph down to its floor from any context, not only from a power of two
   times it.** The width is halved from the context while its compute buffers are past their share
   of memory, and the halving stopped where the next half would fall under the floor (512 tokens):
