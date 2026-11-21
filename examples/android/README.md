@@ -242,8 +242,8 @@ being answered; a row's menu renames or deletes it.
   to 100%; Found in memory, as "81 of every 100 parts"; Reading the message; Context used; Guesses
   kept) and links to the Plan and to Metrics. A notice says, in words, why
   something did not happen. Stop ends the answer.
-- **The composer.** The prompt, Send, or Stop while an answer is written; the + beside the prompt
-  holds **Image** and **Take a photo**, when the loaded model reads images (a projector file beside
+- **The composer.** The prompt, across the whole sheet, and under it the + and Send, or Stop while
+  an answer is written, as on the web and iOS; the + holds **Image** and **Take a photo**, when the loaded model reads images (a projector file beside
   it; otherwise the two say so, disabled), at most 8 in a message, shown as thumbnails above the
   prompt until sent and on the message after, and **Choose from options** (below). With no model loaded the status line says so, and the
   engine's line above the navigation bar leads to Models.

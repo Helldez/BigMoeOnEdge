@@ -379,6 +379,9 @@ target_include_directories(bmoe_memory_topology_test PRIVATE ${CMAKE_SOURCE_DIR}
 if(APPLE AND GGML_METAL)
     target_compile_definitions(bmoe_memory_topology_test PRIVATE BMOE_HAVE_METAL_MEMORY_PROBE=1)
 endif()
+if(GGML_OPENCL AND BMOE_OPENCL_INCLUDE)
+    target_compile_definitions(bmoe_memory_topology_test PRIVATE BMOE_HAVE_OPENCL_MEMORY_PROBE=1)
+endif()
 add_test(NAME memory_topology COMMAND bmoe_memory_topology_test)
 
 # The cache brake's policy, replayed on measured per-token compute traces.
