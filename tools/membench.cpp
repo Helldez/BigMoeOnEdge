@@ -197,12 +197,16 @@ void free_anon(uint8_t * p, size_t bytes) {
 }
 
 #if BMOE_HAVE_AHWB
+// AHardwareBuffer is API 26: a build for an older minimum (Termux) binds it weakly
+// (tools/CMakeLists.txt), so every caller of these three asks the device first.
+#define BMOE_AHWB_API __attribute__((availability(android, introduced = 26)))
+
 AHardwareBuffer * g_ahwb = nullptr;
 
 // BLOB is the "just N bytes" format: width carries the byte count and height must be 1. The usage
 // flags are the whole experiment — CPU_READ_OFTEN is the request for a cacheable mapping, and
 // whether gralloc honours it is exactly what is unknown.
-Alloc alloc_ahwb(size_t bytes, bool read_often) {
+BMOE_AHWB_API Alloc alloc_ahwb(size_t bytes, bool read_often) {
     Alloc a;
     if (bytes > 0xFFFFFFFFULL) {
         a.note = "exceeds the 32-bit BLOB width cap (4 GiB)";
@@ -237,7 +241,7 @@ Alloc alloc_ahwb(size_t bytes, bool read_often) {
     return a;
 }
 
-void free_ahwb() {
+BMOE_AHWB_API void free_ahwb() {
     if (!g_ahwb) return;
     AHardwareBuffer_unlock(g_ahwb, nullptr);
     AHardwareBuffer_release(g_ahwb);
@@ -250,7 +254,7 @@ void free_ahwb() {
 // while lock refuses anything at or above 2 GiB with EINVAL, a signed-32-bit boundary inside the
 // lock path. Probing allocation only would therefore report double the size the caller can use, so
 // the probe locks every candidate and reports both ceilings.
-void probe_max() {
+BMOE_AHWB_API void probe_max() {
     const uint64_t cap = 0xFFFFFFFFULL; // 32-bit BLOB width
     auto try_size = [](uint64_t bytes, bool with_lock) -> bool {
         if (bytes > 0xFFFFFFFFULL) return false;
@@ -383,8 +387,12 @@ int main(int argc, char ** argv) {
 
     if (probe) {
 #if BMOE_HAVE_AHWB
-        probe_max();
-        return 0;
+        if (__builtin_available(android 26, *)) {
+            probe_max();
+            return 0;
+        }
+        std::fprintf(stderr, "--probe-max needs AHardwareBuffer (Android 8, API 26)\n");
+        return 2;
 #else
         std::fprintf(stderr, "--probe-max needs AHardwareBuffer (Android build)\n");
         return 2;
@@ -436,7 +444,11 @@ int main(int argc, char ** argv) {
                 free_anon(a.base, bytes);
             } else {
 #if BMOE_HAVE_AHWB
-                Alloc a = alloc_ahwb(bytes, read_often);
+                Alloc a;
+                if (__builtin_available(android 26, *))
+                    a = alloc_ahwb(bytes, read_often);
+                else
+                    a.note = "needs Android 8 (API 26)";
                 if (!a.base) {
                     std::printf("%4d %-8s %12s %12s %10.1f %8s  %s\n", rep, "ahwb", "-", "-", a.alloc_ms, "-",
                                 a.note.c_str());
@@ -446,7 +458,7 @@ int main(int argc, char ** argv) {
                 ahwb_best = std::max(ahwb_best, r.best_mibs);
                 std::printf("%4d %-8s %12.1f %12.1f %10.1f %8d  %s\n", rep, "ahwb", r.best_mibs, r.mean_mibs,
                             a.alloc_ms, r.passes, "pinned dma-buf");
-                free_ahwb();
+                if (__builtin_available(android 26, *)) free_ahwb();
 #else
                 std::printf("%4d %-8s %12s %12s %10s %8s  %s\n", rep, "ahwb", "-", "-", "-", "-",
                             "not an Android build");

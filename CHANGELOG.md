@@ -14,6 +14,42 @@ Semantic Versioning.
   debug rows stay flags of the command line ([screens.md](docs/screens.md)).
 
 ### Fixed
+- **A native build in Termux compiles, and pins the dense set where the phone has the store, as the
+  APK does.** Termux's toolchain targets API 24, and its headers mark `AHardwareBuffer_*`, the API 26
+  store behind `--dense-weights pinned`, unavailable below that: `platform_io.cpp` stopped the build
+  with five errors, and with `BMOE_BUILD_TOOLS` so did `bmoe-iobench` and `bmoe-membench`. The calls
+  are now bound weakly, and `platform_io.cpp` asks the device in one place (`__builtin_available`).
+  From API 26 a Termux build pins, and the plan chooses it there as it does in the APK
+  ([android-memory.md](docs/android-memory.md#the-dma-buf-exception-and-what-it-does-not-solve));
+  `--dense-weights anon` keeps the dense set in ordinary memory. Below API 26 the store reads as
+  absent, as on a platform without one. `-Werror=unguarded-availability` makes a call outside that
+  check a build error, and a build whose minimum is 26 or more, as the APK's 29, folds the check to
+  true. The Termux build line is in the README. By @pt7777 (#659).
+- **An integrated GPU reached through OpenCL is known to share the host's memory, the same on every
+  load.** ggml's OpenCL backend reports every device as a discrete GPU, so the plan measured it: an
+  allocation on the device, against the host's available memory. On a 12 GB phone that figure moves
+  while the system reclaims, and the same GPU read as memory of its own on one load in four. That
+  load applied the capacity fitter's placement of the output head on it, and with a layer on a
+  device the NPU prefill (2.5x the CPU on a prompt) was ruled out. The probe now asks each API that
+  does not report it whether the device shares the host's memory, the way it already asked Metal:
+  OpenCL's `CL_DEVICE_HOST_UNIFIED_MEMORY`, read through the library the backend loaded. A discrete
+  card through OpenCL answers no and is planned as before; Vulkan, CUDA and SYCL already reported it
+  ([hardware-planning.md](docs/hardware-planning.md)).
+- **`--auto` narrows the graph down to its floor from any context, not only from a power of two
+  times it.** The width is halved from the context while its compute buffers are past their share
+  of memory, and the halving stopped where the next half would fall under the floor (512 tokens):
+  from a 4092-token context that is 1023, with its buffers still past the share. It now takes the
+  floor there. Inkling 2 Mini at a 4092-token context projects 1662 MiB of buffers at 1023 tokens
+  (Qwen3.6-35B 495), and on a 12 GB phone that gave 3.4 GiB to the process no expert cache was left;
+  at 512 the buffers are about half. Not yet run on the phone. Every context that is a power of two times the floor (all 68 plan records on file, 2048 and
+  16384) is narrowed exactly as before ([hardware-planning.md](docs/hardware-planning.md)).
+- **An answer with thinking off no longer ends in the template's closing marker.** Where a template
+  ignores `enable_thinking`, the engine opens the answer in the prompt, and it then showed the raw
+  stream without llama.cpp's parser, so a format that closes each block with a marker the vocabulary
+  does not stop on left it in the text: Inkling 2 Mini answered `Ciao! Come posso aiutarti
+  oggi?<|end_message|>`. Such a turn is now parsed like any other, with the opening handed to the
+  parser as llama.cpp does for a continued message. Qwen3.6-35B, Gemma 4 E4B and SmolVLM answer the
+  same text as before with thinking on and off ([session.md](docs/session.md)).
 - **A value typed in the Android or iOS settings is saved without pressing Done**: it is saved once
   typing pauses, as on the web. Before, only Done or leaving the field saved it, and tapping beside
   the field or going back keeps the focus there, so the value was lost.

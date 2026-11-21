@@ -97,6 +97,23 @@ if(BMOE_HAVE_LLAMA)
     find_package(Threads REQUIRED)
     target_link_libraries(bmoe_core PUBLIC Threads::Threads)
 
+    # The native memory-topology answers (memory_topology.h): one source per API, compiled where the
+    # backend is, and nothing linked for them - OpenCL is read through the library its backend loaded.
+    target_sources(bmoe_core PRIVATE src/plan/native_memory_probe.cpp)
+    if(GGML_OPENCL)
+        find_path(BMOE_OPENCL_INCLUDE CL/cl.h HINTS ${OpenCL_INCLUDE_DIR} ${OpenCL_INCLUDE_DIRS})
+        if(BMOE_OPENCL_INCLUDE)
+            target_sources(bmoe_core PRIVATE src/plan/opencl_memory_probe.cpp)
+            target_include_directories(bmoe_core PRIVATE ${BMOE_OPENCL_INCLUDE})
+            target_compile_definitions(bmoe_core PRIVATE BMOE_HAVE_OPENCL_MEMORY_PROBE=1)
+            if(NOT WIN32)
+                target_link_libraries(bmoe_core PRIVATE ${CMAKE_DL_LIBS})
+            endif()
+        else()
+            message(STATUS "bmoe: OpenCL headers not found; the OpenCL memory-topology answer is left out")
+        endif()
+    endif()
+
     if(APPLE AND GGML_METAL)
         target_sources(bmoe_core PRIVATE src/plan/metal_memory_probe.mm)
         set_source_files_properties(src/plan/metal_memory_probe.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
@@ -108,6 +125,13 @@ if(BMOE_HAVE_LLAMA)
         # libandroid carries AHardwareBuffer_*, Android's reclaim-exempt allocation behind
         # `--dense-weights pinned` (pio::pinned_alloc; Darwin's needs no extra library).
         target_link_libraries(bmoe_core PUBLIC android)
+        # The API is 26 and up. A build for an older minimum (Termux's toolchain targets 24, where the
+        # header marks the calls unavailable) binds it weakly, and platform_io.cpp asks the device in
+        # one place before any use. The error turns a call without that check into a build failure
+        # instead of a crash on an older device. At a minimum of 26 or more neither changes anything.
+        set_property(SOURCE src/io/platform_io.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+                     __ANDROID_UNAVAILABLE_SYMBOLS_ARE_WEAK__)
+        set_property(SOURCE src/io/platform_io.cpp APPEND PROPERTY COMPILE_OPTIONS -Werror=unguarded-availability)
     endif()
     if(WIN32)
         # QueryWorkingSetEx, behind the dense residency sensor (pio::vm_resident_sample). Newer SDKs
