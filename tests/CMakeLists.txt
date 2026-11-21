@@ -28,6 +28,24 @@ target_link_libraries(bmoe_lock_limits_test PRIVATE bmoe_core)
 target_include_directories(bmoe_lock_limits_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/io)
 add_test(NAME lock_limits COMMAND bmoe_lock_limits_test)
 
+# A release unpacked under a folder whose name is not ASCII (#677): the programs find the backends
+# beside themselves through that path. The whole output folder is copied, since the libraries the
+# CLI loads sit in it, and the CLI is asked to probe a device that does not exist: it loads the
+# backends first, and says so only if it got that far.
+if(TARGET bmoe-cli)
+    set(BMOE_NON_ASCII_BIN "${CMAKE_BINARY_DIR}/bin-日本語-ünï")
+    add_test(NAME non_ascii_install_path_setup
+             COMMAND ${CMAKE_COMMAND} -E copy_directory $<TARGET_FILE_DIR:bmoe-cli> "${BMOE_NON_ASCII_BIN}")
+    add_test(NAME non_ascii_install_path
+             COMMAND "${BMOE_NON_ASCII_BIN}/$<TARGET_FILE_NAME:bmoe-cli>" --probe-device no-such-device)
+    add_test(NAME non_ascii_install_path_cleanup
+             COMMAND ${CMAKE_COMMAND} -E remove_directory "${BMOE_NON_ASCII_BIN}")
+    set_tests_properties(non_ascii_install_path_setup PROPERTIES FIXTURES_SETUP non_ascii_bin)
+    set_tests_properties(non_ascii_install_path_cleanup PROPERTIES FIXTURES_CLEANUP non_ascii_bin)
+    set_tests_properties(non_ascii_install_path PROPERTIES FIXTURES_REQUIRED non_ascii_bin
+                         PASS_REGULAR_EXPRESSION "no such device to probe")
+endif()
+
 # Reasoning-parser wiring regression (issue #49). Needs no model — it drives the extracted
 # bmoe::detail::build_parse_params directly — so it runs unconditionally, unlike the gates below.
 add_executable(bmoe_chat_parse_test chat_parse_test.cpp)

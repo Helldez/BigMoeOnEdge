@@ -188,6 +188,18 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/CMakeLists.txt")
     endforeach()
 endif()
 
+# An executable whose paths and arguments are UTF-8 on Windows as they are everywhere else: the
+# manifest names UTF-8 as the process's code page, so a folder or a model named outside the system's
+# own code page (or inside it, where its bytes are not UTF-8) reaches every path this code and
+# llama.cpp build as the same string. Without it a release unpacked under a non-ASCII folder ended at
+# start (#677). MSVC's linker merges a manifest listed among a target's sources; other toolchains
+# on Windows are not what the releases are built with, and get nothing.
+function(bmoe_utf8_process target)
+    if(MSVC)
+        target_sources(${target} PRIVATE ${CMAKE_SOURCE_DIR}/packaging/windows/utf8.manifest)
+    endif()
+endfunction()
+
 add_subdirectory(core)
 add_subdirectory(frontend)
 

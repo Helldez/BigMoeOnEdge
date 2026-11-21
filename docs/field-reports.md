@@ -55,6 +55,22 @@ desktop app is not affected: it installs the pack itself.
 
 ## Fixed
 
+### Windows: the programs end at start from a folder with a non-ASCII name (#677)
+
+- **Seen on** 0.46.1, Windows 11, the release archive unpacked under a folder named in Japanese:
+  `bmoe-cli.exe` and `bmoe-server.exe` end at once, with any model or none.
+- **How to recognise it.** No output. The Event Viewer shows an application error in
+  `ucrtbase.dll` with exception code `0xc0000409`, and the executable's path has characters outside
+  ASCII. From a folder named in ASCII the same files run.
+- **Cause.** Confirmed in the code, not on a Windows machine: the engine asked for its own path with
+  the narrow system call, which answers in the system's code page, and the listing of the backends
+  beside the executable read that answer as UTF-8. Bytes of another code page are not valid UTF-8,
+  the conversion throws, and nothing catches it. A folder the code page cannot spell at all did not
+  end the program: its backends were not found.
+- **Fixed in** 0.47.0: the path is asked for in wide characters and kept as UTF-8, and the
+  executables declare UTF-8 as their code page.
+- **Workaround.** Unpack the release under a path of ASCII characters only.
+
 ### The server ends while loading a large model behind a small card, with no message
 
 - **Seen on** 0.45.1 to 0.46.1, Linux in a container: an 8 GB card, a memory limit of 42.5 GiB, a
