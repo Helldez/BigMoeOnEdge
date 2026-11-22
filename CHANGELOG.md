@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Changed
+- **Every llama.cpp tensor name is read in `tensor_names` again.** The router hook recognised the
+  memory modules' state (`cache_k_l<il>`, `cache_r_l<il>`, ...) by a prefix match of its own and built a
+  block's trace label by hand; both are now `tensor_names::is_state_tensor` and `block_label`, with
+  tests. The half-precision gate kernel and its row conversion moved into `gate_gemv` beside the float
+  and int8 ones, so the router hook carries no instruction-set branch, and the streamer's spin count,
+  pin slack, the device probe's matmul shape and the cache brake's cap are named constants. No
+  behaviour changes; the gates are unchanged.
+
 ## [0.47.2] - 2026-11-21
 
 ### Fixed
