@@ -23,10 +23,17 @@ export interface SettingsCard {
  * person set, which `setByYou` lists instead (each row appears once). Nothing here names a group or
  * a parameter.
  */
-export function settingsCards(params: readonly ParamSpec[], userKeys?: ReadonlySet<string>): SettingsCard[] {
+export function settingsCards(
+  params: readonly ParamSpec[],
+  userKeys?: ReadonlySet<string>,
+  showAdvanced = false,
+): SettingsCard[] {
   const cards = new Map<string, { card: SettingsCard; order: number; first: number }>();
   params.forEach((p, i) => {
-    if (!inForm(p) || (p.group_read_only !== true && (userKeys?.has(p.key) ?? false))) return;
+    // Advanced rows are opt-in from the UI. Experimental and debug rows stay the CLI's: they are
+    // measured experiments and test knobs, not choices a settings form should offer by accident.
+    const offered = inForm(p) || (showAdvanced && p.level === 'advanced');
+    if (!offered || (p.group_read_only !== true && (userKeys?.has(p.key) ?? false))) return;
     let entry = cards.get(p.group);
     if (!entry) {
       entry = {

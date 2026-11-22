@@ -344,6 +344,7 @@ export const en = {
   'app.port.invalid': 'Use a number from 1024 to 65535.',
   'app.port.saved': 'Saved. The engine restarts on the new port.',
   'settings.engine.lead': 'The settings a person may want to choose. The plan picks every other one for this computer.',
+  'settings.advanced': 'Advanced settings',
   'settings.saving': 'Saving…',
   'settings.reset': 'Reset',
   'settings.reset.all': 'Reset all my values',
