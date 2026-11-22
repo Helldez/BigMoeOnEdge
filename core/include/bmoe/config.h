@@ -807,6 +807,18 @@ struct RunConfig {
     // falls back to F16 rather than failing the run.
     KvCacheType cache_type_k = k_default_kv_cache_type;
     KvCacheType cache_type_v = k_default_kv_cache_type;
+
+    // Flash attention. llama.cpp's default is `auto`, which can pick the non-flash kernel for a
+    // lossless F16 KV on a backend that has flash: long-context prefill then pays far more than it
+    // has to. A quantized V forces flash on inside llama.cpp, so `off` there is only advisory.
+    // Kept as an explicit choice so a dense model that fits can try F16 KV with flash forced on.
+    enum class FlashAttn : int { Auto = -1, Off = 0, On = 1 };
+    FlashAttn flash_attn = FlashAttn::Auto;
+    // Offload the K/Q/V ops and the KV cache to a device that holds layers (llama.cpp's default).
+    // A dense model placed on a device whose link is slower than its compute can measure the other
+    // side. `kv_unified` shares one attention buffer across sequences; llama.cpp's default is false.
+    bool offload_kqv = true;
+    bool kv_unified = false;
     // Wrap the prompt in chat turns, rendered with the chat template the gguf carries (llama.cpp's
     // common_chat_templates_init): the model's own template, not one picked by architecture. A file
     // whose template cannot be read falls back to the raw prompt, with a warning.

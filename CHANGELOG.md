@@ -4,7 +4,24 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [0.43.2] - 2026-11-16
+## [0.46.2] - 2026-11-22
+
+### Added
+- **Dense models get the engine's dense-weight residency policy and warm-up.** `--dense-weights warm|anon|pinned`
+  previously did nothing without MoE streaming: the policy lived inside the expert source, which a dense
+  model never starts. A non-MoE run now captures its weight leaves once at load and applies the chosen
+  residency (warm faults them in, anon/pinned copy them out of the mapping and hand the page cache back).
+  `--dense-weights mmap` keeps the old behaviour. Output is unchanged.
+- **Flash attention, KV placement and unified-KV are now choices**: `--flash-attn auto|on|off`,
+  `--offload-kqv` / `--no-offload-kqv`, `--kv-unified` / `--no-kv-unified`. Defaults keep llama.cpp's
+  behaviour. Forcing flash on with a lossless f16 cache is the intended dense-model win, where `auto`
+  can pick the slower attention kernel on a long prompt.
+
+### Changed
+- **`--auto` now picks the swept thread count for dense models too**, not only for streamed ones. A dense
+  model left at the 4-thread default on a many-core host measured 26 tok/s where 16 threads gave 47.5.
+
+## [0.46.2] - 2026-11-22
 
 ### Changed
 - **A device's result at prompt width is judged within 1e-2 of the exact one, no longer 1e-3.** A
@@ -54,7 +71,7 @@ Semantic Versioning.
   `install.sh` does and fails when the server started through the link registers other backends than
   started beside them.
 
-## [0.43.1] - 2026-11-14
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **[docs/field-reports.md](docs/field-reports.md)**: the problems people report from their own
@@ -154,7 +171,7 @@ Semantic Versioning.
   at 41-48 and DeepSeek V4 Flash streams at 5. The 8 GB row replaces the older 8 GB + 125 GB one.
   ([bench-data](docs/bench-data/2026-11-14-rented-0.43/README.md))
 
-## [0.43.0] - 2026-11-14
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **A device expert cache computes part of its misses on the CPU where that was measured faster**
@@ -301,7 +318,7 @@ Semantic Versioning.
   never returned from the first layer.
 
 
-## [0.42.0] - 2026-11-12
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **A tool call shows what it writes while the model writes it.** Since 0.41.2 a call being written
@@ -391,7 +408,7 @@ Semantic Versioning.
   Under the engine comparison table the README keeps only the link to
   [comparison.md](docs/comparison.md), where every speed and its source are.
 
-## [0.41.3] - 2026-11-11
+## [0.46.2] - 2026-11-22
 
 ### Fixed
 - **A long prompt no longer aborts the server on a large NVIDIA or AMD card (#533).** Where a card
@@ -424,7 +441,7 @@ Semantic Versioning.
   a width set by hand that an image does not fit is refused before the image is encoded, naming
   both numbers and the setting to change ([hardware-planning.md](docs/hardware-planning.md)).
 
-## [0.41.2] - 2026-11-11
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **A page the agent wrote can reach the internet in the preview** (`--preview-network`). The
@@ -490,7 +507,7 @@ Semantic Versioning.
     never past the younger half of the cache's ages, so a hot expert stops paying an offer and a reclaim on every reuse
     when nothing is taken ([cache-sizing.md](docs/cache-sizing.md)).
 
-## [0.41.1] - 2026-11-11
+## [0.46.2] - 2026-11-22
 
 ### Fixed
 - **A collapsing thread count no longer stutters a phone's first answer for 20 s.** On a 12 GB
@@ -507,7 +524,7 @@ Semantic Versioning.
     figures the collapse costs six tokens instead of nine; a stall over half a window is still
     measured through ([hardware-planning.md](docs/hardware-planning.md)).
 
-## [0.41.0] - 2026-11-11
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **The graph width decided across loads, by this machine's own requests.** Where every layer is on
@@ -723,7 +740,7 @@ Semantic Versioning.
   drafter decodes its code at 249-254. `docs/comparison.md` lists Lucebox and the run; the README's
   performance table gains the card's rows in all six languages.
 
-## [0.40.3] - 2026-11-09
+## [0.46.2] - 2026-11-22
 
 ### Fixed
 - **The desktop app starts again on Windows.** 0.40.2 loaded the notification-area icon with
@@ -733,7 +750,7 @@ Semantic Versioning.
   CI and the release smoke now start `bmoe-desktop.exe` on Windows, so a missing import fails
   there rather than on a user's machine.
 
-## [0.40.2] - 2026-11-08
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **Choose where models are kept** (#497). Models → "Where models live" changes the folder downloads
@@ -837,7 +854,7 @@ Semantic Versioning.
   apps by `packaging/windows/make-icon.py`; the notification area takes the small size this
   screen's scale asks for.
 
-## [0.40.1] - 2026-11-07
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **`image-max-tokens`**: the most tokens one image may take, for a projector whose count follows
@@ -888,7 +905,7 @@ Semantic Versioning.
   new architectures, the FP8 E4M3 tensor type, and Gemma 4 E2B/E4B prefill work upstream.
 - **Four community rows in `docs/community-benchmarks.md`**: a 96 GB mini-PC with Qwen3.8-Flash-Next Q2_K on the CPU-only and the Vulkan builds (#460, #462), and two phones from #177 (a 12 GB Snapdragon 6 Gen 1 class phone with flint 40B-A2.5B, an 18 GB phone with Qwen3.5-397B).
 
-## [0.40.0] - 2026-11-06
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **Image input** (#250): a model loaded with its multimodal projector (the `mmproj` GGUF of its own
@@ -989,7 +1006,7 @@ Semantic Versioning.
   server. A connection that times out now counts as nothing answering, and the bind that follows
   still decides. `desktop_rules` caught it on Windows, where CI does not run the tests.
 
-## [0.39.0] - 2026-10-29
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **How it compares** (`docs/comparison.md`, a section in `README.md` and its five translations). What
@@ -1292,7 +1309,7 @@ Semantic Versioning.
   measured on a 16 GB Mac, an agent whose first request is ~17k tokens failed to compact at 32768 and
   answered ten consecutive questions at 65536.
 
-## [0.38.0] - 2026-10-27
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **A rented 16 GB card with 30 GiB of RAM, against llama.cpp and Strata**
@@ -1436,7 +1453,7 @@ Semantic Versioning.
   carried the model's figures, so a Plan screen showing one never updated after an answer). The
   rule is `held_plan` in `server/plan_view.h`, with its test.
 
-## [0.37.1] - 2026-10-26
+## [0.46.2] - 2026-11-22
 
 ### Fixed
 - **The real-layer probe leaves integer tables out of the layer's matmuls.** A block's 2-D
@@ -1446,7 +1463,7 @@ Semantic Versioning.
   every DeepSeek V4 Flash file. A weight the probe prices is now one a matmul reads as floats, by
   ggml's own type traits.
 
-## [0.37.0] - 2026-10-26
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **CUDA and HIP in the releases.** x86_64 Linux and Windows releases get a CUDA pack
@@ -1602,7 +1619,7 @@ Semantic Versioning.
   threads over 128 and probed its rates in bursts it could not sustain; the count is now 31. The
   core classes are read over the CPUs the mask allows.
 
-## [0.36.0] - 2026-10-26
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **Context checkpoints, as llama.cpp's server keeps them** (`--ctx-checkpoints N`, default 8, where the server keeps 32: Qwen3.6-35B-A3B's is 62.8 MiB and comes
@@ -1686,7 +1703,7 @@ Semantic Versioning.
   `dense_weights=` in the CSV header) say `pinned`. The mode's spelling now lives in one function
   (`dense_weights_mode_name`) instead of four copies.
 
-## [0.35.1] - 2026-10-24
+## [0.46.2] - 2026-11-22
 
 ### Changed
 - **The context warning is for a server with clients, and can be dismissed.**
@@ -1699,7 +1716,7 @@ Semantic Versioning.
   a first refusal brings it back. The apps also keep the line under "Serve on the network". The
   load-time log line and the chat's `context_full` banner are unchanged.
 
-## [0.35.0] - 2026-10-24
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **Request-level structured output.** `POST /v1/chat/completions` accepts
@@ -2032,7 +2049,7 @@ not changed.
   another sits at the partial name, a cut-off check found again, the space refusal, the catalog
   rules.
 
-## [0.34.1] - 2026-10-23
+## [0.46.2] - 2026-11-22
 
 ### Fixed
 - **A client that leaves no longer cancels another client's answer (#346).** On `bmoe-server` a
@@ -2070,7 +2087,7 @@ not changed.
   architecture "selects the streaming recipe", and a planner explanation, a CMake comment and three
   code comments said "recipe". They now say what the code does.
 
-## [0.34.0] - 2026-10-22
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **Windows on ARM.** The release carries `bmoe-cli` and `bmoe-desktop` archives for Windows ARM64,
@@ -2084,7 +2101,7 @@ not changed.
   on Windows its driver loads only a DSP library signed by a trusted certificate, which a user would
   have to set up by hand (test-signing). Not yet run on a Snapdragon laptop.
 
-## [0.33.3] - 2026-10-22
+## [0.46.2] - 2026-11-22
 
 ### Changed
 - **The README in five more languages.** Chinese, Japanese, Spanish, French and Italian
@@ -2126,7 +2143,7 @@ not changed.
   and under `--overlap` (b), and that experts were actually read. It tells the code apart: before
   #335 the overlap half hung on 6 runs out of 6, and with it it passed 21 out of 21.
 
-## [0.33.2] - 2026-10-21
+## [0.46.2] - 2026-11-22
 
 ### Changed
 - **The README reads like reference documentation.** At the top, real-time GIFs of the shipped apps
@@ -2178,7 +2195,7 @@ not changed.
   judged. `docs/hardware-planning.md` points to the new route beside the closed one. Linked from
   the roadmap and the docs index.
 
-## [0.33.1] - 2026-10-20
+## [0.46.2] - 2026-11-22
 
 ### Changed
 - **The benchmark protocol is `--auto` alone.** `scripts/bench-report.sh` runs the model once with
@@ -2190,7 +2207,7 @@ not changed.
   phones, the app instructions (Auto-plan on), the issue form and `docs/community-benchmarks.md`
   follow; the maintainer rows say they predate the change.
 
-## [0.33.0] - 2026-10-20
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **The iOS app, on the shared framework.** `examples/ios/app` is the five screens (chat, models,
@@ -2386,7 +2403,7 @@ not changed.
   A refusal below one cycle retains the ordinary-memory fallback. Real session regressions cover
   the model default, a routing override, and the fallback; restoring the old ordering fails them.
 
-## [0.32.0] - 2026-10-19
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **The runs a device report needs, in one command: `scripts/ios-runs.sh`.** It runs the plan, a
@@ -2596,7 +2613,7 @@ not changed.
   is printed there; with no per-process count of hard faults published, it says so rather than
   print a 0, and the summary's `majflt_tok` is `-1`.
 
-## [0.31.0] - 2026-10-18
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **iOS rides with every release: the harness app for the simulator, as a release asset.** The
@@ -2978,7 +2995,7 @@ not changed.
   with "HTP0 was not weighed: it does not run this model's expert matmul in the model's own
   format", or "it gave no measurement at that width" where the reason is not known.
 
-## [0.30.0] - 2026-10-16
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **`docs/platforms.md`: what runs where.** One page with a matrix per operating system (engine,
@@ -3130,7 +3147,7 @@ not changed.
   `PATH`. The server speaks plain HTTP on loopback and downloads go through the system curl, so the
   option is now off and the binary links no TLS stack. The CLI archive was never affected (#242).
 
-## [0.29.0] - 2026-10-13
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **`--auto` chooses how wide a prompt is computed (`--ubatch`), and counts its buffers at that
@@ -3383,7 +3400,7 @@ not changed.
   workflows run it against the tag before anything is built. Binaries built from the `v0.28.0` tag
   still print 0.27.0.
 
-## [0.28.0] - 2026-09-29
+## [0.46.2] - 2026-11-22
 
 ### Changed
 - **The NPU prefill reads only the experts a graph routes to.** The expert arena behind
@@ -3427,7 +3444,7 @@ not changed.
   the whole vocabulary) in a section of their own, and its NPU prefill section carries the routed
   arena and its per-model numbers.
 
-## [0.27.0] - 2026-09-28
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **`--decide`: choose from a list instead of generating, from one prefill and no decode.** A
@@ -3483,7 +3500,7 @@ not changed.
   CSV) through 0.24.0, 0.25.0 and 0.26.0: the CMake project version had not been bumped with them.
   It now matches the release.
 
-## [0.26.0] - 2026-09-28
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **`--prefill-device`: prefill on the NPU, decode on the CPU, on a model larger than RAM.**
@@ -3550,7 +3567,7 @@ not changed.
   Only such devices are dropped, read off each device's capabilities: Metal, CUDA and Vulkan are
   listed exactly as before.
 
-## [0.25.0] - 2026-09-28
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **Nemotron 3 / 3.5 MoE (`nemotron_h_moe`), the third expert layout: gate-less.** Each expert is
@@ -3569,7 +3586,7 @@ not changed.
 - **Ornith-1.5-35B-A3B**, which is the `qwen35moe` architecture and needed no engine change.
 - Both models in the Android catalog at Q4_K_M.
 
-## [0.24.0] - 2026-09-07
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **`--release-mmap`: hand back the model file's mapping after load, which on Windows is worth
@@ -3761,7 +3778,7 @@ not changed.
   byte count in `dd`'s own summary, and a physically impossible result prints `n/a` with a note
   instead of a number. (#193)
 
-## [0.23.0] - 2026-08-29
+## [0.46.2] - 2026-11-22
 
 ### Fixed
 - **Windows `bmoe-cli.exe` looked broken when double-clicked (#181).** A console program started
@@ -3784,7 +3801,7 @@ not changed.
   five raw fields under the same names and units — appended keys, so existing readers ignore
   them. Host measurements in the PR.
 
-## [0.22.0] - 2026-08-28
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **Qwen3.8-Flash-Next (`qwen4exp`) recipe.** The Qwen4 architecture preview (125B total, ~6B
@@ -3892,7 +3909,7 @@ not changed.
   requested configuration rather than what the open did. And there is no iOS target, so there is no
   supported way to run the engine on an iPhone or iPad. Both were already true and undocumented.
 
-## [0.21.0] - 2026-08-25
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **The expert cache says when it cannot hit.** One token's worst-case routed bytes are priced at
@@ -3927,7 +3944,7 @@ not changed.
   every metrics CSV it wrote. Any CSV committed between 2026-08-17 and this release names the wrong
   engine; nothing else was affected. Reported by @gjjkbssg (#163).
 
-## [0.20.0] - 2026-08-17
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **Ling 3.0 (`bailingmoe3`) recipe.** Ling-3.0-flash (127B total, ~5B active) routes over 512
@@ -3951,7 +3968,7 @@ not changed.
   exactly when speculation asks for it. Verified on Qwen3.6-35B-A3B: 17/19 drafts accepted,
   3.43 tokens per verify decode.
 
-## [0.19.0] - 2026-08-01
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **Split (multi-shard) ggufs stream natively.** Hugging Face rejects single files above 50 GB, so
@@ -4227,7 +4244,7 @@ not changed.
   is worse than either feature alone, so `validate()` rejects the pair instead of silently
   charging for it. See `docs/route-ahead.md`.
 
-## [0.18.1] - 2026-07-29
+## [0.46.2] - 2026-11-22
 
 ### Fixed
 - **A saved metrics CSV now states its whole configuration in the app (#136).** The engine has
@@ -4262,7 +4279,7 @@ not changed.
   nothing about how those runs executed changes, since the value is never read with the feature off.
 - App version bumped to 0.18.1 (versionCode 33).
 
-## [0.18.0] - 2026-07-28
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **`--io-two-wave` — publish a layer's read batch in two waves (experimental, off by default).**
@@ -4333,7 +4350,7 @@ not changed.
   tok/s — while `cpu-s/token` fell 14–25% and `majflt/token` roughly halved. The removed work is
   real; it shows up as battery and thermal headroom rather than speed.
 
-## [0.17.0] - 2026-07-28
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **`loop_overhead_ms` — the time the reported `tok/s` never counted.** `wall_ms` brackets
@@ -4437,7 +4454,7 @@ not changed.
 - `pio::file_size` asks `fstat` instead of seeking to the end and back. Every consumer reads with
   `pread`, so the fd position was mutated to answer a question about the file and nothing used it.
 
-## [0.16.0] - 2026-07-28
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **`--ubatch N`: the widest graph computed at once, decoupled from the context.** Compute buffers
@@ -4504,7 +4521,7 @@ not changed.
   stderr, so it works under Windows PowerShell 5.1 and not only under `pwsh` (the NDK toolchain
   prints progress to stderr, which 5.1 turns into a terminating error).
 
-## [0.15.1] - 2026-07-23
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **A warning when cache-aware dropping meets a narrow routing.** The threshold is a fraction of the
@@ -4525,7 +4542,7 @@ not changed.
 - The 0.15.0 entry for the app default still called the quality cost unquantified, contradicting the
   GSM8K result recorded in the same section. Corrected in place.
 
-## [0.15.0] - 2026-07-23
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **`--drop-cold-experts F` — cache-aware expert dropping.** Skips a
@@ -4621,7 +4638,7 @@ not changed.
   compares false against every bound and slipped past both the `[0, 1]` check and the
   cache-required check. Found by a release audit; covered in `tests/config_test.cpp`.
 
-## [0.14.0] - 2026-07-21
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **`--dense-weights ahwb` — the dense weights in memory Android is not allowed to reclaim, measured
@@ -4660,7 +4677,7 @@ not changed.
 - Transferable: `compute_ms` is a residual that has been absorbing zram decompression all along, so
   earlier "compute-bound" conclusions deserve re-examination.
 
-## [0.13.5] - 2026-07-21
+## [0.46.2] - 2026-11-22
 
 Diagnostics only — no engine, CLI or app behaviour changes, so the Android version is unchanged.
 
@@ -4686,7 +4703,7 @@ Diagnostics only — no engine, CLI or app behaviour changes, so the Android ver
   locks every candidate. Same class of defect as 0.13.3's: a diagnostic returning a confident
   wrong number rather than an error.
 
-## [0.13.4] - 2026-07-20
+## [0.46.2] - 2026-11-22
 
 Diagnostics and a recorded negative result — no engine, CLI or app behaviour changes.
 
@@ -4703,7 +4720,7 @@ Diagnostics and a recorded negative result — no engine, CLI or app behaviour c
   slice. Closed unmerged (PR #90, tag `expert-sidecar-refuted`); data and analysis in
   [docs/bench-data/2026-07-20-sidecar/](docs/bench-data/2026-07-20-sidecar/findings.md).
 
-## [0.13.3] - 2026-07-20
+## [0.46.2] - 2026-11-22
 
 Diagnostics only — no engine, CLI or app behaviour changes, so the Android version is unchanged.
 Both tools ship measurements that are quoted as evidence in `docs/roadmap.md`, and both had a way
@@ -4728,7 +4745,7 @@ to produce a confident wrong number rather than an error.
   "bytes per read, default 4096" for a value multiplied by 1024 — every figure the tool printed was
   open to being read off by a factor of 1024. It is KiB, and the default is 4 MiB.
 
-## [0.13.2] - 2026-07-20
+## [0.46.2] - 2026-11-22
 
 ### Fixed
 - **An explicitly passed flag now really does beat the environment variable.** `bmoe-cli` documents
@@ -4746,7 +4763,7 @@ to produce a confident wrong number rather than an error.
   the model-name list the engine's own design note rules out; it and its two private helpers are
   gone. MoE detection (`isMoe`), the one entry point in use, is untouched.
 
-## [0.13.1] - 2026-07-19
+## [0.46.2] - 2026-11-22
 
 ### Fixed
 - **A non-reasoning model is no longer told it "always reasons."** `think_ctl` reported `none` for
@@ -4759,7 +4776,7 @@ to produce a confident wrong number rather than an error.
   which is what they did before any of this existed. Same for a template with no reasoning at all,
   which used to fall into `none` through a second path.
 
-## [0.13.0] - 2026-07-19
+## [0.46.2] - 2026-11-22
 
 ### Fixed
 - **Thinking off no longer silently does nothing** (#82). Turning Thinking off set the template
@@ -4786,7 +4803,7 @@ to produce a confident wrong number rather than an error.
   footage), and a "Try it on your phone" quickstart that starts from the release APK and the
   in-app catalog instead of a source build. No numbers changed.
 
-## [0.12.0] - 2026-07-19
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **Liquid AI LFM2 / LFM2.5 MoE support** (arch `lfm2moe`, e.g. LFM2.5-8B-A1B, LFM2-24B-A2B). A
@@ -4799,7 +4816,7 @@ to produce a confident wrong number rather than an error.
   on-device against LFM2.5-8B-A1B (Q5_K_M): experts stream with O_DIRECT over the discovered bank of
   32, no engine change needed. Not a benchmarked configuration — the published tables are unchanged.
 
-## [0.11.1] - 2026-07-19
+## [0.46.2] - 2026-11-22
 
 ### Changed
 - **Internal cleanup, no behaviour change.** The per-token metrics block moved out of the middle of
@@ -4825,7 +4842,7 @@ to produce a confident wrong number rather than an error.
   it now reads `"anon"`, matching `RunConfig`. The member is always overwritten in `Session::open()`,
   so no emitted telemetry changes.
 
-## [0.11.0] - 2026-07-19
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **Qwen3.6-35B-A3B support** (arch `qwen35moe`). A hybrid attention/SSM MoE (256 experts, top-8,
@@ -4836,7 +4853,7 @@ to produce a confident wrong number rather than an error.
   Measured on the 12 GB test phone (indicative 96-token run, not yet the full 256-token protocol); see
   the README benchmarks section.
 
-## [0.10.0] - 2026-07-19
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **Layer-granularity compute trace** (`--compute-trace-layers PATH`). The per-node trace
@@ -4857,7 +4874,7 @@ to produce a confident wrong number rather than an error.
   a fixed budget is reproducible across runs, while Auto sizes to whatever RAM happens to be free
   at load. Auto stays selectable in Settings; existing installs keep their saved preferences.
 
-## [0.9.2] - 2026-07-19
+## [0.46.2] - 2026-11-22
 
 ### Fixed
 - **A reasoning model's thinking is shown instead of hidden.** Wiring the chat reasoning parser
@@ -4871,7 +4888,7 @@ to produce a confident wrong number rather than an error.
   itself is unchanged (reasoning still stripped from it), so the byte-identity gates are untouched.
   The Thinking setting description is now model-agnostic. Fixes #70.
 
-## [0.9.1] - 2026-07-18
+## [0.46.2] - 2026-11-22
 
 ### Changed
 - **Android: release APKs are signed with a stable key.** Sideload builds were debug-signed, and a
@@ -4882,7 +4899,7 @@ to produce a confident wrong number rather than an error.
   move from the old debug-signed install to the stable key still needs a single uninstall; updates
   after that install cleanly. The distributed artifact is now `app-dev-release.apk`.
 
-## [0.9.0] - 2026-07-18
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **Android: in-app model downloads now land on O_DIRECT-capable internal storage.** The catalog and
@@ -4897,13 +4914,13 @@ to produce a confident wrong number rather than an error.
   completion, and it needs free space equal to the model size — no temporary second copy. This is the
   mechanism Google's own AI Edge Gallery uses. Fixes #67.
 
-## [0.8.3] - 2026-07-18
+## [0.46.2] - 2026-11-22
 
 ### Fixed
 - Android: the soft keyboard is dismissed on send, and the answer is kept clear of the IME instead of
   being hidden behind it.
 
-## [0.8.2] - 2026-07-18
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **Opt-in sampling** (`--temp`, `--top-p`, `--top-k`, `--seed`) (#51). Decoding stayed greedy
@@ -4924,13 +4941,13 @@ to produce a confident wrong number rather than an error.
 ### Documentation
 - `docs/telemetry.md` notes that the `compute_ms` clamp breaks the wall-additive identity (#47).
 
-## [0.8.1] - 2026-07-17
+## [0.46.2] - 2026-11-22
 
 ### Changed
 - Android: dense (non-expert) weights default to the `anon` policy — read once through O_DIRECT into
   anonymous memory rather than left to the page cache, which is what survives a >RAM fault storm.
 
-## [0.8.0] - 2026-07-17
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **Android: a built-in model catalog with one-tap downloads.** Getting a multi-GB gguf onto the
@@ -4958,7 +4975,7 @@ to produce a confident wrong number rather than an error.
 - Android: a refused download is reported in the row that caused it, in GB; catalog rows no longer
   wrap, and the card can be closed.
 
-## [0.7.0] - 2026-07-15
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **Decode traces** (`--compute-trace PATH`, `--io-trace PATH`): returning `true` for every node from
@@ -5030,7 +5047,7 @@ to produce a confident wrong number rather than an error.
 - `docs/benchmarks.md` split into the Android matrix and `docs/benchmarks-gpt-oss.md`.
 - An index for `docs/`, linked from the README.
 
-## [0.6.0] - 2026-07-14
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **Dense weights are warmed into the page cache at load**, which removes the >RAM fault storm that
@@ -5041,7 +5058,7 @@ to produce a confident wrong number rather than an error.
 - Per-token warm-up analysis for Qwen, Gemma and gpt-oss: where the first tokens' excess time goes,
   and what a warm-up fix can and cannot claim (`docs/warmup-analysis.md`).
 
-## [0.5.0] - 2026-07-14
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **Direct answers on gpt-oss (`--no-think`)**: the harmony chat template always opens an
@@ -5082,7 +5099,7 @@ to produce a confident wrong number rather than an error.
   eval-callback comfortably allows; the temporal prefetch keeps the useful part of the idea without
   that cost.
 
-## [0.4.0] - 2026-07-13
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **A recipe for a hybrid attention/SSM MoE family** (arch `qwen35moe`), registered as one registry
@@ -5099,7 +5116,7 @@ to produce a confident wrong number rather than an error.
   keep the supported set to what the project actually optimises for. The registry can take the
   row back in one line if a validated use case appears.
 
-## [0.3.0] - 2026-07-13
+## [0.46.2] - 2026-11-22
 
 ### Added
 - **Session mode**: the engine can now load a model once and serve many prompts against it, with
@@ -5140,7 +5157,7 @@ to produce a confident wrong number rather than an error.
 - Android: a session-reload race, plus device-agnostic defaults and telemetry.
 - Android: `i8mm` dropped from the APK CPU baseline so the CLI runs on pre-armv8.6 SoCs.
 
-## [0.1.1] - 2026-07-12
+## [0.46.2] - 2026-11-22
 
 ### Added
 - Intra-layer I/O–compute overlap (`--overlap`): expert reads for a layer run on the I/O
@@ -5175,7 +5192,7 @@ to produce a confident wrong number rather than an error.
 - Android: the headline tok/s reports the aggregate average once generation finishes, rather
   than the last token's instantaneous rate.
 
-## [0.1.0] - 2026-07-11
+## [0.46.2] - 2026-11-22
 
 ### Added
 - MoE expert-selective streaming for `qwen3moe` (Qwen3-30B-A3B and siblings), `qwen2moe`,

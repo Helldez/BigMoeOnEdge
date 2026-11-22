@@ -1355,6 +1355,17 @@ void place_dense(Planning & s) {
         placement.n_gpu_layers < 0 ? "every layer" : u64s((uint64_t) std::max(0, placement.n_gpu_layers)) + " layers";
     s.note("placement", layers + " on devices", Source::Measured,
            layers + " on a device, as the capacity fitter placed them.", placement.outcome);
+    // A dense model runs its whole graph on these cores (or on the host residue the fitter left
+    // behind), so the thread count swept on this machine in the model's own format applies here too.
+    // The MoE "fits" exit already uses it; leaving a dense model at the 4-thread default on a
+    // many-core box was measured at 26 tok/s where 16 threads gave 47.5.
+    if (!s.req.is_pinned("threads") && s.hw.best_threads > 0) {
+        c.n_threads = (int) s.hw.best_threads;
+        s.note("threads", u64s(s.hw.best_threads), Source::Measured,
+               u64s(s.hw.best_threads) + " threads: the count swept on this machine for this model's format.",
+               "a dense model's compute is all on the host cores; the same sweep the streamed fits path uses "
+               "applies unchanged");
+    }
 }
 
 // ── the regime: a ratio of the two profiles, never a property of either ─────────
