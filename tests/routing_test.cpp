@@ -213,22 +213,6 @@ int main() {
               "a route-trace CSV row with an id past 32 bits is refused, not wrapped", err);
     }
 
-    // The hottest experts: every routing is a use, ranked by uses, ties by block then id.
-    {
-        const std::vector<HotExpert> hot = hottest_experts(t);
-        // block 0: e0 3, e1 5, e2 2; block 1: e3 5, e0 2, e1 2, e2 1.
-        check(hot.size() == 7, "every expert used is listed", std::to_string(hot.size()));
-        check(hot.size() == 7 && hot[0].layer == 0 && hot[0].expert == 1 && hot[0].uses == 5 && hot[1].layer == 1 &&
-                  hot[1].expert == 3 && hot[1].uses == 5 && hot[2].layer == 0 && hot[2].expert == 0 && hot[2].uses == 3,
-              "ranked by uses, a tie by block then expert id");
-        const std::vector<HotExpert> top2 = hottest_experts(t, 2);
-        check(top2.size() == 2 && top2[0].expert == 1 && top2[1].expert == 3, "a limit keeps the hottest");
-        uint64_t total = 0;
-        for (const HotExpert & h : hot)
-            total += h.uses;
-        check(total == 20, "the uses add up to every routing in the trace", std::to_string(total));
-    }
-
     // attach_routing: a trace is this model's only if it matches the file and the run.
     {
         ModelProfile m;

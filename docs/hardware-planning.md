@@ -273,9 +273,6 @@ one ([measured-planning.md](measured-planning.md#step-1-the-cache-sized-from-the
   is byte for byte the one it was before the curve existed (a rejected record adds one `cache-hits`
   line saying why).
 
-`bmoe::hottest_experts(trace)` ranks the same record's (block, expert) pairs by use, for a later step
-that warms a device-side cache at start; nothing reads it yet.
-
 ### Lossless knobs measured on the first answer
 
 The decode thread count and `--overlap` change no output, and which setting decodes faster is this
@@ -645,9 +642,7 @@ on, never under one token cycle. That is `--cache-pin-fit`, which the plan arms 
 sized the cache to the lock and which is off otherwise: the engine cannot tell what a reclaim costs,
 so a budget set by hand is never shrunk unasked, and without the flag a part-way refusal ends
 pinning and leaves the budget alone. Likewise if the pinned store runs out during load, the remaining dense
-tensors are ordinary buffers and the run continues. Both are recorded in the streamer's statistics
-(`cache_pin_refused_bytes`, `dense_pin_refused_bytes`), which nothing reads yet: they are the
-signal the next plan is to be corrected from. A platform that refuses the very first
+tensors are ordinary buffers and the run continues, and the log says how much of each was refused. A platform that refuses the very first
 lock is not in this case, and neither is one whose total is smaller than a token cycle - a
 per-process limit of a few MiB grants the first slices and then nothing: both grant no lock worth
 having, and the cache there is ordinary memory at its full budget.

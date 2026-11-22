@@ -377,8 +377,8 @@ int main() {
         check(flag_spelling("no-such-knob", "1").empty(), "flag_spelling is empty for a key the table lacks");
         // Every spelling the planner's rationale prints must parse back to the value it names.
         const std::pair<const char *, const char *> named[] = {
-            {"ctx-size", "4096"},   {"release-mmap", "true"}, {"dense-on-device", "true"}, {"overlap", "true"},
-            {"moe-stream", "true"}, {"ubatch", "256"},        {"prefill-device", "accel"}, {"overlap", "false"},
+            {"ctx-size", "4096"}, {"release-mmap", "true"},    {"overlap", "true"},  {"moe-stream", "true"},
+            {"ubatch", "256"},    {"prefill-device", "accel"}, {"overlap", "false"},
         };
         for (const auto & kv : named) {
             std::vector<std::string> argv;

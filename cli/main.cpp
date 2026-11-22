@@ -953,8 +953,7 @@ int main(int argc, char ** argv) {
     // which is the name a Decision uses for its knob. See docs/hardware-planning.md.
     double predicted_s_per_token = 0.0;
     double predicted_hit_pct = -1.0;
-    bool predicted_hit_measured = false;                 // the credit came from the model's own hit curve
-    if (seen.count("dense-on-device")) auto_plan = true; // a request to the planner, as before
+    bool predicted_hit_measured = false; // the credit came from the model's own hit curve
     // The child of an isolated device probe: one device, its facts on one line, nothing else. If
     // the driver ends this process, or it never returns, that is the parent's answer about the device.
     // What the backends read from their environment, as every front-end sets it (frontend/backend_env.h),

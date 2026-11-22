@@ -138,8 +138,6 @@ cache size moves, and the cache is lossless.
   The prior is a curve like a record's and takes the same path through the ranking and the price; the
   plan says its hit rate is a prior (`cache-hits`) until a record replaces it. `cache_hit_optimism`
   and the linear credit remain only for a model whose token cycle is unknown.
-- The same record ranks the hottest (block, expert) pairs by use (`hottest_experts`), for Step 4's
-  device tier to warm from at start. Nothing reads it yet.
 
 Owed: the on-device runs this step is judged by (the reference machines and #321's desktop), each a
 first load to record and a second to plan from the record, with the predicted-against-measured line

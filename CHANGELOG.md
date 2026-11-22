@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Removed
+- **Levers nothing read any more.** `--dense-on-device` (the session never read it, and the plan
+  refused it whenever it was set), the device cache CPU share's side timed across loads
+  (`--trial-cpu-share` and the `cpu_share_tps` / `no_cpu_share_tps` rates in the measured record:
+  the plan has left the share to the person since 0.44.1, and nothing read those rates; a record that
+  still carries them is read as before, the keys skipped), `hottest_experts()`, the streamer's
+  `cache_pin_refused_bytes` / `dense_pin_refused_bytes` statistics (the log still says how much was
+  refused), an unused mapping query of the dense policy, and the server's `BMOE_HAVE_PLANNER` switch,
+  which every build defined. Six one-off benchmark scripts nothing referenced are gone from
+  `scripts/`, and `bench-warmonly.sh` moved beside the data it produced
+  (`docs/bench-data/2026-07-14-warmup/`). No plan or output changes.
+
 ## [0.47.2] - 2026-11-21
 
 ### Fixed

@@ -1884,10 +1884,8 @@ IExpertSource::Stats ExpertStreamSource::stats() const {
     s.stall_seconds = stall_union_.total_ns() / 1e9;
     s.cache_budget_bytes = (uint64_t) cache_max_;
     s.cache_resizes = cache_resizes_;
-    s.cache_pin_refused_bytes = (uint64_t) pin_refused_at_;
     s.discarded = disc_.lost_on_lookup() + swept_;
     s.discarded_on_hit = disc_.lost_on_lookup();
-    s.dense_pin_refused_bytes = dense_.pin_refused_bytes();
     s.o_direct = effective_direct_;
     s.evictions = evictions_;
     s.rereads = rereads_;

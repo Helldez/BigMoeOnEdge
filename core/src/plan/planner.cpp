@@ -3770,7 +3770,7 @@ bool leave_out_failed_devices(Planning & s) {
             s.note("devices", "as set", Source::Operator, "Devices as you set them, though one failed its check.",
                    "set by the caller, and left alone - but a device here failed its probe (" + broken +
                        "), and a run that lists it may end the same way");
-        } else if (!alive.empty() && (c.n_gpu_layers != 0 || c.dense_on_device)) {
+        } else if (!alive.empty() && c.n_gpu_layers != 0) {
             if (dropped) c.device_list = alive;
             std::string names;
             for (const std::string & n : alive)
@@ -3797,7 +3797,7 @@ bool leave_out_failed_devices(Planning & s) {
 void choose_devices(Planning & s) {
     if (leave_out_failed_devices(s)) return;
     RunConfig & c = s.p.config;
-    if (s.req.is_pinned("devices") || c.n_gpu_layers != 0 || c.dense_on_device || c.prefill.enabled()) return;
+    if (s.req.is_pinned("devices") || c.n_gpu_layers != 0 || c.prefill.enabled()) return;
     size_t non_cpu = 0;
     for (const ComputeDevice & d : s.hw.devices)
         if (!d.is_cpu) ++non_cpu;
@@ -3835,58 +3835,6 @@ void note_shared_pool(Planning & s) {
                    "instead reads as a model twice its real size and declines a run that works. So the "
                    "placement is quoted and not applied: using such a device is a bandwidth decision, not a "
                    "capacity one");
-}
-
-// ── the dense set on a device that shares this memory ──────────────────────────
-// The capacity tier said nothing here, so this is the bandwidth decision it left behind. The dense
-// set is small - a fraction of the file - and the device reads this model's weights faster than the
-// cores do, so computing it there is the whole of what an integrated accelerator can offer. It costs
-// no capacity, because the memory is the same memory.
-//
-// Armed by the caller, not by this plan. What is missing is the device's own compute buffer as a
-// budget line: on one phone it reserved 906 MiB against the CPU's 22, and a plan that sizes a cache
-// without knowing that is a plan that takes the machine down - which it did, once.
-void dense_on_shared_device(Planning & s) {
-    RunConfig & c = s.p.config;
-    const HardwareProfile & hw = s.hw;
-    if (!s.devices_share_host_memory) return;
-    if (!c.dense_on_device) {
-        const ComputeDevice * fast = nullptr;
-        for (const ComputeDevice & d : hw.devices) {
-            if (d.is_cpu || d.runs_expert_op != Tri::Yes || d.needs_repack == Tri::Yes) continue;
-            if (hw.host_bandwidth_gibs <= 0.0 || d.memory_bandwidth_gibs <= s.host_bandwidth_win) continue;
-            fast = &d;
-            break;
-        }
-        if (fast)
-            s.note("dense-on-device", "off", Source::Unprobed,
-                   "The dense weights could run on the device, faster; not turned on until it is priced.",
-                   "this device reads the model's own weights at " + u64s((uint64_t) fast->memory_bandwidth_gibs) +
-                       " GiB/s against the host's " + u64s((uint64_t) hw.host_bandwidth_gibs) +
-                       ", and the dense set is " + u64s(mib(s.model.dense_bytes)) +
-                       " MiB - small enough that computing it there costs no memory on a shared pool. Arm it with " +
-                       flag_spelling("dense-on-device", "true") +
-                       "; this plan will not, until the device's compute buffer is a budget line");
-        return;
-    }
-    // Refused, and the refusal is the finding. Placing the dense set on a shared-memory device and
-    // routing the experts back with an `exps` override loads, reserves, starts the streamer - and
-    // then segmentation-faults, three times out of three on the phone it was tried on, while the
-    // same run without it is fine. Standing the dense policy down (it would rebind a pointer it does
-    // not own) moved the fault later rather than removing it, so something else in the streamed path
-    // is still handed a device address. Until that is found this arms nothing: a lever that takes
-    // the machine down is worse than one that does not exist.
-    c.dense_on_device = false;
-    s.note("dense-on-device", "refused", Source::Derived,
-           "Refused: this path crashes once streaming starts, and it measured slower.",
-           "refused, and twice over. This path faults once the expert streamer starts, reproducibly - the "
-           "expert override here is a literal pattern where the retired GPU-offload flag built one from the "
-           "model's expert tensors, which is a bug and a small one. The larger reason is that the same "
-           "placement was measured three times on a device of this class and LOST: full offload -27% on a "
-           "Q4_0 run, because the dense and expert halves interleave, so a two-device split crosses the "
-           "boundary twice per layer - 96 splits against 1 - and the boundary tax eats the CPU time the "
-           "device frees. The untested shape that could change it is contiguous layer BLOCKS, experts "
-           "included and resident, which puts the boundary in one place");
 }
 
 // ── overlap: named, not armed ──────────────────────────────────────────────────
@@ -4327,7 +4275,6 @@ Plan plan_once(const RunConfig & base,
     choose_gate_mirror(s);
     choose_devices(s);
     note_shared_pool(s);
-    dense_on_shared_device(s);
     note_overlap(s);
     choose_threads(s);
     return p;

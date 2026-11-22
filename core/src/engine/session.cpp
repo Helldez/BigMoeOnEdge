@@ -1782,15 +1782,12 @@ void Session::Impl::hand_over_dense_weights(const SessionConfig & cfg,
 void Session::Impl::release_mapping(const SessionConfig & cfg,
                                     const GgufOffsets & offs,
                                     const std::vector<std::string> & unaccounted) {
-    std::vector<const void *> weight_addrs;
-    if (cfg.moe.release_mmap) {
-        weight_addrs.reserve(hook->captured_weight_objects().size());
-        for (const ggml_tensor * t : hook->captured_weight_objects())
-            if (t && t->data) weight_addrs.push_back(t->data);
-    }
-    const size_t still_mapped =
-        cfg.moe.release_mmap ? pio::addresses_in_file_mappings(offs.shard_paths, weight_addrs) : 0;
     if (!cfg.moe.release_mmap) return;
+    std::vector<const void *> weight_addrs;
+    weight_addrs.reserve(hook->captured_weight_objects().size());
+    for (const ggml_tensor * t : hook->captured_weight_objects())
+        if (t && t->data) weight_addrs.push_back(t->data);
+    const size_t still_mapped = pio::addresses_in_file_mappings(offs.shard_paths, weight_addrs);
     if (still_mapped) {
         log_printf(LogLevel::Info, "release-mmap skipped: %zu weight(s) still read the model's mapping", still_mapped);
     } else if (!unaccounted.empty() && cfg.spec.is_mtp()) {
@@ -2402,7 +2399,7 @@ void Session::Impl::arm_trials() {
         else
             trials.overlap = {cfg.moe.overlap ? 1 : 0, cfg.moe.overlap ? 0 : 1};
     }
-    trials.rate = t.device_tier >= 0 || t.width_side >= 0 || t.cpu_share_side >= 0 || t.shared_device_side >= 0;
+    trials.rate = t.device_tier >= 0 || t.width_side >= 0 || t.shared_device_side >= 0;
     trials.stage = stage_done;
     next_trial_stage(/*settled*/ false);
 }
@@ -2509,10 +2506,6 @@ void Session::Impl::rate_step(double seconds, int tokens, uint64_t lookups, uint
     char what[96];
     if (tier)
         std::snprintf(what, sizeof(what), "%s a device expert cache", cfg.trial.device_tier == 1 ? "with" : "without");
-    else if (cfg.trial.cpu_share_side >= 0)
-        std::snprintf(what, sizeof(what), "%s",
-                      cfg.trial.cpu_share_side == 1 ? "with part of the device cache's misses on the CPU"
-                                                    : "with every device cache miss uploaded");
     else if (cfg.trial.shared_device_side >= 0)
         std::snprintf(what, sizeof(what), "with every layer on %s",
                       cfg.trial.shared_device_side == 1 && !cfg.device_split.empty()

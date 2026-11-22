@@ -1326,7 +1326,7 @@ void RouterHook::capture_sources(ggml_tensor * t) {
             // An expert-named tensor: streamed, never a dense-rebind candidate - and only if
             // it is somewhere we can serve. The streamer works by pointing `data` at bytes it
             // read itself, so a tensor a device owns is not ours to bind: writing through that
-            // pointer is a fault, and it is the fault a dense-on-device run hit three times.
+            // pointer is a fault, and it is the fault a run with the dense weights on a device hit three times.
             // A layer whose experts the placement put on a device is simply not the
             // streamer's, and this is where that becomes true rather than assumed. A null
             // buffer keeps the historical answer, since that is what a CPU-only run has
