@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **A model held whole in memory shows its figures like a streamed one.** With streaming off (a
+  dense model, `--moe-stream` off, or a plan that keeps the model resident) the Android Metrics card
+  stopped after the answer speed: the prompt's speed, the time to the first word, where a token's
+  time went, CPU and the guesses kept were all left out behind an "mmap baseline" note. It now shows
+  every figure the run has and leaves out only the disk and cache ones, saying why in the same words
+  as the web UI and iOS. The engine's summary also gave such a run no compute time
+  (`compute_s_tok` was `0`, though each token event already counted its whole wall as compute), so
+  every UI split its tokens' time as "other 100%"; it now reads "computing 100%"
+  ([telemetry.md](docs/telemetry.md), [screens.md](docs/screens.md)).
+
 ## [0.47.2] - 2026-11-21
 
 ### Fixed

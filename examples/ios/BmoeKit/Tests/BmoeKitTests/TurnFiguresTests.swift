@@ -56,6 +56,18 @@ final class TurnFiguresTests: XCTestCase {
         XCTAssertTrue(TurnFigure.valueOnOwnLine(String(repeating: "x", count: 25)))
     }
 
+    /// A model held whole in memory (the web's resident fixture): both speeds, all of its time computing.
+    func testAResidentModelStillHasItsSpeeds() {
+        let s = summary(with(web, ["tok_s": 93.9, "prefill_s": 0.17, "prefill_tps": 111.6, "n_prompt": 19, "n_past": 25,
+                                   "cache_hit_pct": -1, "read_mib": 0, "compute_s_tok": .double(1 / 93.9),
+                                   "flash_wait_s_tok": 0, "mgmt_s_tok": 0]))
+        XCTAssertEqual(TurnFigures.line(s), "tg 93.9 tok/s · pp 112 tok/s")
+        let f = TurnFigures.figures(s, nCtx: 16384, expectedTokS: nil)
+        XCTAssertEqual(f.map(\.id), [.speed, .time, .prompt, .context])
+        XCTAssertEqual(f.first { $0.id == .prompt }?.value, "111.6 tok/s, 19 tokens in 0.2 s")
+        XCTAssertEqual(f.first { $0.id == .time }?.value, "computing 100%")
+    }
+
     func testWhatATurnDidNotMeasureIsNotShown() {
         let f = TurnFigures.figures(summary(with(web, ["cache_hit_pct": -1])), nCtx: 0, expectedTokS: nil)
         XCTAssertEqual(f[0].value, "10.0 tok/s")

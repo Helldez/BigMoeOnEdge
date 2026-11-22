@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { isDoneSummary } from './guards';
 import { timeShares, turnFigures } from './turnMetrics';
 import type { DoneSummary } from './types';
 
@@ -56,5 +57,33 @@ describe('turnFigures', () => {
     expect(f[0].value).toBe('10.0 tok/s');
     expect(f.map((x) => x.id)).toEqual(['speed', 'time', 'prompt']);
     expect(turnFigures({ ...s, cancelled: true }, 0, null).at(-1)?.id).toBe('stopped');
+  });
+});
+
+describe('a resident model (nothing streamed)', () => {
+  // A `done` event as bmoe-server sends it for a model held whole in memory: no flash or cache
+  // terms, the whole token in compute, and both speeds measured.
+  const resident: DoneSummary = {
+    ...s,
+    tok_s: 93.9,
+    prefill_s: 0.17,
+    prefill_tps: 111.6,
+    n_prompt: 19,
+    n_past: 25,
+    cache_hit_pct: -1,
+    read_mib: 0,
+    compute_s_tok: 1 / 93.9,
+    flash_wait_s_tok: 0,
+    mgmt_s_tok: 0,
+  };
+  it('passes the guard every screen reads the event through', () => {
+    expect(isDoneSummary(resident)).toBe(true);
+  });
+  it('still says how fast it wrote and read the prompt, and that the time went to computing', () => {
+    const f = turnFigures(resident, 16384, null);
+    expect(f.map((x) => x.id)).toEqual(['speed', 'time', 'prompt', 'context']);
+    expect(f[0].value).toBe('93.9 tok/s');
+    expect(f.find((x) => x.id === 'prompt')?.value).toBe('111.6 tok/s, 19 tokens in 0.2 s');
+    expect(timeShares(resident)).toEqual([{ key: 'compute', pct: 100 }]);
   });
 });
