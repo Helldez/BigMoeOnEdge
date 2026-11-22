@@ -173,6 +173,11 @@ public:
     // the measured token_demand_ needs a decode before it exists.
     size_t worst_cycle_bytes(int top_k) const;
 
+    // The prefill-aware floor auto sizing used, in bytes: the widest bound layer's full expert set,
+    // capped at the full expert set. Zero when the option is off or no cache was sized. Exposed so
+    // the planner and telemetry can name the budget the cache was actually sized against.
+    size_t prefill_layer_floor_bytes() const { return prefill_floor_bytes_; }
+
     // The floor a pin refusal may not shrink the cache under: one token's worst-case cycle, which
     // only the caller knows because the routing width is its to resolve. Unset, a part-way refusal
     // ends pinning and leaves the budget alone.
@@ -231,6 +236,11 @@ private:
     void spec_integrate_done();       // integrate completed spec entries; cancel nothing (route-ahead)
     void drain_adopted(int adopt_il); // serial: lane 0 reads the loading layer's adopted jobs inline
     void release_entry_pages(int32_t id);
+    // As above, for a batch of evictions chosen together: one sorted, coalesced vm_evict per layer
+    // instead of one per projection per entry. Neighbours in the same batch are treated as gone so
+    // their shared head/tail pages are released once, not kept forever by a stale "live" check.
+    void release_entry_pages(const std::vector<int32_t> & ids);
+    void evict_entries(const std::vector<int32_t> & ids);
 
     // Accumulate one token's routed working set. Eval-thread only, called per layer load.
     void account_demand(int il, int n_unique);
@@ -302,6 +312,9 @@ private:
         int32_t id;
     };
     std::vector<EvictCand> evict_cand_;
+    // Victims of one eviction sweep, selected before any page is released so their ranges can be
+    // coalesced into one vm_evict per disjoint run. Scratch, reused across loads.
+    std::vector<int32_t> evict_victims_;
 
     // I/O trace buffer. Its own leaf mutex, never held across a read: the lanes append
     // concurrently, and the eval thread swaps the buffer out between decodes.
@@ -370,6 +383,10 @@ private:
     // init and keeps nothing else: its floor and ceiling are locals there, not state.
     size_t total_expert_bytes_ = 0;
     long long cache_resizes_ = 0;
+    // The widest bound layer's full expert set, in bytes, when cache_prefill_floor is on: the
+    // smallest budget that can keep a wide prefill's layer resident while its matmul runs. Zero
+    // otherwise. Auto sizing raises its minimum to this; an explicit budget only warns below it.
+    size_t prefill_floor_bytes_ = 0;
 
     // The dense (non-expert) weights: their residency policy (mmap / warm / anon) and the buffers it
     // may hold. Set before init via set_dense_tensors, then handed to dense_.init(). The module also

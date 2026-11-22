@@ -144,6 +144,11 @@ target_link_libraries(bmoe_file_reader_test PRIVATE bmoe_core)
 target_include_directories(bmoe_file_reader_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/io)
 add_test(NAME file_reader COMMAND bmoe_file_reader_test)
 
+# Pure cache-sizing and page-range arithmetic. Header-only, no model and no bmoe_core needed.
+add_executable(bmoe_cache_sizing_test cache_sizing_test.cpp)
+target_include_directories(bmoe_cache_sizing_test PRIVATE ${CMAKE_SOURCE_DIR}/core/include/bmoe)
+add_test(NAME cache_sizing COMMAND bmoe_cache_sizing_test)
+
 # self_path: the executable's own file with every link resolved, so a link on PATH (what install.sh
 # puts there) still finds the backend modules beside the real file (#605). Starts itself again
 # through a link; no model.

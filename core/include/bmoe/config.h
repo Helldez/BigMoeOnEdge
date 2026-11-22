@@ -169,6 +169,14 @@ struct MoeStreamConfig {
     bool cache_prefill_cold = true;
     static constexpr int prefill_cold_min_tokens = 32;
 
+    // Size an auto cache so it can hold one whole layer's expert set, not only one decode token's
+    // cycle. A wide CPU prefill routes to the union of its tokens, so a token-cycle floor leaves the
+    // cache unable to keep the layer whose matmul is running: it evicts and re-reads slices of that
+    // same layer. This floor is the widest bound layer's full set (entry bytes x n_expert), clamped
+    // to the same ceiling as every other budget. It never lowers an explicit cache_mb; it only
+    // raises the auto budget's minimum and warns when a hand-set budget sits below it.
+    bool cache_prefill_floor = true;
+
     // Overlap async expert reads with FFN compute instead of blocking on them: load_layer()
     // publishes the reads and returns immediately, and the CPU mul_mat_id kernel blocks per
     // expert (via the fork's expert-ready hook) only if that expert's slice is not yet in.
@@ -807,6 +815,7 @@ struct RunConfig {
     // falls back to F16 rather than failing the run.
     KvCacheType cache_type_k = k_default_kv_cache_type;
     KvCacheType cache_type_v = k_default_kv_cache_type;
+
     // Wrap the prompt in chat turns, rendered with the chat template the gguf carries (llama.cpp's
     // common_chat_templates_init): the model's own template, not one picked by architecture. A file
     // whose template cannot be read falls back to the raw prompt, with a warning.

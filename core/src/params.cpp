@@ -1403,6 +1403,18 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("cache-prefill-floor", "Hold one prefill layer", G::Cache, L::Advanced,
+                          "Size an auto cache so it can hold one whole layer's experts, not only one decode "
+                          "token's working set. A wide prompt routes to nearly every expert of a layer, so "
+                          "without this floor the cache re-reads the layer it is computing. Off restores the "
+                          "token-cycle floor. Output is identical either way.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--cache-prefill-floor", "true"}, {"--no-cache-prefill-floor", "false"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.cache_prefill_floor; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("cache-pin-fit", "Fit the cache to the lock", G::Cache, L::Advanced,
                           "When the platform stops pinning the cache part way, shrink the budget to what it "
                           "pinned instead of holding the rest as ordinary memory. Worth it where memory "

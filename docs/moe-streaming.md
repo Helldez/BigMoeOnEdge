@@ -66,6 +66,9 @@ calling thread participates as lane 0. On UFS 4.x, 4 lanes roughly triples effec
 bandwidth over serial. Compute threads (`-t`) show a U-shape — 4 is the measured optimum;
 8 regresses badly because ggml's spin-wait contends with the synchronous reads.
 
+Evictions are batched now: a sweep picks all victims first and folds their page ranges into one
+`vm_evict` per disjoint run, instead of one call per projection per evicted expert.
+
 ## The model file's mapping (`--release-mmap`)
 
 llama.cpp maps the gguf and keeps it mapped for the model's lifetime. On Windows that mapping
