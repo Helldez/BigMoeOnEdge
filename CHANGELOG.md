@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Documentation
+- **The planning docs say what the planner arms today.** `hardware-planning.md` no longer calls the
+  device expert cache and the prefill device "not armed yet", its architecture diagram drops the
+  `[NOT ACTIVE]` box and the "stock submodule" (the pin is upstream plus one commit), and its table
+  of unused llama.cpp levers marks both as in and the device cache's CPU share as the person's
+  setting. `measured-planning.md` names the replay the plan uses (`replay_cache`, under the run's own
+  eviction policy). `roadmap.md` says the cache-policy question was reopened below the token cycle,
+  where decayed-frequency eviction shipped as the default. `bench-data/README.md` lists the seven
+  folders it was missing, `architecture.md` names the server's newer files, and `AGENTS.md` says the
+  server passes its environment to the programs it starts.
+
 ## [0.47.2] - 2026-11-21
 
 ### Fixed
