@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **Advanced settings are back** (web, Android, iOS alike): below the group cards, one folded
+  section holds every other setting a client may set, the ones the plan usually decides, cut into
+  the same groups in the same order: which devices run the prompt and the answer (the prefill
+  device, the compute devices and backends, layers per device), the caches, the reads, and the
+  experimental and debug options, each of those marked as such. Since 0.39 these were flags of the
+  command line only. Each row still appears once on the page: a value the person set stays in
+  "Set by you", and a link from the Plan screen to one of these rows now lands on it
+  ([screens.md](docs/screens.md)).
+
 ## [0.47.2] - 2026-11-21
 
 ### Fixed

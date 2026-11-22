@@ -24,9 +24,35 @@ export interface SettingsCard {
  * a parameter.
  */
 export function settingsCards(params: readonly ParamSpec[], userKeys?: ReadonlySet<string>): SettingsCard[] {
+  return groupCards(params, (p) => inForm(p) && (p.group_read_only === true || !(userKeys?.has(p.key) ?? false)));
+}
+
+/**
+ * Whether a client may set a row over the API: every row but a path, which is given at launch, except
+ * where its group is read-only (the model a load chose, shown with no control).
+ */
+export function settable(p: ParamSpec): boolean {
+  return p.type !== 'path' || p.group_read_only === true;
+}
+
+/**
+ * Advanced settings: every other row a client may set, the ones the form leaves to the plan (which
+ * devices run the prompt and the answer, the cache, the reads, the experimental and debug knobs),
+ * cut into the same group cards in the same order. Less the rows the person set, which "Set by you"
+ * lists, so each row still appears once on the page.
+ */
+export function advancedCards(params: readonly ParamSpec[], userKeys?: ReadonlySet<string>): SettingsCard[] {
+  return groupCards(
+    params,
+    (p) => !inForm(p) && settable(p) && p.group_read_only !== true && !(userKeys?.has(p.key) ?? false),
+  );
+}
+
+/** One card per group of the rows `keep` takes, groups in the table's order, rows in table order. */
+function groupCards(params: readonly ParamSpec[], keep: (p: ParamSpec) => boolean): SettingsCard[] {
   const cards = new Map<string, { card: SettingsCard; order: number; first: number }>();
   params.forEach((p, i) => {
-    if (!inForm(p) || (p.group_read_only !== true && (userKeys?.has(p.key) ?? false))) return;
+    if (!keep(p)) return;
     let entry = cards.get(p.group);
     if (!entry) {
       entry = {

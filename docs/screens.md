@@ -427,7 +427,12 @@ there on every front-end (#465):
   every advanced row of a group that decides the answer rather than its speed (Sampling and Quality
   trades: top-k, top-p, the context's precision, the active experts, cold-expert dropping),
   and the few deeper ones a person picks rather than the plan (which devices, speculative drafts).
-  The rest stay flags of the command line, set by the plan. No level filter and no search: every card starts closed, with its row count.
+  No level filter and no search: every card starts closed, with its row count.
+- **Advanced settings.** Below the group cards, one fold, closed, with its row count: every other
+  row a client may set (all but a path, given at launch), the ones the plan usually decides, in
+  the same group cards and the same order: the prefill device, the compute devices and backends,
+  layers per device, the caches, the reads, the experimental and debug rows. An experimental or
+  debug row says so with a chip. A link to one of these rows opens the fold and its card.
 - **Set by you.** First among the cards, shown while there is any: every value the person set, in
   or out of the form, in table order, each with its way back (to the plan's value or the default).
   A row the person set lives there and leaves its group, so each row appears once; a reset sends it

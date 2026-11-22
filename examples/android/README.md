@@ -274,8 +274,10 @@ and lists, in the table's order, the rows the table marks for a form (`form`; a 
 send it offers its basic rows), the same rows the web UI and the iOS app show. Every value you set,
 on the form or off it, sits instead in a **Set by you** card ahead of the groups, with the count in
 its header and hidden while you set nothing: each row appears once on the page, a reset sends it back
-to its group, and a link to a value you set opens that card. Every other parameter is still the engine's, set
-from the command line or the API. Each row carries one chip for where its value came from (default,
+to its group, and a link to a value you set opens that card. Below the groups, **Advanced settings**
+folds every other parameter the app may set (the devices for the prompt and the answer, the caches,
+the reads, the experimental and debug rows, marked as such) into the same group cards; only a path,
+given at launch, stays off the page. Each row carries one chip for where its value came from (default,
 from the plan, set by you); a value you set can be reset, or, where the plan decided
 another, replaced with **Use plan value**. **Reset all my values** removes yours after asking,
 leaving what the engine was launched with and the model. A number shows its unit, the name of a
