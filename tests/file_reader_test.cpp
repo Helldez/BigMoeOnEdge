@@ -7,6 +7,7 @@
 //
 // Checks are explicit (not <cassert>): the Release build defines NDEBUG, which compiles assert out.
 #include "file_reader.h"
+#include "platform_io.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -55,6 +56,19 @@ static void run(const std::string & path, uint64_t size, bool direct) {
     buf.assign(4096, 0xEE);
     check(r.read(0, buf.data(), 8192, buf.size()) >= (long long) buf.size() && matches(buf, 8192),
           mode + ": the reader still reads after refusing");
+
+    // A fully aligned request (offset, length and destination) takes the no-bounce fast path in
+    // direct mode. It must still deliver exactly the requested bytes, not an aligned-window copy.
+    if (direct && r.is_open()) {
+        const size_t align = r.buffer_align();
+        void * raw = bmoe::pio::alloc_aligned(align, 8192);
+        if (raw) {
+            check(r.read(0, raw, 65536, 8192) >= 8192 &&
+                      matches(std::vector<unsigned char>((unsigned char *) raw, (unsigned char *) raw + 8192), 65536),
+                  mode + ": an aligned read goes straight into the destination");
+            bmoe::pio::aligned_free(raw);
+        }
+    }
 }
 
 int main() {
