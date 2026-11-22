@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **A new chat no longer pulls the whole KV cache back into memory.** Every drop of the target
+  context (a new chat whose prefix nothing stands in for, a rollback with no checkpoint, perplexity,
+  a decision, a discarded capture or warm-up) went through `llama_memory_clear(..., true)`, which
+  memsets every KV buffer. The positions a conversation never reached hold the zero pages of
+  llama.cpp's clear at allocation, which a kernel with compressed memory keeps at almost no cost,
+  and the memset faulted all of them back in at once, as the new chat arrived: 1.1 GiB on a 24 GB
+  phone at a 110k context. The drop now forgets the cells and leaves the buffers alone: a free cell
+  is masked out of attention, and the graph zeroes a recurrent state without a source before
+  reading it. With a prefill device too (Metal under `--auto` on a Mac or an iPhone), where the
+  clear cost twice, the moved state and llama.cpp's own buffers, faulted back in after they had been
+  handed back; the reservation decode at load no longer zeroes either. New gate G29: a new chat
+  after a longer conversation == the same chat in a fresh session, resident, streamed and with a
+  prefill device, and perplexity after it == in a fresh session, bit for bit
+  ([session.md](docs/session.md#independent-prompts-vs-multi-turn-chat)). By @pt7777 (#703).
+
 ## [0.47.2] - 2026-11-21
 
 ### Fixed

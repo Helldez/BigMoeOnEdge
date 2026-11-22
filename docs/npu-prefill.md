@@ -252,10 +252,11 @@ Per-decision numbers: `bench-data/2026-09-29-prefill-routed/`.
   finished, the DSP never returning from the first layer. Without it the state stays in CPU memory and
   the attention of a device graph runs on the CPU. Where it does move, the buffers llama.cpp first
   allocated the state in stay allocated, since only llama.cpp can free them, but nothing reads them
-  after the move, so their pages are handed back to the kernel (and again after each
-  `llama_memory_clear`, which rewrites them). Kept resident they would double the KV cache: 1760 MiB
-  on Gemma 4 26B-A4B at an 8192-token context when its windowed layers held the whole context (they
-  now hold their window), where Qwen3.6, mostly linear attention, has 143 MiB.
+  after the move, so their pages are handed back to the kernel, for good: a drop of the memory forgets
+  its cells and rewrites no buffer, neither these nor the moved state
+  ([session.md](session.md#independent-prompts-vs-multi-turn-chat)). Kept resident they would double
+  the KV cache: 1760 MiB on Gemma 4 26B-A4B at an 8192-token context when its windowed layers held
+  the whole context (they now hold their window), where Qwen3.6, mostly linear attention, has 143 MiB.
 - **Weights that are not a matmul's matrix.** A backend may hold a `WEIGHTS` buffer in a form only its
   matmul kernels address: with DMA64 on (the default above Hexagon v79), the Hexagon backend maps
   such a buffer for DMA only, and most of its other kernels refuse it at run time, which aborts the

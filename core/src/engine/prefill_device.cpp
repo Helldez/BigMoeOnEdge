@@ -78,11 +78,6 @@ bool PrefillDevice::init_state(ggml_backend_dev_t dev,
     return true;
 }
 
-void PrefillDevice::clear_state() {
-    if (state_buf_) ggml_backend_buffer_clear(state_buf_, 0);
-    drop_host_state();
-}
-
 void PrefillDevice::drop_host_state() const {
     const uintptr_t page = (uintptr_t) pio::vm_page();
     for (const Entry & e : states_) {

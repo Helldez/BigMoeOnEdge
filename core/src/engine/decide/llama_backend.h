@@ -37,8 +37,7 @@ struct LlamaDecideDeps {
     const common_chat_templates * tmpls = nullptr; // null when chat mode is off: the prompt is raw
     ThinkControl think_ctl = ThinkControl::Template;
     // The session's prefill device, or null. With one, the prompt is fed in pieces `n_batch` wide
-    // (the session passes its prefill piece) and placed by generate()'s rule, and every clear also
-    // clears the moved model state: see PrefillPath.
+    // (the session passes its prefill piece) and placed by generate()'s rule: see PrefillPath.
     PrefillPath * prefill = nullptr;
     int prefill_min_tokens = 0;
 };

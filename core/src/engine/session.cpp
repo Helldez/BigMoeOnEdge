@@ -415,12 +415,20 @@ struct Session::Impl {
         Impl & im;
         ~PlacementGuard() { im.place_prefill(false); }
     };
-    // Every llama_memory_clear(data) of the target context goes through here: llama.cpp clears the
-    // buffers it allocated, which a moved model state no longer lives in.
-    void clear_memory(llama_context * c) {
-        llama_memory_clear(llama_get_memory(c), true);
-        if (prefill) prefill->clear_state();
-    }
+    // Every drop of the target context's memory goes through here (a new chat whose prefix nothing
+    // stands in for, a rollback with no boundary to rewind to, perplexity, a discarded capture or
+    // warm-up). It forgets the cells and leaves the buffers as they are. A data clear memsets the
+    // whole KV, and the positions a conversation never reached are zero pages from llama.cpp's own
+    // clear at allocation, which a kernel with compressed swap parks there at almost no cost: the
+    // memset faults all of them back in as real memory at once, on a phone right when a new chat
+    // arrives. The buffers do not need it: a free cell is masked out of attention, and the graph
+    // zeroes the recurrent state of a cell that has no source before reading it (rs_z). A partial
+    // seq_rm and a checkpoint restore leave the same stale-but-free cells behind on every turn. A
+    // state a prefill device moved needs it no more: the mask and rs_z are read from the cells, which
+    // stay llama.cpp's wherever the bytes live. Zeroing cost twice there, the moved copy and the
+    // buffers llama.cpp first allocated, whose pages the memset faulted back in after they had been
+    // handed back (PrefillDevice::init_state).
+    void clear_memory(llama_context * c) { llama_memory_clear(llama_get_memory(c), /*data=*/false); }
 
     // The MTP draft source (SpecConfig::source == mtp). A SECOND context over the SAME model,
     // created with ctx_type = MTP so llama.cpp builds the nextn graph instead of the trunk one. It
