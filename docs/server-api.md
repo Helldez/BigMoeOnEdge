@@ -439,7 +439,9 @@ Body: `{"values": {key: value, ...}, "reset": [key, ...]}`. Sets the given keys 
 `user_keys`) and resets the listed keys to the server default (they leave `user_keys`), then
 validates. Returns the same object as `GET /api/config`, plus `"rejected": {key: reason}` for
 values that did not parse. A config that fails `validate()` is still stored (a form mid-edit is
-often briefly invalid); `valid`/`error` say so, and `load` refuses it.
+often briefly invalid); `valid`/`error` say so, and `load` refuses it. The config is judged, and
+`args` written, as a load opens it: with streaming off, the knobs that only act on a stream (overlap,
+which the server turns on by default, among them) are dropped first, as the load drops them.
 
 Persisted to `settings.json` in the data directory, so it survives a restart.
 

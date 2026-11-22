@@ -16,6 +16,11 @@ Semantic Versioning.
   (`compute_s_tok` was `0`, though each token event already counted its whole wall as compute), so
   every UI split its tokens' time as "other 100%"; it now reads "computing 100%"
   ([telemetry.md](docs/telemetry.md), [screens.md](docs/screens.md)).
+- **Settings with streaming off are no longer reported invalid.** With Expert streaming off, the
+  settings read "Overlap I/O needs Expert streaming" and "Copy command" carried `--overlap`, which
+  the CLI refuses, though the load itself worked: it drops the knobs that only act on a stream,
+  overlap among them (the server turns it on by default). `GET /api/config` now judges the settings,
+  and writes the command, as a load opens them ([server-api.md](docs/server-api.md)).
 
 ## [0.47.2] - 2026-11-21
 
