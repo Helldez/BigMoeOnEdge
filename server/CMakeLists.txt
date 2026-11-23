@@ -142,14 +142,6 @@ if(WIN32)
     target_link_libraries(bmoe_server PUBLIC ws2_32)
 endif()
 
-# The hardware planner is a library the engine may or may not carry. Detected by its header, the
-# same way the overlap hook is detected by its own: the server offers /api/plan when it is there
-# and says it is not otherwise, with nothing to configure.
-if(EXISTS "${CMAKE_SOURCE_DIR}/core/include/bmoe/planner.h")
-    target_compile_definitions(bmoe_server PRIVATE BMOE_HAVE_PLANNER=1)
-    message(STATUS "bmoe-server: hardware planner present (/api/plan enabled)")
-endif()
-
 # On iOS an app links the library instead (examples/ios/app): no executable, nothing to stage.
 if(IOS)
     return()
