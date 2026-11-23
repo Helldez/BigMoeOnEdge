@@ -70,8 +70,9 @@ cross the network unencrypted. Then **Appearance**: the theme (System, Light or 
 once; the web UI's choice). Then **Set by you · N**, every value the person
 set, on the form or not, in table order, each with its reset or plan action, shown when there is
 one; then one card per engine group holding the other rows the parameter table offers on a form
-(`form`), so each row appears once and a reset sends it back to its group. Every card is closed
-until opened; a row carries a chip for where its value came from, and a link from Plan opens the
+(`form`), so each row appears once and a reset sends it back to its group; then **Advanced
+settings**, one fold holding every other row a client may set in the same group cards, experimental
+and debug rows marked. Every card is closed until opened; a row carries a chip for where its value came from, and a link from Plan opens the
 row's card ("Set by you" for a value the person set) and lands on it.
 Metrics is not a tab: the **Metrics** switch in Appearance (off by default) records a per-token CSV
 for every loaded model and adds the Metrics entry to Settings. "This app" starts and stops the

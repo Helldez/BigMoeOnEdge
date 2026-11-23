@@ -93,8 +93,8 @@ struct ParamDesc {
     ParamScope scope = ParamScope::Session;
     // A settings form offers it: every basic row, every advanced row of a group that shapes the
     // answer (param_group_shapes_answer), and the few deeper ones a person picks rather than the
-    // plan (which devices, drafts). The rest stay flags of the CLI: the plan sets them, or they are
-    // a value nobody types into a phone. Experimental and debug rows never are.
+    // plan (which devices, drafts). The rest the plan sets: a form keeps them under Advanced
+    // settings, out of the way. Experimental and debug rows are never in the form itself.
     bool form = false;
     std::string help; // one paragraph, in the user's terms
     // What a form folds under the help, in a sentence or two of plain words: when to change the

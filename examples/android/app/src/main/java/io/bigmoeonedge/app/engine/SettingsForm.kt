@@ -40,6 +40,27 @@ fun settingsCards(params: List<ParamSpec>, pinned: Set<String> = emptySet(), min
 }
 
 /**
+ * Whether a client may set a row over the API: every row but a path, which is given at launch, except
+ * where its group is read-only (the model a load chose, shown with no control).
+ */
+fun ParamSpec.settable(): Boolean = type != "path" || groupReadOnly
+
+/**
+ * Advanced settings: every other row a client may set, the ones the form leaves to the plan (which
+ * devices run the prompt and the answer, the cache, the reads, the experimental and debug knobs),
+ * cut into the same group cards in the same order, less the rows in [mine] ("Set by you" lists
+ * them), so each row still appears once on the page. Same rule as the web UI's `advancedCards`.
+ */
+fun advancedCards(params: List<ParamSpec>, mine: Set<String> = emptySet()): List<SettingsCard> {
+    return ParamSpec.grouped(params).mapNotNull { (_, rows) ->
+        val first = rows.first()
+        val shown = rows.filter { !it.form && it.settable() && !it.groupReadOnly && it.key !in mine }
+        if (shown.isEmpty()) return@mapNotNull null
+        SettingsCard(group = first.group, label = first.groupLabel.ifEmpty { first.group }, help = first.groupHelp, readOnly = false, params = shown)
+    }
+}
+
+/**
  * What "reset all my values" removes: the person's own values, never a key the server was launched
  * with and never a row of a read-only group (the model a load chose), which the form could not set back.
  */

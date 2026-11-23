@@ -22,6 +22,11 @@ public enum SettingsForm {
     /// is not in `setByYou` (those live in "Set by you"; a reset sends one back to its group). A
     /// card left with no row is dropped.
     public static func cards(_ params: [ParamSpec], revealed: Set<String> = [], setByYou: Set<String> = []) -> [Card] {
+        grouped(params) { ($0.form || revealed.contains($0.key)) && !setByYou.contains($0.key) }
+    }
+
+    /// One card per group of the rows `keep` takes, groups in the table's order, rows in table order.
+    private static func grouped(_ params: [ParamSpec], keep: (ParamSpec) -> Bool) -> [Card] {
         var order: [String] = []
         var cards: [String: Card] = [:]
         var position: [String: (order: Int, first: Int)] = [:]
@@ -31,7 +36,7 @@ public enum SettingsForm {
                 cards[p.group] = Card(group: p.group, label: p.groupLabel, help: p.groupHelp, readOnly: p.groupReadOnly)
                 position[p.group] = (p.groupOrder ?? Int.max, i)
             }
-            guard p.form || revealed.contains(p.key), !setByYou.contains(p.key) else { continue }
+            guard keep(p) else { continue }
             cards[p.group]!.rows.append(p)
         }
         return order
@@ -41,6 +46,18 @@ public enum SettingsForm {
                 return pa.order != pb.order ? pa.order < pb.order : pa.first < pb.first
             }
             .map { cards[$0]! }
+    }
+
+    /// Whether a client may set a row over the API: every row but a path, which is given at launch,
+    /// except where its group is read-only (the model a load chose, shown with no control).
+    public static func settable(_ p: ParamSpec) -> Bool { p.kind != .path || p.groupReadOnly }
+
+    /// Advanced settings: every other row a client may set, the ones the form leaves to the plan
+    /// (which devices run the prompt and the answer, the cache, the reads, the experimental and debug
+    /// knobs), cut into the same group cards in the same order, less the rows in `setByYou`, so each
+    /// row still appears once on the page. The web UI's `advancedCards`.
+    public static func advancedCards(_ params: [ParamSpec], setByYou: Set<String> = []) -> [Card] {
+        grouped(params) { !$0.form && settable($0) && !$0.groupReadOnly && !setByYou.contains($0.key) }
     }
 
     /// What "Reset all my values" removes: the person's own values, never a key the server was
