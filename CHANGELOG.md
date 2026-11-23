@@ -7,6 +7,11 @@ Semantic Versioning.
 ## [Unreleased]
 
 ### Fixed
+- **A chat without a folder is plain chat again.** A conversation with no workspace still got the
+  agent's system prompt ("You are a coding agent…", the mode, the skills, "end with what you did and
+  what is left") and the skill tool: a model spent its thinking on an agent it could not be and closed
+  every answer with a work report. It now gets the person's messages alone, no system prompt and no
+  tools, as llama.cpp's web UI sends; the agent prompt and tools come with a folder, as before.
 - **A new chat no longer pulls the whole KV cache back into memory.** Every drop of the target
   context (a new chat whose prefix nothing stands in for, a rollback with no checkpoint, perplexity,
   a decision, a discarded capture or warm-up) went through `llama_memory_clear(..., true)`, which

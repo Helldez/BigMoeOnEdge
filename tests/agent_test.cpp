@@ -617,8 +617,8 @@ static void loop_tests() {
         const json notices = rig->items_of(c, "notice");
         check(!notices.empty() && notices.back().value("text", "").find("same thing") != std::string::npos,
               "and says why");
-        check(rig->last_request().messages[0].content.find("pick a folder") != std::string::npos,
-              "without a workspace the prompt says to pick a folder for files");
+        check(rig->last_request().tools.empty() && rig->last_request().messages[0].role == "user",
+              "without a workspace the conversation is plain chat: no agent prompt and no tools");
     }
     {
         auto rig = std::make_unique<Rig>();
