@@ -84,9 +84,6 @@ public:
     int decode(llama_context * ctx, const llama_batch & b);
     // The same bracket around a batch of embeddings (an image's tokens, media_input.h).
     int decode_ext(llama_context * ctx, llama_batch_ext * b);
-    // For every llama_memory_clear(data) of the target context: llama.cpp clears the buffers it
-    // allocated, which the moved model state no longer lives in.
-    void clear_state();
 
     uint64_t arena_read_bytes() const { return arena_ ? arena_->read_bytes() : 0; }
     uint64_t arena_cache_bytes() const { return arena_ ? arena_->cache_bytes() : 0; }
