@@ -574,12 +574,17 @@ struct App {
 
     json config_object(const json * rejected = nullptr) {
         const RunConfig cfg = store.config();
-        const ValidationResult v = validate(cfg);
+        // Judged as a load opens it: with streaming off, the knobs that only mean something on a
+        // stream (the overlap the server arms by default among them) are dropped there, so they must
+        // not mark the settings invalid here, nor go into the command a person copies.
+        RunConfig opened = cfg;
+        if (!opened.moe.enabled) drop_streaming_only(opened);
+        const ValidationResult v = validate(opened);
         const std::vector<std::string> reload = host.reload_keys(cfg);
         json o = {{"values", config_values(cfg)},
                   {"user_keys", store.operator_keys()},
                   {"launch_keys", store.launch_keys()},
-                  {"args", to_args(cfg)},
+                  {"args", to_args(opened)},
                   {"valid", v.ok},
                   {"error", engine_message(v.error)},
                   {"reload_required", !reload.empty()},

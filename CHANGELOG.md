@@ -6,6 +6,21 @@ Semantic Versioning.
 
 ## [Unreleased]
 
+### Fixed
+- **A model held whole in memory shows its figures like a streamed one.** With streaming off (a
+  dense model, `--moe-stream` off, or a plan that keeps the model resident) the Android Metrics card
+  stopped after the answer speed: the prompt's speed, the time to the first word, where a token's
+  time went, CPU and the guesses kept were all left out behind an "mmap baseline" note. It now shows
+  every figure the run has and leaves out only the disk and cache ones, saying why in the same words
+  as the web UI and iOS. The engine's summary also gave such a run no compute time
+  (`compute_s_tok` was `0`, though each token event already counted its whole wall as compute), so
+  every UI split its tokens' time as "other 100%"; it now reads "computing 100%"
+  ([telemetry.md](docs/telemetry.md), [screens.md](docs/screens.md)).
+- **Settings with streaming off are no longer reported invalid.** With Expert streaming off, the
+  settings read "Overlap I/O needs Expert streaming" and "Copy command" carried `--overlap`, which
+  the CLI refuses, though the load itself worked: it drops the knobs that only act on a stream,
+  overlap among them (the server turns it on by default). `GET /api/config` now judges the settings,
+  and writes the command, as a load opens them ([server-api.md](docs/server-api.md)).
 ### Removed
 - **Levers nothing read any more.** `--dense-on-device` (the session never read it, and the plan
   refused it whenever it was set), the device cache CPU share's side timed across loads

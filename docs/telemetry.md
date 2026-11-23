@@ -783,6 +783,8 @@ prefilled **this turn** (the suffix after any reused KV prefix), and `n_past` is
 length after the turn — so a multi-turn UI can show both per-turn prefill cost and how full the
 context is. `prefill_tps` is the prompt prefill rate; `compute_s_tok`/`io_s_tok` are the per-token
 AVERAGES over the run (so a UI can show an average compute-vs-I/O split, not just the last token).
+With streaming off the flash and cache terms are `0` and `compute_s_tok` is the whole token, as each
+token line's `compute_ms` is its `wall_ms`; the speeds (`tok_s`, `prefill_tps`) are reported either way.
 `cache_resident_mib`/`cache_budget_mib` track the fixed cache, `read_mib` is the
 total flash streamed this generation, and `stall_s_tok`/`mgmt_s_tok` the per-token overlap stall and
 cache-management cost. `flash_wait_s_tok` is the flash term that adds to wall time, already chosen

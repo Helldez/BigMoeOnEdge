@@ -4092,8 +4092,6 @@ struct Session::Impl::Turn {
             s.moe_mgmt_s_per_token = n_gen ? tally.mgmt_seconds / n_gen : 0.0;
             s.moe_stall_s_per_token = n_gen ? tally.stall_seconds / n_gen : 0.0;
             s.moe_flash_wait_s_per_token = tally.overlap ? s.moe_stall_s_per_token : s.moe_io_s_per_token;
-            s.moe_compute_s_per_token = s.s_per_token - s.moe_flash_wait_s_per_token - s.moe_mgmt_s_per_token;
-            if (s.moe_compute_s_per_token < 0) s.moe_compute_s_per_token = 0;
             s.cache_hit_pct = st.cache_lookups > 0 ? 100.0 * st.cache_hits / st.cache_lookups : -1.0;
             const long long dec_lookups = st.cache_lookups - prev_cache_lookups;
             s.cache_hit_decode_pct =
@@ -4122,6 +4120,10 @@ struct Session::Impl::Turn {
             s.moe_spec_experts = st.spec_experts - prev_spec_experts;
             s.moe_spec_useful = st.spec_useful - prev_spec_useful;
         }
+        // Outside the streaming block: a resident model's token is all compute by the same residual
+        // (its flash and cache terms are zero), as each token event already says.
+        s.moe_compute_s_per_token =
+            std::max(0.0, s.s_per_token - s.moe_flash_wait_s_per_token - s.moe_mgmt_s_per_token);
         s.experts_routed = im.hook->experts_routed() - prev_routed;
         s.experts_dropped = im.hook->experts_dropped() - prev_dropped;
         s.experts_reranked = im.hook->experts_reranked() - prev_reranked;
