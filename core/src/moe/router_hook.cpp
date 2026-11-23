@@ -463,36 +463,8 @@ static bool gate_scores(const ggml_tensor * w, const std::vector<float> & h, std
         gate_gemv::scores_f32((const float *) w->data, w->nb[1], nd, ne, hp, out.data());
         return true;
     }
-    const int64_t nd4 = nd & ~(int64_t) 3;
-    for (int64_t e = 0; e < ne; ++e) {
-        const char * row = (const char *) w->data + (size_t) e * w->nb[1];
-        float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
-#if defined(__aarch64__)
-        const __fp16 * p = (const __fp16 *) row;
-#else
-        const ggml_fp16_t * q = (const ggml_fp16_t *) row;
-#endif
-        for (int64_t d = 0; d < nd4; d += 4) {
-#if defined(__aarch64__)
-            a0 += (float) p[d + 0] * hp[d + 0];
-            a1 += (float) p[d + 1] * hp[d + 1];
-            a2 += (float) p[d + 2] * hp[d + 2];
-            a3 += (float) p[d + 3] * hp[d + 3];
-#else
-            a0 += ggml_fp16_to_fp32(q[d + 0]) * hp[d + 0];
-            a1 += ggml_fp16_to_fp32(q[d + 1]) * hp[d + 1];
-            a2 += ggml_fp16_to_fp32(q[d + 2]) * hp[d + 2];
-            a3 += ggml_fp16_to_fp32(q[d + 3]) * hp[d + 3];
-#endif
-        }
-        for (int64_t d = nd4; d < nd; ++d)
-#if defined(__aarch64__)
-            a0 += (float) p[d] * hp[d];
-#else
-            a0 += ggml_fp16_to_fp32(q[d]) * hp[d];
-#endif
-        out[(size_t) e] = (a0 + a1) + (a2 + a3);
-    }
+    // The same kernel over half-precision rows.
+    gate_gemv::scores_f16(w->data, w->nb[1], nd, ne, hp, out.data());
     return true;
 }
 
@@ -544,19 +516,10 @@ bool RouterHook::quantize_gate(int il, const ggml_tensor * w) {
     std::vector<float> row((size_t) nd);
     for (int64_t e = 0; e < ne; ++e) {
         const char * src = (const char *) w->data + (size_t) e * w->nb[1];
-        for (int64_t d = 0; d < nd; ++d) {
-            float v;
-            if (w->type == GGML_TYPE_F32) {
-                v = ((const float *) src)[d];
-            } else {
-#if defined(__aarch64__)
-                v = (float) ((const __fp16 *) src)[d];
-#else
-                v = ggml_fp16_to_fp32(((const ggml_fp16_t *) src)[d]);
-#endif
-            }
-            row[(size_t) d] = v;
-        }
+        if (w->type == GGML_TYPE_F32)
+            std::copy((const float *) src, (const float *) src + nd, row.begin());
+        else
+            gate_gemv::f16_row_to_f32(src, nd, row.data());
         s[(size_t) e] = gate_gemv::quantize_row(row.data(), nd, q.data() + (size_t) e * (size_t) nd);
     }
     ra_gate_q_[il] = std::move(q);
@@ -1236,7 +1199,7 @@ void RouterHook::ctrace_close_segment(int interval_layer, const char * tail_name
     r.seq = ctrace_seq_++;
     r.layer = interval_layer;
     r.op = "LAYER";
-    r.name = tail_name ? tail_name : (interval_layer < 0 ? "pre" : "blk." + std::to_string(interval_layer));
+    r.name = tail_name ? tail_name : (interval_layer < 0 ? "pre" : tn::block_label(interval_layer));
     r.wall_ns = (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(now - ctrace_mark_).count();
     r.majflt = faults - ctrace_faults_;
     compute_rows_.push_back(std::move(r));
@@ -1307,7 +1270,7 @@ void RouterHook::capture_sources(ggml_tensor * t) {
         }
         // Memory-module state, reached through a view. Not a weight: recorded apart.
         ggml_tensor * base = src->view_src ? src->view_src : src;
-        if (std::strncmp(base->name, "cache_", 6) == 0) {
+        if (tn::is_state_tensor(base->name)) {
             if (captured_state_seen_.insert(base).second) captured_state_objects_.push_back(base);
             continue;
         }

@@ -99,8 +99,9 @@ cache size moves, and the cache is lossless.
 
 **Status: built, judgement owed.** What landed, and how it was checked off the device:
 
-- The replay is `replay_lru` in `core/src/plan/routing.cpp` (`bmoe/routing.h`). On the three archived
-  phone traces it matches `scripts/route-replay.py`'s LRU row to the third decimal at five budgets each,
+- The replay is `replay_cache` in `core/src/plan/routing.cpp` (`bmoe/routing.h`), under the eviction
+  policy the run's cache uses (`cache_freq_half_life`; `replay_lru` is the same replay at half-life 0).
+  On the three archived phone traces the LRU replay matches `scripts/route-replay.py`'s LRU row to the third decimal at five budgets each,
   and at each run's own budget reproduces the hit rate the run recorded (74.9, 76.8, 32.4%); a test
   (`routing`) holds both. In the gates (`G2r`), the record a real streamed session kept replays to the
   hit rate that session's cache measured, prompt included and decode alone.

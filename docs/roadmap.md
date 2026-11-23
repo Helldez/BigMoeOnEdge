@@ -342,85 +342,34 @@ sizing the prize first: under `pinned` only ~294 MiB of a 3000 MiB budget sits i
 is a fraction of the dense one while the cost — 3 GiB of rigid, LMK-accounted memory, and the loss
 of the reserve/commit/evict elasticity the cache is built on — is far higher.
 
-## Expert cache policy — closed, negatively
+## Expert cache policy — reopened below the token cycle
 
-Whether a smarter eviction policy could raise throughput is **answered, and the answer is no**
-([bench-data/2026-07-20-cache-replay/](bench-data/2026-07-20-cache-replay/)).
-
+The first answer was no ([bench-data/2026-07-20-cache-replay/](bench-data/2026-07-20-cache-replay/)).
 Offline replay of the route traces through Bélády, LRU, LFU, random and a per-layer partition
-(`scripts/route-replay.py`, validated against the recorded hit rates to the decimal) shows the
-offline optimum is 11-23 points above LRU, but **no online policy recovers more than ~5**. The
-best candidate, a per-layer budget partition with frequency eviction, was implemented under the
-tag `experiment/layer-lfu` and measured: it delivers the predicted hit-rate gain
-(+2.0 points, −7 % flash reads) and is **~30 % slower**, because a hard per-layer cap removes the
-cache's ability to self-balance and the resulting `MADV_DONTNEED` churn gets paid for by the
-kernel reclaiming the dense weights (majflt/token 6 → 2370). It is preserved under that tag rather
-than merged — a measured regression does not belong in the engine.
+(`scripts/route-replay.py`, validated against the recorded hit rates to the decimal) put the
+offline optimum 11-23 points above LRU, with no online policy recovering more than ~5. The best
+candidate, a per-layer budget partition with frequency eviction, was implemented under the tag
+`experiment/layer-lfu` and measured: it delivered the predicted hit-rate gain (+2.0 points, −7 %
+flash reads) and was **~30 % slower**, because a hard per-layer cap removes the cache's ability to
+self-balance and the resulting `MADV_DONTNEED` churn was paid for by the kernel reclaiming the dense
+weights (majflt/token 6 → 2370). It stays under that tag.
 
-The transferable lesson: a hit-rate curve is not a throughput argument. Any future policy has to
-be measured on device, however good its simulation.
+What reopened it is the regime those traces did not cover: a cache **below one token's working
+set**, where LRU is a cyclic scan that evicts exactly what the next token needs and hits 0%. A
+global (not per-layer) eviction by decayed frequency, every use counting half as much after 8
+tokens, keeps the experts the recent tokens shared instead. Replayed on Qwen3.6-35B-A3B and OLMoE it
+read 25-36% fewer bytes than LRU below the cycle and 1-11% fewer above it; on a 16 GB Mac a 440 MiB
+cache went from 0% to 27% hits and 6.1 to 8.5 tok/s. It is the default (`cache_freq_half_life` 8,
+[cache-sizing.md](cache-sizing.md)), and the planner's replay uses the same policy.
 
-What was still worth doing here was **not** a policy but a guard, and it has shipped. Global LRU's
-recency order is anti-correlated with the deterministic layer cycle, so below one token cycle it
-evicts precisely what it is about to read and the hit rate goes to **exactly 0 %** — reproduced on
-device at a budget the CLI accepts today. Since the worst-case cycle is computable at init from
-model shape alone, the engine now prices it there, records it as `cache_cycle_mb`, and warns when
-the resolved budget falls under it. It warns rather than refuses: the budget is legal and the run is
-byte-correct, it just cannot hit. See [cache-sizing.md](cache-sizing.md).
-
-Reopened in 0.40.2 for the two places where the verdict above did not look: **below the cycle** and
-**during a prompt**. A global decayed-frequency eviction with a short half-life (8 tokens) is not a
-per-layer cap, so it keeps the cache's self-balancing; it hits a quarter of lookups where LRU hits
-none (6.1 → 8.5 tok/s on the Mac at 0.76 cycles) and reads 1 - 11 % less above the cycle, and it is
-now the default. A CPU prefill's misses enter at the cold end, which halves what a long prompt reads.
-Neither changes the "no policy recovers the Bélády gap" result above the cycle: there the gain is a
-few percent. Admission filters on decode (second touch, TinyLFU, set dueling) were replayed and all
-lost to LRU. See [cache-sizing.md](cache-sizing.md#the-eviction-policy).
-
-## More architectures
-
-Any MoE llama.cpp loads whose experts come in one of the three layouts it builds (split, fused
-`ffn_gate_up_exps`, gate-less) streams with no change here, since which tensors are the routed
-experts is read from the file rather than from a table
-([which-models-stream.md](which-models-stream.md)); each layout has a byte-identity gate. The
-remaining frontier is architectures whose routing node is not the shared `ffn_moe_topk` — custom
-gating, which the capture/stream hook would need to learn.
-
-## Steering the routing toward what is resident — built, measured on the desktop
-
-`--expert-substitute` ([cache-aware-substitution.md](cache-aware-substitution.md)) re-ranks each
-decode routing toward the experts already in the cache, by a margin that is a fraction of the
-token's own score range. It is the mechanism of Skliar et al. (arXiv:2412.00099) with the cache in
-front of flash instead of DRAM, and on the desktop it is the strongest lever measured at its
-quality cost: half the flash bytes per token and +62% decode for a 1 to 4% perplexity increase at
-`0.15`. What it owes is the same device A/B as dropping, and a task-level quality check, since the
-desktop's flash share of a token is larger than the phone's and the throughput column will
-compress.
-
-## Skipping reads the router barely wants — built, unmeasured
-
-`--drop-cold-experts` ([expert-dropping.md](expert-dropping.md)) is the first lever that treats
-quality and I/O as a *joint* budget rather than two separate knobs: an expert already in the cache
-runs however small its weight, and only a routing that would cost a flash read can be dropped. On
-the recorded traces that is worth ~3× the reads of turbo top-k for a comparable weight cost, which
-is the strongest offline case any remaining lever has shown.
-
-What it does **not** have is a device measurement, and the previous entry on this page is the reason
-that matters: `layer-lfu` simulated well and was ~30% slower in reality. The open questions are the
-device A/B against turbo top-k at matched throughput, the quality comparison at that speed, and how
-far the static replay overstated the win once dropping starts changing what the cache holds.
-
-## Expert quantization on the fly
-
-Storing streamed experts at a lower precision than the resident parts to cut read volume, if it
-can stay within an acceptable quality boundary. Most valuable exactly where read bandwidth still
-binds, above.
+The transferable lesson stands: a hit-rate curve is not a throughput argument, and a policy ships
+only once it is measured on a device.
 
 ## Bigger, smarter cache
 
 The cache is capacity-bound, not policy-bound (reuse is broad, not skewed), so the simplest win is
 more budget — which `--cache-mb auto` now takes automatically, capped by `--cache-ceil-mb`
-([cache-sizing.md](cache-sizing.md)). Admission on decode was replayed and lost to LRU; a prompt's
+([cache-sizing.md](cache-sizing.md)). Admission on decode was replayed and lost; a prompt's
 misses now enter cold, and a device prefill reads what the cache holds instead of flash
 ([npu-prefill.md](npu-prefill.md)). A persistent cross-run cache remains unexplored.
 

@@ -37,8 +37,9 @@ which is a fork.
 
 One public route has since appeared beside it: llama.cpp's experimental device-side expert cache
 (`moe_cache_size`), which keeps hot experts of host-resident layers in device memory and computes
-them there. It is not armed by this planner yet. What it needs first, including a correctness check
-with streamed experts, is in [measured-planning.md](measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache).
+them there. The planner arms it as the device tier of the expert cache, where every layer's dense
+part is on a card and the card computes the experts faster than the host (`choose_device_tier`,
+below, and [measured-planning.md](measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache)).
 
 ## Two stages, one composer
 
@@ -1442,8 +1443,7 @@ fitter as before.
 
 ## Architecture
 
-The logical flow, as implemented. Diamonds are decisions; the two bracketed boxes in the session
-are designed and not yet active.
+The logical flow, as implemented. Diamonds are decisions.
 
 ```
  INPUT
@@ -1531,14 +1531,16 @@ are designed and not yet active.
  | SESSION                                                        |
  | loads with the fitter's n_gpu_layers + overrides               |
  | dense -> anon | dma-buf | mmap                                 |
- | host experts -> streamer: LRU cache, lanes, mul_mat_id overlap |
- | experts -> planned device's HOST buffer type at LOAD          |
- | (but the streamer then rebinds onto its own reservation)      |
- | [NOT ACTIVE] prefill on the device over streamed experts       |
+ | host experts -> streamer: cache (decayed-frequency eviction),  |
+ |   lanes, mul_mat_id overlap                                    |
+ | device tier -> llama.cpp's device expert cache on a card, its  |
+ |   misses uploaded from the mapping or a pinned host copy       |
+ | prefill device -> a shared-memory GPU or NPU computes prompts  |
+ |   over the streamed experts, through slots lent by the cache   |
  +--------------------------------+-------------------------------+
                                   v
  +----------------------------------------------------------------+
- | llama.cpp + ggml (stock submodule)                             |
+ | llama.cpp + ggml (upstream + one commit, the expert-ready hook) |
  | CPU . CUDA . Metal . Vulkan . ROCm . SYCL . OpenCL             |
  +----------------------------------------------------------------+
 
@@ -1558,10 +1560,10 @@ Each row is a gap here paired with the public facility that closes it. None need
 
 | gap | facility | what it would allow |
 |---|---|---|
-| hot experts of host-resident layers kept and computed in device memory | `llama_context_params.moe_cache_size` (experimental upstream) | a device-memory tier under the RAM cache; see [measured-planning.md](measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache) for what it needs before the plan arms it |
-| part of a device cache's misses computed on the host rather than uploaded | `llama_context_params.moe_cache_cpu_share` (experimental upstream) | a knob only, resident experts only: the plan does not set it yet (see above) |
+| ~~hot experts of host-resident layers kept and computed in device memory~~ — **in**, as the device tier (`choose_device_tier`) | `llama_context_params.moe_cache_size` (experimental upstream) | a device-memory tier above the RAM cache, as RAM is above flash ([measured-planning.md](measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache)) |
+| part of a device cache's misses computed on the host rather than uploaded — **a person's setting** (`--device-cache-cpu-share`); the plan uploads every miss and names the flag | `llama_context_params.moe_cache_cpu_share` (experimental upstream) | a knob only, resident experts only: why the plan leaves it to the person is in [Who computes the device cache's misses](#who-computes-the-device-caches-misses) |
 | streamed experts computed on a device rather than on the CPU cores | **not** a buffer-type override — that route is closed, see below. The open one is `ggml_backend_dev_buffer_from_host_ptr` | on a backend that can wrap memory the caller already owns, the streamer's reservations could be handed over and the device could execute out of them. Who implements it is **not** what `caps.buffer_from_host_ptr` says — see "A capability that lies by omission" below |
-| prefill on the device over streamed experts (built as `--prefill-device`, see [npu-prefill.md](npu-prefill.md); the planner does not arm it yet) | `cparams.op_offload`, `offload_kqv`, the scheduler's batch threshold (`ggml_backend_dev_offload_op`) | per-op copy of host weights to the device above a batch size: the "batch amortises bytes over link bandwidth" rule |
+| ~~prefill on the device over streamed experts~~ — **in**: `--prefill-device`, armed by the plan where it wins and fits ([The prefill plan](#the-prefill-plan), [npu-prefill.md](npu-prefill.md)) | `cparams.op_offload`, `offload_kqv`, the scheduler's batch threshold (`ggml_backend_dev_offload_op`) | per-op copy of host weights to the device above a batch size: the "batch amortises bytes over link bandwidth" rule |
 | ~~no thread rule~~ — **in**, from core classes rather than a core count | `n_threads_batch` distinct from `n_threads`, `llama_numa_init` | still open: different counts for decode and prefill, and NUMA on workstations |
 | KV and flash attention undecided — the KV is now a budget line (`kv-budget`), and `type_k` / `type_v` are **in** as `--cache-type-k` / `--cache-type-v`, `q8_0` by default (lossy, so never planned); the fitter projects the KV at the type the run allocates | `flash_attn_type` (auto), `type_k` / `type_v`, `kv_unified`, `swa_full` | still open: the plan choosing the context length and a cache type behind a measured quality bound |
 | device selection | `mparams.devices[]`, `split_mode`, `main_gpu` | tell the fitter which devices to use, e.g. exclude one that demands a repack |

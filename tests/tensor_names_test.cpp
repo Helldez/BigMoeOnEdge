@@ -95,6 +95,12 @@ int main() {
     // ── graph nodes ──────────────────────────────────────────────────────────────────
     {
         check(tn::is_moe_node("ffn_moe_topk-7") && !tn::is_moe_node("attn_norm-7"), "is_moe_node: by prefix");
+        check(tn::is_state_tensor("cache_k_l3") && tn::is_state_tensor("cache_r_l0") &&
+                  !tn::is_state_tensor("blk.3.attn_k.weight") && !tn::is_state_tensor("token_embd.weight"),
+              "is_state_tensor: the memory modules' state, not a weight");
+        check(tn::block_label(12) == "blk.12" &&
+                  tn::block_layer((tn::block_label(12) + ".attn_q.weight").c_str()) == 12,
+              "block_label: the name block_layer reads back");
         check(tn::node_layer("ffn_moe_topk-7", tn::k_topk_node) == 7, "node_layer: the topk node's layer");
         check(tn::node_layer("ffn_moe_logits-40", tn::k_logits_node) == 40, "node_layer: the gate matmul");
         check(tn::node_layer("l_out-3", tn::k_layer_out_node) == 3, "node_layer: a layer's output");
