@@ -48,14 +48,13 @@ public:
     // llama.cpp keeps the buffers it allocated the state in, and nothing reads them after the move,
     // so their pages are handed back (drop_host_state): left resident they would hold a second copy of
     // the whole cache, which for a model with a large KV is more memory than the device path saves.
+    // Nothing writes them again either: a drop of the memory forgets its cells and clears no data
+    // (Session::Impl::clear_memory), where llama.cpp's data clear would memset these dead buffers and
+    // fault their pages back in, and the moved state needs no zeroing of its own.
     bool init_state(ggml_backend_dev_t dev,
                     const std::vector<ggml_tensor *> & states,
                     std::string & where,
                     std::string & err);
-    // Zero the moved state, for every llama_memory_clear(data=true) of the session: that call clears
-    // the buffers llama.cpp allocated, which these tensors no longer live in. Its memset faults those
-    // pages back in, so they are handed back again.
-    void clear_state();
     size_t state_bytes() const { return state_bytes_; }
 
     // Placement for the NEXT graph. Idempotent; cheap (three stores per tensor).
@@ -78,7 +77,7 @@ private:
         Binding dev;
     };
     static void apply(ggml_tensor * t, const Binding & b);
-    // Release the resident pages of the state's original (host) copies; see init_state.
+    // Release the resident pages of the state's original (host) copies, once; see init_state.
     void drop_host_state() const;
 
     std::vector<Entry> entries_;

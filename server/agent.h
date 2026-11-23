@@ -50,6 +50,9 @@ inline constexpr int k_max_rounds_per_message = 30;
 inline constexpr int k_max_same_failed_calls = 3;
 // The most of a workspace's AGENTS.md the system prompt carries.
 inline constexpr size_t k_agents_md_max_bytes = 8 * 1024;
+// The most a person's own system prompt (a conversation's `system`) may hold: as AGENTS.md, a page of
+// instructions, not a document to answer from.
+inline constexpr size_t k_system_max_bytes = 8 * 1024;
 // How long a stop waits for the run to end before answering anyway. Local turns forward their
 // atomic stop signal while they own the session, including encoding and prefill.
 inline constexpr int k_stop_wait_s = 30;
@@ -167,6 +170,12 @@ public:
     std::vector<std::pair<Skill, bool>> skills(const std::string & workspace_path,
                                                std::vector<std::string> * warnings = nullptr) const;
 
+    // The system prompt a built-in conversation's next message is given, for a run a local client
+    // starts or a remote one (`remote`: no workspace): the agent's own lines where it has a folder,
+    // then the person's (the conversation's `system`). GET /api/conversations/<id>/system serves
+    // exactly this, so nothing the model reads before the conversation is hidden (#625).
+    std::string system_prompt(const json & conv, bool remote) const;
+
     // Run a task now, as the scheduler would. False when it is already running or does not exist.
     Refusal run_task(const std::string & id);
     // A task was added, changed or removed: the scheduler looks again.
@@ -203,7 +212,6 @@ private:
     // The tools a round offers; `mcp` gets the MCP tools among them, by the name the model calls.
     std::vector<ChatTool>
     tools_for(const json & conv, bool remote, std::map<std::string, McpTool> * mcp = nullptr) const;
-    std::string system_prompt(const json & conv, bool remote) const;
 
     // ---- a conversation whose agent is another program (agent_external.cpp) ----
     std::string run_external(Run & run, const std::string & conv_id);

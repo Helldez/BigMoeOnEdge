@@ -55,6 +55,20 @@ desktop app is not affected: it installs the pack itself.
 
 ## Fixed
 
+### Plain chat answers like an agent: thinking about tools, a work report at the end
+
+- **Seen on** 0.47.2, the web UI and desktop app, a conversation with no folder: a person asked how
+  to get rid of the "agentic parts" and reach the system prompt, since they cost thinking time and
+  the end of every answer.
+- **How to recognise it.** In a chat with no folder the model reasons about tools, modes or skills,
+  or ends with a summary of what it "did and what is left".
+- **Cause.** Confirmed in the code: the agent's system prompt and the skill tool were sent to every
+  conversation, a folder or not; only `--chat-only` turned them off, for the whole server.
+- **Fixed in** the release after 0.47.2: a conversation that can reach no folder is sent as plain
+  chat, with no system prompt and no tools.
+- **Workaround.** Start the server with `--chat-only` (no agent in any conversation), or use the
+  chat over the API (`/v1/chat/completions`), where only what the client sends reaches the model.
+
 ### Windows: every model ends the server at its first message after an update (#660)
 
 - **Seen on** 0.46.0 and 0.46.1, Windows 11 with a graphics card and the CUDA pack installed by an

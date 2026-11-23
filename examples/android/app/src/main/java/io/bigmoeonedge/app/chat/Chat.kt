@@ -33,7 +33,12 @@ data class ChatUi(
     val unsupported: Boolean = false,
     /** How each finished answer ran, by its item id: the engine's `done` summary, held while the app runs. */
     val figures: Map<String, TurnSummary> = emptyMap(),
+    /** A new chat's system prompt, sent when its first message makes the conversation. */
+    val draftSystem: String = "",
 ) {
+    /** The system prompt the person set: the open conversation's, else the new chat's. */
+    val system get() = open?.system ?: draftSystem
+
     /** An answer is being written in the open conversation: Stop instead of Send. */
     val running get() = open?.busy == true || items.any { it.streaming }
 }
@@ -127,7 +132,35 @@ object Chat {
     }
 
     fun newConversation() {
-        _state.update { it.copy(open = null, items = emptyList(), error = null, errorCode = "") }
+        // A system prompt is the conversation's own: a new chat starts without one, as llama.cpp's web UI does.
+        _state.update { it.copy(open = null, items = emptyList(), error = null, errorCode = "", draftSystem = "") }
+    }
+
+    /**
+     * The person's own system prompt for the open conversation, or for the new chat until its first
+     * message. [onDone] hears whether it was kept (the error card says why when it was not).
+     */
+    fun setSystem(text: String, onDone: (Boolean) -> Unit = {}) {
+        val id = _state.value.open?.id
+        if (id == null) {
+            _state.update { it.copy(draftSystem = text) }
+            onDone(true)
+            return
+        }
+        scope.launch {
+            catching { ConversationSummary.of(Engine.api().patchConversation(id, JSONObject().put("system", text))) }.onSuccess { c ->
+                _state.update { s ->
+                    s.copy(
+                        open = if (s.open?.id == id) c else s.open,
+                        conversations = s.conversations.map { if (it.id == id) c else it },
+                    )
+                }
+                onDone(true)
+            }.onFailure {
+                fail(it)
+                onDone(false)
+            }
+        }
     }
 
     fun open(id: String) {
@@ -203,9 +236,11 @@ object Chat {
                 val api = Engine.api()
                 var open = _state.value.open
                 if (open == null) {
-                    open = ConversationSummary.of(api.createConversation(JSONObject().put("title", Conversation.titleFor(prompt))))
+                    val body = JSONObject().put("title", Conversation.titleFor(prompt))
+                    if (_state.value.draftSystem.isNotEmpty()) body.put("system", _state.value.draftSystem)
+                    open = ConversationSummary.of(api.createConversation(body))
                     val made = open
-                    _state.update { it.copy(open = made, items = emptyList(), conversations = listOf(made) + it.conversations.filter { c -> c.id != made.id }) }
+                    _state.update { it.copy(open = made, items = emptyList(), draftSystem = "", conversations = listOf(made) + it.conversations.filter { c -> c.id != made.id }) }
                 }
                 val r = api.sendMessage(open.id, prompt, images)
                 r.optJSONObject("item")?.let { o -> _state.update { it.copy(items = ItemReducer.upsert(it.items, ChatItem.of(o))) } }

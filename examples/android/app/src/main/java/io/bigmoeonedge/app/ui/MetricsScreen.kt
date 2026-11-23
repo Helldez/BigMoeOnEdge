@@ -798,13 +798,14 @@ private fun LiveCard() {
                 else String.format(loc, "%.2f tok/s   (token %d/%d)", t.tokensPerSecond, t.step, t.steps),
                 fontWeight = FontWeight.Bold, fontSize = 18.sp,
             )
-            if (!model.streaming) {
+            // A model held whole in memory still has its speeds, its time split and its prompt figures:
+            // only what a stream measures (the disk and the cache) is left out, and said so.
+            val streamed = model.streaming
+            if (!streamed) {
                 Text(
-                    "mmap baseline: the model is read through the OS page cache, so per-token flash I/O, the " +
-                        "compute split and cache hits are not observable in this mode.",
+                    "This model runs without streaming, so the disk and cache figures are not measured.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                return@Column
             }
             val b = breakdown(t)
             if (b.wallMs > 0.0) {
@@ -813,7 +814,7 @@ private fun LiveCard() {
             val last = engine.lastDone?.takeIf { done }
             if (last == null) {
                 // While it writes: what the token now waits for, and what it finds in memory.
-                if (b.wallMs > 0) {
+                if (streamed && b.wallMs > 0) {
                     Text(
                         String.format(loc, "Now: waiting for the disk %.0f%% of each token's time", 100.0 * b.flashWaitMs / b.wallMs),
                         fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -850,9 +851,9 @@ private fun LiveCard() {
                 val prefill = if (t.prefillTps > 0) String.format(loc, "prefill %.1f tok/s", t.prefillTps) else ""
                 val ttft = if (t.ttftS >= 0) String.format(loc, "TTFT %.2fs", t.ttftS) else ""
                 if (prefill.isNotEmpty() || ttft.isNotEmpty()) Text(listOf(prefill, ttft).filter { it.isNotEmpty() }.joinToString("   ·   "), fontSize = 13.sp)
-                val streamed = if (t.readMib >= 0) String.format(loc, "streamed %.0f MB", t.readMib) else ""
-                val cache = if (t.cacheResidentMib >= 0) String.format(loc, "cache %.0f/%.0f MiB", t.cacheResidentMib, t.cacheBudgetMib) else ""
-                if (streamed.isNotEmpty() || cache.isNotEmpty()) Text(listOf(streamed, cache).filter { it.isNotEmpty() }.joinToString("   ·   "), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                val read = if (streamed && t.readMib >= 0) String.format(loc, "streamed %.0f MB", t.readMib) else ""
+                val cache = if (streamed && t.cacheResidentMib >= 0) String.format(loc, "cache %.0f/%.0f MiB", t.cacheResidentMib, t.cacheBudgetMib) else ""
+                if (read.isNotEmpty() || cache.isNotEmpty()) Text(listOf(read, cache).filter { it.isNotEmpty() }.joinToString("   ·   "), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (t.mtpDecodes > 0 && t.mtpDrafted > 0) {
                     Text(
                         String.format(loc, "guessing: %d/%d kept (%.0f%%), %.2f tok per pass, %.2f tok/s real",

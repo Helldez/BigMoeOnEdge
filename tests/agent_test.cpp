@@ -434,6 +434,21 @@ static void loop_tests() {
         }
         check(first.messages[0].content == r.messages[0].content && first.messages.size() < r.messages.size(),
               "rounds of one message share the system prompt and only append");
+        // What the person can read is what the model read (#625), and a remote client is shown the prompt
+        // its own run would get: no workspace.
+        check(rig->agent->system_prompt(rig->conv(c), false) == r.messages[0].content,
+              "the system prompt shown is the one sent");
+        check(rig->agent->system_prompt(rig->conv(c), true).empty(),
+              "a remote client is shown the prompt of its own run: plain chat, none");
+        // The person's own system prompt follows the agent's lines with a folder, and is the whole
+        // prompt without one.
+        rig->store->edit_conversation(c, [](json & conv) { conv["system"] = "Answer in French."; }, false);
+        const std::string with_own = rig->agent->system_prompt(rig->conv(c), false);
+        check(with_own.rfind(r.messages[0].content, 0) == 0 && with_own.size() > r.messages[0].content.size() &&
+                  with_own.substr(with_own.size() - 17) == "Answer in French.",
+              "a person's system prompt comes after the agent's, at its end");
+        check(rig->agent->system_prompt(rig->conv(c), true) == "Answer in French.",
+              "without a folder the person's system prompt is the whole prompt");
     }
     {
         auto rig = std::make_unique<Rig>();
@@ -600,6 +615,13 @@ static void loop_tests() {
         const GenerateRequest r = rig->last_request();
         check(r.tools.empty() && !r.messages.empty() && r.messages[0].role == "user",
               "chat only: no tools and no agent prompt, even with a workspace and full access");
+        rig->store->edit_conversation(c, [](json & conv) { conv["system"] = "Be brief."; }, false);
+        rig->say({{"Hi.", {}}});
+        rig->agent->send(c, "again", json::array(), false, false, item);
+        check(rig->wait_done(c), "chat only: a second message is answered");
+        const GenerateRequest r2 = rig->last_request();
+        check(r2.tools.empty() && r2.messages[0].role == "system" && r2.messages[0].content == "Be brief.",
+              "chat only: the person's own system prompt is sent, and nothing else");
     }
     {
         // A model that keeps asking for the same refused call is stopped, not left to loop.
@@ -617,8 +639,8 @@ static void loop_tests() {
         const json notices = rig->items_of(c, "notice");
         check(!notices.empty() && notices.back().value("text", "").find("same thing") != std::string::npos,
               "and says why");
-        check(rig->last_request().messages[0].content.find("pick a folder") != std::string::npos,
-              "without a workspace the prompt says to pick a folder for files");
+        check(rig->last_request().tools.empty() && rig->last_request().messages[0].role == "user",
+              "without a workspace the conversation is plain chat: no agent prompt and no tools");
     }
     {
         auto rig = std::make_unique<Rig>();

@@ -21,6 +21,13 @@ namespace bmoe::gate_gemv {
 // all; they change the summation order, so the last bits may differ from the graph's own gate.
 void scores_f32(const float * w, size_t row_bytes, int64_t nd, int64_t ne, const float * h, float * out);
 
+// The same scores over half-precision rows (an F16 gate). Each half is widened to float exactly, so the
+// result is scores_f32's over the widened rows.
+void scores_f16(const void * w, size_t row_bytes, int64_t nd, int64_t ne, const float * h, float * out);
+
+// One row of `nd` halves widened to float, exactly.
+void f16_row_to_f32(const void * src, int64_t nd, float * dst);
+
 // Quantize one row of `nd` floats to int8 with one symmetric scale, written to `dst`. Returns the
 // scale that dequantizes it (0 for an all-zero row).
 float quantize_row(const float * src, int64_t nd, int8_t * dst);

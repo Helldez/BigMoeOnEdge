@@ -439,7 +439,9 @@ Body: `{"values": {key: value, ...}, "reset": [key, ...]}`. Sets the given keys 
 `user_keys`) and resets the listed keys to the server default (they leave `user_keys`), then
 validates. Returns the same object as `GET /api/config`, plus `"rejected": {key: reason}` for
 values that did not parse. A config that fails `validate()` is still stored (a form mid-edit is
-often briefly invalid); `valid`/`error` say so, and `load` refuses it.
+often briefly invalid); `valid`/`error` say so, and `load` refuses it. The config is judged, and
+`args` written, as a load opens it: with streaming off, the knobs that only act on a stream (overlap,
+which the server turns on by default, among them) are dropped first, as the load drops them.
 
 Persisted to `settings.json` in the data directory, so it survives a restart.
 
@@ -860,6 +862,15 @@ their state and tools (to a client on loopback; `[]` to one on the network). A s
 `--chat-only` (the phone apps start theirs so) answers `tools: false`: its conversations are plain
 chat, sent to the model with no system prompt and no tools, as before the agent, and adding a
 workspace or a task is `409` with `code: "chat_only"`. A UI reads this and shows only what works.
+
+**The system prompt.** A conversation's `system` is the person's own system prompt, set on `POST
+/api/conversations` or `PATCH /api/conversations/<id>` (`""` for none, at most 8 KiB, `409 busy`
+while a run goes): the whole prompt in a conversation with no folder, after the agent's lines in one
+with a folder. `GET /api/conversations/<id>/system` answers what the model reads before the
+conversation, exactly as sent (`text`), the person's part (`own`), and `tokens`, its size counted by
+the loaded model's tokenizer (the count [`/tokenize`](#llama-server-compatibility) gives; `null` with
+no model ready or on a provider route). A client of `/v1/chat/completions`, `/v1/messages`
+(`system`) or `/v1/responses` (`instructions`) sends its own, which reaches the model as written.
 
 **Runs.** `POST /api/conversations/<id>/messages` answers `202 {item}` as soon as the person's item
 is stored; everything after that arrives on `/api/events` (`conversation`, `item`, `delta`) and is

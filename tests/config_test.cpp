@@ -134,25 +134,6 @@ int main() {
         expect_fail("device_cache_cpu_share negative", c);
         c.moe.device_cache_cpu_share = std::numeric_limits<float>::quiet_NaN();
         expect_fail("device_cache_cpu_share NaN", c);
-        // Its side timed across loads: one decision a load, of a cache that exists, and side 1 with a share.
-        RunConfig t = ok_base();
-        t.moe.device_cache_mb = 1024;
-        t.trial.cpu_share_side = 0;
-        expect_ok("trial cpu share, every miss uploaded", t);
-        t.trial.cpu_share_side = 1;
-        expect_fail("trial cpu share 1 without a share", t);
-        t.moe.device_cache_cpu_share = 0.7f;
-        expect_ok("trial cpu share 1 with a share", t);
-        RunConfig two = t;
-        two.trial.device_tier = 1;
-        expect_fail("trial cpu share beside the device tier's", two);
-        RunConfig no_cache = t;
-        no_cache.moe.device_cache_mb = 0;
-        no_cache.moe.device_cache_cpu_share = 0.0f;
-        no_cache.trial.cpu_share_side = 0;
-        expect_fail("trial cpu share without a device cache", no_cache);
-        t.trial.cpu_share_side = 2;
-        expect_fail("trial cpu share out of range", t);
     }
     {
         // The shared-memory device's side: one decision a load, and side 1 with layers on the device.

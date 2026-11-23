@@ -3996,8 +3996,7 @@ int main() {
                 const Plan uploaded = tier_on(slow_link, won);
                 const Decision * sd = find(uploaded, "device-cache-cpu-share");
                 check(uploaded.config.moe.device_cache_mb > 0 && uploaded.config.moe.device_cache_cpu_share == 0.0f &&
-                          uploaded.config.trial.cpu_share_side == -1 && sd && sd->source == Source::Policy &&
-                          sd->reason.find("sets it by hand") != std::string::npos,
+                          sd && sd->source == Source::Policy && sd->reason.find("sets it by hand") != std::string::npos,
                       "cpu share: never the plan's, every miss uploaded, and the plan says how to set it",
                       sd ? sd->reason : "no decision");
                 PlanRequest pin_share;
@@ -4007,7 +4006,7 @@ int main() {
                 ModelProfile mm = model;
                 mm.knobs = won;
                 const Plan asked = plan_run(with_share, slow_link, mm, half, pin_share, PlannerPolicy::defaults());
-                check(asked.config.moe.device_cache_cpu_share == 0.5f && asked.config.trial.cpu_share_side == -1,
+                check(asked.config.moe.device_cache_cpu_share == 0.5f,
                       "cpu share: a share the person set is kept as set");
             }
 

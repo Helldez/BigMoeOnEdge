@@ -48,7 +48,13 @@ server/         bmoe-server: the application framework every UI speaks to (docs/
                 may keep a worker team per calling thread, as ggml's OpenMP CPU backend does);
                 engine_host: the one Session, loads, the turn line, over the HostedSession seam
                 (hosted_session.h) its test drives with a scripted session; model_library: files, catalog,
-                downloads; planner_adapter: /api/plan when the planner is built in;
+                downloads; planner_adapter: /api/plan;
+                hf_repo (a Hugging Face repository as a source of models, pure rules),
+                model_inspect (a model's gguf header read before download, against this machine),
+                request_sampling (the sampling fields every protocol may carry, read once),
+                decide_protocol (the decide request and answer at the server's edge, docs/decide.md),
+                log_file (--log-file and its rotation), service_spec and service_manager (the
+                server as a login service of the person's init system), cpu_thermal (the CPU temperature from the kernel's thermal zones);
                 agent: the agent's runs (one thread each, approvals, stop, MCP tools) and its task
                 scheduler, over EngineHost::chat or a provider; agent_external: a conversation
                 another coding agent works, over ACP; agent_routes: its HTTP routes;

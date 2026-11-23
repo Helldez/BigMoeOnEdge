@@ -71,6 +71,8 @@ it.
 
 A model that loaded with streaming off (a dense model, or a plan that declined) is marked as such
 wherever the model's name is shown: the live metrics then have no flash column, and the UI says why.
+Every other figure stays: the answer and prompt speeds under each answer and in Metrics, the time to
+the first word, and where a token's time went (all of it computing, with nothing read from the disk).
 
 A loaded model whose context is below what a client of the server sends gets a warning beside its
 name when the server says to (`model.ctx_advice.warn`): while the server serves the network, where
@@ -107,6 +109,12 @@ conversation with no folder.
   a white sheet with no header: the model's name is in the composer and the model card, not on
   every answer. Before the first word: "Reading
   your message…".
+- **System prompt.** A button in the conversation's header, on a new chat too, opens the person's
+  own system prompt for this conversation in a text field with Save (empty for none; a new chat
+  sends it with its first message, and starts without one). Below it, where the folder's agent adds
+  lines, what the model reads before the conversation exactly as sent, and how many tokens of the
+  context it takes (`GET /api/conversations/<id>/system`). The same on the web UI, the desktop app,
+  Android and iOS.
 - **Tool calls.** One card each, with the tool's plain title ("Read src/main.cpp"), its state in
   words, the lines an edit added and removed, and on demand what it was given (the command, the
   address, the arguments) and what it answered, an edit as a diff whose `+` and `−` stay in the
@@ -505,7 +513,8 @@ only that:
   being answered or after an error.
 - **Messages as above.** The person's text with Copy and Edit and send again (on a long press),
   the answer as Markdown with its reasoning folded above it, Copy under it and Answer again on the
-  last one, the server's notices, Stop. Choose from options stays, in the composer, and so does
+  last one, the server's notices, Stop, and the System prompt from the top bar (none under
+  `--chat-only`, and it says so). Choose from options stays, in the composer, and so does
   Image: the composer's + offers an image from the photos or the camera, disabled with the reason
   while the loaded model reads none, and a message shows the images it carried.
 - **The empty chat** says the model runs on the phone and leads to Models while none is loaded.
