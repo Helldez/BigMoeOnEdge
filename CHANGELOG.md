@@ -4,17 +4,9 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.48.0] - 2026-11-23
 
 ### Added
-- **Advanced settings are back** (web, Android, iOS alike): below the group cards, one folded
-  section holds every other setting a client may set, the ones the plan usually decides, cut into
-  the same groups in the same order: which devices run the prompt and the answer (the prefill
-  device, the compute devices and backends, layers per device), the caches, the reads, and the
-  experimental and debug options, each of those marked as such. Since 0.39 these were flags of the
-  command line only. Each row still appears once on the page: a value the person set stays in
-  "Set by you", and a link from the Plan screen to one of these rows now lands on it
-  ([screens.md](docs/screens.md)).
 - **A system prompt of your own, per conversation, on every UI** (#625). A button in the
   conversation's header (on a new chat too) opens a field for the instructions the model reads before
   the conversation, as llama.cpp's web UI has: without a folder they are the whole system prompt, with
@@ -23,7 +15,39 @@ Semantic Versioning.
   8 KiB), and `GET /api/conversations/<id>/system` answers the prompt as sent with the person's part
   as `own`. The web UI and desktop app, Android and iOS.
 
+- **Advanced settings are back** (web, Android, iOS alike): below the group cards, one folded
+  section holds every other setting a client may set, the ones the plan usually decides, cut into
+  the same groups in the same order: which devices run the prompt and the answer (the prefill
+  device, the compute devices and backends, layers per device), the caches, the reads, and the
+  experimental and debug options, each of those marked as such. Since 0.39 these were flags of the
+  command line only. Each row still appears once on the page: a value the person set stays in
+  "Set by you", and a link from the Plan screen to one of these rows now lands on it
+  ([screens.md](docs/screens.md)).
+
+### Changed
+- **Every llama.cpp tensor name is read in `tensor_names` again.** The router hook recognised the
+  memory modules' state (`cache_k_l<il>`, `cache_r_l<il>`, ...) by a prefix match of its own and built a
+  block's trace label by hand; both are now `tensor_names::is_state_tensor` and `block_label`, with
+  tests. The half-precision gate kernel and its row conversion moved into `gate_gemv` beside the float
+  and int8 ones, so the router hook carries no instruction-set branch, and the streamer's spin count,
+  pin slack, the device probe's matmul shape and the cache brake's cap are named constants. No
+  behaviour changes; the gates are unchanged.
+
 ### Fixed
+- **A model held whole in memory shows its figures like a streamed one.** With streaming off (a
+  dense model, `--moe-stream` off, or a plan that keeps the model resident) the Android Metrics card
+  stopped after the answer speed: the prompt's speed, the time to the first word, where a token's
+  time went, CPU and the guesses kept were all left out behind an "mmap baseline" note. It now shows
+  every figure the run has and leaves out only the disk and cache ones, saying why in the same words
+  as the web UI and iOS. The engine's summary also gave such a run no compute time
+  (`compute_s_tok` was `0`, though each token event already counted its whole wall as compute), so
+  every UI split its tokens' time as "other 100%"; it now reads "computing 100%"
+  ([telemetry.md](docs/telemetry.md), [screens.md](docs/screens.md)).
+- **Settings with streaming off are no longer reported invalid.** With Expert streaming off, the
+  settings read "Overlap I/O needs Expert streaming" and "Copy command" carried `--overlap`, which
+  the CLI refuses, though the load itself worked: it drops the knobs that only act on a stream,
+  overlap among them (the server turns it on by default). `GET /api/config` now judges the settings,
+  and writes the command, as a load opens them ([server-api.md](docs/server-api.md)).
 - **A chat without a folder is plain chat again.** A conversation with no workspace still got the
   agent's system prompt ("You are a coding agent…", the mode, the skills, "end with what you did and
   what is left") and the skill tool: a model spent its thinking on an agent it could not be and closed
@@ -42,21 +66,8 @@ Semantic Versioning.
   handed back; the reservation decode at load no longer zeroes either. New gate G29: a new chat
   after a longer conversation == the same chat in a fresh session, resident, streamed and with a
   prefill device, and perplexity after it == in a fresh session, bit for bit
-  ([session.md](docs/session.md#independent-prompts-vs-multi-turn-chat)). By @pt7777 (#703).
-- **A model held whole in memory shows its figures like a streamed one.** With streaming off (a
-  dense model, `--moe-stream` off, or a plan that keeps the model resident) the Android Metrics card
-  stopped after the answer speed: the prompt's speed, the time to the first word, where a token's
-  time went, CPU and the guesses kept were all left out behind an "mmap baseline" note. It now shows
-  every figure the run has and leaves out only the disk and cache ones, saying why in the same words
-  as the web UI and iOS. The engine's summary also gave such a run no compute time
-  (`compute_s_tok` was `0`, though each token event already counted its whole wall as compute), so
-  every UI split its tokens' time as "other 100%"; it now reads "computing 100%"
-  ([telemetry.md](docs/telemetry.md), [screens.md](docs/screens.md)).
-- **Settings with streaming off are no longer reported invalid.** With Expert streaming off, the
-  settings read "Overlap I/O needs Expert streaming" and "Copy command" carried `--overlap`, which
-  the CLI refuses, though the load itself worked: it drops the knobs that only act on a stream,
-  overlap among them (the server turns it on by default). `GET /api/config` now judges the settings,
-  and writes the command, as a load opens them ([server-api.md](docs/server-api.md)).
+  ([session.md](docs/session.md#independent-prompts-vs-multi-turn-chat)). By @pt7777 (#711).
+
 ### Removed
 - **Levers nothing read any more.** `--dense-on-device` (the session never read it, and the plan
   refused it whenever it was set), the device cache CPU share's side timed across loads
@@ -68,14 +79,7 @@ Semantic Versioning.
   which every build defined. Six one-off benchmark scripts nothing referenced are gone from
   `scripts/`, and `bench-warmonly.sh` moved beside the data it produced
   (`docs/bench-data/2026-07-14-warmup/`). No plan or output changes.
-### Changed
-- **Every llama.cpp tensor name is read in `tensor_names` again.** The router hook recognised the
-  memory modules' state (`cache_k_l<il>`, `cache_r_l<il>`, ...) by a prefix match of its own and built a
-  block's trace label by hand; both are now `tensor_names::is_state_tensor` and `block_label`, with
-  tests. The half-precision gate kernel and its row conversion moved into `gate_gemv` beside the float
-  and int8 ones, so the router hook carries no instruction-set branch, and the streamer's spin count,
-  pin slack, the device probe's matmul shape and the cache brake's cap are named constants. No
-  behaviour changes; the gates are unchanged.
+
 ### Documentation
 - **The planning docs say what the planner arms today.** `hardware-planning.md` no longer calls the
   device expert cache and the prefill device "not armed yet", its architecture diagram drops the
