@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.48.1] - 2026-11-23
+
+### Fixed
+- **On a GPU that shares the host's memory, the first load times a prompt as wide as one runs, and
+  every later plan decides by the same measurement** (#714). The load that compares a model's answers
+  on the device with the cores' also times the two sides, and it timed the prompt on the 64-token graph
+  the answers are compared on. A GPU's cost per token keeps falling as a graph widens and the cores'
+  does not, so that width ranks them the other way round from a real prompt: one integrated GPU ran a
+  prompt at 0.56x its cores' rate 64 tokens wide and 1.42x 512 wide. Its first load sent the model to
+  the cores in two loads of three (the third kept the device only because the cores' reference was
+  still cold), and the next plan, which priced the prompt on the probes' matmul instead, sent it back.
+  The prompt is now timed on each side by climbing the widths from the comparison's, doubling, towards
+  the session's own graph width (`answer_prompt_widths`), and the climb stops once the side ahead is not
+  losing ground by more than the margin (`prompt_ranking_settled`); the reference on the cores is
+  widened only as the climb reaches a width. Both sides' prompt rates are recorded beside their decode
+  rates (`shared_device_prompt_tps`, `no_shared_device_prompt_tps`); a plan made on them weighs a
+  request by the rule the load decided by, now one function for both (`bmoe/serving_side.h`). A record
+  from an earlier engine has no prompt rates and is planned as before. On that laptop (on battery):
+  an 8B MoE model climbed to 256 tokens and kept the GPU, serving a 468-token prompt at 155 tok/s where
+  0.47.2 sent it to the cores at 62; a 4B dense model the GPU leads from the start stopped at 128 and
+  kept the GPU as before. The check costs 14-16 s more on a model's first load on that machine (a
+  timing at the session's whole width cost the dense model 28 s), once per model and machine
+  ([hardware-planning.md](docs/hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it),
+  [measured-planning.md](docs/measured-planning.md)).
+
 ## [0.48.0] - 2026-11-23
 
 ### Added
@@ -34,27 +59,6 @@ Semantic Versioning.
   behaviour changes; the gates are unchanged.
 
 ### Fixed
-- **On a GPU that shares the host's memory, the first load times a prompt as wide as one runs, and
-  every later plan decides by the same measurement** (#714). The load that compares a model's answers
-  on the device with the cores' also times the two sides, and it timed the prompt on the 64-token graph
-  the answers are compared on. A GPU's cost per token keeps falling as a graph widens and the cores'
-  does not, so that width ranks them the other way round from a real prompt: one integrated GPU ran a
-  prompt at 0.56x its cores' rate 64 tokens wide and 1.42x 512 wide. Its first load sent the model to
-  the cores in two loads of three (the third kept the device only because the cores' reference was
-  still cold), and the next plan, which priced the prompt on the probes' matmul instead, sent it back.
-  The prompt is now timed on each side by climbing the widths from the comparison's, doubling, towards
-  the session's own graph width (`answer_prompt_widths`), and the climb stops once the side ahead is not
-  losing ground by more than the margin (`prompt_ranking_settled`); the reference on the cores is
-  widened only as the climb reaches a width. Both sides' prompt rates are recorded beside their decode
-  rates (`shared_device_prompt_tps`, `no_shared_device_prompt_tps`); a plan made on them weighs a
-  request by the rule the load decided by, now one function for both (`bmoe/serving_side.h`). A record
-  from an earlier engine has no prompt rates and is planned as before. On that laptop (on battery):
-  an 8B MoE model climbed to 256 tokens and kept the GPU, serving a 468-token prompt at 155 tok/s where
-  0.47.2 sent it to the cores at 62; a 4B dense model the GPU leads from the start stopped at 128 and
-  kept the GPU as before. The check costs 14-16 s more on a model's first load on that machine (a
-  timing at the session's whole width cost the dense model 28 s), once per model and machine
-  ([hardware-planning.md](docs/hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it),
-  [measured-planning.md](docs/measured-planning.md)).
 - **A model held whole in memory shows its figures like a streamed one.** With streaming off (a
   dense model, `--moe-stream` off, or a plan that keeps the model resident) the Android Metrics card
   stopped after the answer speed: the prompt's speed, the time to the first word, where a token's
