@@ -42,14 +42,18 @@ Semantic Versioning.
   prompt at 0.56x its cores' rate 64 tokens wide and 1.42x 512 wide. Its first load sent the model to
   the cores in two loads of three (the third kept the device only because the cores' reference was
   still cold), and the next plan, which priced the prompt on the probes' matmul instead, sent it back.
-  The prompt is now timed once on each side at the session's own graph width, up to 512 tokens
-  (`answer_prompt_width`), and both sides' prompt rates are recorded beside their decode rates
-  (`shared_device_prompt_tps`, `no_shared_device_prompt_tps`); a plan made on them weighs a request by
-  the rule the load decided by, now one function for both (`bmoe/serving_side.h`). A record from an
-  earlier engine has no prompt rates and is planned as before. On that laptop with an 8B MoE model,
-  first loads kept the GPU three times in three and served a 468-token prompt at 138-139 tok/s, where
-  0.47.2 served it at 95-128; the check costs about 8.5 s more on that first load, once per model and
-  machine ([hardware-planning.md](docs/hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it),
+  The prompt is now timed on each side by climbing the widths from the comparison's, doubling, towards
+  the session's own graph width (`answer_prompt_widths`), and the climb stops once the side ahead is not
+  losing ground by more than the margin (`prompt_ranking_settled`); the reference on the cores is
+  widened only as the climb reaches a width. Both sides' prompt rates are recorded beside their decode
+  rates (`shared_device_prompt_tps`, `no_shared_device_prompt_tps`); a plan made on them weighs a
+  request by the rule the load decided by, now one function for both (`bmoe/serving_side.h`). A record
+  from an earlier engine has no prompt rates and is planned as before. On that laptop (on battery):
+  an 8B MoE model climbed to 256 tokens and kept the GPU, serving a 468-token prompt at 155 tok/s where
+  0.47.2 sent it to the cores at 62; a 4B dense model the GPU leads from the start stopped at 128 and
+  kept the GPU as before. The check costs 14-16 s more on a model's first load on that machine (a
+  timing at the session's whole width cost the dense model 28 s), once per model and machine
+  ([hardware-planning.md](docs/hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it),
   [measured-planning.md](docs/measured-planning.md)).
 - **A model held whole in memory shows its figures like a streamed one.** With streaming off (a
   dense model, `--moe-stream` off, or a plan that keeps the model resident) the Android Metrics card

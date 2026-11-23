@@ -1241,9 +1241,10 @@ detail::DeviceAnswer Session::Impl::compare_device_answer(Opening & o) {
                 LogLevel::Info,
                 "device answer: this model one token at a time takes %.1f ms on %s and %.1f ms on the CPU "
                 "(%.1f against %.1f tok/s), a %d-token prompt graph %.0f ms against %.0f (%.1f against %.1f "
-                "tok/s); with %.1f prompt tokens a decoded token a request takes %.2fx the CPU's time on %s - %s",
+                "tok/s, the widest of %d widths climbed); with %.1f prompt tokens a decoded token a request takes "
+                "%.2fx the CPU's time on %s - %s",
                 a.device_token_s * 1e3, dev, a.host_token_s * 1e3, on.decode_tps, off.decode_tps, a.prompt_width,
-                a.device_prompt_s * 1e3, a.host_prompt_s * 1e3, on.prompt_tps, off.prompt_tps,
+                a.device_prompt_s * 1e3, a.host_prompt_s * 1e3, on.prompt_tps, off.prompt_tps, a.prompt_steps,
                 (double) cfg.trial.answer_prompt_per_token, w.device_request_s / w.cores_request_s, dev,
                 w.side == detail::AnswerSide::Cores ? "the CPU is faster by the margin: the model is reopened on it"
                                                     : "the device keeps the model");

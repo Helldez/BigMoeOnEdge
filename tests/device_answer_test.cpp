@@ -173,8 +173,8 @@ int main() {
         check(mixed.side == AnswerSide::Device && mixed.device_request_s < mixed.cores_request_s,
               "weighing: the same device on the default request, where the prompt is most of the time: the device");
         // The same pair timed 64 tokens wide, where the GPU ran a prompt at 50 tok/s and the cores at
-        // 89: the narrow graph ranks the prompt the other way round, which is why the width timed is
-        // the prompt's (answer_prompt_width) and not the confirmation's.
+        // 89: the narrow graph ranks the prompt the other way round, which is why the prompt is timed
+        // by climbing towards the session's width (answer_prompt_widths) and not at the confirmation's.
         a.prompt_width = 64;
         a.device_prompt_s = 64.0 / 50.0;
         a.host_prompt_s = 64.0 / 89.0;
@@ -206,16 +206,65 @@ int main() {
         check(none.decode_tps == 0.0 && none.prompt_tps == 0.0, "rates: nothing timed is no rate");
     }
 
-    // The width the prompt side is timed at: the session's own graph width, bounded by its context and
-    // by what a first load pays for, and nothing where it would be one of the narrow pieces.
+    // The widths the prompt side may be timed at: from the confirmation's, doubling, up to the session's
+    // own graph width (the last one exactly that), no wider than its context; none where the session's
+    // graphs are no wider than the narrow pieces.
     {
-        check(answer_prompt_width(4096, 2048) == k_answer_prompt_tokens_max,
-              "prompt width: a wide session is timed at the bound");
-        check(answer_prompt_width(4096, 256) == 256, "prompt width: a session whose graphs are narrower, at theirs");
-        check(answer_prompt_width(300, 2048) == 300, "prompt width: no wider than the context");
-        check(answer_prompt_width(4096, k_answer_narrow_max) == 0,
-              "prompt width: as narrow as the narrow pieces, no prompt timed");
-        check(answer_prompt_width(0, 0) == 0, "prompt width: no context, no prompt timed");
+        using W = std::vector<int>;
+        check(answer_prompt_widths(4096, 2048) == W{64, 128, 256, 512, 1024, 2048},
+              "prompt widths: doubling up to a wide session's own width");
+        check(answer_prompt_widths(4096, 300) == W{64, 128, 256, 300},
+              "prompt widths: the last one is the session's width, not the next doubling");
+        check(answer_prompt_widths(100, 2048) == W{64, 100}, "prompt widths: no wider than the context");
+        check(answer_prompt_widths(4096, 48) == W{48}, "prompt widths: a session narrower than the confirmation's");
+        check(answer_prompt_widths(4096, k_answer_narrow_max).empty(),
+              "prompt widths: as narrow as the narrow pieces, no prompt timed");
+        check(answer_prompt_widths(0, 0).empty(), "prompt widths: no context, no prompt timed");
+    }
+
+    // Where the climb stops: once the side ahead is not losing ground by more than the margin, one more
+    // width cannot change the ranking. Ratios are the device's seconds per prompt token over the cores'.
+    {
+        const double margin = 0.10;
+        check(!prompt_ranking_settled(0.0, 1.8, margin), "climb: the first width says nothing about the trend");
+        check(!prompt_ranking_settled(1.8, 1.5, margin), "climb: the cores ahead, the device gaining: wider");
+        check(prompt_ranking_settled(1.5, 1.45, margin),
+              "climb: the cores ahead, the device gaining inside the margin");
+        check(prompt_ranking_settled(1.5, 1.7, margin), "climb: the cores ahead and pulling away: settled");
+        check(prompt_ranking_settled(0.5, 0.45, margin), "climb: the device ahead and pulling away: settled");
+        check(!prompt_ranking_settled(0.5, 0.6, margin), "climb: the device ahead, the cores gaining: wider");
+        check(prompt_ranking_settled(1.5, 0.8, margin), "climb: the device overtook the cores: settled");
+
+        // The climb over prompt curves measured on one laptop (llama.cpp, tok/s by graph width), where it
+        // stops and what it costs against timing the session's whole width.
+        struct Curve {
+            std::vector<int> w;
+            std::vector<double> device_tps, cores_tps;
+        };
+        const auto climb = [&](const Curve & c, int & stopped_at, double & seconds) {
+            double previous = 0.0;
+            seconds = 0.0;
+            for (size_t i = 0; i < c.w.size(); ++i) {
+                const double d = c.w[i] / c.device_tps[i], h = c.w[i] / c.cores_tps[i];
+                seconds += d + h;
+                stopped_at = c.w[i];
+                if (prompt_ranking_settled(previous, d / h, margin)) return;
+                previous = d / h;
+            }
+        };
+        // An 8B MoE (1B active) on an integrated GPU: the cores ahead up to 128 tokens, the GPU past it.
+        const Curve moe{{64, 128, 256, 512, 1024, 2048}, {50, 73, 129, 146, 167, 173}, {89, 110, 101, 103, 102, 102}};
+        int at = 0;
+        double cost = 0.0;
+        climb(moe, at, cost);
+        check(at == 256 && cost < 2048.0 / 173.0 + 2048.0 / 102.0,
+              "climb, a MoE the GPU overtakes: stops at 256 once the GPU leads, far under the whole width's cost (" +
+                  std::to_string(at) + " tokens, " + std::to_string(cost) + " s)");
+        // A 4B dense model, where the GPU leads from the first width and keeps its lead.
+        const Curve dense{{64, 128, 256, 512}, {62, 62, 62, 62}, {25, 26, 26, 26.3}};
+        climb(dense, at, cost);
+        check(at == 128,
+              "climb, a model the GPU leads from the start: stops at the second width (" + std::to_string(at) + ")");
     }
 
     std::printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "ok", failures, failures == 1 ? "" : "s");

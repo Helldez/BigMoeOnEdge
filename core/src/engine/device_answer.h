@@ -50,23 +50,30 @@ std::vector<int> answer_piece_widths(int n_ctx, int n_batch);
 // Rows compared of a piece `width` tokens wide.
 int answer_rows_of(int width);
 
-// The prompt side is timed apart from the pieces, at the width a prompt is computed at, because a
-// side's prompt rate depends on that width and the two sides' rates move apart with it: a processor
-// with wide parallel units pays a graph's fixed cost (dispatch, a pass over the weights) once per
-// graph, so its cost per token keeps falling as the graph widens, while the cores reach their rate a
-// few dozen tokens wide. Timed at the confirmation's width, one integrated GPU ran a prompt at 0.56x
-// its cores' rate and the model was sent to them; as wide as its prompts ran (468 to 2048 tokens) it
-// ran them at 1.4x to 1.7x. A request's prompt is computed in graphs as wide as the session's
-// (llama_n_ubatch) and a request is weighed by its prompt tokens, which long prompts dominate, so that
-// width is the one timed, up to `k_answer_prompt_tokens_max`: the check is paid for on a model's first
-// load, and past that width a graph's fixed cost is a small share of its time on the processors
-// measured, so the ranking it gives is the ranking of the widest graphs (the same GPU: 1.42x at 512,
-// 1.70x at 2048). It is also llama.cpp's default physical batch and the width its prefill benchmark
-// is quoted at.
-constexpr int k_answer_prompt_tokens_max = 512;
-// The width the prompt side is timed at, for a session whose context holds `n_ctx` tokens and whose
-// graphs take `n_ubatch` a call; 0 where that is no wider than the narrow pieces, which time no prompt.
-int answer_prompt_width(int n_ctx, int n_ubatch);
+// The prompt side is timed apart from the pieces, because a side's prompt rate depends on the width a
+// graph is computed at and the two sides' rates move apart with it: a processor with wide parallel
+// units pays a graph's fixed cost (dispatch, a pass over the weights) once per graph, so its cost per
+// token keeps falling as the graph widens, while the cores reach their rate a few dozen tokens wide.
+// Timed at the confirmation's width, one integrated GPU ran a prompt at 0.56x its cores' rate and the
+// model was sent to them; as wide as its prompts ran (468 to 2048 tokens) it ran them at 1.4x to 1.7x.
+//
+// A request's prompt is computed in graphs as wide as the session's (llama_n_ubatch), so that is the
+// widest width that speaks for it, and timing it there outright costs a first load a whole graph of
+// it on each side: 19 s on the cores alone for a 4B dense model 512 wide. So the widths are climbed
+// instead (answer_prompt_widths), from the confirmation's, doubling, and the climb stops once one more
+// step cannot change which side is ahead (prompt_ranking_settled): where the side ahead is also the
+// side the widening favours, a wider graph only widens its lead. Only where the side behind is
+// catching up by more than the margin is the next width timed, up to the session's own.
+//
+// The widths a session whose context holds `n_ctx` tokens and whose graphs take `n_ubatch` a call may
+// be timed at: the confirmation's width (k_answer_wide_tokens), doubling, the last one the session's
+// own; empty where that is no wider than the narrow pieces, which time no prompt.
+std::vector<int> answer_prompt_widths(int n_ctx, int n_ubatch);
+// Whether the climb stops after a width at which the device took `ratio` times the cores' seconds per
+// prompt token, the width before it having taken `previous` (0 at the first width, which says nothing
+// about where the ranking is going). It goes on only where the side behind gained on the side ahead
+// by more than `margin` (a fraction) over that step.
+bool prompt_ranking_settled(double previous, double ratio, double margin);
 
 // The fixed sequence a device is checked on, `want` tokens of it: ordinary prose through the model's
 // own tokenizer, repeated to the width asked. Prose, so the model's next-token choices are confident
@@ -85,12 +92,12 @@ struct DeviceAnswer {
     double device_s = 0.0; // the sequence on the placement
     double host_s = 0.0;   // the reference: its model opened, the sequence decoded
     // The two sides' speed on this model, where the check was asked to time them (`timed`): the median
-    // seconds of a token decoded alone, and the seconds one graph `prompt_width` tokens wide took
-    // (answer_prompt_width). 0 where not timed, or where that side's timed decode failed. The
-    // comparison is the model's own, on the memory, the kernels and the threads the session will
-    // serve with, which no probe of a part of a model is.
+    // seconds of a token decoded alone, and the seconds one graph `prompt_width` tokens wide took, the
+    // widest the climb reached (answer_prompt_widths) over `prompt_steps` widths. 0 where not timed,
+    // or where that side's timed decode failed. The comparison is the model's own, on the memory, the
+    // kernels and the threads the session will serve with, which no probe of a part of a model is.
     double device_token_s = 0.0, host_token_s = 0.0;
-    int prompt_width = 0;
+    int prompt_width = 0, prompt_steps = 0;
     double device_prompt_s = 0.0, host_prompt_s = 0.0;
 };
 
