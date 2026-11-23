@@ -542,7 +542,8 @@ to the device bound (`ubatch_max_device`) takes more of the card's memory than i
 experts would use (`width_narrow` and its rates,
 [hardware-planning.md](hardware-planning.md#the-widest-graph)), and where a model held in memory runs
 on a machine whose device reads that same memory, on the cores or every layer on the device
-(`shared_device_tps`, `no_shared_device_tps`,
+(`shared_device_tps`, `no_shared_device_tps`, and the prompt rates `shared_device_prompt_tps`,
+`no_shared_device_prompt_tps` the load that compared the answers timed,
 [hardware-planning.md](hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it)).
 
 That last move also carries a word that is not a rate: whether the model's answers on the device
@@ -575,7 +576,8 @@ serves the side it prices faster, and lets the served load time that side:
   device's prompt-wide rate plus, per pass, the upload of the experts that are not on the device
   (`prompt_gather_seconds`), which a narrower graph pays once per pass. The shared-memory device's is
   the same request at the rates each processor probed on a real layer of the model, one token wide
-  and as wide as a prompt.
+  and as wide as a prompt, until the load that compared the model's answers has timed both sides on
+  the model itself; then it is that load's rates, by that load's rule (`bmoe/serving_side.h`).
 - **A request is this machine's own, weighed with a default.** The prompt tokens prefilled and the
   tokens decoded per request are recorded on every load that answers one (`MeasuredKnobs::mix_*`),
   and weighed with `PlannerPolicy::mix_prompt_tokens_default` against `mix_gen_tokens_default` (4096

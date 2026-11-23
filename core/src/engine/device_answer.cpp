@@ -30,10 +30,8 @@ bool decode_probe(llama_context * c,
                   const std::vector<llama_token> & probe,
                   const std::vector<int> & widths,
                   int n_vocab,
-                  std::vector<float> & rows,
-                  double & wide_s) {
+                  std::vector<float> & rows) {
     rows.clear();
-    wide_s = 0.0;
     int widest = 1;
     for (int w : widths)
         widest = std::max(widest, w);
@@ -51,16 +49,7 @@ bool decode_probe(llama_context * c,
             at[(size_t) r] = (int) ((int64_t) (r + 1) * w / n_rows) - 1;
             b.logits[at[(size_t) r]] = 1;
         }
-        // The wide piece is timed: a device's decode returns once the graph is queued, so what was
-        // queued before it is waited for first, and the piece itself waited to its end.
-        const bool wide = w > k_answer_narrow_max;
-        if (wide) llama_synchronize(c);
-        const auto t0 = std::chrono::steady_clock::now();
         ok = llama_decode(c, b) == 0;
-        if (wide) {
-            llama_synchronize(c);
-            if (ok) wide_s = since(t0);
-        }
         for (size_t r = 0; ok && r < at.size(); ++r) {
             const float * row = llama_get_logits_ith(c, at[r]);
             ok = row != nullptr;
@@ -101,18 +90,57 @@ double time_tokens(llama_context * c, const std::vector<llama_token> & probe) {
     return step[step.size() / 2];
 }
 
+// The seconds `c` takes to compute one graph `width` tokens of `probe` wide from an empty memory, as a
+// prompt's graph is computed: only its last row's logits asked for. A device's decode returns once the
+// graph is queued, so what was queued before it is waited for first, and the graph itself to its end.
+// 0 where the context cannot take that width or the decode failed. Leaves the memory empty.
+double time_prompt(llama_context * c, const std::vector<llama_token> & probe, int width) {
+    if (width <= 0 || (int) probe.size() < width || (int) llama_n_ctx(c) < width || (int) llama_n_batch(c) < width ||
+        (int) llama_n_ubatch(c) < width)
+        return 0.0;
+    llama_memory_clear(llama_get_memory(c), true);
+    llama_batch b = llama_batch_init(width, 0, 1);
+    batch_fill(b, probe.data(), width, 0, /*all_logits*/ false);
+    llama_synchronize(c);
+    const auto t0 = std::chrono::steady_clock::now();
+    const bool ok = llama_decode(c, b) == 0;
+    llama_synchronize(c);
+    const double s = since(t0);
+    llama_batch_free(b);
+    llama_memory_clear(llama_get_memory(c), true);
+    return ok ? s : 0.0;
+}
+
+SideRates rates_of(double token_s, double prompt_s, int prompt_width) {
+    SideRates r;
+    if (token_s > 0.0) r.decode_tps = 1.0 / token_s;
+    if (prompt_s > 0.0 && prompt_width > 0) r.prompt_tps = (double) prompt_width / prompt_s;
+    return r;
+}
+
 } // namespace
 
+SideRates answer_device_rates(const DeviceAnswer & a) {
+    return rates_of(a.device_token_s, a.device_prompt_s, a.prompt_width);
+}
+
+SideRates answer_host_rates(const DeviceAnswer & a) {
+    return rates_of(a.host_token_s, a.host_prompt_s, a.prompt_width);
+}
+
 AnswerWeighing weigh_answer_sides(const DeviceAnswer & a, double prompt_per_token, double margin) {
+    const SideWeighing s = weigh_sides(answer_device_rates(a), answer_host_rates(a), prompt_per_token, margin);
     AnswerWeighing w;
-    if (!(a.device_token_s > 0.0) || !(a.host_token_s > 0.0)) return w;
-    const bool prompts = prompt_per_token > 0.0 && a.wide > 0 && a.device_wide_s > 0.0 && a.host_wide_s > 0.0;
-    const double per_prompt_token = prompts ? prompt_per_token / (double) a.wide : 0.0;
-    w.device_request_s = a.device_token_s + per_prompt_token * a.device_wide_s;
-    w.cores_request_s = a.host_token_s + per_prompt_token * a.host_wide_s;
-    w.side =
-        w.device_request_s > w.cores_request_s * (1.0 + std::max(margin, 0.0)) ? AnswerSide::Cores : AnswerSide::Device;
+    if (!s.weighed) return w;
+    w.device_request_s = s.device_s;
+    w.cores_request_s = s.cores_s;
+    w.side = s.cores_sooner ? AnswerSide::Cores : AnswerSide::Device;
     return w;
+}
+
+int answer_prompt_width(int n_ctx, int n_ubatch) {
+    const int w = std::min({n_ctx, n_ubatch, k_answer_prompt_tokens_max});
+    return w > k_answer_narrow_max ? w : 0;
 }
 
 std::vector<llama_token> answer_probe_tokens(const llama_vocab * vocab, int want) {
@@ -167,7 +195,10 @@ DeviceAnswer check_device_answer(llama_context * placed, const AnswerReference &
         a.unchecked = "the context is too narrow for a sequence to compare";
         return a;
     }
-    const std::vector<llama_token> probe = answer_probe_tokens(vocab, n);
+    // The prompt side is timed as wide as the session computes a prompt; the reference is sized for it.
+    const int prompt_width = timed ? answer_prompt_width((int) llama_n_ctx(placed), (int) llama_n_ubatch(placed)) : 0;
+    const std::vector<llama_token> probe =
+        answer_probe_tokens(vocab, std::max({n, prompt_width, k_answer_timed_prefix + k_answer_timed_tokens}));
     if (probe.empty()) {
         a.unchecked = "the sequence it is compared on does not tokenize";
         return a;
@@ -179,7 +210,7 @@ DeviceAnswer check_device_answer(llama_context * placed, const AnswerReference &
     // The placement first: where it cannot even decode, no reference is opened to say so.
     std::vector<float> dev_rows, host_rows;
     auto t0 = std::chrono::steady_clock::now();
-    const bool dev_ok = decode_probe(placed, probe, widths, n_vocab, dev_rows, a.device_wide_s);
+    const bool dev_ok = decode_probe(placed, probe, widths, n_vocab, dev_rows);
     a.device_s = since(t0);
     if (!dev_ok) {
         a.unchecked = "the sequence could not be decoded on the device";
@@ -193,10 +224,11 @@ DeviceAnswer check_device_answer(llama_context * placed, const AnswerReference &
         return a;
     }
     llama_context_params cp = llama_context_default_params();
-    // No wider than the sequence: the reference is a few graphs and is gone before the session serves.
-    cp.n_ctx = (uint32_t) std::max(n, k_answer_timed_prefix + k_answer_timed_tokens);
-    cp.n_batch = (uint32_t) a.wide;
-    cp.n_ubatch = (uint32_t) a.wide;
+    // No wider than the sequence and the prompt timed: the reference is a few graphs and is gone before
+    // the session serves.
+    cp.n_ctx = (uint32_t) std::max({n, k_answer_timed_prefix + k_answer_timed_tokens, prompt_width});
+    cp.n_batch = (uint32_t) std::max(a.wide, prompt_width);
+    cp.n_ubatch = cp.n_batch;
     cp.type_k = ref.type_k;
     cp.type_v = ref.type_v;
     cp.swa_full = false;
@@ -207,7 +239,7 @@ DeviceAnswer check_device_answer(llama_context * placed, const AnswerReference &
     bool host_ok = host_ctx;
     if (hc) {
         llama_set_n_threads(hc, ref.n_threads, ref.n_threads_batch);
-        host_ok = decode_probe(hc, probe, widths, n_vocab, host_rows, a.host_wide_s);
+        host_ok = decode_probe(hc, probe, widths, n_vocab, host_rows);
     }
     a.host_s = since(t0);
     const auto done = [&] {
@@ -231,11 +263,14 @@ DeviceAnswer check_device_answer(llama_context * placed, const AnswerReference &
     // Timed once the answers matched, while the reference is still open: a device that does not
     // compute the model is not a side, and its speed is nobody's question. The cores first, so the
     // device's turn is the one nearer the moment the session starts serving from it.
+    // The pieces before it already ran every narrow width and a wide one on both sides, so the
+    // kernels are loaded and the weights read when the clock starts.
     if (timed && a.verdict == DeviceAnswer::Verdict::Confirmed) {
         a.host_token_s = time_tokens(hc, probe);
         a.device_token_s = time_tokens(placed, probe);
-    } else {
-        a.device_wide_s = a.host_wide_s = 0.0;
+        a.prompt_width = prompt_width;
+        a.host_prompt_s = time_prompt(hc, probe, prompt_width);
+        a.device_prompt_s = time_prompt(placed, probe, prompt_width);
     }
     done();
     return a;

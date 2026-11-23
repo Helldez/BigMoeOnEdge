@@ -16,6 +16,7 @@
 #pragma once
 
 #include "bmoe/config.h"
+#include "bmoe/serving_side.h"
 #include "bmoe/session.h"
 #include "logit_agreement.h"
 
@@ -49,6 +50,24 @@ std::vector<int> answer_piece_widths(int n_ctx, int n_batch);
 // Rows compared of a piece `width` tokens wide.
 int answer_rows_of(int width);
 
+// The prompt side is timed apart from the pieces, at the width a prompt is computed at, because a
+// side's prompt rate depends on that width and the two sides' rates move apart with it: a processor
+// with wide parallel units pays a graph's fixed cost (dispatch, a pass over the weights) once per
+// graph, so its cost per token keeps falling as the graph widens, while the cores reach their rate a
+// few dozen tokens wide. Timed at the confirmation's width, one integrated GPU ran a prompt at 0.56x
+// its cores' rate and the model was sent to them; as wide as its prompts ran (468 to 2048 tokens) it
+// ran them at 1.4x to 1.7x. A request's prompt is computed in graphs as wide as the session's
+// (llama_n_ubatch) and a request is weighed by its prompt tokens, which long prompts dominate, so that
+// width is the one timed, up to `k_answer_prompt_tokens_max`: the check is paid for on a model's first
+// load, and past that width a graph's fixed cost is a small share of its time on the processors
+// measured, so the ranking it gives is the ranking of the widest graphs (the same GPU: 1.42x at 512,
+// 1.70x at 2048). It is also llama.cpp's default physical batch and the width its prefill benchmark
+// is quoted at.
+constexpr int k_answer_prompt_tokens_max = 512;
+// The width the prompt side is timed at, for a session whose context holds `n_ctx` tokens and whose
+// graphs take `n_ubatch` a call; 0 where that is no wider than the narrow pieces, which time no prompt.
+int answer_prompt_width(int n_ctx, int n_ubatch);
+
 // The fixed sequence a device is checked on, `want` tokens of it: ordinary prose through the model's
 // own tokenizer, repeated to the width asked. Prose, so the model's next-token choices are confident
 // in most rows and a device that computes the same model agrees with the host on them; a device whose
@@ -66,20 +85,23 @@ struct DeviceAnswer {
     double device_s = 0.0; // the sequence on the placement
     double host_s = 0.0;   // the reference: its model opened, the sequence decoded
     // The two sides' speed on this model, where the check was asked to time them (`timed`): the median
-    // seconds of a token decoded alone, and the seconds the wide piece took. 0 where not timed, or
-    // where that side's timed decode failed. The comparison is the model's own, on the memory, the
-    // kernels and the threads the session will serve with, which no probe of a part of a model is.
+    // seconds of a token decoded alone, and the seconds one graph `prompt_width` tokens wide took
+    // (answer_prompt_width). 0 where not timed, or where that side's timed decode failed. The
+    // comparison is the model's own, on the memory, the kernels and the threads the session will
+    // serve with, which no probe of a part of a model is.
     double device_token_s = 0.0, host_token_s = 0.0;
-    double device_wide_s = 0.0, host_wide_s = 0.0;
+    int prompt_width = 0;
+    double device_prompt_s = 0.0, host_prompt_s = 0.0;
 };
 
-// Which side serves a request sooner, by the check's own timing.
-//
-// A request is its prompt and its answer, so a side is weighed on both: the seconds one decoded token
-// takes there, plus the seconds of the prompt tokens that come with it (`prompt_per_token` of them a
-// decoded token, at the rate the wide piece ran). The placement is the side already open: the cores
-// take the model only where a request is shorter there by `margin`, because a reopening is paid for
-// and a few tokens' timing is not a whole answer's. Unweighed where either side was not timed.
+// Each side's rates as the check timed them (0 where not timed): what the load weighs and what it
+// records for the plans after it, so both decide on the same measurement.
+SideRates answer_device_rates(const DeviceAnswer & a);
+SideRates answer_host_rates(const DeviceAnswer & a);
+
+// Which side serves a request sooner, by the check's own timing: weigh_sides (bmoe/serving_side.h)
+// over the two sides' rates, the placement being the side in force. Unweighed where either side's
+// decode was not timed; the prompt counts only where both sides' prompt was.
 enum class AnswerSide { Unweighed, Device, Cores };
 struct AnswerWeighing {
     AnswerSide side = AnswerSide::Unweighed;

@@ -1235,17 +1235,19 @@ detail::DeviceAnswer Session::Impl::compare_device_answer(Opening & o) {
         if (w.side == detail::AnswerSide::Unweighed)
             log_printf(LogLevel::Warn, "device answer: the two sides could not be timed on this model; %s keeps it",
                        dev);
-        else
-            log_printf(LogLevel::Info,
-                       "device answer: this model one token at a time takes %.1f ms on %s and %.1f ms on the CPU "
-                       "(%.1f against %.1f tok/s), a %d-token graph %.0f ms against %.0f; with %.1f prompt tokens a "
-                       "decoded token a request takes %.2fx the CPU's time on %s - %s",
-                       a.device_token_s * 1e3, dev, a.host_token_s * 1e3, 1.0 / a.device_token_s, 1.0 / a.host_token_s,
-                       a.wide, a.device_wide_s * 1e3, a.host_wide_s * 1e3, (double) cfg.trial.answer_prompt_per_token,
-                       w.device_request_s / w.cores_request_s, dev,
-                       w.side == detail::AnswerSide::Cores
-                           ? "the CPU is faster by the margin: the model is reopened on it"
-                           : "the device keeps the model");
+        else {
+            const SideRates on = detail::answer_device_rates(a), off = detail::answer_host_rates(a);
+            log_printf(
+                LogLevel::Info,
+                "device answer: this model one token at a time takes %.1f ms on %s and %.1f ms on the CPU "
+                "(%.1f against %.1f tok/s), a %d-token prompt graph %.0f ms against %.0f (%.1f against %.1f "
+                "tok/s); with %.1f prompt tokens a decoded token a request takes %.2fx the CPU's time on %s - %s",
+                a.device_token_s * 1e3, dev, a.host_token_s * 1e3, on.decode_tps, off.decode_tps, a.prompt_width,
+                a.device_prompt_s * 1e3, a.host_prompt_s * 1e3, on.prompt_tps, off.prompt_tps,
+                (double) cfg.trial.answer_prompt_per_token, w.device_request_s / w.cores_request_s, dev,
+                w.side == detail::AnswerSide::Cores ? "the CPU is faster by the margin: the model is reopened on it"
+                                                    : "the device keeps the model");
+        }
     }
     return a;
 }
@@ -2772,11 +2774,15 @@ struct Session::AnswerCheck {
 };
 
 namespace {
-// The two sides as the check timed them, kept where a plan reads a side's decode rate: both at once,
-// from one load, so the plan after this one decides on the model's own measurement.
+// The two sides as the check timed them, kept where a plan reads a side's rates: both at once, from
+// one load, so the plan after this one decides on the model's own measurement, by the rule this load
+// decided by (weigh_sides), and does not undo its choice on a different instrument.
 void keep_answer_rates(const detail::DeviceAnswer & a, MeasuredKnobs & rec) {
-    if (a.device_token_s > 0.0) rec.shared_device_tps = 1.0 / a.device_token_s;
-    if (a.host_token_s > 0.0) rec.no_shared_device_tps = 1.0 / a.host_token_s;
+    const SideRates on = detail::answer_device_rates(a), off = detail::answer_host_rates(a);
+    if (on.decode_tps > 0.0) rec.shared_device_tps = on.decode_tps;
+    if (off.decode_tps > 0.0) rec.no_shared_device_tps = off.decode_tps;
+    if (on.prompt_tps > 0.0) rec.shared_device_prompt_tps = on.prompt_tps;
+    if (off.prompt_tps > 0.0) rec.no_shared_device_prompt_tps = off.prompt_tps;
 }
 } // namespace
 
