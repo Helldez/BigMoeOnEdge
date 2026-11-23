@@ -17,6 +17,11 @@ namespace {
 // of the device itself rather than read off a list, so any backend answers for its own kernels. The
 // probe weight is allocated: a backend may remember an unallocated weight (Hexagon notes it for
 // repacking) and that note would outlive the probe.
+// The probe matmul's shape: enough rows and activation columns that a backend which picks its kernel
+// by size picks the one a layer's matmul would; the support question does not depend on more.
+constexpr int64_t k_probe_rows = 256;
+constexpr int64_t k_probe_cols = 256;
+
 bool device_matmul_takes(ggml_backend_dev_t dev, ggml_type type, const ggml_tensor * w) {
     if (ggml_is_quantized(type) && w->ne[0] % ggml_blck_size(type) != 0) return false;
     ggml_init_params ip{};
@@ -24,12 +29,12 @@ bool device_matmul_takes(ggml_backend_dev_t dev, ggml_type type, const ggml_tens
     ip.no_alloc = true;
     ggml_context * c = ggml_init(ip);
     if (!c) return false;
-    ggml_tensor * p = ggml_new_tensor_2d(c, type, w->ne[0], std::min<int64_t>(w->ne[1], 256));
+    ggml_tensor * p = ggml_new_tensor_2d(c, type, w->ne[0], std::min<int64_t>(w->ne[1], k_probe_rows));
     ggml_backend_buffer_t b = ggml_backend_alloc_ctx_tensors_from_buft(c, ggml_backend_dev_buffer_type(dev));
     bool ok = false;
     if (b) {
         ggml_backend_buffer_set_usage(b, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
-        ggml_tensor * x = ggml_new_tensor_2d(c, GGML_TYPE_F32, w->ne[0], 256);
+        ggml_tensor * x = ggml_new_tensor_2d(c, GGML_TYPE_F32, w->ne[0], k_probe_cols);
         ok = ggml_backend_dev_supports_op(dev, ggml_mul_mat(c, p, x));
         ggml_backend_buffer_free(b);
     }

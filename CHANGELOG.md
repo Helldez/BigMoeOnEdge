@@ -21,6 +21,35 @@ Semantic Versioning.
   the CLI refuses, though the load itself worked: it drops the knobs that only act on a stream,
   overlap among them (the server turns it on by default). `GET /api/config` now judges the settings,
   and writes the command, as a load opens them ([server-api.md](docs/server-api.md)).
+### Removed
+- **Levers nothing read any more.** `--dense-on-device` (the session never read it, and the plan
+  refused it whenever it was set), the device cache CPU share's side timed across loads
+  (`--trial-cpu-share` and the `cpu_share_tps` / `no_cpu_share_tps` rates in the measured record:
+  the plan has left the share to the person since 0.44.1, and nothing read those rates; a record that
+  still carries them is read as before, the keys skipped), `hottest_experts()`, the streamer's
+  `cache_pin_refused_bytes` / `dense_pin_refused_bytes` statistics (the log still says how much was
+  refused), an unused mapping query of the dense policy, and the server's `BMOE_HAVE_PLANNER` switch,
+  which every build defined. Six one-off benchmark scripts nothing referenced are gone from
+  `scripts/`, and `bench-warmonly.sh` moved beside the data it produced
+  (`docs/bench-data/2026-07-14-warmup/`). No plan or output changes.
+### Changed
+- **Every llama.cpp tensor name is read in `tensor_names` again.** The router hook recognised the
+  memory modules' state (`cache_k_l<il>`, `cache_r_l<il>`, ...) by a prefix match of its own and built a
+  block's trace label by hand; both are now `tensor_names::is_state_tensor` and `block_label`, with
+  tests. The half-precision gate kernel and its row conversion moved into `gate_gemv` beside the float
+  and int8 ones, so the router hook carries no instruction-set branch, and the streamer's spin count,
+  pin slack, the device probe's matmul shape and the cache brake's cap are named constants. No
+  behaviour changes; the gates are unchanged.
+### Documentation
+- **The planning docs say what the planner arms today.** `hardware-planning.md` no longer calls the
+  device expert cache and the prefill device "not armed yet", its architecture diagram drops the
+  `[NOT ACTIVE]` box and the "stock submodule" (the pin is upstream plus one commit), and its table
+  of unused llama.cpp levers marks both as in and the device cache's CPU share as the person's
+  setting. `measured-planning.md` names the replay the plan uses (`replay_cache`, under the run's own
+  eviction policy). `roadmap.md` says the cache-policy question was reopened below the token cycle,
+  where decayed-frequency eviction shipped as the default. `bench-data/README.md` lists the seven
+  folders it was missing, `architecture.md` names the server's newer files, and `AGENTS.md` says the
+  server passes its environment to the programs it starts.
 
 ## [0.47.2] - 2026-11-21
 

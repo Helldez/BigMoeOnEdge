@@ -93,11 +93,6 @@ public:
     // engine's graph adapter needs it to make rows present before a gather node runs.
     IRowSource * row_source() const;
 
-    // Whether any tensor this module was given still reads through the model file's mapping once
-    // init has run: every tensor under Mmap/Warmed, and under Anonymous/Pinned the ones held back
-    // as oversized. Row-gathered tables are served from our own reader, not the mapping.
-    bool file_mapping_in_use() const;
-
     // Reopen the readers still in service after init: the row policy's, if any (the dense copy's
     // own readers have done their one job). See FileReader::reopen for why this exists.
     bool reopen_readers();
@@ -112,7 +107,6 @@ public:
 
     // Bytes of the dense set that asked for the reclaim-exempt store and were refused it, and so
     // are held as ordinary memory. 0 when the store granted everything, or was never asked.
-    uint64_t pin_refused_bytes() const { return pin_refused_bytes_; }
 
     void shutdown();
 
