@@ -25,7 +25,8 @@ prompt and a project's `AGENTS.md`. A model used to one works with the other.
   temporary file and renamed, so a crash leaves the previous version), because a run can outlive
   the page that started it: a scheduled task has no page at all, and an approval can wait for a
   person who closed the tab. A conversation has a title, an optional workspace, a mode, a model
-  route, an agent (`builtin`, or another coding agent: see "Other agents") and a list of items. Plain chat in the web UI is a conversation with no workspace. A
+  route, an agent (`builtin`, or another coding agent: see "Other agents") and a list of items. Plain chat in the web UI is a conversation with no workspace, and it is sent as plain chat: the
+  person's messages alone, with no system prompt and no tools (see "The run"). A
   conversation that was running when the server stopped reads `idle` on the next start, with a
   notice saying its run ended there.
 - **Workspace.** A folder a person added (`<data>/agent/workspaces.json`): `id`, `name`, `path`
@@ -93,8 +94,10 @@ conversation keeps what a round decided. Its tool calls run under the mode, thei
 answer that calls no tool or the round limit (30 rounds per message; a notice says so, and another
 message lets it go on). The same call failing the same way three times in a row also stops the run,
 with a notice: a small model that repeats a refused call would otherwise spend every round on it.
-Without a workspace the prompt tells the model to ask the person for a folder rather than look for
-files some other way. The system prompt is the same for every round of a message and the
+A conversation that can reach no folder (none chosen, or a request from beyond loopback, which the
+file tools refuse) sends no system prompt and no tools at all, as llama.cpp's own web UI sends none
+until the person adds them: an agent prompt there would only spend prefill and the model's thinking
+on tools it cannot use, and bend every answer into a report of work done. The system prompt is the same for every round of a message and the
 conversation is only appended to, so the engine reuses the prompt its KV cache already holds.
 
 When a request no longer fits the context (the engine refuses it with `context_full`), the oldest

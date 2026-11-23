@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **A chat without a folder is plain chat again.** A conversation with no workspace still got the
+  agent's system prompt ("You are a coding agent…", the mode, the skills, "end with what you did and
+  what is left") and the skill tool: a model spent its thinking on an agent it could not be and closed
+  every answer with a work report. It now gets the person's messages alone, no system prompt and no
+  tools, as llama.cpp's web UI sends; the agent prompt and tools come with a folder, as before.
+
 ## [0.47.2] - 2026-11-21
 
 ### Fixed

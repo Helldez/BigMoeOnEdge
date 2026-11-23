@@ -392,24 +392,22 @@ std::vector<std::pair<Skill, bool>> Agent::skills(const std::string & workspace_
 // ---- requests to the model ----
 
 std::string Agent::system_prompt(const json & conv, bool remote) const {
-    if (!d_.tools) return ""; // plain chat: the model as it is, as before the agent
+    // Plain chat: the model as it is, with nothing the person did not write. A conversation that can
+    // reach no folder (none chosen, or a request from beyond loopback, which file tools refuse) is
+    // one, like llama.cpp's own web UI, whose chat sends no prompt and no tool until the person adds
+    // them: an agent prompt there only spends prefill and thinking on tools the conversation cannot
+    // use, and bends every answer into a work report.
     const std::string ws = remote ? std::string() : workspace_path(conv);
+    if (!d_.tools || ws.empty()) return "";
     // Short on purpose: every token here is prefilled on every new conversation, and a small model
     // follows a few plain rules better than many. What each tool does is in its own definition.
     std::string s = "You are a coding agent working for the person at this computer. Today is " + today() +
-                    "; the "
-                    "computer runs " +
-                    d_.os_name + ".\n";
-    if (!ws.empty()) {
-        // Neither the folder's absolute path nor its name: a small model handed either prefixes it to
-        // what it writes (a folder tree, or a folder of that name, inside the workspace). Commands start
-        // there already; get_info gives the path when one is needed.
-        s += "You work in the person's project folder, which is the working directory. Give tools paths relative "
-             "to it, like `src/main.py` or `.`; nothing outside it can be reached.\n";
-    } else {
-        s += "No workspace: there are no file or command tools. If the person asks to create, read or change "
-             "files, tell them to pick a folder for this conversation first.\n";
-    }
+                    "; the computer runs " + d_.os_name + ".\n";
+    // Neither the folder's absolute path nor its name: a small model handed either prefixes it to
+    // what it writes (a folder tree, or a folder of that name, inside the workspace). Commands start
+    // there already; get_info gives the path when one is needed.
+    s += "You work in the person's project folder, which is the working directory. Give tools paths relative "
+         "to it, like `src/main.py` or `.`; nothing outside it can be reached.\n";
     s += mode_words(conv.value("mode", "ask"));
     s += "\n";
     bool any = false;
@@ -427,10 +425,10 @@ std::string Agent::system_prompt(const json & conv, bool remote) const {
 }
 
 std::vector<ChatTool> Agent::tools_for(const json & conv, bool remote, std::map<std::string, McpTool> * mcp) const {
-    if (!d_.tools) return {};
     const std::string ws = workspace_path(conv);
-    const std::string mode = conv.value("mode", "ask");
     const bool local_ws = !ws.empty() && !remote;
+    if (!d_.tools || !local_ws) return {}; // plain chat, as the system prompt says
+    const std::string mode = conv.value("mode", "ask");
     bool any_skill = false;
     for (const auto & [s, on] : skills(ws))
         any_skill = any_skill || on;
@@ -440,12 +438,12 @@ std::vector<ChatTool> Agent::tools_for(const json & conv, bool remote, std::map<
         bool offered = false;
         switch (t.kind) {
         case Kind::Read:
-            offered = local_ws;
+            offered = true;
             break;
         case Kind::Change:
             // A change in read-only mode could only be refused, so it is not offered; a command still
             // is, since one that only reads runs.
-            offered = local_ws && (n == "exec_shell_command" ? d_.can_run_commands : mode != "read_only");
+            offered = n == "exec_shell_command" ? d_.can_run_commands : mode != "read_only";
             break;
         case Kind::Skill:
             offered = any_skill;
@@ -456,7 +454,7 @@ std::vector<ChatTool> Agent::tools_for(const json & conv, bool remote, std::map<
     // An MCP server's tools, beside the built-in ones under the name `<server>_<tool>`: a name already
     // taken is left out, so a server cannot stand in for a built-in tool. Like a change, none is
     // offered where it could only be refused.
-    if (d_.mcp && local_ws && mode != "read_only") {
+    if (d_.mcp && mode != "read_only") {
         for (const McpTool & t : d_.mcp->tools()) {
             const std::string name = t.exposed_name();
             bool taken = false;
