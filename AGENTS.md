@@ -51,7 +51,9 @@ we do not fork llama.cpp. See `docs/architecture.md` and `docs/seam.md`.
   front-end like the CLI: HTTP, files and the platform live here, never in `core/`. Its only env
   reads are the per-user data, config and home folders and `PATH` (to find the coding agents it may
   start, and the init system's tool) on POSIX, and its only env writes are the backend defaults of
-  `frontend/backend_env`, which the CLI applies too.
+  `frontend/backend_env`, which the CLI applies too. The programs it starts (coding agents, MCP
+  servers) inherit its environment as a whole, with the entries their configuration adds; that is
+  passed through, never read.
   The init systems are the one other adapter (`service_manager.cpp`): which one answers is asked of
   the machine, and what it is handed is rendered by a pure function (`service_spec.cpp`). The agent (`docs/agent.md`) is the server's too: `agent*.{h,cpp}`,
   `provider_protocol`, `connect`; its bundled skills are `skills/`.
