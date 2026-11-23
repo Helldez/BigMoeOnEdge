@@ -16,6 +16,15 @@
 
 namespace bmoe {
 
+// Pause beats a waiter spins on a slice's ready flag before it sleeps: a slice usually lands within
+// microseconds, and a sleep costs a syscall on both sides.
+constexpr int k_ready_spin = 256;
+// The least a refused pin shrinks the cache by, as a fraction of the cache (1/64): under that the
+// next load's commits run straight into the same refusal.
+constexpr size_t k_pin_slack_divisor = 64;
+// A projection slot index is packed into the low byte of a tensor's key beside its layer.
+static_assert(ExpertLayout::max_slots < 256, "the slot index is packed into one byte");
+
 using clock_t_ = std::chrono::steady_clock;
 
 namespace {
@@ -1334,7 +1343,7 @@ void ExpertStreamSource::pin_pages(void * p, size_t sz) {
     // Below what is resident, by the room a load needs: a layer's slices are committed before the
     // previous ones are evicted, so a budget equal to what was granted is over it by that much on
     // every load, and the refusal would simply repeat.
-    const size_t slack = std::max({layer_demand_, sz, cache_max_ / 64});
+    const size_t slack = std::max({layer_demand_, sz, cache_max_ / k_pin_slack_divisor});
     // From the smaller of the budget and what is resident: a load can run past the budget before
     // its eviction, and a refusal there says the budget is still too high, not that it was reached.
     const size_t from = std::min(cresident_, cache_max_);
@@ -1810,7 +1819,7 @@ void ExpertStreamSource::on_expert_ready(const ggml_tensor * src0, int expert) {
     // beat is a pause instruction, not yield() — 2048 yields burnt up to a millisecond of
     // sched_yield churn per genuinely slow slice, stealing CPU from the I/O lanes and the
     // sibling compute threads that would have finished the slice sooner.
-    for (int s = 0; s < 256; ++s) {
+    for (int s = 0; s < k_ready_spin; ++s) {
         if (ready_[idx].gen.load(std::memory_order_acquire) == want || fatal_.load(std::memory_order_acquire)) {
             stall_union_.exit();
             return;
@@ -1884,10 +1893,8 @@ IExpertSource::Stats ExpertStreamSource::stats() const {
     s.stall_seconds = stall_union_.total_ns() / 1e9;
     s.cache_budget_bytes = (uint64_t) cache_max_;
     s.cache_resizes = cache_resizes_;
-    s.cache_pin_refused_bytes = (uint64_t) pin_refused_at_;
     s.discarded = disc_.lost_on_lookup() + swept_;
     s.discarded_on_hit = disc_.lost_on_lookup();
-    s.dense_pin_refused_bytes = dense_.pin_refused_bytes();
     s.o_direct = effective_direct_;
     s.evictions = evictions_;
     s.rereads = rereads_;

@@ -116,12 +116,16 @@ void DropFollowingBudget::dropped(size_t bytes, uint32_t gen) {
     if (current_ > floor_) current_ = std::max(floor_, current_ > bytes ? current_ - bytes : 0);
 }
 
+// How many times the recovery stretch doubles at most: past it the doubled stretch would overflow a
+// generation count, and long before that it already outlasts any session.
+constexpr uint32_t k_brakes_max = 16;
+
 void DropFollowingBudget::braked(size_t budget, uint32_t gen) {
     last_drop_ = gen;
     dropped_ever_ = true;
     // Capped where the doubled stretch would overflow a generation count; long before that it
     // already outlasts any session.
-    if (brakes_ < 16) ++brakes_;
+    if (brakes_ < k_brakes_max) ++brakes_;
     current_ = std::max(floor_, std::min(current_, budget));
 }
 

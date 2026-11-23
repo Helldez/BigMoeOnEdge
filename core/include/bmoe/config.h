@@ -700,11 +700,6 @@ struct KnobTrialConfig {
     // changes, with the requests it served, which the plan weighs the two sides by.
     int width_side = -1;
     int width_narrow = 0;
-    // The device cache's CPU share, decided across loads (MeasuredKnobs::cpu_share_tps): 1 times the
-    // decode with part of the cache's misses computed on the host (moe.device_cache_cpu_share, as the
-    // plan priced it), 0 with every miss uploaded; -1 neither. A share is fixed when a context is
-    // created, so a side is timed by a load that serves it, as the device tier's are.
-    int cpu_share_side = -1;
     // Where a resident model runs on a machine whose devices read the host's own memory, decided across
     // loads (MeasuredKnobs::shared_device_tps): 1 times the decode with every layer on the device the
     // plan named (device_split), 0 with every layer on the cores; -1 neither. Which engine decodes the
@@ -737,8 +732,7 @@ struct KnobTrialConfig {
     bool test_answer_differs = false;
 
     bool enabled() const {
-        return !threads.empty() || overlap || device_tier >= 0 || width_side >= 0 || cpu_share_side >= 0 ||
-               shared_device_side >= 0;
+        return !threads.empty() || overlap || device_tier >= 0 || width_side >= 0 || shared_device_side >= 0;
     }
 
     static constexpr int threads_max_candidates = 2;
@@ -874,19 +868,6 @@ struct RunConfig {
     // same card (bmoe/backend_choice.h). Empty leaves the choice to llama.cpp, which keeps the first
     // backend registered for a card.
     std::vector<std::string> device_list;
-
-    // Put the DENSE weights on an accelerator that shares this host's memory, leaving the routed
-    // experts on the host for the streamer. On such a machine the move frees no memory - it is the
-    // same pool - so it is worth making only where that device consumes this model's weights faster
-    // than the CPU does, which the bandwidth probe measures.
-    //
-    // Off by default, armed by the caller, and currently REFUSED by the planner - because it was
-    // measured three times in July on a device of exactly this class and it lost by 27%: the dense
-    // and expert halves interleave, so a two-device split crosses the boundary twice per layer and
-    // the boundary tax eats the CPU time the device frees. See the OpenCL row of
-    // docs/backends.md. Kept as a named lever so the next person to have this idea finds the
-    // verdict instead of the idea.
-    bool dense_on_device = false;
 
     // Hand llama.cpp the CPU and nothing else. Set when this plan has decided no weight goes on a
     // device: leaving one registered is not free, because the scheduler gives it every node it can

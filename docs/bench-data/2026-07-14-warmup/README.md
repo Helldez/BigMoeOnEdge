@@ -3,7 +3,7 @@
 Measured on the 12 GB test phone (Snapdragon class, 11.4 GB usable RAM), UFS4 storage, models pushed to
 `/data/local/tmp`. Each CSV is one row per generated token
 (`step,steps,wall_ms,io_ms,compute_ms,read_bytes,cache_hit_pct,stall_ms,mgmt_ms`) plus a `#
-summary` trailer. Reproduced with `scripts/bench-warmonly.sh`.
+summary` trailer. Reproduced with [`bench-warmonly.sh`](bench-warmonly.sh), kept here beside its data.
 
 ## What changed
 

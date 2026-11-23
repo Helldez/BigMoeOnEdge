@@ -1790,15 +1790,12 @@ void Session::Impl::hand_over_dense_weights(const SessionConfig & cfg,
 void Session::Impl::release_mapping(const SessionConfig & cfg,
                                     const GgufOffsets & offs,
                                     const std::vector<std::string> & unaccounted) {
-    std::vector<const void *> weight_addrs;
-    if (cfg.moe.release_mmap) {
-        weight_addrs.reserve(hook->captured_weight_objects().size());
-        for (const ggml_tensor * t : hook->captured_weight_objects())
-            if (t && t->data) weight_addrs.push_back(t->data);
-    }
-    const size_t still_mapped =
-        cfg.moe.release_mmap ? pio::addresses_in_file_mappings(offs.shard_paths, weight_addrs) : 0;
     if (!cfg.moe.release_mmap) return;
+    std::vector<const void *> weight_addrs;
+    weight_addrs.reserve(hook->captured_weight_objects().size());
+    for (const ggml_tensor * t : hook->captured_weight_objects())
+        if (t && t->data) weight_addrs.push_back(t->data);
+    const size_t still_mapped = pio::addresses_in_file_mappings(offs.shard_paths, weight_addrs);
     if (still_mapped) {
         log_printf(LogLevel::Info, "release-mmap skipped: %zu weight(s) still read the model's mapping", still_mapped);
     } else if (!unaccounted.empty() && cfg.spec.is_mtp()) {
@@ -2410,7 +2407,7 @@ void Session::Impl::arm_trials() {
         else
             trials.overlap = {cfg.moe.overlap ? 1 : 0, cfg.moe.overlap ? 0 : 1};
     }
-    trials.rate = t.device_tier >= 0 || t.width_side >= 0 || t.cpu_share_side >= 0 || t.shared_device_side >= 0;
+    trials.rate = t.device_tier >= 0 || t.width_side >= 0 || t.shared_device_side >= 0;
     trials.stage = stage_done;
     next_trial_stage(/*settled*/ false);
 }
@@ -2517,10 +2514,6 @@ void Session::Impl::rate_step(double seconds, int tokens, uint64_t lookups, uint
     char what[96];
     if (tier)
         std::snprintf(what, sizeof(what), "%s a device expert cache", cfg.trial.device_tier == 1 ? "with" : "without");
-    else if (cfg.trial.cpu_share_side >= 0)
-        std::snprintf(what, sizeof(what), "%s",
-                      cfg.trial.cpu_share_side == 1 ? "with part of the device cache's misses on the CPU"
-                                                    : "with every device cache miss uploaded");
     else if (cfg.trial.shared_device_side >= 0)
         std::snprintf(what, sizeof(what), "with every layer on %s",
                       cfg.trial.shared_device_side == 1 && !cfg.device_split.empty()
@@ -4107,8 +4100,6 @@ struct Session::Impl::Turn {
             s.moe_mgmt_s_per_token = n_gen ? tally.mgmt_seconds / n_gen : 0.0;
             s.moe_stall_s_per_token = n_gen ? tally.stall_seconds / n_gen : 0.0;
             s.moe_flash_wait_s_per_token = tally.overlap ? s.moe_stall_s_per_token : s.moe_io_s_per_token;
-            s.moe_compute_s_per_token = s.s_per_token - s.moe_flash_wait_s_per_token - s.moe_mgmt_s_per_token;
-            if (s.moe_compute_s_per_token < 0) s.moe_compute_s_per_token = 0;
             s.cache_hit_pct = st.cache_lookups > 0 ? 100.0 * st.cache_hits / st.cache_lookups : -1.0;
             const long long dec_lookups = st.cache_lookups - prev_cache_lookups;
             s.cache_hit_decode_pct =
@@ -4137,6 +4128,10 @@ struct Session::Impl::Turn {
             s.moe_spec_experts = st.spec_experts - prev_spec_experts;
             s.moe_spec_useful = st.spec_useful - prev_spec_useful;
         }
+        // Outside the streaming block: a resident model's token is all compute by the same residual
+        // (its flash and cache terms are zero), as each token event already says.
+        s.moe_compute_s_per_token =
+            std::max(0.0, s.s_per_token - s.moe_flash_wait_s_per_token - s.moe_mgmt_s_per_token);
         s.experts_routed = im.hook->experts_routed() - prev_routed;
         s.experts_dropped = im.hook->experts_dropped() - prev_dropped;
         s.experts_reranked = im.hook->experts_reranked() - prev_reranked;

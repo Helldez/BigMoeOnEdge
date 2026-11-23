@@ -54,15 +54,6 @@ struct MeasuredKnobs {
     double device_cache_tps = 0.0;
     double no_device_cache_tps = 0.0;
 
-    // The device cache's CPU share, decided across loads as the tier is (planner.cpp,
-    // choose_device_cache_cpu_share): the decode rate with the share the plan priced, and with every
-    // miss uploaded, in tokens per second, 0 when that side was not measured. A price proposes the
-    // share and these decide it, because the price cannot see what a share costs on a machine whose
-    // cache never fills: on a 32 GB card a share priced at 0.89 took the decode from 114 to 68 tok/s
-    // with no miss computed on the host at all, and on a 12 GB card 0.77 took it from 18.5 to 21.2.
-    double cpu_share_tps = 0.0;
-    double no_cpu_share_tps = 0.0;
-
     // Where a model held in memory runs on a machine whose devices read the host's own memory, decided
     // across loads (planner.cpp, choose_shared_device): the decode rate with every layer on the device
     // and on the cores, in tokens per second, 0 when that side was not measured. Capacity does not
@@ -71,15 +62,6 @@ struct MeasuredKnobs {
     // the model itself decoded 54 tok/s on the GPU against 40 on the cores.
     double shared_device_tps = 0.0;
     double no_shared_device_tps = 0.0;
-    // The rate the share is held against at graph width `n_ubatch`: its own timing of every miss
-    // uploaded, else the width's timing of the cache at that width (the width is decided on the cache
-    // before the share is weighed), else the tier's. 0 where no side of the cache was timed.
-    double cpu_share_baseline_tps(int n_ubatch) const {
-        if (no_cpu_share_tps > 0.0) return no_cpu_share_tps;
-        const double at_width =
-            width_narrow > 0 ? (n_ubatch == width_narrow ? narrow_decode_tps : wide_decode_tps) : 0.0;
-        return at_width > 0.0 ? at_width : device_cache_tps;
-    }
 
     // The graph width, decided across loads where a wide graph's compute buffers take device memory
     // the experts would use (planner.cpp, choose_graph_width). A wide graph prefills a long prompt in
@@ -151,7 +133,6 @@ struct MeasuredKnobs {
     // `width_narrow` only, as its rates are.
     static constexpr int unviable_max = 2;
     int device_cache_unviable = 0, no_device_cache_unviable = 0;
-    int cpu_share_unviable = 0, no_cpu_share_unviable = 0;
     int wide_unviable = 0, narrow_unviable = 0;
     int shared_device_unviable = 0, no_shared_device_unviable = 0;
 
@@ -242,11 +223,10 @@ struct MeasuredKnobs {
     // grows rather than as the first request left it; so do the requests of the mix.
     int verdicts() const {
         return (threads > 0) + (overlap >= 0) + (device_cache_tps > 0.0) + (no_device_cache_tps > 0.0) +
-               (cpu_share_tps > 0.0) + (no_cpu_share_tps > 0.0) + (wide_decode_tps > 0.0) + (narrow_decode_tps > 0.0) +
-               (wide_prefill_tps > 0.0) + (narrow_prefill_tps > 0.0) + usage_requests + (width_held >= 0) +
-               (decode_compute_s > 0.0) + (decode_hit >= 0.0) + mix_requests + (host_prefill_tps > 0.0) +
-               (device_cache_unviable > 0) + (no_device_cache_unviable > 0) + (wide_unviable > 0) +
-               (narrow_unviable > 0) + (cpu_share_unviable > 0) + (no_cpu_share_unviable > 0) +
+               (wide_decode_tps > 0.0) + (narrow_decode_tps > 0.0) + (wide_prefill_tps > 0.0) +
+               (narrow_prefill_tps > 0.0) + usage_requests + (width_held >= 0) + (decode_compute_s > 0.0) +
+               (decode_hit >= 0.0) + mix_requests + (host_prefill_tps > 0.0) + (device_cache_unviable > 0) +
+               (no_device_cache_unviable > 0) + (wide_unviable > 0) + (narrow_unviable > 0) +
                (shared_device_tps > 0.0) + (no_shared_device_tps > 0.0) + (shared_device_unviable > 0) +
                (no_shared_device_unviable > 0) + (int) prefill.size() + (int) device_answers.size();
     }
@@ -268,8 +248,8 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
 // unmeasured, so the record of the load before holds the rest.
 void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKnobs & rec);
 
-// The decode rate of a load that ran the side `trial` names (KnobTrialConfig::device_tier, width_side,
-// cpu_share_side or shared_device_side), put where a plan reads it. One decision per load, in that
+// The decode rate of a load that ran the side `trial` names (KnobTrialConfig::device_tier, width_side
+// or shared_device_side), put where a plan reads it. One decision per load, in that
 // order, so a rate never answers two questions measured under one placement. Nothing when `trial`
 // names no side.
 void record_side_rate(const KnobTrialConfig & trial, double tokens_per_second, MeasuredKnobs & rec);

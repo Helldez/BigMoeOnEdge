@@ -70,6 +70,10 @@ std::string_view weight_suffix(const char * name, int & il_out) {
     return std::string_view(rest, len - k_weight_tail.size());
 }
 
+std::string block_label(int il) {
+    return std::string(k_block_prefix) + std::to_string(il);
+}
+
 bool is_weight(const char * name) {
     const size_t len = std::strlen(name);
     return len >= k_weight_tail.size() && k_weight_tail == name + (len - k_weight_tail.size());

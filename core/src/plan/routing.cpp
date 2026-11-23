@@ -411,24 +411,6 @@ HitCurve hit_curve(const RoutingTrace & t, uint32_t points, int half_life) {
     return c;
 }
 
-std::vector<HotExpert> hottest_experts(const RoutingTrace & t, size_t limit) {
-    std::map<std::pair<uint32_t, int32_t>, uint64_t> uses;
-    for (const RoutingBatch & b : t.batches)
-        for (int32_t e : b.experts)
-            ++uses[{b.layer, e}];
-    std::vector<HotExpert> out;
-    out.reserve(uses.size());
-    for (const auto & kv : uses)
-        out.push_back({kv.first.first, kv.first.second, kv.second});
-    std::stable_sort(out.begin(), out.end(), [](const HotExpert & a, const HotExpert & b) {
-        if (a.uses != b.uses) return a.uses > b.uses;
-        if (a.layer != b.layer) return a.layer < b.layer;
-        return a.expert < b.expert;
-    });
-    if (limit && out.size() > limit) out.resize(limit);
-    return out;
-}
-
 void attach_routing(ModelProfile & m, const RoutingTrace & t, uint32_t n_expert_used, int half_life) {
     m.hit_curve = HitCurve{};
     auto reject = [&](std::string why) { m.hit_curve.rejected = std::move(why); };
