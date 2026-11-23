@@ -53,6 +53,8 @@ struct PropsFacts {
     int top_k = 0;
     float top_p = 0.0f;
     uint32_t seed = 0;
+    float presence_penalty = 0.0f, frequency_penalty = 0.0f, repeat_penalty = 1.0f;
+    int repeat_last_n = 64;
     std::string model_name, model_path;
     bool vision = false;
     std::string build;

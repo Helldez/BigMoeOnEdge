@@ -21,16 +21,33 @@ namespace bmoe {
 // byte-identity gates depend on, and today's behaviour for any caller that sets nothing. temp > 0
 // builds the standard chain top_k -> top_p -> temp -> dist. Opt-in by construction: sampling never
 // perturbs a run that did not ask for it, so the gates stay meaningful.
+//
+// The penalties are the defaults of a request's own (RequestSampling), for a client that sends none:
+// they act on greedy decoding too, in the turn's chain, so a session that sets none decodes as before.
 struct SamplingConfig {
-    float temp = 0.0f;           // <= 0: greedy (argmax). > 0: stochastic sampling.
-    int top_k = 40;              // 0 disables the top-k stage (llama.cpp convention)
-    float top_p = 0.95f;         // nucleus cutoff, in (0, top_p_max]
-    uint32_t seed = seed_random; // == LLAMA_DEFAULT_SEED, static_assert'd in session.cpp
+    float temp = 0.0f;              // <= 0: greedy (argmax). > 0: stochastic sampling.
+    int top_k = 40;                 // 0 disables the top-k stage (llama.cpp convention)
+    float top_p = 0.95f;            // nucleus cutoff, in (0, top_p_max]
+    uint32_t seed = seed_random;    // == LLAMA_DEFAULT_SEED, static_assert'd in session.cpp
+    float repeat_penalty = 1.0f;    // 1: off. In [repeat_penalty_min, repeat_penalty_max]
+    float frequency_penalty = 0.0f; // 0: off. In [-penalty_max, penalty_max]
+    float presence_penalty = 0.0f;  // 0: off. In [-penalty_max, penalty_max]
+    int penalty_last_n = 64;        // the recent tokens the penalties look back over; 0 off, penalty_last_n_ctx all
 
     static constexpr uint32_t seed_random = 0xFFFFFFFFu; // the seed that draws a fresh one per run
     static constexpr int top_k_max = 1000;   // the widest cutoff a form offers; validate() does not enforce it
     static constexpr float temp_max = 2.0f;  // the hottest a form offers; validate() does not enforce it
     static constexpr float top_p_max = 1.0f; // a probability mass: the whole distribution
+    // The ranges a request is held to (server/request_sampling.cpp; OpenAI's for presence and
+    // frequency), so a default set here is one a request could have sent. The repeat penalty divides a
+    // score, so it stays above 0; the floor is a double so a request's 0.001 is not refused against
+    // the float nearest it.
+    static constexpr float penalty_max = 2.0f;
+    static constexpr double repeat_penalty_min = 1e-3;
+    static constexpr float repeat_penalty_max = 100.0f;
+    static constexpr int penalty_last_n_ctx = -1; // the whole context
+
+    bool penalized() const { return repeat_penalty != 1.0f || frequency_penalty != 0.0f || presence_penalty != 0.0f; }
 };
 
 // How the dense (non-expert) model weights are kept resident. See MoeStreamConfig::dense_weights and

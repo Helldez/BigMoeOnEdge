@@ -312,6 +312,34 @@ int main() {
         c.sampling.top_k = -3;
         expect_ok("out-of-range sampling knobs are inert under greedy", c);
     }
+    // The penalties act on greedy decoding too, so their ranges hold at any temperature (#715).
+    {
+        RunConfig c = ok_base();
+        c.sampling.presence_penalty = 1.5f;
+        c.sampling.frequency_penalty = -SamplingConfig::penalty_max;
+        c.sampling.repeat_penalty = 1.05f;
+        c.sampling.penalty_last_n = SamplingConfig::penalty_last_n_ctx;
+        expect_ok("penalties under greedy decoding, over the whole context", c);
+        c.sampling.presence_penalty = 2.5f;
+        expect_fail("a presence penalty above 2 is rejected, greedy or not", c);
+        c.sampling.presence_penalty = std::numeric_limits<float>::quiet_NaN();
+        expect_fail("a NaN presence penalty is rejected", c);
+        c.sampling.presence_penalty = 0.0f;
+        c.sampling.frequency_penalty = -2.5f;
+        expect_fail("a frequency penalty below -2 is rejected", c);
+        c.sampling.frequency_penalty = 0.0f;
+        c.sampling.repeat_penalty = 0.0f;
+        expect_fail("a repeat penalty of 0 is rejected (the score is divided by it)", c);
+        c.sampling.repeat_penalty = 0.0005f;
+        expect_fail("a repeat penalty below the floor a request is held to is rejected", c);
+        c.sampling.repeat_penalty = 0.001f;
+        expect_ok("the floor itself is valid, as for a request", c);
+        c.sampling.repeat_penalty = std::numeric_limits<float>::quiet_NaN();
+        expect_fail("a NaN repeat penalty is rejected", c);
+        c.sampling.repeat_penalty = 1.0f;
+        c.sampling.penalty_last_n = -2;
+        expect_fail("a penalty window below -1 is rejected", c);
+    }
 
     // Cache-aware expert dropping. The upper bound is not cosmetic: above the uniform share the
     // threshold can exceed every weight in a routing, and a config that can empty a layer must not
@@ -468,6 +496,9 @@ int main() {
         c.sampling.temp = 0.8f;
         expect_fail("the n-gram source with a sampling chain is rejected", c);
         c.sampling.temp = 0.0f;
+        c.sampling.presence_penalty = 1.5f;
+        expect_fail("speculation with a penalty is rejected, at temperature 0 too", c);
+        c.sampling.presence_penalty = 0.0f;
         c.spec.draft_max = SpecConfig::draft_max_limit + 1;
         expect_fail("the draft-width limit applies to the n-gram source too", c);
         c.spec.draft_max = 3;

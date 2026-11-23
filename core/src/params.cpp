@@ -447,6 +447,58 @@ std::vector<ParamDesc> build() {
                     "new one each run.";
         t.push_back(d);
     }
+    // The penalties a request may set (RequestSampling), as the defaults for one that sets none. No
+    // typical range: the right one is the model's, from its card.
+    {
+        ParamDesc d = row("presence-penalty", "Presence penalty", G::Sampling, L::Advanced,
+                          "Lowers each token already in the penalty window by this much, however often it "
+                          "appeared. 0 is off.");
+        d.type = ParamType::Float;
+        d.value_hint = "F";
+        bounds(d, -SamplingConfig::penalty_max, SamplingConfig::penalty_max);
+        special(d, "0", "off");
+        bind_float(d, [](RunConfig & c) -> float & { return c.sampling.presence_penalty; });
+        d.details = "Some model cards recommend one against a model repeating itself. It applies at any Temperature, "
+                    "to every request that sends no penalty of its own; a request's own value wins.";
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("frequency-penalty", "Frequency penalty", G::Sampling, L::Advanced,
+                          "Lowers each token in the penalty window by this much for every time it appeared. 0 is off.");
+        d.type = ParamType::Float;
+        d.value_hint = "F";
+        bounds(d, -SamplingConfig::penalty_max, SamplingConfig::penalty_max);
+        special(d, "0", "off");
+        bind_float(d, [](RunConfig & c) -> float & { return c.sampling.frequency_penalty; });
+        d.details = "Like the presence penalty, but it grows with each repeat. It applies at any Temperature, to every "
+                    "request that sends no penalty of its own; a request's own value wins.";
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("repeat-penalty", "Repeat penalty", G::Sampling, L::Advanced,
+                          "Divides the score of each token in the penalty window by this. 1 is off.");
+        d.type = ParamType::Float;
+        d.value_hint = "F";
+        bounds(d, SamplingConfig::repeat_penalty_min, SamplingConfig::repeat_penalty_max);
+        special(d, "1", "off");
+        bind_float(d, [](RunConfig & c) -> float & { return c.sampling.repeat_penalty; });
+        d.details =
+            "llama.cpp's older penalty, which some model cards give instead of the presence penalty. It applies "
+            "at any Temperature, to every request that sends no penalty of its own; a request's own value wins.";
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("repeat-last-n", "Penalty window", G::Sampling, L::Advanced,
+                          "How many recent tokens, the prompt's included, the penalties look back over.");
+        d.value_hint = "N";
+        at_least(d, SamplingConfig::penalty_last_n_ctx, "tokens");
+        special(d, std::to_string(SamplingConfig::penalty_last_n_ctx), "whole context");
+        special(d, "0", "penalties off");
+        bind_int(d, [](RunConfig & c) -> int & { return c.sampling.penalty_last_n; });
+        d.details = "64 is llama.cpp's default. A loop that repeats whole paragraphs is longer than that; the whole "
+                    "context catches it. A request that sends no window of its own uses this one.";
+        t.push_back(d);
+    }
 
     // ── streaming ────────────────────────────────────────────────────────────────────
     {

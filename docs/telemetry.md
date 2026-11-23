@@ -276,7 +276,8 @@ prints just the summary lines.
   dense_weights=<mmap|warm|anon|pinned> drop_cold_frac=<f> drop_renorm=<0|1> drop_prefill=<0|1>
   substitute_lambda=<f>
 # temp=<f> top_k=<n> top_p=<f> seed=<u> compute_trace_layers=<n> spec=<off|mtp|ngram>
-  spec_draft_max=<n> mtp_p_min=<f> ngram_min_match=<n>
+  spec_draft_max=<n> mtp_p_min=<f> ngram_min_match=<n> repeat_penalty=<f> frequency_penalty=<f>
+  presence_penalty=<f> repeat_last_n=<n>
 ```
 
 Rows without this are not evidence: two files answer "which is faster" only if something says what
