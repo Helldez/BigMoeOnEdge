@@ -114,6 +114,13 @@ bool read_conversation_fields(
             return err = "no such workspace", false;
         out["workspace"] = body["workspace"];
     }
+    if (body.contains("system")) {
+        // The person's own system prompt; "" takes it away.
+        if (!body["system"].is_string()) return err = "system must be a string", false;
+        if (body["system"].get<std::string>().size() > agent::k_system_max_bytes)
+            return err = "system is longer than " + std::to_string(agent::k_system_max_bytes) + " bytes", false;
+        out["system"] = body["system"];
+    }
     if (body.contains("agent")) {
         // Another agent works in a folder of this computer: it needs one, and a computer that runs
         // programs.
@@ -294,6 +301,26 @@ void register_agent_routes(httplib::Server & svr, const AgentRouteDeps & d) {
         if (hidden_from(req, c)) return refuse_remote(res);
         send_json(res, c);
     });
+    // What the model reads before the conversation (#625), exactly as sent: the agent's lines where it
+    // has a folder, then the person's own (`own`, the conversation's `system`, which PATCH sets).
+    // `tokens` is what it takes of the context, counted by the loaded model's tokenizer as /tokenize
+    // counts (null with no model ready, or for a conversation answered elsewhere: a provider counts
+    // with its own). Another agent program writes its own prompt, so there is none of ours to show.
+    svr.Get(R"(/api/conversations/([^/]+)/system)", [&d](const httplib::Request & req, httplib::Response & res) {
+        json c;
+        if (!d.agent->conversation(req.matches[1].str(), c))
+            return send_error(res, 404, "no such conversation", "not_found");
+        if (hidden_from(req, c)) return refuse_remote(res);
+        const bool external = c.value("agent", std::string(agent::k_builtin_agent)) != agent::k_builtin_agent;
+        const std::string text = external ? std::string() : d.agent->system_prompt(c, !local(req));
+        json tokens = nullptr;
+        if (!text.empty() && c.value("route", std::string("local")) == "local" && d.host)
+            d.host->with_session([&](const HostedSession & s) { tokens = s.tokenize(text, false, true).size(); });
+        send_json(res, json{{"text", text},
+                            {"own", c.value("system", std::string())},
+                            {"tokens", tokens},
+                            {"external", external}});
+    });
     svr.Patch(R"(/api/conversations/([^/]+))", [&d](const httplib::Request & req, httplib::Response & res) {
         const std::string id = req.matches[1].str();
         json body;
@@ -309,7 +336,8 @@ void register_agent_routes(httplib::Server & svr, const AgentRouteDeps & d) {
         }
         // The mode may change while a run goes (a person allows everything while a card waits); what
         // the run works in and with may not.
-        if ((fields.contains("workspace") || fields.contains("route")) && d.agent->running(id))
+        if ((fields.contains("workspace") || fields.contains("route") || fields.contains("system")) &&
+            d.agent->running(id))
             return send_error(res, 409, "this conversation is running: stop it first", "busy");
         if (fields.contains("agent")) {
             // The agent is chosen before the first message: another one would not know what was said.

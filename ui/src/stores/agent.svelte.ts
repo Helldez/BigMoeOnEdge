@@ -47,6 +47,8 @@ export interface Draft {
   mode: Mode;
   route: string;
   agent: string;
+  /** The person's own system prompt for this conversation; '' for none. */
+  system: string;
 }
 
 const BUSY: ReadonlySet<string> = new Set(['running', 'waiting']);
@@ -82,7 +84,7 @@ class AgentStore {
   imported = $state(0);
 
   /** What a new conversation starts with: the composer's chips before the first message. */
-  draft = $state<Draft>({ workspace: null, mode: 'ask', route: 'local', agent: BUILTIN_AGENT });
+  draft = $state<Draft>({ workspace: null, mode: 'ask', route: 'local', agent: BUILTIN_AGENT, system: '' });
   /** What conversations here can do; until the server says, plain chat with the built-in agent. */
   caps = $state<AgentCapabilities>({ tools: true, commands: false, agents: [] });
 
@@ -92,6 +94,7 @@ class AgentStore {
   mode = $derived<Mode>(((this.current?.mode as Mode) ?? this.draft.mode) || 'ask');
   route = $derived(this.current?.route ?? this.draft.route);
   agentId = $derived(this.current?.agent ?? this.draft.agent);
+  system = $derived(this.current ? (this.current.system ?? '') : this.draft.system);
 
   private started = false;
   private opening = 0;
@@ -174,7 +177,8 @@ class AgentStore {
     this.decisions = [];
     this.currentError = '';
     this.clearError();
-    if (draft) this.draft = { ...this.draft, ...draft };
+    // A system prompt is the conversation's own: a new one starts without, as llama.cpp's web UI does.
+    this.draft = { ...this.draft, system: '', ...draft };
   }
 
   async open(id: string): Promise<void> {
@@ -226,7 +230,7 @@ class AgentStore {
     const d = this.draft;
     const c = await agentApi.createConversation(
       d.agent === BUILTIN_AGENT
-        ? { workspace: d.workspace, mode: d.mode, route: d.route }
+        ? { workspace: d.workspace, mode: d.mode, route: d.route, system: d.system }
         : { workspace: d.workspace, mode: d.mode, agent: d.agent },
     );
     this.currentId = c.id;
@@ -315,6 +319,11 @@ class AgentStore {
   }
   async setWorkspace(workspace: string | null): Promise<void> {
     await this.change({ workspace });
+  }
+  /** The person's own system prompt: true once the open conversation (or the draft) has it. */
+  async setSystem(system: string): Promise<boolean> {
+    await this.change({ system });
+    return this.system === system;
   }
   async setAgent(agent: string): Promise<void> {
     await this.change({ agent });
