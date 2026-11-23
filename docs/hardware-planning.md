@@ -1364,6 +1364,19 @@ stream on the same cores can reach, so a device the cores do not beat is one the
 beat. The plan says both parts (`held-whole`). A machine where the whole model is past that ceiling
 (a model larger than what the process may hold) streams as before, with nothing asked of the load.
 
+**Every move of a whole model onto such a device has the cores behind it.** Sharing the host's
+memory does not mean the device may allocate all of it: a driver can keep a ceiling of its own
+(an integrated GPU allowed 7.8 GiB of a 16 GB laptop's memory refused a 9.3 GiB model the plan held
+whole, and the load ended there). So a plan that moves a model onto the device, compared or already
+confirmed, carries the same configuration on the cores as its other part (`back_with_cores`, one
+definition shared with the session: `held_on_cores`), unless it carries the streaming plan already.
+Where the device cannot open the model the session opens that part in the same load and keeps the
+failure with what the device reported free at that moment (`MeasuredKnobs::shared_device_unviable`,
+`shared_device_unviable_free_mib`). The plans after it keep the cores until the device reports more
+free than that by `min_backend_win`; then it is named again, the cores still behind it. A failure
+costs that load the attempt (about 12 s on that laptop) and no later load pays it again for the same
+room.
+
 The probes are not asked, because a probe of one layer does not predict the whole model's decode.
 On a laptop with integrated graphics they read the cores 74% ahead (143 GiB/s against 82) of a GPU
 that decoded a 21 GB model at 40 tok/s, more than twice the cores' rate. On a 16 GB unified-memory

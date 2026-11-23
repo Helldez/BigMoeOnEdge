@@ -85,9 +85,9 @@ ValidationResult validate(const RunConfig & cfg) {
     // The other part of the plan is a configuration like any, and the one the session may end on: it
     // is the same model, it names no part of its own, and it holds up by itself.
     if (cfg.fallback) {
-        if (cfg.trial.answer_device.empty())
-            return fail("a fallback configuration is what a load reopens with where {trial-device-answer} does not "
-                        "keep the model on its device: it needs a device named there");
+        if (cfg.n_gpu_layers == 0 || cfg.device_split.empty())
+            return fail("a fallback configuration is what a load opens where the model cannot serve from the device "
+                        "it was placed on: it needs layers placed on a named device ({gpu-layers}, {device-split})");
         if (cfg.fallback->fallback) return fail("a fallback configuration has no fallback of its own");
         if (cfg.fallback->model_path != cfg.model_path) return fail("a fallback configuration is the same model's");
         const ValidationResult other = validate(*cfg.fallback);

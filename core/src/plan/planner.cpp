@@ -2230,9 +2230,18 @@ void choose_shared_device(Planning & s, uint64_t resident) {
         s.note(knob, "cpu", src, brief, place + "; " + reason);
     };
 
-    if (lost(mk.shared_device_unviable)) {
+    // A device that could not open this model is not named again until it reports more room than it
+    // had when it failed, by the margin: what a driver lets a device allocate can grow (another program
+    // lets go of it, a setting raises it), and the cores stay behind it (back_with_cores) if it still
+    // cannot. A failure with no figure beside it stands.
+    const uint64_t failed_free = mk.shared_device_unviable_free_mib << 20;
+    const bool more_room = failed_free > 0 && (double) dev.memory_free > (double) failed_free * (1.0 + m);
+    if (lost(mk.shared_device_unviable) && !more_room) {
         on_cores(Source::Measured, "The model runs on the CPU: loads with it on " + dev.name + " failed here.",
-                 "loads of this model with every layer on " + dev.name + " failed on this machine");
+                 "loads of this model with every layer on " + dev.name + " failed on this machine" +
+                     (failed_free > 0 ? ", with " + u64s(mib(failed_free)) + " MiB free on it then and " +
+                                            u64s(mib(dev.memory_free)) + " MiB now"
+                                      : std::string()));
         return;
     }
     if (lost(mk.no_shared_device_unviable)) {
@@ -4280,6 +4289,21 @@ Plan plan_once(const RunConfig & base,
     return p;
 }
 
+// A whole model the plan moved onto a device that reads the host's memory (choose_shared_device),
+// with the cores behind it as the configuration's other part (RunConfig::fallback). Such a device can
+// refuse the allocation all the same: its driver may keep a ceiling of its own below the memory the
+// host has, and an integrated GPU allowed 7.8 GiB of a 16 GB laptop refused a 9.3 GiB model the plan
+// held whole, which ended the load. With the cores behind it the load serves from them instead, and
+// keeps the failure (MeasuredKnobs::shared_device_unviable). A configuration that already carries its
+// other part keeps it: a model the plan streams, tried whole on the device, falls back to the stream.
+void back_with_cores(Plan & p) {
+    if (p.config.fallback || p.config.n_gpu_layers == 0) return;
+    const auto moved = std::find_if(p.decisions.begin(), p.decisions.end(),
+                                    [](const Decision & d) { return d.knob == "shared-device" && d.value != "cpu"; });
+    if (moved == p.decisions.end()) return;
+    p.config.fallback = std::make_shared<const RunConfig>(held_on_cores(p.config));
+}
+
 Plan plan_from(const RunConfig & base,
                const HardwareProfile & hw,
                const ModelProfile & model,
@@ -4288,6 +4312,7 @@ Plan plan_from(const RunConfig & base,
                const PlannerPolicy & pol,
                const Planning::LayersHome * home_from) {
     Plan p = plan_once(base, hw, model, projected, req, pol, home_from);
+    back_with_cores(p);
     // ── a model the plan streams, on a machine whose device reads this same memory ──
     // llama.cpp would hold such a model whole on the device, and where that fits it can be the faster
     // run by far: on a laptop with integrated graphics a 21 GB model streamed with an 18 GiB cache
