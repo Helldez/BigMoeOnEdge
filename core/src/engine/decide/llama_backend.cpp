@@ -51,9 +51,8 @@ std::vector<Token> LlamaDecideBackend::tokenize_plain(const std::string & text) 
 }
 
 void LlamaDecideBackend::clear() {
-    llama_memory_clear(llama_get_memory(d_.ctx), true);
-    // The moved model state is not in the buffers llama.cpp clears (Session::Impl::clear_memory).
-    if (d_.prefill) d_.prefill->clear_state();
+    // Forget the cells, keep the bytes, with or without a prefill device (Session::Impl::clear_memory).
+    llama_memory_clear(llama_get_memory(d_.ctx), /*data=*/false);
     if (d_.ctx_dft) llama_memory_clear(llama_get_memory(d_.ctx_dft), true);
     have_logits_ = false;
 }

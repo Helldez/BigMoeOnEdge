@@ -66,6 +66,18 @@ class TurnFiguresTest {
         assertEquals(Words.TIME_HINT, by.getValue("time").hint)
     }
 
+    /** A model held whole in memory (the web's resident fixture): both speeds, all of its time computing. */
+    @Test
+    fun aResidentModelStillHasItsSpeeds() {
+        val s = web().put("tok_s", 93.9).put("prefill_s", 0.17).put("prefill_tps", 111.6).put("n_prompt", 19).put("n_past", 25)
+            .put("cache_hit_pct", -1).put("read_mib", 0).put("compute_s_tok", 1 / 93.9).put("flash_wait_s_tok", 0.0).put("mgmt_s_tok", 0.0)
+        assertEquals("tg 93.9 tok/s · pp 112 tok/s", TurnFigures.line(s))
+        val f = TurnFigures.of(s, 16384, null)
+        assertEquals(listOf("speed", "time", "prompt", "context"), f.map { it.id })
+        assertEquals("111.6 tok/s, 19 tokens in 0.2 s", f.first { it.id == "prompt" }.value)
+        assertEquals("computing 100%", f.first { it.id == "time" }.value)
+    }
+
     @Test
     fun figuresLeftOutWhenUnknown() {
         val f = TurnFigures.of(web().put("cache_hit_pct", -1), 0, null)

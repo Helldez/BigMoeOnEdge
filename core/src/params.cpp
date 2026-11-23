@@ -565,17 +565,6 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
-        ParamDesc d = row("trial-cpu-share", "Measure the device cache's CPU share", G::Cache, L::Experimental,
-                          "Time the decode of this load's side of the device cache's CPU share, to be compared "
-                          "across loads: 1 with --device-cache-cpu-share as set, 0 with every miss uploaded. -1 "
-                          "times neither. Changes no output; set by hand only: the plan arms no CPU share.");
-        d.value_hint = "N";
-        bounds(d, -1, 1, "side");
-        special(d, "-1", "off");
-        bind_int(d, [](RunConfig & c) -> int & { return c.trial.cpu_share_side; });
-        t.push_back(d);
-    }
-    {
         ParamDesc d = row("trial-shared-device", "Measure the shared-memory device", G::Memory, L::Experimental,
                           "Time the decode of this load's side of where a model held in memory runs, on a machine "
                           "whose device reads the host's own memory, to be compared across loads: 1 with every "
@@ -823,16 +812,6 @@ std::vector<ParamDesc> build() {
         bind_int(d, [](RunConfig & c) -> int & { return c.n_gpu_layers; });
         d.details = "Layers held and computed on a device with its own memory, such as a graphics card: much faster "
                     "than streaming. The plan fills the device as far as it fits.";
-        t.push_back(d);
-    }
-    {
-        ParamDesc d = row("dense-on-device", "Dense weights on device", G::Memory, L::Experimental,
-                          "Put the dense weights on an accelerator that shares this host's memory, leaving the "
-                          "experts to the streamer. Measured to lose on a phone GPU; kept as a named lever.");
-        d.type = ParamType::Bool;
-        d.flag.clear();
-        d.switches = {{"--dense-on-device", "true"}};
-        bind_bool(d, [](RunConfig & c) -> bool & { return c.dense_on_device; });
         t.push_back(d);
     }
     {

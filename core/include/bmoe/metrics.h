@@ -184,7 +184,10 @@ struct RunSummary {
     // from_cache): the experts a device prefill did NOT read from flash. Zero without an arena.
     double prefill_device_cache_mib = 0.0;
 
-    // MoE streaming totals (zero when streaming is off)
+    // MoE streaming totals (zero when streaming is off), except moe_compute_s_per_token: the residual
+    // of the wall once the flash and cache terms are taken out, which with nothing streamed is the
+    // whole token, as TokenMetrics::compute_ms is. Zero there would read as a token whose time went
+    // nowhere measured, and a UI's split of it as "other 100%".
     double moe_read_mib = 0.0;
     double moe_io_seconds = 0.0;
     double moe_compute_s_per_token = 0.0;

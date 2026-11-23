@@ -415,12 +415,20 @@ struct Session::Impl {
         Impl & im;
         ~PlacementGuard() { im.place_prefill(false); }
     };
-    // Every llama_memory_clear(data) of the target context goes through here: llama.cpp clears the
-    // buffers it allocated, which a moved model state no longer lives in.
-    void clear_memory(llama_context * c) {
-        llama_memory_clear(llama_get_memory(c), true);
-        if (prefill) prefill->clear_state();
-    }
+    // Every drop of the target context's memory goes through here (a new chat whose prefix nothing
+    // stands in for, a rollback with no boundary to rewind to, perplexity, a discarded capture or
+    // warm-up). It forgets the cells and leaves the buffers as they are. A data clear memsets the
+    // whole KV, and the positions a conversation never reached are zero pages from llama.cpp's own
+    // clear at allocation, which a kernel with compressed swap parks there at almost no cost: the
+    // memset faults all of them back in as real memory at once, on a phone right when a new chat
+    // arrives. The buffers do not need it: a free cell is masked out of attention, and the graph
+    // zeroes the recurrent state of a cell that has no source before reading it (rs_z). A partial
+    // seq_rm and a checkpoint restore leave the same stale-but-free cells behind on every turn. A
+    // state a prefill device moved needs it no more: the mask and rs_z are read from the cells, which
+    // stay llama.cpp's wherever the bytes live. Zeroing cost twice there, the moved copy and the
+    // buffers llama.cpp first allocated, whose pages the memset faulted back in after they had been
+    // handed back (PrefillDevice::init_state).
+    void clear_memory(llama_context * c) { llama_memory_clear(llama_get_memory(c), /*data=*/false); }
 
     // The MTP draft source (SpecConfig::source == mtp). A SECOND context over the SAME model,
     // created with ctx_type = MTP so llama.cpp builds the nextn graph instead of the trunk one. It
@@ -1782,15 +1790,12 @@ void Session::Impl::hand_over_dense_weights(const SessionConfig & cfg,
 void Session::Impl::release_mapping(const SessionConfig & cfg,
                                     const GgufOffsets & offs,
                                     const std::vector<std::string> & unaccounted) {
-    std::vector<const void *> weight_addrs;
-    if (cfg.moe.release_mmap) {
-        weight_addrs.reserve(hook->captured_weight_objects().size());
-        for (const ggml_tensor * t : hook->captured_weight_objects())
-            if (t && t->data) weight_addrs.push_back(t->data);
-    }
-    const size_t still_mapped =
-        cfg.moe.release_mmap ? pio::addresses_in_file_mappings(offs.shard_paths, weight_addrs) : 0;
     if (!cfg.moe.release_mmap) return;
+    std::vector<const void *> weight_addrs;
+    weight_addrs.reserve(hook->captured_weight_objects().size());
+    for (const ggml_tensor * t : hook->captured_weight_objects())
+        if (t && t->data) weight_addrs.push_back(t->data);
+    const size_t still_mapped = pio::addresses_in_file_mappings(offs.shard_paths, weight_addrs);
     if (still_mapped) {
         log_printf(LogLevel::Info, "release-mmap skipped: %zu weight(s) still read the model's mapping", still_mapped);
     } else if (!unaccounted.empty() && cfg.spec.is_mtp()) {
@@ -2402,7 +2407,7 @@ void Session::Impl::arm_trials() {
         else
             trials.overlap = {cfg.moe.overlap ? 1 : 0, cfg.moe.overlap ? 0 : 1};
     }
-    trials.rate = t.device_tier >= 0 || t.width_side >= 0 || t.cpu_share_side >= 0 || t.shared_device_side >= 0;
+    trials.rate = t.device_tier >= 0 || t.width_side >= 0 || t.shared_device_side >= 0;
     trials.stage = stage_done;
     next_trial_stage(/*settled*/ false);
 }
@@ -2509,10 +2514,6 @@ void Session::Impl::rate_step(double seconds, int tokens, uint64_t lookups, uint
     char what[96];
     if (tier)
         std::snprintf(what, sizeof(what), "%s a device expert cache", cfg.trial.device_tier == 1 ? "with" : "without");
-    else if (cfg.trial.cpu_share_side >= 0)
-        std::snprintf(what, sizeof(what), "%s",
-                      cfg.trial.cpu_share_side == 1 ? "with part of the device cache's misses on the CPU"
-                                                    : "with every device cache miss uploaded");
     else if (cfg.trial.shared_device_side >= 0)
         std::snprintf(what, sizeof(what), "with every layer on %s",
                       cfg.trial.shared_device_side == 1 && !cfg.device_split.empty()
@@ -4099,8 +4100,6 @@ struct Session::Impl::Turn {
             s.moe_mgmt_s_per_token = n_gen ? tally.mgmt_seconds / n_gen : 0.0;
             s.moe_stall_s_per_token = n_gen ? tally.stall_seconds / n_gen : 0.0;
             s.moe_flash_wait_s_per_token = tally.overlap ? s.moe_stall_s_per_token : s.moe_io_s_per_token;
-            s.moe_compute_s_per_token = s.s_per_token - s.moe_flash_wait_s_per_token - s.moe_mgmt_s_per_token;
-            if (s.moe_compute_s_per_token < 0) s.moe_compute_s_per_token = 0;
             s.cache_hit_pct = st.cache_lookups > 0 ? 100.0 * st.cache_hits / st.cache_lookups : -1.0;
             const long long dec_lookups = st.cache_lookups - prev_cache_lookups;
             s.cache_hit_decode_pct =
@@ -4129,6 +4128,10 @@ struct Session::Impl::Turn {
             s.moe_spec_experts = st.spec_experts - prev_spec_experts;
             s.moe_spec_useful = st.spec_useful - prev_spec_useful;
         }
+        // Outside the streaming block: a resident model's token is all compute by the same residual
+        // (its flash and cache terms are zero), as each token event already says.
+        s.moe_compute_s_per_token =
+            std::max(0.0, s.s_per_token - s.moe_flash_wait_s_per_token - s.moe_mgmt_s_per_token);
         s.experts_routed = im.hook->experts_routed() - prev_routed;
         s.experts_dropped = im.hook->experts_dropped() - prev_dropped;
         s.experts_reranked = im.hook->experts_reranked() - prev_reranked;

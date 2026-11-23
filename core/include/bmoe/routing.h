@@ -88,16 +88,6 @@ inline ReplayCounts replay_lru(const RoutingTrace & trace, uint64_t budget_bytes
 // `half_life` as replay_cache: the policy the run's cache will evict by.
 HitCurve hit_curve(const RoutingTrace & trace, uint32_t points, int half_life);
 
-// The experts the trace used most, by block and expert id, every routing counted (a token routing an
-// expert is one use, prompt and decode alike). Ranked by uses, ties by block then id, so two calls
-// agree. `limit` 0 returns every expert used at all.
-struct HotExpert {
-    uint32_t layer = 0;
-    int32_t expert = 0;
-    uint64_t uses = 0;
-};
-std::vector<HotExpert> hottest_experts(const RoutingTrace & trace, size_t limit = 0);
-
 // A trace shorter than this many decoded tokens is not a curve: the first tokens fill an empty cache,
 // and a replay of only those would describe the cold start.
 inline constexpr uint32_t k_routing_min_decode_tokens = 32;

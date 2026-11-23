@@ -92,6 +92,15 @@
 //   G28 the answer check of a model held whole on a device (KnobTrialConfig::answer_device): answers
 //       that match the cores' are confirmed and the placement serves (a); answers made to differ
 //       reopen the session on the cores, which serve (b); the record carries each word.
+//   G29 a new chat after another, longer conversation == the same chat in a fresh session, resident
+//       (a) and streamed (b). Dropping a conversation forgets the cells but does not zero the
+//       buffers, so the chat decodes over stale KV and, on a hybrid stack, over an advanced recurrent
+//       state. Both must stay invisible. The control (c) continues the first conversation instead
+//       and must differ, or the gate could not see a leak. (d) the same with a prefill device, whose
+//       moved state is not zeroed either, at load or on a drop: the new chat, prefilled on the
+//       device, == the fresh session, with the same control. (e) perplexity after the other
+//       conversation == in a fresh session, nll/top1 bit for bit, resident and with the device:
+//       every position's logits, so a leak that moves them without flipping a greedy token shows.
 //
 // G15 needs no separate "did it do anything" check of the G10 kind: the tensor is bound to
 // RESERVED address space, so a row the policy fails to fetch is not a slightly wrong weight but
@@ -346,6 +355,83 @@ session_shrink_gen(const RunConfig & c, int shrink_mib, std::string & out1, std:
     }
     out1 = r1.generated_text;
     out2 = r2.generated_text;
+    return true;
+}
+
+// G29's other conversation, about twice as long as the reference one (prompt and answer), so the
+// reference decodes into cells it wrote and leaves cells it wrote behind, unused but not zeroed. It
+// has to fit the gates' 256-token context: the tiny models spend more than a token per byte.
+static const char * const k_other_conversation =
+    "A longer, different conversation comes first and fills the cache past where the reference ends.";
+
+// Open a Session, run `first` as a conversation of its own, then c.prompt. With `new_chat` the
+// second generate drops the first conversation (clear_kv) and must read like a fresh session; without
+// it the second continues the first, which is G29's control. `device_tokens`, when given, gets the
+// second generate's prompt tokens a prefill device computed.
+static bool session_after_other(const RunConfig & c,
+                                const std::string & first,
+                                bool new_chat,
+                                std::string & out,
+                                std::string & err,
+                                int * device_tokens = nullptr) {
+    std::unique_ptr<Session> s = Session::open(session_config_from(c), err);
+    if (!s) return false;
+    GenerateRequest g1;
+    g1.prompt = first;
+    g1.n_predict = c.n_predict;
+    g1.clear_kv = true;
+    RunResult r1 = s->generate(g1);
+    if (!r1) {
+        err = r1.error;
+        return false;
+    }
+    GenerateRequest g2;
+    g2.prompt = c.prompt;
+    g2.n_predict = c.n_predict;
+    g2.clear_kv = new_chat;
+    RunResult r2 = s->generate(g2);
+    if (!r2) {
+        err = r2.error;
+        return false;
+    }
+    out = r2.generated_text;
+    if (device_tokens) *device_tokens = r2.summary.prefill_device_tokens;
+    return true;
+}
+
+// The text G16c and G29e score, one constant so the two stay in step.
+static const char * const k_ppl_text =
+    "The quick brown fox jumps over the lazy dog, and then it runs back home to sleep.";
+
+// G29e: the perplexity of k_ppl_text in a Session that first held `first` as a conversation of its
+// own ("" for none), as nll/top1 to compare bit for bit. perplexity() drops the memory itself, so
+// every position's logits read the drop, where a greedy answer shows only the leaks that flip a
+// token.
+static bool ppl_after_other(const RunConfig & c, const std::string & first, std::string & out, std::string & err) {
+    std::unique_ptr<Session> s = Session::open(session_config_from(c), err);
+    if (!s) return false;
+    if (!first.empty()) {
+        GenerateRequest g;
+        g.prompt = first;
+        g.n_predict = c.n_predict;
+        g.clear_kv = true;
+        RunResult r = s->generate(g);
+        if (!r) {
+            err = r.error;
+            return false;
+        }
+    }
+    PplRequest pr;
+    pr.text = k_ppl_text;
+    pr.skip = 2;
+    PplResult p = s->perplexity(pr);
+    if (!p.ok) {
+        err = p.error;
+        return false;
+    }
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%.17g/%d", p.nll, p.n_top1);
+    out = buf;
     return true;
 }
 
@@ -858,6 +944,38 @@ int main(int argc, char ** argv) {
     fails += check("S3a session generate #1 == resident", s_res, s_sh1);
     fails += check("S3b session generate #2 (after budget shrink) == resident", s_res, s_sh2);
 
+    // ── G29: a new chat after another conversation must read like a fresh session ──
+    // (d), the same with a prefill device, runs in the G16 block, which has the device.
+    {
+        const std::string other = k_other_conversation;
+        std::string s_nc_res, s_nc_str, s_cont;
+        if (!session_after_other(resident, other, /*new_chat=*/true, s_nc_res, err) ||
+            !session_after_other(sess, other, /*new_chat=*/true, s_nc_str, err) ||
+            !session_after_other(resident, other, /*new_chat=*/false, s_cont, err)) {
+            std::fprintf(stderr, "G29 session run failed: %s\n", err.c_str());
+            return 2;
+        }
+        fails += check("G29a resident: new chat after another conversation == fresh", s_res, s_nc_res);
+        fails += check("G29b streaming(LRU cache): new chat after another conversation == fresh", s_res, s_nc_str);
+        // A tiny model may answer the reference prompt with the same greedy bytes whatever came
+        // before it, and there the control can show nothing: G29a/b only prove the drop is
+        // consistent. The models whose answer does depend on their past (the hybrid stacks among
+        // them) are the runs that show the gate would see a leak.
+        if (s_cont == s_res) {
+            std::printf("[N/A]  G29c control: this model's greedy output ignores earlier context, so a leak "
+                        "would not show here; the runs where the control passes cover it\n");
+        } else {
+            std::printf("[PASS] G29c control: continuing the other conversation changes the output\n");
+        }
+        std::string p_fresh, p_after;
+        if (!ppl_after_other(resident, "", p_fresh, err) || !ppl_after_other(resident, other, p_after, err)) {
+            std::fprintf(stderr, "G29e perplexity run failed: %s\n", err.c_str());
+            return 2;
+        }
+        fails += check("G29e resident: perplexity after another conversation == fresh (nll/top1, bit for bit)", p_fresh,
+                       p_after);
+    }
+
     // ── G5: temporal prefetch must not change bytes ──
     // A forced cache (prefetch needs one) plus a couple of look-ahead layers, exercising the
     // speculative queue, integration and eviction against the plain streamed reference.
@@ -1332,7 +1450,7 @@ int main(int argc, char ** argv) {
             fails += check("G16b session generate #2 (device prefill again) == all CPU", s_pref, g2.generated_text);
 
             PplRequest pr;
-            pr.text = "The quick brown fox jumps over the lazy dog, and then it runs back home to sleep.";
+            pr.text = k_ppl_text;
             pr.skip = 2;
             std::unique_ptr<Session> sc = Session::open(session_config_from(pref), open_err);
             if (!sc) {
@@ -1388,6 +1506,43 @@ int main(int argc, char ** argv) {
                         std::printf("[PASS] G16d a verify as wide as the device's narrowest piece is refused\n");
                     }
                 }
+            }
+
+            // G29d: G29 with the prefill device. The model state lives in the device's buffer from
+            // load on, and neither the reservation decode at load nor the drop of the other
+            // conversation zeroes it: the new chat, prefilled on the device, reads its stale bytes as
+            // the CPU does and must answer as the fresh session (G16b's first generate). The device
+            // must have prefilled it, or the gate would only repeat G29a. The control is G29c's.
+            {
+                std::string s_nc_dev, s_cont_dev;
+                int nc_dev_tokens = 0;
+                if (!session_after_other(pdev, k_other_conversation, /*new_chat=*/true, s_nc_dev, err,
+                                         &nc_dev_tokens) ||
+                    !session_after_other(pdev, k_other_conversation, /*new_chat=*/false, s_cont_dev, err)) {
+                    std::fprintf(stderr, "G29d session run failed: %s\n", err.c_str());
+                    return 2;
+                }
+                fails += check("G29d prefill device: new chat after another conversation == fresh", g1.generated_text,
+                               s_nc_dev);
+                if (nc_dev_tokens <= 0) {
+                    std::printf("[FAIL] G29d the device did not prefill the new chat\n");
+                    ++fails;
+                }
+                if (s_cont_dev == g1.generated_text) {
+                    std::printf("[N/A]  G29d control: this model's greedy output ignores earlier context, so a "
+                                "leak would not show here; the runs where the control passes cover it\n");
+                } else {
+                    std::printf("[PASS] G29d control: continuing the other conversation changes the output\n");
+                }
+                std::string p_fresh_dev, p_after_dev;
+                if (!ppl_after_other(pdev, "", p_fresh_dev, err) ||
+                    !ppl_after_other(pdev, k_other_conversation, p_after_dev, err)) {
+                    std::fprintf(stderr, "G29e prefill-device perplexity run failed: %s\n", err.c_str());
+                    return 2;
+                }
+                fails += check("G29e prefill device: perplexity after another conversation == fresh (nll/top1, bit "
+                               "for bit)",
+                               p_fresh_dev, p_after_dev);
             }
 
             // ── G17: streamed experts through the device arena ──

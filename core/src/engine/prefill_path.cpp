@@ -192,15 +192,17 @@ bool PrefillPath::open_arena(const PrefillDeviceConfig & cfg,
 // graph needed 136 MB at 1024). So reserve again, with the weights where a wide graph will actually
 // find them: request_compute_reservation has llama.cpp redo its reservation at the next decode, and
 // one device-placed decode is that decode. The CPU keeps only what its own graphs (decode, a short
-// tail) need, grown on demand from there.
+// tail) need, grown on demand from there. The filler stays in the cells it wrote, which are freed:
+// the first prompt passes over them as over any free cell (Session::Impl::clear_memory). Zeroing
+// them would fault the whole state in at load, the moved copy and the buffers llama.cpp first
+// allocated, whose pages init_state has just handed back.
 bool PrefillPath::reserve_on_device(llama_context * ctx, const llama_vocab * vocab, int n_tokens) {
     request_compute_reservation(ctx);
     std::vector<llama_token> toks((size_t) n_tokens, filler_token(vocab));
     place(true);
     const int rc = decode(ctx, llama_batch_get_one(toks.data(), n_tokens));
     place(false);
-    llama_memory_clear(llama_get_memory(ctx), true);
-    clear_state();
+    llama_memory_clear(llama_get_memory(ctx), /*data=*/false);
     return rc == 0;
 }
 
@@ -267,10 +269,6 @@ int PrefillPath::decode_ext(llama_context * ctx, llama_batch_ext * b) {
         if (rc == 0 && arena_->failed()) rc = -1;
     }
     return rc;
-}
-
-void PrefillPath::clear_state() {
-    if (dev_) dev_->clear_state();
 }
 
 } // namespace bmoe::detail

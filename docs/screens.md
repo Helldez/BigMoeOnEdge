@@ -71,6 +71,8 @@ it.
 
 A model that loaded with streaming off (a dense model, or a plan that declined) is marked as such
 wherever the model's name is shown: the live metrics then have no flash column, and the UI says why.
+Every other figure stays: the answer and prompt speeds under each answer and in Metrics, the time to
+the first word, and where a token's time went (all of it computing, with nothing read from the disk).
 
 A loaded model whose context is below what a client of the server sends gets a warning beside its
 name when the server says to (`model.ctx_advice.warn`): while the server serves the network, where
