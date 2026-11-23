@@ -61,6 +61,20 @@ inline bool is_token_table(const std::string & name) {
     return name == k_token_table;
 }
 
+// The memory module's state tensors (the KV cache's "cache_k_l<il>" and "cache_v_l<il>", a recurrent
+// state's "cache_r_l<il>" and "cache_s_l<il>", and their kin), as llama.cpp's memory modules name
+// them. Not weights: a graph reads them through views, and whatever records a graph's reads must tell
+// them apart from the model's own tensors.
+inline constexpr std::string_view k_state_prefix = "cache_";
+
+inline bool is_state_tensor(const char * name) {
+    return std::strncmp(name, k_state_prefix.data(), k_state_prefix.size()) == 0;
+}
+
+// The label of block `il` as the file names its tensors ("blk.<il>"), for a trace row that stands for
+// the whole block.
+std::string block_label(int il);
+
 // ── graph nodes ─────────────────────────────────────────────────────────────────────
 
 // The per-layer nodes the engine asks the graph for, as build_moe_ffn and the layer builders name
