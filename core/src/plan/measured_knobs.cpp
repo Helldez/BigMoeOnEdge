@@ -187,6 +187,13 @@ std::string format_measured_knobs(const std::vector<MeasuredKnobs> & records) {
             std::snprintf(num, sizeof(num), "%.3f", r.no_shared_device_tps);
             out += std::string(" no_shared_device_tps=") + num;
         }
+        // Their prompt rates: later keys still, written once a load timed one.
+        if (r.shared_device_prompt_tps > 0.0 || r.no_shared_device_prompt_tps > 0.0) {
+            std::snprintf(num, sizeof(num), "%.3f", r.shared_device_prompt_tps);
+            out += std::string(" shared_device_prompt_tps=") + num;
+            std::snprintf(num, sizeof(num), "%.3f", r.no_shared_device_prompt_tps);
+            out += std::string(" no_shared_device_prompt_tps=") + num;
+        }
         // The decode's own cost: later keys of the same format, which an older engine reads past.
         std::snprintf(num, sizeof(num), "%.6f", r.decode_compute_s);
         out += std::string(" decode_compute_s=") + num;
@@ -213,6 +220,9 @@ std::string format_measured_knobs(const std::vector<MeasuredKnobs> & records) {
             if (r.*u.count > 0)
                 unviable += (unviable.empty() ? "" : ",") + std::string(u.name) + ":" + std::to_string(r.*u.count);
         if (!unviable.empty()) out += " unviable=" + unviable;
+        // What the shared device reported free when it failed: beside its count, once there is one.
+        if (r.shared_device_unviable_free_mib > 0)
+            out += " shared_device_unviable_free_mib=" + std::to_string(r.shared_device_unviable_free_mib);
         // Each prefill device's word, likewise only when there is one.
         std::string words;
         for (const MeasuredKnobs::PrefillWord & w : r.prefill) {
@@ -265,6 +275,11 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
                 dst = std::strtod(v.c_str(), &end);
                 return !v.empty() && !*end;
             };
+            auto as_u64 = [&v](uint64_t & dst) {
+                char * end = nullptr;
+                dst = (uint64_t) std::strtoull(v.c_str(), &end, 10);
+                return !v.empty() && v[0] != '-' && !*end;
+            };
             bool ok = true;
             if (k == "hardware")
                 r.hardware = v;
@@ -292,6 +307,10 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
                 ok = as_double(r.shared_device_tps);
             else if (k == "no_shared_device_tps")
                 ok = as_double(r.no_shared_device_tps);
+            else if (k == "shared_device_prompt_tps")
+                ok = as_double(r.shared_device_prompt_tps);
+            else if (k == "no_shared_device_prompt_tps")
+                ok = as_double(r.no_shared_device_prompt_tps);
             else if (k == "width_narrow")
                 ok = as_int(r.width_narrow);
             else if (k == "wide_decode_tps")
@@ -332,6 +351,8 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
                 ok = as_double(r.host_prefill_tps);
             else if (k == "unviable")
                 ok = parse_unviable(v, r);
+            else if (k == "shared_device_unviable_free_mib")
+                ok = as_u64(r.shared_device_unviable_free_mib);
             else if (k == "prefill")
                 ok = parse_prefill(v, r);
             else if (k == "device_answer")
@@ -354,7 +375,8 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
             r.decode_threads < 0 || !(r.decode_hit >= -1.0 && r.decode_hit <= 1.0) || !(r.decode_cache_mib >= 0.0) ||
             r.decode_gpu_layers < 0 || r.decode_device_cache_mb < 0 || r.mix_requests < 0 ||
             !(r.mix_gen_tokens >= 0.0) || !(r.mix_wide_prompt_tokens >= 0.0) || !(r.host_prefill_tps >= 0.0) ||
-            !(r.shared_device_tps >= 0.0) || !(r.no_shared_device_tps >= 0.0)) {
+            !(r.shared_device_tps >= 0.0) || !(r.no_shared_device_tps >= 0.0) || !(r.shared_device_prompt_tps >= 0.0) ||
+            !(r.no_shared_device_prompt_tps >= 0.0)) {
             error = "line " + std::to_string(n) + ": a value out of range";
             return false;
         }
@@ -391,10 +413,17 @@ void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKno
             if (rec.no_device_cache_tps > 0.0) r.no_device_cache_tps = rec.no_device_cache_tps;
             merge_unviable(r.shared_device_unviable, rec.shared_device_unviable, r.shared_device_tps,
                            rec.shared_device_tps);
+            // The room the device reported goes with the failure it was reported at: the latest one
+            // handed on, and nothing once the failure is cleared.
+            if (rec.shared_device_unviable > 0 && rec.shared_device_unviable_free_mib > 0)
+                r.shared_device_unviable_free_mib = rec.shared_device_unviable_free_mib;
+            if (r.shared_device_unviable == 0) r.shared_device_unviable_free_mib = 0;
             merge_unviable(r.no_shared_device_unviable, rec.no_shared_device_unviable, r.no_shared_device_tps,
                            rec.no_shared_device_tps);
             if (rec.shared_device_tps > 0.0) r.shared_device_tps = rec.shared_device_tps;
             if (rec.no_shared_device_tps > 0.0) r.no_shared_device_tps = rec.no_shared_device_tps;
+            if (rec.shared_device_prompt_tps > 0.0) r.shared_device_prompt_tps = rec.shared_device_prompt_tps;
+            if (rec.no_shared_device_prompt_tps > 0.0) r.no_shared_device_prompt_tps = rec.no_shared_device_prompt_tps;
             // A different narrow width is a different comparison: what was measured against the old
             // one no longer answers it.
             set_width_narrow(r, rec.width_narrow);
@@ -464,6 +493,7 @@ void record_side_rate(const KnobTrialConfig & trial, double tokens_per_second, M
     } else if (trial.shared_device_side >= 0) {
         (trial.shared_device_side == 1 ? rec.shared_device_tps : rec.no_shared_device_tps) = tokens_per_second;
         (trial.shared_device_side == 1 ? rec.shared_device_unviable : rec.no_shared_device_unviable) = 0;
+        if (trial.shared_device_side == 1) rec.shared_device_unviable_free_mib = 0;
     }
 }
 

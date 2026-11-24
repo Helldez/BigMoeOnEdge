@@ -1236,17 +1236,20 @@ detail::DeviceAnswer Session::Impl::compare_device_answer(Opening & o) {
         if (w.side == detail::AnswerSide::Unweighed)
             log_printf(LogLevel::Warn, "device answer: the two sides could not be timed on this model; %s keeps it",
                        dev);
-        else
-            log_printf(LogLevel::Info,
-                       "device answer: this model one token at a time takes %.1f ms on %s and %.1f ms on the CPU "
-                       "(%.1f against %.1f tok/s), a %d-token graph %.0f ms against %.0f; with %.1f prompt tokens a "
-                       "decoded token a request takes %.2fx the CPU's time on %s - %s",
-                       a.device_token_s * 1e3, dev, a.host_token_s * 1e3, 1.0 / a.device_token_s, 1.0 / a.host_token_s,
-                       a.wide, a.device_wide_s * 1e3, a.host_wide_s * 1e3, (double) cfg.trial.answer_prompt_per_token,
-                       w.device_request_s / w.cores_request_s, dev,
-                       w.side == detail::AnswerSide::Cores
-                           ? "the CPU is faster by the margin: the model is reopened on it"
-                           : "the device keeps the model");
+        else {
+            const SideRates on = detail::answer_device_rates(a), off = detail::answer_host_rates(a);
+            log_printf(
+                LogLevel::Info,
+                "device answer: this model one token at a time takes %.1f ms on %s and %.1f ms on the CPU "
+                "(%.1f against %.1f tok/s), a %d-token prompt graph %.0f ms against %.0f (%.1f against %.1f "
+                "tok/s, the widest of %d widths climbed); with %.1f prompt tokens a decoded token a request takes "
+                "%.2fx the CPU's time on %s - %s",
+                a.device_token_s * 1e3, dev, a.host_token_s * 1e3, on.decode_tps, off.decode_tps, a.prompt_width,
+                a.device_prompt_s * 1e3, a.host_prompt_s * 1e3, on.prompt_tps, off.prompt_tps, a.prompt_steps,
+                (double) cfg.trial.answer_prompt_per_token, w.device_request_s / w.cores_request_s, dev,
+                w.side == detail::AnswerSide::Cores ? "the CPU is faster by the margin: the model is reopened on it"
+                                                    : "the device keeps the model");
+        }
     }
     return a;
 }
@@ -2804,11 +2807,26 @@ struct Session::AnswerCheck {
 };
 
 namespace {
-// The two sides as the check timed them, kept where a plan reads a side's decode rate: both at once,
-// from one load, so the plan after this one decides on the model's own measurement.
+// The two sides as the check timed them, kept where a plan reads a side's rates: both at once, from
+// one load, so the plan after this one decides on the model's own measurement, by the rule this load
+// decided by (weigh_sides), and does not undo its choice on a different instrument.
 void keep_answer_rates(const detail::DeviceAnswer & a, MeasuredKnobs & rec) {
-    if (a.device_token_s > 0.0) rec.shared_device_tps = 1.0 / a.device_token_s;
-    if (a.host_token_s > 0.0) rec.no_shared_device_tps = 1.0 / a.host_token_s;
+    const SideRates on = detail::answer_device_rates(a), off = detail::answer_host_rates(a);
+    if (on.decode_tps > 0.0) rec.shared_device_tps = on.decode_tps;
+    if (off.decode_tps > 0.0) rec.no_shared_device_tps = off.decode_tps;
+    if (on.prompt_tps > 0.0) rec.shared_device_prompt_tps = on.prompt_tps;
+    if (off.prompt_tps > 0.0) rec.no_shared_device_prompt_tps = off.prompt_tps;
+}
+
+// The memory the device named `name` reports free, in MiB, as the hardware probe reads it
+// (ggml_backend_dev_props::memory_free), so a plan compares the two figures in the same terms. 0 where
+// no device has that name.
+uint64_t device_free_mib(const std::string & name) {
+    ggml_backend_dev_t dev = ggml_backend_dev_by_name(name.c_str());
+    if (!dev) return 0;
+    ggml_backend_dev_props props{};
+    ggml_backend_dev_get_props(dev, &props);
+    return (uint64_t) props.memory_free >> 20;
 }
 } // namespace
 
@@ -2823,22 +2841,31 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     AnswerCheck check;
     std::unique_ptr<Session> self = open_placed(cfg, error, route_trace, compute_trace, io_trace, &check);
     if (!check.ran) {
-        if (self || !cfg.fallback || device.empty()) return self;
+        // A plan that moved the model onto a device gives the configuration its other part
+        // (RunConfig::fallback), whether or not the load compares answers there: a device the plan
+        // already confirmed can still refuse the allocation (a driver's own ceiling, memory another
+        // program holds).
+        if (self || !cfg.fallback || cfg.device_split.empty()) return self;
+        const std::string placed_on = device.empty() ? cfg.device_split.front().first : device;
         // The model could not be opened on the device at all, most likely for memory: the plan's other
         // part serves, and the device has lost this model here (a second try at a load that does not
-        // fit is a second failure on a machine already short of room).
+        // fit is a second failure on a machine already short of room) until it reports more room than
+        // it has now (MeasuredKnobs::shared_device_unviable_free_mib).
+        const uint64_t free_mib = device_free_mib(placed_on);
         log_printf(LogLevel::Warn,
-                   "the model could not be opened on %s (%s); the plan's other configuration is opened instead",
-                   device.c_str(), error.c_str());
+                   "the model could not be opened on %s (%s, %llu MiB free there); the plan's other configuration "
+                   "is opened instead",
+                   placed_on.c_str(), error.c_str(), (unsigned long long) free_mib);
         const double first_s = secs(t0, clock_t_::now());
         const std::string first_error = error;
         self = open_placed(*cfg.fallback, error, route_trace, compute_trace, io_trace, nullptr);
         if (!self) {
-            error = "the model could not be opened on " + device + " (" + first_error + "), nor as the plan's other " +
-                    "configuration: " + error;
+            error = "the model could not be opened on " + placed_on + " (" + first_error +
+                    "), nor as the plan's other configuration: " + error;
             return nullptr;
         }
         self->impl_->trials.result.shared_device_unviable = MeasuredKnobs::unviable_max;
+        self->impl_->trials.result.shared_device_unviable_free_mib = free_mib;
         self->impl_->load_seconds += first_s;
         return self;
     }

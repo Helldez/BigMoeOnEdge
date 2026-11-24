@@ -112,6 +112,9 @@ core/
     measured_knobs.h
                     the lossless knobs' verdicts as a value (what the first answer measured), their
                     text form, and the hardware fingerprint a verdict is kept against
+    serving_side.h  which of two processors serves a request sooner, from each one's decode and
+                    prompt rates on the model: one rule for the load that times both and the plans
+                    made on what it recorded
     model_records.h a model's routing record and verdicts kept on disk between loads, by content
                     fingerprint, in a folder the front-end names: one store for every front-end
     probe.h         the adapters' entry points: what fills the two profiles
@@ -182,6 +185,8 @@ core/
                 routing - the routing record's text form, the LRU replay over it, the hit curve
                   and the hottest experts (measured-planning.md, Step 1); pure as the rules
                 measured_knobs - the knob verdicts' text form and the hardware fingerprint (Step 2)
+                serving_side - the request weighing a device and the cores are ranked by, shared
+                  by the load's answer check and the shared-device rule; pure as the rules
                 model_records - ModelRecords: the routing record and verdicts per model on disk
                 hardware_probe, model_probe, storage_probe, headroom_probe, bandwidth_probe,
                   layer_probe (one real layer of the model, its experts and its dense matrices, on

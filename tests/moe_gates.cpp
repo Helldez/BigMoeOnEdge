@@ -2185,8 +2185,9 @@ int main(int argc, char ** argv) {
                     // d) The plan in two parts (RunConfig::fallback): the model held whole on the
                     // device, and the streaming plan behind it. Where the device does not keep the
                     // model, the session reopens as the stream and serves its bytes, which are the
-                    // resident model's: once because the cores are faster (the loopback device is the
-                    // cores behind a socket), once because its answers were made to differ.
+                    // resident model's: where the cores came out faster (the loopback device is the
+                    // cores behind a socket, so either side can), and always once its answers were made
+                    // to differ.
                     RunConfig stream = base(model);
                     stream.moe.enabled = true;
                     for (const bool differs : {false, true}) {
@@ -2195,9 +2196,15 @@ int main(int argc, char ** argv) {
                         two.fallback = std::make_shared<const RunConfig>(stream);
                         const ValidationResult vt = validate(two);
                         const RunResult rt2 = vt.ok ? run(two) : RunResult{};
-                        const char * why = differs ? "answers differ" : "the cores faster";
-                        const bool on_device = rt2 && rt2.knobs.device_answer(dev) == 1 && !differs &&
-                                               rt2.knobs.shared_device_tps >= rt2.knobs.no_shared_device_tps;
+                        const char * why = differs ? "answers differ" : "sides weighed";
+                        // Which side the load chose is the session's to decide (weigh_sides, held by
+                        // its own unit tests), on rates a loopback device and the cores reach close to
+                        // each other and that a sanitizer's slowdown can turn round. So the gate reads
+                        // the side from what the session did, and holds each side to its bytes: the
+                        // device kept the model where no expert was streamed, and only an answer it
+                        // confirmed may stay there.
+                        const bool on_device =
+                            rt2 && rt2.knobs.device_answer(dev) == 1 && !differs && !(rt2.summary.moe_read_mib > 0.0);
                         if (!vt.ok || !rt2) {
                             std::printf("[FAIL] G28d two-part plan (%s) failed: %s\n", why,
                                         !vt.ok ? vt.error.c_str() : rt2.error.c_str());
