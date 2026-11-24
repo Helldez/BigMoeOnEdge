@@ -729,15 +729,20 @@ struct App {
                     other = plan_other_side(p);
                     if (other.ok) named = p;
                 }
-                store.apply_plan(p.values, p.decisions);
+                store.apply_plan(p.values, p.decisions, p.body.value("model", ""));
                 std::lock_guard<std::mutex> lk(plan_m);
                 load_plan = p;
                 last_plan = std::move(p);
+            } else {
+                // No plan for this load: an earlier one, possibly another model's, must not
+                // open under its name (#718).
+                store.clear_plan();
             }
             publish_config();
         } else {
             // A load on the settings as they are runs no plan: an earlier auto load's must not be
-            // answered as the one this session runs with.
+            // answered as the one this session runs with. A plan layer the person applied stays
+            // under their settings only for the model it was made for (SettingsStore::apply_plan).
             std::lock_guard<std::mutex> lk(plan_m);
             load_plan = PlanOutcome{};
         }
@@ -801,7 +806,7 @@ struct App {
             }
             PlanOutcome p = other;
             p.seq = ++plan_seq;
-            store.apply_plan(p.values, p.decisions);
+            store.apply_plan(p.values, p.decisions, p.body.value("model", ""));
             {
                 std::lock_guard<std::mutex> lk(plan_m);
                 load_plan = p;
@@ -1738,7 +1743,7 @@ void register_routes(httplib::Server & svr, App & app) {
         }
         if (!p.ok || p.body.value("model", "") != app.store.config().model_path)
             return send_error(res, 409, "compute a plan for the current model first (GET /api/plan)");
-        app.store.apply_plan(p.values, p.decisions);
+        app.store.apply_plan(p.values, p.decisions, p.body.value("model", ""));
         send_json(res, app.config_object());
         app.publish_config();
     });
