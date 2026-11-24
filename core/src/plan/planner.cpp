@@ -356,6 +356,10 @@ struct Planning {
     // take there with its compute buffer: what the plan that streams it may hold of this pool, its
     // own ledger's ceiling. 0 on every other pass, where the regime and the margin decide.
     uint64_t whole_room = 0;
+    // Set where choose_shared_device moved every layer onto a device that reads this memory: the move
+    // back_with_cores puts the cores behind. A flag rather than a reading of the decision's words, so
+    // rewording a line cannot leave a move without its fallback.
+    bool whole_on_shared_device = false;
 
     // The model as the allocator sees it: only the host's share of the experts (host_model).
     ModelProfile host_model;
@@ -2216,6 +2220,7 @@ void choose_shared_device(Planning & s, uint64_t resident) {
         c.n_gpu_layers = layers;
         c.buft_overrides.clear();
         c.device_split.assign(1, {dev.name, layers});
+        s.whole_on_shared_device = true;
         // The probes let the device through; what this model answers there is compared by the load
         // that moves it, once: a device the record already confirmed for it is not asked again.
         const bool confirmed = mk.device_answer(dev.name) > 0;
@@ -2231,11 +2236,12 @@ void choose_shared_device(Planning & s, uint64_t resident) {
     };
 
     // A device that could not open this model is not named again until it reports more room than it
-    // had when it failed, by the margin: what a driver lets a device allocate can grow (another program
-    // lets go of it, a setting raises it), and the cores stay behind it (back_with_cores) if it still
-    // cannot. A failure with no figure beside it stands.
+    // had when it failed, by PlannerPolicy::shared_device_regrowth: what a driver lets a device allocate
+    // can grow (another program lets go of it, a setting raises it), and the cores stay behind it
+    // (back_with_cores) if it still cannot. A failure with no figure beside it stands.
     const uint64_t failed_free = mk.shared_device_unviable_free_mib << 20;
-    const bool more_room = failed_free > 0 && (double) dev.memory_free > (double) failed_free * (1.0 + m);
+    const bool more_room = failed_free > 0 && (double) dev.memory_free >
+                                                  (double) failed_free * (1.0 + (double) s.pol.shared_device_regrowth);
     if (lost(mk.shared_device_unviable) && !more_room) {
         on_cores(Source::Measured, "The model runs on the CPU: loads with it on " + dev.name + " failed here.",
                  "loads of this model with every layer on " + dev.name + " failed on this machine" +
@@ -4188,9 +4194,20 @@ Plan plan_once(const RunConfig & base,
                const PlanRequest & req,
                const PlannerPolicy & pol,
                const Planning::LayersHome * home_from,
-               uint64_t whole_room = 0) {
+               uint64_t whole_room = 0,
+               bool * whole_on_shared_device = nullptr) {
     Plan p;
     Planning s(base, hw, model, projected, req, pol, p);
+    // Reported on every return below, early ones included, so no path can lose the move. A plan made
+    // again from the layers brought home (plan_from) reports nothing here: that inner plan already
+    // had the cores put behind it.
+    struct Report {
+        const Planning & s;
+        bool * out;
+        ~Report() {
+            if (out) *out = s.whole_on_shared_device;
+        }
+    } report{s, whole_on_shared_device};
     s.whole_room = whole_room;
     if (home_from) s.home.considered = false;
 
@@ -4296,11 +4313,8 @@ Plan plan_once(const RunConfig & base,
 // held whole, which ended the load. With the cores behind it the load serves from them instead, and
 // keeps the failure (MeasuredKnobs::shared_device_unviable). A configuration that already carries its
 // other part keeps it: a model the plan streams, tried whole on the device, falls back to the stream.
-void back_with_cores(Plan & p) {
-    if (p.config.fallback || p.config.n_gpu_layers == 0) return;
-    const auto moved = std::find_if(p.decisions.begin(), p.decisions.end(),
-                                    [](const Decision & d) { return d.knob == "shared-device" && d.value != "cpu"; });
-    if (moved == p.decisions.end()) return;
+void back_with_cores(Plan & p, bool whole_on_shared_device) {
+    if (!whole_on_shared_device || p.config.fallback || p.config.n_gpu_layers == 0) return;
     p.config.fallback = std::make_shared<const RunConfig>(held_on_cores(p.config));
 }
 
@@ -4311,8 +4325,9 @@ Plan plan_from(const RunConfig & base,
                const PlanRequest & req,
                const PlannerPolicy & pol,
                const Planning::LayersHome * home_from) {
-    Plan p = plan_once(base, hw, model, projected, req, pol, home_from);
-    back_with_cores(p);
+    bool whole_on_shared_device = false;
+    Plan p = plan_once(base, hw, model, projected, req, pol, home_from, 0, &whole_on_shared_device);
+    back_with_cores(p, whole_on_shared_device);
     // ── a model the plan streams, on a machine whose device reads this same memory ──
     // llama.cpp would hold such a model whole on the device, and where that fits it can be the faster
     // run by far: on a laptop with integrated graphics a 21 GB model streamed with an 18 GiB cache

@@ -17,8 +17,9 @@ Semantic Versioning.
   `back_with_cores`; `held_on_cores` is the one definition the plan and the session share), so every
   front-end opens the cores in the same load. The failure is kept with what the device reported free
   (`shared_device_unviable_free_mib`), and the device is named again only once it reports more than
-  that by the planner's margin. On that laptop the first load served from the cores at 8.5 tok/s
-  after a 12 s failed attempt, and the next load planned the cores at once (6.6 s to load).
+  that by `PlannerPolicy::shared_device_regrowth` (10%). On that laptop the first load served from the
+  cores at 8.5 tok/s after a 12 s failed attempt, and the next load planned the cores at once (6.6 s
+  to load).
   `validate()` now accepts a fallback behind any device placement, not only one whose answers are
   compared ([hardware-planning.md](docs/hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it),
   [measured-planning.md](docs/measured-planning.md), [telemetry.md](docs/telemetry.md)).

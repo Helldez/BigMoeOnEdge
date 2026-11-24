@@ -138,7 +138,7 @@ struct MeasuredKnobs {
     // What the device the model failed to open on said it had free when it failed, in MiB, as its
     // backend reports it (0: not known). A device's room is its driver's to give and can grow (another
     // program lets go of it, a setting raises it), so a plan names the device again where it now
-    // reports more than that by the planner's margin, the cores still behind it; until then the
+    // reports more than that (PlannerPolicy::shared_device_regrowth), the cores still behind it; until then the
     // failure stands and no load pays for a second one.
     uint64_t shared_device_unviable_free_mib = 0;
 

@@ -3488,11 +3488,11 @@ int main() {
         {
             ModelProfile at = failed;
             at.knobs.shared_device_unviable_free_mib = 7941;
-            const auto with_free = [&](uint64_t free) {
+            const auto with_free = [&](uint64_t free, PlannerPolicy pol = PlannerPolicy::defaults()) {
                 HardwareProfile h = prompts;
                 for (ComputeDevice & d : h.devices)
                     if (!d.is_cpu) d.memory_free = free;
-                return plan_run(base_cfg(), h, at, shared, PlanRequest{}, PlannerPolicy::defaults());
+                return plan_run(base_cfg(), h, at, shared, PlanRequest{}, pol);
             };
             const Plan same = with_free(7941 * MiB);
             const Decision * ds = find(same, "shared-device");
@@ -3506,6 +3506,16 @@ int main() {
             check(on_device(grown) && grown.config.fallback && grown.config.fallback->n_gpu_layers == 0,
                   "shared device failed, more room now past the margin: named again, the cores behind it");
             check(on_cores(with_free(0)), "shared device failed, no room reported now: the cores");
+            // The regrowth threshold is its own policy field, not the speed margin: moving one leaves
+            // the other's answer alone.
+            PlannerPolicy tight = PlannerPolicy::defaults();
+            tight.shared_device_regrowth = 0.01f;
+            check(on_device(with_free(8300 * MiB, tight)),
+                  "shared device failed, a little more room now past a smaller regrowth: named again");
+            PlannerPolicy wide_win = PlannerPolicy::defaults();
+            wide_win.min_backend_win = 1.0f;
+            check(on_device(with_free(12 * GiB, wide_win)),
+                  "shared device failed, more room now: a wider speed margin does not hold it back");
         }
 
         HardwareProfile wraps = roomy;

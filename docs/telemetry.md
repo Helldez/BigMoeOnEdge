@@ -634,7 +634,7 @@ plan's other side instead (`device_cache`, `no_device_cache`, `wide`, `narrow`; 
 side once more; from two on it is the losing side in every plan. A rate measured since clears it. A name the reader does
 not know, or a part it cannot read, is skipped. `shared_device_unviable_free_mib` is the memory, in MiB,
 the device reported free when the whole model failed to open on it, written beside that failure: the
-plan names the device again once it reports more than that by the planner's margin. The load that
+plan names the device again once it reports more than that by `PlannerPolicy::shared_device_regrowth`. The load that
 failed says so with this warning:
 
 ```
