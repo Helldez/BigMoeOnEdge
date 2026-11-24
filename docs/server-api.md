@@ -1413,15 +1413,17 @@ elsewhere, for testing.
 
 ### `GET /api/backends`
 
-`{registered, graphics, target, feed, packs, installed, restart_required, feed_error?}`. `registered`
+`{version, registered, graphics, target, feed, packs, installed, restart_required, feed_error?}`.
+`version` is this engine's release. `registered`
 is every backend that registered at start (`CPU`, `MTL`, `Vulkan`, ...); `graphics` the local
 graphics cards they offer, discrete or integrated, `{backend, description}` with the device's own
 description, read from each device's type and never from a backend's name (a remote backend's
 devices are not local, and the processor's are not graphics); `target` the build's
 (`macos-arm64`, ...); `feed` `{version, published}` of the verified feed known, or `null`. `packs`
 is that feed's packs for this target: `{id, title, size, applies, installed, installed_version,
-current}`, `applies` when one of the pack's driver libraries loads here, `current` when the
-installed copy is this feed's file. `installed` lists every pack on disk (`{id, version, offered,
+current, loads}`, `applies` when one of the pack's driver libraries loads here, `current` when the
+installed copy is this feed's file, `loads` when the installed copy is of this engine's release, so
+the engine uses it (`installed` alone is true for a copy another release left, which it does not). `installed` lists every pack on disk (`{id, version, offered,
 loaded}`): `loaded` is false for a pack another release left, which the engine does not load, since a
 backend module is built against one llama.cpp; installing it again replaces it. An install is
 refused (`409`, `code: "version_mismatch"`) while the feed's packs are a newer release's than the

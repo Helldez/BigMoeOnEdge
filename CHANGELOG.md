@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.49.1] - 2026-11-24
+
+### Fixed
+- **Settings no longer calls a graphics pack "Installed" when the engine does not use it.** After the
+  app is updated, the pack installed for the earlier release stays on disk, and the engine does not
+  load it (a backend module is built against one llama.cpp), so the card goes unused. Settings checked
+  only that the pack's files were there and showed it as installed, so a field report spent hours on a
+  graphics card that was not in use: only `GET /api/backends` showed the old version. Each pack now says
+  whether the engine loads it (`loads`) and the answer names the engine's release (`version`). Settings
+  shows the installed pack's version, and a pack from another release says so with an "Install again"
+  button, or says to update the app first while the feed is a newer release's. The first run offers
+  such a pack as if it were missing ([server-api.md](docs/server-api.md#get-apibackends),
+  [desktop-app.md](docs/desktop-app.md#backend-packs)).
+
 ## [0.49.0] - 2026-11-24
 
 ### Fixed

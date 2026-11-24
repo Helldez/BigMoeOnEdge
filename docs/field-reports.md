@@ -55,6 +55,19 @@ desktop app is not affected: it installs the pack itself.
 
 ## Fixed
 
+### Windows: no model loads after an update, and Settings says the graphics pack is installed
+
+- **Seen on** 0.47.2, Windows, a 6 GB laptop card, the app updated from 0.42.0: the plan asked for
+  the card, no model loaded, and Settings showed the CUDA pack as "Installed".
+- **How to recognise it.** `GET /api/backends` lists the pack with `installed_version` older than
+  the app, `current: false`, and the engine registered only Vulkan and the CPU.
+- **Cause.** Confirmed in the code: the engine loads only its own release's packs (since 0.47.0),
+  and Settings showed "Installed" from the pack's files alone, never from its version.
+- **Fixed in** the release after 0.49.0: Settings names the installed pack's version, says when the
+  engine does not use it, and offers to install it again; the first run offers it as missing.
+- **Workaround.** Install the pack again from Settings (or `POST /api/backends/cuda/install`) and
+  restart the engine.
+
 ### Plain chat answers like an agent: thinking about tools, a work report at the end
 
 - **Seen on** 0.47.2, the web UI and desktop app, a conversation with no folder: a person asked how
