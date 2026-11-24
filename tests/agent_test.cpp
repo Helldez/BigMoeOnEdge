@@ -624,6 +624,29 @@ static void loop_tests() {
               "chat only: the person's own system prompt is sent, and nothing else");
     }
     {
+        // #721: a message that does not say whether to think follows the Thinking setting, which the
+        // phone apps set in Settings and never send per message; one that says so wins either way.
+        for (const bool setting : {true, false}) {
+            auto rig = std::make_unique<Rig>(true, true, [setting](AgentDeps & d) {
+                d.config = [setting] {
+                    RunConfig c;
+                    c.think = setting;
+                    return c;
+                };
+            });
+            const std::string c = rig->conversation("ask", false);
+            json item;
+            for (const std::optional<bool> asked : {std::optional<bool>(), std::optional<bool>(!setting)}) {
+                rig->say({{"Hi.", {}}});
+                check(rig->agent->send(c, "hi", json::array(), asked, false, item).ok() && rig->wait_done(c),
+                      "think: a message is answered");
+                check(rig->last_request().think == asked.value_or(setting),
+                      asked ? "think: a message that asks wins over the setting"
+                            : "think: a message that does not ask follows the setting");
+            }
+        }
+    }
+    {
         // A model that keeps asking for the same refused call is stopped, not left to loop.
         auto rig = std::make_unique<Rig>();
         const std::string c = rig->conversation("ask", false);

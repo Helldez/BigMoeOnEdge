@@ -461,7 +461,7 @@ Request fields that are read:
 | `stream`, `stream_options.include_usage` | streaming, and a last chunk with the token counts. |
 | `return_progress` | llama-server's field: while the prompt is prefilled, streamed chunks with an empty assistant delta and `prompt_progress: {total, cache, processed, time_ms}`, one before the first piece and one after each. `cache` is the part the context already held; `processed` reaches `total - cache`. |
 | `max_tokens` / `max_completion_tokens` | default: the `n-predict` parameter (also for `null` and `0`), whose server default `0` means no ceiling but the context. Clamped to that parameter's upper bound; a negative or non-integer value is refused with `400`. It is a ceiling, not a reservation: the answer gets at most what the context has left after the prompt and then stops with `finish_reason: "length"`. Only a conversation that leaves no room at all is refused, with `400`. |
-| `think`, `chat_template_kwargs.enable_thinking`, `reasoning_effort` | thinking on or off, most specific first: this server's own `think` (bool), the template argument llama.cpp clients send, then `reasoning_effort`, where `"none"` turns it off and any other level turns it on. Default: on, unless the person set the `think` parameter (a launch flag or a saved setting), which then holds. The apps' conversations do not use this route and keep `think` off by default; a client that never asks gets the model's own reasoning, as from a llama.cpp server. |
+| `think`, `chat_template_kwargs.enable_thinking`, `reasoning_effort` | thinking on or off, most specific first: this server's own `think` (bool), the template argument llama.cpp clients send, then `reasoning_effort`, where `"none"` turns it off and any other level turns it on. Default: on, unless the person set the `think` parameter (a launch flag or a saved setting), which then holds. A client that never asks gets the model's own reasoning, as from a llama.cpp server. |
 | `response_format` | `{"type":"json_object"}` requests JSON object output; `{"type":"json_schema","json_schema":{"schema":{...}}}` supplies a schema. Omitted, `null` or `{"type":"text"}` leaves the top-level `json_schema` unchanged; without one, output is ordinary text. See the support boundary below. |
 | `json_schema` | llama.cpp-compatible top-level schema for this request. A JSON object supplies schema keywords; `null` or omission adds no constraint. An empty object defaults to `{"type":"object"}`. |
 | `temperature`, `top_p`, `top_k`, `min_p`, `seed` | this request's sampling. A field left out keeps the session's (the `temp`, `top-k`, `top-p` and `seed` parameters); `temperature: 0` is greedy, `seed: -1` a fresh seed. A request that sets none samples exactly as the session does. Bounds: `temperature` 0 to 100, `top_p` and `min_p` 0 to 1, `top_k` a non-negative integer. |
@@ -872,10 +872,13 @@ the loaded model's tokenizer (the count [`/tokenize`](#llama-server-compatibilit
 no model ready or on a provider route). A client of `/v1/chat/completions`, `/v1/messages`
 (`system`) or `/v1/responses` (`instructions`) sends its own, which reaches the model as written.
 
-**Runs.** `POST /api/conversations/<id>/messages` answers `202 {item}` as soon as the person's item
-is stored; everything after that arrives on `/api/events` (`conversation`, `item`, `delta`) and is
-in the stored conversation. A UI that reconnects reads `GET /api/conversations/<id>`. An approval
-card is a `tool` item in state `waiting`, answered with `POST .../approval` on its conversation.
+**Runs.** `POST /api/conversations/<id>/messages` (`text`, optional `images` and `think`) answers
+`202 {item}` as soon as the person's item is stored. `think` turns the model's reasoning on or off for
+this message; absent, the `think` parameter decides (on, unless the person set it), as on every other
+route. `POST .../edit` takes the same fields and `item`, the message it replaces. Everything after
+that arrives on `/api/events` (`conversation`, `item`, `delta`) and is in the stored conversation. A
+UI that reconnects reads `GET /api/conversations/<id>`. An approval card is a `tool` item in state
+`waiting`, answered with `POST .../approval` on its conversation.
 
 `POST /api/conversations/<id>/stop` requests cancellation for that conversation and waits up to
 30 s for its run to finish. The response is `{stopped}`: `false` when no run was found, `true`

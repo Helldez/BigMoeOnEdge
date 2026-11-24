@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.48.1] - 2026-11-24
+
+### Fixed
+- **Thinking on the phones follows the setting again** (#721). A conversation's message
+  (`POST /api/conversations/<id>/messages` and `/edit`) that did not say whether to think was sent
+  with thinking off, whatever the Thinking setting said. The web UI and the desktop app send `think`
+  with every message, so they reasoned; the Android and iOS apps take it from Settings and send none,
+  so no model reasoned there since 0.39. A message that leaves `think` out now follows the setting, as
+  `/v1/chat/completions`, `/v1/messages` and `/v1/responses` already did, and one that names it still
+  wins. A scheduled task follows the setting too, where it was always sent with thinking off
+  ([server-api.md](docs/server-api.md)).
+
 ## [0.48.0] - 2026-11-23
 
 ### Added
