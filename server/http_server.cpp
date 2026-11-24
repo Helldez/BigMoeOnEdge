@@ -19,6 +19,7 @@
 #include "openai_chat.h"
 #include "openai_responses.h"
 #include "llama_compat.h"
+#include "text_completion.h"
 #include "event_bus.h"
 #include "feed.h"
 #include "feed_key.h"
@@ -1370,6 +1371,79 @@ void register_routes(httplib::Server & svr, App & app) {
             return true;
         });
     });
+
+    // A plain text completion, in llama-server's shape (/completion) and OpenAI's legacy one
+    // (/v1/completions): the prompt continued as written, with no chat template (text_completion.h).
+    const auto text_completion = [&](CompletionDialect dialect) {
+        return [&app, dialect](const httplib::Request & req, httplib::Response & res) {
+            json body;
+            if (!parse_body(req, res, body)) return;
+            TextCompletionRequest tr;
+            std::string err;
+            if (!parse_text_completion(body, dialect, app.store.api_config(), tr, err))
+                return send_error(res, 400, err, "invalid_request");
+            if (const std::string why = app.model_for_request(); !why.empty())
+                return send_error(res, 503, why, error_code::no_model);
+            ChatResponseMeta meta;
+            meta.id = "cmpl-" + std::to_string(++app.chat_seq);
+            meta.created = (long long) std::time(nullptr);
+            meta.model = app.host.model_name();
+
+            if (!tr.stream) {
+                ChatOutcome out = app.host.chat(tr.turn, nullptr, [&req] { return !req.is_connection_closed(); });
+                if (out.status != 200) return send_error(res, out.status, out.error, out.code);
+                return send_json(res, text_completion_json(dialect, meta, out.result,
+                                                           finish_reason(out.result, out.n_predict), tr.turn.prompt));
+            }
+            res.set_header("Cache-Control", "no-cache");
+            res.set_header("X-Accel-Buffering", "no");
+            res.set_chunked_content_provider("text/event-stream", [&app, tr, meta, dialect](size_t,
+                                                                                            httplib::DataSink & sink) {
+                const auto dump = [](const json & j) { return j.dump(-1, ' ', false, json::error_handler_t::replace); };
+                StreamKeepalive out_stream([&sink](const std::string & f) { return sink.write(f.data(), f.size()); },
+                                           ": ping\n\n", kEventPingInterval);
+                const auto write = [&](const json & j) { out_stream.write("data: " + dump(j) + "\n\n"); };
+                // The text is the generation as written, so each token's text extends the last one's.
+                // A piece goes out once it is whole UTF-8; the answer's end sends whatever is left,
+                // whole or not, so a client always ends with every byte the model wrote.
+                std::string sent;
+                const auto send_up_to = [&](const std::string & text, bool last) {
+                    const std::string upto = last ? text : text.substr(0, complete_utf8_prefix_size(text));
+                    if (upto.size() > sent.size() && starts_with(upto, sent)) {
+                        write(text_completion_chunk(dialect, meta, upto.substr(sent.size())));
+                        sent = upto;
+                    }
+                };
+                ChatOutcome out = app.host.chat(
+                    tr.turn,
+                    [&](const TokenMetrics & m) {
+                        if (!out_stream.alive()) return false;
+                        send_up_to(m.text, false);
+                        return out_stream.alive();
+                    },
+                    [&] {
+                        out_stream.write(": waiting for a turn\n\n");
+                        return out_stream.alive();
+                    });
+                if (out.status != 200) {
+                    write(json{{"error", {{"message", out.error}, {"code", out.code}}}});
+                } else {
+                    send_up_to(out.result.generated_text, true);
+                    write(text_completion_last_chunk(dialect, meta, out.result,
+                                                     finish_reason(out.result, out.n_predict), tr.turn.prompt,
+                                                     tr.include_usage));
+                }
+                // OpenAI's stream ends with [DONE]; llama-server's /completion ends at its stop:true object.
+                if (dialect == CompletionDialect::OpenAi) out_stream.write("data: [DONE]\n\n");
+                out_stream.stop();
+                sink.done();
+                return true;
+            });
+        };
+    };
+    svr.Post("/completion", text_completion(CompletionDialect::Llama));
+    svr.Post("/completions", text_completion(CompletionDialect::Llama));
+    svr.Post("/v1/completions", text_completion(CompletionDialect::OpenAi));
 
     // The Anthropic Messages API, for Claude Code (anthropic_messages.h). The request names a model;
     // the loaded one answers, as on the chat endpoint.

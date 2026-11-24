@@ -492,6 +492,13 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
     gr.tools = req.tools;
     gr.tool_choice = req.tool_choice;
     gr.clear_kv = false;
+    // A text completion is no conversation: it starts from an empty context, and the chat turn after
+    // it prefills its conversation again.
+    if (req.raw) {
+        gr.raw = true;
+        gr.prompt = req.prompt;
+        gr.clear_kv = true;
+    }
     gr.n_predict = req.n_predict;
     gr.think = req.think;
     gr.json_schema = req.json_schema;

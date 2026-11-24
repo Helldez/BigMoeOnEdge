@@ -19,7 +19,9 @@ server/         bmoe-server: the application framework every UI speaks to (docs/
                 and the engine behind the desktop web UI (docs/server-api.md)
                 openai_chat (the chat protocol), anthropic_messages and openai_responses (the
                 agent protocols, over agent_protocol's append-only stream), llama_compat (llama.cpp
-                server's timings, prompt progress, metrics and tokenizer routes, as a wire format), image_part (an image as
+                server's timings, prompt progress, metrics and tokenizer routes, as a wire format),
+                text_completion (/completion and /v1/completions: a raw prompt in llama-server's and
+                OpenAI's shapes), image_part (an image as
                 a protocol carries it, inline, to the engine's ChatImage), turn_queue,
                 server_seams (what a test puts in place of the engine and the planner),
                 settings_store, event_bus, json_util,

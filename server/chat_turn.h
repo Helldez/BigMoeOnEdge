@@ -24,6 +24,10 @@ struct ChatRequest {
     std::string grammar;
     int top_logprobs = 0;  // candidates per token reported beside its own logprob
     bool logprobs = false; // report each token's logprob
+    // A plain text completion (/completion, /v1/completions): `prompt` is fed as written, with no
+    // template and no messages, from an empty context (GenerateRequest::raw).
+    bool raw = false;
+    std::string prompt;
 };
 
 } // namespace bmoe::server

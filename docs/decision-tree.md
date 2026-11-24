@@ -1815,7 +1815,8 @@ flowchart TD
 - parent: —
 - code: `core/src/engine/session.cpp` · `Turn::render_prompt`
 - condition: `if (!chat_on) {`
-- No chat template → the prompt as given.
+- No chat template, or a raw request (`req.raw`, a text completion, which needs `clear_kv` and takes
+  no messages, tools, schema or grammar) → the prompt as given.
 - Otherwise → messages replace the history, or a user message is pushed. The template is then
   applied.
 - A template that throws:

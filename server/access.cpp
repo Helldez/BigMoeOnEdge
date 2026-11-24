@@ -14,7 +14,7 @@ bool is_api_path(const std::string & path) {
     // llama-server's paths without the /v1 prefix (llama_compat.h): the engine too, under the same key.
     static const char * const roots[] = {"/health",           "/props",      "/metrics",        "/slots",
                                          "/tokenize",         "/detokenize", "/apply-template", "/models",
-                                         "/chat/completions", "/responses"};
+                                         "/chat/completions", "/responses",  "/completion",     "/completions"};
     for (const char * r : roots) {
         const std::string root = r;
         if (path == root || path.compare(0, root.size() + 1, root + "/") == 0) return true;
