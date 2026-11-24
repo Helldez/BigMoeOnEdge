@@ -874,11 +874,12 @@ no model ready or on a provider route). A client of `/v1/chat/completions`, `/v1
 
 **Runs.** `POST /api/conversations/<id>/messages` (`text`, optional `images` and `think`) answers
 `202 {item}` as soon as the person's item is stored. `think` turns the model's reasoning on or off for
-this message; absent, the `think` parameter decides (on, unless the person set it), as on every other
-route. `POST .../edit` takes the same fields and `item`, the message it replaces. Everything after
-that arrives on `/api/events` (`conversation`, `item`, `delta`) and is in the stored conversation. A
-UI that reconnects reads `GET /api/conversations/<id>`. An approval card is a `tool` item in state
-`waiting`, answered with `POST .../approval` on its conversation.
+this message; absent, the `think` parameter decides: off unless the person turned it on (the API
+routes below default to on, as llama.cpp's server does). `POST .../edit` takes the same fields and
+`item`, the message it replaces. Everything after that arrives on `/api/events` (`conversation`,
+`item`, `delta`) and is in the stored conversation. A UI that reconnects reads
+`GET /api/conversations/<id>`. An approval card is a `tool` item in state `waiting`, answered with
+`POST .../approval` on its conversation.
 
 `POST /api/conversations/<id>/stop` requests cancellation for that conversation and waits up to
 30 s for its run to finish. The response is `{stopped}`: `false` when no run was found, `true`

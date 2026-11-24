@@ -11,9 +11,8 @@ Semantic Versioning.
   (`POST /api/conversations/<id>/messages` and `/edit`) that did not say whether to think was sent
   with thinking off, whatever the Thinking setting said. The web UI and the desktop app send `think`
   with every message, so they reasoned; the Android and iOS apps take it from Settings and send none,
-  so no model reasoned there since 0.39. A message that leaves `think` out now follows the setting, as
-  `/v1/chat/completions`, `/v1/messages` and `/v1/responses` already did, and one that names it still
-  wins. A scheduled task follows the setting too, where it was always sent with thinking off
+  so no model reasoned there since 0.39. A message that leaves `think` out now follows the setting,
+  which stays off until the person turns it on, and one that names it still wins. A scheduled task follows the setting too, where it was always sent with thinking off
   ([server-api.md](docs/server-api.md)).
 
 ## [0.48.0] - 2026-11-23
