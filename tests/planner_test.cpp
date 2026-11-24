@@ -3524,6 +3524,25 @@ int main() {
         check(on_device(plan_with(54.0, 40.0)),
               "shared device, the cores not ahead by the margin on the whole request: the device keeps it");
 
+        // Every move of the whole model onto the device carries the cores behind it (back_with_cores),
+        // asked to compare answers or not: a device can refuse the allocation all the same, and the load
+        // then serves from the cores instead of failing. A model left on the cores carries nothing.
+        {
+            const auto cores_behind = [&](const Plan & p) {
+                const RunConfig * f = p.config.fallback.get();
+                return f && f->n_gpu_layers == 0 && f->device_split.empty() && f->device_list.empty() &&
+                       f->device_use == DeviceUse::CpuOnly && f->trial.answer_device.empty() && !f->fallback &&
+                       f->model_path == p.config.model_path;
+            };
+            check(cores_behind(first) && first.config.fallback->trial.shared_device_side == 0,
+                  "shared device, the load decides: the cores behind the device, timed as the cores' side");
+            check(cores_behind(faster) && faster.config.fallback->trial.shared_device_side == -1,
+                  "shared device, measured faster: the cores behind the device all the same");
+            check(validate(faster.config).ok, "shared device, the cores behind it: a valid config",
+                  validate(faster.config).error);
+            check(!plan_chat(30.0, 40.0, roomy).config.fallback, "shared device, on the cores: nothing behind them");
+        }
+
         // The probes let the device through; what this model answers there is compared by the load that
         // moves it, once, and the record's word then decides.
         check(moved.config.trial.answer_device == "accel" && df &&
@@ -3576,6 +3595,42 @@ int main() {
         const Plan f = plan_run(base_cfg(), prompts, failed, shared, PlanRequest{}, PlannerPolicy::defaults());
         check(on_cores(f) && f.config.trial.shared_device_side == -1,
               "shared device that failed to load the model: the cores, whatever its price");
+
+        // The failure keeps what the device reported free then. It is named again only once it reports
+        // more than that by the margin, with the cores behind it; the same room, or a little more, and
+        // the cores keep the model with no load paying for a second failure.
+        {
+            ModelProfile at = failed;
+            at.knobs.shared_device_unviable_free_mib = 7941;
+            const auto with_free = [&](uint64_t free, PlannerPolicy pol = PlannerPolicy::defaults()) {
+                HardwareProfile h = prompts;
+                for (ComputeDevice & d : h.devices)
+                    if (!d.is_cpu) d.memory_free = free;
+                return plan_run(base_cfg(), h, at, shared, PlanRequest{}, pol);
+            };
+            const Plan same = with_free(7941 * MiB);
+            const Decision * ds = find(same, "shared-device");
+            check(on_cores(same) && ds &&
+                      ds->reason.find("7941 MiB free on it then and 7941 MiB now") != std::string::npos,
+                  "shared device failed at this room, the same room now: the cores, and the line says both",
+                  ds ? ds->reason : "no line");
+            check(on_cores(with_free(8300 * MiB)),
+                  "shared device failed, a little more room now (inside the margin): the cores");
+            const Plan grown = with_free(12 * GiB);
+            check(on_device(grown) && grown.config.fallback && grown.config.fallback->n_gpu_layers == 0,
+                  "shared device failed, more room now past the margin: named again, the cores behind it");
+            check(on_cores(with_free(0)), "shared device failed, no room reported now: the cores");
+            // The regrowth threshold is its own policy field, not the speed margin: moving one leaves
+            // the other's answer alone.
+            PlannerPolicy tight = PlannerPolicy::defaults();
+            tight.shared_device_regrowth = 0.01f;
+            check(on_device(with_free(8300 * MiB, tight)),
+                  "shared device failed, a little more room now past a smaller regrowth: named again");
+            PlannerPolicy wide_win = PlannerPolicy::defaults();
+            wide_win.min_backend_win = 1.0f;
+            check(on_device(with_free(12 * GiB, wide_win)),
+                  "shared device failed, more room now: a wider speed margin does not hold it back");
+        }
 
         HardwareProfile wraps = roomy;
         for (ComputeDevice & d : wraps.devices)

@@ -889,14 +889,17 @@ struct RunConfig {
     DecideConfig decide;         // decide()'s prefix-state policy; off by default
     KnobTrialConfig trial;       // lossless knobs measured on the first real request; off by default
 
-    // The configuration the session opens instead, where this one names a device whose answers the
-    // load compares with the cores' (trial.answer_device) and the device does not keep the model:
-    // its answers differed, could not be compared, the cores were faster, or it could not be opened.
-    // Empty, that is this same configuration with no layer on a device (the cores hold the model as
-    // it is held here). A plan sets it where the two differ in more than where they compute: a model
-    // it would stream, tried whole on a device that reads the host's memory, falls back to the
-    // streaming plan and not to the same model held whole on the cores. Not a tunable: one plan in
-    // two parts, which no flag spells, so it is not in the parameter table.
+    // The configuration the session opens instead where this one cannot serve: it could not be opened
+    // at all, or it names a device whose answers the load compares with the cores'
+    // (trial.answer_device) and the device does not keep the model (its answers differed, could not be
+    // compared, or the cores were faster). Empty with a device to compare, that is this same
+    // configuration on the cores (held_on_cores). A plan sets it on every move of a whole model onto a
+    // device that reads the host's memory, whether or not the load compares answers: such a device can
+    // still refuse to allocate the model (a driver's own ceiling below the memory the host has), and
+    // the load then serves from the cores instead of failing. A model it would stream, tried whole on
+    // such a device, falls back to the streaming plan rather than to the same model held whole on the
+    // cores. Not a tunable: one plan in two parts, which no flag spells, so it is not in the parameter
+    // table.
     std::shared_ptr<const RunConfig> fallback;
 
     // Let llama.cpp's and ggml's DEBUG log lines through to stderr. Off, they are dropped: about
@@ -921,6 +924,25 @@ struct RunConfig {
     // on a machine whose expert cache needs the RAM.
     static constexpr int ctx_for_clients = 16384;
 };
+
+// `cfg` with no layer on any device and no device in the room: the cores hold the model as `cfg`
+// holds it. One definition for the plan, which sets it as a configuration's other part
+// (RunConfig::fallback), and for the session, which opens it where a device did not keep the model,
+// so the two cannot drift. Not "auto" devices: a caller who asked for every device in the room would
+// keep them there with no layer on them, and the scheduler hands such a device whatever nodes it can
+// run. A load that timed the device's side of the shared-device decision times the cores' instead.
+// A template over the configuration types that carry these fields (RunConfig, SessionConfig).
+template <class Config> Config held_on_cores(Config cfg) {
+    cfg.n_gpu_layers = 0;
+    cfg.device_split.clear();
+    cfg.device_list.clear();
+    cfg.device_use = DeviceUse::CpuOnly;
+    cfg.spec.mtp_head_on_devices = false;
+    cfg.trial.answer_device.clear();
+    cfg.trial.answer_prompt_per_token = -1.0f; // the check's weighing, with no device left to compare
+    if (cfg.trial.shared_device_side == 1) cfg.trial.shared_device_side = 0;
+    return cfg;
+}
 
 // Validation result: ok plus a human-readable reason when not.
 struct ValidationResult {

@@ -614,6 +614,11 @@ serves the side it prices faster, and lets the served load time that side:
   (`MeasuredKnobs::*_unviable`). One failure may be the machine's moment (another program holding
   the card's memory, a driver's hiccup): the plan may name the side once more, the other still
   behind it. At `MeasuredKnobs::unviable_max` (two) the side loses in every plan made on the record.
+  A whole model moved onto a device that shares the host's memory has its other side in the
+  configuration itself (`RunConfig::fallback`), so every front-end, the CLI included, opens the
+  cores in the same load where the device cannot open it. That failure counts as two at once and
+  keeps the room the device reported (`shared_device_unviable_free_mib`): the device is named again
+  only once it reports more than that by `shared_device_regrowth` (10%).
   A rate measured for the side clears the count, and a new engine version starts a new record.
 - **The device cache's CPU share is a person's setting.** It is fixed when the context is created,
   and no price of it held: where the cache never fills, llama.cpp computes no miss on the host and

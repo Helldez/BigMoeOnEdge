@@ -213,6 +213,9 @@ std::string format_measured_knobs(const std::vector<MeasuredKnobs> & records) {
             if (r.*u.count > 0)
                 unviable += (unviable.empty() ? "" : ",") + std::string(u.name) + ":" + std::to_string(r.*u.count);
         if (!unviable.empty()) out += " unviable=" + unviable;
+        // What the shared device reported free when it failed: beside its count, once there is one.
+        if (r.shared_device_unviable_free_mib > 0)
+            out += " shared_device_unviable_free_mib=" + std::to_string(r.shared_device_unviable_free_mib);
         // Each prefill device's word, likewise only when there is one.
         std::string words;
         for (const MeasuredKnobs::PrefillWord & w : r.prefill) {
@@ -264,6 +267,11 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
                 char * end = nullptr;
                 dst = std::strtod(v.c_str(), &end);
                 return !v.empty() && !*end;
+            };
+            auto as_u64 = [&v](uint64_t & dst) {
+                char * end = nullptr;
+                dst = (uint64_t) std::strtoull(v.c_str(), &end, 10);
+                return !v.empty() && v[0] != '-' && !*end;
             };
             bool ok = true;
             if (k == "hardware")
@@ -332,6 +340,8 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
                 ok = as_double(r.host_prefill_tps);
             else if (k == "unviable")
                 ok = parse_unviable(v, r);
+            else if (k == "shared_device_unviable_free_mib")
+                ok = as_u64(r.shared_device_unviable_free_mib);
             else if (k == "prefill")
                 ok = parse_prefill(v, r);
             else if (k == "device_answer")
@@ -391,6 +401,11 @@ void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKno
             if (rec.no_device_cache_tps > 0.0) r.no_device_cache_tps = rec.no_device_cache_tps;
             merge_unviable(r.shared_device_unviable, rec.shared_device_unviable, r.shared_device_tps,
                            rec.shared_device_tps);
+            // The room the device reported goes with the failure it was reported at: the latest one
+            // handed on, and nothing once the failure is cleared.
+            if (rec.shared_device_unviable > 0 && rec.shared_device_unviable_free_mib > 0)
+                r.shared_device_unviable_free_mib = rec.shared_device_unviable_free_mib;
+            if (r.shared_device_unviable == 0) r.shared_device_unviable_free_mib = 0;
             merge_unviable(r.no_shared_device_unviable, rec.no_shared_device_unviable, r.no_shared_device_tps,
                            rec.no_shared_device_tps);
             if (rec.shared_device_tps > 0.0) r.shared_device_tps = rec.shared_device_tps;
@@ -464,6 +479,7 @@ void record_side_rate(const KnobTrialConfig & trial, double tokens_per_second, M
     } else if (trial.shared_device_side >= 0) {
         (trial.shared_device_side == 1 ? rec.shared_device_tps : rec.no_shared_device_tps) = tokens_per_second;
         (trial.shared_device_side == 1 ? rec.shared_device_unviable : rec.no_shared_device_unviable) = 0;
+        if (trial.shared_device_side == 1) rec.shared_device_unviable_free_mib = 0;
     }
 }
 
