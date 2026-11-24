@@ -2710,8 +2710,10 @@ AllocationInputs ledger_inputs(const Planning & s, uint64_t dense_pending) {
     ai.reserved_bytes = dense_pending;
     ai.cacheable_bytes = s.host_expert_bytes;
     // The person's bound on an automatic cache holds for the one the plan sizes too (#697): the plan
-    // turns the cache into a fixed size, which the runtime's ceiling never sees.
-    ai.cache_ceiling_bytes = (uint64_t) std::max(0, c.moe.cache_ceil_mb) << 20;
+    // turns the cache into a fixed size, which the runtime's ceiling never sees. A cache-mb the caller
+    // pinned is not sized for them: charge_caller_cache keeps it whole, so a ceiling here would size the
+    // other groups around a cache the run never has and report a bound that did not hold.
+    if (!s.req.is_pinned("cache-mb")) ai.cache_ceiling_bytes = (uint64_t) std::max(0, c.moe.cache_ceil_mb) << 20;
     ai.fixed_bytes = s.host_fixed;
     ai.projector_bytes = s.projector_host;
     ai.checkpoint_bytes = s.checkpoint_bytes;

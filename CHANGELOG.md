@@ -13,7 +13,8 @@ Semantic Versioning.
   sizes its cache under the person's ceiling: the ledger charges it as held, the memory past it stays
   free, and the plan says the ceiling held it (`cache-ceil-mb`). A ceiling above the cache the plan
   would pick changes nothing; one under the token cycle leaves the cache off, as the floor does,
-  saying the ceiling is why and without offering a shorter context
+  saying the ceiling is why and without offering a shorter context. A `--cache-mb` the person pinned
+  is not a cache the plan sizes, so the ceiling leaves it whole and the plan claims no bound
   ([settings.md](docs/settings.md), [hardware-planning.md](docs/hardware-planning.md)).
 
 ## [0.48.0] - 2026-11-23

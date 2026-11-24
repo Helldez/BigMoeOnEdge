@@ -266,6 +266,21 @@ int main() {
                       cm->reason.find("ctx-size") == std::string::npos,
                   "desktop, ceiling under the token cycle: no shorter context is offered for a bound the person set",
                   cm ? cm->brief + " / " + cm->reason : "no cache-mb decision");
+
+            // A cache-mb the caller pinned is not one the plan sizes, so the ceiling has nothing to
+            // bound: the pinned size is kept whole and the plan claims no ceiling held it.
+            RunConfig own = base_cfg();
+            own.moe.cache_mb = 2048;
+            own.moe.cache_ceil_mb = 1024;
+            PlanRequest prq;
+            prq.pinned = {"cache-mb"};
+            const Plan pinned = plan_run(own, desktop(), model, prq);
+            const LedgerRow * prow = ledger_row(pinned, LedgerKind::ExpertCache);
+            check(pinned.config.moe.cache_mb == 2048 && prow && prow->bytes == 2048 * MiB,
+                  "desktop, pinned cache + ceiling: the pinned size is kept and charged",
+                  std::to_string(pinned.config.moe.cache_mb));
+            check(!find(pinned, "cache-ceil-mb") && !find(pinned, "cache-off"),
+                  "desktop, pinned cache + ceiling: no bound is reported for a cache the plan did not size");
         }
 
         const Decision * d = find(p, "release-mmap");
