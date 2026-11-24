@@ -1348,14 +1348,28 @@ sides, `choose_shared_device` opens the device (every layer and the output head,
 `device_split` so no second backend that drives the same silicon takes a share) and asks the load to
 keep the faster: the load compares the model's answers on the device with the cores' before it serves
 (below), which decodes the model on both, so it also times the two there, one token at a time as an
-answer is decoded and once as wide as a prompt, and keeps the side a request of this machine's is
-shorter on (`KnobTrialConfig::answer_prompt_per_token`, the prompt tokens a request brings per decoded
-token: `MeasuredKnobs::mix_*`, or the default mix on a first load). The device is the side opened
-because the comparison needs the placement open; the cores take the model, reopened on them once,
-where a request is shorter there by `min_backend_win`. Both rates are kept
-(`MeasuredKnobs::shared_device_tps`, `no_shared_device_tps`), so every plan after that load reads a
-measurement and opens the faster side at once, by the same rule: the device unless the cores are
-faster by the margin. A served load then keeps its own side at what it decoded at
+answer is decoded and once as wide as the session computes a prompt, and keeps the side a request of
+this machine's is shorter on (`KnobTrialConfig::answer_prompt_per_token`, the prompt tokens a request
+brings per decoded token: `MeasuredKnobs::mix_*`, or the default mix on a first load). The prompt is
+not timed at the width the answers are compared at, because the two sides' prompt rates move apart
+with the width: a processor with wide parallel units pays a graph's fixed cost once per graph and gets
+faster per token as the graph widens, and the cores reach their rate a few dozen tokens wide. One
+integrated GPU ran a prompt at 0.56x its cores' rate 64 tokens wide and at 1.42x 512 wide (1.70x at
+2048), so a timing at the comparison's width sent a model to the cores, which ran its prompt 31%
+slower (#714). The session's own graph width is the one that speaks for a prompt, but a whole graph of
+it on each side costs a first load seconds (19 s on the cores alone for a 4B dense model 512 wide), so
+the widths are climbed instead (`answer_prompt_widths`): from the comparison's width, doubling, up to
+the session's own, and the climb stops once the side ahead is not losing ground by more than the margin
+(`prompt_ranking_settled`), since a wider graph then only widens its lead. A model the GPU leads from
+the first width stops at the second; that integrated GPU's MoE, behind up to 128 tokens and ahead past
+them, stopped at 256. The reference on the cores is widened only as the climb reaches a width. The
+device is the side opened because the comparison needs the placement open; the cores take the model,
+reopened on them once, where a request is shorter there by `min_backend_win`. Both sides' rates are
+kept, the decode's and the prompt's (`MeasuredKnobs::shared_device_tps`, `no_shared_device_tps`,
+`shared_device_prompt_tps`, `no_shared_device_prompt_tps`), so every plan after that load reads a
+measurement and opens the faster side at once, by the same rule (`bmoe/serving_side.h`): the device
+unless the cores are faster by the margin. A record with no prompt rates (an earlier engine's) weighs
+the prompt on the probes' wide matmul as before. A served load then keeps its own side at what it decoded at
 (`KnobTrialConfig::shared_device_side`). No other load is opened to try a side
 ([measured-planning.md](measured-planning.md#decisions-fixed-at-load-priced-served-then-measured)).
 

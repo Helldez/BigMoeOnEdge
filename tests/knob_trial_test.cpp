@@ -445,6 +445,40 @@ int main() {
                   "record: a rate handed on clears the failure and its room together");
         }
 
+        // The shared-memory device's prompt rates, as the load that compared the answers timed them: read
+        // back as written, counted, merged beside the decode rates, and absent from an earlier record.
+        MeasuredKnobs sp;
+        sp.hardware = a.hardware;
+        sp.engine = a.engine;
+        sp.shared_device_tps = 29.5;
+        sp.no_shared_device_tps = 33.3;
+        sp.shared_device_prompt_tps = 146.0;
+        sp.no_shared_device_prompt_tps = 103.0;
+        check(sp.verdicts() == 4, "record: both sides' prompt rates count, so a front-end keeps the grown record");
+        std::vector<MeasuredKnobs> sback;
+        check(parse_measured_knobs(format_measured_knobs({sp}), sback, err) && sback.size() == 1 &&
+                  std::fabs(sback[0].shared_device_prompt_tps - 146.0) < 1e-9 &&
+                  std::fabs(sback[0].no_shared_device_prompt_tps - 103.0) < 1e-9 &&
+                  std::fabs(sback[0].shared_device_tps - 29.5) < 1e-9,
+              "record: the shared device's prompt rates read back as written");
+        keep_measured_knobs(back, sp);
+        const MeasuredKnobs * ks = find_measured_knobs(back, a.hardware, a.engine);
+        check(ks && std::fabs(ks->shared_device_prompt_tps - 146.0) < 1e-9 &&
+                  std::fabs(ks->no_shared_device_prompt_tps - 103.0) < 1e-9,
+              "record: the prompt rates are merged beside what else was measured");
+        MeasuredKnobs decode_only = sp;
+        decode_only.shared_device_prompt_tps = decode_only.no_shared_device_prompt_tps = 0.0;
+        keep_measured_knobs(back, decode_only);
+        ks = find_measured_knobs(back, a.hardware, a.engine);
+        check(ks && std::fabs(ks->shared_device_prompt_tps - 146.0) < 1e-9,
+              "record: a later load that timed only the decode keeps the prompt rates measured before");
+        check(format_measured_knobs({dc}).find("prompt_tps") == std::string::npos, "record: no prompt timed, no key");
+        check(old.size() == 1 && old[0].shared_device_prompt_tps == 0.0 && old[0].no_shared_device_prompt_tps == 0.0,
+              "record: one written before the prompt rates were recorded reads as not measured");
+        check(
+            !parse_measured_knobs("bmoe-measured-knobs 1\nhardware=a engine=b shared_device_prompt_tps=-1\n", bad, err),
+            "record: a negative prompt rate is refused");
+
         // Failed opens of a side (MeasuredKnobs::*_unviable): written as a count per side only when there is
         // one, read back, counted as a verdict, grown by a later failure, cleared by a rate for the side,
         // reset with another narrow width, and read past by an engine that does not know a side's name.

@@ -187,6 +187,13 @@ std::string format_measured_knobs(const std::vector<MeasuredKnobs> & records) {
             std::snprintf(num, sizeof(num), "%.3f", r.no_shared_device_tps);
             out += std::string(" no_shared_device_tps=") + num;
         }
+        // Their prompt rates: later keys still, written once a load timed one.
+        if (r.shared_device_prompt_tps > 0.0 || r.no_shared_device_prompt_tps > 0.0) {
+            std::snprintf(num, sizeof(num), "%.3f", r.shared_device_prompt_tps);
+            out += std::string(" shared_device_prompt_tps=") + num;
+            std::snprintf(num, sizeof(num), "%.3f", r.no_shared_device_prompt_tps);
+            out += std::string(" no_shared_device_prompt_tps=") + num;
+        }
         // The decode's own cost: later keys of the same format, which an older engine reads past.
         std::snprintf(num, sizeof(num), "%.6f", r.decode_compute_s);
         out += std::string(" decode_compute_s=") + num;
@@ -300,6 +307,10 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
                 ok = as_double(r.shared_device_tps);
             else if (k == "no_shared_device_tps")
                 ok = as_double(r.no_shared_device_tps);
+            else if (k == "shared_device_prompt_tps")
+                ok = as_double(r.shared_device_prompt_tps);
+            else if (k == "no_shared_device_prompt_tps")
+                ok = as_double(r.no_shared_device_prompt_tps);
             else if (k == "width_narrow")
                 ok = as_int(r.width_narrow);
             else if (k == "wide_decode_tps")
@@ -364,7 +375,8 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
             r.decode_threads < 0 || !(r.decode_hit >= -1.0 && r.decode_hit <= 1.0) || !(r.decode_cache_mib >= 0.0) ||
             r.decode_gpu_layers < 0 || r.decode_device_cache_mb < 0 || r.mix_requests < 0 ||
             !(r.mix_gen_tokens >= 0.0) || !(r.mix_wide_prompt_tokens >= 0.0) || !(r.host_prefill_tps >= 0.0) ||
-            !(r.shared_device_tps >= 0.0) || !(r.no_shared_device_tps >= 0.0)) {
+            !(r.shared_device_tps >= 0.0) || !(r.no_shared_device_tps >= 0.0) || !(r.shared_device_prompt_tps >= 0.0) ||
+            !(r.no_shared_device_prompt_tps >= 0.0)) {
             error = "line " + std::to_string(n) + ": a value out of range";
             return false;
         }
@@ -410,6 +422,8 @@ void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKno
                            rec.no_shared_device_tps);
             if (rec.shared_device_tps > 0.0) r.shared_device_tps = rec.shared_device_tps;
             if (rec.no_shared_device_tps > 0.0) r.no_shared_device_tps = rec.no_shared_device_tps;
+            if (rec.shared_device_prompt_tps > 0.0) r.shared_device_prompt_tps = rec.shared_device_prompt_tps;
+            if (rec.no_shared_device_prompt_tps > 0.0) r.no_shared_device_prompt_tps = rec.no_shared_device_prompt_tps;
             // A different narrow width is a different comparison: what was measured against the old
             // one no longer answers it.
             set_width_narrow(r, rec.width_narrow);

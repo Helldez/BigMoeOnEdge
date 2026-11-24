@@ -3543,6 +3543,34 @@ int main() {
             check(!plan_chat(30.0, 40.0, roomy).config.fallback, "shared device, on the cores: nothing behind them");
         }
 
+        // Both prompts timed too, by the load that compared the answers, as wide as a prompt runs: the
+        // whole request is weighed on those, by the load's own rule, and the probes' matmul at a width
+        // of its own no longer decides. An integrated GPU and its cores on one MoE model: 29.5 and 33.3
+        // tok/s decoded, 146 and 103 prompt tok/s timed 512 wide, 50 and 89 timed 64 wide.
+        {
+            const auto plan_timed = [&](double on_prompt, double off_prompt, const HardwareProfile & h) {
+                ModelProfile m = model;
+                m.knobs.shared_device_tps = 29.5;
+                m.knobs.no_shared_device_tps = 33.3;
+                m.knobs.shared_device_prompt_tps = on_prompt;
+                m.knobs.no_shared_device_prompt_tps = off_prompt;
+                return plan_run(base_cfg(), h, m, shared, PlanRequest{}, PlannerPolicy::defaults());
+            };
+            // The probes read the device no faster on a prompt, and on them alone the cores keep it.
+            check(on_cores(plan_with(29.5, 33.3)), "shared device, prompts not timed: the probes rank the prompt");
+            const Plan timed = plan_timed(146.0, 103.0, roomy);
+            const Decision * dt = find(timed, "shared-device");
+            check(on_device(timed) && dt && dt->source == Source::Measured &&
+                      dt->reason.find("timed as wide as a prompt runs") != std::string::npos,
+                  "shared device, both prompts timed: the request is weighed on them, whatever the probes read",
+                  dt ? dt->reason : "no line");
+            check(on_cores(plan_timed(50.0, 89.0, prompts)),
+                  "shared device, both prompts timed and the cores' faster: the cores, against probes that favour "
+                  "the device");
+            check(on_device(plan_timed(0.0, 89.0, prompts)) && on_cores(plan_timed(146.0, 0.0, roomy)),
+                  "shared device, one side's prompt timed: no comparison, and the probes decide as before");
+        }
+
         // The probes let the device through; what this model answers there is compared by the load that
         // moves it, once, and the record's word then decides.
         check(moved.config.trial.answer_device == "accel" && df &&
