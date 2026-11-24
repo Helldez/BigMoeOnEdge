@@ -78,6 +78,20 @@ Semantic Versioning.
   after a longer conversation == the same chat in a fresh session, resident, streamed and with a
   prefill device, and perplexity after it == in a fresh session, bit for bit
   ([session.md](docs/session.md#independent-prompts-vs-multi-turn-chat)). By @pt7777 (#711).
+- **A context refused for another reason no longer costs the device expert cache.** Where llama.cpp
+  refuses a context the session asks again: with a smaller device cache, then with the V cache at
+  f16 (a quantized one needs flash attention), then with a narrower graph. The three were tried in
+  that order with everything kept from the one before, so on a backend that refuses a quantized V
+  cache the device cache was first cut a quarter at a time down to one token cycle, the context
+  then opened with V at f16 and that cache, and the session kept reporting the planned size: the
+  log, the run's metadata and the figures the next plan is priced from all named a cache the run
+  never held. A refused width did the same. Each remedy is now asked for with the cache as planned
+  first; where the cache was in the way as well, it ends at the largest size that opens beside the
+  remedy rather than at its floor; a narrower graph no longer leaves V at f16 where the quantized
+  one opens; and what opened is what the session records. The capture context's settled width and
+  V type are also where the second creation, which arms the cache, starts from, instead of asking
+  again for what was just refused. The order is one module (`core/src/engine/context_fallback`)
+  with its own test (`context_fallback`).
 
 ### Removed
 - **Levers nothing read any more.** `--dense-on-device` (the session never read it, and the plan

@@ -1289,7 +1289,11 @@ it serves. The fitter measured a graph without the cache, and with it a wide gra
 experts into the device's compute buffers, so the session treats the planned size as a ceiling: where
 the context cannot be created beside the cache, the cache gives up a quarter at a time down to one
 token cycle (measured why on a 24 GB card with DeepSeek V4.1, where a 15.3 GB cache left 2.4 GB of
-prefill buffers nowhere to go). Where the device is not faster, a fact is missing, or not every dense part fits, the
+prefill buffers nowhere to go). The cache is only one of three reasons a context can be refused
+(a quantized V cache on a backend without flash attention, and a graph too wide for the memory
+left, are the others), and none can be told from the others before asking, so each remedy is first
+asked for with the cache as planned and the cache shrinks only where it did stand in the way
+(`core/src/engine/context_fallback.h`); the session records and reports the size that opened. Where the device is not faster, a fact is missing, or not every dense part fits, the
 fitter's placement stands and the plan says which. On a shared pool, or with the caller's own
 placement, it says nothing and changes nothing.
 

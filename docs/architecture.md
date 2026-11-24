@@ -148,6 +148,8 @@ core/
                   generate() are short sequences of named steps (see "The generation loop")
                 cache_brake - the expert cache's brake: halves the budget when the run stalls and
                   the cache's own pages are being taken back, and never grows it again (pressure.md)
+                context_fallback - what a refused context is asked for again with (a smaller device
+                  cache, an unquantized V cache, a narrower graph), one remedy at a time
                 image_probe - an encoded image's size from its header alone, so an image too large
                   to decode is refused before any pixel is allocated
                 kv_cache_type - the KV cache type to the ggml type llama.cpp's context takes
