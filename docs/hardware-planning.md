@@ -462,7 +462,7 @@ flag names and none of this page's vocabulary. `note()` takes both, so no rule c
 only an engineer can read. Neither cites one machine's story on every other: what a line says about
 the machine is what its profile says. The cost model's own notes (`Allocation::notes`) are
 structured the same way, each under a stable kebab-case `topic` that becomes the decision's knob -
-`storage-rate`, `storage-spread`, `cache-floor`, `cache-off`, `cache-lock`, `cache-unpriced`,
+`storage-rate`, `storage-spread`, `cache-floor`, `cache-off`, `cache-lock`, `cache-unpriced`, `cache-ceil-mb`,
 `dense-pin`, `shared-memory`, `device-crossing`, `device-unapplied`, `device-excluded`,
 `device-host-pointer`, `unmeasured-compute`, `unmeasured-refault`, `unmeasured-storage` - with the
 number it turns on as its value ("6.3 GB/s", "581 MiB") or `-`.

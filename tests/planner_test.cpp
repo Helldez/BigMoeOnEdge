@@ -229,6 +229,60 @@ int main() {
             check(!ledger_row(p, LedgerKind::Projector), "desktop, no projector: no row");
         }
 
+        // #697: the person's cache ceiling bounds the cache the plan sizes, which the runtime's own
+        // ceiling never sees once the plan has made it a fixed size. Above the plan's cache it
+        // changes nothing; under one token's worth it leaves the cache off, as the floor does.
+        {
+            const auto with_ceiling = [&](int mb) {
+                RunConfig c = base_cfg();
+                c.moe.cache_ceil_mb = mb;
+                return plan_run(c, desktop(), model, PlanRequest{});
+            };
+            check(p.config.moe.cache_mb > 2048, "desktop: room for a ceiling under the plan's cache",
+                  std::to_string(p.config.moe.cache_mb) + " MiB");
+            const Plan held = with_ceiling(1024);
+            const LedgerRow * row = ledger_row(held, LedgerKind::ExpertCache);
+            check(held.config.moe.cache_mb == 1024 && !held.config.moe.cache_auto,
+                  "desktop, ceiling: the plan's cache stops at the ceiling", std::to_string(held.config.moe.cache_mb));
+            check(row && row->bytes == 1024 * MiB, "desktop, ceiling: the ledger charges the cache as held");
+            check(find(held, "cache-ceil-mb") != nullptr, "desktop, ceiling: the plan says the ceiling held it");
+            check(validate(held.config).ok, "desktop, ceiling: the plan is a valid config",
+                  validate(held.config).error);
+
+            const Plan loose = with_ceiling(p.config.moe.cache_mb + 1024);
+            check(loose.config.moe.cache_mb == p.config.moe.cache_mb && !find(loose, "cache-ceil-mb"),
+                  "desktop, ceiling above the cache: the plan is unchanged", std::to_string(loose.config.moe.cache_mb));
+
+            const Plan under = with_ceiling(512);
+            check(under.config.moe.enabled && under.config.moe.cache_mb == 0 && !under.config.moe.cache_auto,
+                  "desktop, ceiling under the token cycle: the experts stream with the cache off",
+                  std::to_string(under.config.moe.cache_mb));
+            const Decision * off = find(under, "cache-off");
+            check(off && off->brief.find("ceiling") != std::string::npos,
+                  "desktop, ceiling under the token cycle: the reason names the ceiling",
+                  off ? off->brief : "no cache-off decision");
+            const Decision * cm = find(under, "cache-mb");
+            check(cm && cm->brief.find("ceiling") != std::string::npos &&
+                      cm->reason.find("ctx-size") == std::string::npos,
+                  "desktop, ceiling under the token cycle: no shorter context is offered for a bound the person set",
+                  cm ? cm->brief + " / " + cm->reason : "no cache-mb decision");
+
+            // A cache-mb the caller pinned is not one the plan sizes, so the ceiling has nothing to
+            // bound: the pinned size is kept whole and the plan claims no ceiling held it.
+            RunConfig own = base_cfg();
+            own.moe.cache_mb = 2048;
+            own.moe.cache_ceil_mb = 1024;
+            PlanRequest prq;
+            prq.pinned = {"cache-mb"};
+            const Plan pinned = plan_run(own, desktop(), model, prq);
+            const LedgerRow * prow = ledger_row(pinned, LedgerKind::ExpertCache);
+            check(pinned.config.moe.cache_mb == 2048 && prow && prow->bytes == 2048 * MiB,
+                  "desktop, pinned cache + ceiling: the pinned size is kept and charged",
+                  std::to_string(pinned.config.moe.cache_mb));
+            check(!find(pinned, "cache-ceil-mb") && !find(pinned, "cache-off"),
+                  "desktop, pinned cache + ceiling: no bound is reported for a cache the plan did not size");
+        }
+
         const Decision * d = find(p, "release-mmap");
         check(d && d->source == Source::Measured, "desktop: release-mmap is a measured decision");
     }
