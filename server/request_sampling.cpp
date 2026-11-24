@@ -171,6 +171,7 @@ bool parse_request_sampling(const json & body, SamplingDialect dialect, ChatRequ
         if (!read_logit_bias(body, r.logit_bias, err)) return false;
         if (!r.logit_bias.empty()) any = true;
     }
+    // dt:srv.request.sampling
     if (any) turn.sampling = r;
 
     if (dialect == SamplingDialect::Messages) {

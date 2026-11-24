@@ -402,7 +402,10 @@ void register_agent_routes(httplib::Server & svr, const AgentRouteDeps & d) {
             return send_error(res, 400,
                               "the loaded model reads no images: load it with its projector (mmproj) file beside it",
                               "no_vision");
-        const bool think = body.contains("think") && body["think"].is_boolean() && body["think"].get<bool>();
+        // Absent, the Thinking setting decides (Agent::send): a client that never asks gets what the
+        // person set, as on the OpenAI and Anthropic routes.
+        std::optional<bool> think;
+        if (body.contains("think") && body["think"].is_boolean()) think = body["think"].get<bool>();
         json item;
         const Refusal r = edit ? d.agent->edit(id, body.value("item", ""), body["text"].get<std::string>(), images,
                                                think, !local(req), item)

@@ -17,9 +17,11 @@ add_library(bmoe_core STATIC
     src/plan/planner.cpp
     src/plan/backend_choice.cpp
     src/plan/routing.cpp
+    src/plan/serving_side.cpp
     src/engine/logits.cpp
     src/engine/logit_agreement.cpp
     src/engine/cache_brake.cpp
+    src/engine/context_fallback.cpp
     src/engine/knob_trial.cpp
     src/plan/measured_knobs.cpp
     src/plan/model_records.cpp

@@ -1005,7 +1005,7 @@ static void settings_tests() {
     check(s.load().empty(), "no settings file is a clean start");
     check(s.config().n_threads == 4, "defaults apply");
 
-    s.apply_plan({{"threads", "6"}, {"io-threads", "2"}}, json::array());
+    s.apply_plan({{"threads", "6"}, {"io-threads", "2"}}, json::array(), "");
     check(s.config().n_threads == 6 && s.config().moe.io_threads == 2, "plan layer overrides defaults");
     check(s.operator_keys().empty(), "a plan is not an operator choice");
 
@@ -1086,7 +1086,7 @@ static void planning_config_tests() {
     defaults.moe.enabled = true;
     SettingsStore store(defaults, path);
     store.apply(json{{"threads", 6}}, {});
-    store.apply_plan({{"cache-mb", "1333"}, {"force-cache", "true"}}, json::array());
+    store.apply_plan({{"cache-mb", "1333"}, {"force-cache", "true"}}, json::array(), "");
     check(store.config().moe.cache_mb == 1333 && store.config().moe.force_cache && store.config().n_threads == 6,
           "the plan layer is in the config");
     const RunConfig base = store.planning_config();
@@ -1101,11 +1101,39 @@ static void planning_config_tests() {
     for (const ParamDesc & d : params())
         if (d.get(planned) != d.get(base)) second[d.key] = d.get(planned);
     check(second.count("force-cache") == 1 && second.count("cache-mb") == 1, "a repeated choice is still a value");
-    store.apply_plan(second, json::array());
+    store.apply_plan(second, json::array(), "");
     // (validate() wants a model path too; the cache rule is the one this guards.)
     check(store.config().moe.cache_mb == 1233 && store.config().moe.force_cache &&
               validate(store.config()).error.find("pathological") == std::string::npos,
           "the second plan applies whole, and the cache rule is satisfied");
+    std::filesystem::remove(path);
+}
+
+// #718: a plan's values are placement for the model it was made for, so the layer is in force only
+// while the settings name that model, and a plan that could not be made leaves none behind.
+static void plan_layer_model_tests() {
+    const std::string path = (std::filesystem::temp_directory_path() / "bmoe_server_test_plan_model.json").string();
+    std::filesystem::remove(path);
+    RunConfig defaults;
+    defaults.moe.enabled = true;
+    SettingsStore store(defaults, path);
+    store.apply(json{{"model", "/models/a.gguf"}}, {});
+    store.apply_plan({{"cache-mb", "1333"}, {"threads", "6"}}, json::array({"a's decisions"}), "/models/a.gguf");
+    check(store.config().moe.cache_mb == 1333 && store.config().n_threads == 6 && !store.plan_decisions().is_null(),
+          "the plan is in force for the model it was made for");
+    store.apply(json{{"model", "/models/b.gguf"}}, {});
+    const RunConfig other = store.config();
+    check(other.model_path == "/models/b.gguf" && other.moe.cache_mb == defaults.moe.cache_mb &&
+              other.n_threads == defaults.n_threads && store.plan_decisions().is_null(),
+          "another model opens with none of that plan's values or decisions");
+    store.apply(json{{"model", "/models/a.gguf"}}, {});
+    check(store.config().moe.cache_mb == 1333, "back on the plan's model, its plan is in force again");
+    store.set_launch_values({{"model", "/models/b.gguf"}});
+    check(store.config().moe.cache_mb == defaults.moe.cache_mb, "a launch flag naming another model leaves it out");
+    store.set_launch_values({});
+    store.clear_plan();
+    check(store.config().moe.cache_mb == defaults.moe.cache_mb && store.plan_decisions().is_null(),
+          "a cleared plan leaves no layer behind");
     std::filesystem::remove(path);
 }
 
@@ -2978,6 +3006,7 @@ int main() {
     queue_tests();
     settings_tests();
     planning_config_tests();
+    plan_layer_model_tests();
     json_tests();
     access_tests();
     llama_compat_tests();

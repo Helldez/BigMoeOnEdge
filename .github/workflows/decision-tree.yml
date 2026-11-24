@@ -1,0 +1,21 @@
+name: decision-tree
+
+# docs/decision-tree.md and the `// dt:` markers in the code must agree. The main CI skips pull
+# requests that touch only docs, and an edit to the tree alone is exactly what can break it, so this
+# check has a workflow of its own with no path filter. Standard-library Python only: seconds.
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Nodes, markers and conditions agree; graphs are current
+        run: python3 scripts/decision-tree.py check

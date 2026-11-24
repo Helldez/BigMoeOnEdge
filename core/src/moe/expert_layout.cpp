@@ -47,6 +47,7 @@ ExpertLayout discover_expert_layout(const std::vector<TensorExtent> & tensors, i
     // another tail and falls out here, by its shape and not by its name.
     std::map<int, std::set<std::string>> per_layer;
     for (const TensorExtent & t : tensors) {
+        // dt:open.read.layout.rule
         if (t.third != (uint64_t) n_expert) continue;
         int il = -1;
         const std::string_view sfx = tensor_names::weight_suffix(t.name.c_str(), il);

@@ -468,6 +468,7 @@ static int run_session_loop(const RunConfig & cfg,
                         recoverable ? "false" : "true", run_error_name(r.error_kind),
                         json_escape(flags_named(r.error)).c_str());
             std::fflush(stdout);
+            // dt:cli.session.error
             if (!recoverable) {
                 rc = 1;
                 break;
@@ -500,6 +501,7 @@ static int run_session_loop(const RunConfig & cfg,
         std::fflush(stdout);
         // The record grows over the first turns and then stops; it is written each time it grew, so a
         // session ended any way at all has kept what it recorded.
+        // dt:cli.session.keep
         if (routing.kept()) {
             const RoutingTrace rec = session->routing_record();
             if (rec.decode_tokens > routing_kept) {
@@ -888,6 +890,7 @@ int main(int argc, char ** argv) {
             seen.insert(r.param->key);
             // Two switches that are alternatives for one parameter are a contradiction rather than a
             // precedence question — say so instead of silently honouring the last one.
+            // dt:cli.switch-exclusive
             if (r.via_switch && r.param->exclusive_switches) {
                 auto it = switch_used.find(r.param->key);
                 if (it != switch_used.end() && it->second != r.via_switch->flag) {
@@ -927,6 +930,7 @@ int main(int argc, char ** argv) {
     };
     for (const EnvOverride & e : kEnvOverrides) {
         const char * v = std::getenv(e.var);
+        // dt:cli.env
         if (seen.count(e.key) || !v || !*v) continue;
         if (e.front_end) {
             *e.front_end = std::atoi(v) != 0; // the reading these switches always had: non-zero is on
@@ -943,6 +947,7 @@ int main(int argc, char ** argv) {
     // "no cache". With streaming on, a budget of 0 re-reads every routed expert from flash every
     // token, which is never what someone who just typed --moe-stream wanted (#186). An explicit
     // --cache-mb or BMOE_CACHE_MB still wins, including an explicit 0.
+    // dt:cli.cache-auto
     if (cfg.moe.enabled && !cfg.moe.cache_auto && !seen.count("cache-mb") && std::getenv("BMOE_CACHE_MB") == nullptr)
         cfg.moe.cache_auto = true;
 
@@ -974,6 +979,7 @@ int main(int argc, char ** argv) {
     // Kept where every front-end keeps it unless --routing-dir names another folder ("" keeps nothing).
     RunRecords routing(routing_dir_set ? routing_dir : frontend::records_dir(frontend::default_data_dir()),
                        cfg.model_path);
+    // dt:cli.auto
     if (auto_plan && !cfg.model_path.empty()) {
         PlanRequest req;
         req.pinned.assign(seen.begin(), seen.end());
@@ -986,6 +992,7 @@ int main(int argc, char ** argv) {
         AutoPlanOptions opt;
         opt.probe_io = probe_io;
         opt.probe_mem = probe_mem;
+        // dt:cli.auto.isolated
         if (isolated_probes) {
             const std::string model = cfg.model_path;
             opt.isolated_probe_args = [model](const std::string & dev) {
@@ -995,6 +1002,7 @@ int main(int argc, char ** argv) {
         // The routing this model recorded on an earlier run, when one was kept: the cache is then
         // priced on its hit curve rather than the linear credit.
         RoutingTrace kept;
+        // dt:cli.auto.records
         if (routing.load(kept)) opt.routing = &kept;
         // And what an earlier load measured about the lossless knobs; with a place to keep the
         // verdict, the first answer measures what is not measured yet (docs/measured-planning.md).
@@ -1010,6 +1018,7 @@ int main(int argc, char ** argv) {
         // A prefill device this run arms is marked unconfirmed for this model before the session opens;
         // what the session makes of it replaces the word (MeasuredKnobs::prefill_verdict), and a run
         // that never gets that far leaves it, so the next plan does not arm the device again.
+        // dt:cli.auto.prefill-unconfirmed
         if (!plan_only && !cfg.prefill.device.empty()) {
             MeasuredKnobs here;
             if (const MeasuredKnobs * k = find_measured_knobs(knobs_kept, routing.hardware, version())) here = *k;
@@ -1103,6 +1112,7 @@ int main(int argc, char ** argv) {
             std::fprintf(stderr, "plan: reproduce with\n  bmoe-cli -m %s %s\n", cfg.model_path.c_str(),
                          plan.to_flags().c_str());
         }
+        // dt:cli.auto.plan-only
         if (plan_only) return 0;
     }
 
@@ -1182,12 +1192,14 @@ int main(int argc, char ** argv) {
     // Interactive session: one persistent process serves many prompts over stdin, keeping the
     // model loaded and the expert cache warm between them. Prompts arrive as JSON requests, not
     // via -p. This is a superset of --progress output (BMOE_* lines), so it never streams inline.
+    // dt:cli.dispatch.session
     if (session_mode)
         return run_session_loop(cfg, sink.get(), route_trace.get(), compute_trace.get(), io_trace.get(), routing);
 
     // Perplexity mode: score a fixed text instead of generating one. It opens the same session
     // with the same flags, so a lossy setting is priced under exactly the configuration it ships
     // with — and every cell scores the same tokens, which is the whole point.
+    // dt:cli.dispatch.ppl
     if (!ppl_path.empty() || !ppl_list.empty()) {
         std::vector<std::string> paths;
         if (!ppl_path.empty()) paths.push_back(ppl_path);

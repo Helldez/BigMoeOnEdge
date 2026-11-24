@@ -96,16 +96,25 @@ bool SettingsStore::forget_missing_model(const std::function<bool(const std::str
     std::lock_guard<std::mutex> lk(m_);
     if (launch_.count("model")) return false;
     const auto it = user_.find("model");
+    // dt:srv.forget-missing
     if (it == user_.end() || it->second.empty() || exists(it->second)) return false;
     user_.erase(it);
     save_locked();
     return true;
 }
 
-void SettingsStore::apply_plan(std::map<std::string, std::string> values, json decisions) {
+void SettingsStore::apply_plan(std::map<std::string, std::string> values, json decisions, std::string model) {
     std::lock_guard<std::mutex> lk(m_);
     plan_ = std::move(values);
     decisions_ = std::move(decisions);
+    plan_model_ = std::move(model);
+}
+
+void SettingsStore::clear_plan() {
+    std::lock_guard<std::mutex> lk(m_);
+    plan_.clear();
+    decisions_ = nullptr;
+    plan_model_.clear();
 }
 
 RunConfig SettingsStore::config_with_plan(const std::map<std::string, std::string> & values) const {
@@ -118,8 +127,24 @@ RunConfig SettingsStore::config_with_plan(const std::map<std::string, std::strin
     return c;
 }
 
-RunConfig SettingsStore::build_locked() const {
+RunConfig SettingsStore::operator_config_locked() const {
     RunConfig c = defaults_;
+    std::string err;
+    for (const auto * layer : {&user_, &launch_})
+        for (const auto & kv : *layer)
+            if (const ParamDesc * d = find_param(kv.first)) d->set(c, kv.second, err);
+    return c;
+}
+
+bool SettingsStore::plan_in_force_locked(const RunConfig & operator_config) const {
+    return !plan_.empty() && operator_config.model_path == plan_model_;
+}
+
+RunConfig SettingsStore::build_locked() const {
+    RunConfig c = operator_config_locked();
+    // dt:srv.layers
+    if (!plan_in_force_locked(c)) return c;
+    c = defaults_;
     std::string err;
     for (const auto * layer : {&plan_, &user_, &launch_})
         for (const auto & kv : *layer)
@@ -134,17 +159,13 @@ RunConfig SettingsStore::config() const {
 
 RunConfig SettingsStore::planning_config() const {
     std::lock_guard<std::mutex> lk(m_);
-    RunConfig c = defaults_;
-    std::string err;
-    for (const auto * layer : {&user_, &launch_})
-        for (const auto & kv : *layer)
-            if (const ParamDesc * d = find_param(kv.first)) d->set(c, kv.second, err);
-    return c;
+    return operator_config_locked();
 }
 
 RunConfig SettingsStore::api_config() const {
     std::lock_guard<std::mutex> lk(m_);
     RunConfig c = build_locked();
+    // dt:srv.api-think
     if (!launch_.count("think") && !user_.count("think")) c.think = true;
     return c;
 }
@@ -200,7 +221,7 @@ void SettingsStore::set_model_folders(ModelFolders f) {
 
 json SettingsStore::plan_decisions() const {
     std::lock_guard<std::mutex> lk(m_);
-    return decisions_;
+    return plan_in_force_locked(operator_config_locked()) ? decisions_ : json(nullptr);
 }
 
 void SettingsStore::save_locked() const {

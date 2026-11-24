@@ -176,6 +176,10 @@ struct Pricing {
     uint64_t spendable = 0; // what the ranking may spend once those are off the top
     uint64_t locked = 0;    // what is already charged to the lockable total
     uint64_t unspent = 0;   // what the ranking left once every candidate had its turn
+    // The expert cache had a price and stood in the ranking. Where it did and came out with
+    // nothing, that is the ranking's answer (less than one token cycle was left at its turn), not a
+    // lane nobody could price.
+    bool cache_ranked = false;
 };
 
 // A group in a lane, as the ranking sees it.
@@ -536,8 +540,10 @@ void spend_ranking(Pricing & c, std::vector<Candidate> & candidates) {
             continue;
         }
         GroupPlacement & p = a.at(k.group);
+        // dt:plan.ledger
         if (k.curve_piece > 0 && !curve_open) continue;
         if (k.fractional) {
+            c.cache_ranked = true;
             if (remaining < k.floor) {
                 curve_open = false;
                 note(a, "cache-off", size_brief(remaining),
@@ -664,7 +670,10 @@ void bound_cache(Pricing & c) {
     if (in.cacheable_bytes == 0 || !model.is_moe) return;
     const uint64_t after_reserved = c.spendable > in.reserved_bytes ? c.spendable - in.reserved_bytes : 0;
     const uint64_t priced = a.cache_bytes;
-    uint64_t sized = std::min(after_reserved, in.cacheable_bytes) & ~((1ull << 20) - 1);
+    // The largest the cache may be: the set it caches, under the person's ceiling where one is set.
+    const uint64_t cache_max =
+        in.cache_ceiling_bytes > 0 ? std::min(in.cacheable_bytes, in.cache_ceiling_bytes) : in.cacheable_bytes;
+    uint64_t sized = std::min(after_reserved, cache_max) & ~((1ull << 20) - 1);
 
     // The second ceiling. Where the cache can be kept in place, it is sized to what can be kept: a
     // byte past that is a byte the machine is free to take back, and on the machine this was
@@ -677,7 +686,7 @@ void bound_cache(Pricing & c) {
     const bool cache_protected = cache_may_lock && in.lock_in_place_bytes_known;
     // An offered cache is taken back by dropping it, never by a write (AllocationInputs::cache_offered),
     // so it leaves the margin as a locked one does - all but the token cycle the last pass used.
-    const bool cache_offered = !cache_protected && in.cache_offered && in.cacheable_bytes > model.token_cycle_bytes;
+    const bool cache_offered = !cache_protected && in.cache_offered && cache_max > model.token_cycle_bytes;
     uint64_t holdable_cap = in.budget_bytes;
     if ((cache_protected || cache_offered) && in.holdable_bytes > 0) {
         // With the cache locked or offered, most of what this run holds is not memory a reclaim has
@@ -686,8 +695,8 @@ void bound_cache(Pricing & c) {
         // ceiling the caller was given. "Ordinary" is never less than the rows that really are: an
         // unpinned dense set is memory the machine can take back however much lock is left unused
         // beside it, and an offered cache keeps the experts of its last pass as ordinary memory.
-        const uint64_t exempt_cache = cache_protected ? std::min(cache_lock_room, in.cacheable_bytes)
-                                                      : in.cacheable_bytes - model.token_cycle_bytes;
+        const uint64_t exempt_cache =
+            cache_protected ? std::min(cache_lock_room, cache_max) : cache_max - model.token_cycle_bytes;
         const uint64_t locked_all = c.locked + exempt_cache;
         const uint64_t ordinary_rows =
             in.fixed_bytes + in.projector_bytes + in.checkpoint_bytes + (in.device_locked ? 0 : in.device_bytes) +
@@ -697,9 +706,17 @@ void bound_cache(Pricing & c) {
         const uint64_t m = std::max((uint64_t) ((double) ordinary * in.margin_frac), in.margin_min_bytes);
         holdable_cap = std::max(holdable_cap, in.holdable_bytes > m ? in.holdable_bytes - m : 0);
         const uint64_t taken = c.fixed + in.reserved_bytes;
-        sized = std::min(holdable_cap > taken ? holdable_cap - taken : 0, in.cacheable_bytes) & ~((1ull << 20) - 1);
+        sized = std::min(holdable_cap > taken ? holdable_cap - taken : 0, cache_max) & ~((1ull << 20) - 1);
     }
     a.ledger.holdable_cap = holdable_cap;
+    // Where the ranking priced the cache and gave it nothing, the groups ahead of it took the budget
+    // and what is left is all there is: the ranking's remainder and whatever the ceiling was raised
+    // by for a cache that is locked or offered. Sized from the whole budget instead, as an unpriced
+    // lane is below, the cache stood beside the groups the ranking had just made resident: on a
+    // mapped dense set (nothing reserved ahead of the ranking) a 2752 MiB budget held 5480.
+    const uint64_t raised = holdable_cap - in.budget_bytes;
+    const bool ranked_out = priced == 0 && c.cache_ranked;
+    if (ranked_out) sized = std::min(sized, c.unspent + raised) & ~((1ull << 20) - 1);
     if (cache_may_lock && sized > cache_lock_room) {
         note(a, "cache-lock", size_brief(cache_lock_room),
              in.lock_in_place_bytes_known
@@ -724,7 +741,22 @@ void bound_cache(Pricing & c) {
     // and returns no hits - and a bound that only guards one of the two paths into this number is
     // not a floor.
     const uint64_t floor = model.token_cycle_bytes;
-    if (sized > 0 && sized < floor) {
+    // Whether the person's ceiling, rather than the memory, is what the cache stops at.
+    const bool by_ceiling = cache_max < in.cacheable_bytes && sized == (cache_max & ~((1ull << 20) - 1));
+    if (ranked_out && sized < floor) {
+        // The ranking said so already, with the figures it had at the cache's turn; a ceiling the
+        // person set changes nothing about a cache the budget gave nothing, so it gets no second note.
+        sized = 0;
+    } else if (sized > 0 && sized < floor && by_ceiling) {
+        note(a, "cache-off", size_brief(sized),
+             "No cache: your ceiling of " + size_brief(sized) + " is under the " + size_brief(floor) +
+                 " one token reads.",
+             "expert cache left off: the caller's cache-ceil-mb holds it to " + mibs(sized) +
+                 " and one token's routing reads " + mibs(floor) +
+                 ". Under that floor the cache evicts a slice before the same token needs it again - an eviction "
+                 "per read and no hits, measurably slower than no cache at all.");
+        sized = 0;
+    } else if (sized > 0 && sized < floor) {
         note(a, "cache-off", size_brief(sized),
              "No cache: " + size_brief(sized) + " is left after the dense weights, under the " + size_brief(floor) +
                  " one token reads.",
@@ -733,6 +765,23 @@ void bound_cache(Pricing & c) {
                  ". Under that floor the cache evicts a slice before the same token needs it again - an eviction "
                  "per read and no hits, measurably slower than no cache at all.");
         sized = 0;
+    } else if (ranked_out && sized > 0) {
+        // The ranking turned the cache off with what the budget had left, and only the raise for a
+        // locked or offered cache can carry it past one token cycle. That raise exists for the cache
+        // and nothing else, so the cache has it; the ranking's verdict no longer describes the plan,
+        // and a plan that holds a cache while saying it has none contradicts itself.
+        a.notes.erase(std::remove_if(a.notes.begin(), a.notes.end(),
+                                     [](const AllocationNote & n) { return n.topic == "cache-off"; }),
+                      a.notes.end());
+        const char * how = cache_protected ? "locked" : "offered";
+        note(a, "cache-raised", size_brief(sized),
+             "The cache has " + size_brief(sized) + ": what being " + how +
+                 " frees past the budget, which the other weights had used up.",
+             "the ranking left the expert cache off: the groups ranked ahead of it took the budget and " +
+                 mibs(c.unspent) + " was left, under the " + mibs(floor) + " one token's routing reads. A " + how +
+                 " cache is not memory a reclaim has to write to take back, so the holdable ceiling is raised by " +
+                 mibs(raised) + " for it, and with that raise the cache is " + mibs(sized) +
+                 ", over the floor: the raise is the cache's, as it is for a cache the ranking did size");
     }
 
     if (priced > 0) {
@@ -743,7 +792,6 @@ void bound_cache(Pricing & c) {
         // answer routes to experts the record never saw and a byte left idle saves nothing at all.
         // Measured on a 16 GB card with 30 GiB of RAM, Qwen3.8-Flash-Next over 1024 tokens: the
         // curve's 15.7 GB cache held 83% and decoded 11.6 tok/s, 22 GB held 96% and decoded 20.7.
-        const uint64_t raised = holdable_cap - in.budget_bytes;
         const uint64_t want = (priced + c.unspent + raised) & ~((1ull << 20) - 1);
         if (want > std::min(priced + raised, sized) && sized > priced + raised)
             note(a, "cache-remainder", size_brief(std::min(want, sized) - priced),
@@ -753,13 +801,18 @@ void bound_cache(Pricing & c) {
                      ", where its curve stops rising; a record is a few hundred tokens, and a longer answer routes to "
                      "experts it never saw, so the memory the ranking left unspent is the cache's too");
         sized = std::min(want, sized);
-    } else if (sized > 0) {
+    } else if (sized > 0 && !ranked_out) {
         note(a, "cache-unpriced", size_brief(sized),
              "The cache gets what is left, " + size_brief(sized) + ": storage speed was not measured.",
              "the expert cache was sized from what remains after the dense policy (" + mibs(sized) +
                  ") rather than from what a hit is worth: this machine's read rate was not measured, so there is no "
                  "price to rank it against. It is the answer that was available, not the answer that was chosen.");
     }
+    if (by_ceiling && sized > 0 && sized == (cache_max & ~((1ull << 20) - 1)))
+        note(a, "cache-ceil-mb", size_brief(sized),
+             "Your ceiling holds the cache to " + size_brief(sized) + "; the memory past it is left free.",
+             "the expert cache stops at the " + mibs(sized) +
+                 " the caller set as its ceiling (cache-ceil-mb), short of what this machine could give it");
     a.cache_bytes = sized;
     a.cache_locked_bytes = cache_protected ? sized : 0;
     a.cache_lock_unverified = cache_may_lock && !in.lock_in_place_bytes_known && sized > 0;

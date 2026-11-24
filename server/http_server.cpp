@@ -192,6 +192,7 @@ RunConfig server_defaults() {
     c.decide.enabled = true; // POST /api/decide; costs nothing until a decision is asked for
     // Byte-identical and the measured best on every device; needs the fork's hook in the CPU
     // backend, which is a fact about the backend loaded, asked of it rather than assumed.
+    // dt:srv.defaults.overlap
     c.moe.overlap = expert_ready_hook_available();
     return c;
 }
@@ -612,6 +613,7 @@ struct App {
         RunConfig cfg = store.planning_config();
         // The projector the load pairs (load_current, below) is priced by the plan, so it is paired
         // here first: a plan made without it would size the cache into the projector's bytes.
+        // dt:srv.load.projector
         if (cfg.mmproj.empty()) cfg.mmproj = lib.projector_for(cfg.model_path);
         RoutingTrace kept;
         const bool have = routing.load(cfg.model_path, kept);
@@ -692,6 +694,7 @@ struct App {
     // A load under way, whoever started it (a person or --autoload), is a model coming: the turn waits
     // for it in the host's line. Refusing it would answer 503 for a model seconds from ready.
     std::string model_for_request() {
+        // dt:srv.request.model
         if (host.model_coming()) return "";
         if (!opt.autoload) return "no model is loaded: load one from the Models page";
         if (store.config().model_path.empty()) return "no model is selected: choose one from the Models page";
@@ -717,6 +720,7 @@ struct App {
         // plan names a side of a decision across loads (the side it priced best, which this load
         // times as it serves), the other side is what opens if that one does not (fallback_for).
         PlanOutcome named, other;
+        // dt:srv.load.auto
         if (auto_plan()) {
             host.unload();
             host.begin_planning();
@@ -724,20 +728,27 @@ struct App {
             std::unique_lock<std::mutex> measuring(measure_m);
             PlanOutcome p = measure_plan();
             measuring.unlock();
+            // dt:srv.load.plan-ok
             if (p.ok) {
+                // dt:srv.load.other-side
                 if (p.names_side()) {
                     other = plan_other_side(p);
                     if (other.ok) named = p;
                 }
-                store.apply_plan(p.values, p.decisions);
+                store.apply_plan(p.values, p.decisions, p.body.value("model", ""));
                 std::lock_guard<std::mutex> lk(plan_m);
                 load_plan = p;
                 last_plan = std::move(p);
+            } else {
+                // No plan for this load: an earlier one, possibly another model's, must not
+                // open under its name (#718).
+                store.clear_plan();
             }
             publish_config();
         } else {
             // A load on the settings as they are runs no plan: an earlier auto load's must not be
-            // answered as the one this session runs with.
+            // answered as the one this session runs with. A plan layer the person applied stays
+            // under their settings only for the model it was made for (SettingsStore::apply_plan).
             std::lock_guard<std::mutex> lk(plan_m);
             load_plan = PlanOutcome{};
         }
@@ -748,11 +759,13 @@ struct App {
         // to the session, which reopens as it where the device does not keep the model.
         {
             std::lock_guard<std::mutex> lk(plan_m);
+            // dt:srv.load.fallback
             if (load_plan.ok && load_plan.has_fallback && !effective.trial.answer_device.empty())
                 effective.fallback = std::make_shared<const RunConfig>(
                     effective_config(store.config_with_plan(load_plan.fallback_values)));
         }
         mark_prefill_unconfirmed(effective);
+        // dt:srv.load.with-other
         if (!other.ok) return host.load(effective, requested);
         return host.load(effective, requested, fallback_for(named, other));
     }
@@ -762,6 +775,7 @@ struct App {
     // returns leaves it, so the next plan of the model does not arm that device again. Only where a
     // plan of this model names the machine: a record is kept against it.
     void mark_prefill_unconfirmed(const RunConfig & c) {
+        // dt:srv.load.prefill-unconfirmed
         if (c.prefill.device.empty()) return;
         MeasuredKnobs here;
         {
@@ -789,6 +803,7 @@ struct App {
             log_printf(LogLevel::Warn, "the plan's side could not be opened (%s); its other side was loaded instead",
                        error.c_str());
             const std::string model = named.body.value("model", "");
+            // dt:srv.loader.taken
             if (named.names_side() && !model.empty() && !named.hardware.empty()) {
                 std::vector<MeasuredKnobs> kept;
                 MeasuredKnobs rec;
@@ -801,7 +816,7 @@ struct App {
             }
             PlanOutcome p = other;
             p.seq = ++plan_seq;
-            store.apply_plan(p.values, p.decisions);
+            store.apply_plan(p.values, p.decisions, p.body.value("model", ""));
             {
                 std::lock_guard<std::mutex> lk(plan_m);
                 load_plan = p;
@@ -820,6 +835,7 @@ struct App {
         // A readable file with no routed experts this engine streams runs as plain mmap, unless the
         // operator pinned streaming on, in which case the engine refuses the load with its reason.
         const ModelLibrary::ModelFacts facts = lib.probe(requested.model_path);
+        // dt:srv.load.streamable
         if (effective.moe.enabled && !pinned && !facts.arch.empty() && !facts.streamable) effective.moe.enabled = false;
         if (!effective.moe.enabled) drop_streaming_only(effective);
         // The projector beside the model, unless one was named: a model whose folder holds its
@@ -1143,6 +1159,7 @@ void register_routes(httplib::Server & svr, App & app) {
             const ParamDesc * d = find_param(it.key());
             std::string why;
             json model;
+            // dt:srv.config.paths
             if (d && d->type == ParamType::Path && it.key() != "model")
                 refused[it.key()] = "a file path other than the model is set at launch, not over the API";
             else if (it.key() == "model" && !app.model_path_for(req, it.value(), model, why))
@@ -1742,7 +1759,7 @@ void register_routes(httplib::Server & svr, App & app) {
         }
         if (!p.ok || p.body.value("model", "") != app.store.config().model_path)
             return send_error(res, 409, "compute a plan for the current model first (GET /api/plan)");
-        app.store.apply_plan(p.values, p.decisions);
+        app.store.apply_plan(p.values, p.decisions, p.body.value("model", ""));
         send_json(res, app.config_object());
         app.publish_config();
     });
@@ -2116,6 +2133,7 @@ int run(int argc, char ** argv, const Embedding & embedding) {
             o.host.c_str());
     std::fflush(stdout);
 
+    // dt:srv.autoload
     if (o.launch.count("model") || o.autoload) {
         const std::string err = app.load_current();
         if (!err.empty()) std::fprintf(stderr, "warning: not loading the model at start: %s\n", err.c_str());

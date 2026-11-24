@@ -54,6 +54,7 @@ int ngram_draft(const std::vector<int32_t> & ctx,
 
     // The confidence gate, and the whole economics of this source: no confident match means no
     // draft, no widened verify batch, and a step that costs exactly a plain decode.
+    // dt:req.draft.ngram
     if (best_m < min_match) return 0;
 
     const size_t avail = end - best_j; // tokens that followed the match, up to the corpus end

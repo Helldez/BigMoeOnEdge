@@ -741,7 +741,7 @@ std::vector<ParamDesc> build() {
     }
     {
         ParamDesc d = row("cache-ceil-mb", "Cache: ceiling", G::Cache, L::Advanced,
-                          "With the cache on auto: upper bound on the budget (0 = no cap).");
+                          "Upper bound on a cache sized for you, by auto or by the plan (0 = no cap).");
         d.value_hint = "N";
         at_least(d, 0, "MiB");
         special(d, "0", "no cap");
