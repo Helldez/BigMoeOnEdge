@@ -542,7 +542,8 @@ to the device bound (`ubatch_max_device`) takes more of the card's memory than i
 experts would use (`width_narrow` and its rates,
 [hardware-planning.md](hardware-planning.md#the-widest-graph)), and where a model held in memory runs
 on a machine whose device reads that same memory, on the cores or every layer on the device
-(`shared_device_tps`, `no_shared_device_tps`,
+(`shared_device_tps`, `no_shared_device_tps`, and the prompt rates `shared_device_prompt_tps`,
+`no_shared_device_prompt_tps` the load that compared the answers timed,
 [hardware-planning.md](hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it)).
 
 That last move also carries a word that is not a rate: whether the model's answers on the device
@@ -575,7 +576,8 @@ serves the side it prices faster, and lets the served load time that side:
   device's prompt-wide rate plus, per pass, the upload of the experts that are not on the device
   (`prompt_gather_seconds`), which a narrower graph pays once per pass. The shared-memory device's is
   the same request at the rates each processor probed on a real layer of the model, one token wide
-  and as wide as a prompt.
+  and as wide as a prompt, until the load that compared the model's answers has timed both sides on
+  the model itself; then it is that load's rates, by that load's rule (`bmoe/serving_side.h`).
 - **A request is this machine's own, weighed with a default.** The prompt tokens prefilled and the
   tokens decoded per request are recorded on every load that answers one (`MeasuredKnobs::mix_*`),
   and weighed with `PlannerPolicy::mix_prompt_tokens_default` against `mix_gen_tokens_default` (4096
@@ -614,6 +616,11 @@ serves the side it prices faster, and lets the served load time that side:
   (`MeasuredKnobs::*_unviable`). One failure may be the machine's moment (another program holding
   the card's memory, a driver's hiccup): the plan may name the side once more, the other still
   behind it. At `MeasuredKnobs::unviable_max` (two) the side loses in every plan made on the record.
+  A whole model moved onto a device that shares the host's memory has its other side in the
+  configuration itself (`RunConfig::fallback`), so every front-end, the CLI included, opens the
+  cores in the same load where the device cannot open it. That failure counts as two at once and
+  keeps the room the device reported (`shared_device_unviable_free_mib`): the device is named again
+  only once it reports more than that by `shared_device_regrowth` (10%).
   A rate measured for the side clears the count, and a new engine version starts a new record.
 - **The device cache's CPU share is a person's setting.** It is fixed when the context is created,
   and no price of it held: where the cache never fills, llama.cpp computes no miss on the host and

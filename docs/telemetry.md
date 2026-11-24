@@ -604,6 +604,7 @@ hardware=<16 hex> engine=<version> threads=<n> threads_tried=<incumbent,candidat
   device_cache_tps=<f> no_device_cache_tps=<f> width_narrow=<n> wide_decode_tps=<f>
   narrow_decode_tps=<f> wide_prefill_tps=<f> narrow_prefill_tps=<f> usage_gen_tokens=<f>
   usage_long_prompt_tokens=<f> usage_requests=<n> ... [unviable=<side:n,...>]
+  [shared_device_unviable_free_mib=<n>]
   [prefill=<device>:<kept|refused|unconfirmed[-n]>[,...]]
   [device_answer=<device>:<confirmed|differs>[,...]]  (one line)
 ```
@@ -631,7 +632,14 @@ bmoe: knob trial: <f> tok/s with the graph <...> (<n> tokens wide), the median o
 plan's other side instead (`device_cache`, `no_device_cache`, `wide`, `narrow`; the width's at
 `width_narrow`), as `side:n`, written only when there is one. After one failure the plan may name the
 side once more; from two on it is the losing side in every plan. A rate measured since clears it. A name the reader does
-not know, or a part it cannot read, is skipped.
+not know, or a part it cannot read, is skipped. `shared_device_unviable_free_mib` is the memory, in MiB,
+the device reported free when the whole model failed to open on it, written beside that failure: the
+plan names the device again once it reports more than that by `PlannerPolicy::shared_device_regrowth`. The load that
+failed says so with this warning:
+
+```
+bmoe: the model could not be opened on <device> (<error>, <n> MiB free there); the plan's other configuration is opened instead
+```
 
 `device_answer=` is whether this model's answers on a device matched the cores', one word per device
 compared, written only when there is one: the load a plan moved the whole model onto a device with

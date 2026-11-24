@@ -62,6 +62,13 @@ struct MeasuredKnobs {
     // the model itself decoded 54 tok/s on the GPU against 40 on the cores.
     double shared_device_tps = 0.0;
     double no_shared_device_tps = 0.0;
+    // The same two sides' prompt rate, in prompt tokens per second, as the load that compared their
+    // answers timed it: one graph each, as wide as the session computes a prompt (device_answer.h,
+    // answer_prompt_width). 0 where not timed. With both, a plan weighs a request by the rule that load
+    // decided by (bmoe/serving_side.h) instead of the probes' one-layer matmul, which a GPU and the
+    // cores can rank the other way round at a narrower width.
+    double shared_device_prompt_tps = 0.0;
+    double no_shared_device_prompt_tps = 0.0;
 
     // The graph width, decided across loads where a wide graph's compute buffers take device memory
     // the experts would use (planner.cpp, choose_graph_width). A wide graph prefills a long prompt in
@@ -135,6 +142,12 @@ struct MeasuredKnobs {
     int device_cache_unviable = 0, no_device_cache_unviable = 0;
     int wide_unviable = 0, narrow_unviable = 0;
     int shared_device_unviable = 0, no_shared_device_unviable = 0;
+    // What the device the model failed to open on said it had free when it failed, in MiB, as its
+    // backend reports it (0: not known). A device's room is its driver's to give and can grow (another
+    // program lets go of it, a setting raises it), so a plan names the device again where it now
+    // reports more than that (PlannerPolicy::shared_device_regrowth), the cores still behind it; until then the
+    // failure stands and no load pays for a second one.
+    uint64_t shared_device_unviable_free_mib = 0;
 
     // What came of each prefill device a load armed for this model, on this machine and engine, one
     // word per device: `verdict` 1 where the session kept it, -1 where its check on this model refused
@@ -227,8 +240,9 @@ struct MeasuredKnobs {
                (narrow_prefill_tps > 0.0) + usage_requests + (width_held >= 0) + (decode_compute_s > 0.0) +
                (decode_hit >= 0.0) + mix_requests + (host_prefill_tps > 0.0) + (device_cache_unviable > 0) +
                (no_device_cache_unviable > 0) + (wide_unviable > 0) + (narrow_unviable > 0) +
-               (shared_device_tps > 0.0) + (no_shared_device_tps > 0.0) + (shared_device_unviable > 0) +
-               (no_shared_device_unviable > 0) + (int) prefill.size() + (int) device_answers.size();
+               (shared_device_tps > 0.0) + (no_shared_device_tps > 0.0) + (shared_device_prompt_tps > 0.0) +
+               (no_shared_device_prompt_tps > 0.0) + (shared_device_unviable > 0) + (no_shared_device_unviable > 0) +
+               (int) prefill.size() + (int) device_answers.size();
     }
 };
 

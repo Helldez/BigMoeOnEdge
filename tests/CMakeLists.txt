@@ -389,6 +389,11 @@ add_executable(bmoe_cache_brake_test cache_brake_test.cpp)
 target_link_libraries(bmoe_cache_brake_test PRIVATE bmoe_core)
 add_test(NAME cache_brake COMMAND bmoe_cache_brake_test)
 
+# The order a refused context is asked for again: pure policy, no llama.cpp.
+add_executable(bmoe_context_fallback_test context_fallback_test.cpp)
+target_link_libraries(bmoe_context_fallback_test PRIVATE bmoe_core)
+add_test(NAME context_fallback COMMAND bmoe_context_fallback_test)
+
 # The knob trial's A/B policy (core/src/engine/knob_trial.h) on synthetic decode steps - noise, a real
 # win, a tie inside the margin, drift, an outlier window, the cache settling - and the record its
 # verdict is kept as (bmoe/measured_knobs.h). Pure policy, no model.

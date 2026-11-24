@@ -15,6 +15,7 @@
 
 #include "bmoe/params.h"
 #include "bmoe/routing.h"
+#include "bmoe/serving_side.h"
 
 #include <algorithm>
 #include <cmath>
@@ -356,6 +357,10 @@ struct Planning {
     // take there with its compute buffer: what the plan that streams it may hold of this pool, its
     // own ledger's ceiling. 0 on every other pass, where the regime and the margin decide.
     uint64_t whole_room = 0;
+    // Set where choose_shared_device moved every layer onto a device that reads this memory: the move
+    // back_with_cores puts the cores behind. A flag rather than a reading of the decision's words, so
+    // rewording a line cannot leave a move without its fallback.
+    bool whole_on_shared_device = false;
 
     // The model as the allocator sees it: only the host's share of the experts (host_model).
     ModelProfile host_model;
@@ -2053,7 +2058,9 @@ bool declines_residency(Planning & s) {
 // rate each applies it as wide as a prompt, both probed here with the host's results. The cores are
 // the side in force; the device takes the model where the request is shorter there by the margin.
 // The load times the decode of the side it serves (MeasuredKnobs::shared_device_tps), and once both
-// sides have one their ratio replaces the probe's.
+// sides have one their ratio replaces the probe's; the load that compares a model's answers also
+// times both sides' prompt (shared_device_prompt_tps), and with those the whole request is weighed on
+// the loads' own measurements, by the rule that load decided by (bmoe/serving_side.h).
 //
 // A probe of one layer does not always predict the whole model's decode: on a unified-memory laptop
 // the one-token probe read the cores 60% ahead (109 GiB/s against 67) while the model itself decoded
@@ -2216,6 +2223,7 @@ void choose_shared_device(Planning & s, uint64_t resident) {
         c.n_gpu_layers = layers;
         c.buft_overrides.clear();
         c.device_split.assign(1, {dev.name, layers});
+        s.whole_on_shared_device = true;
         // The probes let the device through; what this model answers there is compared by the load
         // that moves it, once: a device the record already confirmed for it is not asked again.
         const bool confirmed = mk.device_answer(dev.name) > 0;
@@ -2230,9 +2238,19 @@ void choose_shared_device(Planning & s, uint64_t resident) {
         s.note(knob, "cpu", src, brief, place + "; " + reason);
     };
 
-    if (lost(mk.shared_device_unviable)) {
+    // A device that could not open this model is not named again until it reports more room than it
+    // had when it failed, by PlannerPolicy::shared_device_regrowth: what a driver lets a device allocate
+    // can grow (another program lets go of it, a setting raises it), and the cores stay behind it
+    // (back_with_cores) if it still cannot. A failure with no figure beside it stands.
+    const uint64_t failed_free = mk.shared_device_unviable_free_mib << 20;
+    const bool more_room = failed_free > 0 && (double) dev.memory_free >
+                                                  (double) failed_free * (1.0 + (double) s.pol.shared_device_regrowth);
+    if (lost(mk.shared_device_unviable) && !more_room) {
         on_cores(Source::Measured, "The model runs on the CPU: loads with it on " + dev.name + " failed here.",
-                 "loads of this model with every layer on " + dev.name + " failed on this machine");
+                 "loads of this model with every layer on " + dev.name + " failed on this machine" +
+                     (failed_free > 0 ? ", with " + u64s(mib(failed_free)) + " MiB free on it then and " +
+                                            u64s(mib(dev.memory_free)) + " MiB now"
+                                      : std::string()));
         return;
     }
     if (lost(mk.no_shared_device_unviable)) {
@@ -2272,10 +2290,41 @@ void choose_shared_device(Planning & s, uint64_t resident) {
         trial.shared_device_side = 1;
         return;
     }
-    // A request's time on each side, in the same unit: its decoded tokens at the rate each processor
-    // applies a real layer of this model one token wide, and its prompt at the rate each applies it as
-    // wide as a prompt, both probed here with the host's results (a token reads the same bytes on
-    // either, so the bytes cancel). The decode's ratio is the loads' own once both sides were timed.
+    const RequestMix mix = request_mix(s, 0);
+    // The device keeps the model unless the cores serve a request faster by the margin: the rule the
+    // first load decided by (weigh_sides), so a plan made on its measurements does not undo it.
+    const auto settle = [&](bool cores_sooner, const std::string & nums) {
+        if (cores_sooner)
+            on_cores(Source::Measured, "The model runs on the CPU, which serves this machine's requests faster.",
+                     nums + ", past the " + margin + " margin");
+        else
+            on_device(Source::Measured,
+                      "Every layer runs on " + dev.name + ": the CPU would not serve a request faster.",
+                      nums + ", which the cores do not beat by the " + margin + " margin");
+    };
+    // The load that compared the answers also timed each side's prompt, as wide as the session computes
+    // one: a request is then weighed on that load's own measurements, by its own rule. The probes below
+    // time one layer's matmul at a width of their own, where a GPU and the cores can rank the other way
+    // round from how they rank on a prompt.
+    const double on_prompt = mk.shared_device_prompt_tps, off_prompt = mk.no_shared_device_prompt_tps;
+    if (on_prompt > 0.0 && off_prompt > 0.0) {
+        const double per_token = mix.gen > 0.0 ? mix.prompt / mix.gen : 0.0;
+        const SideWeighing w = weigh_sides({on, on_prompt}, {off, off_prompt}, per_token, m);
+        char nums[400];
+        std::snprintf(nums, sizeof(nums),
+                      "a request here is %.0f prompt tokens and %.0f decoded (%s); %s decodes at %.2fx the cores' "
+                      "rate (%s) and computes this model's prompt at %.2fx (%.1f against %.1f tok/s, timed as wide "
+                      "as a prompt runs), so a request takes %.2fx the time it takes on the cores",
+                      mix.prompt, mix.gen, mix.words().c_str(), dev.name.c_str(), on / off, measured,
+                      on_prompt / off_prompt, on_prompt, off_prompt, w.device_s / w.cores_s);
+        settle(w.cores_sooner, nums);
+        return;
+    }
+    // A record from before the prompt was timed: a request's time on each side, in the same unit: its
+    // decoded tokens at the rate each processor applies a real layer of this model one token wide, and
+    // its prompt at the rate each applies it as wide as a prompt, both probed here with the host's
+    // results (a token reads the same bytes on either, so the bytes cancel). The decode's ratio is the
+    // loads' own once both sides were timed.
     const double decode_host = s.model.is_moe ? s.hw.host_expert_rate() : s.hw.host_dense_rate();
     if (decode_host <= 0.0) {
         on_cores(Source::Unprobed, "The model runs on the CPU: its rate on this model was not measured.",
@@ -2285,7 +2334,6 @@ void choose_shared_device(Planning & s, uint64_t resident) {
     }
     const double decode_dev = decode_host * on / off;
     const bool wide_probed = s.hw.host_wide_matmul_gibs > 0.0 && dev.wide_matmul_gibs > 0.0;
-    const RequestMix mix = request_mix(s, 0);
     const double gen = mix.gen, prompt = wide_probed ? mix.prompt : 0.0;
     const double t_cores = gen / decode_host + (prompt > 0.0 ? prompt / s.hw.host_wide_matmul_gibs : 0.0);
     const double t_dev = gen / decode_dev + (prompt > 0.0 ? prompt / dev.wide_matmul_gibs : 0.0);
@@ -2296,15 +2344,7 @@ void choose_shared_device(Planning & s, uint64_t resident) {
                   "the cores",
                   prompt, gen, mix.words().c_str(), dev.name.c_str(), decode_dev / decode_host, measured,
                   wide_probed ? dev.wide_matmul_gibs / s.hw.host_wide_matmul_gibs : 0.0, t_dev / t_cores);
-    // The rule the first load decided by (weigh_answer_sides), so a plan made on its measurements does
-    // not undo it: the device keeps the model unless the cores serve a request faster by the margin.
-    const bool cores_win = t_dev > t_cores * (1.0 + m);
-    if (cores_win)
-        on_cores(Source::Measured, "The model runs on the CPU, which serves this machine's requests faster.",
-                 std::string(nums) + ", past the " + margin + " margin");
-    else
-        on_device(Source::Measured, "Every layer runs on " + dev.name + ": the CPU would not serve a request faster.",
-                  std::string(nums) + ", which the cores do not beat by the " + margin + " margin");
+    settle(t_dev > t_cores * (1.0 + m), nums);
 }
 
 // The same question for a model with no experts. Nothing streams, so the cores hold the whole model
@@ -2709,6 +2749,11 @@ AllocationInputs ledger_inputs(const Planning & s, uint64_t dense_pending) {
     ai.pin_forced = ai.can_pin && s.req.is_pinned("dense-weights");
     ai.reserved_bytes = dense_pending;
     ai.cacheable_bytes = s.host_expert_bytes;
+    // The person's bound on an automatic cache holds for the one the plan sizes too (#697): the plan
+    // turns the cache into a fixed size, which the runtime's ceiling never sees. A cache-mb the caller
+    // pinned is not sized for them: charge_caller_cache keeps it whole, so a ceiling here would size the
+    // other groups around a cache the run never has and report a bound that did not hold.
+    if (!s.req.is_pinned("cache-mb")) ai.cache_ceiling_bytes = (uint64_t) std::max(0, c.moe.cache_ceil_mb) << 20;
     ai.fixed_bytes = s.host_fixed;
     ai.projector_bytes = s.projector_host;
     ai.checkpoint_bytes = s.checkpoint_bytes;
@@ -3465,6 +3510,7 @@ bool size_cache(Planning & s, const Allocation & alloc) {
     const GroupPlacement & experts = alloc.at(WeightGroup::Experts);
     bool cache_off = false;
     std::string cache_off_why;
+    std::string cache_off_brief;
 
     if (budget < cycle && s.req.is_pinned("cache-mb")) {
         s.note("cache-floor", u64s(mib(cycle)) + " MiB", Source::Derived,
@@ -3473,12 +3519,16 @@ bool size_cache(Planning & s, const Allocation & alloc) {
                    " MiB) is under this model's token cycle, but the caller "
                    "pinned cache-mb and a pin is the caller's authority: proceeding with the pinned value");
     } else if (budget < cycle) {
-        std::string why = "the " + u64s(mib(alloc.cache_available_bytes)) +
-                          " MiB left for the expert cache is below this model's worst-case token cycle of " +
-                          u64s(mib(cycle)) +
-                          " MiB: under that floor the cache evicts what the same token still needs, "
-                          "so it costs its memory and returns no hits at all";
-        why += context_suggestion(s.placement, cycle, alloc.cache_available_bytes);
+        // Short by the person's own ceiling rather than by the memory: no context would clear it.
+        const uint64_t ceiling = (uint64_t) std::max(0, p.config.moe.cache_ceil_mb) << 20;
+        const bool by_ceiling = ceiling > 0 && ceiling < cycle;
+        std::string why =
+            (by_ceiling ? "the cache ceiling of " + u64s(mib(ceiling)) + " MiB you set"
+                        : "the " + u64s(mib(alloc.cache_available_bytes)) + " MiB left for the expert cache") +
+            " is below this model's worst-case token cycle of " + u64s(mib(cycle)) +
+            " MiB: under that floor the cache evicts what the same token still needs, "
+            "so it costs its memory and returns no hits at all";
+        if (!by_ceiling) why += context_suggestion(s.placement, cycle, alloc.cache_available_bytes);
         if (!stream_priced(alloc)) {
             s.decline(why + ". This storage's read rate was not measured, so a stream with no cache has no price "
                             "to set against the mapping and is not chosen on faith");
@@ -3490,6 +3540,10 @@ bool size_cache(Planning & s, const Allocation & alloc) {
         }
         cache_off = true;
         cache_off_why = std::move(why);
+        cache_off_brief = by_ceiling ? "No cache: your ceiling of " + size_brief(ceiling) + " is under the " +
+                                           size_brief(cycle) + " one token reads."
+                                     : "No cache: " + size_brief(alloc.cache_available_bytes) + " is left, under the " +
+                                           size_brief(cycle) + " one token reads.";
     }
 
     p.config.moe.enabled = true;
@@ -3520,10 +3574,7 @@ bool size_cache(Planning & s, const Allocation & alloc) {
         // the floor has just refused.
         p.config.moe.cache_auto = false;
         p.config.moe.cache_mb = 0;
-        s.note("cache-mb", "0", Source::Derived,
-               "No cache: " + size_brief(alloc.cache_available_bytes) + " is left, under the " + size_brief(cycle) +
-                   " one token reads.",
-               cache_off_why);
+        s.note("cache-mb", "0", Source::Derived, cache_off_brief, cache_off_why);
     } else if (!s.pinned("cache-mb", u64s((uint64_t) std::max(0, p.config.moe.cache_mb)))) {
         p.config.moe.cache_auto = false;
         p.config.moe.cache_mb = (int) mib(budget);
@@ -4179,9 +4230,20 @@ Plan plan_once(const RunConfig & base,
                const PlanRequest & req,
                const PlannerPolicy & pol,
                const Planning::LayersHome * home_from,
-               uint64_t whole_room = 0) {
+               uint64_t whole_room = 0,
+               bool * whole_on_shared_device = nullptr) {
     Plan p;
     Planning s(base, hw, model, projected, req, pol, p);
+    // Reported on every return below, early ones included, so no path can lose the move. A plan made
+    // again from the layers brought home (plan_from) reports nothing here: that inner plan already
+    // had the cores put behind it.
+    struct Report {
+        const Planning & s;
+        bool * out;
+        ~Report() {
+            if (out) *out = s.whole_on_shared_device;
+        }
+    } report{s, whole_on_shared_device};
     s.whole_room = whole_room;
     if (home_from) s.home.considered = false;
 
@@ -4280,6 +4342,18 @@ Plan plan_once(const RunConfig & base,
     return p;
 }
 
+// A whole model the plan moved onto a device that reads the host's memory (choose_shared_device),
+// with the cores behind it as the configuration's other part (RunConfig::fallback). Such a device can
+// refuse the allocation all the same: its driver may keep a ceiling of its own below the memory the
+// host has, and an integrated GPU allowed 7.8 GiB of a 16 GB laptop refused a 9.3 GiB model the plan
+// held whole, which ended the load. With the cores behind it the load serves from them instead, and
+// keeps the failure (MeasuredKnobs::shared_device_unviable). A configuration that already carries its
+// other part keeps it: a model the plan streams, tried whole on the device, falls back to the stream.
+void back_with_cores(Plan & p, bool whole_on_shared_device) {
+    if (!whole_on_shared_device || p.config.fallback || p.config.n_gpu_layers == 0) return;
+    p.config.fallback = std::make_shared<const RunConfig>(held_on_cores(p.config));
+}
+
 Plan plan_from(const RunConfig & base,
                const HardwareProfile & hw,
                const ModelProfile & model,
@@ -4287,7 +4361,9 @@ Plan plan_from(const RunConfig & base,
                const PlanRequest & req,
                const PlannerPolicy & pol,
                const Planning::LayersHome * home_from) {
-    Plan p = plan_once(base, hw, model, projected, req, pol, home_from);
+    bool whole_on_shared_device = false;
+    Plan p = plan_once(base, hw, model, projected, req, pol, home_from, 0, &whole_on_shared_device);
+    back_with_cores(p, whole_on_shared_device);
     // ── a model the plan streams, on a machine whose device reads this same memory ──
     // llama.cpp would hold such a model whole on the device, and where that fits it can be the faster
     // run by far: on a laptop with integrated graphics a 21 GB model streamed with an 18 GiB cache

@@ -472,6 +472,10 @@ std::vector<ChatTool> Agent::tools_for(const json & conv, bool remote, std::map<
     return out;
 }
 
+RunConfig Agent::settings() const {
+    return d_.config ? d_.config() : RunConfig{};
+}
+
 ChatRequest Agent::build_request(const json & conv, const std::string & system, bool remote, bool think) const {
     ChatRequest req;
     const bool provider_route = conv.value("route", "local") != "local";
@@ -531,8 +535,7 @@ ChatRequest Agent::build_request(const json & conv, const std::string & system, 
         }
     }
     req.tools = tools_for(conv, remote);
-    const RunConfig cfg = d_.config ? d_.config() : RunConfig{};
-    req.n_predict = cfg.n_predict;
+    req.n_predict = settings().n_predict;
     req.think = think;
     return req;
 }
@@ -1035,7 +1038,7 @@ std::string Agent::run_rounds(Run & run, const std::string & conv_id) {
 Refusal Agent::start(const std::string & conversation,
                      const std::string & text,
                      const json & images,
-                     bool think,
+                     std::optional<bool> think,
                      bool remote,
                      bool auto_deny,
                      const std::string & task_id,
@@ -1061,7 +1064,9 @@ Refusal Agent::start(const std::string & conversation,
     auto run = std::make_shared<Run>();
     run->remote = remote;
     run->auto_deny = auto_deny;
-    run->think = think;
+    // Settled when the message is sent, as the person's setting stood then: a run's rounds all
+    // think alike, whatever changes while it runs.
+    run->think = think.value_or(settings().think);
     run->root = conversation;
     run->task = task_id;
     std::vector<std::thread> reap;
@@ -1133,7 +1138,7 @@ Refusal Agent::start(const std::string & conversation,
 Refusal Agent::send(const std::string & conversation,
                     const std::string & text,
                     const json & images,
-                    bool think,
+                    std::optional<bool> think,
                     bool remote,
                     json & item_out) {
     return start(conversation, text, images, think, remote, false, "", item_out);
@@ -1143,7 +1148,7 @@ Refusal Agent::edit(const std::string & conversation,
                     const std::string & item,
                     const std::string & text,
                     const json & images,
-                    bool think,
+                    std::optional<bool> think,
                     bool remote,
                     json & item_out) {
     if (running(conversation)) return {409, "this conversation is running: stop it first", "busy"};
@@ -1228,7 +1233,7 @@ Refusal Agent::run_task(const std::string & id) {
     task["last_run"] = json{{"at", now_s()}, {"conversation", cid}, {"outcome", "running"}};
     d_.store->put_task(task);
     json item;
-    const Refusal r = start(cid, task.value("prompt", ""), json::array(), false, false, true, id, item);
+    const Refusal r = start(cid, task.value("prompt", ""), json::array(), std::nullopt, false, true, id, item);
     if (!r.ok()) {
         {
             std::lock_guard<std::mutex> lk(m_);

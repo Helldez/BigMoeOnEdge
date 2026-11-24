@@ -24,6 +24,7 @@
 #include "../moe/tensor_names.h"
 #include "cache_brake.h"
 #include "context_checkpoints.h"
+#include "context_fallback.h"
 #include "kv_cache_type.h"
 #include "media_input.h"
 #include "prompt_stream.h"
@@ -1235,17 +1236,20 @@ detail::DeviceAnswer Session::Impl::compare_device_answer(Opening & o) {
         if (w.side == detail::AnswerSide::Unweighed)
             log_printf(LogLevel::Warn, "device answer: the two sides could not be timed on this model; %s keeps it",
                        dev);
-        else
-            log_printf(LogLevel::Info,
-                       "device answer: this model one token at a time takes %.1f ms on %s and %.1f ms on the CPU "
-                       "(%.1f against %.1f tok/s), a %d-token graph %.0f ms against %.0f; with %.1f prompt tokens a "
-                       "decoded token a request takes %.2fx the CPU's time on %s - %s",
-                       a.device_token_s * 1e3, dev, a.host_token_s * 1e3, 1.0 / a.device_token_s, 1.0 / a.host_token_s,
-                       a.wide, a.device_wide_s * 1e3, a.host_wide_s * 1e3, (double) cfg.trial.answer_prompt_per_token,
-                       w.device_request_s / w.cores_request_s, dev,
-                       w.side == detail::AnswerSide::Cores
-                           ? "the CPU is faster by the margin: the model is reopened on it"
-                           : "the device keeps the model");
+        else {
+            const SideRates on = detail::answer_device_rates(a), off = detail::answer_host_rates(a);
+            log_printf(
+                LogLevel::Info,
+                "device answer: this model one token at a time takes %.1f ms on %s and %.1f ms on the CPU "
+                "(%.1f against %.1f tok/s), a %d-token prompt graph %.0f ms against %.0f (%.1f against %.1f "
+                "tok/s, the widest of %d widths climbed); with %.1f prompt tokens a decoded token a request takes "
+                "%.2fx the CPU's time on %s - %s",
+                a.device_token_s * 1e3, dev, a.host_token_s * 1e3, on.decode_tps, off.decode_tps, a.prompt_width,
+                a.device_prompt_s * 1e3, a.host_prompt_s * 1e3, on.prompt_tps, off.prompt_tps, a.prompt_steps,
+                (double) cfg.trial.answer_prompt_per_token, w.device_request_s / w.cores_request_s, dev,
+                w.side == detail::AnswerSide::Cores ? "the CPU is faster by the margin: the model is reopened on it"
+                                                    : "the device keeps the model");
+        }
     }
     return a;
 }
@@ -1392,9 +1396,13 @@ bool Session::Impl::create_contexts(Opening & o) {
     // The graph is reserved for the widest ubatch, so this is what sets the resident compute
     // buffers — the memory this engine is always short of. 0 keeps the historical behaviour
     // (one graph as wide as the batch); a smaller value chunks prefill to buy that memory back.
-    cparams.n_ubatch = cfg.n_ubatch > 0 ? (uint32_t) cfg.n_ubatch : (uint32_t) cfg.n_batch;
+    // The width and the V cache's type are this session's own: an earlier creation (the one the
+    // capture warm-up runs on) may have settled them below, and the one that arms the device cache
+    // starts from what opened rather than asking again for what was refused.
+    const int ubatch = this->cfg.n_ubatch;
+    cparams.n_ubatch = ubatch > 0 ? (uint32_t) ubatch : (uint32_t) cfg.n_batch;
     cparams.type_k = detail::to_ggml_type(cfg.cache_type_k);
-    cparams.type_v = detail::to_ggml_type(cfg.cache_type_v);
+    cparams.type_v = detail::to_ggml_type(this->cfg.cache_type_v);
     // A sliding-window layer keeps its window, not the whole context. llama.cpp's own default is a
     // full-size cache on those layers too (common/, which its server and CLI use, turns it off), and
     // on a model whose layers are mostly windowed that is most of the context's memory spent on cells
@@ -1440,56 +1448,83 @@ bool Session::Impl::create_contexts(Opening & o) {
     // from (docs/seam.md).
     if (device_cache_armed) cparams.moe_cache_cpu_share = cfg.moe.device_cache_cpu_share;
 
-    llama_context * c = llama_init_from_model(model.get(), cparams);
+    // llama.cpp is asked, and where it refuses, asked again with one thing changed at a time
+    // (context_fallback.h says in which order, and why none of the three is settled before asking).
+    //
     // The device cache is sized from what the capacity fitter left free, and the fitter measured a
     // graph without the cache; with it, a wide graph gathers a layer's experts into the device's own
     // compute buffers, which no estimate made before the context exists has counted. Measured on a
     // 24 GB card with DeepSeek V4.1: a 15.3 GB cache left 2.4 GB of prefill buffers nowhere to go, and
     // the run could not start. The context is the instrument: the cache gives up a quarter at a time
     // until it fits, never below one token cycle, under which it would return no hits.
-    if (!c && device_cache_armed && cparams.moe_cache_size > 0) {
-        const size_t floor = n_expert_used > 0 ? source.worst_cycle_bytes(n_expert_used) : 0;
-        size_t size = cparams.moe_cache_size;
-        while (!c && size - size / 4 >= std::max<size_t>(floor, 1)) {
-            const size_t smaller = (size - size / 4) & ~((size_t(1) << 20) - 1);
-            log_printf(LogLevel::Warn,
-                       "the %zu MiB device expert cache did not fit beside the context; retrying at %zu MiB",
-                       size >> 20, smaller >> 20);
-            size = smaller;
-            cparams.moe_cache_size = size;
-            c = llama_init_from_model(model.get(), cparams);
-        }
-        if (c) this->cfg.moe.device_cache_mb = (int) (size >> 20);
-    }
+    //
     // A quantized V cache needs flash attention, and whether a backend has it is only known by asking
     // llama.cpp for the context. The default is quantized, so a backend without it must not lose the
     // run: V goes back to F16 (K stays, it needs nothing). The fitter charged the smaller V, which is
     // why the fallback is said out loud.
-    if (!c && ggml_is_quantized(cparams.type_v)) {
-        log_printf(LogLevel::Warn,
-                   "a %s V cache needs flash attention, which this backend refused; V falls back to f16",
-                   kv_cache_type_name(cfg.cache_type_v));
-        cparams.type_v = GGML_TYPE_F16;
-        c = llama_init_from_model(model.get(), cparams);
-        if (c) this->cfg.cache_type_v = KvCacheType::F16;
-    }
+    //
     // The graph's compute buffers are reserved with the context, and their size is an estimate until
     // then: priced off a slope the probe measured, on a device whose free memory others share. Where
-    // the reservation fails, the context is the instrument again: the graph halves until it fits, down
-    // to llama.cpp's own physical batch, or the most tokens one image takes in a pass where the run
-    // has images. A narrower graph changes how many passes a prompt takes, never what it computes.
-    if (!c) {
-        const uint32_t image_floor =
-            !cfg.mmproj.empty() && cfg.image_max_tokens > 0 ? (uint32_t) cfg.image_max_tokens : 0;
-        const uint32_t floor_w = std::max(llama_context_default_params().n_ubatch, image_floor);
-        while (!c && cparams.n_ubatch / 2 >= floor_w) {
-            log_printf(LogLevel::Warn,
-                       "the context's compute buffers did not fit at a graph %u tokens wide; retrying at %u",
-                       cparams.n_ubatch, cparams.n_ubatch / 2);
-            cparams.n_ubatch /= 2;
+    // the reservation fails, the graph halves until it fits, down to llama.cpp's own physical batch,
+    // or the most tokens one image takes in a pass where the run has images. A narrower graph changes
+    // how many passes a prompt takes, never what it computes.
+    const ggml_type v_planned = cparams.type_v;
+    detail::ContextAsk first;
+    first.cache_bytes = device_cache_armed ? cparams.moe_cache_size : 0;
+    first.v_quantized = ggml_is_quantized(v_planned);
+    first.width = cparams.n_ubatch;
+    detail::ContextFloors floors;
+    floors.cache_bytes = n_expert_used > 0 ? source.worst_cycle_bytes(n_expert_used) : 0;
+    const uint32_t image_floor = !cfg.mmproj.empty() && cfg.image_max_tokens > 0 ? (uint32_t) cfg.image_max_tokens : 0;
+    floors.width = std::max(llama_context_default_params().n_ubatch, image_floor);
+    llama_context * c = nullptr;
+    const detail::ContextOpened opened = detail::open_with_fallbacks(
+        first, floors,
+        [&](const detail::ContextAsk & a) {
+            if (c) llama_free(c); // asked again after an ask that opened: the cache climbing back
+            if (device_cache_armed) cparams.moe_cache_size = a.cache_bytes;
+            cparams.type_v = a.v_quantized ? v_planned : GGML_TYPE_F16;
+            cparams.n_ubatch = a.width;
             c = llama_init_from_model(model.get(), cparams);
-        }
-        if (c) this->cfg.n_ubatch = (int) cparams.n_ubatch;
+            return c != nullptr;
+        },
+        [&](const detail::ContextAsk & from, const detail::ContextAsk & to, detail::ContextRetry why) {
+            // Beside which cache the ask is made, where one is armed: a remedy is first tried with
+            // the cache as planned, and the log is what tells the two asks apart.
+            const std::string beside =
+                device_cache_armed ? " beside a " + std::to_string(to.cache_bytes >> 20) + " MiB device expert cache"
+                                   : std::string();
+            switch (why) {
+            case detail::ContextRetry::SmallerCache:
+                log_printf(LogLevel::Warn,
+                           "the %zu MiB device expert cache did not fit beside the context; retrying at %zu MiB",
+                           from.cache_bytes >> 20, to.cache_bytes >> 20);
+                break;
+            case detail::ContextRetry::UnquantizedV:
+                log_printf(LogLevel::Warn,
+                           "the context did not open with a %s V cache, which needs flash attention; retrying "
+                           "with V at f16%s",
+                           kv_cache_type_name(cfg.cache_type_v), beside.c_str());
+                break;
+            case detail::ContextRetry::NarrowerGraph:
+                log_printf(LogLevel::Warn,
+                           "the context's compute buffers did not fit; retrying with a graph %u tokens wide%s",
+                           to.width, beside.c_str());
+                break;
+            }
+        });
+    // What opened is what this session has, and what it reports and records: the next plan prices
+    // a rate against the cache this run held, not the one it asked for.
+    if (opened.ok) {
+        if (device_cache_armed) this->cfg.moe.device_cache_mb = (int) (opened.ask.cache_bytes >> 20);
+        if (first.v_quantized && !opened.ask.v_quantized) this->cfg.cache_type_v = KvCacheType::F16;
+        if (opened.ask.width != first.width) this->cfg.n_ubatch = (int) opened.ask.width;
+        if (opened.attempts > 1)
+            log_printf(LogLevel::Warn,
+                       "the context opened on attempt %d: %u tokens per pass, V %s, device expert cache %zu MiB",
+                       opened.attempts, opened.ask.width,
+                       opened.ask.v_quantized ? kv_cache_type_name(cfg.cache_type_v) : "f16",
+                       opened.ask.cache_bytes >> 20);
     }
     if (!c) return o.fail("failed to create context"); // llama.cpp's own log says why
     ctx.reset(c);
@@ -2772,11 +2807,26 @@ struct Session::AnswerCheck {
 };
 
 namespace {
-// The two sides as the check timed them, kept where a plan reads a side's decode rate: both at once,
-// from one load, so the plan after this one decides on the model's own measurement.
+// The two sides as the check timed them, kept where a plan reads a side's rates: both at once, from
+// one load, so the plan after this one decides on the model's own measurement, by the rule this load
+// decided by (weigh_sides), and does not undo its choice on a different instrument.
 void keep_answer_rates(const detail::DeviceAnswer & a, MeasuredKnobs & rec) {
-    if (a.device_token_s > 0.0) rec.shared_device_tps = 1.0 / a.device_token_s;
-    if (a.host_token_s > 0.0) rec.no_shared_device_tps = 1.0 / a.host_token_s;
+    const SideRates on = detail::answer_device_rates(a), off = detail::answer_host_rates(a);
+    if (on.decode_tps > 0.0) rec.shared_device_tps = on.decode_tps;
+    if (off.decode_tps > 0.0) rec.no_shared_device_tps = off.decode_tps;
+    if (on.prompt_tps > 0.0) rec.shared_device_prompt_tps = on.prompt_tps;
+    if (off.prompt_tps > 0.0) rec.no_shared_device_prompt_tps = off.prompt_tps;
+}
+
+// The memory the device named `name` reports free, in MiB, as the hardware probe reads it
+// (ggml_backend_dev_props::memory_free), so a plan compares the two figures in the same terms. 0 where
+// no device has that name.
+uint64_t device_free_mib(const std::string & name) {
+    ggml_backend_dev_t dev = ggml_backend_dev_by_name(name.c_str());
+    if (!dev) return 0;
+    ggml_backend_dev_props props{};
+    ggml_backend_dev_get_props(dev, &props);
+    return (uint64_t) props.memory_free >> 20;
 }
 } // namespace
 
@@ -2791,22 +2841,31 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     AnswerCheck check;
     std::unique_ptr<Session> self = open_placed(cfg, error, route_trace, compute_trace, io_trace, &check);
     if (!check.ran) {
-        if (self || !cfg.fallback || device.empty()) return self;
+        // A plan that moved the model onto a device gives the configuration its other part
+        // (RunConfig::fallback), whether or not the load compares answers there: a device the plan
+        // already confirmed can still refuse the allocation (a driver's own ceiling, memory another
+        // program holds).
+        if (self || !cfg.fallback || cfg.device_split.empty()) return self;
+        const std::string placed_on = device.empty() ? cfg.device_split.front().first : device;
         // The model could not be opened on the device at all, most likely for memory: the plan's other
         // part serves, and the device has lost this model here (a second try at a load that does not
-        // fit is a second failure on a machine already short of room).
+        // fit is a second failure on a machine already short of room) until it reports more room than
+        // it has now (MeasuredKnobs::shared_device_unviable_free_mib).
+        const uint64_t free_mib = device_free_mib(placed_on);
         log_printf(LogLevel::Warn,
-                   "the model could not be opened on %s (%s); the plan's other configuration is opened instead",
-                   device.c_str(), error.c_str());
+                   "the model could not be opened on %s (%s, %llu MiB free there); the plan's other configuration "
+                   "is opened instead",
+                   placed_on.c_str(), error.c_str(), (unsigned long long) free_mib);
         const double first_s = secs(t0, clock_t_::now());
         const std::string first_error = error;
         self = open_placed(*cfg.fallback, error, route_trace, compute_trace, io_trace, nullptr);
         if (!self) {
-            error = "the model could not be opened on " + device + " (" + first_error + "), nor as the plan's other " +
-                    "configuration: " + error;
+            error = "the model could not be opened on " + placed_on + " (" + first_error +
+                    "), nor as the plan's other configuration: " + error;
             return nullptr;
         }
         self->impl_->trials.result.shared_device_unviable = MeasuredKnobs::unviable_max;
+        self->impl_->trials.result.shared_device_unviable_free_mib = free_mib;
         self->impl_->load_seconds += first_s;
         return self;
     }
