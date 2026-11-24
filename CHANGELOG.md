@@ -4,6 +4,42 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.49.1] - 2026-11-24
+
+### Fixed
+- **A device that runs a long prompt faster is no longer refused for a short graph's rate** (#728).
+  The compute probe timed the prompt on one real layer 128 tokens wide, while a plan never computes a
+  long prompt in graphs narrower than 512, and a mixture-of-experts layer divides a graph's tokens
+  over its experts: on a 128-expert top-8 model each expert got 8 tokens there, the batch where a GPU
+  still runs its few-token kernel. On an Apple M5 (16 GB) Inkling 2 Mini IQ4_NL measured 0.8x the
+  cores 128 wide and 7.9x 512 wide, so `--auto` kept the prompt on the cores: a 1855-token prompt
+  prefilled at 19-23 tok/s (85-101 s to the first token), where Metal prefilled it at 100-103 (36-37
+  s). The probe now times the layer as wide as the narrowest graph a plan computes a long prompt in,
+  the planner's own constant (`PlannerPolicy::ubatch_min`, 512) rather than a number of its own, so
+  every rule that weighs a long prompt reads a rate taken in the regime prompts run in, on a phone's
+  NPU as on a large card. Inkling 2 Mini on that Mac: prefill 101-103 tok/s, 37 s to the first token,
+  with the load 12-13 s longer (the device's arena is set up) and decode 4-8% slower on short
+  prompts (the device's slots take part of the expert cache). Qwen3.6-35B-A3B Q4_K_M, which Metal
+  already prefilled: the same decisions. The probes take the same time.
+- **A prefill device is weighed against the cache it takes, not only when it takes all of it.** A
+  device that fits beside a cache of a token cycle still makes that cache smaller, and every decoded
+  token pays for it: Inkling 2 Mini decoded at 4.8-5.3 tok/s with Metal prefilling against 6.1-6.5
+  without. Where this machine's requests and the host's prefill rate are recorded, the device is now
+  priced as the cache-for-device trade already was (its prompts at its measured ratio, its answers at
+  the decode each allocation predicts) and kept only where a request is cheaper with it by the margin;
+  with nothing recorded it is armed as before.
+
+### Known limits
+- The device's prompt rate is the probe's layer ratio applied to the host's measured prefill rate,
+  which overstates a streamed model's device prefill (7.9x probed, 4.5x end to end on Inkling 2 Mini:
+  the probe does not count the experts' transfer to the device).
+- The weighing above needs the host's prefill rate, which a load records only where the host ran the
+  prompt: once a device is armed for a model, later loads have no new host rate and keep it armed.
+  Recording each side's real prefill rate, as #714 does for a model held on a shared device, is the
+  follow-up (#729).
+- The probe's prompt graph is four times wider than before: same time on the Mac (+0.1 s); its
+  time and memory on a phone are not measured yet.
+
 ## [0.49.0] - 2026-11-24
 
 ### Fixed

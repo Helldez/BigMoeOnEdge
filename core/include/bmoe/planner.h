@@ -87,7 +87,10 @@ struct PlannerPolicy {
     float compute_share_max = 0.10f;
     // The narrowest graph the width is brought down to. llama.cpp's own physical batch: nothing
     // here has been measured below it, and under it a prefill is mostly passes over the experts.
-    uint32_t ubatch_min = 512;
+    // So a long prompt is computed in graphs at least this wide, and the compute probe times a
+    // prompt this wide (layer_probe.h, k_wide_batch).
+    static constexpr uint32_t ubatch_min_default = 512;
+    uint32_t ubatch_min = ubatch_min_default;
     // The widest graph a device with memory of its own is planned at: an evidence boundary, not a
     // measurement of this machine. A device's expert matmul can hold a whole pass's tokens in a
     // per-block scratch whose size the backend fixes, and past it the pass aborts the process (#533:

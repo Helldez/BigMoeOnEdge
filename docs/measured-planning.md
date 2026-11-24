@@ -16,7 +16,7 @@ model's own tensors rather than on stand-ins.
 |---|---|---|
 | What fits where (layers per device, context and compute reservations) | llama.cpp's capacity fitter, a `no_alloc` load of the real file | yes, sizes only |
 | `--io-threads`, `--no-odirect`, `--release-mmap` | the storage probe, reading the model file itself at its own expert slice size | yes |
-| Prefill device | one real layer of the model at 128 tokens (Step 3), then a short real prefill compared against the host at load | yes |
+| Prefill device | one real layer of the model 512 tokens wide, the narrowest graph a plan computes a long prompt in (Step 3), then a short real prefill compared against the host at load | yes |
 | `--threads`, host and device bandwidth | a GEMV sweep on synthetic bytes encoded in the model's quant format; for `--threads`, once a front-end kept a verdict, the model's own decode on the first answer (Step 2) | format only; with a verdict, yes |
 | Host and device rate on the experts and on the dense matrices | one real layer of the model at one token (Step 3) | yes, its matmuls |
 | Cache size against resident dense groups | seconds saved per byte, with the hit rate read off the model's own routing record (Step 1), or on a first load credited **linearly** in the fraction of the expert set held | with a record, yes; on a first load, no: a coefficient |
@@ -260,18 +260,23 @@ unchanged plan.
   as `mul_mat`, each matrix with an input of its own width - so no dataflow, no norms and no
   attention arithmetic, which is the stated limit. The bytes are the file's, read once. At one token
   a pass reads enough disjoint sets of k experts, and enough copies of the dense matrices, to outrun
-  the last-level cache (64 MiB of each, at most 256 MiB of experts held, 16 copies); at 128 tokens a
-  subset of the experts gets the per-expert batch a 128-token prompt gives the whole set
-  (`128 * k / n_expert`), so the kernels run at the prompt's own intensity. Samples are 0.15 s each,
+  the last-level cache (64 MiB of each, at most 256 MiB of experts held, 16 copies); at 512 tokens, the
+  narrowest graph a plan computes a long prompt in (`PlannerPolicy::ubatch_min`, `k_wide_batch`), a
+  subset of the experts gets the per-expert batch a 512-token prompt gives the whole set
+  (`512 * k / n_expert`), so the kernels run at the prompt's own intensity. Until 0.49.1 it was taken 128 tokens wide, a regime no planned
+  prompt runs in: a 128-expert top-8 layer gives each expert 8 tokens there, and Metal on an Apple M5
+  ran Inkling 2 Mini's layer at 0.8x the cores 128 wide and 7.9x 512 wide (8 and 32 tokens an expert),
+  so the plan kept on the cores a prompt Metal ran 4.5x faster. Samples are 0.15 s each,
   every pass ends with a read of its result (a backend that queues work is timed on doing it, not on
   accepting it), and everything is freed on every path. It runs in the isolated child with the other
-  device probes; the facts line is `v=2` and carries `expert=` and `dense=`.
+  device probes; the facts line is `v=4` and carries `expert=`, `dense=` and `pr=` (each prompt width
+  with its rate).
 - **Correctness first.** Every backend computes the same bytes on the same inputs, and a device too
-  far from the right result at one token is refused for good (`identity_ok = No`); at 128 tokens it
+  far from the right result at one token is refused for good (`identity_ok = No`); at prompt width it
   is not armed for the prefill. The right result is computed: the compared nodes (the first decode
   group, and the first four tokens at width) in double precision from the dequantized weights. A
   device passes within twice llama.cpp's per-op NMSE bound of it (`k_max_nmse_device`, 1e-3) at one
-  token, and within 1e-2 at 128 tokens (`k_max_nmse_device_wide`, a bound that leans towards the
+  token, and within 1e-2 at width (`k_max_nmse_device_wide`, a bound that leans towards the
   device): a backend runs the wide matmul with another kernel, whichever reference it is judged by
   (the exact result, the host, or the synthetic matmul of a model with no readable layer). Metal on an
   Apple M5 measured 2.4e-3 on OLMoE Q4_K_M's attention at width, a model whose prompt computed there lost what the models inside 1e-3 lost (KL 0.004 against the host,

@@ -2595,6 +2595,45 @@ int main() {
                                                           "same flags");
         }
 
+        // A device that fits beside the cache still takes memory from it, paid on every decoded token:
+        // where this machine's requests are recorded it is weighed against them, and kept only where a
+        // request is cheaper with it.
+        {
+            const Plan fits = plan_run(base_cfg(), machine(1500.0, Tri::Yes), mm, PlanRequest{});
+            const Plan bare = plan_run(base_cfg(), unified(), mm, PlanRequest{});
+            check(fits.config.prefill.device == "accel" && fits.cache_budget_bytes < bare.cache_budget_bytes,
+                  "prefill decode: (a device that fits and takes some of the cache)",
+                  std::to_string((unsigned long long) (fits.cache_budget_bytes >> 20)) + " against " +
+                      std::to_string((unsigned long long) (bare.cache_budget_bytes >> 20)));
+            const auto plan_mix = [&](const MeasuredKnobs & k) {
+                ModelProfile e = mm;
+                e.knobs = k;
+                return plan_run(base_cfg(), machine(1500.0, Tri::Yes), e, PlanRequest{});
+            };
+            MeasuredKnobs answers;
+            answers.mix_requests = 3;
+            answers.mix_wide_prompt_tokens = 0;
+            answers.mix_gen_tokens = 2000;
+            answers.host_prefill_tps = 8.6;
+            const Plan kept = plan_mix(answers);
+            const Decision * kd = find(kept, "prefill-device");
+            check(!kept.config.prefill.enabled() && kd && kd->source == Source::Measured &&
+                      kd->reason.find("so the cache is kept") != std::string::npos,
+                  "prefill decode: long answers from short prompts keep the whole cache, priced",
+                  kd ? kd->reason : "none");
+            check(kept.cache_budget_bytes == bare.cache_budget_bytes,
+                  "prefill decode: and the cache is the one the run has without the device");
+            MeasuredKnobs prompts = answers;
+            prompts.mix_wide_prompt_tokens = 1054;
+            prompts.mix_gen_tokens = 40;
+            const Plan armed = plan_mix(prompts);
+            check(armed.config.prefill.device == "accel" &&
+                      reason(armed).find("cheaper with the device") != std::string::npos,
+                  "prefill decode: long prompts and short answers arm it, with both costs", reason(armed));
+            check(plan_mix(MeasuredKnobs{}).config.prefill.device == "accel",
+                  "prefill decode: with nothing recorded it is armed as before");
+        }
+
         // The same run where not even the dense set fits what may be held: the device's row would be
         // new memory on a full pool, so it is refused - and the plan says that, not that a cache
         // which was never there needs the room.
