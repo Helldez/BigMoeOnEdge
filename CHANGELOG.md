@@ -4,25 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [0.48.1] - 2026-11-23
+## [0.48.1] - 2026-11-24
 
 ### Fixed
-- **A model the plan moves onto a GPU that shares the host's memory opens on the cores where the GPU
-  cannot allocate it, instead of ending the load.** Sharing the host's memory does not mean a device
-  may allocate all of it: on a 16 GB laptop the integrated GPU's driver allowed 7.8 GiB, and a 9.3 GiB
-  Qwen3.6-35B the plan held whole there failed with `ErrorOutOfDeviceMemory`; the CLI exited, nothing
-  was recorded, and every load failed the same way. Only a model the plan streams, tried whole on the
-  device, had the cores (its stream) behind it. Now every move of a whole model onto such a device
-  carries the same configuration on the cores as its other part (`RunConfig::fallback`, set by
-  `back_with_cores`; `held_on_cores` is the one definition the plan and the session share), so every
-  front-end opens the cores in the same load. The failure is kept with what the device reported free
-  (`shared_device_unviable_free_mib`), and the device is named again only once it reports more than
-  that by `PlannerPolicy::shared_device_regrowth` (10%). On that laptop the first load served from the
-  cores at 8.5 tok/s after a 12 s failed attempt, and the next load planned the cores at once (6.6 s
-  to load).
-  `validate()` now accepts a fallback behind any device placement, not only one whose answers are
-  compared ([hardware-planning.md](docs/hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it),
-  [measured-planning.md](docs/measured-planning.md), [telemetry.md](docs/telemetry.md)).
+- **Thinking on the phones follows the setting again** (#721). A conversation's message
+  (`POST /api/conversations/<id>/messages` and `/edit`) that did not say whether to think was sent
+  with thinking off, whatever the Thinking setting said. The web UI and the desktop app send `think`
+  with every message, so they reasoned; the Android and iOS apps take it from Settings and send none,
+  so no model reasoned there since 0.39. A message that leaves `think` out now follows the setting,
+  which stays off until the person turns it on, and one that names it still wins. A scheduled task follows the setting too, where it was always sent with thinking off
+  ([server-api.md](docs/server-api.md)).
 
 ## [0.48.0] - 2026-11-23
 

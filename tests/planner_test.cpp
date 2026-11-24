@@ -229,6 +229,60 @@ int main() {
             check(!ledger_row(p, LedgerKind::Projector), "desktop, no projector: no row");
         }
 
+        // #697: the person's cache ceiling bounds the cache the plan sizes, which the runtime's own
+        // ceiling never sees once the plan has made it a fixed size. Above the plan's cache it
+        // changes nothing; under one token's worth it leaves the cache off, as the floor does.
+        {
+            const auto with_ceiling = [&](int mb) {
+                RunConfig c = base_cfg();
+                c.moe.cache_ceil_mb = mb;
+                return plan_run(c, desktop(), model, PlanRequest{});
+            };
+            check(p.config.moe.cache_mb > 2048, "desktop: room for a ceiling under the plan's cache",
+                  std::to_string(p.config.moe.cache_mb) + " MiB");
+            const Plan held = with_ceiling(1024);
+            const LedgerRow * row = ledger_row(held, LedgerKind::ExpertCache);
+            check(held.config.moe.cache_mb == 1024 && !held.config.moe.cache_auto,
+                  "desktop, ceiling: the plan's cache stops at the ceiling", std::to_string(held.config.moe.cache_mb));
+            check(row && row->bytes == 1024 * MiB, "desktop, ceiling: the ledger charges the cache as held");
+            check(find(held, "cache-ceil-mb") != nullptr, "desktop, ceiling: the plan says the ceiling held it");
+            check(validate(held.config).ok, "desktop, ceiling: the plan is a valid config",
+                  validate(held.config).error);
+
+            const Plan loose = with_ceiling(p.config.moe.cache_mb + 1024);
+            check(loose.config.moe.cache_mb == p.config.moe.cache_mb && !find(loose, "cache-ceil-mb"),
+                  "desktop, ceiling above the cache: the plan is unchanged", std::to_string(loose.config.moe.cache_mb));
+
+            const Plan under = with_ceiling(512);
+            check(under.config.moe.enabled && under.config.moe.cache_mb == 0 && !under.config.moe.cache_auto,
+                  "desktop, ceiling under the token cycle: the experts stream with the cache off",
+                  std::to_string(under.config.moe.cache_mb));
+            const Decision * off = find(under, "cache-off");
+            check(off && off->brief.find("ceiling") != std::string::npos,
+                  "desktop, ceiling under the token cycle: the reason names the ceiling",
+                  off ? off->brief : "no cache-off decision");
+            const Decision * cm = find(under, "cache-mb");
+            check(cm && cm->brief.find("ceiling") != std::string::npos &&
+                      cm->reason.find("ctx-size") == std::string::npos,
+                  "desktop, ceiling under the token cycle: no shorter context is offered for a bound the person set",
+                  cm ? cm->brief + " / " + cm->reason : "no cache-mb decision");
+
+            // A cache-mb the caller pinned is not one the plan sizes, so the ceiling has nothing to
+            // bound: the pinned size is kept whole and the plan claims no ceiling held it.
+            RunConfig own = base_cfg();
+            own.moe.cache_mb = 2048;
+            own.moe.cache_ceil_mb = 1024;
+            PlanRequest prq;
+            prq.pinned = {"cache-mb"};
+            const Plan pinned = plan_run(own, desktop(), model, prq);
+            const LedgerRow * prow = ledger_row(pinned, LedgerKind::ExpertCache);
+            check(pinned.config.moe.cache_mb == 2048 && prow && prow->bytes == 2048 * MiB,
+                  "desktop, pinned cache + ceiling: the pinned size is kept and charged",
+                  std::to_string(pinned.config.moe.cache_mb));
+            check(!find(pinned, "cache-ceil-mb") && !find(pinned, "cache-off"),
+                  "desktop, pinned cache + ceiling: no bound is reported for a cache the plan did not size");
+        }
+
         const Decision * d = find(p, "release-mmap");
         check(d && d->source == Source::Measured, "desktop: release-mmap is a measured decision");
     }
@@ -3036,6 +3090,66 @@ int main() {
             tight.budget_bytes = 3 * GiB;
             tight.reserved_bytes = 3 * GiB - (100 * MiB);
             check(allocate(h, steep, tight, pol).cache_bytes == 0, "with a curve: under the floor there is no cache");
+
+            // Whatever the ranking gave the read-whole groups, the cache has only what is left: at
+            // no budget do the two together hold more than the budget. Where the run's dense mode
+            // reserves nothing ahead of the ranking (a mapped dense set), a ranking that had found
+            // less than one token cycle left turned the cache off, and the bound then sized it from
+            // the whole budget as if the lane had never been priced.
+            for (const ModelProfile * mp : {&model, &steep, &knee}) {
+                uint64_t worst_over = 0, worst_budget = 0, with_cache = 0, without = 0;
+                for (uint64_t budget = GiB; budget <= 12 * GiB; budget += 64 * MiB) {
+                    AllocationInputs mapped;
+                    mapped.budget_bytes = budget;
+                    mapped.cacheable_bytes = model.expert_bytes;
+                    const Allocation a = allocate(h, *mp, mapped, pol);
+                    uint64_t held = a.cache_bytes;
+                    for (const GroupPlacement & g : a.groups)
+                        if (g.group != WeightGroup::Experts && (g.lane == Lane::Resident || g.lane == Lane::Pinned))
+                            held += g.resident_bytes;
+                    ++(a.cache_bytes ? with_cache : without);
+                    if (held > budget && held - budget > worst_over) {
+                        worst_over = held - budget;
+                        worst_budget = budget;
+                    }
+                }
+                check(worst_over == 0 && with_cache > 0 && without > 0,
+                      "the cache and the groups held whole never take more than the budget between them",
+                      std::to_string(worst_over >> 20) + " MiB over at a budget of " +
+                          std::to_string(worst_budget >> 20) + " MiB; " + std::to_string(with_cache) +
+                          " budgets with a cache, " + std::to_string(without) + " without");
+            }
+
+            // A locked or offered cache raises the holdable ceiling past the budget, and that raise is
+            // the cache's: where the ranking had turned the cache off, the raise can still lift it
+            // past one token cycle. The plan then holds a cache and must not also say it is off; it
+            // says what the cache is instead.
+            for (const bool locked : {true, false}) {
+                int lifted = 0, contradictions = 0;
+                for (uint64_t budget = GiB; budget <= 12 * GiB; budget += 64 * MiB) {
+                    AllocationInputs raise;
+                    raise.budget_bytes = budget;
+                    raise.cacheable_bytes = model.expert_bytes;
+                    raise.holdable_bytes = budget + 2 * model.token_cycle_bytes;
+                    raise.cache_lock = locked;
+                    raise.lock_in_place_bytes = locked ? raise.holdable_bytes : 0;
+                    raise.cache_offered = !locked;
+                    const Allocation a = allocate(h, steep, raise, pol);
+                    bool off = false, raised = false;
+                    for (const AllocationNote & n : a.notes) {
+                        off = off || n.topic == "cache-off";
+                        raised = raised || n.topic == "cache-raised";
+                    }
+                    if (a.cache_bytes > 0 && off) ++contradictions;
+                    if (a.cache_bytes > 0 && raised) ++lifted;
+                    if (raised && a.cache_bytes == 0) ++contradictions;
+                }
+                check(contradictions == 0 && lifted > 0,
+                      std::string(locked ? "a locked" : "an offered") +
+                          " cache: a plan that holds a cache never says it is off, and says what the raise gave it",
+                      std::to_string(contradictions) + " contradictions, " + std::to_string(lifted) +
+                          " budgets where the raise lifted a cache the ranking had turned off");
+            }
 
             // The host's share: where the first stage placed half the layers' experts on a device, a
             // host cache of C is read as a whole-set cache of 2C.

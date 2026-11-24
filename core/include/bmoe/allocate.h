@@ -150,6 +150,10 @@ struct AllocationInputs {
     // it caches, and on a machine where the first stage placed some layers on a device that set is
     // smaller than the model's.
     uint64_t cacheable_bytes = 0;
+    // The most the person lets the cache take (`cache-ceil-mb`); 0 for no ceiling. It bounds the
+    // cache's size only: what a hit is worth stays priced against `cacheable_bytes`, and the RAM it
+    // leaves is left free, which is what a ceiling is set for.
+    uint64_t cache_ceiling_bytes = 0;
 
     // ── the device crossing, as a candidate (docs/measured-planning.md, Step 3) ─────────────────
     // Where the capacity fitter put the dense part of some layers on a device and left their experts
