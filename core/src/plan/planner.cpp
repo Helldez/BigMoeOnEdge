@@ -2709,6 +2709,9 @@ AllocationInputs ledger_inputs(const Planning & s, uint64_t dense_pending) {
     ai.pin_forced = ai.can_pin && s.req.is_pinned("dense-weights");
     ai.reserved_bytes = dense_pending;
     ai.cacheable_bytes = s.host_expert_bytes;
+    // The person's bound on an automatic cache holds for the one the plan sizes too (#697): the plan
+    // turns the cache into a fixed size, which the runtime's ceiling never sees.
+    ai.cache_ceiling_bytes = (uint64_t) std::max(0, c.moe.cache_ceil_mb) << 20;
     ai.fixed_bytes = s.host_fixed;
     ai.projector_bytes = s.projector_host;
     ai.checkpoint_bytes = s.checkpoint_bytes;
@@ -3465,6 +3468,7 @@ bool size_cache(Planning & s, const Allocation & alloc) {
     const GroupPlacement & experts = alloc.at(WeightGroup::Experts);
     bool cache_off = false;
     std::string cache_off_why;
+    std::string cache_off_brief;
 
     if (budget < cycle && s.req.is_pinned("cache-mb")) {
         s.note("cache-floor", u64s(mib(cycle)) + " MiB", Source::Derived,
@@ -3473,12 +3477,16 @@ bool size_cache(Planning & s, const Allocation & alloc) {
                    " MiB) is under this model's token cycle, but the caller "
                    "pinned cache-mb and a pin is the caller's authority: proceeding with the pinned value");
     } else if (budget < cycle) {
-        std::string why = "the " + u64s(mib(alloc.cache_available_bytes)) +
-                          " MiB left for the expert cache is below this model's worst-case token cycle of " +
-                          u64s(mib(cycle)) +
-                          " MiB: under that floor the cache evicts what the same token still needs, "
-                          "so it costs its memory and returns no hits at all";
-        why += context_suggestion(s.placement, cycle, alloc.cache_available_bytes);
+        // Short by the person's own ceiling rather than by the memory: no context would clear it.
+        const uint64_t ceiling = (uint64_t) std::max(0, p.config.moe.cache_ceil_mb) << 20;
+        const bool by_ceiling = ceiling > 0 && ceiling < cycle;
+        std::string why =
+            (by_ceiling ? "the cache ceiling of " + u64s(mib(ceiling)) + " MiB you set"
+                        : "the " + u64s(mib(alloc.cache_available_bytes)) + " MiB left for the expert cache") +
+            " is below this model's worst-case token cycle of " + u64s(mib(cycle)) +
+            " MiB: under that floor the cache evicts what the same token still needs, "
+            "so it costs its memory and returns no hits at all";
+        if (!by_ceiling) why += context_suggestion(s.placement, cycle, alloc.cache_available_bytes);
         if (!stream_priced(alloc)) {
             s.decline(why + ". This storage's read rate was not measured, so a stream with no cache has no price "
                             "to set against the mapping and is not chosen on faith");
@@ -3490,6 +3498,10 @@ bool size_cache(Planning & s, const Allocation & alloc) {
         }
         cache_off = true;
         cache_off_why = std::move(why);
+        cache_off_brief = by_ceiling ? "No cache: your ceiling of " + size_brief(ceiling) + " is under the " +
+                                           size_brief(cycle) + " one token reads."
+                                     : "No cache: " + size_brief(alloc.cache_available_bytes) + " is left, under the " +
+                                           size_brief(cycle) + " one token reads.";
     }
 
     p.config.moe.enabled = true;
@@ -3520,10 +3532,7 @@ bool size_cache(Planning & s, const Allocation & alloc) {
         // the floor has just refused.
         p.config.moe.cache_auto = false;
         p.config.moe.cache_mb = 0;
-        s.note("cache-mb", "0", Source::Derived,
-               "No cache: " + size_brief(alloc.cache_available_bytes) + " is left, under the " + size_brief(cycle) +
-                   " one token reads.",
-               cache_off_why);
+        s.note("cache-mb", "0", Source::Derived, cache_off_brief, cache_off_why);
     } else if (!s.pinned("cache-mb", u64s((uint64_t) std::max(0, p.config.moe.cache_mb)))) {
         p.config.moe.cache_auto = false;
         p.config.moe.cache_mb = (int) mib(budget);

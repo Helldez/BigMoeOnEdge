@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.48.1] - 2026-11-24
+
+### Fixed
+- **The cache ceiling holds under `--auto` too** (#697). `--cache-ceil-mb` bounded only a cache the
+  engine sized at load (`--cache-mb auto`); a plan turns the cache into a fixed size, which that
+  ceiling never sees, so `--auto --cache-ceil-mb 512` still ran with a 3280 MiB cache. The plan now
+  sizes its cache under the person's ceiling: the ledger charges it as held, the memory past it stays
+  free, and the plan says the ceiling held it (`cache-ceil-mb`). A ceiling above the cache the plan
+  would pick changes nothing; one under the token cycle leaves the cache off, as the floor does,
+  saying the ceiling is why and without offering a shorter context
+  ([settings.md](docs/settings.md), [hardware-planning.md](docs/hardware-planning.md)).
+
 ## [0.48.0] - 2026-11-23
 
 ### Added
