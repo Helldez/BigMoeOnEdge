@@ -9,6 +9,7 @@
 #include "tensor_names.h"
 #include "../io/platform_io.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -108,6 +109,8 @@ std::unordered_set<std::string> RouterHook::row_gathered_weights() const {
 
 void RouterHook::begin_capture() {
     capturing_ = true;
+    block_of_.assign((size_t) n_layer_, -1);
+    layer_order_.clear();
     for (auto & L : captured_)
         L = LayerExperts{};
     captured_weights_.clear();
@@ -460,36 +463,8 @@ static bool gate_scores(const ggml_tensor * w, const std::vector<float> & h, std
         gate_gemv::scores_f32((const float *) w->data, w->nb[1], nd, ne, hp, out.data());
         return true;
     }
-    const int64_t nd4 = nd & ~(int64_t) 3;
-    for (int64_t e = 0; e < ne; ++e) {
-        const char * row = (const char *) w->data + (size_t) e * w->nb[1];
-        float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
-#if defined(__aarch64__)
-        const __fp16 * p = (const __fp16 *) row;
-#else
-        const ggml_fp16_t * q = (const ggml_fp16_t *) row;
-#endif
-        for (int64_t d = 0; d < nd4; d += 4) {
-#if defined(__aarch64__)
-            a0 += (float) p[d + 0] * hp[d + 0];
-            a1 += (float) p[d + 1] * hp[d + 1];
-            a2 += (float) p[d + 2] * hp[d + 2];
-            a3 += (float) p[d + 3] * hp[d + 3];
-#else
-            a0 += ggml_fp16_to_fp32(q[d + 0]) * hp[d + 0];
-            a1 += ggml_fp16_to_fp32(q[d + 1]) * hp[d + 1];
-            a2 += ggml_fp16_to_fp32(q[d + 2]) * hp[d + 2];
-            a3 += ggml_fp16_to_fp32(q[d + 3]) * hp[d + 3];
-#endif
-        }
-        for (int64_t d = nd4; d < nd; ++d)
-#if defined(__aarch64__)
-            a0 += (float) p[d] * hp[d];
-#else
-            a0 += ggml_fp16_to_fp32(q[d]) * hp[d];
-#endif
-        out[(size_t) e] = (a0 + a1) + (a2 + a3);
-    }
+    // The same kernel over half-precision rows.
+    gate_gemv::scores_f16(w->data, w->nb[1], nd, ne, hp, out.data());
     return true;
 }
 
@@ -541,19 +516,10 @@ bool RouterHook::quantize_gate(int il, const ggml_tensor * w) {
     std::vector<float> row((size_t) nd);
     for (int64_t e = 0; e < ne; ++e) {
         const char * src = (const char *) w->data + (size_t) e * w->nb[1];
-        for (int64_t d = 0; d < nd; ++d) {
-            float v;
-            if (w->type == GGML_TYPE_F32) {
-                v = ((const float *) src)[d];
-            } else {
-#if defined(__aarch64__)
-                v = (float) ((const __fp16 *) src)[d];
-#else
-                v = ggml_fp16_to_fp32(((const ggml_fp16_t *) src)[d]);
-#endif
-            }
-            row[(size_t) d] = v;
-        }
+        if (w->type == GGML_TYPE_F32)
+            std::copy((const float *) src, (const float *) src + nd, row.begin());
+        else
+            gate_gemv::f16_row_to_f32(src, nd, row.data());
         s[(size_t) e] = gate_gemv::quantize_row(row.data(), nd, q.data() + (size_t) e * (size_t) nd);
     }
     ra_gate_q_[il] = std::move(q);
@@ -1233,7 +1199,7 @@ void RouterHook::ctrace_close_segment(int interval_layer, const char * tail_name
     r.seq = ctrace_seq_++;
     r.layer = interval_layer;
     r.op = "LAYER";
-    r.name = tail_name ? tail_name : (interval_layer < 0 ? "pre" : "blk." + std::to_string(interval_layer));
+    r.name = tail_name ? tail_name : (interval_layer < 0 ? "pre" : tn::block_label(interval_layer));
     r.wall_ns = (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(now - ctrace_mark_).count();
     r.majflt = faults - ctrace_faults_;
     compute_rows_.push_back(std::move(r));
@@ -1285,12 +1251,26 @@ void RouterHook::capture_sources(ggml_tensor * t) {
     // index is that layer's end.
     const int nl = tn::any_node_layer(t->name);
     if (nl >= 0 && nl < (int) last_node_.size()) last_node_[(size_t) nl] = t->name;
+    if (nl >= 0 && nl < n_layer_ && std::find(layer_order_.begin(), layer_order_.end(), nl) == layer_order_.end())
+        layer_order_.push_back(nl);
     for (int s = 0; s < GGML_MAX_SRC; ++s) {
         ggml_tensor * src = t->src[s];
         if (!src || src->name[0] == '\0') continue;
+        // Whose weights this graph layer computes from: the block its weights are named after. A
+        // model may run one block at several depths of its graph (a looped core: each later pass is
+        // a layer of the graph over the first pass's tensors), and such a layer's routing has to ask
+        // for that block's experts. Read off the graph, with or without a streamer: the first block
+        // weight a layer reads says it, and the matrix of its indexed matmul, which is the expert
+        // tensor itself, has the last word.
+        if (nl >= 0 && nl < n_layer_) {
+            const int block = tn::block_layer(src->name);
+            const bool experts = t->op == GGML_OP_MUL_MAT_ID && s == 0;
+            if (block >= 0 && block < n_layer_ && (experts || block_of_[(size_t) nl] < 0))
+                block_of_[(size_t) nl] = block;
+        }
         // Memory-module state, reached through a view. Not a weight: recorded apart.
         ggml_tensor * base = src->view_src ? src->view_src : src;
-        if (std::strncmp(base->name, "cache_", 6) == 0) {
+        if (tn::is_state_tensor(base->name)) {
             if (captured_state_seen_.insert(base).second) captured_state_objects_.push_back(base);
             continue;
         }
@@ -1309,7 +1289,7 @@ void RouterHook::capture_sources(ggml_tensor * t) {
             // An expert-named tensor: streamed, never a dense-rebind candidate - and only if
             // it is somewhere we can serve. The streamer works by pointing `data` at bytes it
             // read itself, so a tensor a device owns is not ours to bind: writing through that
-            // pointer is a fault, and it is the fault a dense-on-device run hit three times.
+            // pointer is a fault, and it is the fault a run with the dense weights on a device hit three times.
             // A layer whose experts the placement put on a device is simply not the
             // streamer's, and this is where that becomes true rather than assumed. A null
             // buffer keeps the historical answer, since that is what a CPU-only run has
@@ -1366,17 +1346,23 @@ void RouterHook::serve_rows(ggml_tensor * t) {
         ggml_tensor * table = t->src[0];
         ggml_tensor * ids = t->src[1];
         if (table && row_source_->serves(table)) {
-            if (ids && ids->data && ids->type == GGML_TYPE_I32)
-                row_source_->gather(table, (const int32_t *) ids->data, (int) ggml_nelements(ids));
-            else
-                row_source_->materialize(table); // an index we cannot read: take the whole table
+            const bool ok = ids && ids->data && ids->type == GGML_TYPE_I32
+                                ? row_source_->gather(table, (const int32_t *) ids->data, (int) ggml_nelements(ids))
+                                : row_source_->materialize(table); // an index we cannot read: the whole table
+            if (!ok) rows_failed();
         }
         return;
     }
     for (int s = 0; s < GGML_MAX_SRC; ++s) {
         ggml_tensor * src = t->src[s];
-        if (src && row_source_->serves(src)) row_source_->materialize(src);
+        if (src && row_source_->serves(src) && !row_source_->materialize(src)) rows_failed();
     }
+}
+
+// A row read that failed leaves the gather reading whatever the address space holds (IRowSource):
+// the run ends through the expert source's flag, which the session's abort callback already reads.
+void RouterHook::rows_failed() {
+    if (source_) source_->mark_fatal();
 }
 
 // A routing node, observed with its selected ids materialized: rewrite them if a policy asks,
@@ -1537,7 +1523,12 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     // One prefix test decides whether any of the three matchers below can possibly fire. The vast
     // majority of a graph's nodes fail it and leave having done nothing else.
     const bool moe_node = tn::is_moe_node(t->name);
-    const int il = moe_node ? tn::node_layer(t->name, tn::k_topk_node) : -1;
+    // Every routing node below is filed under the BLOCK its layer computes from, the index the
+    // streamer loads by: the routed ids, the weights applied to them and the gate's inputs of one
+    // layer have to meet under one number, and on a graph that runs a block at several depths the
+    // layer's own index is another (block_of). The device arena alone is told the graph's layer,
+    // since what it follows is the graph's order (arena_eval).
+    const int il = moe_node ? block_of(tn::node_layer(t->name, tn::k_topk_node)) : -1;
     const bool is_topk = il >= 0;
     // The weight nodes are asked for by a traced run, and by the drop policy, which decides on the
     // weights the matmul will actually apply. Each extra ask is another barrier — a handful per MoE
@@ -1546,6 +1537,7 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     const bool want_weights = trace_on_ || drop_armed();
     const int weight_variant = (moe_node && want_weights) ? tn::weight_node(t->name, wl) : -1;
     const bool is_weights = weight_variant >= 0;
+    if (is_weights) wl = block_of(wl);
     // Which of them is worth a BARRIER is a narrower question than which of them we recognise. The
     // chain's earlier nodes exist only so the terminal one can be identified; once a layer's
     // terminal is known, both consumers — the drop policy's decision point and the trace's
@@ -1564,7 +1556,7 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     // instead. Decode-only either way. The "-" in the pattern is what keeps
     // "ffn_moe_logits_biased-<il>" — a different node — from matching.
     const int gl = (moe_node && (predict_on() || route_ahead_ > 0) && source_ && batch_phase_ == 1)
-                       ? tn::node_layer(t->name, tn::k_logits_node)
+                       ? block_of(tn::node_layer(t->name, tn::k_logits_node))
                        : -1;
     const bool is_logits = gl >= 0;
     // The predictors read both on the host, barrier-less; a layer whose router runs on a device

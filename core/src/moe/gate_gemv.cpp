@@ -1,5 +1,7 @@
 #include "gate_gemv.h"
 
+#include "ggml.h"
+
 #include <algorithm>
 #include <chrono>
 #include <new>
@@ -22,6 +24,44 @@ void scores_f32(const float * w, size_t row_bytes, int64_t nd, int64_t ne, const
             a0 += p[d] * h[d];
         out[e] = (a0 + a1) + (a2 + a3);
     }
+}
+
+namespace {
+
+// One half to float. On AArch64 the native half type widens in one instruction; elsewhere ggml's
+// conversion, which is exact too, so the choice changes the speed and never the value.
+#if defined(__aarch64__)
+inline float half_at(const void * row, int64_t d) {
+    return (float) ((const __fp16 *) row)[d];
+}
+#else
+inline float half_at(const void * row, int64_t d) {
+    return ggml_fp16_to_fp32(((const ggml_fp16_t *) row)[d]);
+}
+#endif
+
+} // namespace
+
+void scores_f16(const void * w, size_t row_bytes, int64_t nd, int64_t ne, const float * h, float * out) {
+    const int64_t nd4 = nd & ~(int64_t) 3;
+    for (int64_t e = 0; e < ne; ++e) {
+        const void * p = (const char *) w + (size_t) e * row_bytes;
+        float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
+        for (int64_t d = 0; d < nd4; d += 4) {
+            a0 += half_at(p, d + 0) * h[d + 0];
+            a1 += half_at(p, d + 1) * h[d + 1];
+            a2 += half_at(p, d + 2) * h[d + 2];
+            a3 += half_at(p, d + 3) * h[d + 3];
+        }
+        for (int64_t d = nd4; d < nd; ++d)
+            a0 += half_at(p, d) * h[d];
+        out[e] = (a0 + a1) + (a2 + a3);
+    }
+}
+
+void f16_row_to_f32(const void * src, int64_t nd, float * dst) {
+    for (int64_t d = 0; d < nd; ++d)
+        dst[d] = half_at(src, d);
 }
 
 float quantize_row(const float * src, int64_t nd, int8_t * dst) {

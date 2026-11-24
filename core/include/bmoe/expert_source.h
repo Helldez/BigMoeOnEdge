@@ -28,6 +28,10 @@ public:
     // Returns false on I/O failure (serial) or if a prior async batch already failed.
     virtual bool load_layer(int il, const int32_t * ids, int n_ids) = 0;
 
+    // A read made beside this source failed (a row of a table it lends the hook, IRowSource): end
+    // the run as a failed load_layer does. Default: a source with no such state has nothing to end.
+    virtual void mark_fatal() {}
+
     // Hint that layer `il` is likely to route `ids` (n_ids of them) on a future token, so the
     // implementation may read them ahead on otherwise-idle lanes. Purely advisory: a correct
     // guess makes the later load_layer(il, …) a cache hit, a wrong guess wastes a read — neither
@@ -81,12 +85,6 @@ public:
         long long spec_useful = 0;         // prefetched experts that a later lookup actually hit
         uint64_t cache_budget_bytes = 0;   // cache budget in force; set at init, moved only by a resize
         long long cache_resizes = 0;       // explicit set_cache_budget_mb() calls that moved the budget
-        // Where the platform stopped granting locks. `cache_pin_refused_bytes` is the cache that
-        // was resident when a pin was first refused part way - the size the budget then shrank to -
-        // and `dense_pin_refused_bytes` the dense tensors that fell back to ordinary memory. Both 0
-        // on a run whose plan closed, and on a platform that grants no lock at all.
-        uint64_t cache_pin_refused_bytes = 0;
-        uint64_t dense_pin_refused_bytes = 0;
         // Whether cache-bypassing reads are actually in effect for the expert shards — every shard
         // reader's request honoured by the platform (O_DIRECT open succeeded, F_NOCACHE applied on
         // Apple), after the open-time downgrades. NOT the config flag: a run can ask for direct and

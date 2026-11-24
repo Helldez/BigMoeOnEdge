@@ -8,6 +8,8 @@ import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -44,6 +46,7 @@ import io.bigmoeonedge.app.engine.paramValueFromText
 import io.bigmoeonedge.app.engine.paramValueText
 import io.bigmoeonedge.app.engine.setByYou
 import io.bigmoeonedge.app.engine.resettableKeys
+import io.bigmoeonedge.app.engine.advancedCards
 import io.bigmoeonedge.app.engine.settingsCards
 import io.bigmoeonedge.app.engine.valueSource
 import kotlinx.coroutines.delay
@@ -54,6 +57,8 @@ private const val APP_SECTION = " app"
 private const val SHARE_SECTION = " share"
 private const val LOOK_SECTION = " appearance"
 private const val MINE_SECTION = " mine"
+private const val ADVANCED_SECTION = " advanced"
+private fun advancedCard(group: String) = " advanced:$group"
 
 /**
  * Settings, rendered from the engine's parameter table (`GET /api/params`) and nothing else: one
@@ -96,9 +101,8 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
     val settable = remember(params) { params?.filter { it.type != "path" || it.groupReadOnly } }
 
     // A link to one setting lands on it: its card opened ("Set by you" for a value the person set;
-    // else its group, the row shown even where the table offers it no form); the row itself scrolls
-    // into view. Once per link, so editing
-    // another field afterwards does not jump back.
+    // else its group's card, under Advanced settings for a row the form leaves to the plan); the row
+    // itself scrolls into view. Once per link, so editing another field afterwards does not jump back.
     LaunchedEffect(landing, settable, cfg != null) {
         if (landing.isEmpty() || settable == null || cfg == null) return@LaunchedEffect
         val spec = settable.firstOrNull { it.key == landing }
@@ -106,7 +110,11 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
         jump = ""
         if (spec == null) return@LaunchedEffect
         landedMine = !spec.groupReadOnly && spec.key in cfg.userKeys
-        openCards = openCards + ((if (landedMine) MINE_SECTION else spec.group) to true)
+        openCards = openCards + when {
+            landedMine -> mapOf(MINE_SECTION to true)
+            spec.form || spec.groupReadOnly -> mapOf(spec.group to true)
+            else -> mapOf(ADVANCED_SECTION to true, advancedCard(spec.group) to true)
+        }
         landedOn = spec.key
     }
 
@@ -156,10 +164,11 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
                 else -> {
                     val decisions = remember(cfg.plan) { cfg.plan.orEmpty().associateBy { it.knob } }
                     val mine = remember(settable, cfg) { setByYou(settable, cfg) }
-                    val cards = remember(settable, mine, landedOn, landedMine) {
-                        val pinned = if (landedMine) emptySet() else setOfNotNull(landedOn.ifEmpty { null })
-                        settingsCards(settable, pinned, mine.map { it.key }.toSet())
-                    }
+                    val cards = remember(settable, mine) { settingsCards(settable, mine = mine.map { it.key }.toSet()) }
+                    // Everything else a client may set, behind one fold and cut into the same groups: the plan
+                    // sets these, and a person who wants to choose (the devices that run the prompt and the
+                    // answer, the cache, the reads) finds them all here.
+                    val advanced = remember(settable, mine) { advancedCards(settable, mine.map { it.key }.toSet()) }
                     val resettable = remember(settable, cfg) { resettableKeys(cfg.userKeys, cfg.launchKeys, settable) }
 
                     if (resettable.isNotEmpty()) {
@@ -204,6 +213,28 @@ fun SettingsScreen(modifier: Modifier = Modifier, target: String = "", onLanded:
                                     spec, cfg, decisions[spec.key], readOnly = c.readOnly, landing = !landedMine && spec.key == landedOn,
                                     onSet = { set(spec.key, it) }, onReset = { reset(listOf(spec.key)) },
                                 )
+                            }
+                        }
+                    }
+                    if (advanced.isNotEmpty()) {
+                        val advOpen = openCards[ADVANCED_SECTION] == true
+                        FoldCard(
+                            "Advanced settings · ${advanced.sumOf { it.params.size }}",
+                            "Everything else the engine lets you set, which the plan usually decides: the devices that run " +
+                                "the prompt and the answer, the cache, the reads, and the experimental and debug options.",
+                            advOpen, onToggle = { openCards = openCards + (ADVANCED_SECTION to !advOpen) },
+                        ) {
+                            advanced.forEach { c ->
+                                val key = advancedCard(c.group)
+                                val open = openCards[key] == true
+                                FoldCard(c.label, c.help, open, onToggle = { openCards = openCards + (key to !open) }) {
+                                    c.params.forEach { spec ->
+                                        ParamRow(
+                                            spec, cfg, decisions[spec.key], readOnly = false, landing = !landedMine && spec.key == landedOn,
+                                            onSet = { set(spec.key, it) }, onReset = { reset(listOf(spec.key)) }, showLevel = true,
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -481,6 +512,8 @@ private fun ParamRow(
     landing: Boolean,
     onSet: (Any?) -> Unit,
     onReset: () -> Unit,
+    // Say when the row is experimental or a debug aid (Advanced settings, where those rows live).
+    showLevel: Boolean = false,
 ) {
     val value = cfg.value(spec.key)
     val mine = spec.key in cfg.userKeys
@@ -528,6 +561,8 @@ private fun ParamRow(
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             if (!readOnly) Chip(source.chip, if (source == ValueSource.DEFAULT) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary)
+            if (showLevel && spec.level == "experimental") Chip("experimental", warnColor())
+            if (showLevel && spec.level == "debug") Chip("debug", warnColor())
             if (spec.lossy) Chip("changes the reply", warnColor())
             if (spec.scope == "request") Chip("per message", MaterialTheme.colorScheme.onSurfaceVariant)
             if (spec.key in cfg.reloadKeys) Chip("needs reload", warnColor())
@@ -544,7 +579,12 @@ private fun ParamRow(
     }
 }
 
-/** A number (or `auto`, where the row accepts it) or free text; committed when the field is left. */
+/**
+ * A number (or `auto`, where the row accepts it) or free text. Saved by the check beside the field,
+ * shown while the typed text differs from the saved value, by Done, or when the field is left. Not
+ * on a pause: a pause saved a value still being typed ("0" on the way to "0.5"), and the field,
+ * rebuilt from the saved value, took the text from under the person's fingers.
+ */
 @Composable
 private fun NumberOrTextField(spec: ParamSpec, value: Any?, focus: FocusRequester, onSet: (Any?) -> Unit) {
     var text by remember(spec.key, value) { mutableStateOf(paramValueText(value)) }
@@ -575,6 +615,11 @@ private fun NumberOrTextField(spec: ParamSpec, value: Any?, focus: FocusRequeste
         suffix = spec.unit?.let { { Text(it, fontSize = 12.sp) } },
         isError = error != null,
         supportingText = hint?.let { { Text(it) } },
+        // Compose keeps the focus when the person taps beside the field or leaves the screen, so
+        // Done and the focus alone could lose a typed value: the check saves it in one tap.
+        trailingIcon = if (text != paramValueText(value)) {
+            { IconButton(onClick = { commit() }) { Icon(Icons.Filled.Check, contentDescription = "Save") } }
+        } else null,
         singleLine = spec.type != "text",
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
         keyboardActions = KeyboardActions(onDone = { commit() }),

@@ -76,9 +76,11 @@ namespace {
 // it cannot be resolved the name as given is still the best answer there is.
 std::string without_links(const std::string & path) {
     if (path.empty()) return path;
+    // UTF-8 in and out, as every path here is: read as the system's own narrow encoding, a path
+    // outside it would not resolve, and one inside it would come back in bytes that are not UTF-8.
     std::error_code ec;
-    const std::filesystem::path real = std::filesystem::canonical(std::filesystem::path(path), ec);
-    return ec ? path : real.string();
+    const std::filesystem::path real = std::filesystem::canonical(std::filesystem::u8path(path), ec);
+    return ec ? path : real.u8string();
 }
 } // namespace
 
@@ -210,6 +212,9 @@ void vm_drop_file_pages(void * /*p*/, size_t /*sz*/) {
 }
 void drop_file_cache(const char * /*path*/) {
     // No posix_fadvise; the standby list is the system's to trim.
+}
+void drop_file_cache_range(const char * /*path*/, uint64_t /*offset*/, uint64_t /*size*/) {
+    // As above.
 }
 void vm_drop_anon_pages(void * /*p*/, size_t /*sz*/) {
     // MEM_DECOMMIT would turn the owner's next write into an access violation, and MEM_RESET is only
@@ -497,6 +502,17 @@ void drop_file_cache(const char * path) {
     const int fd = ::open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) return;
     posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED); // advice only: a failure keeps the pages
+    ::close(fd);
+#endif
+}
+void drop_file_cache_range(const char * path, uint64_t offset, uint64_t size) {
+#if defined(__APPLE__)
+    (void) path, (void) offset, (void) size; // no posix_fadvise on Darwin
+#else
+    if (size == 0) return;
+    const int fd = ::open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return;
+    posix_fadvise(fd, (off_t) offset, (off_t) size, POSIX_FADV_DONTNEED); // advice only, as above
     ::close(fd);
 #endif
 }
@@ -1036,11 +1052,33 @@ bool file_mapped_regions(const char * basename, std::vector<MappedRegion> & out)
 // ── A second process, for work that can end one ─────────────────────────────────────────
 #if defined(_WIN32)
 
+namespace {
+// Between UTF-8, which every path here is written in, and what the system's own calls take.
+std::wstring widen(const std::string & s, UINT code_page) {
+    if (s.empty()) return {};
+    const int n = MultiByteToWideChar(code_page, 0, s.data(), (int) s.size(), nullptr, 0);
+    std::wstring w((size_t) (n > 0 ? n : 0), L'\0');
+    if (n > 0) MultiByteToWideChar(code_page, 0, s.data(), (int) s.size(), w.data(), n);
+    return w;
+}
+std::string narrow_utf8(const wchar_t * w, size_t len) {
+    if (len == 0) return {};
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w, (int) len, nullptr, 0, nullptr, nullptr);
+    std::string s((size_t) (n > 0 ? n : 0), '\0');
+    if (n > 0) WideCharToMultiByte(CP_UTF8, 0, w, (int) len, s.data(), n, nullptr, nullptr);
+    return s;
+}
+} // namespace
+
+// Asked of the system in its own wide characters and returned as UTF-8. Asked in the narrow form, a
+// folder named in the system's code page came back in that code page's bytes, and the first reader
+// that took them for UTF-8 (the listing of the backends beside the executable) threw: a release
+// unpacked under such a folder ended at start (#677).
 std::string self_path() {
-    char buf[4096];
-    const DWORD n = GetModuleFileNameA(nullptr, buf, (DWORD) sizeof(buf));
-    if (n == 0 || n >= sizeof(buf)) return "";
-    return without_links(std::string(buf, n));
+    wchar_t buf[4096];
+    const DWORD n = GetModuleFileNameW(nullptr, buf, (DWORD) (sizeof(buf) / sizeof(buf[0])));
+    if (n == 0 || n >= sizeof(buf) / sizeof(buf[0])) return "";
+    return without_links(narrow_utf8(buf, (size_t) n));
 }
 
 bool can_run_self() {
@@ -1106,18 +1144,20 @@ ChildResult run_self(const std::vector<std::string> & args, double timeout_secon
     append_quoted(cmd, path);
     for (const std::string & a : args)
         append_quoted(cmd, a);
-    std::vector<char> cmdline(cmd.begin() + 1, cmd.end()); // without the leading space
-    cmdline.push_back(0);
+    // The arguments are in the encoding this process was given its own in (its code page, UTF-8
+    // where the executable's manifest says so); the executable's path is UTF-8 whatever that is.
+    std::wstring cmdline = widen(cmd.substr(1), CP_ACP); // without the leading space
+    const std::wstring wpath = widen(path, CP_UTF8);
 
-    STARTUPINFOA si{};
+    STARTUPINFOW si{};
     si.cb = sizeof(si);
     si.dwFlags = STARTF_USESTDHANDLES;
     si.hStdOutput = wr;
     si.hStdError = wr;
     si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
     PROCESS_INFORMATION pi{};
-    const BOOL started = CreateProcessA(path.c_str(), cmdline.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr,
-                                        nullptr, &si, &pi);
+    const BOOL started = CreateProcessW(wpath.c_str(), cmdline.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW,
+                                        nullptr, nullptr, &si, &pi);
     CloseHandle(wr);
     if (!started) {
         CloseHandle(rd);
@@ -1412,26 +1452,11 @@ LockLimit memlock_limit() {
 
 #if defined(__ANDROID__)
 
-// A dma-buf is charged to no limit this process can read: gralloc publishes no total, so the
-// answer is "unbounded here" and the caller bounds it by what the process may hold. Locking in
-// place is a different store with a different answer - the vendor caps it at a few pages.
-LockLimit lockable_limit() {
-    return {lock_unbounded, true};
-}
-LockLimit lock_in_place_limit() {
-    return memlock_limit();
-}
-
-size_t pinned_max_bytes() {
-    // The lock path uses a signed 32-bit type: AHardwareBuffer_lock returns EINVAL at exactly 2^31
-    // bytes while 2^31 - 1 succeeds, even though allocation reaches the 32-bit width cap of 4 GiB.
-    // Probing this at runtime would cost a multi-GiB allocation at startup to learn a constant, so
-    // it is stated here and verified by `bmoe-membench --probe-max` instead.
-    return 0x7FFFFFFFu;
-}
-
-bool pinned_alloc(size_t sz, PinnedAlloc * out) {
-    if (!out || sz == 0 || sz > pinned_max_bytes()) return false;
+namespace {
+// AHardwareBuffer is API 26. A build whose minimum is older (Termux's toolchain targets 24) binds it
+// weakly (core/CMakeLists.txt), and the attribute makes a use of these two outside the check in
+// ahwb() a build error.
+__attribute__((availability(android, introduced = 26))) bool ahwb_alloc(size_t sz, PinnedAlloc * out) {
     AHardwareBuffer_Desc d{};
     d.width = (uint32_t) sz; // BLOB: width IS the byte count, and height must be 1
     d.height = 1;
@@ -1455,11 +1480,59 @@ bool pinned_alloc(size_t sz, PinnedAlloc * out) {
     return true;
 }
 
-void pinned_free(PinnedAlloc * a) {
-    if (!a || !a->handle) return;
+__attribute__((availability(android, introduced = 26))) void ahwb_release(PinnedAlloc * a) {
     AHardwareBuffer * buf = (AHardwareBuffer *) a->handle;
     AHardwareBuffer_unlock(buf, nullptr);
     AHardwareBuffer_release(buf);
+}
+
+struct Ahwb {
+    bool (*alloc)(size_t, PinnedAlloc *);
+    void (*release)(PinnedAlloc *);
+};
+
+// The one place that asks the device. Below API 26 there is no such store: null, and every function
+// below answers as the last branch does, the same "absent" the plan reads on a platform without
+// one. Where the minimum is 26 or more, the check folds to true.
+const Ahwb * ahwb() {
+    if (__builtin_available(android 26, *)) {
+        static constexpr Ahwb calls{ahwb_alloc, ahwb_release};
+        return &calls;
+    }
+    return nullptr;
+}
+} // namespace
+
+// A dma-buf is charged to no limit this process can read: gralloc publishes no total, so the
+// answer is "unbounded here" and the caller bounds it by what the process may hold. Locking in
+// place is a different store with a different answer - the vendor caps it at a few pages.
+LockLimit lockable_limit() {
+    if (!ahwb()) return {0, true};
+    return {lock_unbounded, true};
+}
+LockLimit lock_in_place_limit() {
+    return memlock_limit();
+}
+
+size_t pinned_max_bytes() {
+    // The lock path uses a signed 32-bit type: AHardwareBuffer_lock returns EINVAL at exactly 2^31
+    // bytes while 2^31 - 1 succeeds, even though allocation reaches the 32-bit width cap of 4 GiB.
+    // Probing this at runtime would cost a multi-GiB allocation at startup to learn a constant, so
+    // it is stated here and verified by `bmoe-membench --probe-max` instead.
+    if (!ahwb()) return 0;
+    return 0x7FFFFFFFu;
+}
+
+bool pinned_alloc(size_t sz, PinnedAlloc * out) {
+    const Ahwb * calls = ahwb();
+    if (!calls || !out || sz == 0 || sz > pinned_max_bytes()) return false;
+    return calls->alloc(sz, out);
+}
+
+void pinned_free(PinnedAlloc * a) {
+    const Ahwb * calls = ahwb();
+    if (!calls || !a || !a->handle) return; // a handle comes only from pinned_alloc
+    calls->release(a);
     a->base = nullptr;
     a->handle = nullptr;
     a->size = 0;

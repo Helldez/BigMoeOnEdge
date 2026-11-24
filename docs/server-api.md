@@ -439,7 +439,9 @@ Body: `{"values": {key: value, ...}, "reset": [key, ...]}`. Sets the given keys 
 `user_keys`) and resets the listed keys to the server default (they leave `user_keys`), then
 validates. Returns the same object as `GET /api/config`, plus `"rejected": {key: reason}` for
 values that did not parse. A config that fails `validate()` is still stored (a form mid-edit is
-often briefly invalid); `valid`/`error` say so, and `load` refuses it.
+often briefly invalid); `valid`/`error` say so, and `load` refuses it. The config is judged, and
+`args` written, as a load opens it: with streaming off, the knobs that only act on a stream (overlap,
+which the server turns on by default, among them) are dropped first, as the load drops them.
 
 Persisted to `settings.json` in the data directory, so it survives a restart.
 
@@ -557,10 +559,11 @@ unsupported keywords do not gain a guarantee merely because they appear in the r
 JSON syntax and a schema cannot guarantee that the generated values are factually correct.
 
 Thinking and speculative decoding use the existing template grammar path. Tool combinations
-are template-dependent: the pinned Qwen3.5 specialized parser produces an invalid lazy grammar
-for a response schema with offered tools and `tool_choice: "auto"`; that request returns `400`
-with `code: "template_rejected"` before inference. The differential Qwen3 parser accepts this
-combination and produces a JSON answer. Both tested parsers give JSON precedence over required
+are template-dependent. A response schema with offered tools and `tool_choice: "auto"` produces a
+JSON answer with both tested parsers (the differential Qwen3 one and the specialized Qwen3.5 one,
+whose grammar llama.cpp could not build before the pin of 0.47.0: that request returned `400` with
+`code: "template_rejected"`, as any template whose grammar cannot be built still does, before
+inference). Both tested parsers give JSON precedence over required
 tool calls, so a response schema with `tool_choice: "required"` (including a named-function choice)
 is explicitly refused with `400` / `invalid_request`, instead of silently ignoring the requirement.
 These cases are covered by vendored-template regressions; tools are not universally disabled.
@@ -859,6 +862,15 @@ their state and tools (to a client on loopback; `[]` to one on the network). A s
 `--chat-only` (the phone apps start theirs so) answers `tools: false`: its conversations are plain
 chat, sent to the model with no system prompt and no tools, as before the agent, and adding a
 workspace or a task is `409` with `code: "chat_only"`. A UI reads this and shows only what works.
+
+**The system prompt.** A conversation's `system` is the person's own system prompt, set on `POST
+/api/conversations` or `PATCH /api/conversations/<id>` (`""` for none, at most 8 KiB, `409 busy`
+while a run goes): the whole prompt in a conversation with no folder, after the agent's lines in one
+with a folder. `GET /api/conversations/<id>/system` answers what the model reads before the
+conversation, exactly as sent (`text`), the person's part (`own`), and `tokens`, its size counted by
+the loaded model's tokenizer (the count [`/tokenize`](#llama-server-compatibility) gives; `null` with
+no model ready or on a provider route). A client of `/v1/chat/completions`, `/v1/messages`
+(`system`) or `/v1/responses` (`instructions`) sends its own, which reaches the model as written.
 
 **Runs.** `POST /api/conversations/<id>/messages` answers `202 {item}` as soon as the person's item
 is stored; everything after that arrives on `/api/events` (`conversation`, `item`, `delta`) and is
@@ -1399,7 +1411,11 @@ devices are not local, and the processor's are not graphics); `target` the build
 (`macos-arm64`, ...); `feed` `{version, published}` of the verified feed known, or `null`. `packs`
 is that feed's packs for this target: `{id, title, size, applies, installed, installed_version,
 current}`, `applies` when one of the pack's driver libraries loads here, `current` when the
-installed copy is this feed's file. `installed` lists every pack on disk (`{id, version, offered}`).
+installed copy is this feed's file. `installed` lists every pack on disk (`{id, version, offered,
+loaded}`): `loaded` is false for a pack another release left, which the engine does not load, since a
+backend module is built against one llama.cpp; installing it again replaces it. An install is
+refused (`409`, `code: "version_mismatch"`) while the feed's packs are a newer release's than the
+server: the update comes first.
 `restart_required` is true once a pack was installed since the server started. With `?refresh=1`
 the feed is read from the network first; a feed that cannot be read or does not verify is said in
 `feed_error`, and the rest of the answer stands. Without it, the feed kept from the last read

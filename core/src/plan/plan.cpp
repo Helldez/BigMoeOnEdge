@@ -106,6 +106,11 @@ uint64_t ModelProfile::bytes_per_token() const {
     return total;
 }
 
+uint32_t ModelProfile::moe_layer_runs() const {
+    if (n_block == 0 || n_layer <= n_block) return n_moe_layer;
+    return (uint32_t) ((uint64_t) n_moe_layer * n_layer / n_block);
+}
+
 uint64_t HardwareProfile::device_local_memory() const {
     uint64_t total = 0;
     for (const ComputeDevice & d : devices)

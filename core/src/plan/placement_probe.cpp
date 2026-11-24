@@ -46,6 +46,22 @@ constexpr size_t fitter_device_margin_bytes = (size_t) 1 << 30;
 constexpr uint32_t fitter_n_ctx_min = 4096;
 } // namespace
 
+uint32_t probe_engine_layers(const char * model_path) {
+    if (!model_path || !*model_path) return 0;
+    // The loader reads the file's metadata and works the count out as the run will. The same
+    // weightless load the capacity fitter makes: no tensor data is read or mapped, and with no
+    // layer asked of a device none is touched.
+    llama_model_params mp = llama_model_default_params();
+    mp.no_alloc = true;
+    mp.load_mode = LLAMA_LOAD_MODE_NONE;
+    mp.n_gpu_layers = 0;
+    llama_model * model = llama_model_load_from_file(model_path, mp);
+    if (!model) return 0;
+    const int32_t n = llama_model_n_layer(model);
+    llama_model_free(model);
+    return n > 0 ? (uint32_t) n : 0;
+}
+
 Placement probe_placement(const char * model_path,
                           const ModelProfile & model,
                           const HardwareProfile & hw,
@@ -57,6 +73,9 @@ Placement probe_placement(const char * model_path,
                           const SpecConfig * spec) {
     Placement pl;
     if (!model_path || !*model_path || !model.ok) return pl;
+    // One path, as llama.cpp's own loader takes it (common_model_load): the first file of a split set
+    // stands for the set, by the split naming convention, as it did when the fitter took a C string.
+    const std::vector<std::string> model_paths{model_path};
 
     // The fitter works by asking every device it is handed, and a device that did not survive its own
     // probe is not one to ask again from this process: what ended the probe would end the plan. So it
@@ -147,14 +166,14 @@ Placement probe_placement(const char * model_path,
         dcparams.n_outputs_max = 0;
         dcparams.n_ubatch = std::min<uint32_t>(cparams.n_ubatch,
                                                (uint32_t) std::max(spec->draft_max + 1, SpecConfig::mtp_draft_ubatch));
-        draft.path_model = own_head ? spec->mtp_head.c_str() : model_path;
+        draft.paths_model = {own_head ? spec->mtp_head : std::string(model_path)};
         draft.mparams = &dmparams;
         draft.cparams = &dcparams;
         draft.shares_model = !own_head;
     }
 
     const common_params_fit_status st =
-        common_fit_params(model_path, &mparams, &cparams, tensor_split.data(), overrides.data(), margins.data(),
+        common_fit_params(model_paths, &mparams, &cparams, tensor_split.data(), overrides.data(), margins.data(),
                           fitter_n_ctx_min, mtp ? &draft : nullptr, GGML_LOG_LEVEL_WARN);
     if (st == COMMON_PARAMS_FIT_STATUS_ERROR) {
         pl.outcome = "the capacity fitter hit an error; planning as if there were no devices";
@@ -201,8 +220,8 @@ Placement probe_placement(const char * model_path,
     // size is not one the fitter can have budgeted against.
     std::vector<ggml_backend_dev_t> devs;
     uint32_t hp_ngl = 0, hp_nsk = 0, hp_nct = 0, hp_nex = 0;
-    const common_device_memory_data_vec dm = common_get_device_memory_data(model_path, &mparams, &cparams, devs, hp_ngl,
-                                                                           hp_nsk, hp_nct, hp_nex, GGML_LOG_LEVEL_WARN);
+    const common_device_memory_data_vec dm = common_get_device_memory_data(
+        model_paths, &mparams, &cparams, devs, hp_ngl, hp_nsk, hp_nct, hp_nex, GGML_LOG_LEVEL_WARN);
     const ComputeDevice * placed_on_shared = nullptr;
     bool placed_unknown = false;
     for (size_t i = 0; i + 1 < dm.size() && i < devs.size(); ++i) {
@@ -253,11 +272,10 @@ Placement probe_placement(const char * model_path,
     // placed layer an override moves any of the FFN of is host for all of its experts (below).
     // Anything else went to a device and is not the streamer's to serve.
     const uint32_t n_layer = model.n_layer;
-    const uint32_t on_devices = pl.n_gpu_layers < 0 ? n_layer : std::min<uint32_t>((uint32_t) pl.n_gpu_layers, n_layer);
-    const uint32_t first_device_layer = n_layer - on_devices; // llama.cpp fills devices from the top
+    const LayerSlots slots = layer_slots(pl.n_gpu_layers, n_layer);
 
     std::vector<bool> host(n_layer, false);
-    for (uint32_t il = 0; il < first_device_layer; ++il)
+    for (uint32_t il = 0; il < slots.host_blocks(); ++il)
         host[il] = true;
 
     // A layer's experts never straddle the boundary. The fitter's partial layer can overflow a SHARE
@@ -300,12 +318,13 @@ Placement probe_placement(const char * model_path,
         // fitter's own load mode, and on a CPU-only machine it equals neither the file nor the
         // dense set (measured: 5724 MiB for a 21242 MiB file whose dense set is 2642). What the
         // fitter knows and we do not is the context and compute reservation, and that is what is
-        // taken from it. Dense bytes are pro-rated by the layers still on the host; the embedding
-        // and head are counted as host in full, which over-reserves a little where they offload.
-        const uint64_t dense_on_host =
-            n_layer ? (uint64_t) ((double) model.dense_bytes * (double) (n_layer - on_devices) / (double) n_layer)
-                    : model.dense_bytes;
-        pl.host_resident_bytes = dense_on_host + (uint64_t) cpu.context + (uint64_t) cpu.compute;
+        // taken from it. The dense bytes are where llama.cpp puts them (host_dense_of), not a share
+        // of the whole by layer count: a share counted the embedding tables, which never leave the
+        // host, at the fraction of blocks left here, so every layer on a device counted none of a
+        // table the host holds, and a split counted part of one the run leaves mapped.
+        const HostDense dense = host_dense_of(model, slots);
+        pl.host_resident_bytes = dense.bytes + (uint64_t) cpu.context + (uint64_t) cpu.compute;
+        pl.host_table_bytes = dense.tables;
         for (size_t i = 0; i + 1 < dm.size(); ++i) {
             const uint64_t used = (uint64_t) dm[i].model + (uint64_t) dm[i].context + (uint64_t) dm[i].compute;
             pl.device_bytes += used;
@@ -340,8 +359,8 @@ Placement probe_placement(const char * model_path,
             half.n_ubatch = cparams.n_ubatch / 2;
             std::vector<ggml_backend_dev_t> devs_half;
             uint32_t a = 0, sk = 0, b = 0, c = 0;
-            const common_device_memory_data_vec hm =
-                common_get_device_memory_data(model_path, &mparams, &half, devs_half, a, sk, b, c, GGML_LOG_LEVEL_WARN);
+            const common_device_memory_data_vec hm = common_get_device_memory_data(
+                model_paths, &mparams, &half, devs_half, a, sk, b, c, GGML_LOG_LEVEL_WARN);
             if (hm.size() == dm.size()) {
                 const uint64_t span = cparams.n_ubatch - half.n_ubatch;
                 uint64_t dev_half = 0;
@@ -379,8 +398,8 @@ Placement probe_placement(const char * model_path,
             half.n_ubatch = std::min(cparams.n_ubatch, half.n_ctx);
             std::vector<ggml_backend_dev_t> devs_half;
             uint32_t a = 0, sk = 0, b = 0, c = 0;
-            const common_device_memory_data_vec hm =
-                common_get_device_memory_data(model_path, &mparams, &half, devs_half, a, sk, b, c, GGML_LOG_LEVEL_WARN);
+            const common_device_memory_data_vec hm = common_get_device_memory_data(
+                model_paths, &mparams, &half, devs_half, a, sk, b, c, GGML_LOG_LEVEL_WARN);
             if (hm.size() == dm.size()) {
                 uint64_t whole = 0, halved = 0;
                 for (size_t i = 0; i < dm.size(); ++i) {

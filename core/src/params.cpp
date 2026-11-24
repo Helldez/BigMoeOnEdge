@@ -161,7 +161,7 @@ ParamDesc row(const char * key, const char * label, ParamGroup group, ParamLevel
     d.label = label;
     d.group = group;
     d.level = level;
-    d.form = level == ParamLevel::Basic;
+    d.form = level == ParamLevel::Basic || (level == ParamLevel::Advanced && param_group_shapes_answer(group));
     d.help = std::move(help);
     d.flag = std::string("--") + key;
     return d;
@@ -430,6 +430,9 @@ std::vector<ParamDesc> build() {
         ParamDesc d = row("seed", "Seed", G::Sampling, L::Advanced,
                           "RNG seed for sampling. " + std::to_string(SamplingConfig::seed_random) +
                               " draws a random seed per run.");
+        // Picks which answer of the same distribution comes out, not how good it is: a value to
+        // replay a run with, typed on a command line, not a choice a form asks a person to make.
+        d.form = false;
         d.value_hint = "N";
         at_least(d, 0);
         special(d, std::to_string(SamplingConfig::seed_random), "random per run");
@@ -522,10 +525,11 @@ std::vector<ParamDesc> build() {
                           "Output is byte-identical. Needs the fork's expert-ready hook in this build.");
         d.type = ParamType::Bool;
         d.flag.clear();
-        d.switches = {{"--overlap", "true"}};
+        d.switches = {{"--overlap", "true"}, {"--no-overlap", "false"}};
         bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.overlap; });
         d.details = "Reads the next experts while the current ones are computed. Same answer, often faster; the plan "
-                    "keeps it only where it measures faster.";
+                    "keeps it only where it measures faster, and turns it off where layers sit on a device without "
+                    "an expert cache there, since it keeps prompts on the cores.";
         t.push_back(d);
     }
     {
@@ -561,17 +565,6 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
-        ParamDesc d = row("trial-cpu-share", "Measure the device cache's CPU share", G::Cache, L::Experimental,
-                          "Time the decode of this load's side of the device cache's CPU share, to be compared "
-                          "across loads: 1 with --device-cache-cpu-share as set, 0 with every miss uploaded. -1 "
-                          "times neither. Changes no output; set by hand only: the plan arms no CPU share.");
-        d.value_hint = "N";
-        bounds(d, -1, 1, "side");
-        special(d, "-1", "off");
-        bind_int(d, [](RunConfig & c) -> int & { return c.trial.cpu_share_side; });
-        t.push_back(d);
-    }
-    {
         ParamDesc d = row("trial-shared-device", "Measure the shared-memory device", G::Memory, L::Experimental,
                           "Time the decode of this load's side of where a model held in memory runs, on a machine "
                           "whose device reads the host's own memory, to be compared across loads: 1 with every "
@@ -595,6 +588,21 @@ std::vector<ParamDesc> build() {
         d.type = ParamType::Text;
         d.value_hint = "NAME";
         bind_string(d, [](RunConfig & c) -> std::string & { return c.trial.answer_device; });
+        t.push_back(d);
+    }
+    {
+        ParamDesc d = row("trial-answer-mix", "Keep the faster side of the check", G::Memory, L::Experimental,
+                          "With --trial-device-answer: also time the two sides the check decodes, and serve from "
+                          "the one a request is shorter on, reopening on the cores where they are faster by the "
+                          "trial's margin. F is the prompt tokens a request brings per decoded token, which weighs "
+                          "a prompt-wide graph's time against a single token's. Below 0 nothing is weighed and a "
+                          "device whose answers match keeps the model. The plan sets it where no load has "
+                          "measured both sides on this machine.");
+        d.type = ParamType::Float;
+        d.value_hint = "F";
+        bounds(d, -1.0, KnobTrialConfig::answer_prompt_per_token_max);
+        special(d, "-1", "off");
+        bind_float(d, [](RunConfig & c) -> float & { return c.trial.answer_prompt_per_token; });
         t.push_back(d);
     }
     {
@@ -681,7 +689,7 @@ std::vector<ParamDesc> build() {
     }
     {
         ParamDesc d = row("cache-ceil-mb", "Cache: ceiling", G::Cache, L::Advanced,
-                          "With the cache on auto: upper bound on the budget (0 = no cap).");
+                          "Upper bound on a cache sized for you, by auto or by the plan (0 = no cap).");
         d.value_hint = "N";
         at_least(d, 0, "MiB");
         special(d, "0", "no cap");
@@ -804,16 +812,6 @@ std::vector<ParamDesc> build() {
         bind_int(d, [](RunConfig & c) -> int & { return c.n_gpu_layers; });
         d.details = "Layers held and computed on a device with its own memory, such as a graphics card: much faster "
                     "than streaming. The plan fills the device as far as it fits.";
-        t.push_back(d);
-    }
-    {
-        ParamDesc d = row("dense-on-device", "Dense weights on device", G::Memory, L::Experimental,
-                          "Put the dense weights on an accelerator that shares this host's memory, leaving the "
-                          "experts to the streamer. Measured to lose on a phone GPU; kept as a named lever.");
-        d.type = ParamType::Bool;
-        d.flag.clear();
-        d.switches = {{"--dense-on-device", "true"}};
-        bind_bool(d, [](RunConfig & c) -> bool & { return c.dense_on_device; });
         t.push_back(d);
     }
     {
@@ -1212,7 +1210,6 @@ std::vector<ParamDesc> build() {
             d.short_flag = short_flag;
             d.value_hint = "TYPE";
             d.lossy = true;
-            d.form = true;
             d.details = details;
             bind_choice<KvCacheType>(d, field, kv_types);
             t.push_back(d);
@@ -1237,7 +1234,6 @@ std::vector<ParamDesc> build() {
         ParamDesc d = row("n-expert-used", "Active experts", G::Lossy, L::Advanced,
                           "Override the experts routed per token (top-k). Lower is faster but changes the "
                           "output. 0 = the model's own value.");
-        d.form = true;
         d.value_hint = "N";
         d.lossy = true;
         bounds(d, 0, RunConfig::n_expert_used_max, "experts");
@@ -1257,6 +1253,8 @@ std::vector<ParamDesc> build() {
         bounds(d, 0.0, MoeStreamConfig::drop_cold_frac_max);
         special(d, "0", "off");
         bind_float(d, [](RunConfig & c) -> float & { return c.moe.drop_cold_frac; });
+        d.details = "Skips a little-used expert that is not in RAM instead of waiting for storage: faster on a slow "
+                    "drive, but the answers change and a rerun may differ. 0 keeps every expert.";
         t.push_back(d);
     }
     {
@@ -1617,6 +1615,10 @@ const char * param_group_help(ParamGroup g) {
         return "Tests, probes and A/B baselines; never a speed setting.";
     }
     return "";
+}
+
+bool param_group_shapes_answer(ParamGroup g) {
+    return g == ParamGroup::Sampling || g == ParamGroup::Lossy;
 }
 
 bool param_group_read_only(ParamGroup g) {

@@ -21,7 +21,7 @@ cmake_minimum_required(VERSION 3.21)
 # --version, and the run-parameter preamble of every metrics CSV), so a committed benchmark file
 # says which engine produced it. Keep it in step with CHANGELOG.md and the app's versionName:
 # scripts/check-version.sh compares the three, in CI and against the tag before a release builds.
-project(bigmoeonedge VERSION 0.46.1 LANGUAGES CXX)
+project(bigmoeonedge VERSION 0.48.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -46,7 +46,7 @@ option(BMOE_BUILD_SERVER "Build bmoe-server, the engine behind the local web UI"
 option(BMOE_BUILD_DESKTOP "Build bmoe-desktop, the app window that runs bmoe-server" ON)
 # Off by default: diagnostics, not part of the product. They need no llama.cpp, so they can be
 # configured and cross-compiled on their own without building the engine.
-option(BMOE_BUILD_TOOLS "Build standalone diagnostic tools (bmoe-iobench)" OFF)
+option(BMOE_BUILD_TOOLS "Build standalone diagnostic tools (bmoe-iobench, bmoe-membench)" OFF)
 # Every ggml backend as a module loaded from beside the executable at start-up, and the CPU backend
 # once per instruction-set tier. The engine then knows no backend at compile time; the same layout
 # ships on every OS; a module whose driver library is missing fails to load and is simply not
@@ -72,7 +72,11 @@ if(MSVC)
 else()
     set(BMOE_WARNING_FLAGS -Wall -Wextra)
     if(BMOE_WARNINGS_AS_ERRORS)
-        list(APPEND BMOE_WARNING_FLAGS -Werror)
+        # A deprecation is upstream's notice, not a defect in this tree: it stays a warning. The
+        # pinned llama.cpp deprecates llama_batch and llama_decode for llama_batch_ext and
+        # llama_process, which the whole decode path is written on; moving it is a change of its
+        # own, measured on its own, and a submodule bump must not have to carry it to build.
+        list(APPEND BMOE_WARNING_FLAGS -Werror -Wno-error=deprecated-declarations)
     endif()
 endif()
 
@@ -187,6 +191,18 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/CMakeLists.txt")
         endif()
     endforeach()
 endif()
+
+# An executable whose paths and arguments are UTF-8 on Windows as they are everywhere else: the
+# manifest names UTF-8 as the process's code page, so a folder or a model named outside the system's
+# own code page (or inside it, where its bytes are not UTF-8) reaches every path this code and
+# llama.cpp build as the same string. Without it a release unpacked under a non-ASCII folder ended at
+# start (#677). MSVC's linker merges a manifest listed among a target's sources; other toolchains
+# on Windows are not what the releases are built with, and get nothing.
+function(bmoe_utf8_process target)
+    if(MSVC)
+        target_sources(${target} PRIVATE ${CMAKE_SOURCE_DIR}/packaging/windows/utf8.manifest)
+    endif()
+endfunction()
 
 add_subdirectory(core)
 add_subdirectory(frontend)

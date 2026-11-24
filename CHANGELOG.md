@@ -4,9 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [Unreleased]
+## [0.48.1] - 2026-11-24
 
 ### Fixed
+- **The cache ceiling holds under `--auto` too** (#697). `--cache-ceil-mb` bounded only a cache the
+  engine sized at load (`--cache-mb auto`); a plan turns the cache into a fixed size, which that
+  ceiling never sees, so `--auto --cache-ceil-mb 512` still ran with a 3280 MiB cache. The plan now
+  sizes its cache under the person's ceiling: the ledger charges it as held, the memory past it stays
+  free, and the plan says the ceiling held it (`cache-ceil-mb`). A ceiling above the cache the plan
+  would pick changes nothing; one under the token cycle leaves the cache off, as the floor does,
+  saying the ceiling is why and without offering a shorter context. A `--cache-mb` the person pinned
+  is not a cache the plan sizes, so the ceiling leaves it whole and the plan claims no bound
+  ([settings.md](docs/settings.md), [hardware-planning.md](docs/hardware-planning.md)).
 - **A cache the ranking turned off stays off, instead of being sized from the whole budget.** The
   allocation ranks the expert cache against the dense groups a token reads whole. Where those
   groups took the budget and less than one token cycle was left at the cache's turn, the ranking
@@ -16,7 +25,374 @@ Semantic Versioning.
   whole budget: the plan held the dense groups and a cache of the same memory, 5480 MiB against a
   2752 MiB budget in the test that now pins it, with a `cache-off` and a `cache-unpriced` note on
   the same plan. The cache now has what the ranking left, and under one token cycle it is off;
-  the experts still stream, as on any plan whose cache does not reach the floor.
+  the experts still stream, as on any plan whose cache does not reach the floor. A locked or offered
+  cache also keeps what being locked or offered raises the ceiling by; where that carries it past one
+  token cycle the cache is on, and the plan says so (`cache-raised`) instead of calling it off.
+
+## [0.48.0] - 2026-11-23
+
+### Added
+- **A system prompt of your own, per conversation, on every UI** (#625). A button in the
+  conversation's header (on a new chat too) opens a field for the instructions the model reads before
+  the conversation, as llama.cpp's web UI has: without a folder they are the whole system prompt, with
+  one they follow the agent's lines. Below it, what the model reads exactly as sent and the tokens it
+  takes. On the API it is the conversation's `system` (POST and PATCH `/api/conversations`, at most
+  8 KiB), and `GET /api/conversations/<id>/system` answers the prompt as sent with the person's part
+  as `own`. The web UI and desktop app, Android and iOS.
+
+- **Advanced settings are back** (web, Android, iOS alike): below the group cards, one folded
+  section holds every other setting a client may set, the ones the plan usually decides, cut into
+  the same groups in the same order: which devices run the prompt and the answer (the prefill
+  device, the compute devices and backends, layers per device), the caches, the reads, and the
+  experimental and debug options, each of those marked as such. Since 0.39 these were flags of the
+  command line only. Each row still appears once on the page: a value the person set stays in
+  "Set by you", and a link from the Plan screen to one of these rows now lands on it
+  ([screens.md](docs/screens.md)).
+
+### Changed
+- **Every llama.cpp tensor name is read in `tensor_names` again.** The router hook recognised the
+  memory modules' state (`cache_k_l<il>`, `cache_r_l<il>`, ...) by a prefix match of its own and built a
+  block's trace label by hand; both are now `tensor_names::is_state_tensor` and `block_label`, with
+  tests. The half-precision gate kernel and its row conversion moved into `gate_gemv` beside the float
+  and int8 ones, so the router hook carries no instruction-set branch, and the streamer's spin count,
+  pin slack, the device probe's matmul shape and the cache brake's cap are named constants. No
+  behaviour changes; the gates are unchanged.
+
+### Fixed
+- **A model held whole in memory shows its figures like a streamed one.** With streaming off (a
+  dense model, `--moe-stream` off, or a plan that keeps the model resident) the Android Metrics card
+  stopped after the answer speed: the prompt's speed, the time to the first word, where a token's
+  time went, CPU and the guesses kept were all left out behind an "mmap baseline" note. It now shows
+  every figure the run has and leaves out only the disk and cache ones, saying why in the same words
+  as the web UI and iOS. The engine's summary also gave such a run no compute time
+  (`compute_s_tok` was `0`, though each token event already counted its whole wall as compute), so
+  every UI split its tokens' time as "other 100%"; it now reads "computing 100%"
+  ([telemetry.md](docs/telemetry.md), [screens.md](docs/screens.md)).
+- **Settings with streaming off are no longer reported invalid.** With Expert streaming off, the
+  settings read "Overlap I/O needs Expert streaming" and "Copy command" carried `--overlap`, which
+  the CLI refuses, though the load itself worked: it drops the knobs that only act on a stream,
+  overlap among them (the server turns it on by default). `GET /api/config` now judges the settings,
+  and writes the command, as a load opens them ([server-api.md](docs/server-api.md)).
+- **A chat without a folder is plain chat again.** A conversation with no workspace still got the
+  agent's system prompt ("You are a coding agent…", the mode, the skills, "end with what you did and
+  what is left") and the skill tool: a model spent its thinking on an agent it could not be and closed
+  every answer with a work report. It now gets the person's messages alone, no system prompt and no
+  tools, as llama.cpp's web UI sends; the agent prompt and tools come with a folder, as before.
+- **A new chat no longer pulls the whole KV cache back into memory.** Every drop of the target
+  context (a new chat whose prefix nothing stands in for, a rollback with no checkpoint, perplexity,
+  a decision, a discarded capture or warm-up) went through `llama_memory_clear(..., true)`, which
+  memsets every KV buffer. The positions a conversation never reached hold the zero pages of
+  llama.cpp's clear at allocation, which a kernel with compressed memory keeps at almost no cost,
+  and the memset faulted all of them back in at once, as the new chat arrived: 1.1 GiB on a 24 GB
+  phone at a 110k context. The drop now forgets the cells and leaves the buffers alone: a free cell
+  is masked out of attention, and the graph zeroes a recurrent state without a source before
+  reading it. With a prefill device too (Metal under `--auto` on a Mac or an iPhone), where the
+  clear cost twice, the moved state and llama.cpp's own buffers, faulted back in after they had been
+  handed back; the reservation decode at load no longer zeroes either. New gate G29: a new chat
+  after a longer conversation == the same chat in a fresh session, resident, streamed and with a
+  prefill device, and perplexity after it == in a fresh session, bit for bit
+  ([session.md](docs/session.md#independent-prompts-vs-multi-turn-chat)). By @pt7777 (#711).
+
+### Removed
+- **Levers nothing read any more.** `--dense-on-device` (the session never read it, and the plan
+  refused it whenever it was set), the device cache CPU share's side timed across loads
+  (`--trial-cpu-share` and the `cpu_share_tps` / `no_cpu_share_tps` rates in the measured record:
+  the plan has left the share to the person since 0.44.1, and nothing read those rates; a record that
+  still carries them is read as before, the keys skipped), `hottest_experts()`, the streamer's
+  `cache_pin_refused_bytes` / `dense_pin_refused_bytes` statistics (the log still says how much was
+  refused), an unused mapping query of the dense policy, and the server's `BMOE_HAVE_PLANNER` switch,
+  which every build defined. Six one-off benchmark scripts nothing referenced are gone from
+  `scripts/`, and `bench-warmonly.sh` moved beside the data it produced
+  (`docs/bench-data/2026-07-14-warmup/`). No plan or output changes.
+
+### Documentation
+- **The planning docs say what the planner arms today.** `hardware-planning.md` no longer calls the
+  device expert cache and the prefill device "not armed yet", its architecture diagram drops the
+  `[NOT ACTIVE]` box and the "stock submodule" (the pin is upstream plus one commit), and its table
+  of unused llama.cpp levers marks both as in and the device cache's CPU share as the person's
+  setting. `measured-planning.md` names the replay the plan uses (`replay_cache`, under the run's own
+  eviction policy). `roadmap.md` says the cache-policy question was reopened below the token cycle,
+  where decayed-frequency eviction shipped as the default. `bench-data/README.md` lists the seven
+  folders it was missing, `architecture.md` names the server's newer files, and `AGENTS.md` says the
+  server passes its environment to the programs it starts.
+
+## [0.47.2] - 2026-11-21
+
+### Fixed
+- **A value can be typed in the Android and iOS settings again.** 0.47.1 saved a typed value once
+  typing paused for 400 ms, and the field is rebuilt from the saved value: "0" on the way to "0.5"
+  was saved and put back while the person was still typing, so a number could not be written. The
+  apps no longer save on a pause. A check beside the field saves the value, shown while the text
+  differs from the saved one; Done/Return and leaving the field still save it. The web form is
+  unchanged ([screens.md](docs/screens.md)).
+
+## [0.47.1] - 2026-11-21
+
+### Changed
+- **Settings offer every setting that changes the answer** (web, Android, iOS alike): Top-k, Top-p
+  and Drop cold experts join Temperature, the context's precision and the active experts. The
+  rule is the group's, in one place (`param_group_shapes_answer`): a Sampling or Quality trades row
+  at the advanced level is in the form, since the plan never sets one. The seed, experimental and
+  debug rows stay flags of the command line ([screens.md](docs/screens.md)).
+
+### Fixed
+- **The CUDA packs are built again** (Linux x86_64, Linux ARM64, Windows). v0.47.0 was published
+  without them: the llama.cpp it moved to includes `nvml.h` in its CUDA backend, and the toolkit the
+  release workflow fetches from NVIDIA's redistributable archives carried no NVML header, so all
+  three builds failed at compile time and the release went out with Vulkan only. The fetch now takes
+  `cuda_nvml_dev` as well; nothing else in the pack changes, since the backend opens the driver's
+  NVML at run time. The pull-request CI built no CUDA module, which is why the bump passed it: a
+  pull request that moves the llama.cpp submodule or the toolkit fetch now builds the GPU modules too.
+- **A native build in Termux compiles, and pins the dense set where the phone has the store, as the
+  APK does.** Termux's toolchain targets API 24, and its headers mark `AHardwareBuffer_*`, the API 26
+  store behind `--dense-weights pinned`, unavailable below that: `platform_io.cpp` stopped the build
+  with five errors, and with `BMOE_BUILD_TOOLS` so did `bmoe-iobench` and `bmoe-membench`. The calls
+  are now bound weakly, and `platform_io.cpp` asks the device in one place (`__builtin_available`).
+  From API 26 a Termux build pins, and the plan chooses it there as it does in the APK
+  ([android-memory.md](docs/android-memory.md#the-dma-buf-exception-and-what-it-does-not-solve));
+  `--dense-weights anon` keeps the dense set in ordinary memory. Below API 26 the store reads as
+  absent, as on a platform without one. `-Werror=unguarded-availability` makes a call outside that
+  check a build error, and a build whose minimum is 26 or more, as the APK's 29, folds the check to
+  true. The Termux build line is in the README. By @pt7777 (#659).
+- **An integrated GPU reached through OpenCL is known to share the host's memory, the same on every
+  load.** ggml's OpenCL backend reports every device as a discrete GPU, so the plan measured it: an
+  allocation on the device, against the host's available memory. On a 12 GB phone that figure moves
+  while the system reclaims, and the same GPU read as memory of its own on one load in four. That
+  load applied the capacity fitter's placement of the output head on it, and with a layer on a
+  device the NPU prefill (2.5x the CPU on a prompt) was ruled out. The probe now asks each API that
+  does not report it whether the device shares the host's memory, the way it already asked Metal:
+  OpenCL's `CL_DEVICE_HOST_UNIFIED_MEMORY`, read through the library the backend loaded. A discrete
+  card through OpenCL answers no and is planned as before; Vulkan, CUDA and SYCL already reported it
+  ([hardware-planning.md](docs/hardware-planning.md)).
+- **`--auto` narrows the graph down to its floor from any context, not only from a power of two
+  times it.** The width is halved from the context while its compute buffers are past their share
+  of memory, and the halving stopped where the next half would fall under the floor (512 tokens):
+  from a 4092-token context that is 1023, with its buffers still past the share. It now takes the
+  floor there. Inkling 2 Mini at a 4092-token context projects 1662 MiB of buffers at 1023 tokens
+  (Qwen3.6-35B 495), and on a 12 GB phone that gave 3.4 GiB to the process no expert cache was left;
+  at 512 the buffers are about half. Not yet run on the phone. Every context that is a power of two times the floor (all 68 plan records on file, 2048 and
+  16384) is narrowed exactly as before ([hardware-planning.md](docs/hardware-planning.md)).
+- **An answer with thinking off no longer ends in the template's closing marker.** Where a template
+  ignores `enable_thinking`, the engine opens the answer in the prompt, and it then showed the raw
+  stream without llama.cpp's parser, so a format that closes each block with a marker the vocabulary
+  does not stop on left it in the text: Inkling 2 Mini answered `Ciao! Come posso aiutarti
+  oggi?<|end_message|>`. Such a turn is now parsed like any other, with the opening handed to the
+  parser as llama.cpp does for a continued message. Qwen3.6-35B, Gemma 4 E4B and SmolVLM answer the
+  same text as before with thinking on and off ([session.md](docs/session.md)).
+- **A value typed in the Android or iOS settings is saved without pressing Done**: it is saved once
+  typing pauses, as on the web. Before, only Done or leaving the field saved it, and tapping beside
+  the field or going back keeps the focus there, so the value was lost.
+- **The Android composer gives the words the whole width**: the prompt takes the sheet's full width
+  and the + and Send (or Stop) sit on a line under it, as on the web and iOS. Beside it they, and the
+  clear button that appeared once something was typed, left a phone's prompt about a third of the
+  screen. The clear button is gone; neither other composer has one.
+
+## [0.47.0] - 2026-11-21
+
+### Added
+- **Models that run a core of their blocks more than once per token stream, on the CPU and through
+  a prefill device**: Inkling 2 Mini (`inkling2_loop`, 26B, 24 blocks run as 48 layers), in the
+  `ggml-org` conversion llama.cpp loads. Nothing names the model: the engine reads off the graph
+  which block's weights each layer computes from and the order the layers run in
+  ([seam.md](docs/seam.md)). Streamed and resident output are the same text on the real file; a
+  fourth tiny model is its byte-identity gate in CI. On a 16 GB laptop, CPU only, the 17.6 GB
+  IQ4_NL file decodes at 10.7-11.9 tok/s under `--auto` against 6.1-7.9 with streaming off. Not
+  run on a graphics card or a phone yet, and not in the app's catalog.
+- **`--no-overlap`**, the off switch of the overlap row, so a server whose default is on can be
+  turned off by flag like any other switch ([settings.md](docs/settings.md)). By @pt7777.
+- **The CUDA pack for Linux on ARM64**: DGX Spark (GB10) and Grace machines get the NVIDIA backend,
+  where the aarch64 archive had Vulkan alone.
+
+### Changed
+- **llama.cpp moves to upstream `29b52d3`** (2026-11-20, 386 commits past `b12214`), with the
+  fork's two commits carried over unchanged on `bmoe/expert-ready-hook-2011`. On a 16 GB laptop
+  the three benchmark models decode as before (Qwen3.6-35B 15.3 tok/s on a first load and 17.2-18.4
+  on its record, Gemma 26B 16.6-17.4, Gemma E4B 38.5). A Qwen3.5 `json_object` request with `tools: auto` is no longer refused where
+  upstream now builds its grammar ([server-api.md](docs/server-api.md)).
+- **`--auto` counts a token's demand over the layers the graph runs, not the blocks the file
+  carries** ([hardware-planning.md](docs/hardware-planning.md)). The two are one number on every
+  model before the looped one, whose plans do not change. On Inkling 2 Mini the plan priced half
+  the token: 35 ms predicted against 94 measured, 75 now, and a cache floor of 941 MiB against the
+  1883 a token routes through.
+- **A model's hit curve is read from its routing record in half the time.** Every `--auto` plan of
+  a model with a record replays the record through the cache at 64 sizes. Measured on a desktop
+  core, the three archived records (64-128 decoded tokens): 36-271 ms a curve before, 15-139 ms
+  now, with every point and every replay count unchanged. Two things: an entry that moves in the
+  replay's order keeps its node instead of being freed and allocated again, and the curve stops
+  replaying at the first size nothing was evicted at, since a larger budget replays the same (25
+  to 33 of the 64 sizes on those records). The comment that called a replay "well under a
+  millisecond" is corrected to what it measures.
+- **`--auto` turns the server's default overlap off where layers sit on a device without an expert
+  cache there.** Overlap takes llama.cpp's offload of host-held weights in a wide graph away
+  (`offloads_wide_matmuls`), so with some layers placed and the rest on the host every host-held
+  weight of a prompt ran on the cores. On a laptop with a discrete GPU and 25 of 41 layers placed
+  that cost 2.1x of the prefill on a 2.7k-token prompt and 4.5x on a 20.7k one, and bought no
+  decode. The plan cannot have seen it: the trial needs every layer on the host. Now the plan turns
+  a front-end's default off there with a `[derived]` line that says why; a caller who set `--overlap`
+  keeps it, and the plan line says the prompts stay on the cores (#645,
+  [hardware-planning.md](docs/hardware-planning.md#two-stages-one-composer)). By @pt7777.
+- **The GPU packs have code for the GPUs llama.cpp's own release covers, no longer a list of ours.**
+  The HIP pack now builds llama.cpp's Linux ROCm target list (23 targets, was 8), which adds the
+  integrated GPUs of the Ryzen mini PCs and laptops (780M, Strix Point, Strix Halo) and RDNA 1; the
+  CUDA pack builds ggml's default architecture list with CUDA 12.9, which adds GB10 (sm_121) and,
+  as code compiled at first start, Maxwell, Pascal and Volta. `scripts/check-gpu-targets.py` fails CI
+  when either drifts from the pinned llama.cpp.
+- **A release builds the GPU modules once per llama.cpp version, beside the archives instead of
+  before them.** The CUDA and HIP modules build in `.github/workflows/gpu-modules.yml`, kept in the
+  Actions cache by main and restored by a release that did not move the submodule; every archive
+  used to wait for the HIP module (65 min) and the x86_64 ones then built CUDA too (70-80 min), 2 h
+  25 min for 0.44.0.
+- **Where a model held in memory can run on a GPU that shares the host's memory, the first load
+  decides which of the two runs it, on the model itself.** The plan used to choose from probes of a
+  part of a model (one layer's matrices), and they do not say which side decodes the whole of it
+  faster: on a laptop with integrated graphics they read the cores 74% ahead of a GPU that decoded
+  a 21 GB model at more than twice the cores' rate, and the model was kept on the cores. The load
+  that opens a model on such a device already decodes it there and on the cores, to compare their
+  answers before it serves; it now times the two as it does (a token alone, and a graph as wide as
+  a prompt), keeps the side a request is shorter on, reopening on the cores where they are faster
+  by the 10% margin, and records both rates, so every later plan opens the faster side at once. On
+  a 16 GB unified-memory laptop with a 4.3 GiB model: 3.4 s on the first load, 37.6 tok/s on the
+  GPU against 23.9 on the cores, and the rate read for the side that served was the rate the
+  answer decoded at. New parameter `--trial-answer-mix`, set by the plan
+  ([hardware-planning.md](docs/hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it)).
+  A model that is streamed is not affected: this is for models the plan holds whole in memory.
+- **A model the plan streams is tried whole on a GPU that shares the host's memory, where the GPU
+  can hold it, and the first load keeps the faster.** On a laptop with 31 GB and integrated
+  graphics, a published benchmark of 0.46.0 measured a 21 GB model at 12 tok/s where llama.cpp with
+  every layer on the same GPU decoded 40: the model fit, but not beside the room that machine asks
+  to be left, so the plan streamed it with an 18.6 GiB cache and decoded on the cores. Now, where
+  the whole model and its compute buffer stay inside what the streaming plan itself may hold, the
+  load opens the model on the device, times it there and on the cores (above), and keeps the device
+  unless the cores are faster by the margin; where the device does not keep it, the session reopens
+  as the streaming plan (`RunConfig::fallback`), which is otherwise unchanged. A model larger than
+  what the process may hold streams as before. The plan shows both parts (`held-whole`). The rule
+  is tested on a machine of that shape in `planner_test` and the reopening on a real session in the
+  gates (G28d); it was not run on that laptop ([field-reports.md](docs/field-reports.md)).
+
+### Fixed
+- **A backend pack is loaded only by the release it was built for** (#660). Packs live in the data
+  folder, which outlives an update and an uninstall, and the server loaded every pack folder it
+  found. A graphics backend built against an earlier llama.cpp can load and then compute the wrong
+  thing or end the server at its first graph. Now a pack another release left is not loaded: the
+  log names it, `GET /api/backends` lists it with `loaded: false`, and installing it again replaces
+  it. The feed's packs are not installed into an older server either (`409`,
+  `version_mismatch`): the update comes first. A folder put under `<data>/backends/` by hand, with
+  no `pack.json`, is loaded as before ([desktop-app.md](docs/desktop-app.md)).
+- **A model with a sliding window and a recurrent state reuses its context checkpoints.** Its
+  memory reports the recurrent state's one position as its minimum, which the checkpoint rule read
+  as a window that no longer covered the prefix, so no checkpoint was ever restored and every turn
+  read the conversation again. Judged now as llama.cpp's server judges it. No model before Inkling
+  2 has both.
+- **On Windows, the programs start from a folder whose name is not ASCII** (#677). `bmoe-cli` and
+  `bmoe-server` ended at start (exception `0xc0000409` in `ucrtbase.dll`, no output) when the
+  release sat under such a folder on a system whose code page can spell it, a Japanese folder on a
+  Japanese Windows. The engine asked the system for its own path in the narrow form, which answers
+  in the code page's bytes, and listed the backends beside itself reading those bytes as UTF-8,
+  which throws. The path is now asked for in wide characters and carried as UTF-8, the child a
+  device probe runs is started the same way, and the three executables declare UTF-8 as their code
+  page (Windows 10 1903 and later), so their arguments and the paths llama.cpp opens are UTF-8 too.
+  A test runs the CLI from a folder named in Japanese and accented Latin on every platform.
+- **A model larger than a container's memory limit is no longer killed while it loads behind a
+  device expert cache.** Since 0.45.1 the plan copies the experts into the device's own host memory
+  wherever the copy takes the place of their pages in the file's mapping. The engine made the whole
+  copy first and handed the pages back afterwards, and pages only unmapped are still the system's
+  cache, counted against a container's limit until the kernel reclaims them. On a rented 8 GB card
+  under a 42.5 GiB limit, Qwen3.8-Flash-Next Q2_0 (62 GiB, 32.4 GiB of experts) was killed about
+  7 GiB into the copy on every load, with a log that ends after the first context's graph and no
+  message; 0.42.0 to 0.44.1, which refused the copy there, loaded. Now each tensor's pages are
+  handed back as its copy is made, from the mapping and from the file cache: six loads of six, a
+  peak of 37.4 GiB, the copy made in 8 s, decode 24.0 / 20.8 tok/s where 0.42.0 without the copy
+  did 19.2 / 17.1. And a copy larger than the system can give is no longer handed to the backend to
+  allocate as pinned memory: the cache uploads from the mapping instead, and the log says so
+  ([field-reports.md](docs/field-reports.md)).
+- **A read of an expert that fails ends the run in every read mode** (the serial path, which is
+  the default). Without `--overlap` a failed read (a storage error, a shard cut
+  short, a drive removed) returned to a caller that dropped the result: the entry was already
+  counted resident, the layer's matmul ran on a slice nobody had read, the answer was reported as a
+  success, and the entry was served as a hit on later tokens until it was evicted. Only the overlap
+  path stopped the run. The serial path now sets the same sticky failure, the session reports
+  "expert stream I/O failed" in both modes, and a failed read of a row-gathered table ends the run
+  the same way instead of only counting an error. A new gate (`expert_read_failure`) refuses the
+  reads of a real session over the fixture and fails if any mode answers.
+- **No device expert cache where the first block is still on the host.** llama.cpp counts
+  `n_layer + 1` slots, the output last, and fills the devices from the top, so a placement of
+  exactly `n_layer` leaves block 0 on the host, dense part and all. The device tier took that
+  count as "every layer's dense part is on the device" and armed the cache, which that block then
+  crossed to on every token; the graph-width rule already called the same placement short.
+- **The projector follows the model onto the device where the whole model fits one.** The planner
+  prices it on the device for any placement with layers there, `-1` (every layer) included, and
+  the fitter reserves its room; the session asked for `n_gpu_layers > 0` and loaded it on the
+  cores in exactly that case.
+- **A context suggestion that would not bring the cache back is no longer made.** Where a cache
+  falls under one token cycle the plan may name a shorter `--ctx-size` that would clear the floor;
+  when the arithmetic asked for fewer than 512 tokens it named 512 anyway, which frees less than
+  the cache is short of.
+- **A route-trace CSV with an expert id past the model's experts is refused** instead of being
+  replayed: the replay indexes its tables by layer and id, and such a row wrote past them. The
+  native format already refused it; an id past 32 bits is refused too, not wrapped.
+- **A prefill device the plan arms no longer costs the cache the wide graph's buffers.** Once such
+  a device is armed the graph is held to the device's bound (8192 tokens), but the ledger had been
+  made before that, at the width the plan had chosen for the host: on a long context the wide
+  graph's compute buffers stayed charged, on the host and again as the device's own row, and the
+  expert cache was sized under them. With a 32768-token context and a graph of 16 KiB a token the
+  ledger charged 512 MiB of buffers where the bounded graph takes 128, and the cache was 384 MiB
+  smaller than with the same device named by `--prefill-device`. The device is now weighed, and
+  the ledger made, with the graph it will run; a test pins that both ways of arming it give the
+  same ledger. Nothing changes where the context is no wider than the bound, or `--ubatch` is set.
+- **A plan no longer says "not even the dense weights fit" when they do** (#664). The regime weighed
+  the dense set with the embedding tables in it, and a table the graph gathers by row is one the run
+  can always leave mapped: on a phone where the process may hold about 17 GiB, Qwen3.8-Flash-Next's
+  per-layer n-gram table alone is larger than that, so the plan's headline and its regime note said
+  the dense weights did not fit while the 4.5 GiB the run holds did. The regime now weighs what the
+  run has to hold: the dense set less the tables, as the host figure counts them with a placement or
+  without one (`Placement::host_table_bytes`); a `dense-mapped` list
+  the caller pinned leaves them out only where it names every table. The regime note says how much
+  it left out. The regime's verdict and its words change, not the cache or the dense policy: the
+  regime gates neither for a model that streams.
+- **With layers on a card, the host's share of the model is counted where llama.cpp puts it.** The
+  capacity fitter's placement took the dense set's share by layer count, and llama.cpp does not
+  divide it that way: the embedding tables (the input layer) never leave the host, and the output
+  takes the first device slot before any block. So with every slot on a card a 27 GB per-layer
+  table the host holds was counted as none; with a split, part of a table the run leaves mapped was
+  charged to the ledger and taken from the cache; and one block too many was read as the device's,
+  its experts missing from the host's. The host figure now adds up the parts as llama.cpp assigns
+  them (`layer_slots`, `host_dense_of`, one rule the planner's device split and the layers it brings
+  home read too), and the tables the run leaves mapped come out of the dense reservation with a
+  placement as without one. Simulated (`bmoe-planlab simulate`), a 4 GB card beside 32 GB of RAM
+  with Qwen3.8-Flash-Next Q2_0 (23 of 49 slots on the card) charged 16.1 GB of dense for 1.5 GB held:
+  its cache goes from 10.1 to 25.9 GB, the decode estimate from 13.7 to 15.9 tok/s. With DeepSeek
+  V4.1 split on a 12 GB card the dense blocks left on the host (3.4 GB) were charged nowhere while the
+  run copied them; they are now.
+- **Whether a model fits whole no longer counts a table the run leaves mapped.** The question is
+  asked of what the run has to hold, with a card or without one: a model held whole beside its
+  per-layer table no longer streams for the table's sake. Without a card this was the rule's only
+  answer (a 64 GB Mac streamed Flash-Next Q2_0, simulated 10.6 tok/s, and now holds it, 11.1); with
+  every layer on a card it was already the answer, by the arithmetic above counting the table as
+  none, and that answer is what kept the copy of the experts the cards read from (two 16 GB cards:
+  32.6 tok/s measured). A table llama.cpp reads whole at load is one small enough to, which the
+  margin below the budget covers.
+- **A prefill device gives the CPU's unused compute reservation back again** (since the llama.cpp
+  bump of #278, #657). After moving the layer weights to the device, the session asks llama.cpp to
+  reserve its compute buffers again, so the CPU keeps only what its own graphs need instead of a
+  reservation for the widest graph with every weight on the CPU, which it never runs. It asked by
+  toggling `llama_set_causal_attn`, and upstream #28751 stopped re-reserving on that: the second
+  reservation silently never happened, with every output unchanged. The request now has one module
+  (`core/src/engine/compute_reservation`), made through a setter llama.cpp still re-reserves on,
+  and a gate (`compute_reservation`) that fails if a bump changes that. Measured on a 16 GB
+  Apple-silicon laptop with a streamed MoE model at ubatch 1024: the CPU's compute buffer goes from
+  651 to 149 MiB, about 500 MiB back to the expert cache and the system; the gap grows with the
+  ubatch.
+- **`GET /health` answers without the API key, as llama-server's does.** With `--api-key` set it
+  answered 401, so a supervisor, a start script or a load balancer that asks it before it holds the
+  key read a ready server as down. `GET` and `HEAD` on `/health` and `/v1/health` now skip the key
+  check; sub-paths, writes and every other route keep it, and the host and origin rules still run
+  first ([server-api.md](docs/server-api.md)). By @pt7777 (#630).
+- **The desktop app starts with "Serve on network" on** (since the app shipped, #644). Serving on
+  the network puts a key on every engine route, and the app asked `/api/info` to learn that the
+  server it had started was up, before it holds the key: the answer was a refusal, and after 90 s
+  the app said "The engine's server did not start" over a server that was running. It now asks
+  `/health`, the one route that needs no key, and takes any answer as a running server
+  ([desktop-app.md](docs/desktop-app.md)).
 
 ## [0.46.1] - 2026-11-19
 

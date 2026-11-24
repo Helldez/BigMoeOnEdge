@@ -18,12 +18,33 @@ target_include_directories(bmoe_moe_gates PRIVATE ${CMAKE_SOURCE_DIR}/core/src/m
 if(UNIX AND NOT ANDROID)
     add_executable(bmoe_startup_pin_fit_test startup_pin_fit_test.cpp startup_pin_platform_io.cpp)
     target_link_libraries(bmoe_startup_pin_fit_test PRIVATE bmoe_core)
+    # The same substitution for one syscall, pread: a real session whose expert reads can be refused.
+    add_executable(bmoe_expert_read_failure_test expert_read_failure_test.cpp expert_read_failure_platform_io.cpp)
+    target_link_libraries(bmoe_expert_read_failure_test PRIVATE bmoe_core)
 endif()
 
 add_executable(bmoe_lock_limits_test lock_limits_test.cpp)
 target_link_libraries(bmoe_lock_limits_test PRIVATE bmoe_core)
 target_include_directories(bmoe_lock_limits_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/io)
 add_test(NAME lock_limits COMMAND bmoe_lock_limits_test)
+
+# A release unpacked under a folder whose name is not ASCII (#677): the programs find the backends
+# beside themselves through that path. The whole output folder is copied, since the libraries the
+# CLI loads sit in it, and the CLI is asked to probe a device that does not exist: it loads the
+# backends first, and says so only if it got that far.
+if(TARGET bmoe-cli)
+    set(BMOE_NON_ASCII_BIN "${CMAKE_BINARY_DIR}/bin-日本語-ünï")
+    add_test(NAME non_ascii_install_path_setup
+             COMMAND ${CMAKE_COMMAND} -E copy_directory $<TARGET_FILE_DIR:bmoe-cli> "${BMOE_NON_ASCII_BIN}")
+    add_test(NAME non_ascii_install_path
+             COMMAND "${BMOE_NON_ASCII_BIN}/$<TARGET_FILE_NAME:bmoe-cli>" --probe-device no-such-device)
+    add_test(NAME non_ascii_install_path_cleanup
+             COMMAND ${CMAKE_COMMAND} -E remove_directory "${BMOE_NON_ASCII_BIN}")
+    set_tests_properties(non_ascii_install_path_setup PROPERTIES FIXTURES_SETUP non_ascii_bin)
+    set_tests_properties(non_ascii_install_path_cleanup PROPERTIES FIXTURES_CLEANUP non_ascii_bin)
+    set_tests_properties(non_ascii_install_path PROPERTIES FIXTURES_REQUIRED non_ascii_bin
+                         PASS_REGULAR_EXPRESSION "no such device to probe")
+endif()
 
 # Reasoning-parser wiring regression (issue #49). Needs no model — it drives the extracted
 # bmoe::detail::build_parse_params directly — so it runs unconditionally, unlike the gates below.
@@ -65,6 +86,12 @@ add_test(NAME device_answer COMMAND bmoe_device_answer_test)
 add_executable(bmoe_output_constraint_session_test output_constraint_session_test.cpp)
 target_link_libraries(bmoe_output_constraint_session_test PRIVATE bmoe_core)
 target_include_directories(bmoe_output_constraint_session_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/engine)
+
+# The request that makes a context reserve its compute buffers again (compute_reservation.h): a
+# llama.cpp behaviour the prefill device depends on, checked on the tiny model every build.
+add_executable(bmoe_compute_reservation_test compute_reservation_test.cpp)
+target_link_libraries(bmoe_compute_reservation_test PRIVATE bmoe_core)
+target_include_directories(bmoe_compute_reservation_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/engine)
 
 # Thinking-control tests (issue #82). Drives bmoe::detail::probe_think_control and the prefill
 # against real vendored templates, so it needs no model and runs unconditionally.
@@ -271,7 +298,7 @@ endif()
 
 if(PYTHON3)
     # arch → (fixture id, gguf filename). Each gets a generate fixture + a gate run.
-    foreach(spec "qwen3moe" "gemma4" "nemotron_h_moe")
+    foreach(spec "qwen3moe" "gemma4" "nemotron_h_moe" "inkling2_loop")
         set(_model "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-${spec}.gguf")
         set(_fixture "TINY_MOE_MODEL_${spec}")
 
@@ -288,6 +315,16 @@ if(PYTHON3)
     add_test(NAME output_constraint_session COMMAND bmoe_output_constraint_session_test
              "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-qwen3moe.gguf")
     set_tests_properties(output_constraint_session PROPERTIES FIXTURES_REQUIRED TINY_MOE_MODEL_qwen3moe)
+
+    if(TARGET bmoe_expert_read_failure_test)
+        add_test(NAME expert_read_failure COMMAND bmoe_expert_read_failure_test
+                 "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-qwen3moe.gguf")
+        set_tests_properties(expert_read_failure PROPERTIES FIXTURES_REQUIRED TINY_MOE_MODEL_qwen3moe)
+    endif()
+
+    add_test(NAME compute_reservation COMMAND bmoe_compute_reservation_test
+             "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-qwen3moe.gguf")
+    set_tests_properties(compute_reservation PROPERTIES FIXTURES_REQUIRED TINY_MOE_MODEL_qwen3moe)
 
     if(TARGET bmoe_startup_pin_fit_test)
         add_test(NAME startup_pin_fit COMMAND bmoe_startup_pin_fit_test
@@ -319,6 +356,13 @@ endif()
 # device — which is the point: rules meant to hold on hardware we do not own are checked here.
 add_executable(bmoe_planner_test planner_test.cpp)
 target_link_libraries(bmoe_planner_test PRIVATE bmoe_core)
+# The planner's tests are one long main() whose locals (hundreds of whole plans) share one stack frame
+# on a compiler that does not overlap disjoint scopes: past the 1 MiB a Windows executable gets by
+# default it faults on entry, before a line is printed. The size every other platform here gives a
+# main thread.
+if(MSVC)
+    target_link_options(bmoe_planner_test PRIVATE /STACK:8388608)
+endif()
 add_test(NAME planner COMMAND bmoe_planner_test)
 
 # The routing trace the planner prices the cache from: its LRU replay against scripts/route-replay.py
@@ -334,6 +378,9 @@ target_link_libraries(bmoe_memory_topology_test PRIVATE bmoe_core)
 target_include_directories(bmoe_memory_topology_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/plan)
 if(APPLE AND GGML_METAL)
     target_compile_definitions(bmoe_memory_topology_test PRIVATE BMOE_HAVE_METAL_MEMORY_PROBE=1)
+endif()
+if(GGML_OPENCL AND BMOE_OPENCL_INCLUDE)
+    target_compile_definitions(bmoe_memory_topology_test PRIVATE BMOE_HAVE_OPENCL_MEMORY_PROBE=1)
 endif()
 add_test(NAME memory_topology COMMAND bmoe_memory_topology_test)
 

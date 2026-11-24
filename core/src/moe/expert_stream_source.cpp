@@ -16,6 +16,15 @@
 
 namespace bmoe {
 
+// Pause beats a waiter spins on a slice's ready flag before it sleeps: a slice usually lands within
+// microseconds, and a sleep costs a syscall on both sides.
+constexpr int k_ready_spin = 256;
+// The least a refused pin shrinks the cache by, as a fraction of the cache (1/64): under that the
+// next load's commits run straight into the same refusal.
+constexpr size_t k_pin_slack_divisor = 64;
+// A projection slot index is packed into the low byte of a tensor's key beside its layer.
+static_assert(ExpertLayout::max_slots < 256, "the slot index is packed into one byte");
+
 using clock_t_ = std::chrono::steady_clock;
 
 namespace {
@@ -1334,7 +1343,7 @@ void ExpertStreamSource::pin_pages(void * p, size_t sz) {
     // Below what is resident, by the room a load needs: a layer's slices are committed before the
     // previous ones are evicted, so a budget equal to what was granted is over it by that much on
     // every load, and the refusal would simply repeat.
-    const size_t slack = std::max({layer_demand_, sz, cache_max_ / 64});
+    const size_t slack = std::max({layer_demand_, sz, cache_max_ / k_pin_slack_divisor});
     // From the smaller of the budget and what is resident: a load can run past the budget before
     // its eviction, and a refusal there says the budget is still too high, not that it was reached.
     const size_t from = std::min(cresident_, cache_max_);
@@ -1426,6 +1435,15 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
     if (!active_ || il < 0 || il >= n_layer_ || !layers_[il].bound || !ids || n_ids <= 0) return false;
     freq_pass_check(il);
     if (overlap_) return load_layer_async(il, ids, n_ids);
+    // A load that failed is the end of the run, as on the overlap path: the entries it staged are
+    // already counted resident (touch_entry) and their slices were never read, so a later token
+    // would be served them as hits. The session's abort callback reads the flag and stops the graph
+    // this layer's matmul belongs to; nothing downstream reads a slot nobody filled.
+    if (fatal_.load(std::memory_order_acquire)) return false;
+    const auto failed = [&] {
+        fatal_.store(true, std::memory_order_release);
+        return false;
+    };
     LayerExperts & L = layers_[il];
     cgen_++;
     // A wide graph is a prefill; a decode or a speculative verify window is far narrower.
@@ -1492,14 +1510,14 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
         }
         seen_[e] = 1;
         ++n_unique;
-        if (!stage(e)) return false;
+        if (!stage(e)) return failed();
     }
     if (load_all_) {
         for (int e = 0; e < n_expert_; ++e) {
             if (seen_[e]) continue;
             seen_[e] = 1;
             ++n_unique;
-            if (!stage(e)) return false;
+            if (!stage(e)) return failed();
         }
     }
     account_demand(il, n_unique);
@@ -1511,7 +1529,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
     if (io_threads_ <= 1 || njobs <= 1) {
         for (size_t i = 0; i < njobs; ++i) {
             const IoJob & j = jobs_[i];
-            if (!read_slice(0, j)) return false;
+            if (!read_slice(0, j)) return failed();
         }
     } else {
         uint64_t my_gen;
@@ -1529,7 +1547,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
             std::unique_lock<std::mutex> lk(io_mtx_);
             io_cv_done_.wait(lk, [&] { return done_cnt_ == njobs || io_stop_; });
         }
-        if (io_err_.load()) return false;
+        if (io_err_.load()) return failed();
     }
     read_ns_.fetch_add((long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - t0).count());
 
@@ -1801,7 +1819,7 @@ void ExpertStreamSource::on_expert_ready(const ggml_tensor * src0, int expert) {
     // beat is a pause instruction, not yield() — 2048 yields burnt up to a millisecond of
     // sched_yield churn per genuinely slow slice, stealing CPU from the I/O lanes and the
     // sibling compute threads that would have finished the slice sooner.
-    for (int s = 0; s < 256; ++s) {
+    for (int s = 0; s < k_ready_spin; ++s) {
         if (ready_[idx].gen.load(std::memory_order_acquire) == want || fatal_.load(std::memory_order_acquire)) {
             stall_union_.exit();
             return;
@@ -1875,10 +1893,8 @@ IExpertSource::Stats ExpertStreamSource::stats() const {
     s.stall_seconds = stall_union_.total_ns() / 1e9;
     s.cache_budget_bytes = (uint64_t) cache_max_;
     s.cache_resizes = cache_resizes_;
-    s.cache_pin_refused_bytes = (uint64_t) pin_refused_at_;
     s.discarded = disc_.lost_on_lookup() + swept_;
     s.discarded_on_hit = disc_.lost_on_lookup();
-    s.dense_pin_refused_bytes = dense_.pin_refused_bytes();
     s.o_direct = effective_direct_;
     s.evictions = evictions_;
     s.rereads = rereads_;

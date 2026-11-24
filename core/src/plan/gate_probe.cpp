@@ -21,7 +21,7 @@ namespace bmoe {
 void probe_gate_gemv(HardwareProfile & hw, const ModelProfile & model) {
     hw.gate_gemv_f32_us = hw.gate_gemv_int8_us = 0.0;
     if (!model.is_moe) return;
-    const uint32_t layers = model.n_moe_layer > 0 ? model.n_moe_layer : model.n_layer;
+    const uint32_t layers = model.n_moe_layer > 0 ? model.moe_layer_runs() : model.n_layer;
     const gate_gemv::Timing t = gate_gemv::measure(model.n_embd, model.n_expert, layers);
     if (!t.measured()) return;
     hw.gate_gemv_f32_us = t.f32_us;

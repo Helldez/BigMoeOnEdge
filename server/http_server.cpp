@@ -574,12 +574,17 @@ struct App {
 
     json config_object(const json * rejected = nullptr) {
         const RunConfig cfg = store.config();
-        const ValidationResult v = validate(cfg);
+        // Judged as a load opens it: with streaming off, the knobs that only mean something on a
+        // stream (the overlap the server arms by default among them) are dropped there, so they must
+        // not mark the settings invalid here, nor go into the command a person copies.
+        RunConfig opened = cfg;
+        if (!opened.moe.enabled) drop_streaming_only(opened);
+        const ValidationResult v = validate(opened);
         const std::vector<std::string> reload = host.reload_keys(cfg);
         json o = {{"values", config_values(cfg)},
                   {"user_keys", store.operator_keys()},
                   {"launch_keys", store.launch_keys()},
-                  {"args", to_args(cfg)},
+                  {"args", to_args(opened)},
                   {"valid", v.ok},
                   {"error", engine_message(v.error)},
                   {"reload_required", !reload.empty()},
@@ -737,7 +742,16 @@ struct App {
             load_plan = PlanOutcome{};
         }
         const RunConfig requested = store.config();
-        const RunConfig effective = effective_config(requested);
+        RunConfig effective = effective_config(requested);
+        // A plan in two parts (RunConfig::fallback): the settings hold the part the load opens, and the
+        // other is rebuilt from the plan's own values, as that part would be applied, and goes with it
+        // to the session, which reopens as it where the device does not keep the model.
+        {
+            std::lock_guard<std::mutex> lk(plan_m);
+            if (load_plan.ok && load_plan.has_fallback && !effective.trial.answer_device.empty())
+                effective.fallback = std::make_shared<const RunConfig>(
+                    effective_config(store.config_with_plan(load_plan.fallback_values)));
+        }
         mark_prefill_unconfirmed(effective);
         if (!other.ok) return host.load(effective, requested);
         return host.load(effective, requested, fallback_for(named, other));
@@ -1899,7 +1913,14 @@ int run(int argc, char ** argv, const Embedding & embedding) {
     const std::string backends_root = (fs::u8path(data_dir) / "backends").u8string();
     for (const std::string & w : finish_pending_packs(backends_root))
         std::fprintf(stderr, "warning: %s\n", w.c_str());
-    const std::vector<std::string> pack_dirs = backend_pack_dirs(backends_root);
+    // Only the packs of this release: one left by an earlier version is not loaded (backend_packs.h).
+    std::vector<std::string> other_release;
+    const std::vector<std::string> pack_dirs = loadable_pack_dirs(backends_root, version(), &other_release);
+    for (const std::string & p : other_release)
+        std::fprintf(stderr,
+                     "warning: backend pack %s is not this release's (%s) and is not loaded: install it again "
+                     "from Settings\n",
+                     p.c_str(), version());
     if (load_backends) {
         platform::prepare_backend_modules(extra_backend_modules(platform::executable_dir(), pack_dirs));
         register_backends(pack_dirs);

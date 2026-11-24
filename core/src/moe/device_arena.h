@@ -105,11 +105,22 @@ public:
     // binding is taken at the moment of the swap, so whatever the streamer bound stays authoritative.
     void place(bool on_device);
 
-    // Start of a device graph: queue the first two layers. Each graph refills from layer 0.
+    // The order the graph runs its layers in, and the block of weights each one computes from:
+    // `layers[i]` is the i-th layer the graph runs, by the graph's own index, and `blocks[i]` the
+    // layer id its weights are filed under (the index `init` and `init_dense` take). Read off the
+    // graph by whoever captured it. Without a call the graph is taken to run layer 0, 1, 2... each
+    // on its own weights, which is every model whose blocks run once; with one, a routing node of a
+    // layer the lists do not name fails its graph. A graph that comes back to a block (a looped core) names it again:
+    // what is "next" is then the next entry here, not the next index, and a block the slots still hold is not read
+    // twice. Call after init and init_dense, between graphs.
+    void set_graph_order(const std::vector<int> & layers, const std::vector<int> & blocks);
+
+    // Start of a device graph: queue the first layers the graph runs. Each graph refills from its
+    // first layer.
     void begin_graph();
-    // At layer il's routing node: queue the next layer into the slot the previous one just freed,
-    // then wait until il's experts are in place. A layer with no slot passes straight through.
-    // `topk` is that node (the routed ids); only the routed mode reads it.
+    // At the routing node of graph layer `il`: queue the layer the graph runs next into the slot the
+    // previous one just freed, then wait until this one's experts are in place. A layer with no slot
+    // passes straight through. `topk` is that node (the routed ids); only the routed mode reads it.
     void barrier(int il, const ggml_tensor * topk = nullptr);
 
     // Routed mode (the session's default). Off, every layer's whole expert set is read, ahead of its
@@ -127,8 +138,8 @@ public:
     // reads the prediction missed, which the graph waited for).
     uint64_t routed_used() const { return routed_used_.load(); }
     uint64_t routed_demand() const { return routed_demand_.load(); }
-    // At the last node of layer il: its dense slot is free, so queue layer il+2 into it, and wait
-    // for layer il+1's. With no dense slots this is a no-op.
+    // At the last node of graph layer `il`: its dense slot is free, so queue the layer after the
+    // next into it, and wait for the next one's. With no dense slots this is a no-op.
     void dense_barrier(int il);
     // End of a device graph: wait out anything still in flight (only a graph that stopped early
     // leaves any), so the next graph starts from empty queues.
@@ -201,9 +212,28 @@ private:
     // `front` puts them ahead of everything waiting. Caller holds mu_.
     void schedule(int k, const std::vector<uint8_t> * want = nullptr, bool front = false);
     void schedule_dense(int il); // caller holds mu_
+    // The block graph layer `il` computes from, and the one the graph runs `ahead` layers after it
+    // (-1 past the end). Identity where set_graph_order named nothing.
+    int block_at(int il, int ahead) const;
+    // Index into order_ of a block, -1 for one with no experts or out of range.
+    int k_of(int block) const {
+        return block >= 0 && block < (int) k_of_layer_.size() ? k_of_layer_[(size_t) block] : -1;
+    }
+    // The next expert-carrying block the graph runs after graph layer `il`, as an index into order_.
+    int next_k(int il) const;
+    void rebuild_order(); // identity for the layers set_graph_order did not name
 
-    std::vector<Layer> order_;    // bound layers in graph order
+    std::vector<Layer> order_;    // bound layers, ascending by layer id
     std::vector<int> k_of_layer_; // layer id -> index into order_, -1 for dense layers
+    // The graph's run order (set_graph_order): position -> block, and graph layer -> position.
+    std::vector<int> run_block_;
+    std::vector<int> pos_of_layer_;
+    std::vector<int> given_layers_, given_blocks_; // what set_graph_order was handed, kept for a rebuild
+    // Which block's weights each slot holds, or is being filled with (-1: none). A block that is
+    // queued into a slot another block held starts from nothing; one queued again into its own slot
+    // keeps what this graph already put there.
+    int expert_owner_[max_slots] = {-1, -1};
+    int dense_owner_[2] = {-1, -1};
     int n_expert_ = 0;
     int n_proj_ = 0;
 

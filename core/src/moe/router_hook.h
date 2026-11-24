@@ -103,6 +103,18 @@ public:
 
     // After capture, whether the last node of every layer was seen: what paces a dense arena, which
     // must load a layer's weights before its first node and so waits at the end of the one before.
+    // The layers of the capture graph in the order it runs them, by the graph's own index, and the
+    // block of weights each computes from (itself where the graph named none). What a consumer that
+    // walks the graph layer by layer follows instead of counting up: a graph that runs a block at
+    // several depths comes back to it.
+    const std::vector<int> & layer_order() const { return layer_order_; }
+    std::vector<int> layer_blocks() const {
+        std::vector<int> out;
+        out.reserve(layer_order_.size());
+        for (const int il : layer_order_)
+            out.push_back(block_of(il));
+        return out;
+    }
     bool learned_layer_ends() const {
         for (const std::string & n : last_node_)
             if (n.empty()) return false;
@@ -332,6 +344,7 @@ private:
     void capture_sources(ggml_tensor * t);                      // capture warm-up, every node
     bool arena_eval(ggml_tensor * t, bool ask, bool probe_ask); // device prefill: the arena's pace
     void serve_rows(ggml_tensor * t);                           // row-gathered tables, before a node
+    void rows_failed();                                         // a row read failed: the run ends
     void on_topk(ggml_tensor * t, int il);                      // a routing node, ids materialized
     void record_topk(ggml_tensor * t, int il);                  // the same node, recorded only: no streamer
     // Whether the routing record still wants routing nodes: armed, and not yet full.
@@ -362,6 +375,14 @@ private:
     ExpertLayout layout_;
     int n_layer_ = 0;
     bool capturing_ = false;
+    // Graph layer -> the block whose weights it computes from, learnt at capture (-1: not seen, the
+    // layer is its own block). They differ where a model runs a block at several depths.
+    std::vector<int> block_of_;
+    std::vector<int> layer_order_; // graph layers in the order the capture graph first reached them
+    int block_of(int layer) const {
+        if (layer < 0 || layer >= (int) block_of_.size()) return layer;
+        return block_of_[(size_t) layer] >= 0 ? block_of_[(size_t) layer] : layer;
+    }
     IExpertSource * source_ = nullptr;  // non-null → stream mode
     IRowSource * row_source_ = nullptr; // row-gathered dense tables, when the policy is on
     std::vector<LayerExperts> captured_;

@@ -4,8 +4,9 @@ import SwiftUI
 /// Settings (docs/screens.md): the engine tunables a form offers, rendered from the parameter
 /// table, and the few settings that are the app's own. "Set by you" first, every row holding a
 /// value the person set, then one card per group of the table, in its order, listing the other
-/// rows the table puts on a form; every card starts closed. A link (`Navigator.openSetting`) opens
-/// its row's card and lands on it. Each row appears once.
+/// rows the table puts on a form; every card starts closed. Below them, Advanced settings: every
+/// other row a client may set, folded and cut into the same groups. A link (`Navigator.openSetting`)
+/// opens its row's card and lands on it. Each row appears once.
 struct SettingsView: View {
     @EnvironmentObject private var engine: Engine
     @EnvironmentObject private var nav: Navigator
@@ -16,8 +17,7 @@ struct SettingsView: View {
     @State private var shareOpen = false
     @State private var appearanceOpen = false
     @State private var mineOpen = false
-    /// A row a link landed on that the form does not offer, shown for this visit.
-    @State private var revealed: String?
+    @State private var advancedOpen = false
     @State private var focusKey: String?
     @State private var failure: String?
     @State private var confirmReset = false
@@ -39,8 +39,9 @@ struct SettingsView: View {
                     tools
                     let mine = SettingsForm.setByYou(engine.params, config: engine.config)
                     if !mine.isEmpty { setByYouCard(mine) }
-                    ForEach(SettingsForm.cards(engine.params, revealed: revealed.map { [$0] } ?? [],
-                                               setByYou: Set(mine.map(\.key)))) { c in card(c) }
+                    ForEach(SettingsForm.cards(engine.params, setByYou: Set(mine.map(\.key)))) { c in card(c) }
+                    let advanced = SettingsForm.advancedCards(engine.params, setByYou: Set(mine.map(\.key)))
+                    if !advanced.isEmpty { advancedSection(advanced) }
                 }
                 AppSettingsSection(open: $appOpen)
                 UpdatesSection()
@@ -65,11 +66,7 @@ struct SettingsView: View {
             .onChange(of: nav.settingTarget) { _ in land(proxy) }
             .onChange(of: engine.params.count) { _ in land(proxy) }
             .onChange(of: engine.config == nil) { _ in land(proxy) }
-            // A row a link revealed is shown for that visit only.
-            .onDisappear {
-                revealed = nil
-                focusKey = nil
-            }
+            .onDisappear { focusKey = nil }
         }
         .confirmationDialog(resetTitle, isPresented: $confirmReset, titleVisibility: .visible) {
             Button("Reset", role: .destructive) { resetAll() }
@@ -115,11 +112,28 @@ struct SettingsView: View {
 
     // MARK: a card
 
-    private func card(_ c: SettingsForm.Card) -> some View {
-        let open = openCards.contains(c.group)
+    /// Everything else a client may set, behind one fold and cut into the same groups: the plan sets
+    /// these, and a person who wants to choose (the devices that run the prompt and the answer, the
+    /// cache, the reads) finds them all here.
+    private func advancedSection(_ cards: [SettingsForm.Card]) -> some View {
+        VStack(alignment: .leading, spacing: Grid.s) {
+            CardHeader(title: "Advanced settings · \(cards.reduce(0) { $0 + $1.rows.count })",
+                       detail: "Everything else the engine lets you set, which the plan usually decides: the devices that "
+                           + "run the prompt and the answer, the cache, the reads, and the experimental and debug options.",
+                       open: $advancedOpen)
+            if advancedOpen { ForEach(cards) { c in card(c, key: Self.advancedKey(c.group), showLevel: true) } }
+        }
+        .card(padding: 12)
+    }
+
+    private static func advancedKey(_ group: String) -> String { " advanced:\(group)" }
+
+    private func card(_ c: SettingsForm.Card, key: String? = nil, showLevel: Bool = false) -> some View {
+        let id = key ?? c.group
+        let open = openCards.contains(id)
         return VStack(alignment: .leading, spacing: Grid.s) {
             Button {
-                if open { openCards.remove(c.group) } else { openCards.insert(c.group) }
+                if open { openCards.remove(id) } else { openCards.insert(id) }
             } label: {
                 HStack(alignment: .firstTextBaseline, spacing: Grid.s) {
                     Text(c.label).font(.ui(18, bold: true)).foregroundStyle(Palette.accentInk)
@@ -132,7 +146,7 @@ struct SettingsView: View {
             if !c.help.isEmpty {
                 Text(c.help).font(.ui(12)).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
             }
-            if open { rows(c.rows, readOnly: c.readOnly) }
+            if open { rows(c.rows, readOnly: c.readOnly, showLevel: showLevel) }
         }
         .card(padding: 12)
     }
@@ -146,14 +160,14 @@ struct SettingsView: View {
         .card(padding: 12)
     }
 
-    private func rows(_ specs: [ParamSpec], readOnly: Bool) -> some View {
+    private func rows(_ specs: [ParamSpec], readOnly: Bool, showLevel: Bool = false) -> some View {
         let decisions = Dictionary((engine.config?.plan ?? []).map { ($0.knob, $0) }, uniquingKeysWith: { _, last in last })
         let reload = Set(engine.config?.reloadKeys ?? [])
         return VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(specs.enumerated()), id: \.element.key) { i, spec in
                 if i > 0 { Rectangle().fill(Palette.line).frame(height: 1) }
-                ParamRow(spec: spec, readOnly: readOnly, decision: decisions[spec.key], needsReload: reload.contains(spec.key),
-                         focusRequest: focusKey == spec.key, onError: { failure = $0 })
+                ParamRow(spec: spec, readOnly: readOnly, showLevel: showLevel, decision: decisions[spec.key],
+                         needsReload: reload.contains(spec.key), focusRequest: focusKey == spec.key, onError: { failure = $0 })
                     .id("param-\(spec.key)")
             }
         }
@@ -162,17 +176,19 @@ struct SettingsView: View {
     // MARK: actions
 
     /// A link to one setting lands on it: "Set by you" opened when the person set it, else its group's
-    /// card, with the row shown even where the form does not offer it; the row scrolled into view
-    /// and its field focused. Once per link.
+    /// card (under Advanced settings for a row the form leaves to the plan); the row scrolled into
+    /// view and its field focused. Once per link.
     private func land(_ proxy: ScrollViewProxy) {
         guard let key = nav.settingTarget, engine.config != nil,
               let spec = engine.params.first(where: { $0.key == key }) else { return }
         nav.settingTarget = nil
         if SettingsForm.setByYou(engine.params, config: engine.config).contains(where: { $0.key == key }) {
             mineOpen = true
-        } else {
-            if !spec.form { revealed = key }
+        } else if spec.form || spec.groupReadOnly {
             openCards.insert(spec.group)
+        } else {
+            advancedOpen = true
+            openCards.insert(Self.advancedKey(spec.group))
         }
         focusKey = nil
         // After the cards above have opened, so the row is there to scroll to.
@@ -206,6 +222,8 @@ struct ParamRow: View {
     let spec: ParamSpec
     /// Shown, not edited: its group is set elsewhere (the model, from Models).
     var readOnly = false
+    /// Say when the row is experimental or a debug aid (Advanced settings, where those rows live).
+    var showLevel = false
     /// The applied plan's decision on this row, if it made one.
     var decision: PlanDecision?
     /// The value differs from the one the loaded session runs with (the server says which).
@@ -315,12 +333,20 @@ struct ParamRow: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .focused($focused)
-                    .onSubmit(commit)
+                    .onSubmit { commit() }
                     .onChange(of: focused) { f in if !f { commit() } }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
                     .overlay(RoundedRectangle(cornerRadius: Grid.control, style: .continuous).strokeBorder(focused ? Palette.accent : Palette.lineStrong, lineWidth: Grid.line))
                 if let unit = spec.unit { Text(unit).font(.ui(14)).foregroundStyle(Palette.muted) }
+                // Tapping beside the field or leaving the screen keeps the focus, so Return and the
+                // focus alone could lose a typed value: the check saves it in one tap. Not a pause in
+                // typing, which saved a value still being typed ("0" on the way to "0.5").
+                if text != value.display {
+                    Button { commit() } label: { Image(systemName: "checkmark") }
+                        .buttonStyle(.appSecondary)
+                        .accessibilityLabel("Save")
+                }
                 if spec.acceptsAuto && value.string != "auto" {
                     Button("auto") { set(.string("auto")) }.buttonStyle(.appSecondary)
                 }
@@ -345,6 +371,9 @@ struct ParamRow: View {
                 if !readOnly {
                     Badge(text: source.text, color: source == .you ? Palette.accent : source == .plan ? Palette.ok : Palette.muted)
                 }
+                if showLevel, spec.level == .experimental || spec.level == .debug {
+                    Badge(text: spec.level.rawValue, color: Palette.warn)
+                }
                 if spec.lossy { Badge(text: "changes the reply", color: Palette.warn) }
                 if spec.scope == .request { Badge(text: "per message", color: Palette.accentInk) }
                 if needsReload { Badge(text: "needs reload", color: Palette.warn) }
@@ -366,6 +395,8 @@ struct ParamRow: View {
         Button(title) { reset() }.font(.ui(13)).foregroundStyle(Palette.accentInk).buttonStyle(.borderless)
     }
 
+    /// Saves the typed value: the check, Return, or leaving the field. A value that does not parse is
+    /// refused with the reason.
     private func commit() {
         guard text != value.display else { return }
         guard let v = spec.value(fromText: text) else {

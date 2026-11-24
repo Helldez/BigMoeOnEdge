@@ -4,7 +4,7 @@
   import { api } from '../../lib/api';
   import { commandLine } from '../../lib/format';
   import { decisionsByKnob, planDecisions } from '../../lib/plan';
-  import { resettableKeys, setByYou, settingsCards } from '../../lib/schema';
+  import { advancedCards, resettableKeys, setByYou, settingsCards } from '../../lib/schema';
   import { router } from '../../stores/router.svelte';
   import { server } from '../../stores/server.svelte';
   import { settings } from '../../stores/settings.svelte';
@@ -22,13 +22,20 @@
   // the group cards hold the rest of the form.
   let mine = $derived(setByYou(params, userKeys));
   let cards = $derived(settingsCards(params, userKeys));
+  // Everything else a client may set, behind one fold and cut into the same groups: the plan sets
+  // these, and a person who wants to choose (the devices that run the prompt and the answer, the
+  // cache, the reads) finds them all here.
+  let advanced = $derived(advancedCards(params, userKeys));
   const MINE = '__set_by_you';
+  const ADVANCED = '__advanced';
+  const adv = (group: string) => `__advanced:${group}`;
 
   // Open cards, keyed by group: every card starts closed, so the page opens on the groups alone.
   let openCards = $state<Record<string, boolean>>({});
 
   // A link to one setting (`#/settings/<key>`, from the Plan screen or a warning) lands on it: its
-  // card opened, the field scrolled into view and focused. A row no card shows is not a target.
+  // card opened (and Advanced settings, for a row there), the field scrolled into view and focused.
+  // A row no card shows is not a target.
   // Once per link: the config changes on every save, and editing another field must not jump back.
   let landedOn = '';
   $effect(() => {
@@ -36,9 +43,12 @@
     if (!key) landedOn = '';
     if (!key || key === landedOn || !config || params.length === 0) return;
     landedOn = key;
-    const group = mine.some((p) => p.key === key) ? MINE : cards.find((c) => c.params.some((p) => p.key === key))?.group;
+    const inAdvanced = advanced.find((c) => c.params.some((p) => p.key === key))?.group;
+    const group = mine.some((p) => p.key === key)
+      ? MINE
+      : (cards.find((c) => c.params.some((p) => p.key === key))?.group ?? (inAdvanced && adv(inAdvanced)));
     if (!group) return;
-    openCards = { ...openCards, [group]: true };
+    openCards = { ...openCards, [group]: true, ...(inAdvanced ? { [ADVANCED]: true } : {}) };
     tick().then(() => {
       const el = document.getElementById(`param-${key}`);
       el?.scrollIntoView({ block: 'center' });
@@ -172,6 +182,43 @@
       {/each}
     </details>
   {/each}
+  {#if advanced.length > 0}
+    <details
+      class="advanced"
+      open={openCards[ADVANCED] === true}
+      ontoggle={(e) => (openCards = { ...openCards, [ADVANCED]: (e.currentTarget as HTMLDetailsElement).open })}
+    >
+      <summary>
+        <span class="title">{t('settings.advanced')}</span>
+        <span class="badge">{advanced.reduce((n, c) => n + c.params.length, 0)}</span>
+        <span class="muted ghelp">{t('settings.advanced.help')}</span>
+      </summary>
+      {#each advanced as c (c.group)}
+        <details
+          class="card group"
+          open={openCards[adv(c.group)] === true}
+          ontoggle={(e) => (openCards = { ...openCards, [adv(c.group)]: (e.currentTarget as HTMLDetailsElement).open })}
+        >
+          <summary>
+            <span class="title">{c.label}</span>
+            <span class="badge">{c.params.length}</span>
+            {#if c.help}<span class="muted ghelp">{c.help}</span>{/if}
+          </summary>
+          {#each c.params as spec (spec.key)}
+            <ParamField
+              {spec}
+              value={config.values[spec.key]}
+              userSet={false}
+              rejected={settings.rejected[spec.key]}
+              decision={decisions.get(spec.key)}
+              needsReload={reloadKeys.has(spec.key)}
+              showLevel={true}
+            />
+          {/each}
+        </details>
+      {/each}
+    </details>
+  {/if}
 {/if}
 
 <style>
@@ -199,6 +246,28 @@
     flex-wrap: wrap;
     align-items: baseline;
     gap: var(--s1) var(--s3);
+  }
+  .advanced {
+    margin-top: var(--s5);
+  }
+  .advanced > summary {
+    cursor: pointer;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--s1) var(--s3);
+    padding: var(--s2) 0;
+    border-top: var(--edge) solid var(--line);
+  }
+  .advanced > summary .title {
+    flex: 1;
+  }
+  .advanced > summary::after {
+    order: 1;
+    align-self: center;
+  }
+  .advanced[open] > summary {
+    margin-bottom: var(--s3);
   }
   .group[open] > summary {
     margin-bottom: var(--s2);

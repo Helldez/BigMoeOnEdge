@@ -305,10 +305,14 @@ except where noted:
   at run time). So the engine marks only the matmul matrices `WEIGHTS` and puts every other layer weight
   (norms, biases, scales), as found from the ops the capture graph applies to it, in plain device
   memory.
-- **Two context knobs.** `n_outputs_max` bounds the logit rows the context reserves, and toggling
-  `llama_set_causal_attn` off and on makes the next decode redo the compute-buffer reservation, which
-  the engine uses once, with the weights on the device, so the CPU does not keep a reservation for a
-  graph it never runs.
+- **Two context knobs.** `n_outputs_max` bounds the logit rows the context reserves, and a change of
+  `llama_set_embeddings`, put back before the next decode, makes that decode redo the compute-buffer
+  reservation (`core/src/engine/compute_reservation`). The engine asks once, with the weights on the
+  device, so the CPU does not keep a reservation for a graph it never runs. Which setter llama.cpp
+  answers with a new reservation is its behaviour, not its API: `llama_set_causal_attn` was the one
+  used until upstream #28751 stopped re-reserving on it, and from the bump of #278 the CPU kept its
+  all-CPU reservation with every output unchanged (#657). The gate `compute_reservation` counts the
+  reservations the request yields, so a bump that changes this fails it.
 - **Concurrent uploads into one buffer.** The arena's loader threads call `ggml_backend_tensor_set`
   on different views of the same slot buffer at once. ggml does not document this as thread-safe; it
   holds for the CPU, RPC and Hexagon backends today because each write touches only its own bytes.
@@ -365,14 +369,44 @@ instead of silently corrupting output. Each expert layout has a gate to keep gre
 If a future release moves the two hooks (a stable expert-residency API, say) upstream,
 this seam shrinks further or disappears — `core/` does not change.
 
+### A layer of the graph is not always a block of the file
+
+The seam reads a layer's index off its node names (`ffn_moe_topk-<il>`) and a tensor's block off
+its name (`blk.<il>.`), and for every architecture before this base the two were one number. A
+model that runs a core of its blocks more than once per token breaks that: llama.cpp numbers each
+later pass as layers of its own, past the last block, computing from the first pass's tensors. On
+the model this base adds, 24 blocks run as 48 layers.
+
+Nothing in the engine names such a model. At capture the hook reads, for every layer of the graph,
+which block's weights its nodes take as sources (`RouterHook::block_of`: the first block weight a
+layer reads, with the matrix of its indexed matmul, the expert tensor itself, having the last word)
+and the order the graph reaches its layers in (`layer_order`). The streamer then loads a routing
+node's experts for the block, the device arena walks its slots in the graph's order instead of
+counting up (`DeviceExpertArena::set_graph_order`), and the planner counts a token's demand over
+the layers the engine numbers (`ModelProfile::n_layer` against `n_block`,
+[hardware-planning.md](hardware-planning.md)). Before this, streaming such a model loaded a later
+pass's experts for a block that does not exist and computed on whatever the tensor held: plausible
+text, different at every start, and no error. The tiny model `scripts/make-tiny-moe.py --arch
+inkling2_loop` is its gate.
+
 Pinned submodule at the time of writing: `Helldez/llama.cpp` branch
-`bmoe/expert-ready-hook-1711`, commit `fc1a629`: the Hexagon weight-writes commit (section 3b) on
-`ac30987`, the expert-ready-hook commit (section 3), in the variant that also answers the CPU registry's `get_proc_address` so a build that
-loads the CPU backend as a module reaches it, on top of upstream `ggml-org/llama.cpp` tag
-`b12214` (`6590d25` of 2026-11-09, 104 commits past the previous base, `v0.9.0`, `cd959ba` of
-2026-11-04). This base brings the device expert cache's frequency-aware eviction (ClassLRU) and
-`moe_cache_cpu_share`, both through the public `llama_context_params`; `common_get_device_memory_data`
-gained an out-parameter for skipped NextN layers, which the placement probe passes and does not read.
+`bmoe/expert-ready-hook-2011`, commit `09e3dc4`: the Hexagon weight-writes commit (section 3b) on
+`49d1367`, the expert-ready-hook commit (section 3), in the variant that also answers the CPU registry's `get_proc_address` so a build that
+loads the CPU backend as a module reaches it, on top of upstream `ggml-org/llama.cpp` commit
+`29b52d3` of 2026-11-20 (386 commits past the previous base, tag `b12214`, `6590d25` of
+2026-11-09; the last tag before it is `b12591`). Both fork commits moved over unchanged. This base
+brings the Inkling 2 architectures, the second of which runs a core of its blocks more than once per
+token (above). Two things moved under the engine: `common_fit_params` and
+`common_get_device_memory_data` take the model as a list of paths, which the placement probe passes
+as a list of one, and the lazy grammar that failed to build for a Qwen3.5 `json_object` request with
+`tools: auto` now builds, so the request the server used to refuse may go through
+([server-api.md](server-api.md)). It also deprecates `llama_batch` and `llama_decode` for
+`llama_batch_ext` and `llama_process`: the engine's decode path is still written on the first two,
+which work as before, and the build keeps a deprecation a warning where it treats warnings as
+errors. Moving to the new batch is owed before upstream removes the old one. The op numbering
+changed (`GGML_OP_ADD1` and the two `DIAG_MASK` ops are gone) while the backend module version did
+not, so a backend module built against the previous base passes ggml's own check and must not be
+loaded by this one.
 The hook still fires ahead of upstream's tiled `mul_mat_id` path, which G4 proves. Each bump gets
 its own fork branch and the
 previous ones stay, so every commit an old pin names remains reachable (see `.gitmodules` /

@@ -106,6 +106,25 @@ static void replay_matches_script(const char * tag,
     for (size_t i = 1; i < fc.points.size(); ++i)
         fmono = fmono && fc.points[i].hit >= fc.points[i - 1].hit;
     check(fmono, std::string(tag) + ": the decayed-frequency curve is non-decreasing");
+    // Every point is the replay at its size, whether or not the curve replayed it: it stops at the
+    // first size nothing was evicted at, and the sizes past it must be what a replay would have said.
+    for (const int half_life : {0, 8}) {
+        const HitCurve & curve = half_life ? fc : c;
+        bool same = curve.points.size() == k_hit_curve_points + 1;
+        double best = 0.0;
+        uint32_t unbound = 0;
+        for (uint32_t i = 1; same && i <= k_hit_curve_points; ++i) {
+            const ReplayCounts r = replay_cache(t, curve.points[i].cache_bytes, half_life);
+            best = std::max(best, r.decode_hit());
+            unbound += r.evictions == 0;
+            same = curve.points[i].hit == best;
+        }
+        check(same, std::string(tag) + ": every curve point is the replay at its size, half-life " +
+                        std::to_string(half_life));
+        check(unbound > 0 && replay_cache(t, 0, half_life).evictions > 0,
+              std::string(tag) + ": the record leaves part of the set untouched, so some sizes never evict (" +
+                  std::to_string(unbound) + " of " + std::to_string(k_hit_curve_points) + ")");
+    }
 }
 
 int main() {
@@ -181,22 +200,17 @@ int main() {
         check(!parse_routing_trace("hello\n", bad, err), "text that is not a trace is refused", err);
         check(!parse_routing_trace("# bmoe routing v1\n# n_layer=1 n_expert=4 n_expert_used=1\np 0 1\n", bad, err),
               "a layer without expert bytes is refused, never priced as free", err);
-    }
-
-    // The hottest experts: every routing is a use, ranked by uses, ties by block then id.
-    {
-        const std::vector<HotExpert> hot = hottest_experts(t);
-        // block 0: e0 3, e1 5, e2 2; block 1: e3 5, e0 2, e1 2, e2 1.
-        check(hot.size() == 7, "every expert used is listed", std::to_string(hot.size()));
-        check(hot.size() == 7 && hot[0].layer == 0 && hot[0].expert == 1 && hot[0].uses == 5 && hot[1].layer == 1 &&
-                  hot[1].expert == 3 && hot[1].uses == 5 && hot[2].layer == 0 && hot[2].expert == 0 && hot[2].uses == 3,
-              "ranked by uses, a tie by block then expert id");
-        const std::vector<HotExpert> top2 = hottest_experts(t, 2);
-        check(top2.size() == 2 && top2[0].expert == 1 && top2[1].expert == 3, "a limit keeps the hottest");
-        uint64_t total = 0;
-        for (const HotExpert & h : hot)
-            total += h.uses;
-        check(total == 20, "the uses add up to every routing in the trace", std::to_string(total));
+        // An id past the model's experts, in the route-trace CSV: the replay indexes its tables by
+        // layer and id, so this used to write past them. The preamble may come after the rows.
+        const std::string csv_head = "# route_trace v1\nturn,phase,step,layer,slot,expert,w,x,y\n";
+        const std::string csv_tail = "# n_layer=1 n_expert=4 n_expert_used=1\n# layer=0 expert_bytes=10\n";
+        check(parse_routing_trace(csv_head + "0,1,0,0,0,3,0,0,0\n" + csv_tail, bad, err) && bad.batches.size() == 1,
+              "a route-trace CSV with its ids in range is read", err);
+        check(!parse_routing_trace(csv_head + "0,1,0,0,0,300,0,0,0\n" + csv_tail, bad, err) &&
+                  err.find("out of range") != std::string::npos,
+              "a route-trace CSV row with an id past the experts is refused", err);
+        check(!parse_routing_trace(csv_head + "0,1,0,0,0,4294967297,0,0,0\n" + csv_tail, bad, err),
+              "a route-trace CSV row with an id past 32 bits is refused, not wrapped", err);
     }
 
     // attach_routing: a trace is this model's only if it matches the file and the run.
