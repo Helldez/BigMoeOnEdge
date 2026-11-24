@@ -96,6 +96,7 @@ bool SettingsStore::forget_missing_model(const std::function<bool(const std::str
     std::lock_guard<std::mutex> lk(m_);
     if (launch_.count("model")) return false;
     const auto it = user_.find("model");
+    // dt:srv.forget-missing
     if (it == user_.end() || it->second.empty() || exists(it->second)) return false;
     user_.erase(it);
     save_locked();
@@ -141,6 +142,7 @@ bool SettingsStore::plan_in_force_locked(const RunConfig & operator_config) cons
 
 RunConfig SettingsStore::build_locked() const {
     RunConfig c = operator_config_locked();
+    // dt:srv.layers
     if (!plan_in_force_locked(c)) return c;
     c = defaults_;
     std::string err;
@@ -163,6 +165,7 @@ RunConfig SettingsStore::planning_config() const {
 RunConfig SettingsStore::api_config() const {
     std::lock_guard<std::mutex> lk(m_);
     RunConfig c = build_locked();
+    // dt:srv.api-think
     if (!launch_.count("think") && !user_.count("think")) c.think = true;
     return c;
 }

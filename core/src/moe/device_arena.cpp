@@ -221,6 +221,7 @@ bool DeviceExpertArena::init(ggml_backend_dev_t dev,
     dev_ = dev;
     on_demand_ = on_demand;
     // Held for the session, or built for each prefill and given back after it (see acquire()).
+    // dt:open.prefill.slots
     if (!on_demand_ && !build_slots(err)) return false;
 
     // Staging is filled by every shard's reader, so it is aligned for the coarsest of them.

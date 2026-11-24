@@ -139,6 +139,7 @@ bool build_turn_inputs(common_chat_templates_inputs & inputs,
     // those, close the reasoning span in the prompt instead, so the model resumes at the first token
     // of its answer with the reasoning already behind it. Which models need this was measured at
     // open() (probe_think_control), not assumed.
+    // dt:req.render.no-think
     if (!think && ctl == ThinkControl::Prefill) {
         add_no_think_prefill(inputs);
         return true;

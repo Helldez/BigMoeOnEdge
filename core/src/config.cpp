@@ -84,6 +84,7 @@ ValidationResult validate(const RunConfig & cfg) {
     };
     // The other part of the plan is a configuration like any, and the one the session may end on: it
     // is the same model, it names no part of its own, and it holds up by itself.
+    // dt:cfg.validate
     if (cfg.fallback) {
         if (cfg.n_gpu_layers == 0 || cfg.device_split.empty())
             return fail("a fallback configuration is what a load opens where the model cannot serve from the device "
@@ -482,6 +483,7 @@ ValidationResult validate(const RunConfig & cfg) {
 
 bool offloads_wide_matmuls(const MoeStreamConfig & moe, int n_gpu_layers, bool prefill_device) {
     // Placement is decided by moving weights: a prefill device takes the layers for the prompt itself.
+    // dt:cfg.wide-matmuls
     if (prefill_device) return false;
     // Under overlap a streamed expert is waited for inside the CPU's expert matmul, as it is read.
     // With layers on a device, a wide graph's host-weight matmuls are offered to that device, which

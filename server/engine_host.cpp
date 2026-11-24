@@ -228,6 +228,7 @@ void EngineHost::start_loader(const RunConfig & effective_in, std::optional<Open
         // The plan's side would not open: the other side, which a plan may serve instead. Not for a
         // load an unload has cancelled. Only an open of the other side says the first failure was the
         // side's: where both fail, the first error is the one reported, and nothing is told.
+        // dt:srv.loader.fallback
         if (!s && fallback && !load_cancelled_.load()) {
             std::string second;
             std::shared_ptr<HostedSession> other =
@@ -536,6 +537,7 @@ ChatOutcome EngineHost::chat(const ChatRequest & req,
         out.error = engine_message(r.error);
         out.code = run_error_name(r.error_kind);
         if (r.error_kind == RunError::ContextFull) note_context_full(s->n_ctx());
+        // dt:srv.chat.error
         if (run_error_recoverable(r.error_kind)) {
             // Bad generated output is a server error, but its rolled-back turn leaves the
             // loaded model usable. A client should not have to reload it to retry a request.

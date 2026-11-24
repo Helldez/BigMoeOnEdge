@@ -27,6 +27,7 @@ for the idea the project is built on.
 | [which-models-stream.md](which-models-stream.md) | Which models stream: the rule read from the file, what is refused and why, what stays resident. |
 | [telemetry.md](telemetry.md) | The `BMOE_*` line protocol and CSV schema — the integration contract. |
 | [server-api.md](server-api.md) | The desktop server's HTTP API: settings from the parameter table, OpenAI-compatible chat, live events, models and the plan. |
+| [decision-tree.md](decision-tree.md) | Every decision the code makes, from the command line to one MoE layer of one token, as a tree held to the code; the node a change touches, and how to keep it true. |
 | [session.md](session.md) | Session lifecycle, KV prefix reuse, cancellation. |
 | [decide.md](decide.md) | `--decide`: picking one of a list of choices from a single prefill, with no decode, and keeping the state after a shared prefix between calls. |
 | [settings.md](settings.md) | Every streaming setting: the flag, its values and what it does. |

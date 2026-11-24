@@ -45,6 +45,7 @@ bool DenseWeights::init(DenseWeightsMode mode,
     hold_back_oversized();
     take_row_gathered();
 
+    // dt:open.stream.dense
     if (mode_ == DenseWeightsMode::Anonymous || mode_ == DenseWeightsMode::Pinned) {
         if (tensors_.empty()) { // nothing (left) to rebind — behave as Mmap
             advise_random_mapped();
@@ -121,6 +122,7 @@ void DenseWeights::hold_back_oversized() {
     uint64_t oversized = 0, by_plan = 0;
     size_t n_oversized = 0, n_by_plan = 0;
     for (const DenseTensorRef & d : tensors_) {
+        // dt:open.stream.dense.held-back
         const bool too_large = avail && d.size > avail;
         const bool by_name = named(d);
         if (!too_large && !by_name) {
@@ -189,6 +191,7 @@ void DenseWeights::take_row_gathered() {
     if (take.empty()) return;
 
     rows_.reset(new RowStream());
+    // dt:open.stream.dense.rows
     if (!rows_->init(take, paths_, row_budget_) || rows_->empty()) {
         rows_.reset();
         return; // the tables keep the mode the run asked for
@@ -266,6 +269,7 @@ bool DenseWeights::read_anonymous() {
         const size_t held = (size_t) d.size + pio::tensor_tail_slack(); // readable past the last block
         // A tensor larger than one buffer may be was never going to fit and says nothing about
         // the store's total: it takes an ordinary buffer alone, and the tensors after it still pin.
+        // dt:open.stream.dense.pin-fit
         const bool too_big = pinned && held > pio::pinned_max_bytes();
         bool pin_this = pinned && !too_big;
         if (pin_this && !pio::pinned_alloc(held, &pa)) {

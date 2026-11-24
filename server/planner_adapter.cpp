@@ -149,6 +149,7 @@ PlanOutcome plan_other_side(const PlanOutcome & plan) {
     if (int * n = unviable_count(named, k)) *n = (std::max)(*n, MeasuredKnobs::unviable_max);
     basis->facts.plan = replan(basis->facts, basis->cfg, basis->req, k);
     const KnobTrialConfig & now = basis->facts.plan.config.trial;
+    // dt:srv.plan.other-same
     if (now.device_tier == named.device_tier && now.width_side == named.width_side &&
         now.shared_device_side == named.shared_device_side)
         return {};

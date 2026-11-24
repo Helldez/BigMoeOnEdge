@@ -819,6 +819,7 @@ bool lost(int failed_opens) {
 void choose_device_tier(Planning & s) {
     Placement & pl = s.placement;
     const ModelProfile & m = s.model;
+    // dt:plan.tier
     if (!pl.fitted || pl.n_gpu_layers <= 0 || !m.is_moe || m.n_moe_layer == 0) return;
     for (const char * knob : {"device-cache-mb", "gpu-layers", "tensor-overrides"})
         if (s.req.is_pinned(knob)) return; // the caller placed it; the fitter's or theirs stands
@@ -901,6 +902,7 @@ void choose_device_tier(Planning & s) {
                   dev->name.c_str(), rates.device, rates.host,
                   rates.real_layer ? ", both measured on this model's own expert block" : "", held.c_str(),
                   100.0 * share, expert_share_source(m));
+    // dt:plan.tier.rates
     if (rates.device <= rates.host * (1.0 + (double) s.pol.min_backend_win)) {
         s.note("device-cache-mb", "0", Source::Measured,
                "The host computes the experts as fast as the device: they stay where the fitter put them.",
@@ -953,6 +955,7 @@ void choose_device_tier(Planning & s) {
         // A side that could not be opened here loses, whatever the other is priced at: a cache that
         // cannot be created leaves the fitter's placement, and a placement that cannot be loaded leaves
         // the cache.
+        // dt:plan.tier.measured
         if (lost(mk.device_cache_unviable)) {
             s.note("device-cache-mb", "0", Source::Measured,
                    "The experts stay where the fitter put them: a device cache could not be opened here.",
@@ -990,6 +993,7 @@ void choose_device_tier(Planning & s) {
         for (uint32_t il = 0; il < m.n_layer; ++il)
             pl.host_expert_layers.push_back(il);
     pl.override_patterns = pl.all_expert_patterns;
+    // dt:plan.tier.arm
     if (tier.resplit) {
         const auto list = [](const std::vector<std::pair<std::string, uint32_t>> & v) {
             std::string out;
@@ -1073,6 +1077,7 @@ void choose_device_tier(Planning & s) {
 // live in the streamer's slots, which this does not move.
 void choose_expert_staging(Planning & s) {
     MoeStreamConfig & moe = s.p.config.moe;
+    // dt:plan.staging
     if (moe.device_cache_mb <= 0 || s.p.regime != Regime::Fits || s.req.is_pinned("expert-host-buffer")) return;
     std::string why;
     const ComputeDevice * dev = device_tier_device(s, why);
@@ -1163,6 +1168,7 @@ std::string home_reason(const Planning::LayersHome & h, const std::string & outc
 void price_layers_home(Planning & s) {
     const Placement & pl = s.projected;
     const ModelProfile & m = s.model;
+    // dt:plan.layers-home
     if (!s.home.considered || !pl.fitted || pl.n_gpu_layers == 0 || m.n_layer == 0) return;
     for (const char * knob : {"gpu-layers", "tensor-overrides", "devices", "device-cache-mb"})
         if (s.req.is_pinned(knob)) return;
@@ -1335,6 +1341,7 @@ void place_dense(Planning & s) {
 // ── the regime: a ratio of the two profiles, never a property of either ─────────
 // The three inputs no plan can be made from. True when the plan has declined and is complete.
 bool declines_unplannable(Planning & s) {
+    // dt:plan.unplannable
     if (!s.model.ok) {
         s.p.regime = Regime::Unknown;
         s.decline("the model file could not be read, so nothing about it could be planned");
@@ -1451,6 +1458,7 @@ bool width_across_loads(Planning & s, uint32_t full) {
     Plan & p = s.p;
     const Placement & pl = s.placement;
     const ModelProfile & m = s.model;
+    // dt:plan.width.loads
     if (s.req.is_pinned("ubatch") || devices_share_host_memory(s.hw) || !pl.fitted || pl.n_gpu_layers == 0 ||
         pl.host_expert_layers.empty() || m.expert_bytes == 0)
         return false;
@@ -1664,6 +1672,7 @@ void choose_graph_width(Planning & s) {
         return buffers(w) > s.holdable * (double) s.pol.compute_share_max || (device_short && device_over(w));
     };
     const uint32_t probed = s.placement.compute_width;
+    // dt:plan.width
     if (s.req.is_pinned("ubatch")) {
         s.note("ubatch", u64s((uint64_t) p.config.n_ubatch), Source::Operator,
                u64s((uint64_t) p.config.n_ubatch) + " tokens per pass, as you set it.",
@@ -1721,6 +1730,7 @@ void choose_graph_width(Planning & s) {
                                            : std::string(")"))
                       : "a graph " + u64s(full) +
                             " tokens wide (the width the placement was measured at; a wider one is not priced here)";
+    // dt:plan.width.bound
     if (bound > 0 && w == top && top < full) {
         // Narrowed by the bound: inside it, the memory takes the graph.
         const bool full_fits = !over(full);
@@ -1892,6 +1902,7 @@ Regime residency_regime(Planning & s) {
     // the rows a token needs from the mapping; a table it reads whole is one llama.cpp keeps small
     // enough to read at load, which the margin below the budget is there for.
     s.host_tables = mappable_host_tables(s);
+    // dt:plan.regime
     Regime regime = s.held_all() <= s.usable     ? Regime::Fits
                     : s.held_dense() <= s.usable ? Regime::ExpertsStream
                                                  : Regime::DenseOversized;
@@ -1921,6 +1932,7 @@ void classify_regime(Planning & s) {
 void apply_placement(Planning & s) {
     Plan & p = s.p;
     const Placement & placement = s.placement;
+    // dt:plan.placement
     if (!placement.fitted) {
         s.note("placement", "none", placement.shared_memory_placement ? Source::Derived : Source::Unprobed,
                placement.shared_memory_placement ? "The fitter's placement is set aside: the device shares this memory."
@@ -2030,6 +2042,7 @@ void note_regime(Planning & s) {
 // The two outcomes of the first stage that leave the streamer nothing to do. True when the plan
 // has declined and is complete.
 bool declines_residency(Planning & s) {
+    // dt:plan.resident
     if (s.placement.fitted && s.host_layers == 0) {
         s.p.regime = Regime::Fits;
         s.decline("the capacity fitter placed every layer's experts on a device; nothing is left on the host for "
@@ -2179,6 +2192,7 @@ SharedDeviceCandidate shared_device_candidate(const Planning & s, uint64_t resid
 } // namespace
 
 void choose_shared_device(Planning & s, uint64_t resident) {
+    // dt:plan.shared
     if (s.placement.fitted || !s.devices_share_host_memory) return;
     for (const char * knob : {"gpu-layers", "device-split", "devices", "device-list", "tensor-overrides"})
         if (s.req.is_pinned(knob)) return;
@@ -2245,6 +2259,7 @@ void choose_shared_device(Planning & s, uint64_t resident) {
     const uint64_t failed_free = mk.shared_device_unviable_free_mib << 20;
     const bool more_room = failed_free > 0 && (double) dev.memory_free >
                                                   (double) failed_free * (1.0 + (double) s.pol.shared_device_regrowth);
+    // dt:plan.shared.sides
     if (lost(mk.shared_device_unviable) && !more_room) {
         on_cores(Source::Measured, "The model runs on the CPU: loads with it on " + dev.name + " failed here.",
                  "loads of this model with every layer on " + dev.name + " failed on this machine" +
@@ -2552,6 +2567,7 @@ bool choose_dense_policy(Planning & s) {
     Plan & p = s.p;
     const HardwareProfile & hw = s.hw;
     if (s.pinned("dense-weights", dense_weights_mode_name(p.config.moe.dense_weights))) return false;
+    // dt:plan.dense
     if (hw.reclaim_exempt_max > 0 && hw.lockable_bytes_known && hw.anon_overflow == Overflow::Compress) {
         // Anonymous memory keeps the dense set off flash but not out of a compressed swap, where
         // every touch costs a decompression that no I/O counter shows. A store the kernel may not
@@ -2645,6 +2661,7 @@ void calibrate_decode_cost(Planning & s) {
     if (!(mk.decode_compute_s > 0.0) && !(mk.decode_hit >= 0.0)) return;
     const RunConfig & c = s.p.config;
     const int threads = planned_decode_threads(s);
+    // dt:plan.decode-cost
     if (mk.decode_gpu_layers != c.n_gpu_layers || (mk.decode_device_cache_mb > 0) != (c.moe.device_cache_mb > 0)) {
         s.note("decode-cost", "probed", Source::Derived,
                "Decode is priced from the probes: the decode measured here ran with another device placement.",
@@ -3049,6 +3066,7 @@ Allocation fit_prefill_device(Planning & s,
         // cache streamed, the ledger shrinks it to make room and this holds by construction; where
         // none did, nothing yields, and the device's row is new memory on a pool that may be full.
         fits_held = armed.ledger.held <= armed.ledger.holdable_cap || armed.ledger.held <= alloc.ledger.held;
+        // dt:plan.prefill.fit
         if (!own_short && keeps_cache && keeps_dense && fits_held && armed.turn_fits) {
             slots = n;
             break;
@@ -3178,6 +3196,7 @@ Allocation plan_prefill(Planning & s, AllocationInputs & ai) {
         return alloc;
     }
     const Allocation alloc = allocate(hw, s.host_model, ai, s.pol);
+    // dt:plan.prefill
     if (s.req.is_pinned("prefill-device")) {
         s.note("prefill-device", "off", Source::Operator, "Prompts run on the CPU, as you set it.",
                "set by the caller; the planner leaves it alone");
@@ -3207,6 +3226,7 @@ Allocation plan_prefill(Planning & s, AllocationInputs & ai) {
     const std::string width = u64s(hw.wide_batch) + " tokens wide";
     const std::string conflict = prefill_conflict(p.config);
 
+    // dt:plan.prefill.survey
     if (v.n_accel == 0) {
         // The same three answers as the offload line: only one of them is about this machine.
         const bool build_blind = hw.backends_looked && hw.backends_linked <= 1 && hw.backends_loaded == 0;
@@ -3256,6 +3276,7 @@ Allocation plan_prefill(Planning & s, AllocationInputs & ai) {
 void settle_dense_pin(Planning & s, bool pin_candidate, const Allocation & alloc, const AllocationInputs & ai) {
     if (!pin_candidate) return;
     const uint64_t dense_pending = s.p.dense_pending_bytes;
+    // dt:plan.dense.settle
     if (alloc.dense_pinned) {
         s.note("dense-weights", dense_weights_mode_name(DenseWeightsMode::Pinned), Source::Derived,
                "Dense weights (" + size_brief(dense_pending) + ") are pinned, so memory pressure cannot take them.",
@@ -3320,6 +3341,7 @@ void settle_mapped_tables(Planning & s, const Allocation & alloc) {
     const bool ranked_resident = emb.lane == Lane::Resident || emb.lane == Lane::Pinned;
     const bool charged = s.p.dense_pending_bytes >= bytes;
     const bool fits_uncharged = alloc.ledger.holdable_cap >= alloc.ledger.held + bytes;
+    // dt:plan.tables
     if (ranked_resident && (charged || fits_uncharged)) return;
     c.moe.dense_mapped = s.model.embedding_tensors;
     if (ranked_resident) {
@@ -3350,6 +3372,7 @@ void settle_cache_lock(Planning & s, const Allocation & alloc) {
     const bool cache_by_caller = s.req.is_pinned("cache-mb");
     const bool attempt = alloc.cache_locked_bytes > 0 || alloc.cache_lock_unverified;
     if (!s.req.is_pinned("cache-pin-fit") && !cache_by_caller) c.moe.cache_pin_fit = attempt;
+    // dt:plan.cache-lock
     if (!s.req.is_pinned("cache-pin") && c.moe.cache_pin && !attempt && !cache_by_caller) {
         c.moe.cache_pin = false;
         s.note("cache-pin", "off", Source::Derived, "The cache is not locked: not even one token's experts could be.",
@@ -3490,6 +3513,7 @@ bool size_cache(Planning & s, const Allocation & alloc) {
     const uint64_t budget = alloc.cache_bytes;
     p.cache_budget_bytes = budget;
 
+    // dt:plan.cache
     if (cycle == 0) {
         s.decline("the model's expert shapes could not be read, so the cache floor could not be derived");
         price_unstreamed(p.allocation);
@@ -3649,6 +3673,7 @@ void choose_io_lanes(Planning & s) {
     MoeStreamConfig & moe = s.p.config.moe;
     if (s.pinned("io-threads", u64s((uint64_t) moe.io_threads))) return;
     const uint32_t want = s.hw.storage.best_lanes((uint32_t) s.model.expert_slice_bytes);
+    // dt:plan.io-lanes
     if (want > 0) {
         const int lanes = std::min<int>((int) want, MoeStreamConfig::io_threads_max);
         moe.io_threads = std::max(1, lanes);
@@ -3666,6 +3691,7 @@ void choose_io_lanes(Planning & s) {
 void choose_direct_io(Planning & s) {
     MoeStreamConfig & moe = s.p.config.moe;
     if (s.pinned("o-direct", moe.o_direct ? "on" : "off")) return;
+    // dt:plan.direct-io
     if (s.hw.storage.direct_ok == Tri::Yes) {
         moe.o_direct = true;
         s.note("o-direct", "on", Source::Measured, "Reads bypass the page cache: checked correct on this storage.",
@@ -3697,6 +3723,7 @@ void choose_release_mmap(Planning & s) {
                             moe.dense_mapped.empty();
     // Safety is reported before the probe, because it is the stronger constraint: on a shape that
     // keeps a live pointer into the mapping, measuring the storage would change nothing.
+    // dt:plan.release-mmap
     if (!safe_shape) {
         s.note("release-mmap", "off", Source::Derived, "The model's file mapping stays: this run still reads from it.",
                "this run keeps a live pointer into the mapping (a tied head, a draft block, a dense "
@@ -3733,6 +3760,7 @@ void disarm_lossy(Planning & s) {
     MoeStreamConfig & moe = s.p.config.moe;
     const bool lossy_pinned =
         s.req.is_pinned("drop-cold-experts") || s.req.is_pinned("expert-substitute") || s.req.is_pinned("route-ahead");
+    // dt:plan.lossy
     if (lossy_pinned) {
         s.note("lossy", "as set", Source::Operator, "A setting that changes the output is on, as you set it.",
                "the caller armed a lossy policy explicitly");
@@ -3773,6 +3801,7 @@ void choose_gate_mirror(Planning & s) {
     if (moe.route_ahead <= 0) return; // nothing reads it: no decision to explain
     if (s.pinned("gate-mirror", gate_mirror_name(moe.gate_mirror))) return;
     const double f = s.hw.gate_gemv_f32_us, q = s.hw.gate_gemv_int8_us;
+    // dt:plan.gate-mirror
     if (f > 0.0 && q > 0.0) {
         const bool mirror = q <= f;
         moe.gate_mirror = mirror ? GateMirror::On : GateMirror::Off;
@@ -3814,6 +3843,7 @@ bool leave_out_failed_devices(Planning & s) {
     for (const ComputeDevice & d : s.hw.devices)
         if (!d.is_cpu && d.usable == Tri::No)
             broken += (broken.empty() ? "" : "; ") + d.name + ": " + d.unusable_reason;
+    // dt:plan.devices
     if (!broken.empty()) {
         bool dropped = false;
         const std::vector<std::string> alive = surviving_devices(s.hw, c.device_list, &dropped);
@@ -3925,6 +3955,7 @@ std::string margin_pct(const Planning & s) {
 // the prefill on a 2.7k-token prompt and 4.5x on a 20.7k one, and bought no decode (#645). Read
 // from the guard itself, so the plan names exactly the runs the session takes the offload from.
 bool overlap_keeps_prompts_on_host(const RunConfig & c) {
+    // dt:plan.overlap.prompts
     if (!c.moe.overlap || offloads_wide_matmuls(c)) return false;
     MoeStreamConfig serial = c.moe;
     serial.overlap = false;
@@ -3968,6 +3999,7 @@ void note_overlap(Planning & s) {
         }
         return;
     }
+    // dt:plan.overlap
     if (c.moe.device_cache_mb > 0) return; // the device tier decided it, and said so
     // A front-end's own default overlap (the server arms it wherever the hook is available), with
     // layers on a device and no cache there: off, so the prompts reach the device. A caller who asked
@@ -4122,6 +4154,7 @@ void apply_measured_threads(Planning & s, int would_have) {
 // The trial of the count, armed when the front-end keeps its verdict and nothing measured it yet.
 void arm_thread_trial(Planning & s) {
     RunConfig & c = s.p.config;
+    // dt:plan.threads.trial
     if (!s.req.measure_knobs || s.req.is_pinned("trial-threads") || !c.trial.threads.empty()) return;
     std::vector<int> skipped;
     const std::vector<int> cand = thread_candidates(s.hw, c.n_threads, s.pol.min_backend_win, skipped);
@@ -4171,6 +4204,7 @@ void choose_threads(Planning & s) {
     const HardwareProfile & hw = s.hw;
     RunConfig & c = s.p.config;
     if (s.req.is_pinned("threads")) return;
+    // dt:plan.threads
     if (s.model.knobs.threads > 0) {
         apply_measured_threads(s, hw.best_threads > 0 ? (int) hw.best_threads : c.n_threads);
         return;
@@ -4306,6 +4340,7 @@ Plan plan_once(const RunConfig & base,
     if (s.home.priced) {
         // Funded: the plan is made again with those layers on the host, so every line below - the
         // regime, the ledger, the cache - is the one of the placement the run will load.
+        // dt:plan.layers-home.funded
         if (alloc.layers_home) {
             Planning::LayersHome home = s.home;
             home.decision.value = u64s(home.layers) + " home";
@@ -4380,6 +4415,7 @@ Plan plan_from(const RunConfig & base,
     if (p.regime != Regime::ExpertsStream || !p.config.moe.enabled || p.streaming_declined || !model.is_moe) return p;
     // What the streaming plan may hold of this pool: its ledger's ceiling, the margin already off it.
     const uint64_t room = p.allocation.ledger.holdable_cap;
+    // dt:plan.held-whole
     if (!devices_share_host_memory(hw) || projected.fitted || room == 0) return p;
     if (req.is_pinned("moe-stream") || req.is_pinned("cache-mb")) return p;
     Plan whole = plan_once(base, hw, model, projected, req, pol, home_from, room);
@@ -4417,6 +4453,7 @@ Plan plan_run(const RunConfig & base,
               const PlannerPolicy & pol) {
     // A model with no routing record of its own is priced on the prior curve, so the cache is ranked
     // and credited by one path whichever it has (bmoe/routing.h).
+    // dt:plan.prior-curve
     if (!model.hit_curve.credited() && model.is_moe && model.expert_bytes > 0 && model.token_cycle_bytes > 0) {
         ModelProfile with_prior = model;
         with_prior.hit_curve = prior_hit_curve(model.expert_bytes, model.token_cycle_bytes);
@@ -4425,6 +4462,7 @@ Plan plan_run(const RunConfig & base,
     }
     // Which backend drives each card, before anything is weighed on the card: the rules below then
     // see one device per card, the one that will run (bmoe/backend_choice.h).
+    // dt:plan.backends
     if (req.is_pinned("device-list") || req.is_pinned("devices"))
         return plan_from(base, hw, model, projected, req, pol, nullptr);
     const BackendChoice choice = choose_backends(hw, (double) pol.min_backend_win);

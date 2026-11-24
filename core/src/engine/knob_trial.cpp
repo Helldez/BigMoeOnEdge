@@ -80,6 +80,7 @@ void KnobTrial::close_window() {
     step_lo_ = step_hi_ = 0.0;
     lookups_ = hits_ = 0;
 
+    // dt:req.trial.window
     if (phase_ == Phase::Settle) {
         ++settle_windows_;
         // Without a cache there is nothing to settle; otherwise two windows in a row that hit alike.

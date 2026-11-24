@@ -125,6 +125,7 @@ int64_t ContextCheckpoints::restore(const CheckpointContexts & c, int64_t n) {
         if (k.n_tokens > n) continue;
         const llama_pos pos_eval = pos_of(k.n_tokens);
         const llama_pos thold = useful_below(pos_eval);
+        // dt:req.checkpoint.restore
         if (k.pos_max >= pos_eval || !(k.pos_min < thold || k.pos_min == 0)) continue;
         if (!k.load_tgt(c.tgt, k_seq, k_partial) || !k.load_dft(c.dft, k_seq, k_partial)) break;
         if (c.spec) common_speculative_set_state(c.spec, k_seq, k.data_spec);

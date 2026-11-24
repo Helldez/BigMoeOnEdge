@@ -529,6 +529,7 @@ struct Session::Impl {
         n = std::min(n, kv.size());
         if (const detail::MediaSpan * m = kv.media_at(n); m && m->begin < n) n = m->begin;
         size_t kept = n;
+        // dt:req.reuse.cut
         if (!checkpoints.memory_covers(checkpoint_contexts(), (int64_t) n) ||
             !llama_memory_seq_rm(llama_get_memory(ctx.get()), 0, kv.pos_at(n), -1)) {
             kept = (size_t) checkpoints.restore(checkpoint_contexts(), (int64_t) n);
@@ -815,6 +816,7 @@ PplResult Session::perplexity(const PplRequest & req) {
         return true;
     };
 
+    // dt:req.ppl
     if (req.step) {
         // The decode regime, token by token (see PplRequest::step). The unscored prefix goes in as
         // one prefill batch — labelled as such, so a decode-only policy stays out of it exactly as
@@ -936,6 +938,7 @@ DecideResult Session::decide(const DecideRequest & req) {
     deps.prefill_min_tokens = im.cfg.prefill.min_tokens;
     detail::LlamaDecideBackend backend(deps);
 
+    // dt:req.decide.prefix-cache
     if (!im.decide_cache_chosen) {
         // No kept state with a prefill device: llama.cpp would save and restore it through KV views
         // that still point where the state was before PrefillPath moved it (validation refuses `on`).
@@ -1050,6 +1053,7 @@ bool Session::Impl::load_model(Opening & o, llama_model ** reference) {
     // Unless told otherwise that is decided by what was placed: a layer on a device means the
     // devices are wanted, none means they are not. So a build that carries a GPU backend runs a
     // host-only plan exactly as a build without it does, instead of slower and rounded differently.
+    // dt:open.load.cpu-only
     const bool cpu_only =
         cfg.device_use == DeviceUse::CpuOnly || (cfg.device_use == DeviceUse::Auto && cfg.n_gpu_layers == 0);
     ggml_backend_dev_t no_devices[1] = {nullptr};
@@ -1066,9 +1070,11 @@ bool Session::Impl::load_model(Opening & o, llama_model ** reference) {
     // A table the plan leaves mapped (dense_mapped) is priced as rows faulted in as the graph asks,
     // and llama.cpp's lazy mode would prefetch the whole of it at load into pages the plan did not
     // charge: off for that case too.
+    // dt:open.load.lazy
     mparams.lazy_mode =
         cfg.moe.row_stream || !cfg.moe.dense_mapped.empty() ? LLAMA_LAZY_MODE_OFF : LLAMA_LAZY_MODE_AUTO;
     std::vector<llama_model_tensor_buft_override> buft_overrides;
+    // dt:open.load.overrides
     if (!cfg.buft_overrides.empty()) {
         buft_overrides.reserve(cfg.buft_overrides.size() + 1);
         for (const std::string & pat : cfg.buft_overrides)
@@ -1088,6 +1094,7 @@ bool Session::Impl::load_model(Opening & o, llama_model ** reference) {
     // A device that is missing or does not open leaves the whole run on the CPU, exactly as without
     // the flag: the prefill is slower, the output is the CPU's, and the load does not fail over it.
     std::vector<ggml_backend_dev_t> auto_devices;
+    // dt:open.load.prefill-device
     if (cfg.prefill.enabled()) {
         std::string derr;
         if (ggml_backend_dev_t dev = detail::PrefillPath::find_device(cfg.prefill.device, derr)) {
@@ -1101,6 +1108,7 @@ bool Session::Impl::load_model(Opening & o, llama_model ** reference) {
             this->cfg.prefill.device.clear();
         }
     }
+    // dt:open.load.drop-unmappable
     if (!prefill && !cpu_only) {
         if (const ggml_backend_dev_t * devs = detail::PrefillPath::devices_without_prefill(auto_devices)) {
             mparams.devices = const_cast<ggml_backend_dev_t *>(devs);
@@ -1109,6 +1117,7 @@ bool Session::Impl::load_model(Opening & o, llama_model ** reference) {
     // The backends the plan chose, one per card: a name this build does not have is a plan for
     // another machine.
     std::vector<ggml_backend_dev_t> listed_devices;
+    // dt:open.load.device-list
     if (!prefill && !cpu_only && !cfg.device_list.empty()) {
         for (const std::string & n : cfg.device_list) {
             ggml_backend_dev_t dev = ggml_backend_dev_by_name(n.c_str());
@@ -1151,6 +1160,7 @@ bool Session::Impl::load_model(Opening & o, llama_model ** reference) {
     // call below. No llama.cpp patch, no per-arch constants.
     llama_model_kv_override kv_overrides[2];
     std::memset(kv_overrides, 0, sizeof(kv_overrides)); // second entry stays the key[0]==0 terminator
+    // dt:open.load.top-k
     if (cfg.n_expert_used > 0) {
         const GgufModelInfo & info = o.gguf();
         if (!info.ok) return o.fail("cannot read the model file's metadata: " + cfg.model_path);
@@ -1177,6 +1187,7 @@ bool Session::Impl::load_model(Opening & o, llama_model ** reference) {
         return true;
     }
     model.reset(m);
+    // dt:open.load.mtp-head
     if (cfg.spec.is_mtp() && !cfg.spec.mtp_head.empty()) {
         // The head whole and resident, where the plan put it: on the devices the target's layers
         // are on (its bytes taken from the device expert cache) or on the host. One layer the
@@ -1292,6 +1303,7 @@ bool Session::Impl::read_model(Opening & o) {
         n_expert_used = mi.ok ? mi.n_expert_used : 0;
     }
 
+    // dt:open.read.layout
     if (cfg.moe.enabled) {
         // Which tensors are the routed experts, read off the file's shapes. A dense model, or a MoE
         // laid out in a way this engine has not proved byte-identical, is refused here with the reason
@@ -1307,6 +1319,7 @@ bool Session::Impl::read_model(Opening & o) {
     }
 
     // Chat templates are model-bound: initialise once here, apply per prompt in generate().
+    // dt:open.read.chat
     if (cfg.chatml) {
         try {
             chat_tmpls = common_chat_templates_init(m, "");
@@ -1322,6 +1335,7 @@ bool Session::Impl::read_model(Opening & o) {
 
     // The projector beside the model: a session opened with one reads images. A projector that
     // does not match the model is refused here, with the reason, not at the first image.
+    // dt:open.read.vision
     if (!cfg.mmproj.empty()) {
         std::string merr;
         // On the devices by the rule the model's own placement follows (load_model): a layer placed
@@ -1347,6 +1361,7 @@ bool Session::Impl::read_model(Opening & o) {
 // without --auto gets the faster path rather than one read off the compiler's target. A tie goes to
 // the mirror, because the timing runs alone and a decode beside it only makes bytes dearer.
 bool Session::Impl::resolve_gate_mirror(GateMirror m, Opening & o) {
+    // dt:open.hook.gate-mirror.auto
     if (m != GateMirror::Auto) return m == GateMirror::On;
     // Every layer that carries a gate, so the working set is the run's own gate set (see measure()).
     const uint32_t gated = o.layout.layers.empty() ? (uint32_t) n_layer : (uint32_t) o.layout.layers.size();
@@ -1376,8 +1391,10 @@ bool Session::Impl::build_hook(Opening & o) {
     hook->set_expert_substitute(cfg.moe.substitute_lambda);
     hook->set_predict_log(cfg.moe.predict_log);
     hook->set_predict_prefetch(cfg.moe.predict_prefetch, cfg.moe.predict_spec_max);
+    // dt:open.hook.gate-mirror
     if (cfg.moe.route_ahead > 0) hook->set_gate_mirror(resolve_gate_mirror(cfg.moe.gate_mirror, o));
     hook->set_route_ahead(cfg.moe.route_ahead);
+    // dt:open.hook.decide-probe
     if (cfg.decide.enabled && !cfg.decide.probe_path.empty()) {
         decide_probe = std::make_unique<DecideProbe>(cfg.model_path, n_layer, o.gguf().n_expert,
                                                      llama_model_n_embd(model.get()), cfg.decide.probe_path);
@@ -1418,6 +1435,7 @@ bool Session::Impl::create_contexts(Opening & o) {
     // the copy of the experts into a device's host memory.
     // The copy captures on the context the device cache then makes again, which needs no callback.
     const bool copy_capture = !cfg.moe.expert_host_buffer.empty() && !device_cache_armed;
+    // dt:open.ctx.callback
     if (cfg.moe.enabled || o.compute_trace || prefill || records_unstreamed(cfg) || copy_capture) {
         cparams.cb_eval = &RouterHook::c_eval;
         cparams.cb_eval_user_data = hook.get();
@@ -1426,6 +1444,7 @@ bool Session::Impl::create_contexts(Opening & o) {
     // ops of CPU-resident weights to the device on its own (GPU backends do for wide batches).
     // The rule, and the runs that showed why, is offloads_wide_matmuls (config.h): a front-end says
     // where a prompt runs by the same function. The prefill device is this session's own, armed.
+    // dt:open.ctx.op-offload
     if (!offloads_wide_matmuls(cfg.moe, cfg.n_gpu_layers, prefill != nullptr)) cparams.op_offload = false;
     // Logit rows are reserved for as many outputs as a graph may return, and left at llama.cpp's
     // default that is the whole ubatch. A row is the whole vocabulary, and the reservation goes where
@@ -1537,6 +1556,7 @@ bool Session::Impl::create_contexts(Opening & o) {
     // The MTP draft context: same model, same eval callback, but ctx_type = MTP so llama.cpp builds
     // the nextn graph. It keeps its own (single-position) KV, hence n_rs_seq = 0 — nothing is ever
     // rolled back on the draft side, the target is the one that speculates.
+    // dt:open.ctx.mtp
     if (cfg.spec.is_mtp()) {
         llama_context_params dparams = cparams;
         dparams.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
@@ -1580,6 +1600,7 @@ bool Session::Impl::create_contexts(Opening & o) {
 void Session::Impl::build_sampler(const SessionConfig & c) {
     static_assert(SamplingConfig{}.seed == LLAMA_DEFAULT_SEED,
                   "SamplingConfig::seed default must mirror LLAMA_DEFAULT_SEED");
+    // dt:open.sampler
     if (c.sampling.temp > 0.0f) {
         smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
         llama_sampler_chain_add(smpl, llama_sampler_init_top_k(c.sampling.top_k));
@@ -1597,6 +1618,7 @@ void Session::Impl::install_abort_callback() {
         ctx.get(),
         [](void * ud) -> bool {
             auto * p = static_cast<Impl *>(ud);
+            // dt:req.abort
             if (p->cancelled()) {
                 // The decode this aborts is about to be logged by llama.cpp as a failure; it is a
                 // request honoured. Opened once per cancelled call (the callback is asked many
@@ -1636,6 +1658,7 @@ bool Session::Impl::init_speculation(Opening & o) {
     // Built before the capture warm-up on purpose: the driver's constructor turns on nextn
     // extraction for both contexts, which is what the target graph looks like for the rest of the
     // session. Capturing the graph it actually runs beats capturing the one it briefly had.
+    // dt:open.spec
     if (cfg.spec.is_mtp() && !init_mtp_driver(o)) return false;
 
     // The wide verify batch belongs to the loop, not to a source: whoever drafted, the target is
@@ -1696,6 +1719,7 @@ bool Session::Impl::bind_expert_offsets(Opening & o,
     int n_bound = 0;
     for (size_t il = 0; il < layers.size(); ++il) {
         LayerExperts & L = layers[il];
+        // dt:open.stream.bind
         if (!L.bound) continue;
         // Half a layer on a device. The planner never places one (a pattern that moves part of a
         // layer's FFN brings all its experts to the host), so this is a placement given by hand, and
@@ -1743,6 +1767,7 @@ void Session::Impl::hand_over_dense_weights(const SessionConfig & cfg,
     // The subset the graph only row-gathers, when the run asked for the row policy. Their
     // membership is the hook's verdict on what the graph did, and this is a filter over the
     // dense list rather than a second list, so a table cannot be both resident and streamed.
+    // dt:open.stream.rows
     const std::unordered_set<std::string> row_names =
         cfg.moe.row_stream ? hook->row_gathered_weights() : std::unordered_set<std::string>();
     // Walk the captured OBJECTS, not the name map: a tied output head gives two tensors
@@ -1825,6 +1850,7 @@ void Session::Impl::hand_over_dense_weights(const SessionConfig & cfg,
 void Session::Impl::release_mapping(const SessionConfig & cfg,
                                     const GgufOffsets & offs,
                                     const std::vector<std::string> & unaccounted) {
+    // dt:open.stream.release
     if (!cfg.moe.release_mmap) return;
     std::vector<const void *> weight_addrs;
     weight_addrs.reserve(hook->captured_weight_objects().size());
@@ -1924,6 +1950,7 @@ bool Session::Impl::arm_unstreamed_record(Opening & o) {
 // which no longer runs the experts.
 bool Session::Impl::arm_device_cache(Opening & o) {
     const SessionConfig & cfg = o.cfg;
+    // dt:open.device-cache
     if (cfg.moe.overlap)
         return o.fail("{device-cache-mb} does not combine with {overlap}: the cache computes the experts on the "
                       "device, and {overlap} waits for them on the CPU. Turn one of them off.");
@@ -2058,6 +2085,7 @@ bool Session::Impl::stage_experts_in_host_buffer(Opening & o) {
         if (contained > 0 && (r == 0 || contained < r)) r = contained;
         return r;
     }();
+    // dt:open.host-buffer.room
     if (room > 0 && (uint64_t) total > room) {
         log_printf(LogLevel::Warn,
                    "expert host buffer: %.0f MiB is more than the %.0f MiB the system can give; the cache uploads "
@@ -2068,6 +2096,7 @@ bool Session::Impl::stage_experts_in_host_buffer(Opening & o) {
     }
     const bool fits = room > 0;
     // Both entry points or neither: memory pinned that could not be unpinned would stay pinned once freed.
+    // dt:open.host-buffer.register
     if (fits && do_register && do_unregister && pins()) {
         const size_t page = pio::vm_page();
         const size_t size = (total + page - 1) / page * page;
@@ -2167,6 +2196,7 @@ bool Session::Impl::bind_streaming(Opening & o) {
     // them, and the cache brake then halved it twice (a 30 GiB box with swap, Qwen3.8-Flash-Next:
     // 23 GB of one shard and 21 GB of the other cached at load). Only where the dense set is held
     // apart from the mapping; under `mmap` the page cache IS the dense set.
+    // dt:open.stream.drop-page-cache
     if (cfg.moe.dense_weights == DenseWeightsMode::Anonymous || cfg.moe.dense_weights == DenseWeightsMode::Pinned) {
         for (const std::string & path : offs.shard_paths)
             pio::drop_file_cache(path.c_str());
@@ -2182,6 +2212,7 @@ bool Session::Impl::bind_streaming(Opening & o) {
         source.set_io_trace(true);
     }
 
+    // dt:open.stream.overlap-hook
     if (cfg.moe.overlap && !source.enable_overlap_hook())
         return o.fail("{overlap} needs the expert-ready hook of the bmoe llama.cpp fork, and the CPU backend "
                       "loaded here does not expose it: turn {overlap} off (docs/seam.md)");
@@ -2196,6 +2227,7 @@ bool Session::Impl::open_prefill_device(Opening & o) {
     const SessionConfig & cfg = o.cfg;
     std::string perr;
     if (prefill->open(ctx.get(), vocab, *hook, cfg.prefill, cfg.moe, o.n_layer_streamed, perr)) return true;
+    // dt:open.prefill.open
     if (!cfg.prefill.best_effort) return o.fail(perr);
     hand_back_prefill(perr);
     return true;
@@ -2297,6 +2329,7 @@ bool Session::Impl::confirm_prefill_device(Opening & o) {
         llama_batch_free(b);
         clear_memory(c);
     }
+    // dt:open.prefill.confirm
     if (!unchecked.empty()) {
         log_printf(LogLevel::Warn, "prefill-device %s not confirmed: %s; kept as set", cfg.prefill.device.c_str(),
                    unchecked.c_str());
@@ -2428,6 +2461,7 @@ void Session::Impl::arm_trials() {
     // The requests are recorded against the narrow width on every load whose plan has the width's
     // trade, a side timed or not (note_width_turn).
     if (t.width_narrow > 0) trials.result.width_narrow = t.width_narrow;
+    // dt:open.trials
     if (!t.enabled()) return;
     if (!t.threads.empty()) {
         trials.threads.push_back(cfg.n_threads);
@@ -2499,6 +2533,7 @@ bool Session::Impl::apply_trial_arm(int arm) {
     }
     if (trials.stage == stage_overlap) {
         const bool on = trials.overlap[(size_t) arm] != 0;
+        // dt:req.trial.overlap-flip
         if (source.overlap() == on || source.set_overlap(on)) return true;
         log_printf(LogLevel::Warn, "knob trial: overlap could not be switched %s; it is not measured",
                    on ? "on" : "off");
@@ -2518,6 +2553,7 @@ void Session::Impl::snapshot_trial_counters() {
 
 void Session::Impl::resume_trial() {
     const bool costing = trials.cost_probe && !trials.cost_probe->done();
+    // dt:req.trial.resume
     if (trials.stage == stage_done && !costing) return;
     snapshot_trial_counters(); // the prompt's lookups are not the first window's
     if (trials.stage == stage_done) return;
@@ -2840,11 +2876,13 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     const auto t0 = clock_t_::now();
     AnswerCheck check;
     std::unique_ptr<Session> self = open_placed(cfg, error, route_trace, compute_trace, io_trace, &check);
+    // dt:open.entry
     if (!check.ran) {
         // A plan that moved the model onto a device gives the configuration its other part
         // (RunConfig::fallback), whether or not the load compares answers there: a device the plan
         // already confirmed can still refuse the allocation (a driver's own ceiling, memory another
         // program holds).
+        // dt:open.unopened
         if (self || !cfg.fallback || cfg.device_split.empty()) return self;
         const std::string placed_on = device.empty() ? cfg.device_split.front().first : device;
         // The model could not be opened on the device at all, most likely for memory: the plan's other
@@ -2869,6 +2907,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         self->impl_->load_seconds += first_s;
         return self;
     }
+    // dt:open.verdict
     if (check.result.verdict == Verdict::Confirmed && !check.cores_faster) {
         if (self) {
             self->impl_->trials.result.set_device_answer(device, 1);
@@ -2885,6 +2924,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     const double first_s = secs(t0, clock_t_::now());
     // The plan's own other part where it has one (SessionConfig::fallback), else this same
     // configuration on the cores.
+    // dt:open.reopen
     self = open_placed(cfg.fallback ? *cfg.fallback : detail::on_cores(cfg), error, route_trace, compute_trace,
                        io_trace, nullptr);
     if (!self) {
@@ -2939,6 +2979,7 @@ std::unique_ptr<Session> Session::open_placed(const SessionConfig & cfg,
     if (!im.read_model(o)) return nullptr;
     if (!im.build_hook(o)) return nullptr;
     if (!im.create_contexts(o)) return nullptr;
+    // dt:open.answer-check
     if (check && !cfg.trial.answer_device.empty()) {
         check->ran = true;
         check->result = im.compare_device_answer(o);
@@ -2956,8 +2997,11 @@ std::unique_ptr<Session> Session::open_placed(const SessionConfig & cfg,
     im.build_sampler(cfg);
     im.install_abort_callback();
     if (!im.init_speculation(o)) return nullptr;
+    // dt:open.stream
     if (cfg.moe.enabled && !im.bind_streaming(o)) return nullptr;
+    // dt:open.unstreamed-record
     if (records_unstreamed(cfg) && !im.arm_unstreamed_record(o)) return nullptr;
+    // dt:open.host-buffer
     if (!cfg.moe.expert_host_buffer.empty() && !im.stage_experts_in_host_buffer(o)) return nullptr;
     if (cfg.moe.device_cache_mb > 0 && !im.arm_device_cache(o)) return nullptr;
     if (im.prefill && !im.open_prefill_device(o)) return nullptr;
@@ -2968,6 +3012,7 @@ std::unique_ptr<Session> Session::open_placed(const SessionConfig & cfg,
     // kept; refused where its check on this model refused it; or not kept, without a verdict on the
     // device, where it would not open (an allocation another program's memory can fail for a moment):
     // that counts as one more load that did not keep it, not as a refusal.
+    // dt:open.prefill-record
     if (!cfg.prefill.device.empty())
         im.trials.result.set_prefill_word({cfg.prefill.device, im.prefill ? 1 : im.prefill_check_refused ? -1 : 0, 0});
     im.describe_run(o);
@@ -2999,6 +3044,7 @@ void Session::Impl::begin_generate(const GenerateRequest & req, IMetricsSink * s
 
     // clear_kv = "new chat": drop the KV and the engine-held conversation. Otherwise this turn
     // continues the conversation, reusing the KV prefix already decoded from earlier turns.
+    // dt:req.new-chat
     if (req.clear_kv) {
         clear_memory(ctx.get());
         // The draft context tracks the target's positions and must be dropped with it, or the first
@@ -3135,6 +3181,7 @@ struct Session::Impl::Turn {
     // penalties look back over the prompt too, as llama.cpp's server feeds them. False for a request
     // the vocabulary cannot honour.
     bool arm_sampler() {
+        // dt:req.sampler
         if (!req.sampling) return true;
         const RequestSampling & r = *req.sampling;
         if (im.cfg.spec.enabled()) {
@@ -3240,6 +3287,7 @@ struct Session::Impl::Turn {
                         !chat_on
                             ? "a grammar needs chat turns: open the session with {chatml} on"
                             : "a grammar cannot be combined with tools or a response format, which build their own");
+        // dt:req.render
         if (!chat_on) {
             prompt = req.prompt;
             return true;
@@ -3276,6 +3324,7 @@ struct Session::Impl::Turn {
             message_delimiters.tokenize(im.vocab);
             // The request's own grammar stands for the template's: whole, from the answer's first
             // token, which is where the generation prompt ends.
+            // dt:req.render.grammar
             if (!req.grammar.empty()) {
                 cp.grammar = req.grammar;
                 cp.grammar_lazy = false;
@@ -3314,6 +3363,7 @@ struct Session::Impl::Turn {
 
     // Tokenize the prompt and settle the answer's budget against the room the context has left.
     bool tokenize_prompt() {
+        // dt:req.tokenize
         if (!images.empty()) {
             // Text and images together: the projector's tokenizer splits the prompt at its markers
             // and sizes each image in tokens and positions. The text-only path below stays as it
@@ -3362,6 +3412,7 @@ struct Session::Impl::Turn {
                             " tokens): start a new conversation, or load the model with a larger {ctx-size}");
         }
         // No ceiling at all (0) is the context's room: the budget then grows with the context.
+        // dt:req.budget
         n_predict = req.n_predict > 0 ? std::min(req.n_predict, ctx_room) : ctx_room;
         user_starts.clear();
         if (chat_on && !message_delimiters.delimiters.empty()) {
@@ -3418,6 +3469,7 @@ struct Session::Impl::Turn {
     // kv_tokens empty, so n_common = 0 and this reduces to a full prefill — the one-shot path the
     // byte-identity gates exercise stays unchanged.
     void reuse_kv_prefix() {
+        // dt:req.reuse
         if (!chat_on || im.kv.empty()) return;
         const size_t max_common = tokens.size() > 0 ? tokens.size() - 1 : 0;
         n_common = im.kv.common_prefix(tk.stream, max_common);
@@ -3514,6 +3566,7 @@ struct Session::Impl::Turn {
         spec_on = im.cfg.spec.enabled();
         mtp_on = im.mtp != nullptr;
         if (tk.stream.has_media()) im.media_in_conversation = true;
+        // dt:req.media-spec-off
         if (im.media_in_conversation && (spec_on || mtp_on)) {
             if (!im.media_spec_logged) {
                 im.media_spec_logged = true;
@@ -3554,20 +3607,24 @@ struct Session::Impl::Turn {
             // A text run ends where the next image begins; an image goes in whole, as its own graphs.
             const int run_end =
                 next_media < tk.stream.media.size() ? (int) tk.stream.media[next_media].begin : n_prompt;
+            // dt:req.prefill.chunk
             int chunk = span ? (int) span->n_tokens : std::min(pf_step, run_end - i);
             // A text piece stops where a checkpoint is due (a user message's start, the prompt's last
             // tokens), and the checkpoint is taken at the start of the piece, before it is decoded.
             if (chat_on && !span) chunk = (int) (im.checkpoints.next_stop(stops, i, chunk) - i);
+            // dt:req.checkpoint.create
             if (chat_on && i > (int) n_common && im.checkpoints.wanted_at(stops, i, chunk))
                 im.checkpoints.create(im.checkpoint_contexts(), i, turn,
                                       !user_starts.empty() && (size_t) i == user_starts.front());
             if (im.prefill) {
+                // dt:req.prefill.place
                 const bool on_dev = im.place_prefill(chunk >= im.cfg.prefill.min_tokens);
                 if (on_dev) prefill_device_tokens += chunk;
             }
             trace_begin(i, chunk, /*phase*/ 0);
             int rc;
             llama_batch pf{};
+            // dt:req.prefill.batch
             if (span) {
                 // The image: encoded by the projector, decoded as embeddings at the positions the
                 // projector gives it, through the same placed decode as a text batch.
@@ -3591,6 +3648,7 @@ struct Session::Impl::Turn {
             }
             i += chunk;
             if (rc != 0) {
+                // dt:req.prefill.fail
                 if (im.cancelled()) {
                     rollback_turn();
                     res.ok = true;
@@ -3719,6 +3777,7 @@ struct Session::Impl::Turn {
             if (req.n_probs > 0) tok_probs = position_logprobs(lg, im.n_vocab, im.vocab, t, req.n_probs);
             return t;
         }
+        // dt:req.grammar
         if (!grammar.allows(t)) {
             cand.resize((size_t) im.n_vocab);
             for (llama_token v = 0; v < im.n_vocab; ++v)
@@ -3754,6 +3813,7 @@ struct Session::Impl::Turn {
     // goes in BEFORE drafting, so no source is ever asked for tokens with nowhere to go.
     bool draft(Step & s) {
         const int room = n_predict - n_gen - 1; // tokens still wanted after `tok` itself
+        // dt:req.draft
         if (!spec_on || room <= 0) return true;
         const auto d0 = clock_t_::now();
         const uint64_t db0 = moe.enabled ? im.source.stats().read_bytes : 0;
@@ -3803,6 +3863,7 @@ struct Session::Impl::Turn {
     //
     // Returns llama_decode's result.
     int verify_decode(Step & s) {
+        // dt:req.verify
         s.wide = spec_on && s.n_draft > 0;
         llama_batch step;
         if (spec_on) {
@@ -3851,6 +3912,7 @@ struct Session::Impl::Turn {
         if (req.n_probs > 0) confirmed_probs.push_back(tok_probs);
         for (int i = 0; i < s.n_draft; ++i) {
             const llama_token want = argmax(llama_get_logits_ith(ctx, i), im.n_vocab);
+            // dt:req.accept
             if (want != im.draft_buf[i]) break;
             // A draft the grammar refuses ends the group here, and the next token is sampled from
             // this same row under the grammar, exactly as it would have been without speculation.
@@ -3946,6 +4008,7 @@ struct Session::Impl::Turn {
             gen += delta;
             // A stop ends the answer where it begins; text that may yet become one is not shown.
             size_t shown = gen.size();
+            // dt:req.stop-text
             if (!req.stop_text.empty()) {
                 // Only the answer is searched (AnswerStart): the parse that splits the reasoning off says
                 // where it begins, and is asked until it has begun.
@@ -4020,6 +4083,7 @@ struct Session::Impl::Turn {
         // Neither the stall test nor the reference reads such a token.
         if (im.trials.stage < im.stage_rate && im.trials.cur && im.trials.cur->arm() != 0) return;
         const double ref = im.brake.reference();
+        // dt:req.brake
         if (!im.brake.stalled(last_compute_s)) return;
         const double lost = im.source.cache_lost_frac(k_brake_sample);
         if (lost <= 0.0) return; // slow, but not because memory went: the cores, the clock, a neighbour
@@ -4057,9 +4121,11 @@ struct Session::Impl::Turn {
         // A knob trial in progress takes up where the last turn left it.
         trial_guarded([&] { im.resume_trial(); });
         while (n_gen < n_predict) {
+            // dt:req.decode.eog
             if (llama_vocab_is_eog(im.vocab, tok)) break;
             Step s;
             if (!draft(s)) return false;
+            // dt:req.decode.fail
             if (verify_decode(s) != 0) {
                 if (im.cancelled()) {
                     res.cancelled = true;
@@ -4073,6 +4139,7 @@ struct Session::Impl::Turn {
             if (!accept(s)) return false;
             emit(s, on_token, sink);
             brake_cache();
+            // dt:req.trial
             if (im.trials.stage != im.stage_done) {
                 // The decode as the knob changes it: the target's and the draft's passes, not the
                 // emission around them, which a person's own client paces.
@@ -4086,6 +4153,7 @@ struct Session::Impl::Turn {
                 res.cancelled = true;
                 break;
             }
+            // dt:req.end-check
             if (s.eog_hit || stop_hit || (constrained() && n_gen >= n_predict)) break;
             // The accepted group is now KV-resident, and the logits at the first unverified position
             // hold the target's own continuation — the next token, arrived at for free. Off the
@@ -4103,6 +4171,7 @@ struct Session::Impl::Turn {
     // kv_tokens must agree exactly or the next turn's prefix reuse decodes from a state that never
     // produced this answer, so trim back to what was actually emitted.
     void trim_speculative_kv() {
+        // dt:req.trim
         if (!spec_on) return;
         const llama_pos emitted_end = (llama_pos) n_prompt + n_gen;
         // A memory that refuses the cut keeps what a checkpoint still describes, at worst nothing,
@@ -4248,6 +4317,7 @@ struct Session::Impl::Turn {
                 if (!structured()) detail::warn_parse_failed_once(e.what());
             }
         }
+        // dt:req.parse
         if (structured() && complete) {
             std::string error;
             if (!final_parsed || !detail::validate_json_response(final_msg, error)) {
@@ -4277,6 +4347,7 @@ struct Session::Impl::Turn {
 
     // The conversation is committed after its output has passed the requested contract.
     void finish() {
+        // dt:req.finish
         if (res.cancelled) {
             // Undo the whole turn (KV, fed tokens, and the pushed user message) so the conversation
             // is left exactly as it was before this prompt and stays continuable.

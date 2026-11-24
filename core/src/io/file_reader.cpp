@@ -25,6 +25,7 @@ bool FileReader::open(const std::string & path, int lanes, bool direct, size_t m
     const int n = lanes < 1 ? 1 : lanes;
 
     pio::fd_t primary = pio::open_read(path.c_str(), direct, &direct_); // direct_ := the open's real outcome
+    // dt:open.stream.direct
     if (!pio::fd_ok(primary) && direct) { // the platform refused the direct open outright — try buffered
         direct_ = false;
         primary = pio::open_read(path.c_str(), false);

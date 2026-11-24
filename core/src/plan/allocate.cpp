@@ -540,6 +540,7 @@ void spend_ranking(Pricing & c, std::vector<Candidate> & candidates) {
             continue;
         }
         GroupPlacement & p = a.at(k.group);
+        // dt:plan.ledger
         if (k.curve_piece > 0 && !curve_open) continue;
         if (k.fractional) {
             c.cache_ranked = true;

@@ -68,6 +68,7 @@ Plan plan_layout(const AutoPlan & facts, const RunConfig & cfg, const PlanReques
     // PlannerPolicy::ubatch_max_device, no wider than the probed default, and one short of room at
     // its share of the probed width.
     const uint32_t width = (uint32_t) plan.config.n_ubatch;
+    // dt:plan.layout.narrow
     if (!req.is_pinned("ubatch") && placement.fitted && !placement.shared_memory_placement &&
         (placement.n_gpu_layers != 0 || placement.device_compute_per_token > 0) && width > 0 &&
         width < placement.compute_width) {
@@ -111,6 +112,7 @@ Plan plan_layout(const AutoPlan & facts, const RunConfig & cfg, const PlanReques
     // whole at 4096 (decode 133.6 -> 147.3 tok/s, a 4.6k prefill 5277 -> 6190). The search stops where
     // a halving moves no layer's experts onto the device: a model that does not come closer to
     // fitting will not fit narrower, and each width is one fitter call (kept with the facts).
+    // dt:plan.layout.whole
     else if (!req.is_pinned("ubatch") && placement.fitted && !placement.shared_memory_placement &&
              placement.n_gpu_layers != 0 && !placement.host_expert_layers.empty() &&
              (plan.config.n_ubatch == 0 || (uint32_t) plan.config.n_ubatch >= placement.compute_width)) {
@@ -181,12 +183,14 @@ void restate(
 Plan give_way(
     const AutoPlan & facts, const RunConfig & cfg, const PlanRequest & req, const ModelProfile & model, Plan plan) {
     const uint64_t cycle = plan.token_cycle_bytes;
+    // dt:plan.give-way
     if (plan.streaming_declined || !plan.config.moe.enabled || cycle == 0 || plan.cache_budget_bytes >= cycle)
         return plan;
     const auto clears = [&](const Plan & q) { return !q.streaming_declined && q.cache_budget_bytes >= cycle; };
     const auto mib = [](uint64_t b) { return std::to_string(b >> 20); };
     RunConfig base = cfg;
     const int kept = cfg.ctx_checkpoints;
+    // dt:plan.give-way.checkpoints
     if (!req.is_pinned("ctx-checkpoints") && cfg.chatml && kept > 1) {
         for (int n = kept / 2; n >= 1; n /= 2) {
             base.ctx_checkpoints = n;
@@ -208,6 +212,7 @@ Plan give_way(
     const uint32_t floor =
         std::max<uint32_t>(PlannerPolicy::defaults().ctx_min_auto, (uint32_t) RunConfig::ctx_for_clients);
     const int given = cfg.n_ctx;
+    // dt:plan.give-way.ctx
     if (req.is_pinned("ctx-size") || given / 2 < (int) floor) return plan;
     for (uint32_t n_ctx = (uint32_t) given / 2; n_ctx >= floor; n_ctx /= 2) {
         RunConfig shorter = base;
@@ -275,6 +280,7 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     // comes back is that device's facts, or the reason it has none; the probes below then leave it
     // alone either way. Where a second process cannot be started the runner is empty and they run
     // here.
+    // dt:plan.facts.isolated
     if (opt.isolated_probe_args)
         probe_devices_isolated(r.hw, self_process_runner(opt.isolated_probe_args, opt.isolated_probe_seconds));
     starting(); // model
@@ -292,12 +298,14 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
         if (!ec) r.model.projector_bytes = (uint64_t) proj_size;
     }
     // The model's own routing, from an earlier run the front-end kept: what its cache will hit.
+    // dt:plan.facts.routing
     if (opt.routing)
         attach_routing(r.model, *opt.routing,
                        cfg.n_expert_used > 0 ? (uint32_t) cfg.n_expert_used : r.model.n_expert_used,
                        cfg.moe.cache_freq_half_life);
     // What an earlier load measured about the lossless knobs, when it was this machine and engine.
     if (opt.knobs)
+        // dt:plan.facts.knobs
         if (const MeasuredKnobs * k = find_measured_knobs(*opt.knobs, hardware_fingerprint(r.hw), version()))
             r.model.knobs = *k;
     probe_device_support(r.hw, r.model);
@@ -308,11 +316,13 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     detail::log_memory_snapshot("auto-bandwidth");
     // Only route-ahead reads this fact, and route-ahead arms only when the caller sets it, so a plan
     // without it does not pay the timing or the working set.
+    // dt:plan.facts.gate
     if (cfg.moe.route_ahead > 0) probe_gate_gemv(r.hw, r.model);
     probe_device_costs(r.hw, r.model);
     detail::log_memory_snapshot("auto-device-costs");
     starting(); // storage
     // Where the expert reads land, which on a split model is not the file the caller named.
+    // dt:plan.facts.storage
     if (opt.probe_io)
         probe_storage(r.hw, r.model.expert_file.empty() ? path : r.model.expert_file.c_str(),
                       r.model.expert_slice_bytes);
@@ -327,6 +337,7 @@ AutoPlan probe_and_plan(const RunConfig & cfg, const PlanRequest & req, const Au
     // The fitter places on the backends the plan will choose, one per card, or on the caller's list:
     // left empty there, it would place on llama.cpp's default list and the split would name devices
     // the caller left out.
+    // dt:plan.facts.backends
     const BackendChoice backends = req.is_pinned("device-list") || req.is_pinned("devices")
                                        ? BackendChoice{}
                                        : choose_backends(r.hw, (double) PlannerPolicy::defaults().min_backend_win);
