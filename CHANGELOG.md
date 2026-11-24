@@ -7,27 +7,13 @@ Semantic Versioning.
 ## [0.48.1] - 2026-11-24
 
 ### Fixed
-- **The cache ceiling holds under `--auto` too** (#697). `--cache-ceil-mb` bounded only a cache the
-  engine sized at load (`--cache-mb auto`); a plan turns the cache into a fixed size, which that
-  ceiling never sees, so `--auto --cache-ceil-mb 512` still ran with a 3280 MiB cache. The plan now
-  sizes its cache under the person's ceiling: the ledger charges it as held, the memory past it stays
-  free, and the plan says the ceiling held it (`cache-ceil-mb`). A ceiling above the cache the plan
-  would pick changes nothing; one under the token cycle leaves the cache off, as the floor does,
-  saying the ceiling is why and without offering a shorter context. A `--cache-mb` the person pinned
-  is not a cache the plan sizes, so the ceiling leaves it whole and the plan claims no bound
-  ([settings.md](docs/settings.md), [hardware-planning.md](docs/hardware-planning.md)).
-- **A cache the ranking turned off stays off, instead of being sized from the whole budget.** The
-  allocation ranks the expert cache against the dense groups a token reads whole. Where those
-  groups took the budget and less than one token cycle was left at the cache's turn, the ranking
-  left the cache off, and the bound that follows then read "no size from the ranking" as "this
-  lane was never priced" and gave the cache everything left after the dense reservation. Where the
-  run's dense mode reserves nothing ahead of the ranking (a mapped or warmed dense set) that is the
-  whole budget: the plan held the dense groups and a cache of the same memory, 5480 MiB against a
-  2752 MiB budget in the test that now pins it, with a `cache-off` and a `cache-unpriced` note on
-  the same plan. The cache now has what the ranking left, and under one token cycle it is off;
-  the experts still stream, as on any plan whose cache does not reach the floor. A locked or offered
-  cache also keeps what being locked or offered raises the ceiling by; where that carries it past one
-  token cycle the cache is on, and the plan says so (`cache-raised`) instead of calling it off.
+- **Thinking on the phones follows the setting again** (#721). A conversation's message
+  (`POST /api/conversations/<id>/messages` and `/edit`) that did not say whether to think was sent
+  with thinking off, whatever the Thinking setting said. The web UI and the desktop app send `think`
+  with every message, so they reasoned; the Android and iOS apps take it from Settings and send none,
+  so no model reasoned there since 0.39. A message that leaves `think` out now follows the setting,
+  which stays off until the person turns it on, and one that names it still wins. A scheduled task follows the setting too, where it was always sent with thinking off
+  ([server-api.md](docs/server-api.md)).
 
 ## [0.48.0] - 2026-11-23
 
