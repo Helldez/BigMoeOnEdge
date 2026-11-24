@@ -318,6 +318,13 @@ export const en = {
   'done.stopped': 'stopped',
   'done.first': 'First word after',
   'done.read': 'Read from disk',
+  'done.cacheSize': 'Cache in memory',
+  'done.cacheSize.value': '{held} of {budget}',
+  'done.cacheSize.hint': 'How much of the model the expert cache holds in memory, against the most it may hold. A cache far below the memory this computer has free is a reason to raise it in Settings.',
+  'done.rereads': 'Read again',
+  'done.rereads.value': '{n} parts per token',
+  'done.rereads.hint': 'Parts of the model the cache held once, let go for lack of room, and had to read from disk again. Many per token means a bigger cache would be faster.',
+  'done.wait.value': '{ms} ms per token',
 
   // Preview.
   'preview.label': 'File preview',

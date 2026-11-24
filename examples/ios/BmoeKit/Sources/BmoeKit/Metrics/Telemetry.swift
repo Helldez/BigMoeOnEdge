@@ -31,6 +31,8 @@ public struct Telemetry: Equatable, Sendable {
     public var readMiB = -1.0
     public var cacheResidentMiB = -1.0
     public var cacheBudgetMiB = -1.0
+    /// Reads of an expert the cache had held and let go, per token written; -1 when not reported.
+    public var cacheRereadsPerToken = -1.0
     public var avgMajfltPerToken = -1.0
     public var avgCpuSecondsPerToken = -1.0
     // Speculation, all 0 when it was off.
@@ -87,6 +89,8 @@ public struct Telemetry: Equatable, Sendable {
         loopOverheadSecondsPerToken = o["loop_overhead_s_tok"].double(or: 0)
         let tokens = o["tokens"].int(or: 0)
         if tokens > 0 { step = tokens }
+        let rereads = o["cache_rereads"].double(or: -1)
+        cacheRereadsPerToken = rereads >= 0 && tokens > 0 ? rereads / Double(tokens) : -1
     }
 
     /// One token's time split into the four terms the live card draws (docs/telemetry.md): compute

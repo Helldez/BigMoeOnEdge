@@ -6,6 +6,25 @@ Semantic Versioning.
 
 ## [0.49.1] - 2026-11-24
 
+### Added
+- **Plain text completion: `/completion` and `/v1/completions`.** A client written for llama.cpp's
+  server, or for OpenAI's legacy completions, got a `404`: only the chat routes were served. Both
+  now continue a prompt as written, with no chat template, each in its own shape: llama-server's
+  `{content, stop, stop_type, timings, ...}` (streamed as `stop: false` pieces ending in the whole
+  object) and OpenAI's `text_completion` (streamed chunks ending in `[DONE]`). The budget, `stream`,
+  `stop` and the sampling fields read as on the chat route; a grammar, logprobs, `echo`, `suffix`, a
+  prompt of token ids and several prompts are refused rather than ignored. In the engine a turn can be
+  raw (`GenerateRequest::raw`): fed as text from an empty context on a session that has chat turns,
+  so the chat turn after a completion prefills its conversation again
+  ([server-api.md](docs/server-api.md#text-completion-completion-and-v1completions)).
+- **Metrics shows the expert cache's own account on every UI.** A field report found its slow decode
+  only with `bmoe-cli`: the automatic cache held 5.2 GiB where 10.5 were free, re-read 43 experts per
+  token and waited 234 ms per token on the disk. The app's Metrics showed the hit rate and the disk's
+  share of a token, not those three. The last answer's account now adds, when the model streams: the
+  cache in memory against its budget, the parts read again per token, and the disk wait in ms per
+  token, from the `done` event's existing fields, with what each means in the folded list
+  ([screens.md](docs/screens.md#metrics)).
+
 ### Fixed
 - **Settings no longer calls a graphics pack "Installed" when the engine does not use it.** After the
   app is updated, the pack installed for the earlier release stays on disk, and the engine does not
@@ -28,17 +47,6 @@ Semantic Versioning.
   gain is (+24-46% decode on Windows). A `release-mmap` set by hand is kept
   ([field-reports.md](docs/field-reports.md), [hardware-planning.md](docs/hardware-planning.md),
   [moe-streaming.md](docs/moe-streaming.md)).
-### Added
-- **Plain text completion: `/completion` and `/v1/completions`.** A client written for llama.cpp's
-  server, or for OpenAI's legacy completions, got a `404`: only the chat routes were served. Both
-  now continue a prompt as written, with no chat template, each in its own shape: llama-server's
-  `{content, stop, stop_type, timings, ...}` (streamed as `stop: false` pieces ending in the whole
-  object) and OpenAI's `text_completion` (streamed chunks ending in `[DONE]`). The budget, `stream`,
-  `stop` and the sampling fields read as on the chat route; a grammar, logprobs, `echo`, `suffix`, a
-  prompt of token ids and several prompts are refused rather than ignored. In the engine a turn can be
-  raw (`GenerateRequest::raw`): fed as text from an empty context on a session that has chat turns,
-  so the chat turn after a completion prefills its conversation again
-  ([server-api.md](docs/server-api.md#text-completion-completion-and-v1completions)).
 
 ## [0.49.0] - 2026-11-24
 

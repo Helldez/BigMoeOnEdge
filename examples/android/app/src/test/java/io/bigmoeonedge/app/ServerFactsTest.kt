@@ -46,6 +46,14 @@ class ServerFactsTest {
     }
 
     @Test
+    fun theCachesAccountPerToken() {
+        val t = Telemetry().applyDone(JSONObject("""{"tokens":40,"tok_s":2.3,"cache_rereads":488,"flash_wait_s_tok":0.234}"""))
+        assertEquals(12.2, t.cacheRereadsPerTok, 1e-9)
+        assertEquals(234.0, t.avgFlashWaitMs, 1e-9)
+        assertEquals(-1.0, Telemetry().applyDone(JSONObject("""{"tokens":40}""")).cacheRereadsPerTok, 1e-9)
+    }
+
+    @Test
     fun unknownThreadsLeaveTheComputeBarEmptyRatherThanGuessed() {
         val b = breakdown(Telemetry().applyToken(JSONObject("""{"step":1,"wall_ms":100,"flash_wait_ms":10,"cpu_ms":400}""")))
         assertEquals(0.0, b.computeMs, 1e-9)

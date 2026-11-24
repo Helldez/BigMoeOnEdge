@@ -474,7 +474,10 @@ always there. A calm monitor: four
 figures with their recent history (answer speed, disk reads, memory in use against what is free,
 how often what a token needed was already in memory, with the cache's size), where a token's time
 goes as one bar, then the last answer's account, and what each figure means (a folded list, not
-tooltips). Before any answer it says so, with the rate the plan expects, instead of empty figures.
+tooltips). With streaming on, the account carries the cache's own figures: how much it holds against
+the most it may hold, the parts it let go and read again per token (`cache_rereads` over `tokens`),
+and the disk wait per token in milliseconds (`flash_wait_s_tok`), the three that told a slow run's
+cause from the command line alone. Before any answer it says so, with the rate the plan expects, instead of empty figures.
 With no model loaded it says so and leads to Models; a model loaded without streaming says which
 figures it cannot have.
 
