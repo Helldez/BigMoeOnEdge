@@ -70,6 +70,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     discard_wanted_ = cfg.cache_discard;
     discard_drop_ = cfg.cache_discard_drop;
     discard_after_ = (uint32_t) std::max(0, cfg.route_ahead);
+    // dt:open.stream.pin-or-discard
     if (discard_wanted_ && platform_span_ops().supported()) pin_ = false;
     overlap_ = cfg.overlap;
     two_wave_ = cfg.io_two_wave;
@@ -126,6 +127,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     // (validate() guarantees cache_mb == 0 here, so this is the sole source of cache_max_ when auto.)
     // One shot — the floor and the cap decide the budget here and are not kept: nothing re-sizes it
     // afterwards except an explicit set_cache_budget().
+    // dt:open.stream.cache-auto
     if (cfg.cache_auto) {
         const size_t floor = (size_t) std::max(0, cfg.cache_floor_mb) * 1024ull * 1024ull; // RAM to leave free
         // Hard cap: the whole expert set, further capped by the user's ceiling when set.
@@ -187,6 +189,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         }
     }
 
+    // dt:open.stream.cache-mode
     if (cache_max_ == 0) {
         // One shared slot per present projection, reused across layers (one layer computes
         // at a time). Rebind every bound layer's expert tensors onto them; only routed
@@ -250,6 +253,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         spec_remaining_.assign(n_entry, 0);
         ever_evicted_.assign(n_entry, 0);
         cold_gen_.assign(n_entry, 0);
+        // dt:open.stream.eviction
         if (freq_half_life_ > 0) {
             cfreq_.assign(n_entry, 0.0);
             freq_weight_ = 1.0;
@@ -296,6 +300,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     io_stop_ = false;
     io_err_.store(false);
 
+    // dt:open.stream.overlap-map
     if (overlap_) build_ready_map();
 
     // Hand the dense (non-expert) weights to their policy module: it warms them into the page cache,
@@ -556,6 +561,7 @@ void ExpertStreamSource::prefetch(int il, const int32_t * ids, int n_ids) {
             const int e = ids[i];
             if (e < 0 || e >= n_expert_) continue;
             const int32_t id = il * n_expert_ + e;
+            // dt:tok.prefetch
             if (cvalid_[id] || spec_remaining_[id] != 0) continue; // already resident or already queued
             cand.push_back(e);
         }
@@ -683,6 +689,7 @@ void ExpertStreamSource::quiesce_spec(int adopt_il) {
     // guessing predictors, whose queue really is bets. Measured before this branch existed: at
     // depth 2 every early read was destroyed — by the intervening load's quiesce or by the
     // settle preceding each issue — for 0% useful and double flash per token.
+    // dt:tok.spec.quiesce
     if (spec_adopt_ && adopt_il >= 0) {
         std::vector<int32_t> & adopt = spec_adopt_ids_;
         adopt.clear();
@@ -830,6 +837,7 @@ void ExpertStreamSource::move_budget(size_t bytes) {
 
 void ExpertStreamSource::brake_cache_budget(size_t bytes) {
     if (cache_max_ == 0) return;
+    // dt:tok.budget
     if (!disc_.enabled()) return set_cache_budget(bytes);
     disc_.pressure();
     follow_.braked(bytes, cgen_);
@@ -1019,6 +1027,7 @@ void ExpertStreamSource::freq_pass_check(int il) {
 
 void ExpertStreamSource::evict_to_budget(bool spare_current) {
     if (cresident_ <= cache_max_) return;
+    // dt:tok.evict
     if (freq_half_life_ <= 0) {
         // LRU: the staged entries sit at the hot end, so the first spared tail ends the sweep.
         if (!(spare_current && cold_batch_)) {
@@ -1299,6 +1308,7 @@ void ExpertStreamSource::settle_offers() {
 // first kind. Only the budget moves here - the eviction is the per-layer one that skips what the current
 // token staged. Eval-thread only, like the commits it follows.
 void ExpertStreamSource::pin_pages(void * p, size_t sz) {
+    // dt:tok.pin
     if (!pin_ || cache_max_ == 0) return; // no cache: a slice lives one token
     if (pio::vm_pin(p, sz)) {
         if (!pin_said_) log_printf(LogLevel::Info, "expert cache pinned in RAM");
@@ -1383,6 +1393,7 @@ bool ExpertStreamSource::touch_entry(int il, int e, bool & hit, bool promote, in
     // An offer the kernel dropped under pressure is still an entry of the cache, resident in the
     // accounting, but its bytes are gone: a miss the caller reads whole again, so it is scored and
     // placed like one (a cold batch admits it at the cold end, as any other miss of that batch).
+    // dt:tok.cache.touch
     const bool lost = cvalid_[id] && !disc_.take_back(id);
     if ((cvalid_[id] && !lost) || !cold_batch_) freq_touch(id);
     if (lost) {
@@ -1432,6 +1443,7 @@ bool ExpertStreamSource::touch_entry(int il, int e, bool & hit, bool promote, in
 
 // ── load: stage routed experts, read the batch, evict cold entries to budget ────────
 bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
+    // dt:tok.load
     if (!active_ || il < 0 || il >= n_layer_ || !layers_[il].bound || !ids || n_ids <= 0) return false;
     freq_pass_check(il);
     if (overlap_) return load_layer_async(il, ids, n_ids);
@@ -1447,6 +1459,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
     LayerExperts & L = layers_[il];
     cgen_++;
     // A wide graph is a prefill; a decode or a speculative verify window is far narrower.
+    // dt:tok.load.cold
     cold_batch_ = prefill_cold_ && cache_max_ && top_k_ > 0 && n_ids >= top_k_ * cold_min_tokens_;
     jobs_.clear();
 
@@ -1462,6 +1475,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
     if (cache_max_) quiesce_spec(spec_adopt_ ? il : -1);
 
     auto stage = [&](int e) -> bool {
+        // dt:tok.load.stage
         if (cache_max_ == 0) {
             for (int p = 0; p < ExpertLayout::max_slots; ++p) {
                 const uint64_t slice = L.proj[p].nb2;
@@ -1526,6 +1540,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
     const size_t njobs = jobs_.size();
     mgmt_ns_.fetch_add((long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - tm0).count());
     const auto t0 = clock_t_::now();
+    // dt:tok.load.read
     if (io_threads_ <= 1 || njobs <= 1) {
         for (size_t i = 0; i < njobs; ++i) {
             const IoJob & j = jobs_[i];
@@ -1657,6 +1672,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
                 if (L.proj[p].nb2) return p;
             return -1;
         }();
+        // dt:tok.load.async
         const bool two_wave = two_wave_ && !load_all_ && p0 >= 0;
         seen_.assign(seen_.size(), 0); // reuse as a per-staged miss marker keyed by expert
         for (int e : staged_) {

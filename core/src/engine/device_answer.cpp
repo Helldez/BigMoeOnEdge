@@ -168,6 +168,7 @@ AnswerWeighing weigh_answer_sides(const DeviceAnswer & a, double prompt_per_toke
     if (!s.weighed) return w;
     w.device_request_s = s.device_s;
     w.cores_request_s = s.cores_s;
+    // dt:open.answer.weigh
     w.side = s.cores_sooner ? AnswerSide::Cores : AnswerSide::Device;
     return w;
 }
@@ -312,6 +313,7 @@ DeviceAnswer check_device_answer(llama_context * placed, const AnswerReference &
         if (test_differs && n_vocab > 1) std::rotate(d, d + 1, d + n_vocab);
         a.agreement.add(host_rows.data() + (size_t) r * (size_t) n_vocab, d, n_vocab);
     }
+    // dt:open.answer.verdict
     a.verdict = a.agreement.matches() ? DeviceAnswer::Verdict::Confirmed : DeviceAnswer::Verdict::Differs;
     // Timed once the answers matched, while the reference is still open: a device that does not
     // compute the model is not a side, and its speed is nobody's question. The cores first, so the

@@ -64,6 +64,8 @@ we do not fork llama.cpp. See `docs/architecture.md` and `docs/seam.md`.
 - `third_party/llama.cpp` — the pinned submodule: upstream plus two commits on the fork branch hard
   rule 1 describes (`docs/seam.md`): the expert-ready hook `--overlap` needs, and the Hexagon backend's
   weight writes the NPU prefill's streamed slots need. Everything else builds against stock upstream.
+- `docs/decision-tree.md` + `scripts/decision-tree.py` — every decision the code makes, as a tree
+  held to the code by `// dt:<id>` markers (hard rule 8).
 - `tests/` — byte-identity gates. `examples/android/` — the Android app, a client of `bmoe-server`
   (shipped in the APK, run as a child process; no engine logic in Kotlin). `examples/ios/` — the iOS
   app (`app/`: `bmoe_server` run on a thread, since an app there may not start a process, and
@@ -118,6 +120,12 @@ Android CLI: `pwsh scripts/build-android.ps1` (needs the NDK), then build the AP
    identifying data (device model codes, local paths, addresses) before landing in `docs/`;
    phrase the test device generically. After a squash-merge, verify the landed tree
    (`git ls-tree`) before pushing anything else.
+8. **The decision tree follows the code.** `docs/decision-tree.md` holds every branch the engine
+   takes, from the front-ends to one MoE layer. Each node quotes its condition from the code, and a
+   `// dt:<id>` marker sits on the line above it. A change that adds, removes or alters a branch
+   updates its node and marker in the same PR. A PR states which nodes it touches:
+   `scripts/decision-tree.py touched origin/main --mermaid`, pasted into the template's section.
+   `scripts/decision-tree.py check` runs in CI and fails on any drift.
 
 ## Conventions
 

@@ -121,6 +121,7 @@ bool PrefillPath::open(llama_context * ctx,
     // paced at each layer's last node — which the capture must have found for every layer, or the
     // pacing has nowhere to wait and the copy stays resident.
     std::vector<std::vector<ggml_tensor *>> dense_per_layer;
+    // dt:open.prefill.layer-weights
     if (moe.enabled && hook.learned_layer_ends()) {
         dense_per_layer.resize((size_t) n_layer_streamed);
         for (ggml_tensor * t : layer_weights) {

@@ -95,6 +95,20 @@ Semantic Versioning.
   configuration only while the settings name that model, with Auto on or off, and a load whose plan
   fails drops it ([server-api.md](docs/server-api.md#post-apiplanapply)).
 
+### Documentation
+- **A decision tree of the whole engine, held to the code** ([decision-tree.md](docs/decision-tree.md)).
+  It has 206 nodes in six phases, from the command line and the server's settings layers through the
+  planner's rules and the model's opening to one request and one MoE layer of one token. Each node
+  quotes the condition the code tests and names its file. A `// dt:<id>` comment marks the line above
+  each branch in the code. `scripts/decision-tree.py`:
+  - `check` fails when a node and its branch drift apart, and CI runs it on every pull request;
+  - `render` draws the graphs from the nodes;
+  - `tree` prints the tree as text;
+  - `touched` names the nodes a diff changes, as a graph to paste into the PR.
+
+  The PR template asks for those nodes, and AGENTS.md makes it hard rule 8. The markers are
+  comments only: no behaviour changes.
+
 ## [0.48.0] - 2026-11-23
 
 ### Added

@@ -233,6 +233,7 @@ bool read_token_budget(
     }
     // Unsigned covers every value that got this far, including one past a signed 64-bit.
     const unsigned long long n = v.get<unsigned long long>();
+    // dt:srv.request.budget
     if (n == 0) return true;
     const ParamDesc * budget = find_param("n-predict");
     const unsigned long long top = (unsigned long long) (budget && budget->bounded ? budget->max : cfg.n_predict);
@@ -277,6 +278,7 @@ bool parse_chat_request(const json & body, const RunConfig & cfg, OpenAiChatRequ
     // Thinking, most specific first: this server's own field, the template argument llama.cpp
     // clients send, then the protocol's effort level: "none" is off, any other level asks for reasoning.
     turn.think = cfg.think;
+    // dt:srv.request.think
     if (body.contains("think") && body["think"].is_boolean()) {
         turn.think = body["think"].get<bool>();
     } else if (body.contains("chat_template_kwargs") && body["chat_template_kwargs"].is_object() &&

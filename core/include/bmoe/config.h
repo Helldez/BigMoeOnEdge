@@ -806,6 +806,7 @@ struct RunConfig {
     // place that turns 0 into a width: the session opens with it and the planner's probe measures
     // at it.
     int graph_width() const {
+        // dt:cfg.graph-width
         int w = n_ubatch > 0 ? n_ubatch : ubatch_auto_max;
         if (n_ubatch <= 0 && w < graph_width_floor()) w = graph_width_floor();
         return w < n_ctx ? w : n_ctx;

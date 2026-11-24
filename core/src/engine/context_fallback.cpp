@@ -55,6 +55,7 @@ open_with_fallbacks(const ContextAsk & first,
         }
         return false;
     };
+    // dt:open.ctx.cache-shrink
     if (largest_cache(first, ContextRetry::SmallerCache)) return out;
 
     // A later remedy is asked for with the cache as planned and, where that is refused, with the
@@ -74,10 +75,12 @@ open_with_fallbacks(const ContextAsk & first,
     // 2. The V cache alone.
     ContextAsk unquantized = first;
     unquantized.v_quantized = false;
+    // dt:open.ctx.v-f16
     if (first.v_quantized && with_cache(unquantized, ContextRetry::UnquantizedV)) return out;
 
     // 3. The graph, narrower: each width with the V cache as planned, then unquantized.
     const uint32_t width_floor = std::max<uint32_t>(floors.width, 1);
+    // dt:open.ctx.ubatch-halve
     for (uint32_t width = first.width / 2; width >= width_floor; width /= 2) {
         ContextAsk a = first;
         a.width = width;

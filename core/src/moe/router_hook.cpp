@@ -198,6 +198,7 @@ void RouterHook::apply_drop(ggml_tensor * wt) {
         int n_dropped = 0;
         for (int k = 0; k < nu; ++k) {
             const size_t idx = row + k;
+            // dt:tok.drop.apply
             const bool drop = k != best && drop_res_[idx] == route_miss && drop_w_[idx] < thr;
             if (!drop) {
                 kept += drop_w_[idx];
@@ -235,6 +236,7 @@ void RouterHook::close_drop_layer() {
     if (D.layer < 0) return;
     if (D.layer < (int) term_variant_.size() && term_variant_[D.layer] < 0 && chain_last_ >= 0)
         term_variant_[D.layer] = chain_last_;
+    // dt:tok.drop.close
     if (D.deferred && source_) {
         // The node we learned as terminal did not appear this time, so the deferral was never
         // honoured and this layer's matmul has already run against slots nothing loaded. Load the
@@ -693,6 +695,7 @@ void RouterHook::route_ahead_submit(ggml_tensor * ids, int il, int nu, int nt) {
             }
             wd_slots_ += nu;
             wd_hits_ += hits;
+            // dt:tok.route-ahead.watchdog
             if (wd_slots_ >= wd_min_slots && (double) wd_hits_ < wd_min_frac * (double) wd_slots_) {
                 ra_tripped_ = true;
                 log_printf(LogLevel::Warn,
@@ -943,6 +946,7 @@ void RouterHook::build_spec_lists(const std::vector<float> & scores,
 // At the topk of layer il, with the routing ids in hand: sample the watchdog, then submit the
 // prediction job for layer il+2 built from THIS layer's gate input.
 void RouterHook::predict_at_topk(ggml_tensor * /*t*/, int il, int nu, int nt) {
+    // dt:tok.predict-prefetch
     if (!predict_prefetch_ || wd_tripped_ || batch_phase_ != 1 || !source_) return;
     if (il < 0 || il >= n_layer_ || nu <= 0 || nu > predict_max_k || nt <= 0) return;
     ggml_tensor * h = h_t_[il];
@@ -1294,6 +1298,7 @@ void RouterHook::capture_sources(ggml_tensor * t) {
             // streamer's, and this is where that becomes true rather than assumed. A null
             // buffer keeps the historical answer, since that is what a CPU-only run has
             // always presented here.
+            // dt:open.stream.servable
             const bool servable = !src->buffer || ggml_backend_buffer_is_host(src->buffer);
             if (!servable && il >= 0 && il < n_layer_) captured_[il].on_device = true;
             if (servable && il >= 0 && il < n_layer_ && src->ne[2] > 0) { // expert dim is dim-2
@@ -1345,6 +1350,7 @@ void RouterHook::serve_rows(ggml_tensor * t) {
     if (t->op == GGML_OP_GET_ROWS) {
         ggml_tensor * table = t->src[0];
         ggml_tensor * ids = t->src[1];
+        // dt:tok.rows
         if (table && row_source_->serves(table)) {
             const bool ok = ids && ids->data && ids->type == GGML_TYPE_I32
                                 ? row_source_->gather(table, (const int32_t *) ids->data, (int) ggml_nelements(ids))
@@ -1384,6 +1390,7 @@ void RouterHook::on_topk(ggml_tensor * t, int il) {
     // back, so those layers keep the router's own choice, which is the lossless default anyway.
     const bool on_host = host_readable(t);
     const char * ids = (const char *) t->data;
+    // dt:tok.device-ids
     if (!on_host) {
         staged_ids_.resize(ggml_nbytes(t));
         ggml_backend_tensor_get(t, staged_ids_.data(), 0, staged_ids_.size());
@@ -1399,8 +1406,10 @@ void RouterHook::on_topk(ggml_tensor * t, int il) {
     // everything downstream — the trace, the drop policy, load_layer, the weight chain — must
     // see the routing that will actually run, and this is the last point where the ids are
     // still ours to change.
+    // dt:tok.substitute
     if (on_host && substitute_armed()) apply_substitute(t, il, nu, nt);
 
+    // dt:tok.route-ahead
     if (on_host && route_ahead_ > 0 && batch_phase_ == 1) {
         // Collect FIRST: the ranking racing this topk is keyed to the seq of the job the
         // PREVIOUS topk submitted, and the submit below bumps that seq — collecting after it
@@ -1457,6 +1466,7 @@ void RouterHook::on_topk(ggml_tensor * t, int il) {
     drop_.ids = t;
     drop_.deferred = defer;
     chain_last_ = -1;
+    // dt:tok.drop.defer
     if (defer) {
         drop_ids_ = gathered_;
     } else {
@@ -1476,6 +1486,7 @@ void RouterHook::on_topk(ggml_tensor * t, int il) {
 
     // Temporal prefetch: hint the next K layers with what the PREVIOUS token routed there,
     // to be read on idle lanes while this layer computes.
+    // dt:tok.prefetch.temporal
     if (prefetch_layers_ > 0 && il >= 0 && il < n_layer_) {
         for (int k = 1; k <= prefetch_layers_; ++k) {
             const int tl = il + k;
@@ -1506,6 +1517,7 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     // here.
     if (ctrace_on_ && !ask) ctrace_observe(t);
 
+    // dt:tok.capture
     if (capturing_) {
         if (ask) capture_sources(t);
         return false; // capture never isolates a node
@@ -1515,6 +1527,7 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     const bool probe_ask = probe_on && ask && probe_->wants(t);
     if (probe_on && !ask) probe_->observe(t);
 
+    // dt:tok.arena
     if (device_arena_) return arena_eval(t, ask, probe_ask);
 
     if (row_source_ && ask) serve_rows(t);
@@ -1592,6 +1605,7 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
         // Without a streamer the routing nodes are wanted only while the routing record is still
         // open: each is a barrier, and once the record is full a run that does not stream pays none.
         const bool want_topk = is_topk && (source_ || recording());
+        // dt:tok.ask
         return ctrace_iso || want_topk || weights_iso || (is_logits && predict_log_) || probe_ask;
     }
 
@@ -1617,6 +1631,7 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
             apply_drop(t);
     }
 
+    // dt:tok.topk
     if (is_topk && t->data && t->type == GGML_TYPE_I32) {
         if (source_)
             on_topk(t, il);
