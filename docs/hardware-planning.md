@@ -37,8 +37,9 @@ which is a fork.
 
 One public route has since appeared beside it: llama.cpp's experimental device-side expert cache
 (`moe_cache_size`), which keeps hot experts of host-resident layers in device memory and computes
-them there. It is not armed by this planner yet. What it needs first, including a correctness check
-with streamed experts, is in [measured-planning.md](measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache).
+them there. The planner arms it as the device tier of the expert cache, where every layer's dense
+part is on a card and the card computes the experts faster than the host (`choose_device_tier`,
+below, and [measured-planning.md](measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache)).
 
 ## Two stages, one composer
 
@@ -92,6 +93,17 @@ does not establish that identity and leaves the native fact `Unknown`; the exist
 probe can still supply an answer. This is an identity check in the adapter, not a rule that guesses
 a memory topology from a model name.
 
+The same holds for every backend whose ggml device type does not say it (`native_memory_probe`, one
+answer per API). Vulkan, CUDA and SYCL report an integrated device as `IGPU`, which is read as shared
+before anything is measured. Metal and OpenCL report every device as `GPU`: Metal is asked as above,
+and OpenCL answers `CL_DEVICE_HOST_UNIFIED_MEMORY` for the device whose `CL_DEVICE_NAME` is ggml's
+description, through the OpenCL library the backend itself loaded (nothing is linked or loaded for
+it, so a system without OpenCL is unaffected). The allocation delta is what is left where no API
+answers. It reads the host's available-memory figure, which on a phone moves by hundreds of
+megabytes while the system reclaims, and it gave the same integrated GPU of a 12 GB phone both
+answers on consecutive loads: as memory of its own, the capacity fitter's placement of the output
+head there was applied, and its one layer on a device ruled out the NPU prefill.
+
 A direct shared-memory answer takes precedence over a later allocation-delta estimate: available
 memory may rise while the kernel reclaims other pages, so that difference cannot turn a known
 shared pool into separate memory. A native separate-memory answer is not changed into `Unknown`,
@@ -99,6 +111,18 @@ and other backends retain their existing differential probe. The pure planning r
 the same tri-state property: only a known separate pool adds capacity; the bandwidth measurements
 still decide whether moving compute is worthwhile. This topology correction does not establish
 that an entire automatic run fits or completes under memory pressure.
+
+What the host holds of a placement is read off llama.cpp's own assignment, not a share of the dense
+set by layer count (`layer_slots`, `host_dense_of`): `n_gpu_layers` counts slots from the top, the
+output first and then the blocks downwards, and the input layer, which holds the embedding tables,
+never leaves the host. So the host figure is the blocks below the first device slot (each block's own
+bytes), the tables whole, the output head where it was not moved, and the little outside the blocks
+(the final norm and the like). A share by layer count counted a table the host always holds at the
+fraction of blocks left there: with every slot on a card, none of a 27 GB per-layer table; split,
+part of a table the run leaves mapped, which the ledger then charged and the cache lost. It also put
+one block too many on the device, since the output takes the first slot. With the tables in the host
+figure, the ones the run leaves mapped come out of the dense reservation as they do without a
+placement.
 
 Two outcomes of the first stage end the plan early, and both are stated: if the host residual
 fits in RAM the experts stay resident and nothing streams (the classic `-ot exps=CPU` offload);
@@ -116,6 +140,11 @@ placed layer would land on it. And under `--overlap` the session turns off llama
 host-weight matmuls in wide graphs: a streamed expert is waited for inside the CPU's matmul, and an
 offloaded one is copied to the device before its read has landed (a Metal run printed blank lines).
 Serial streaming keeps the offload, since its experts are in place before the matmul starts.
+So where layers are placed and no device expert cache is armed, `--auto` turns a front-end's default
+overlap off (the server's), with a `[derived]` line that says so: kept, every host-held weight of a
+prompt runs on the cores. On a laptop with a discrete GPU and 25 of 41 layers placed that cost 2.1x
+of the prefill on a 2.7k-token prompt and 4.5x on a 20.7k one, and bought no decode (#645). A
+caller who sets `--overlap` keeps it, and the plan line says the prompts stay on the cores.
 
 A layer's experts are never split between the two. The fitter's partial layer can overflow a share
 of its FFN to the host (`ffn_down` here, `ffn_gate` and `ffn_up` on the device), and the streamer
@@ -245,9 +274,6 @@ one ([measured-planning.md](measured-planning.md#step-1-the-cache-sized-from-the
   is byte for byte the one it was before the curve existed (a rejected record adds one `cache-hits`
   line saying why).
 
-`bmoe::hottest_experts(trace)` ranks the same record's (block, expert) pairs by use, for a later step
-that warms a device-side cache at start; nothing reads it yet.
-
 ### Lossless knobs measured on the first answer
 
 The decode thread count and `--overlap` change no output, and which setting decodes faster is this
@@ -363,7 +389,14 @@ and `BMOE_*` env overrides both count as the caller speaking.
    from what it reports for free.
 2. **Classify the regime** — a ratio of the two, never a property of either. The whole model inside
    the residency budget is `fits`; only the dense set is `experts-stream`; not even that is
-   `dense-oversized`.
+   `dense-oversized`. Both are weighed on what the run has to hold: the embedding tables the graph
+   gathers by row are left out, since the run can always leave them mapped (step 4 decides whether it
+   does when the experts stream; held whole, llama.cpp reads a large table's rows as a token asks,
+   and one it reads whole at load is small enough for the margin below the budget). A list the caller
+   pinned (`dense-mapped`) leaves them out only where it names every one. Weighed with the tables, a
+   model whose per-layer table alone is larger than the machine was called `dense-oversized`, and its
+   plan said "not even the dense weights fit", while its dense set held in a quarter of the memory
+   (#664); and a model held whole beside its table streamed for the table's sake.
 3. `fits` **declines streaming and says so**: on that machine reading experts from flash only adds
    reads that resident weights do not need.
 4. **Dense policy**, from what a reclaim costs here. The tables the allocation priced as left
@@ -491,6 +524,19 @@ names expert tensors that llama.cpp never loads. On Qwen3.6-35B-A3B-Q4_K_M this 
 581 MiB against the 582 MiB the engine computes at load from the tensors it actually bound — an
 independent check that the metadata-only path sees the same model.
 
+It is counted per layer the graph runs, not per block the file carries. A model that runs some of
+its blocks more than once per token routes again at every run, so its token asks for more than one
+set per block. The planner reads the number of layers from llama.cpp's own loader, on a load that
+reads no weight (`probe_engine_layers`), and the number of blocks from the file; where they differ
+every per-token demand of a block (its attention, its dense feed-forward, its routed experts, a
+gate product, a boundary crossing) is multiplied by their ratio, as an average over the blocks,
+since which blocks repeat is the graph's business and no key of the format says it. The plan's
+model line then reads "over 24 of 24 blocks, run as 48 layers per token". A placement is expressed
+in the same count, the one llama.cpp places layers by: the layers past the last block carry no
+weights of their own. Before this the plan of such a model priced half its token (35 ms predicted
+against 94 measured on a 16 GB laptop, 75 after), and its cache floor was half the real one. Gate
+G2v holds the count against a run's routing record.
+
 Because the floor is per-model, it also overrides the generic `cache_min_mb` guard: a budget above
 this model's cycle is not pathological however small it looks, and the plan says so when it forces
 past it.
@@ -597,9 +643,7 @@ on, never under one token cycle. That is `--cache-pin-fit`, which the plan arms 
 sized the cache to the lock and which is off otherwise: the engine cannot tell what a reclaim costs,
 so a budget set by hand is never shrunk unasked, and without the flag a part-way refusal ends
 pinning and leaves the budget alone. Likewise if the pinned store runs out during load, the remaining dense
-tensors are ordinary buffers and the run continues. Both are recorded in the streamer's statistics
-(`cache_pin_refused_bytes`, `dense_pin_refused_bytes`), which nothing reads yet: they are the
-signal the next plan is to be corrected from. A platform that refuses the very first
+tensors are ordinary buffers and the run continues, and the log says how much of each was refused. A platform that refuses the very first
 lock is not in this case, and neither is one whose total is smaller than a token cycle - a
 per-process limit of a few MiB grants the first slices and then nothing: both grant no lock worth
 having, and the cache there is ordinary memory at its full budget.
@@ -842,7 +886,8 @@ the side that cannot overcommit.
 
 The rule is the widest graph whose buffers stay inside a share of what the process may hold
 (`PlannerPolicy::compute_share_max`, a tenth), found by halving from the context and never below
-`ubatch_min` (or the image floor above). The plan starts from the whole context even where the probe
+`ubatch_min` (or the image floor above): where the next half would fall under that floor, the floor
+itself is taken, so a context that is not a power of two times it (4092 tokens) still reaches it. The plan starts from the whole context even where the probe
 measured a narrower default: the probe projects the buffers at its width and at half of it, both at
 the run's context, so the slope it reads already carries what the attention mask costs a token of
 width at that context, and a wider graph at the same context is priced by extending that line
@@ -863,7 +908,9 @@ the context on a device. It is no wider than the default, so a device's graph is
 the width the fitter placed against. A device computes the graph where it holds layers, where a
 device expert cache computes the experts there, or where a prefill device takes the prompts; a
 prefill device the plan arms itself is chosen after the width, so the width is held to the bound
-again once it is armed. The image floor does not lift this bound: a cap on an image's tokens past
+again once it is armed, and the device is weighed, and the ledger made, with that bounded graph's
+buffers (`fit_prefill_device`): the plan that arms a device and the caller who names the same one
+get the same ledger. The image floor does not lift this bound: a cap on an image's tokens past
 8192 would widen every prompt's pass on the device, which is the abort the bound exists for. There
 the bound wins, and an image whose tokens attend both ways and do not fit the pass is refused with
 the error that names `--ubatch` and `--image-max-tokens`; the plan's note says so. A device's buffers
@@ -1214,7 +1261,9 @@ on an integrated GPU and only the bandwidth tier is left.
 
 The device tier (`choose_device_tier`, [measured-planning.md](measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache)):
 the experts used most live next to the fastest processor, as RAM holds what flash would read. Where
-every layer's dense part is on devices with memory of their own and a device computes the model's
+every layer's dense part is on devices with memory of their own (`n_gpu_layers` past `n_layer`:
+llama.cpp counts `n_layer + 1` slots, the output last, so `n_layer` of them still leaves the first
+block on the host) and a device computes the model's
 experts faster than the host by `min_backend_win`, the card's free memory past its dense part holds
 a cache of the experts used most, from every layer, computed on the device: every layer's experts
 are kept on the host (resident or streamed, as the regime then says) and the bytes become
@@ -1288,18 +1337,40 @@ memory), the capacity fitter's placement is set aside, because its arithmetic co
 twice (`placement-declined`). That settles capacity and nothing else: where the whole model is held
 in memory (`fits`, or any model with no experts, which the cores hold whole on every plan), running it
 on the device frees nothing and costs only its compute buffer, and what is left is which engine runs
-it faster. `choose_shared_device` prices a request of this machine's on each side
-(`MeasuredKnobs::mix_*`, or the default mix on a first load): its decoded tokens at the rate each
-processor applies one real layer of this model one token wide, and its prompt at the rate each
-applies it as wide as a prompt (`wide_matmul_gibs`), both probed with the host's results. The cores
-are the side in force, the placement every load had before this rule; the device takes every layer
-and the output head, named in `device_split` so no second backend that drives the same silicon takes
-a share, where the request is shorter there by `min_backend_win`. The load times the decode of the
-side it serves (`KnobTrialConfig::shared_device_side`, `MeasuredKnobs::shared_device_tps`), and once
-both sides have a decode rate their ratio replaces the probe's. No load is opened to try the device
+it faster. That is decided by the first load, on the model itself. Until a load has timed both
+sides, `choose_shared_device` opens the device (every layer and the output head, named in
+`device_split` so no second backend that drives the same silicon takes a share) and asks the load to
+keep the faster: the load compares the model's answers on the device with the cores' before it serves
+(below), which decodes the model on both, so it also times the two there, one token at a time as an
+answer is decoded and once as wide as a prompt, and keeps the side a request of this machine's is
+shorter on (`KnobTrialConfig::answer_prompt_per_token`, the prompt tokens a request brings per decoded
+token: `MeasuredKnobs::mix_*`, or the default mix on a first load). The device is the side opened
+because the comparison needs the placement open; the cores take the model, reopened on them once,
+where a request is shorter there by `min_backend_win`. Both rates are kept
+(`MeasuredKnobs::shared_device_tps`, `no_shared_device_tps`), so every plan after that load reads a
+measurement and opens the faster side at once, by the same rule: the device unless the cores are
+faster by the margin. A served load then keeps its own side at what it decoded at
+(`KnobTrialConfig::shared_device_side`). No other load is opened to try a side
 ([measured-planning.md](measured-planning.md#decisions-fixed-at-load-priced-served-then-measured)).
 
-A probe of one layer does not always predict the whole model's decode. On a 16 GB unified-memory
+**A model the plan streams is offered to the device too, where the device can hold it whole.**
+llama.cpp would hold such a model on the device, and where that fits it can be the faster run by
+far, so the stream has to earn its place against it. After the plan that streams is made
+(`plan_from`), the model is planned once more as held whole, and a device that passes every test
+above may take it where the whole model and its compute buffer stay inside what the streaming plan
+itself may hold of this pool (its ledger's ceiling, the margin already off it): then holding it whole
+asks no more of the machine than the plan it replaces. The load decides as above, with one
+difference: the configuration carries the streaming plan as its other part (`RunConfig::fallback`),
+and where the device does not keep the model (its answers differ, the cores are faster by the
+margin, or it cannot be opened) the session reopens as that plan, not as the model held whole on the
+cores. The cores' rate the device is timed against is the model held whole on them, the most a
+stream on the same cores can reach, so a device the cores do not beat is one the stream does not
+beat. The plan says both parts (`held-whole`). A machine where the whole model is past that ceiling
+(a model larger than what the process may hold) streams as before, with nothing asked of the load.
+
+The probes are not asked, because a probe of one layer does not predict the whole model's decode.
+On a laptop with integrated graphics they read the cores 74% ahead (143 GiB/s against 82) of a GPU
+that decoded a 21 GB model at 40 tok/s, more than twice the cores' rate. On a 16 GB unified-memory
 laptop the one-token probe read the cores 60% ahead of the GPU (109 GiB/s against 67), while a
 64-expert cut of Qwen3.6-35B-A3B held in memory decoded 54 tok/s on the GPU against 40 on the
 cores, and Granite-3.1-3B-A800M 165-170 against 121-124 (#380). An AMD laptop APU through Vulkan
@@ -1376,8 +1447,7 @@ fitter as before.
 
 ## Architecture
 
-The logical flow, as implemented. Diamonds are decisions; the two bracketed boxes in the session
-are designed and not yet active.
+The logical flow, as implemented. Diamonds are decisions.
 
 ```
  INPUT
@@ -1465,14 +1535,16 @@ are designed and not yet active.
  | SESSION                                                        |
  | loads with the fitter's n_gpu_layers + overrides               |
  | dense -> anon | dma-buf | mmap                                 |
- | host experts -> streamer: LRU cache, lanes, mul_mat_id overlap |
- | experts -> planned device's HOST buffer type at LOAD          |
- | (but the streamer then rebinds onto its own reservation)      |
- | [NOT ACTIVE] prefill on the device over streamed experts       |
+ | host experts -> streamer: cache (decayed-frequency eviction),  |
+ |   lanes, mul_mat_id overlap                                    |
+ | device tier -> llama.cpp's device expert cache on a card, its  |
+ |   misses uploaded from the mapping or a pinned host copy       |
+ | prefill device -> a shared-memory GPU or NPU computes prompts  |
+ |   over the streamed experts, through slots lent by the cache   |
  +--------------------------------+-------------------------------+
                                   v
  +----------------------------------------------------------------+
- | llama.cpp + ggml (stock submodule)                             |
+ | llama.cpp + ggml (upstream + one commit, the expert-ready hook) |
  | CPU . CUDA . Metal . Vulkan . ROCm . SYCL . OpenCL             |
  +----------------------------------------------------------------+
 
@@ -1492,10 +1564,10 @@ Each row is a gap here paired with the public facility that closes it. None need
 
 | gap | facility | what it would allow |
 |---|---|---|
-| hot experts of host-resident layers kept and computed in device memory | `llama_context_params.moe_cache_size` (experimental upstream) | a device-memory tier under the RAM cache; see [measured-planning.md](measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache) for what it needs before the plan arms it |
-| part of a device cache's misses computed on the host rather than uploaded | `llama_context_params.moe_cache_cpu_share` (experimental upstream) | a knob only, resident experts only: the plan does not set it yet (see above) |
+| ~~hot experts of host-resident layers kept and computed in device memory~~ — **in**, as the device tier (`choose_device_tier`) | `llama_context_params.moe_cache_size` (experimental upstream) | a device-memory tier above the RAM cache, as RAM is above flash ([measured-planning.md](measured-planning.md#step-4-device-memory-as-a-tier-of-the-expert-cache)) |
+| part of a device cache's misses computed on the host rather than uploaded — **a person's setting** (`--device-cache-cpu-share`); the plan uploads every miss and names the flag | `llama_context_params.moe_cache_cpu_share` (experimental upstream) | a knob only, resident experts only: why the plan leaves it to the person is in [Who computes the device cache's misses](#who-computes-the-device-caches-misses) |
 | streamed experts computed on a device rather than on the CPU cores | **not** a buffer-type override — that route is closed, see below. The open one is `ggml_backend_dev_buffer_from_host_ptr` | on a backend that can wrap memory the caller already owns, the streamer's reservations could be handed over and the device could execute out of them. Who implements it is **not** what `caps.buffer_from_host_ptr` says — see "A capability that lies by omission" below |
-| prefill on the device over streamed experts (built as `--prefill-device`, see [npu-prefill.md](npu-prefill.md); the planner does not arm it yet) | `cparams.op_offload`, `offload_kqv`, the scheduler's batch threshold (`ggml_backend_dev_offload_op`) | per-op copy of host weights to the device above a batch size: the "batch amortises bytes over link bandwidth" rule |
+| ~~prefill on the device over streamed experts~~ — **in**: `--prefill-device`, armed by the plan where it wins and fits ([The prefill plan](#the-prefill-plan), [npu-prefill.md](npu-prefill.md)) | `cparams.op_offload`, `offload_kqv`, the scheduler's batch threshold (`ggml_backend_dev_offload_op`) | per-op copy of host weights to the device above a batch size: the "batch amortises bytes over link bandwidth" rule |
 | ~~no thread rule~~ — **in**, from core classes rather than a core count | `n_threads_batch` distinct from `n_threads`, `llama_numa_init` | still open: different counts for decode and prefill, and NUMA on workstations |
 | KV and flash attention undecided — the KV is now a budget line (`kv-budget`), and `type_k` / `type_v` are **in** as `--cache-type-k` / `--cache-type-v`, `q8_0` by default (lossy, so never planned); the fitter projects the KV at the type the run allocates | `flash_attn_type` (auto), `type_k` / `type_v`, `kv_unified`, `swa_full` | still open: the plan choosing the context length and a cache type behind a measured quality bound |
 | device selection | `mparams.devices[]`, `split_mode`, `main_gpu` | tell the fitter which devices to use, e.g. exclude one that demands a repack |

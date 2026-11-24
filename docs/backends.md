@@ -10,7 +10,7 @@ The same facts cut by operating system, next to the rest of what each platform h
 
 ## What the pinned llama.cpp carries
 
-Read from `ggml/src/` and `ggml/CMakeLists.txt` of the pinned submodule (`ac30987`, read again at that bump: same backends, same columns). A bump can
+Read from `ggml/src/` and `ggml/CMakeLists.txt` of the pinned submodule (`09e3dc4`, read again at that bump: same backends, same columns). A bump can
 add or remove rows; redo the reading rather than trusting this table.
 
 The last three columns come from reading the sources, not from running them: the type each backend
@@ -62,12 +62,13 @@ Three things in that table decide what this engine can do with a backend.
 | Metal | macOS | measured on one 16 GB Apple-silicon laptop; on in every macOS build | prefill on the GPU, decode on the CPU ([npu-prefill.md](npu-prefill.md)) |
 | RPC | host test builds | a test fixture only: a loopback server fronting the CPU, so the prefill-device gates have a second device | nothing a front-end can select |
 | BLAS | macOS, where llama.cpp turns it on by default | linked, never given a weight; the planner does not list it as a device, since it registers as an accelerator, part of the host | nothing placed on it |
-| OpenCL | Android, Windows on ARM | built, in the Windows ARM64 archive with the Adreno kernels (never run on a Snapdragon laptop; the driver's own loader is used, none is shipped) and in the release APK beside Hexagon (`scripts/build-hexagon-android.sh`), importing the Khronos ICD loader so a phone without OpenCL still starts the engine, and the vendor's own library where there is one; in July the dense set on a phone's integrated GPU was measured and lost 27 % (`RunConfig::dense_on_device`) | run on a Snapdragon-class phone with an Adreno GPU: 344 GiB/s at prefill width against the cores' 36, and it did not reproduce the host's result, so the plan refuses it on correctness and the prefill stays where the decode is; named by hand it is refused by the arena, whose per-expert placement its padded allocations do not fit ([npu-prefill.md](npu-prefill.md)) |
+| OpenCL | Android, Windows on ARM | built, in the Windows ARM64 archive with the Adreno kernels (never run on a Snapdragon laptop; the driver's own loader is used, none is shipped) and in the release APK beside Hexagon (`scripts/build-hexagon-android.sh`), importing the Khronos ICD loader so a phone without OpenCL still starts the engine, and the vendor's own library where there is one; in July the dense set on a phone's integrated GPU was measured and lost 27 % | run on a Snapdragon-class phone with an Adreno GPU: 344 GiB/s at prefill width against the cores' 36, and it did not reproduce the host's result, so the plan refuses it on correctness and the prefill stays where the decode is; named by hand it is refused by the arena, whose per-expert placement its padded allocations do not fit ([npu-prefill.md](npu-prefill.md)) |
 | Vulkan | Android, Linux, Windows | built, in the release APK and in the Linux and Windows archives, as a module that loads only where a Vulkan driver is present. One 2020 phone ran it and its driver ended the probe, which is what the isolated probe contains | run on the same phone: 44 GiB/s one token wide against the cores' 36, and 36 at prefill width, so no prefill win; its fp16 path did not reproduce the host's result and its fp32 one did. Forced by hand, a 1727-token prompt prefilled in 85 s against 65 on the cores ([npu-prefill.md](npu-prefill.md)) |
-| CUDA, HIP, SYCL | Linux, Windows | not in any archive: a module built where the toolchain is (`-DGGML_CUDA=ON`, ...) and dropped beside the binary is loaded like the shipped ones; none has been run here | unknown |
+| CUDA, HIP | Linux, Windows | shipped as packs beside the archives ([platforms.md](platforms.md)), built by `.github/workflows/gpu-modules.yml` once per llama.cpp version; the GPUs they have code for are llama.cpp's release's, checked in CI by `scripts/check-gpu-targets.py`; measured on rented NVIDIA cards and one AMD datacenter card | every role a device with memory of its own takes |
+| SYCL | Linux, Windows | not in any archive: a module built where the toolchain is (`-DGGML_SYCL=ON`) and dropped beside the binary is loaded like the shipped ones; never run here | unknown |
 | MUSA, WebGPU, CANN, OpenVINO, ET, zDNN, ZenDNN, VirtGPU | - | never built here | unknown |
 
-Three backends, then, with a measurement behind them, out of eighteen.
+Five backends, then, with a measurement behind them, out of eighteen.
 
 Two decisions behind the archives, written down so they are not re-made by accident. CUDA and HIP
 stay out of the default archives: their runtime libraries weigh more than the rest of the archive,
@@ -125,6 +126,11 @@ streamer points them at its slots. The copy takes the place of the experts' page
 mapping, which are handed back once the tensors point at the copy, so the plan charges the experts
 once. Charged twice (until 0.45.1), the copy was refused on every 64 GB machine a 32 GB expert set
 ran on, and misses arrived at half the rate.
+That has to hold while the copy is made, so each tensor's pages are handed back as soon as its copy
+is, from the mapping and, where the system has the call, from its cache of the file: unmapped
+alone they still count against a container's limit, and under one the copy outran the kernel's
+reclaim (0.45.1 to 0.46.1, [field-reports.md](field-reports.md)). A copy larger than the system can
+give is not made: the cache uploads from the mapping.
 The capture that finds them runs on the context the device cache then makes again, so the decode
 context carries no callback. Experts streamed from flash live in the streamer's slots, which this
 does not move.

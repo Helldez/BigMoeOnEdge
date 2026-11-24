@@ -91,7 +91,6 @@ public:
     // The row policy after init, for the graph adapter that must make rows present before a gather
     // node runs; null when nothing qualified. Its accounting, for telemetry, is row_stats().
     IRowSource * row_source() const { return dense_.row_source(); }
-    bool dense_file_mapping_in_use() const { return dense_.file_mapping_in_use(); }
     // Reopen every reader that will serve decode (expert lanes and row tables). Only legal between
     // init and the first decode, when the workers are idle and nothing is queued; checked under the
     // queue lock. See FileReader::reopen.
@@ -125,6 +124,7 @@ public:
     // llama_set_abort_callback so a mid-decode I/O failure aborts the graph cleanly
     // instead of computing on a half-read expert.
     bool fatal() const { return fatal_.load(std::memory_order_acquire); }
+    void mark_fatal() override { fatal_.store(true, std::memory_order_release); }
 
     // Explicitly set the cache budget in bytes and evict down to it immediately (clamped to the
     // full expert-set size). PRECONDITION: no decode in flight — the caller must not be inside a

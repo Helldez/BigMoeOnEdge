@@ -147,7 +147,7 @@ bool probe_one_device(const char * model_path, const std::string & device, std::
     }
     if (!found) return false;
     hw.devices = std::move(keep);
-    const ModelProfile mp = probe_model(model_path);
+    const ModelProfile mp = probe_model(model_path, probe_engine_layers(model_path));
     probe_device_support(hw, mp);
     probe_bandwidth(hw, mp);
     probe_device_costs(hw, mp);

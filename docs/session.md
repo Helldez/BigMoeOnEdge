@@ -105,12 +105,32 @@ prefix diverges at the last answer and up to one answer's worth of tokens is re-
 with thinking **off** (the default) the re-fed suffix is just the new user turn plus a few
 wrapper tokens.
 
+**A drop forgets the cells, not the buffers.** A new chat (`clear_kv = true`, or a prefix nothing
+stands in for), a rollback with no checkpoint, perplexity and a discarded capture or warm-up all
+drop the target context through one function, `clear_memory()`, which calls
+`llama_memory_clear(..., data = false)`: the cells are freed and the buffers keep their bytes. A
+free cell is masked out of attention, and the graph zeroes the recurrent state of a cell with no
+source before reading it, so a stale byte never reaches the output. Clearing the data as well
+memsets the whole KV, and the positions a conversation never reached are the zero pages of
+llama.cpp's clear at allocation, which a kernel with compressed memory (zram on Android, the memory
+compressor on macOS) keeps at almost no cost: the memset faults all of them back in at once, when a
+new chat arrives on a device that has little room left. A prefill device changes nothing here: the
+mask and the zeroing are read from the cells, wherever the device moved the bytes
+([npu-prefill.md](npu-prefill.md)), so its state is not zeroed either, nor after the reservation
+decode at load, nor between `decide()` calls. Gate G29 runs a new chat after a longer conversation
+and compares it with the same chat in a fresh session, resident, streamed and with a prefill
+device, and compares perplexity there with a fresh session bit for bit, which reads every
+position's logits. Without compressed memory the change saves a memset and little memory.
+
 **Reasoning is returned, not discarded.** On a thinking model the Session parses the reasoning span
 out of the raw stream and carries it in its own field (`TokenMetrics`/`RunResult::reasoning`,
 `delta_reasoning` on `BMOE_PROGRESS`, `reasoning` on `BMOE_DONE`) rather than dropping it. The answer text stays free of
 it either way, so the byte-identity gates are unaffected; a caller that wants to show the thinking
 reads the separate field. The parser wiring lives in `core/src/engine/chat_parse.cpp`
-(see [seam.md](seam.md)).
+(see [seam.md](seam.md)). A turn whose answer was opened in the prompt (thinking off on a template
+that ignores the flag, `thinking_control.cpp`) goes through the same parse: llama.cpp hands the parser
+that opening as the generation prompt, so whatever the format closes an answer with is cut there too,
+where the vocabulary does not stop on it.
 
 ## Cancel
 
@@ -119,7 +139,11 @@ boundary via llama's abort callback (installed unconditionally at open, so it wo
 overlap alike). It leaves the model and cache intact; the returned `RunResult` has `cancelled =
 true`. In chat mode a cancel **rolls the turn back** to the reused prefix (dropping this turn's KV
 and un-appending the user message) so prior turns stay usable and the conversation can continue.
-Cancel is distinct from a fatal streaming error, which is sticky and ends the session.
+Cancel is distinct from a fatal streaming error, which is sticky and ends the session: a read of an
+expert or of a row-gathered table that fails stops the graph through the same abort callback, in
+serial and overlap alike, and every later `generate()` fails with "expert stream I/O failed"
+(`tests/expert_read_failure_test.cpp`). The cache then holds entries whose bytes never arrived, so
+the session is closed and opened again rather than continued.
 
 `GenerateRequest::stop` optionally borrows a caller-owned `std::atomic<bool>` until `generate()`
 returns. The decoder's abort callback and the image encoder's eval callback read it alongside the

@@ -57,6 +57,8 @@ data class ConversationSummary(
     val state: String = STATE_IDLE,
     /** Milliseconds since the epoch; 0 when the server sent none. */
     val updated: Long = 0,
+    /** The person's own system prompt; "" for none. */
+    val system: String = "",
 ) {
     val busy get() = state == STATE_RUNNING
 
@@ -70,6 +72,7 @@ data class ConversationSummary(
             title = o.str("title"),
             state = o.str("state").ifEmpty { STATE_IDLE },
             updated = timeMs(o.opt("updated")),
+            system = o.str("system"),
         )
 
         fun list(a: JSONArray?): List<ConversationSummary> =

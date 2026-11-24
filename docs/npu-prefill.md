@@ -149,7 +149,11 @@ leaves the graph alone, was identical.
 
 A model larger than RAM cannot give the NPU a copy of itself. The NPU gets two layer-sized slots
 instead, and every layer's weights are bound to one of them, alternating. While the NPU computes
-layer k out of one slot, loader threads fill the other with layer k+1:
+layer k out of one slot, loader threads fill the other with the layer the graph runs next. That is
+layer k+1 on every model whose blocks run once; a graph that comes back to a block (a looped core)
+is followed in its own order, read off the capture graph, and a block the slots still hold is not
+read again. Where the next layer's slot is the one being computed from, it is read at its own
+routing node instead, as with one slot:
 
 - **experts** are read from the gguf with `O_DIRECT`, one expert at a time, or copied from the expert
   cache when it holds them (below), and handed to the backend with `ggml_backend_tensor_set` on a
@@ -248,10 +252,11 @@ Per-decision numbers: `bench-data/2026-09-29-prefill-routed/`.
   finished, the DSP never returning from the first layer. Without it the state stays in CPU memory and
   the attention of a device graph runs on the CPU. Where it does move, the buffers llama.cpp first
   allocated the state in stay allocated, since only llama.cpp can free them, but nothing reads them
-  after the move, so their pages are handed back to the kernel (and again after each
-  `llama_memory_clear`, which rewrites them). Kept resident they would double the KV cache: 1760 MiB
-  on Gemma 4 26B-A4B at an 8192-token context when its windowed layers held the whole context (they
-  now hold their window), where Qwen3.6, mostly linear attention, has 143 MiB.
+  after the move, so their pages are handed back to the kernel, for good: a drop of the memory forgets
+  its cells and rewrites no buffer, neither these nor the moved state
+  ([session.md](session.md#independent-prompts-vs-multi-turn-chat)). Kept resident they would double
+  the KV cache: 1760 MiB on Gemma 4 26B-A4B at an 8192-token context when its windowed layers held
+  the whole context (they now hold their window), where Qwen3.6, mostly linear attention, has 143 MiB.
 - **Weights that are not a matmul's matrix.** A backend may hold a `WEIGHTS` buffer in a form only its
   matmul kernels address: with DMA64 on (the default above Hexagon v79), the Hexagon backend maps
   such a buffer for DMA only, and most of its other kernels refuse it at run time, which aborts the

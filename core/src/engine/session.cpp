@@ -416,12 +416,20 @@ struct Session::Impl {
         Impl & im;
         ~PlacementGuard() { im.place_prefill(false); }
     };
-    // Every llama_memory_clear(data) of the target context goes through here: llama.cpp clears the
-    // buffers it allocated, which a moved model state no longer lives in.
-    void clear_memory(llama_context * c) {
-        llama_memory_clear(llama_get_memory(c), true);
-        if (prefill) prefill->clear_state();
-    }
+    // Every drop of the target context's memory goes through here (a new chat whose prefix nothing
+    // stands in for, a rollback with no boundary to rewind to, perplexity, a discarded capture or
+    // warm-up). It forgets the cells and leaves the buffers as they are. A data clear memsets the
+    // whole KV, and the positions a conversation never reached are zero pages from llama.cpp's own
+    // clear at allocation, which a kernel with compressed swap parks there at almost no cost: the
+    // memset faults all of them back in as real memory at once, on a phone right when a new chat
+    // arrives. The buffers do not need it: a free cell is masked out of attention, and the graph
+    // zeroes the recurrent state of a cell that has no source before reading it (rs_z). A partial
+    // seq_rm and a checkpoint restore leave the same stale-but-free cells behind on every turn. A
+    // state a prefill device moved needs it no more: the mask and rs_z are read from the cells, which
+    // stay llama.cpp's wherever the bytes live. Zeroing cost twice there, the moved copy and the
+    // buffers llama.cpp first allocated, whose pages the memset faulted back in after they had been
+    // handed back (PrefillDevice::init_state).
+    void clear_memory(llama_context * c) { llama_memory_clear(llama_get_memory(c), /*data=*/false); }
 
     // The MTP draft source (SpecConfig::source == mtp). A SECOND context over the SAME model,
     // created with ctx_type = MTP so llama.cpp builds the nextn graph instead of the trunk one. It
@@ -582,6 +590,7 @@ struct Session::Impl {
     struct Opening;
     bool load_model(Opening & o, llama_model ** reference = nullptr);
     detail::DeviceAnswer compare_device_answer(Opening & o);
+    detail::AnswerWeighing weigh_device_answer(const detail::DeviceAnswer & a) const;
     bool read_model(Opening & o);
     bool build_hook(Opening & o);
     bool resolve_gate_mirror(GateMirror m, Opening & o);
@@ -1203,7 +1212,8 @@ detail::DeviceAnswer Session::Impl::compare_device_answer(Opening & o) {
     ref.n_threads = cfg.n_threads;
     ref.n_threads_batch = cfg.n_threads_batch > 0 ? cfg.n_threads_batch : cfg.n_threads;
     const auto t0 = clock_t_::now();
-    const detail::DeviceAnswer a = detail::check_device_answer(ctx.get(), ref, cfg.trial.test_answer_differs);
+    const bool timed = cfg.trial.answer_prompt_per_token >= 0.0f;
+    const detail::DeviceAnswer a = detail::check_device_answer(ctx.get(), ref, cfg.trial.test_answer_differs, timed);
     const double check_s = secs(t0, clock_t_::now());
     const char * dev = cfg.trial.answer_device.c_str();
     if (a.verdict == detail::DeviceAnswer::Verdict::Unchecked) {
@@ -1221,7 +1231,31 @@ detail::DeviceAnswer Session::Impl::compare_device_answer(Opening & o) {
                dev, a.tokens, a.pieces, a.wide, a.agreement.rows, a.agreement.agree() * 100.0, a.agreement.nmse(),
                a.agreement.kld, a.agreement.kld_max, a.device_s, a.host_s, check_s,
                ok ? "confirmed" : "it does not compute this model: the model is reopened on the CPU");
+    if (ok && timed) {
+        const detail::AnswerWeighing w = weigh_device_answer(a);
+        if (w.side == detail::AnswerSide::Unweighed)
+            log_printf(LogLevel::Warn, "device answer: the two sides could not be timed on this model; %s keeps it",
+                       dev);
+        else
+            log_printf(LogLevel::Info,
+                       "device answer: this model one token at a time takes %.1f ms on %s and %.1f ms on the CPU "
+                       "(%.1f against %.1f tok/s), a %d-token graph %.0f ms against %.0f; with %.1f prompt tokens a "
+                       "decoded token a request takes %.2fx the CPU's time on %s - %s",
+                       a.device_token_s * 1e3, dev, a.host_token_s * 1e3, 1.0 / a.device_token_s, 1.0 / a.host_token_s,
+                       a.wide, a.device_wide_s * 1e3, a.host_wide_s * 1e3, (double) cfg.trial.answer_prompt_per_token,
+                       w.device_request_s / w.cores_request_s, dev,
+                       w.side == detail::AnswerSide::Cores
+                           ? "the CPU is faster by the margin: the model is reopened on it"
+                           : "the device keeps the model");
+    }
     return a;
+}
+
+// The check's timing, weighed as this load was asked to weigh it (KnobTrialConfig::answer_prompt_per_token)
+// by the margin every decision between two measured sides here uses (KnobTrialPolicy::min_win).
+detail::AnswerWeighing Session::Impl::weigh_device_answer(const detail::DeviceAnswer & a) const {
+    if (cfg.trial.answer_prompt_per_token < 0.0f) return {};
+    return detail::weigh_answer_sides(a, (double) cfg.trial.answer_prompt_per_token, KnobTrialPolicy{}.min_win);
 }
 
 // The loaded model's own facts, the expert layout read from its tensors, and its chat template.
@@ -1288,9 +1322,11 @@ bool Session::Impl::read_model(Opening & o) {
     if (!cfg.mmproj.empty()) {
         std::string merr;
         // On the devices by the rule the model's own placement follows (load_model): a layer placed
-        // on one means they are wanted. The planner prices the projector by the same rule.
+        // on one means they are wanted, and -1 is every layer, which is what the fitter leaves where
+        // the model fits a device whole. The planner prices the projector by the same rule, and the
+        // fitter reserved its room there.
         const bool devices_wanted =
-            cfg.device_use == DeviceUse::All || (cfg.device_use == DeviceUse::Auto && cfg.n_gpu_layers > 0);
+            cfg.device_use == DeviceUse::All || (cfg.device_use == DeviceUse::Auto && cfg.n_gpu_layers != 0);
         media = detail::MediaInput::open(cfg.mmproj, m, cfg.n_threads, devices_wanted, cfg.image_max_tokens,
                                          &cancel_requested, merr);
         if (!media) return o.fail(merr);
@@ -1608,7 +1644,13 @@ bool Session::Impl::init_speculation(Opening & o) {
         mtp_batch_owned = true;
         draft_buf.reserve((size_t) cfg.spec.draft_max);
     }
-    checkpoints.configure(cfg.ctx_checkpoints, cfg.checkpoint_min_step, llama_model_n_swa(model.get()));
+    // The window a checkpoint is judged against is the attention's, and a memory with a recurrent
+    // part reports that part's one position as its minimum, never the window's start: such a model
+    // is judged as one without a window, as llama.cpp's server judges it. A windowed model with a
+    // recurrent state otherwise never found a checkpoint it could restore.
+    const bool recurrent_state = llama_model_is_recurrent(model.get()) || llama_model_is_hybrid(model.get());
+    checkpoints.configure(cfg.ctx_checkpoints, cfg.checkpoint_min_step,
+                          recurrent_state ? 0 : llama_model_n_swa(model.get()));
     checkpoints.set_position_map([this](int64_t n) { return kv.pos_at((size_t) n); });
     if (media) {
         media_batch = llama_batch_init(cfg.n_batch, /*embd*/ 0, /*n_seq_max*/ 1);
@@ -1780,15 +1822,12 @@ void Session::Impl::hand_over_dense_weights(const SessionConfig & cfg,
 void Session::Impl::release_mapping(const SessionConfig & cfg,
                                     const GgufOffsets & offs,
                                     const std::vector<std::string> & unaccounted) {
-    std::vector<const void *> weight_addrs;
-    if (cfg.moe.release_mmap) {
-        weight_addrs.reserve(hook->captured_weight_objects().size());
-        for (const ggml_tensor * t : hook->captured_weight_objects())
-            if (t && t->data) weight_addrs.push_back(t->data);
-    }
-    const size_t still_mapped =
-        cfg.moe.release_mmap ? pio::addresses_in_file_mappings(offs.shard_paths, weight_addrs) : 0;
     if (!cfg.moe.release_mmap) return;
+    std::vector<const void *> weight_addrs;
+    weight_addrs.reserve(hook->captured_weight_objects().size());
+    for (const ggml_tensor * t : hook->captured_weight_objects())
+        if (t && t->data) weight_addrs.push_back(t->data);
+    const size_t still_mapped = pio::addresses_in_file_mappings(offs.shard_paths, weight_addrs);
     if (still_mapped) {
         log_printf(LogLevel::Info, "release-mmap skipped: %zu weight(s) still read the model's mapping", still_mapped);
     } else if (!unaccounted.empty() && cfg.spec.is_mtp()) {
@@ -1943,23 +1982,40 @@ bool Session::Impl::stage_experts_in_host_buffer(Opening & o) {
         }
         return spans;
     };
-    // The tensors pointed at the copy, and the mapping's pages they were copied from handed back: the
-    // plan charged the experts once (choose_expert_staging), and nothing reads those pages again. Left
-    // resident, they compete with the pinned copy for the same memory until the kernel reclaims them.
-    // Aligned inward to whole pages, so a page shared with a tensor still read through the mapping
-    // is never dropped (as dense_weights does for its own copy).
+    // Each tensor's pages are handed back as soon as its copy is made, from the mapping and from the
+    // system's cache of the file: the plan charged the experts once (choose_expert_staging), and that
+    // has to hold while the copy is being made, not only after it. Copied whole first, the copy grew
+    // at memory speed beside the pages it was read from; and unmapped alone, those pages stayed the
+    // cache's, counted against a container's limit until the kernel reclaimed them, which it did not
+    // do as fast as the copy grew. On a 62 GB model under a 42 GB limit the process was killed 7 GB
+    // into the copy, three loads in four. Nothing reads those pages again, and a second copy (below)
+    // only reads them back from the file. Aligned inward to whole pages, so a page shared with a
+    // tensor still read through the mapping is never dropped (as dense_weights does for its copy).
+    const GgufOffsets & file = o.meta().offsets;
     size_t handed_back = 0;
-    const auto point_at = [&](const std::vector<pio::CopySpan> & spans) {
+    const auto copy_handing_back = [&](const std::vector<pio::CopySpan> & spans) {
         const uintptr_t page = (uintptr_t) pio::vm_page();
-        for (size_t i = 0; i < experts.size(); ++i) {
-            const uintptr_t a0 = ((uintptr_t) spans[i].src + page - 1) & ~(page - 1);
-            const uintptr_t a1 = ((uintptr_t) spans[i].src + spans[i].bytes) & ~(page - 1);
-            experts[i]->data = spans[i].dst;
-            if (a1 > a0) {
-                pio::vm_drop_file_pages((void *) a0, (size_t) (a1 - a0));
-                handed_back += (size_t) (a1 - a0);
-            }
+        handed_back = 0;
+        for (size_t i = 0; i < spans.size(); ++i) {
+            const pio::CopySpan & span = spans[i];
+            pio::copy_spans({span}, copy_threads);
+            const uintptr_t a0 = ((uintptr_t) span.src + page - 1) & ~(page - 1);
+            const uintptr_t a1 = ((uintptr_t) span.src + span.bytes) & ~(page - 1);
+            if (a1 <= a0) continue;
+            pio::vm_drop_file_pages((void *) a0, (size_t) (a1 - a0));
+            handed_back += (size_t) (a1 - a0);
+            const char * name = ggml_get_name(experts[i]);
+            const auto off = file.off_by_name.find(name);
+            const auto shard = file.file_by_name.find(name);
+            if (off == file.off_by_name.end() || shard == file.file_by_name.end()) continue;
+            if (shard->second < 0 || (size_t) shard->second >= file.shard_paths.size()) continue;
+            pio::drop_file_cache_range(file.shard_paths[(size_t) shard->second].c_str(),
+                                       off->second + (uint64_t) (a0 - (uintptr_t) span.src), (uint64_t) (a1 - a0));
         }
+    };
+    const auto point_at = [&](const std::vector<pio::CopySpan> & spans) {
+        for (size_t i = 0; i < experts.size(); ++i)
+            experts[i]->data = spans[i].dst;
     };
     const auto mib = [](size_t b) { return (double) b / (1024.0 * 1024.0); };
 
@@ -1987,23 +2043,27 @@ bool Session::Impl::stage_experts_in_host_buffer(Opening & o) {
         if (p) pio::vm_release(p, page);
         return ok;
     };
-    // Memory allocated here is committed only as the copy writes it (pio::vm_reserve), so a copy larger
-    // than the system can still give would end in the out-of-memory killer, where a backend's own
-    // allocation fails and leaves the mapping in place. So it is taken only where it fits what the
-    // system can give and a container still lets this process take; otherwise the backend's own
-    // allocation answers, as before.
+    // A copy larger than the system can still give, or than a container still lets this process take,
+    // is not made, whoever would allocate it: memory allocated here is committed only as the copy
+    // writes it (pio::vm_reserve) and ends in the out-of-memory killer, and a backend's own allocation
+    // is pinned as it is made, which a system short of memory answers no more gracefully. The cache
+    // then uploads from the mapping, as it does with no copy. Where the room cannot be read, the
+    // backend's own allocation answers, which fails rather than overcommits.
     const auto room = [] {
         uint64_t r = pio::mem_available_bytes();
         const uint64_t contained = pio::cgroup_memory_left();
         if (contained > 0 && (r == 0 || contained < r)) r = contained;
         return r;
     }();
-    const bool fits = room > 0 && (uint64_t) total <= room;
-    if (!fits && do_register)
-        log_printf(
-            LogLevel::Info,
-            "expert host buffer: %.0f MiB is more than the %.0f MiB the system can give; the backend allocates it",
-            mib(total), mib((size_t) room));
+    if (room > 0 && (uint64_t) total > room) {
+        log_printf(LogLevel::Warn,
+                   "expert host buffer: %.0f MiB is more than the %.0f MiB the system can give; the cache uploads "
+                   "from the file's mapping",
+                   mib(total), mib((size_t) room));
+        if (captured_here) clear_memory(ctx.get());
+        return true;
+    }
+    const bool fits = room > 0;
     // Both entry points or neither: memory pinned that could not be unpinned would stay pinned once freed.
     if (fits && do_register && do_unregister && pins()) {
         const size_t page = pio::vm_page();
@@ -2012,7 +2072,7 @@ bool Session::Impl::stage_experts_in_host_buffer(Opening & o) {
         void * p = pio::vm_reserve(size);
         if (p && pio::vm_commit(p, size)) {
             const std::vector<pio::CopySpan> spans = spans_at((uint8_t *) p);
-            pio::copy_spans(spans, copy_threads);
+            copy_handing_back(spans);
             const auto t_copied = clock_t_::now();
             if (do_register(p, size)) {
                 auto held = std::make_unique<RegisteredHostMemory>();
@@ -2050,7 +2110,7 @@ bool Session::Impl::stage_experts_in_host_buffer(Opening & o) {
         return true;
     }
     const std::vector<pio::CopySpan> spans = spans_at((uint8_t *) ggml_backend_buffer_get_base(buf));
-    pio::copy_spans(spans, copy_threads);
+    copy_handing_back(spans);
     point_at(spans);
     expert_host_buf.reset(buf);
     log_printf(LogLevel::Info,
@@ -2379,7 +2439,7 @@ void Session::Impl::arm_trials() {
         else
             trials.overlap = {cfg.moe.overlap ? 1 : 0, cfg.moe.overlap ? 0 : 1};
     }
-    trials.rate = t.device_tier >= 0 || t.width_side >= 0 || t.cpu_share_side >= 0 || t.shared_device_side >= 0;
+    trials.rate = t.device_tier >= 0 || t.width_side >= 0 || t.shared_device_side >= 0;
     trials.stage = stage_done;
     next_trial_stage(/*settled*/ false);
 }
@@ -2486,10 +2546,6 @@ void Session::Impl::rate_step(double seconds, int tokens, uint64_t lookups, uint
     char what[96];
     if (tier)
         std::snprintf(what, sizeof(what), "%s a device expert cache", cfg.trial.device_tier == 1 ? "with" : "without");
-    else if (cfg.trial.cpu_share_side >= 0)
-        std::snprintf(what, sizeof(what), "%s",
-                      cfg.trial.cpu_share_side == 1 ? "with part of the device cache's misses on the CPU"
-                                                    : "with every device cache miss uploaded");
     else if (cfg.trial.shared_device_side >= 0)
         std::snprintf(what, sizeof(what), "with every layer on %s",
                       cfg.trial.shared_device_side == 1 && !cfg.device_split.empty()
@@ -2743,7 +2799,18 @@ void Session::Impl::warn_about_load(const SessionConfig & cfg) {
 struct Session::AnswerCheck {
     bool ran = false;
     detail::DeviceAnswer result;
+    // The device computes the model and the cores serve a request sooner (weigh_answer_sides).
+    bool cores_faster = false;
 };
+
+namespace {
+// The two sides as the check timed them, kept where a plan reads a side's decode rate: both at once,
+// from one load, so the plan after this one decides on the model's own measurement.
+void keep_answer_rates(const detail::DeviceAnswer & a, MeasuredKnobs & rec) {
+    if (a.device_token_s > 0.0) rec.shared_device_tps = 1.0 / a.device_token_s;
+    if (a.host_token_s > 0.0) rec.no_shared_device_tps = 1.0 / a.host_token_s;
+}
+} // namespace
 
 std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
                                        std::string & error,
@@ -2755,9 +2822,31 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     const auto t0 = clock_t_::now();
     AnswerCheck check;
     std::unique_ptr<Session> self = open_placed(cfg, error, route_trace, compute_trace, io_trace, &check);
-    if (!check.ran) return self;
-    if (check.result.verdict == Verdict::Confirmed) {
-        if (self) self->impl_->trials.result.set_device_answer(device, 1);
+    if (!check.ran) {
+        if (self || !cfg.fallback || device.empty()) return self;
+        // The model could not be opened on the device at all, most likely for memory: the plan's other
+        // part serves, and the device has lost this model here (a second try at a load that does not
+        // fit is a second failure on a machine already short of room).
+        log_printf(LogLevel::Warn,
+                   "the model could not be opened on %s (%s); the plan's other configuration is opened instead",
+                   device.c_str(), error.c_str());
+        const double first_s = secs(t0, clock_t_::now());
+        const std::string first_error = error;
+        self = open_placed(*cfg.fallback, error, route_trace, compute_trace, io_trace, nullptr);
+        if (!self) {
+            error = "the model could not be opened on " + device + " (" + first_error + "), nor as the plan's other " +
+                    "configuration: " + error;
+            return nullptr;
+        }
+        self->impl_->trials.result.shared_device_unviable = MeasuredKnobs::unviable_max;
+        self->impl_->load_seconds += first_s;
+        return self;
+    }
+    if (check.result.verdict == Verdict::Confirmed && !check.cores_faster) {
+        if (self) {
+            self->impl_->trials.result.set_device_answer(device, 1);
+            keep_answer_rates(check.result, self->impl_->trials.result);
+        }
         return self;
     }
     // Not confirmed, and the placement is already freed (open_placed returned nothing): the session
@@ -2767,16 +2856,26 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     // check exists to keep from serving, and "could not compare" has not compared them. The next load
     // asks again.
     const double first_s = secs(t0, clock_t_::now());
-    self = open_placed(detail::on_cores(cfg), error, route_trace, compute_trace, io_trace, nullptr);
+    // The plan's own other part where it has one (SessionConfig::fallback), else this same
+    // configuration on the cores.
+    self = open_placed(cfg.fallback ? *cfg.fallback : detail::on_cores(cfg), error, route_trace, compute_trace,
+                       io_trace, nullptr);
     if (!self) {
-        error =
-            "the model was not kept on " + device +
-            (check.result.verdict == Verdict::Differs ? ", whose answers for it differed from the CPU's"
-                                                      : ", whose answers for it could not be compared with the CPU's") +
-            ", and it could not be opened on the CPU either: " + error;
+        error = "the model was not kept on " + device +
+                (check.cores_faster                         ? ", which the CPU decodes it faster than"
+                 : check.result.verdict == Verdict::Differs ? ", whose answers for it differed from the CPU's"
+                                                            : ", whose answers for it could not be compared with the "
+                                                              "CPU's") +
+                ", and it could not be opened on the CPU either: " + error;
         return nullptr;
     }
     if (check.result.verdict == Verdict::Differs) self->impl_->trials.result.set_device_answer(device, -1);
+    // The device computes the model and the cores are faster: its answers are confirmed all the same,
+    // and both rates are kept, so the next plan opens the cores without opening the device first.
+    if (check.cores_faster) {
+        self->impl_->trials.result.set_device_answer(device, 1);
+        keep_answer_rates(check.result, self->impl_->trials.result);
+    }
     self->impl_->load_seconds += first_s; // the load the caller waited for is both
     return self;
 }
@@ -2818,6 +2917,11 @@ std::unique_ptr<Session> Session::open_placed(const SessionConfig & cfg,
         check->result = im.compare_device_answer(o);
         if (check->result.verdict != detail::DeviceAnswer::Verdict::Confirmed) {
             error = "the device's answers for this model were not confirmed";
+            return nullptr;
+        }
+        if (im.weigh_device_answer(check->result).side == detail::AnswerSide::Cores) {
+            check->cores_faster = true;
+            error = "the cores serve this model's requests faster than the device";
             return nullptr;
         }
         detail::log_memory_snapshot("device-answer-checked");
@@ -2899,7 +3003,7 @@ struct Session::Impl::Turn {
     bool history_pushed = false;                 // did we append this turn's user message to chat_history?
     bool history_replaced = false;               // did we swap chat_history for the request's messages?
     std::vector<common_chat_msg> history_before; // what a replaced conversation goes back to
-    bool prefilled_answer = false;               // closed the reasoning span in the prompt, so skip reasoning parse
+    bool prefilled_answer = false;               // closed the reasoning span in the prompt (parsed all the same)
     common_chat_parser_params parse_params;
     detail::ToolGrammar grammar;        // the template's grammar, off when it has none
     std::vector<llama_token_data> cand; // the full candidate list, built only when the grammar refuses
@@ -3255,16 +3359,24 @@ struct Session::Impl::Turn {
         // template uses, a call that is still being written is visible (TokenMetrics::tool_calls).
         std::vector<ChatToolCall> tool_calls{};
     };
+    // The empty reasoning span a prefill closed is the prompt's, not the model's: a parse that reads
+    // the prefill back finds it, and it is no reasoning to show.
+    void forget_prefilled_reasoning(common_chat_msg & msg) const {
+        if (prefilled_answer && msg.reasoning_content.find_first_not_of(" \t\r\n") == std::string::npos)
+            msg.reasoning_content.clear();
+    }
     ShownView shown_view(const std::string & raw, bool partial) const {
         if (!chat_on) return {raw, ""};
-        // A prefilled turn resumes mid-answer: the reasoning span and the turn header the parser
-        // anchors on are already in the prompt, not in the stream, so there is nothing to strip —
-        // the raw stream already IS the answer. (If a model reasons anyway despite the closed span,
-        // that reasoning surfaces verbatim rather than being cut out here. Hiding it would only
-        // disguise a model this mechanism does not work on; the honest report is ThinkControl::None.)
-        if (prefilled_answer && !structured()) return {raw, ""};
+        // A prefilled turn resumes mid-answer, and is read by the same parse: llama.cpp hands the
+        // parser the prefill as the generation prompt (continue_final_message), so the turn header it
+        // anchors on is there, and what the format closes the answer with is cut as in any turn. The
+        // raw stream is the answer only where that close is an end-of-generation token; where it is
+        // text (a block that ends with a marker the vocabulary does not stop on), it showed.
         try {
             common_chat_msg msg = common_chat_parse(common_chat_input(raw), partial, parse_params);
+            forget_prefilled_reasoning(msg);
+            if (prefilled_answer && !structured() && detail::parsed_nothing(msg) && !raw.empty() && !partial)
+                return {raw, ""};
             return {msg.content, msg.reasoning_content, detail::from_common_tool_calls(msg.tool_calls)};
         } catch (const std::exception & e) {
             if (structured()) return {}; // never leak an unparsed reasoning/tool envelope as JSON
@@ -3458,8 +3570,7 @@ struct Session::Impl::Turn {
                     res.cancelled = true;
                     return false;
                 }
-                if (im.source.overlap() && im.source.fatal())
-                    return fail(RunError::Failed, "expert stream I/O failed during overlap prefill");
+                if (im.source.fatal()) return fail(RunError::Failed, "expert stream I/O failed during prefill");
                 return fail(RunError::Failed, "prefill decode failed");
             }
             trace_flush();
@@ -3927,8 +4038,7 @@ struct Session::Impl::Turn {
                     res.cancelled = true;
                     break;
                 }
-                if (im.source.overlap() && im.source.fatal())
-                    return fail(RunError::Failed, "expert stream I/O failed during overlap decode");
+                if (im.source.fatal()) return fail(RunError::Failed, "expert stream I/O failed during decode");
                 return fail(RunError::Failed, "decode failed during generation");
             }
             trace_flush(); // outside the s0..s1 bracket: the trace's own writes must not bill wall_ms
@@ -4022,8 +4132,6 @@ struct Session::Impl::Turn {
             s.moe_mgmt_s_per_token = n_gen ? tally.mgmt_seconds / n_gen : 0.0;
             s.moe_stall_s_per_token = n_gen ? tally.stall_seconds / n_gen : 0.0;
             s.moe_flash_wait_s_per_token = tally.overlap ? s.moe_stall_s_per_token : s.moe_io_s_per_token;
-            s.moe_compute_s_per_token = s.s_per_token - s.moe_flash_wait_s_per_token - s.moe_mgmt_s_per_token;
-            if (s.moe_compute_s_per_token < 0) s.moe_compute_s_per_token = 0;
             s.cache_hit_pct = st.cache_lookups > 0 ? 100.0 * st.cache_hits / st.cache_lookups : -1.0;
             const long long dec_lookups = st.cache_lookups - prev_cache_lookups;
             s.cache_hit_decode_pct =
@@ -4052,6 +4160,10 @@ struct Session::Impl::Turn {
             s.moe_spec_experts = st.spec_experts - prev_spec_experts;
             s.moe_spec_useful = st.spec_useful - prev_spec_useful;
         }
+        // Outside the streaming block: a resident model's token is all compute by the same residual
+        // (its flash and cache terms are zero), as each token event already says.
+        s.moe_compute_s_per_token =
+            std::max(0.0, s.s_per_token - s.moe_flash_wait_s_per_token - s.moe_mgmt_s_per_token);
         s.experts_routed = im.hook->experts_routed() - prev_routed;
         s.experts_dropped = im.hook->experts_dropped() - prev_dropped;
         s.experts_reranked = im.hook->experts_reranked() - prev_reranked;
@@ -4095,9 +4207,10 @@ struct Session::Impl::Turn {
     // keeps the parser's partial content; only a completed answer promises valid JSON.
     bool parse_result() {
         const bool complete = !res.cancelled && n_gen < n_predict;
-        if (chat_on && (!prefilled_answer || structured())) {
+        if (chat_on) {
             try {
                 final_msg = common_chat_parse(common_chat_input(gen), structured() && !complete, parse_params);
+                forget_prefilled_reasoning(final_msg);
                 final_parsed = true;
             } catch (const std::exception & e) {
                 if (structured() && complete) {

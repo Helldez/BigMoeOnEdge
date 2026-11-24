@@ -846,6 +846,11 @@ object Engine {
         catching { api.deletePartial(id); Unit }.also { refreshModels() }
     }
 
+    /** The system prompt of conversation [id] as the server sends it (#625). */
+    suspend fun systemPrompt(id: String): Result<SystemPrompt> = withContext(Dispatchers.IO) {
+        catching { SystemPrompt.of(api.systemPrompt(id)) }
+    }
+
     /**
      * The client for a chat stream: the chat runs it on its own thread and owns the connection.
      * Throws a ConnectException while no server of this app listens, as a closed port would.

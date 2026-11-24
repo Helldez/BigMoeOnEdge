@@ -5,6 +5,15 @@
 
 namespace bmoe::detail {
 
+namespace {
+// Each refused ask is a whole context creation, so the cache steps down by a quarter: a few asks
+// from the planned size to the floor, each step still close enough to keep most of the cache.
+constexpr size_t k_cache_step_divisor = 4;
+// Sizes are whole MiB because the session logs and records the cache in MiB: a size it reports is
+// the size it asked for.
+constexpr size_t k_cache_granule = size_t(1) << 20;
+} // namespace
+
 ContextOpened
 open_with_fallbacks(const ContextAsk & first,
                     const ContextFloors & floors,
@@ -32,8 +41,8 @@ open_with_fallbacks(const ContextAsk & first,
     std::vector<size_t> ladder; // every size under the planned one, largest first
     if (first.cache_bytes > 0) {
         const size_t floor = std::max<size_t>(floors.cache_bytes, 1);
-        for (size_t size = first.cache_bytes; size - size / 4 >= floor;) {
-            const size_t smaller = (size - size / 4) & ~((size_t(1) << 20) - 1);
+        for (size_t size = first.cache_bytes; size - size / k_cache_step_divisor >= floor;) {
+            const size_t smaller = (size - size / k_cache_step_divisor) & ~(k_cache_granule - 1);
             if (smaller == 0 || smaller >= size) break;
             ladder.push_back(size = smaller);
         }

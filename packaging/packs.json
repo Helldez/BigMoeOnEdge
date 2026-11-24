@@ -7,6 +7,7 @@
       "asset": "bmoe-pack-cuda",
       "targets": {
         "linux-x86_64": { "needs_any": ["libcuda.so.1"] },
+        "linux-aarch64": { "needs_any": ["libcuda.so.1"] },
         "windows-x86_64": { "needs_any": ["nvcuda.dll"] }
       }
     },

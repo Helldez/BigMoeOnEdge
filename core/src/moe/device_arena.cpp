@@ -17,6 +17,11 @@ namespace {
 // of the device itself rather than read off a list, so any backend answers for its own kernels. The
 // probe weight is allocated: a backend may remember an unallocated weight (Hexagon notes it for
 // repacking) and that note would outlive the probe.
+// The probe matmul's shape: enough rows and activation columns that a backend which picks its kernel
+// by size picks the one a layer's matmul would; the support question does not depend on more.
+constexpr int64_t k_probe_rows = 256;
+constexpr int64_t k_probe_cols = 256;
+
 bool device_matmul_takes(ggml_backend_dev_t dev, ggml_type type, const ggml_tensor * w) {
     if (ggml_is_quantized(type) && w->ne[0] % ggml_blck_size(type) != 0) return false;
     ggml_init_params ip{};
@@ -24,12 +29,12 @@ bool device_matmul_takes(ggml_backend_dev_t dev, ggml_type type, const ggml_tens
     ip.no_alloc = true;
     ggml_context * c = ggml_init(ip);
     if (!c) return false;
-    ggml_tensor * p = ggml_new_tensor_2d(c, type, w->ne[0], std::min<int64_t>(w->ne[1], 256));
+    ggml_tensor * p = ggml_new_tensor_2d(c, type, w->ne[0], std::min<int64_t>(w->ne[1], k_probe_rows));
     ggml_backend_buffer_t b = ggml_backend_alloc_ctx_tensors_from_buft(c, ggml_backend_dev_buffer_type(dev));
     bool ok = false;
     if (b) {
         ggml_backend_buffer_set_usage(b, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
-        ggml_tensor * x = ggml_new_tensor_2d(c, GGML_TYPE_F32, w->ne[0], 256);
+        ggml_tensor * x = ggml_new_tensor_2d(c, GGML_TYPE_F32, w->ne[0], k_probe_cols);
         ok = ggml_backend_dev_supports_op(dev, ggml_mul_mat(c, p, x));
         ggml_backend_buffer_free(b);
     }
@@ -517,8 +522,57 @@ void DeviceExpertArena::place(bool on_device) {
     on_device_ = on_device;
 }
 
+void DeviceExpertArena::rebuild_order() {
+    const int n = (int) std::max(k_of_layer_.size(), dense_.size());
+    run_block_.clear();
+    pos_of_layer_.assign((size_t) std::max(n, 0), -1);
+    auto add = [&](int layer, int block) {
+        if (layer < 0 || block < 0 || block >= n) return;
+        if (layer >= (int) pos_of_layer_.size()) pos_of_layer_.resize((size_t) layer + 1, -1);
+        if (pos_of_layer_[(size_t) layer] >= 0) return; // a graph runs a layer of its own once
+        pos_of_layer_[(size_t) layer] = (int) run_block_.size();
+        run_block_.push_back(block);
+    };
+    if (given_layers_.empty()) {
+        for (int il = 0; il < n; ++il)
+            add(il, il);
+        return;
+    }
+    for (size_t i = 0; i < given_layers_.size() && i < given_blocks_.size(); ++i)
+        add(given_layers_[i], given_blocks_[i]);
+}
+
+void DeviceExpertArena::set_graph_order(const std::vector<int> & layers, const std::vector<int> & blocks) {
+    std::lock_guard<std::mutex> lk(mu_);
+    given_layers_ = layers;
+    given_blocks_ = blocks;
+    rebuild_order();
+}
+
+int DeviceExpertArena::block_at(int il, int ahead) const {
+    if (il < 0 || il >= (int) pos_of_layer_.size() || pos_of_layer_[(size_t) il] < 0) return -1;
+    const int p = pos_of_layer_[(size_t) il] + ahead;
+    return p >= 0 && p < (int) run_block_.size() ? run_block_[(size_t) p] : -1;
+}
+
+int DeviceExpertArena::next_k(int il) const {
+    for (int ahead = 1;; ++ahead) {
+        const int b = block_at(il, ahead);
+        if (b < 0) return -1;
+        if (k_of(b) >= 0) return k_of(b);
+    }
+}
+
 void DeviceExpertArena::schedule(int k, const std::vector<uint8_t> * want, bool front) {
     if (k < 0 || k >= (int) order_.size()) return;
+    // The slot may hold another block's experts by now: that block starts over if the graph comes
+    // back to it, and this one starts from nothing.
+    int & owner = expert_owner_[k % n_slots_];
+    if (owner != k) {
+        if (owner >= 0) std::fill(sched_[(size_t) owner].begin(), sched_[(size_t) owner].end(), (uint8_t) 0);
+        std::fill(sched_[(size_t) k].begin(), sched_[(size_t) k].end(), (uint8_t) 0);
+        owner = k;
+    }
     std::vector<uint8_t> & s = sched_[(size_t) k];
     std::vector<int> es;
     for (int e = 0; e < n_expert_; ++e)
@@ -543,7 +597,14 @@ void DeviceExpertArena::schedule(int k, const std::vector<uint8_t> * want, bool 
 }
 
 void DeviceExpertArena::schedule_dense(int il) {
-    if (il < 0 || il >= (int) dense_.size() || dense_scheduled_[(size_t) il]) return;
+    if (il < 0 || il >= (int) dense_.size()) return;
+    // As for the experts: a slot handed to another block forgets the one it held.
+    int & owner = dense_owner_[il % 2];
+    if (owner != il) {
+        if (owner >= 0) dense_scheduled_[(size_t) owner] = dense_waited_[(size_t) owner] = false;
+        owner = il;
+    }
+    if (dense_scheduled_[(size_t) il]) return;
     dense_scheduled_[(size_t) il] = true;
     const std::vector<int> & streamed = dense_[(size_t) il].streamed;
     const int n = (int) streamed.size();
@@ -569,28 +630,44 @@ void DeviceExpertArena::begin_graph() {
         std::fill(s.begin(), s.end(), (uint8_t) 0);
     std::fill(dense_scheduled_.begin(), dense_scheduled_.end(), false);
     std::fill(dense_waited_.begin(), dense_waited_.end(), false);
-    // Dense first: layer 0 needs them before anything, and there is no node before layer 0 to wait
-    // at, so this waits for them here.
-    schedule_dense(0);
-    schedule_dense(1);
-    // As many layers ahead as there are slots to put them in.
-    for (int k = 0; k < n_slots_ && k < (int) order_.size(); ++k)
+    std::fill(std::begin(expert_owner_), std::end(expert_owner_), -1);
+    std::fill(std::begin(dense_owner_), std::end(dense_owner_), -1);
+    if (run_block_.empty()) rebuild_order();
+    // Dense first: the first layer needs them before anything, and there is no node before it to
+    // wait at, so this waits for them here. The second rides along where it has a slot of its own.
+    const int d0 = run_block_.empty() ? -1 : run_block_[0];
+    const int d1 = run_block_.size() > 1 ? run_block_[1] : -1;
+    schedule_dense(d0);
+    if (d1 >= 0 && d1 % 2 != d0 % 2) schedule_dense(d1);
+    // As many expert layers ahead as there are slots to put them in, in the order the graph runs
+    // them, stopping at the first that would land in a slot already given.
+    int given = 0;
+    for (const int b : run_block_) {
+        const int k = k_of(b);
+        if (k < 0) continue;
+        if (given == n_slots_ || expert_owner_[k % n_slots_] >= 0) break;
         schedule(k, routed_ && have_prev_[(size_t) k] ? &prev_[(size_t) k] : nullptr);
-    if (!dense_.empty()) {
-        cv_done_.wait(lk, [&] { return dense_remaining_[0] == 0; });
-        dense_waited_[0] = true;
+        ++given;
+    }
+    if (!dense_.empty() && d0 >= 0 && d0 < (int) dense_.size()) {
+        cv_done_.wait(lk, [&] { return dense_remaining_[(size_t) d0] == 0; });
+        dense_waited_[(size_t) d0] = true;
     }
 }
 
 void DeviceExpertArena::dense_barrier(int il) {
-    if (dense_.empty() || il < 0 || il + 1 >= (int) dense_.size()) return;
+    if (dense_.empty()) return;
     const auto t0 = std::chrono::steady_clock::now();
     std::unique_lock<std::mutex> lk(mu_);
-    // Layer il is done with its slot, which is the one layer il+2 goes into.
-    schedule_dense(il + 1);
-    schedule_dense(il + 2);
-    cv_done_.wait(lk, [&] { return dense_remaining_[(size_t) il + 1] == 0; });
-    dense_waited_[(size_t) il + 1] = true;
+    const int next = block_at(il, 1), after = block_at(il, 2);
+    if (next < 0 || next >= (int) dense_.size()) return;
+    // This layer is done with its slot, which is the one the layer after the next goes into. Where
+    // the graph's order puts that one in the next layer's own slot instead, it waits its turn: it is
+    // queued at the next layer's end, and read while nothing else computes.
+    schedule_dense(next);
+    if (after >= 0 && after % 2 != next % 2) schedule_dense(after);
+    cv_done_.wait(lk, [&] { return dense_remaining_[(size_t) next] == 0; });
+    dense_waited_[(size_t) next] = true;
     lk.unlock();
     stall_ns_ +=
         (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
@@ -599,12 +676,18 @@ void DeviceExpertArena::dense_barrier(int il) {
 void DeviceExpertArena::barrier(int il, const ggml_tensor * topk) {
     // The dense slot of this layer must have been waited for before the layer began: if the graph
     // never passed the node that paces it, its attention already ran on whatever the slot held.
-    if (il >= 0 && il < (int) dense_.size() && !dense_[(size_t) il].t.empty()) {
+    const int block = block_at(il, 0);
+    if (block >= 0 && block < (int) dense_.size() && !dense_[(size_t) block].t.empty()) {
         std::lock_guard<std::mutex> lk(mu_);
-        if (!dense_waited_[(size_t) il]) failed_ = true;
+        if (!dense_waited_[(size_t) block]) failed_ = true;
     }
-    if (il < 0 || il >= (int) k_of_layer_.size()) return;
-    const int k = k_of_layer_[(size_t) il];
+    // A routing node of a layer the order does not name: nothing says which block it computes
+    // from, so nothing was put in a slot for it. The graph fails rather than compute on what is there.
+    if (block < 0) {
+        failed_ = true;
+        return;
+    }
+    const int k = k_of(block);
     if (k < 0) return;
     const auto t0 = std::chrono::steady_clock::now();
     // Routed mode: the ids this layer's matmul will read, as a set. Read before taking the lock: the
@@ -633,7 +716,10 @@ void DeviceExpertArena::barrier(int il, const ggml_tensor * topk) {
     // be loaded ahead, because the only place to put it is still being computed on, so layer k is read
     // here - with its routing already known - and the device waits for it. What that gives up is the
     // overlap of a layer's read with the previous layer's compute; what it buys is a layer of memory.
-    const bool ahead = n_slots_ > 1;
+    // The same holds for the layer the graph runs next, whichever block that is: it may be read
+    // ahead only into a slot this layer is not computing from.
+    const int k1 = next_k(il);
+    const bool ahead = n_slots_ > 1 && k1 >= 0 && k1 % n_slots_ != k % n_slots_;
     if (!used.empty()) {
         int missed = 0;
         for (int e = 0; e < n_expert_; ++e)
@@ -645,12 +731,10 @@ void DeviceExpertArena::barrier(int il, const ggml_tensor * topk) {
         prev_[(size_t) k] = used;
         have_prev_[(size_t) k] = true;
         const bool whole = (float) n_used > routed_full_frac_ * (float) n_expert_;
-        const int k1 = k + 1;
-        if (ahead && k1 < (int) order_.size())
-            schedule(k1, !whole && have_prev_[(size_t) k1] ? &prev_[(size_t) k1] : nullptr);
+        if (ahead) schedule(k1, !whole && have_prev_[(size_t) k1] ? &prev_[(size_t) k1] : nullptr);
     } else {
         schedule(k);
-        if (ahead) schedule(k + 1);
+        if (ahead) schedule(k1);
     }
     cv_done_.wait(lk, [&] { return remaining_[(size_t) k] == 0; });
     lk.unlock();

@@ -225,6 +225,7 @@ json AgentStore::create_conversation(json fields) {
            {"mode", fields.value("mode", std::string("ask"))},
            {"route", fields.value("route", std::string("local"))},
            {"agent", fields.value("agent", std::string("builtin"))},
+           {"system", fields.value("system", std::string())},
            {"state", "idle"},
            {"created", t},
            {"updated", t},

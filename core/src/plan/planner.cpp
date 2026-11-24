@@ -159,6 +159,39 @@ const char * regime_name(Regime r) {
     return "?";
 }
 
+LayerSlots layer_slots(int32_t n_gpu_layers, uint32_t n_layer) {
+    LayerSlots s;
+    s.n_layer = n_layer;
+    const uint32_t slots = n_layer + 1;
+    s.on_device = n_gpu_layers < 0 ? slots : std::min<uint32_t>((uint32_t) n_gpu_layers, slots);
+    return s;
+}
+
+HostDense host_dense_of(const ModelProfile & m, const LayerSlots & slots) {
+    HostDense h;
+    h.tables = m.group(WeightGroup::Embedding).bytes;
+    const uint64_t output = m.group(WeightGroup::Output).bytes;
+    const uint64_t host_blocks = slots.host_blocks();
+    uint64_t blocks = 0, blocks_on_host = 0;
+    if (m.n_layer && m.layer_dense_bytes.size() == m.n_layer) {
+        for (uint32_t il = 0; il < m.n_layer; ++il) {
+            blocks += m.layer_dense_bytes[il];
+            if (il < host_blocks) blocks_on_host += m.layer_dense_bytes[il];
+        }
+    } else {
+        // Without each block's bytes, the blocks are what the parts outside them leave, by count.
+        const uint64_t outside = h.tables + output;
+        blocks = m.dense_bytes > outside ? m.dense_bytes - outside : 0;
+        blocks_on_host = m.n_layer ? (uint64_t) ((double) blocks * (double) host_blocks / (double) m.n_layer) : blocks;
+    }
+    // What is neither a block, a table nor the output head (the final norm and the like) is counted on
+    // the host: the side that can only over-reserve, by bytes too few to move a plan.
+    const uint64_t named = blocks + h.tables + output;
+    const uint64_t rest = m.dense_bytes > named ? m.dense_bytes - named : 0;
+    h.bytes = blocks_on_host + h.tables + (slots.output_on_device() ? 0 : output) + rest;
+    return h;
+}
+
 Placement Placement::at_width(uint32_t width) const {
     Placement q = *this;
     if (compute_width == 0 || width == 0 || width == compute_width) return q;
@@ -309,10 +342,20 @@ struct Planning {
     bool projector_on_device = false;
     uint64_t projector_host = 0;
     uint64_t checkpoint_bytes = 0; // the context checkpoints a chat run will keep (checkpoint_reserve)
-    uint64_t host_all = 0;
-    uint64_t host_dense = 0;
+    uint64_t host_all = 0;         // the host's share of the model, every byte of it
+    uint64_t host_dense = 0;       // of that, all but the experts
+    // Of both, the embedding tables the run may leave in the mapping (mappable_host_tables). What
+    // the regime weighs is what is left: the bytes the run has to hold.
+    uint64_t host_tables = 0;
+    uint64_t held_all() const { return host_all - std::min(host_all, host_tables); }
+    uint64_t held_dense() const { return host_dense - std::min(host_dense, host_tables); }
     uint64_t air = 0;
     bool air_short = false;
+    // Set on the second pass of a plan that streams (plan_from): the model is planned as held whole,
+    // to see whether a device that reads this memory may be given it, and this is the room it may
+    // take there with its compute buffer: what the plan that streams it may hold of this pool, its
+    // own ledger's ceiling. 0 on every other pass, where the regime and the margin decide.
+    uint64_t whole_room = 0;
 
     // The model as the allocator sees it: only the host's share of the experts (host_model).
     ModelProfile host_model;
@@ -458,8 +501,8 @@ TierSplit device_tier_split(const Placement & pl, const ModelProfile & m, uint64
         out.budget = on_devices + spare_sum;
         return out;
     }
-    const uint32_t slots = m.n_layer + 1; // the layers and, last, the output, as llama.cpp fills them
-    const uint32_t ngl = pl.n_gpu_layers < 0 ? slots : std::min<uint32_t>((uint32_t) pl.n_gpu_layers, slots);
+    const LayerSlots ls = layer_slots(pl.n_gpu_layers, m.n_layer);
+    const uint32_t slots = m.n_layer + 1;
     const auto is_moe = [&](uint32_t il) {
         return m.moe_layers.empty() || std::find(m.moe_layers.begin(), m.moe_layers.end(), il) != m.moe_layers.end();
     };
@@ -472,7 +515,7 @@ TierSplit device_tier_split(const Placement & pl, const ModelProfile & m, uint64
         double room = 0.0;
     };
     std::vector<Card> cards(pl.device_split.size());
-    uint32_t at = slots - ngl, n_layers = 0, n_whole = 0;
+    uint32_t at = ls.first_device_slot(), n_layers = 0, n_whole = 0;
     for (size_t i = 0; i < pl.device_split.size(); ++i) {
         Card & c = cards[i];
         for (const auto & sp : pl.device_spare)
@@ -506,7 +549,7 @@ TierSplit device_tier_split(const Placement & pl, const ModelProfile & m, uint64
                                        (double) m.n_layer +
                                    kv_per_layer;
     const double dense_bound = std::max(dense_per_layer, (double) m.largest_layer_dense_bytes + kv_per_layer);
-    const uint32_t first = slots - ngl;
+    const uint32_t first = ls.first_device_slot();
     const bool exact = m.layer_dense_bytes.size() == m.n_layer;
     // The dense part and context of layers [from, from + n), the output's slot not among them.
     const auto dense_of = [&](uint32_t from, uint32_t n) {
@@ -781,7 +824,10 @@ void choose_device_tier(Planning & s) {
     // The dense part of every layer must already be on the devices: it is read by every token, so it
     // has the first claim on the fast memory, and the fitter gives it that claim before any expert.
     // A layer whose dense part is left on the host would cross to reach a cache on the device.
-    if ((uint32_t) pl.n_gpu_layers < m.n_layer) {
+    // llama.cpp counts n_layer + 1 slots, the output last, and fills the devices from the top, so
+    // every block is there only from n_layer + 1: at n_layer the first block is still the host's,
+    // which is the count choose_graph_width calls short too.
+    if ((uint32_t) pl.n_gpu_layers <= m.n_layer) {
         s.note("device-cache-mb", "0", Source::Derived,
                "Not every layer's dense part fits on the device: no cache of experts there.",
                "the capacity fitter put " + u64s((uint64_t) pl.n_gpu_layers) + " of " + u64s(m.n_layer + 1) +
@@ -1044,7 +1090,7 @@ void choose_expert_staging(Planning & s) {
     }
     const uint64_t copy = s.host_expert_bytes;
     // The copy in place of the mapped experts host_all counts (see above): the same total, held once.
-    const uint64_t held = s.host_all - std::min(s.host_all, s.host_expert_bytes) + copy;
+    const uint64_t held = s.held_all() - std::min(s.held_all(), s.host_expert_bytes) + copy;
     if (held > s.usable) {
         s.note("expert-host-buffer", "false", Source::Derived, "The device cache uploads from the file's mapping.",
                std::string(rates) + ", but with the copy's " + mib_s(copy) + " MiB in place of the mapped experts " +
@@ -1118,8 +1164,8 @@ void price_layers_home(Planning & s) {
     if (s.p.config.moe.device_cache_mb > 0) return; // the device tier keeps every layer on the device
 
     // The device slots, top down as llama.cpp fills them: the layers and, last, the output.
-    const uint32_t slots = m.n_layer + 1;
-    const uint32_t ngl = pl.n_gpu_layers < 0 ? slots : std::min<uint32_t>((uint32_t) pl.n_gpu_layers, slots);
+    const LayerSlots ls = layer_slots(pl.n_gpu_layers, m.n_layer);
+    const uint32_t slots = m.n_layer + 1, ngl = ls.on_device;
     std::vector<std::pair<std::string, uint32_t>> split = pl.device_split;
     if (split.empty()) {
         for (const ComputeDevice & d : s.hw.devices)
@@ -1138,7 +1184,7 @@ void price_layers_home(Planning & s) {
         bool output = false;
     };
     std::vector<Part> parts;
-    uint32_t at = slots - ngl, dense_only = 0;
+    uint32_t at = ls.first_device_slot(), dense_only = 0;
     for (const auto & e : split) {
         Part q;
         for (const ComputeDevice & d : s.hw.devices)
@@ -1335,6 +1381,19 @@ void size_budget(Planning & s) {
 // the widest graph, since its buffers take nothing from anything there.
 } // namespace
 
+// From `top`, halve the graph's width while its buffers are past their share, and stop at `floor`
+// rather than above it: a width that is not a power of two times the floor (a context of 4092
+// tokens) used to stop at the last halving still over it (1023, where 511 is under a 512 floor),
+// with the buffers past their share and the floor never reached.
+namespace {
+template <typename Over> uint32_t narrowed_width(uint32_t top, uint32_t floor, Over over) {
+    uint32_t w = top;
+    while (w > floor && over(w))
+        w = std::max(floor, w / 2);
+    return w;
+}
+} // namespace
+
 uint32_t device_share_width(const Placement & placement,
                             const HardwareProfile & hw,
                             const PlannerPolicy & policy,
@@ -1358,11 +1417,7 @@ uint32_t device_share_width(const Placement & placement,
         }
         return !per_card && (double) q.device_compute_bytes > (double) device_memory * policy.compute_share_max;
     };
-    const uint32_t lo = std::max(policy.ubatch_min, min_width);
-    uint32_t w = full;
-    while (w / 2 >= lo && over(w))
-        w /= 2;
-    return w;
+    return narrowed_width(full, std::max(policy.ubatch_min, min_width), over);
 }
 
 namespace {
@@ -1636,9 +1691,7 @@ void choose_graph_width(Planning & s) {
     // run (PlannerPolicy::ubatch_max_device, `bound` above), whatever its memory allows.
     const std::string images = image_past_bound(p.config, bound);
     const uint32_t top = bound > 0 && full > bound ? bound : full;
-    uint32_t w = top;
-    while (w / 2 >= narrowest && over(w))
-        w /= 2;
+    const uint32_t w = narrowed_width(top, narrowest, over);
     // The width taken: its buffers charged, and the session told it whenever it is not the width the
     // config opens with anyway (at the context the placement settles, which apply_placement adopts).
     RunConfig opened = p.config;
@@ -1695,7 +1748,7 @@ void choose_graph_width(Planning & s) {
                                            : share;
     // Held at the floor an image sets, past the share: said, since the share alone would go narrower.
     const std::string image_floor =
-        narrowest > s.pol.ubatch_min && w / 2 < narrowest && over(w)
+        narrowest > s.pol.ubatch_min && w == narrowest && over(w)
             ? " It stays at least " + u64s(narrowest) + " tokens wide: an image takes up to that many, in one pass."
             : std::string();
     take(w);
@@ -1713,10 +1766,17 @@ void choose_graph_width(Planning & s) {
 // A prefill device the plan armed computes every prompt's pass, as wide as the graph: held to the
 // device's bound like any device that computes the graph (#533). The width rule ran before the device
 // was chosen, so a graph it left wider is narrowed here; narrower only gives memory back.
+// The width that rule holds the graph to, or 0 where it leaves the graph as it is. Asked before the
+// device is armed too (fit_prefill_device), so the device is weighed with the graph it will run.
+uint32_t prefill_width_bound(const Planning & s) {
+    const uint32_t bound = device_pass_bound(s.pol);
+    return s.req.is_pinned("ubatch") || bound == 0 || (uint32_t) s.p.config.graph_width() <= bound ? 0 : bound;
+}
+
 void bound_prefill_width(Planning & s) {
     Plan & p = s.p;
-    const uint32_t bound = device_pass_bound(s.pol);
-    if (s.req.is_pinned("ubatch") || bound == 0 || (uint32_t) p.config.graph_width() <= bound) return;
+    const uint32_t bound = prefill_width_bound(s);
+    if (bound == 0) return;
     const uint32_t was = (uint32_t) p.config.graph_width();
     s.placement = s.placement.at_width(bound);
     p.placement = s.placement;
@@ -1743,6 +1803,33 @@ uint64_t checkpoint_reserve(const RunConfig & c, const Placement & placement) {
     return placement.context_fixed_bytes * (uint64_t) c.ctx_checkpoints;
 }
 
+// The context and the compute buffers a placement leaves on the host (residency_regime says what is
+// counted and why). A function of the placement alone, so a graph narrowed later is charged again.
+uint64_t host_fixed_of(const Placement & placement) {
+    uint64_t host_fixed = placement.raw_host_context_bytes + placement.raw_host_compute_bytes;
+    if (placement.shared_memory_placement) host_fixed += placement.device_context_bytes;
+    if (placement.fitted) host_fixed = std::min(host_fixed, placement.host_resident_bytes);
+    return host_fixed;
+}
+
+// The embedding tables inside the host's dense set that the run may leave in the mapping rather than
+// hold. The graph gathers a table by row, and the run leaves in the mapping any tensor it is handed by
+// name, under every dense policy (MoeStreamConfig::dense_mapped), so a table is never a set the run
+// must hold whole: whether it is held is the ledger's call (settle_mapped_tables), made later. Counted
+// as the host set counted them: the file's tables without a placement, the placement's own figure
+// with one (Placement::host_table_bytes). A caller who pinned the list decides instead: the tables
+// are left mapped only where the list names every one of them.
+uint64_t mappable_host_tables(const Planning & s) {
+    const ModelProfile & m = s.model;
+    if (m.embedding_tensors.empty()) return 0;
+    if (s.req.is_pinned("dense-mapped")) {
+        const std::vector<std::string> & named = s.p.config.moe.dense_mapped;
+        for (const std::string & t : m.embedding_tensors)
+            if (std::find(named.begin(), named.end(), t) == named.end()) return 0;
+    }
+    return s.placement.fitted ? s.placement.host_table_bytes : m.group(WeightGroup::Embedding).bytes;
+}
+
 // What the host holds against what it may (s.host_all, s.air and the rest), and the regime that puts
 // the run in. Read for a model with no experts too, where the only question it answers is whether the
 // whole model is held in memory.
@@ -1765,9 +1852,7 @@ Regime residency_regime(Planning & s) {
     // a context is the same size on either side of a boundary this machine does not have; the
     // compute buffer is the host's own, since what a device reserves to compute is not what the
     // cores will.
-    uint64_t host_fixed = placement.raw_host_context_bytes + placement.raw_host_compute_bytes;
-    if (placement.shared_memory_placement) host_fixed += placement.device_context_bytes;
-    if (placement.fitted) host_fixed = std::min(host_fixed, placement.host_resident_bytes);
+    const uint64_t host_fixed = host_fixed_of(placement);
     // Context checkpoints are host memory the fitter never saw, and the run fills it as the chat
     // goes: charged up front, at the count the run may keep, so the cache is not sized into it.
     s.checkpoint_bytes = checkpoint_reserve(s.p.config, placement);
@@ -1793,9 +1878,18 @@ Regime residency_regime(Planning & s) {
     s.host_dense = placement.fitted ? placement.host_resident_bytes + s.device_on_host + s.checkpoint_bytes
                                     : s.model.dense_bytes + unfitted_fixed;
     s.host_dense += s.projector_host;
-    Regime regime = s.host_all <= s.usable     ? Regime::Fits
-                    : s.host_dense <= s.usable ? Regime::ExpertsStream
-                                               : Regime::DenseOversized;
+    // Both questions are asked of what the run has to hold, so neither counts a table it may leave
+    // mapped. Weighing the dense set with one called a model whose per-layer table alone is larger
+    // than the machine "not even the dense weights fit" while its dense set held in a quarter of the
+    // memory (#664). Weighing the whole model with one streams a model that is held whole beside the
+    // table, which on two 16 GB cards also gives up the copy of the experts a device reads them from
+    // (choose_expert_staging) and with it the decode that load measured. Held whole, the run reads
+    // the rows a token needs from the mapping; a table it reads whole is one llama.cpp keeps small
+    // enough to read at load, which the margin below the budget is there for.
+    s.host_tables = mappable_host_tables(s);
+    Regime regime = s.held_all() <= s.usable     ? Regime::Fits
+                    : s.held_dense() <= s.usable ? Regime::ExpertsStream
+                                                 : Regime::DenseOversized;
 
     // Fitting is not the same as being left alone. Where the machine can take pages back, residency
     // has to clear a second bar: room beyond the model itself, so its weights are not reclaimed and
@@ -1804,10 +1898,13 @@ Regime residency_regime(Planning & s) {
     // by two orders of magnitude: streaming a model that would have fitted costs some reads, while
     // residency on a model that does not is 0.1 tok/s against 5.0. Until the headroom probe exists,
     // the cheap side of that asymmetry is the right default, and a caller who disagrees drops --auto.
-    s.air = s.usable > s.host_all ? s.usable - s.host_all : 0;
-    const uint64_t air_needed = (uint64_t) ((double) s.host_all * (double) s.pol.fits_air_ratio);
+    s.air = s.usable > s.held_all() ? s.usable - s.held_all() : 0;
+    // The pass that plans the model as held whole (whole_room) is asked what that plan is, not
+    // whether to make it: the plan that streams was made first and is what it is weighed against.
+    if (s.whole_room > 0) return Regime::Fits;
+    const uint64_t air_needed = (uint64_t) ((double) s.held_all() * (double) s.pol.fits_air_ratio);
     s.air_short = regime == Regime::Fits && reclaim_is_cheap(s.hw.anon_overflow) && s.air < air_needed;
-    if (s.air_short) regime = s.host_dense <= s.usable ? Regime::ExpertsStream : Regime::DenseOversized;
+    if (s.air_short) regime = s.held_dense() <= s.usable ? Regime::ExpertsStream : Regime::DenseOversized;
     return regime;
 }
 
@@ -1891,23 +1988,27 @@ void note_regime(Planning & s) {
     std::string brief;
     switch (s.p.regime) {
     case Regime::Fits:
-        brief = "The whole model (" + size_brief(s.host_all) + ") fits in the " + size_brief(s.usable) + " usable.";
+        brief = "The whole model (" + size_brief(s.held_all()) + ") fits in the " + size_brief(s.usable) + " usable.";
         break;
     case Regime::ExpertsStream:
-        brief = "Experts stream from storage: the model needs " + size_brief(s.host_all) + ", " + size_brief(s.usable) +
-                " is usable.";
+        brief = "Experts stream from storage: the model needs " + size_brief(s.held_all()) + ", " +
+                size_brief(s.usable) + " is usable.";
         break;
     case Regime::DenseOversized:
-        brief =
-            "Even the dense weights (" + size_brief(s.host_dense) + ") exceed the " + size_brief(s.usable) + " usable.";
+        brief = "Even the dense weights (" + size_brief(s.held_dense()) + ") exceed the " + size_brief(s.usable) +
+                " usable.";
         break;
     case Regime::NotMoe:
     case Regime::Unknown:
         brief = "Nothing to stream.";
         break;
     }
+    const uint64_t tables = s.host_dense - s.held_dense();
+    const std::string left_out = tables ? ", of which " + u64s(mib(tables)) +
+                                              " MiB are embedding tables the run may leave mapped, weighed without"
+                                        : "";
     s.note("regime", regime_name(s.p.regime), Source::Derived, brief,
-           "on the host " + u64s(mib(s.host_all)) + " MiB (dense " + u64s(mib(s.host_dense)) + ") against " +
+           "on the host " + u64s(mib(s.host_all)) + " MiB (dense " + u64s(mib(s.host_dense)) + left_out + ") against " +
                u64s(mib(s.usable)) + " MiB usable, which is the " + u64s(mib(s.holdable)) +
                " MiB this process may hold (" + headroom_name(s.hw.holdable_from) + ") less a " + u64s(mib(s.margin)) +
                " MiB margin (" + overflow_name(s.hw.anon_overflow) + ")");
@@ -1915,7 +2016,7 @@ void note_regime(Planning & s) {
     if (s.air_short)
         s.note("residency", "not verified", Source::Derived,
                "Experts stream anyway: the model would fit with only " + size_brief(s.air) + " to spare.",
-               "the host set fits with " + u64s(mib(s.air)) + " MiB to spare against the " + u64s(mib(s.host_all)) +
+               "the host set fits with " + u64s(mib(s.air)) + " MiB to spare against the " + u64s(mib(s.held_all())) +
                    " MiB it would hold, and a reclaim is cheap here (" + overflow_name(s.hw.anon_overflow) +
                    "): a model that fits only just is reclaimed from underneath and refaults its weights one page "
                    "at a time, so the experts stream instead. Run without the planner to keep plain residency");
@@ -2040,6 +2141,14 @@ SharedDeviceCandidate shared_device_candidate(const Planning & s, uint64_t resid
             why = "it needs the weights repacked into a layout of its own, and the model loads as mapped";
         else if (compute == 0)
             why = "the compute buffer it would reserve was never projected";
+        else if (s.whole_room > 0 && resident + compute > s.whole_room)
+            // Weighed against the plan that streams: on the device the whole model is this process's
+            // memory, as that plan's cache and dense set are, so it may take what that plan would.
+            why = "the " + u64s(mib(resident)) + " MiB the model holds whole and its compute buffer of " +
+                  u64s(mib(compute)) + " MiB are past the " + u64s(mib(s.whole_room)) +
+                  " MiB the plan that streams it may hold of this memory";
+        else if (s.whole_room > 0)
+            ; // inside what the streaming plan may hold: the margin is already off that ceiling
         else if (resident + compute > s.usable)
             why = "its compute buffer of " + u64s(mib(compute)) + " MiB beside the " + u64s(mib(resident)) +
                   " MiB the model holds is past the " + u64s(mib(s.usable)) + " MiB usable";
@@ -2131,19 +2240,50 @@ void choose_shared_device(Planning & s, uint64_t resident) {
                   "loads of this model on the cores failed on this machine");
         return;
     }
+    // Until a load has timed both sides on this model here, the load decides, on the model itself. The
+    // probes that let the device through each compute a part of a model, and they do not say which side
+    // decodes the whole of it faster: on one unified-memory laptop they read the cores 60% ahead of a
+    // GPU that decoded the model 35% faster, and on a laptop with integrated graphics 74% ahead of one
+    // that decoded it at more than twice their rate. The load that moves the model compares its answers
+    // with the cores' anyway, which decodes it on both; it times the two as it does, keeps the side a
+    // request is shorter on (KnobTrialConfig::answer_prompt_per_token), and records both rates, so
+    // every plan after this one reads a measurement. The device is the side opened because the
+    // comparison needs the placement open; where the cores win the model is reopened on them, once.
+    const bool both = on > 0.0 && off > 0.0;
+    if (!both) {
+        const RequestMix mix = request_mix(s, 0);
+        const double per_token = mix.gen > 0.0 ? mix.prompt / mix.gen : 0.0;
+        char weighed[200];
+        std::snprintf(weighed, sizeof(weighed),
+                      "a request here is %.0f prompt tokens and %.0f decoded (%s), so a prompt-wide graph's time "
+                      "weighs %.1f tokens a decoded one",
+                      mix.prompt, mix.gen, mix.words().c_str(), per_token);
+        on_device(Source::Derived,
+                  "Every layer opens on " + dev.name + ", and the load keeps whichever of it and the CPU is faster.",
+                  "no load has timed this model on both sides here, and no probe of a part of a model says which "
+                  "decodes the whole faster: the load times it one token at a time and as wide as a prompt on " +
+                      dev.name +
+                      " and on the cores, keeps the side a request is shorter on (the cores where they "
+                      "are faster by the " +
+                      margin + " margin, reopening on them) and records both rates; " + weighed);
+        trial.answer_device = dev.name;
+        trial.answer_prompt_per_token =
+            (float) std::min(per_token, (double) KnobTrialConfig::answer_prompt_per_token_max);
+        trial.shared_device_side = 1;
+        return;
+    }
     // A request's time on each side, in the same unit: its decoded tokens at the rate each processor
     // applies a real layer of this model one token wide, and its prompt at the rate each applies it as
     // wide as a prompt, both probed here with the host's results (a token reads the same bytes on
     // either, so the bytes cancel). The decode's ratio is the loads' own once both sides were timed.
     const double decode_host = s.model.is_moe ? s.hw.host_expert_rate() : s.hw.host_dense_rate();
-    const double decode_dev_probed = layer_rate_of(s, dev);
-    if (decode_host <= 0.0 || decode_dev_probed <= 0.0) {
-        on_cores(Source::Unprobed, "The model runs on the CPU: " + dev.name + "'s rate on it was not measured.",
-                 "which processor applies this model's weights faster was not probed for both, so nothing moves");
+    if (decode_host <= 0.0) {
+        on_cores(Source::Unprobed, "The model runs on the CPU: its rate on this model was not measured.",
+                 "the rate the cores apply this model's weights at was not probed, so a prompt's share of a "
+                 "request has no unit to be weighed in, and nothing moves");
         return;
     }
-    const bool both = on > 0.0 && off > 0.0;
-    const double decode_dev = both ? decode_host * on / off : decode_dev_probed;
+    const double decode_dev = decode_host * on / off;
     const bool wide_probed = s.hw.host_wide_matmul_gibs > 0.0 && dev.wide_matmul_gibs > 0.0;
     const RequestMix mix = request_mix(s, 0);
     const double gen = mix.gen, prompt = wide_probed ? mix.prompt : 0.0;
@@ -2154,21 +2294,17 @@ void choose_shared_device(Planning & s, uint64_t resident) {
                   "a request here is %.0f prompt tokens and %.0f decoded (%s); %s decodes at %.2fx the cores' rate "
                   "(%s) and computes a prompt-wide layer at %.2fx, so a request takes %.2fx the time it takes on "
                   "the cores",
-                  prompt, gen, mix.words().c_str(), dev.name.c_str(), decode_dev / decode_host,
-                  both ? std::string(measured).c_str() : "probed on one real layer of this model",
+                  prompt, gen, mix.words().c_str(), dev.name.c_str(), decode_dev / decode_host, measured,
                   wide_probed ? dev.wide_matmul_gibs / s.hw.host_wide_matmul_gibs : 0.0, t_dev / t_cores);
-    // The cores are the side in force, the placement every load before this rule ran: the device takes
-    // over only past them by the margin.
-    const bool device_wins = t_cores > t_dev * (1.0 + m);
-    // The load times the decode of the side it serves, where no load has yet.
-    if ((device_wins ? on : off) <= 0.0) trial.shared_device_side = device_wins ? 1 : 0;
-    const Source src = both ? Source::Measured : Source::Derived;
-    if (device_wins)
-        on_device(src, "Every layer runs on " + dev.name + ", which serves this machine's requests faster.",
-                  std::string(nums) + ", past the " + margin + " margin");
+    // The rule the first load decided by (weigh_answer_sides), so a plan made on its measurements does
+    // not undo it: the device keeps the model unless the cores serve a request faster by the margin.
+    const bool cores_win = t_dev > t_cores * (1.0 + m);
+    if (cores_win)
+        on_cores(Source::Measured, "The model runs on the CPU, which serves this machine's requests faster.",
+                 std::string(nums) + ", past the " + margin + " margin");
     else
-        on_cores(src, "The model runs on the CPU: " + dev.name + " would not serve a request faster.",
-                 std::string(nums) + ", not past the " + margin + " margin");
+        on_device(Source::Measured, "Every layer runs on " + dev.name + ": the CPU would not serve a request faster.",
+                  std::string(nums) + ", which the cores do not beat by the " + margin + " margin");
 }
 
 // The same question for a model with no experts. Nothing streams, so the cores hold the whole model
@@ -2179,7 +2315,7 @@ void choose_shared_device(Planning & s, uint64_t resident) {
 void choose_shared_device_dense(Planning & s) {
     size_budget(s);
     residency_regime(s); // the books the candidate reads: what the model holds here, the projector's side
-    choose_shared_device(s, s.host_all);
+    choose_shared_device(s, s.held_all());
 }
 
 // ── the accelerator axis: what may leave the host BEYOND the fitter's placement ─
@@ -2815,7 +2951,31 @@ Allocation fit_prefill_device(Planning & s,
     // when they are busy, so standing them beside it charges decode, on every token, for memory only
     // a prefill uses. A caller who set it either way has chosen.
     const bool turns = s.req.is_pinned("prefill-slots-on-demand") ? p.config.prefill.slots_on_demand : true;
-    AllocationInputs with = ai;
+    // Weighed with the graph the device will run. Armed, the device computes every pass and the graph
+    // is held to its bound (bound_prefill_width), and a narrower graph reserves smaller buffers, on
+    // the host and as the device's own row. The ledger used to be made at the width the plan had
+    // before, and the bound applied after it: the wide graph's buffers stayed charged and the cache
+    // was sized under them (at a 32768 context, 384 MiB of cache for a graph of 16 KiB a token). So
+    // the placement is the bounded one from here on, and put back on every refusal.
+    const Placement wide = s.placement;
+    const uint64_t wide_fixed = s.host_fixed, wide_all = s.host_all, wide_dense = s.host_dense;
+    if (const uint32_t bound = prefill_width_bound(s)) {
+        s.placement = wide.at_width(bound);
+        s.host_fixed = host_fixed_of(s.placement);
+        const uint64_t freed = wide_fixed > s.host_fixed ? wide_fixed - s.host_fixed : 0;
+        s.host_all = wide_all - std::min(wide_all, freed);
+        s.host_dense = wide_dense - std::min(wide_dense, freed);
+    }
+    const auto refused = [&]() -> const Allocation & {
+        s.placement = wide;
+        s.host_fixed = wide_fixed;
+        s.host_all = wide_all;
+        s.host_dense = wide_dense;
+        return alloc;
+    };
+    AllocationInputs narrow = ai;
+    narrow.fixed_bytes = s.host_fixed;
+    AllocationInputs with = narrow;
     Allocation armed;
     int slots = 0;
     const uint64_t cycle = s.host_model.token_cycle_bytes;
@@ -2828,7 +2988,7 @@ Allocation fit_prefill_device(Planning & s,
     int traded_slots = 0;
     for (int n = slots_by_caller ? p.config.prefill.slots : PrefillDeviceConfig::slots_max;
          n >= PrefillDeviceConfig::slots_min; --n) {
-        with = ai;
+        with = narrow;
         charge_prefill(s, &best, with, n, turns);
         own_short = own_pool(&best) && best.memory_free > 0 && best.memory_free < prefill_need(s.model, n);
         armed = allocate(s.hw, s.host_model, with, s.pol);
@@ -2865,7 +3025,7 @@ Allocation fit_prefill_device(Planning & s,
                best.name + " computes a wide prefill at " + ratio + " the host's rate and has " +
                    u64s(mib(best.memory_free)) + " MiB free of the " + u64s(mib(least)) +
                    " MiB even one layer of this model takes there: refused on memory" + unweighed);
-        return alloc;
+        return refused();
     }
     // The cache is the only thing the device takes: a trade, settled by the price where there is one.
     PrefillTrade trade;
@@ -2892,7 +3052,7 @@ Allocation fit_prefill_device(Planning & s,
                    u64s(mib(alloc.cache_bytes)) + " MiB without the device; " + trade.account +
                    ", so the cache is kept: the device is not cheaper by the " +
                    u64s((uint64_t) (s.pol.min_backend_win * 100.0f + 0.5f)) + "% margin" + unweighed);
-        return alloc;
+        return refused();
     }
     if (slots == 0) {
         s.note("prefill-device", "off", Source::Derived,
@@ -2916,7 +3076,7 @@ Allocation fit_prefill_device(Planning & s,
                     : !fits_held   ? "which does not fit what the process may hold while it decodes"
                                    : "which does not fit what the process may hold while a prompt runs") +
                    unweighed);
-        return alloc;
+        return refused();
     }
     ai = with;
     p.config.prefill.device = best.name;
@@ -3071,21 +3231,20 @@ void settle_dense_pin(Planning & s, bool pin_candidate, const Allocation & alloc
 }
 
 // The part of the dense reservation the run will never hold: the embedding tables a copying policy
-// is about to be told to leave mapped (settle_mapped_tables, the case where the ranking did not call
-// them resident). The reservation is the dense policy's whole copy, so it carried them; left in, the
-// ledger charges tens of GB nothing holds and the cache is sized short by exactly that. Measured on a
-// 96 GB machine: a 27 GB per-layer table charged as dense held the cache to 92% of an expert set that
-// fits whole beside what the run really holds. Only where the reservation is the file's own count:
-// a fitted placement's host share is the fitter's figure, and whether it counted the tables is not
-// known here, so it is left as charged. Where the runtime already holds back a tensor too large, it
-// may be one of these tables, so it is not taken out twice.
+// is told to leave mapped - by the plan where the ranking did not call them resident
+// (settle_mapped_tables), by a list the caller pinned where it names them all. The reservation is the
+// dense policy's whole copy, so it carried them; left in, the ledger charges tens of GB nothing holds
+// and the cache is sized short by exactly that. Measured on a 96 GB machine: a 27 GB per-layer table
+// charged as dense held the cache to 92% of an expert set that fits whole beside what the run really
+// holds. The same with a placement, whose host figure carries the tables as llama.cpp puts them
+// (host_dense_of). Where the runtime already holds back a tensor too large, it may be one of these
+// tables, so it is not taken out twice.
 uint64_t unheld_table_bytes(const Planning & s, const Allocation & alloc) {
     const RunConfig & c = s.p.config;
-    if (s.placement.fitted || s.req.is_pinned("dense-mapped") || s.model.embedding_tensors.empty()) return 0;
     if (c.moe.dense_weights != DenseWeightsMode::Anonymous && c.moe.dense_weights != DenseWeightsMode::Pinned) return 0;
     const Lane lane = alloc.at(WeightGroup::Embedding).lane;
-    if (lane == Lane::Resident || lane == Lane::Pinned) return 0;
-    uint64_t bytes = s.model.group(WeightGroup::Embedding).bytes;
+    if (!s.req.is_pinned("dense-mapped") && (lane == Lane::Resident || lane == Lane::Pinned)) return 0;
+    uint64_t bytes = mappable_host_tables(s);
     if (s.model.largest_dense_tensor > s.hw.residency_budget)
         bytes = bytes > s.model.largest_dense_tensor ? bytes - s.model.largest_dense_tensor : 0;
     return std::min(bytes, s.p.dense_pending_bytes);
@@ -3261,11 +3420,14 @@ std::string context_suggestion(const Placement & placement, uint64_t cycle, uint
     const double keep = 1.0 - (double) shortfall / (double) kv;
     const uint64_t suggest = (uint64_t) ((double) placement.n_ctx * keep);
     // Down to the next power of two: a context is a number a person types, and one that clears the
-    // floor by arithmetic but not in practice would be worse than no suggestion.
+    // floor by arithmetic but not in practice would be worse than no suggestion. Nothing is named
+    // where the arithmetic asks for less than the smallest context worth suggesting: rounding up to
+    // it would name a context that frees less than the cache is short of.
+    if (suggest < k_min_suggested_ctx) return "";
     uint64_t pow2 = k_min_suggested_ctx;
     while (pow2 * 2 <= suggest)
         pow2 *= 2;
-    if (pow2 < k_min_suggested_ctx || pow2 >= (uint64_t) placement.n_ctx) return "";
+    if (pow2 >= (uint64_t) placement.n_ctx) return "";
     return ". The context reserves " + u64s(mib(kv)) + " MiB here and the cache is " + u64s(mib(shortfall)) +
            " MiB short, so " + flag_spelling("ctx-size", u64s(pow2)) +
            " would clear the floor and keep a cache: the first stage shrinks the context only until the model fits, "
@@ -3608,7 +3770,7 @@ bool leave_out_failed_devices(Planning & s) {
             s.note("devices", "as set", Source::Operator, "Devices as you set them, though one failed its check.",
                    "set by the caller, and left alone - but a device here failed its probe (" + broken +
                        "), and a run that lists it may end the same way");
-        } else if (!alive.empty() && (c.n_gpu_layers != 0 || c.dense_on_device)) {
+        } else if (!alive.empty() && c.n_gpu_layers != 0) {
             if (dropped) c.device_list = alive;
             std::string names;
             for (const std::string & n : alive)
@@ -3635,7 +3797,7 @@ bool leave_out_failed_devices(Planning & s) {
 void choose_devices(Planning & s) {
     if (leave_out_failed_devices(s)) return;
     RunConfig & c = s.p.config;
-    if (s.req.is_pinned("devices") || c.n_gpu_layers != 0 || c.dense_on_device || c.prefill.enabled()) return;
+    if (s.req.is_pinned("devices") || c.n_gpu_layers != 0 || c.prefill.enabled()) return;
     size_t non_cpu = 0;
     for (const ComputeDevice & d : s.hw.devices)
         if (!d.is_cpu) ++non_cpu;
@@ -3675,58 +3837,6 @@ void note_shared_pool(Planning & s) {
                    "capacity one");
 }
 
-// ── the dense set on a device that shares this memory ──────────────────────────
-// The capacity tier said nothing here, so this is the bandwidth decision it left behind. The dense
-// set is small - a fraction of the file - and the device reads this model's weights faster than the
-// cores do, so computing it there is the whole of what an integrated accelerator can offer. It costs
-// no capacity, because the memory is the same memory.
-//
-// Armed by the caller, not by this plan. What is missing is the device's own compute buffer as a
-// budget line: on one phone it reserved 906 MiB against the CPU's 22, and a plan that sizes a cache
-// without knowing that is a plan that takes the machine down - which it did, once.
-void dense_on_shared_device(Planning & s) {
-    RunConfig & c = s.p.config;
-    const HardwareProfile & hw = s.hw;
-    if (!s.devices_share_host_memory) return;
-    if (!c.dense_on_device) {
-        const ComputeDevice * fast = nullptr;
-        for (const ComputeDevice & d : hw.devices) {
-            if (d.is_cpu || d.runs_expert_op != Tri::Yes || d.needs_repack == Tri::Yes) continue;
-            if (hw.host_bandwidth_gibs <= 0.0 || d.memory_bandwidth_gibs <= s.host_bandwidth_win) continue;
-            fast = &d;
-            break;
-        }
-        if (fast)
-            s.note("dense-on-device", "off", Source::Unprobed,
-                   "The dense weights could run on the device, faster; not turned on until it is priced.",
-                   "this device reads the model's own weights at " + u64s((uint64_t) fast->memory_bandwidth_gibs) +
-                       " GiB/s against the host's " + u64s((uint64_t) hw.host_bandwidth_gibs) +
-                       ", and the dense set is " + u64s(mib(s.model.dense_bytes)) +
-                       " MiB - small enough that computing it there costs no memory on a shared pool. Arm it with " +
-                       flag_spelling("dense-on-device", "true") +
-                       "; this plan will not, until the device's compute buffer is a budget line");
-        return;
-    }
-    // Refused, and the refusal is the finding. Placing the dense set on a shared-memory device and
-    // routing the experts back with an `exps` override loads, reserves, starts the streamer - and
-    // then segmentation-faults, three times out of three on the phone it was tried on, while the
-    // same run without it is fine. Standing the dense policy down (it would rebind a pointer it does
-    // not own) moved the fault later rather than removing it, so something else in the streamed path
-    // is still handed a device address. Until that is found this arms nothing: a lever that takes
-    // the machine down is worse than one that does not exist.
-    c.dense_on_device = false;
-    s.note("dense-on-device", "refused", Source::Derived,
-           "Refused: this path crashes once streaming starts, and it measured slower.",
-           "refused, and twice over. This path faults once the expert streamer starts, reproducibly - the "
-           "expert override here is a literal pattern where the retired GPU-offload flag built one from the "
-           "model's expert tensors, which is a bug and a small one. The larger reason is that the same "
-           "placement was measured three times on a device of this class and LOST: full offload -27% on a "
-           "Q4_0 run, because the dense and expert halves interleave, so a two-device split crosses the "
-           "boundary twice per layer - 96 splits against 1 - and the boundary tax eats the CPU time the "
-           "device frees. The untested shape that could change it is contiguous layer BLOCKS, experts "
-           "included and resident, which puts the boundary in one place");
-}
-
 // ── overlap: named, not armed ──────────────────────────────────────────────────
 // Hiding compute behind the reads is not a quality choice - the output is byte-identical - and it is
 // worth about 5% on the phone this was measured on, where a plan without it lost to a hand-written
@@ -3756,10 +3866,75 @@ std::string margin_pct(const Planning & s) {
     return u64s((uint64_t) (s.pol.min_backend_win * 100.0f + 0.5f)) + "%";
 }
 
+// With layers on a device and no device cache, overlap is what keeps a prompt on the host: it turns
+// off llama.cpp's offload of host-held weights in a wide graph (offloads_wide_matmuls), so every
+// such matmul of a prompt runs on the cores, where serial streaming lets the device take them. The
+// placed layers still compute their own weights on the device; what is lost is the copy of the
+// host's. Measured on a laptop with a discrete GPU and 25 of 41 layers placed: overlap cost 2.1x of
+// the prefill on a 2.7k-token prompt and 4.5x on a 20.7k one, and bought no decode (#645). Read
+// from the guard itself, so the plan names exactly the runs the session takes the offload from.
+bool overlap_keeps_prompts_on_host(const RunConfig & c) {
+    if (!c.moe.overlap || offloads_wide_matmuls(c)) return false;
+    MoeStreamConfig serial = c.moe;
+    serial.overlap = false;
+    return offloads_wide_matmuls(serial, c.n_gpu_layers, c.prefill.enabled());
+}
+
+// The devices holding the run's layers, for a line that names them, and how much faster than the
+// host the fastest of them measured on a wide matmul, where it was measured.
+std::string placed_devices(const RunConfig & c) {
+    std::string out;
+    for (const auto & d : c.device_split)
+        if (d.second > 0) out += (out.empty() ? "" : ", ") + d.first;
+    return out.empty() ? std::string("the device") : out;
+}
+
+std::string placed_wide_ratio(const Planning & s) {
+    const double host = s.hw.host_wide_matmul_gibs;
+    double best = 0.0;
+    for (const auto & split : s.p.config.device_split)
+        for (const ComputeDevice & d : s.hw.devices)
+            if (!d.is_cpu && d.name == split.first && split.second > 0) best = std::max(best, d.wide_matmul_gibs);
+    if (host <= 0.0 || best <= 0.0) return "";
+    char b[96];
+    std::snprintf(b, sizeof(b), "; its wide matmuls measured %.1fx the host's", best / host);
+    return b;
+}
+
 void note_overlap(Planning & s) {
-    if (s.req.is_pinned("overlap")) return;
-    if (s.p.config.moe.device_cache_mb > 0) return; // the device tier decided it, and said so
     RunConfig & c = s.p.config;
+    if (s.req.is_pinned("overlap")) {
+        // The caller's setting stands, and the plan says what it costs them.
+        if (overlap_keeps_prompts_on_host(c)) {
+            const std::string devs = placed_devices(c);
+            s.note("overlap", "on", Source::Operator,
+                   "On, as you set it: prompts run on the host's cores, not on " + devs + ".",
+                   "set by the caller; with layers on " + devs +
+                       ", overlap turns off the offload of the host's weights in a prompt's wide matmuls, so they "
+                       "run on the cores, where serial streaming lets " +
+                       devs + " take them" + placed_wide_ratio(s) + ": pass " + flag_spelling("overlap", "false") +
+                       " for serial streaming");
+        }
+        return;
+    }
+    if (c.moe.device_cache_mb > 0) return; // the device tier decided it, and said so
+    // A front-end's own default overlap (the server arms it wherever the hook is available), with
+    // layers on a device and no cache there: off, so the prompts reach the device. A caller who asked
+    // for it never reaches here.
+    if (overlap_keeps_prompts_on_host(c)) {
+        const std::string devs = placed_devices(c);
+        c.moe.overlap = c.moe.io_two_wave = false;
+        c.trial.overlap = false;
+        s.note("overlap", "off", Source::Derived,
+               "Off: with layers on " + devs + ", overlap keeps prompts on the host.",
+               "overlap turns off the offload of the host's weights in a prompt's wide matmuls, so with layers on " +
+                   devs +
+                   " and no expert cache there every one of them would run on the cores; serial streaming "
+                   "lets " +
+                   devs + " take them" + placed_wide_ratio(s) + ". Pass " + flag_spelling("overlap", "true") +
+                   " to keep it");
+        return;
+    }
     const MeasuredKnobs & mk = s.model.knobs;
     if (mk.overlap >= 0 && overlap_switchable(c)) {
         const bool on = mk.overlap == 1;
@@ -4003,9 +4178,11 @@ Plan plan_once(const RunConfig & base,
                const Placement & projected,
                const PlanRequest & req,
                const PlannerPolicy & pol,
-               const Planning::LayersHome * home_from) {
+               const Planning::LayersHome * home_from,
+               uint64_t whole_room = 0) {
     Plan p;
     Planning s(base, hw, model, projected, req, pol, p);
+    s.whole_room = whole_room;
     if (home_from) s.home.considered = false;
 
     // The machine and the model, against each other.
@@ -4038,7 +4215,7 @@ Plan plan_once(const RunConfig & base,
                                                          "them home in, so the fitter's placement stands");
             s.p.decisions.push_back(s.home.decision);
         }
-        choose_shared_device(s, s.host_all);
+        choose_shared_device(s, s.held_all());
         // Resident, the cores still compute whatever the devices do not: the layers the fitter left on
         // the host, or all of them. Leaving the count at its default here ran a 24 GB card's 21 host
         // layers on 4 threads of a 32-core box, at 26 tok/s where 16 threads decoded at 47.5.
@@ -4098,7 +4275,6 @@ Plan plan_once(const RunConfig & base,
     choose_gate_mirror(s);
     choose_devices(s);
     note_shared_pool(s);
-    dense_on_shared_device(s);
     note_overlap(s);
     choose_threads(s);
     return p;
@@ -4111,7 +4287,48 @@ Plan plan_from(const RunConfig & base,
                const PlanRequest & req,
                const PlannerPolicy & pol,
                const Planning::LayersHome * home_from) {
-    return plan_once(base, hw, model, projected, req, pol, home_from);
+    Plan p = plan_once(base, hw, model, projected, req, pol, home_from);
+    // ── a model the plan streams, on a machine whose device reads this same memory ──
+    // llama.cpp would hold such a model whole on the device, and where that fits it can be the faster
+    // run by far: on a laptop with integrated graphics a 21 GB model streamed with an 18 GiB cache
+    // decoded at 12 tok/s, and llama.cpp with every layer on the GPU at 40. Nothing in the plan
+    // above says which is faster, and no probe does (choose_shared_device), so where the model held
+    // whole on the device stays inside what the streaming plan itself may hold of this pool, the
+    // first load is asked: it opens the model there, compares its answers with the cores' and times
+    // both (KnobTrialConfig::answer_device, answer_prompt_per_token), and keeps the device unless the
+    // cores decode the model faster by the margin. The cores' rate there is the model held whole on
+    // them, which is the most a stream on the same cores can reach, so a device the cores do not
+    // beat is one the stream does not beat. Where the device does not keep the model, the session
+    // reopens with the plan above, unchanged (RunConfig::fallback): the stream is what this engine
+    // adds, and it serves wherever holding the model whole is not the faster run.
+    if (p.regime != Regime::ExpertsStream || !p.config.moe.enabled || p.streaming_declined || !model.is_moe) return p;
+    // What the streaming plan may hold of this pool: its ledger's ceiling, the margin already off it.
+    const uint64_t room = p.allocation.ledger.holdable_cap;
+    if (!devices_share_host_memory(hw) || projected.fitted || room == 0) return p;
+    if (req.is_pinned("moe-stream") || req.is_pinned("cache-mb")) return p;
+    Plan whole = plan_once(base, hw, model, projected, req, pol, home_from, room);
+    if (whole.config.n_gpu_layers == 0 || whole.config.device_split.size() != 1 || whole.config.moe.enabled) return p;
+    const std::string dev = whole.config.device_split.front().first;
+    whole.config.fallback = std::make_shared<const RunConfig>(p.config);
+    std::string stream_knobs;
+    for (const Decision & x : p.decisions)
+        if (x.knob == "moe-stream" || x.knob == "cache-mb" || x.knob == "prefill-device" || x.knob == "dense-weights")
+            stream_knobs += (stream_knobs.empty() ? "" : "; ") + x.knob + " " + x.value;
+    Decision d;
+    d.knob = "held-whole";
+    d.value = dev;
+    d.source = Source::Derived;
+    d.brief = "Held whole on " + dev + " if it runs the model faster; otherwise streamed, with a " +
+              size_brief((uint64_t) p.config.moe.cache_mb << 20) + " cache.";
+    d.reason = "this model does not fit beside the room this machine asks for, and the plan that streams it may "
+               "hold " +
+               u64s(mib(room)) + " MiB of this memory, " + u64s(mib(p.allocation.ledger.held)) + " MiB of it with a " +
+               u64s((uint64_t) p.config.moe.cache_mb) + " MiB expert cache. " + dev +
+               " reads this same memory, and the model held whole there with its compute buffer stays inside that, "
+               "so the load decides between the two on the model itself (shared-device says how); where " +
+               dev + " does not keep it, the session reopens as the streaming plan (" + stream_knobs + ")";
+    whole.decisions.push_back(d);
+    return whole;
 }
 
 } // namespace

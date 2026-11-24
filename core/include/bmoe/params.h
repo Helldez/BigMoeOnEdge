@@ -91,9 +91,10 @@ struct ParamDesc {
     ParamGroup group = ParamGroup::Generation;
     ParamLevel level = ParamLevel::Advanced;
     ParamScope scope = ParamScope::Session;
-    // A settings form offers it: every basic row and the few deeper ones a person picks rather than
-    // the plan (which devices, drafts, the context's precision, active experts). The rest stay
-    // flags of the CLI: the plan sets them, or they are a value nobody types into a phone.
+    // A settings form offers it: every basic row, every advanced row of a group that shapes the
+    // answer (param_group_shapes_answer), and the few deeper ones a person picks rather than the
+    // plan (which devices, drafts). The rest the plan sets: a form keeps them under Advanced
+    // settings, out of the way. Experimental and debug rows are never in the form itself.
     bool form = false;
     std::string help; // one paragraph, in the user's terms
     // What a form folds under the help, in a sentence or two of plain words: when to change the
@@ -146,6 +147,10 @@ const char * param_group_help(ParamGroup g);  // the group in one line, under it
 // True for a group a front-end sets with a control of its own (the model file, from a model list):
 // a settings form shows its value and does not edit it. The CLI sets it like any other flag.
 bool param_group_read_only(ParamGroup g);
+// True for a group whose rows decide what the answer is (sampling, quality trades) rather than how
+// fast it comes. The plan never sets them, so a person is the only one who will: a form offers their
+// advanced rows too, unless a row opts out (the seed, which replays a run rather than choosing one).
+bool param_group_shapes_answer(ParamGroup g);
 const char * param_level_name(ParamLevel l);
 const char * param_scope_name(ParamScope s);
 

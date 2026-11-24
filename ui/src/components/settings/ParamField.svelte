@@ -14,6 +14,7 @@
     decision,
     needsReload = false,
     readOnly = false,
+    showLevel = false,
   }: {
     spec: ParamSpec;
     value: ParamValue | undefined;
@@ -24,6 +25,8 @@
     needsReload?: boolean;
     /** Shown, not edited: its group is set elsewhere. */
     readOnly?: boolean;
+    /** Say when the row is experimental or a debug aid (Advanced settings, where those rows live). */
+    showLevel?: boolean;
   } = $props();
 
   const id = $derived(`param-${spec.key}`);
@@ -112,6 +115,9 @@
       <label class="label" for={id}>{spec.label}</label>
     {/if}
     <span class="badges">
+      {#if showLevel && (spec.level === 'experimental' || spec.level === 'debug')}
+        <span class="badge warn" title={t(`param.level.${spec.level}.title`)}>{t(`param.level.${spec.level}`)}</span>
+      {/if}
       {#if spec.lossy}<span class="badge warn" title={t('param.lossy.title')}>{t('param.lossy')}</span>{/if}
       {#if spec.scope === 'request'}<span class="badge info" title={t('param.request.title')}>{t('param.request')}</span>{/if}
       {#if needsReload}<span class="badge warn" title={t('param.reload.title')}>{t('param.reload')}</span>{/if}

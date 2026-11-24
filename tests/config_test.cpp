@@ -134,25 +134,6 @@ int main() {
         expect_fail("device_cache_cpu_share negative", c);
         c.moe.device_cache_cpu_share = std::numeric_limits<float>::quiet_NaN();
         expect_fail("device_cache_cpu_share NaN", c);
-        // Its side timed across loads: one decision a load, of a cache that exists, and side 1 with a share.
-        RunConfig t = ok_base();
-        t.moe.device_cache_mb = 1024;
-        t.trial.cpu_share_side = 0;
-        expect_ok("trial cpu share, every miss uploaded", t);
-        t.trial.cpu_share_side = 1;
-        expect_fail("trial cpu share 1 without a share", t);
-        t.moe.device_cache_cpu_share = 0.7f;
-        expect_ok("trial cpu share 1 with a share", t);
-        RunConfig two = t;
-        two.trial.device_tier = 1;
-        expect_fail("trial cpu share beside the device tier's", two);
-        RunConfig no_cache = t;
-        no_cache.moe.device_cache_mb = 0;
-        no_cache.moe.device_cache_cpu_share = 0.0f;
-        no_cache.trial.cpu_share_side = 0;
-        expect_fail("trial cpu share without a device cache", no_cache);
-        t.trial.cpu_share_side = 2;
-        expect_fail("trial cpu share out of range", t);
     }
     {
         // The shared-memory device's side: one decision a load, and side 1 with layers on the device.
@@ -181,6 +162,36 @@ int main() {
         RunConfig timed = t;
         timed.trial.shared_device_side = 1;
         expect_ok("trial device answer on a load that times the device's side", timed);
+        RunConfig weighed = timed;
+        weighed.trial.answer_prompt_per_token = 13.65f;
+        expect_ok("trial device answer that also weighs the two sides it decodes", weighed);
+        weighed.trial.answer_prompt_per_token = 0.0f;
+        expect_ok("trial device answer weighed on the decode alone", weighed);
+        weighed.trial.answer_prompt_per_token = KnobTrialConfig::answer_prompt_per_token_max * 2.0f;
+        expect_fail("trial answer mix past its bound", weighed);
+        RunConfig unnamed = ok_base();
+        unnamed.trial.answer_prompt_per_token = 1.0f;
+        expect_fail("trial answer mix with no device to compare", unnamed);
+        // The plan's other part (RunConfig::fallback): what the load reopens with where the device
+        // does not keep the model. A configuration of its own, of the same model, with none behind it.
+        RunConfig two = t;
+        two.fallback = std::make_shared<const RunConfig>(ok_moe());
+        expect_ok("a fallback configuration behind a device whose answers are compared", two);
+        RunConfig no_device = ok_base();
+        no_device.fallback = std::make_shared<const RunConfig>(ok_moe());
+        expect_fail("a fallback configuration with no device to fall back from", no_device);
+        RunConfig other_model = ok_moe();
+        other_model.model_path = "another.gguf";
+        two.fallback = std::make_shared<const RunConfig>(other_model);
+        expect_fail("a fallback configuration of another model", two);
+        RunConfig nested = ok_moe();
+        nested.fallback = std::make_shared<const RunConfig>(ok_moe());
+        two.fallback = std::make_shared<const RunConfig>(nested);
+        expect_fail("a fallback configuration with a fallback of its own", two);
+        RunConfig invalid = ok_moe();
+        invalid.n_ctx = 0;
+        two.fallback = std::make_shared<const RunConfig>(invalid);
+        expect_fail("a fallback configuration that is not valid by itself", two);
         RunConfig cached = t;
         cached.moe.device_cache_mb = 2048;
         expect_fail("trial device answer beside a device expert cache", cached);

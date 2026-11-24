@@ -4,31 +4,19 @@
 
 #include "bmoe/params.h"
 
-#if defined(BMOE_HAVE_PLANNER)
 #include "bmoe/auto_plan.h"
 
 #include <algorithm>
 #include <cstdio>
-#endif
-
 #include <vector>
 
 namespace bmoe::server {
 
 bool planner_available() {
-#if defined(BMOE_HAVE_PLANNER)
     return true;
-#else
-    return false;
-#endif
 }
 
 int run_device_probe_child(const std::string & model_path, const std::string & device) {
-#if !defined(BMOE_HAVE_PLANNER)
-    (void) model_path;
-    (void) device;
-    return 3;
-#else
     std::string line;
     if (!probe_device_child(model_path.c_str(), device, line)) {
         std::fprintf(stderr, "bmoe-server: no such device to probe: %s\n", device.c_str());
@@ -37,12 +25,9 @@ int run_device_probe_child(const std::string & model_path, const std::string & d
     std::printf("%s\n", line.c_str());
     std::fflush(stdout);
     return 0;
-#endif
 }
 
-#if defined(BMOE_HAVE_PLANNER)
 static PlanOutcome outcome_of(const PlanBasis & b);
-#endif
 
 PlanOutcome make_plan(const RunConfig & cfg,
                       const std::vector<std::string> & pinned,
@@ -52,17 +37,6 @@ PlanOutcome make_plan(const RunConfig & cfg,
                       const std::vector<MeasuredKnobs> * knobs,
                       bool measure_knobs) {
     PlanOutcome o;
-#if !defined(BMOE_HAVE_PLANNER)
-    (void) routing;
-    (void) knobs;
-    (void) measure_knobs;
-    (void) cfg;
-    (void) pinned;
-    (void) isolated_probes;
-    (void) on_step;
-    o.error = "this build does not include the automatic hardware planner";
-    return o;
-#else
     if (cfg.model_path.empty()) {
         o.error = "choose a model first: a plan is for one model on this machine";
         return o;
@@ -98,10 +72,8 @@ PlanOutcome make_plan(const RunConfig & cfg,
     o = outcome_of(*basis);
     o.basis = std::move(basis);
     return o;
-#endif
 }
 
-#if defined(BMOE_HAVE_PLANNER)
 // A plan as the API returns it: what it changes, through the parameter table, and why.
 static PlanOutcome outcome_of(const PlanBasis & b) {
     PlanOutcome o;
@@ -117,6 +89,15 @@ static PlanOutcome outcome_of(const PlanBasis & b) {
         if (v != d.get(cfg)) {
             o.values[d.key] = v;
             values[d.key] = param_string_to_value(d, v);
+        }
+    }
+    // The plan's other part travels the same way, so the load can hand both to the session: the
+    // parameter table carries a configuration, and a configuration's other part is one more.
+    if (plan.config.fallback) {
+        o.has_fallback = true;
+        for (const ParamDesc & d : params()) {
+            const std::string v = d.get(*plan.config.fallback);
+            if (v != d.get(cfg)) o.fallback_values[d.key] = v;
         }
     }
     // The arguments that reproduce the plan, as the plan itself renders them from the parameter
@@ -151,17 +132,12 @@ static PlanOutcome outcome_of(const PlanBasis & b) {
     o.body.update(plan_view(hw, plan));
     return o;
 }
-#endif
 
 bool PlanOutcome::names_side() const {
     return ok && basis && bmoe::names_side(basis->facts.plan.config.trial);
 }
 
 PlanOutcome plan_other_side(const PlanOutcome & plan) {
-#if !defined(BMOE_HAVE_PLANNER)
-    (void) plan;
-    return {};
-#else
     if (!plan.names_side()) return {};
     auto basis = std::make_shared<PlanBasis>(*plan.basis);
     const KnobTrialConfig named = basis->facts.plan.config.trial;
@@ -174,13 +150,12 @@ PlanOutcome plan_other_side(const PlanOutcome & plan) {
     basis->facts.plan = replan(basis->facts, basis->cfg, basis->req, k);
     const KnobTrialConfig & now = basis->facts.plan.config.trial;
     if (now.device_tier == named.device_tier && now.width_side == named.width_side &&
-        now.cpu_share_side == named.cpu_share_side && now.shared_device_side == named.shared_device_side)
+        now.shared_device_side == named.shared_device_side)
         return {};
     PlanOutcome o = outcome_of(*basis);
     o.hardware = plan.hardware;
     o.basis = std::move(basis);
     return o;
-#endif
 }
 
 } // namespace bmoe::server

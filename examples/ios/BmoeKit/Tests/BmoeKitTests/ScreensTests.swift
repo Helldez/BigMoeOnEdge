@@ -269,6 +269,18 @@ final class ScreensTests: XCTestCase {
         XCTAssertEqual(linked[2].rows.map(\.key), ["threads", "trace", "layers"])
     }
 
+    func testAdvancedSettingsHoldEveryOtherRowInTheSameGroups() throws {
+        let params = try table()
+        let adv = SettingsForm.advancedCards(params)
+        XCTAssertEqual(adv.map(\.group), ["compute", "debugonly"])
+        XCTAssertEqual(adv[0].rows.map(\.key), ["lanes", "trace", "spin", "batch"])
+        // With the form's cards, every settable row appears exactly once.
+        let all = (SettingsForm.cards(params) + adv).flatMap { $0.rows.map(\.key) }.sorted()
+        XCTAssertEqual(all, params.filter(SettingsForm.settable).map(\.key).sorted())
+        // A row the person set lives in "Set by you" instead.
+        XCTAssertEqual(SettingsForm.advancedCards(params, setByYou: ["probe"]).map(\.group), ["compute"])
+    }
+
     func testALoadTargetIsReadFromTheReadOnlyGroupNotByName() throws {
         let params = try table()
         let none = ConfigState(try JSON(parsing: #"{"values":{"model":""}}"#))

@@ -953,8 +953,7 @@ int main(int argc, char ** argv) {
     // which is the name a Decision uses for its knob. See docs/hardware-planning.md.
     double predicted_s_per_token = 0.0;
     double predicted_hit_pct = -1.0;
-    bool predicted_hit_measured = false;                 // the credit came from the model's own hit curve
-    if (seen.count("dense-on-device")) auto_plan = true; // a request to the planner, as before
+    bool predicted_hit_measured = false; // the credit came from the model's own hit curve
     // The child of an isolated device probe: one device, its facts on one line, nothing else. If
     // the driver ends this process, or it never returns, that is the parent's answer about the device.
     // What the backends read from their environment, as every front-end sets it (frontend/backend_env.h),
@@ -1082,8 +1081,13 @@ int main(int argc, char ** argv) {
                              d.probed_out_of_process ? ", probed in a process of its own" : "");
             }
             if (mp.ok) {
-                std::fprintf(stderr, "plan: model %s, %u experts top-%u over %u of %u blocks\n", mp.arch.c_str(),
-                             mp.n_expert, mp.n_expert_used, mp.n_moe_layer, mp.n_layer);
+                // A model whose graph runs some blocks more than once has more layers than blocks,
+                // and the per-token column below is counted over the layers.
+                char runs[64] = "";
+                if (mp.n_layer != mp.n_block)
+                    std::snprintf(runs, sizeof(runs), ", run as %u layers per token", mp.n_layer);
+                std::fprintf(stderr, "plan: model %s, %u experts top-%u over %u of %u blocks%s\n", mp.arch.c_str(),
+                             mp.n_expert, mp.n_expert_used, mp.n_moe_layer, mp.n_block, runs);
                 for (int gi = 0; gi < (int) WeightGroup::count; ++gi) {
                     const GroupDemand & d = mp.groups[gi];
                     if (d.bytes == 0) continue;

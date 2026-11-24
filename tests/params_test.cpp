@@ -15,6 +15,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>
 #include <functional>
 #include <limits>
 #include <set>
@@ -112,6 +113,11 @@ int main() {
         check(unique_keys, "keys are unique");
         check(unique_flags, "flags and switches are unique across the table");
     }
+    // What decides the answer is the person's to set, since the plan never does: a group that shapes
+    // it offers its advanced rows, less a row that opts out (the seed replays a run, it is no choice).
+    check(find_param("top-k")->form && find_param("drop-cold-experts")->form,
+          "an advanced row that shapes the answer is in the form");
+    check(!find_param("seed")->form, "seed stays a flag of the command line");
     const RunConfig defaults;
     for (const ParamDesc & d : params()) {
         check(d.get && d.set, d.key + ": has accessors");
@@ -232,6 +238,7 @@ int main() {
     expect_flag({"--llama-debug"}, [](const RunConfig & c) { return c.llama_debug_log; });
     expect_flag({"--force-cache"}, [](const RunConfig & c) { return c.moe.force_cache; });
     expect_flag({"--overlap"}, [](const RunConfig & c) { return c.moe.overlap; });
+    expect_flag({"--no-overlap"}, [](const RunConfig & c) { return !c.moe.overlap; });
     expect_flag({"--io-two-wave"}, [](const RunConfig & c) { return c.moe.io_two_wave; });
     expect_flag({"--prefetch", "2"}, [](const RunConfig & c) { return c.moe.prefetch_layers == 2; });
     expect_flag({"--prefetch-sync"}, [](const RunConfig & c) { return c.moe.prefetch_sync; });
@@ -335,6 +342,8 @@ int main() {
                 [](const RunConfig & c) { return c.trial.threads == std::vector<int>({12}); });
     expect_flag({"--trial-overlap"}, [](const RunConfig & c) { return c.trial.overlap; });
     expect_flag({"--trial-device-answer", "GPU0"}, [](const RunConfig & c) { return c.trial.answer_device == "GPU0"; });
+    expect_flag({"--trial-answer-mix", "13.5"},
+                [](const RunConfig & c) { return std::fabs(c.trial.answer_prompt_per_token - 13.5f) < 1e-6f; });
     expect_reject({"--trial-threads", "6,"});
     expect_reject({"--trial-threads", "6,,8"});
     expect_reject({"--trial-threads", "x"});
@@ -363,11 +372,13 @@ int main() {
         check(flag_spelling("ubatch") == "--ubatch", "flag_spelling names the flag that takes a value");
         check(flag_spelling("ctx-size", "4096") == "--ctx-size 4096", "flag_spelling spells a flag with its value");
         check(flag_spelling("overlap", "true") == "--overlap", "flag_spelling prefers the switch that says the value");
+        check(flag_spelling("overlap", "false") == "--no-overlap",
+              "flag_spelling spells the off switch where there is one");
         check(flag_spelling("no-such-knob", "1").empty(), "flag_spelling is empty for a key the table lacks");
         // Every spelling the planner's rationale prints must parse back to the value it names.
         const std::pair<const char *, const char *> named[] = {
-            {"ctx-size", "4096"},   {"release-mmap", "true"}, {"dense-on-device", "true"}, {"overlap", "true"},
-            {"moe-stream", "true"}, {"ubatch", "256"},        {"prefill-device", "accel"},
+            {"ctx-size", "4096"}, {"release-mmap", "true"},    {"overlap", "true"},  {"moe-stream", "true"},
+            {"ubatch", "256"},    {"prefill-device", "accel"}, {"overlap", "false"},
         };
         for (const auto & kv : named) {
             std::vector<std::string> argv;

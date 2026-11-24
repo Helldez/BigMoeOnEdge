@@ -48,7 +48,13 @@ server/         bmoe-server: the application framework every UI speaks to (docs/
                 may keep a worker team per calling thread, as ggml's OpenMP CPU backend does);
                 engine_host: the one Session, loads, the turn line, over the HostedSession seam
                 (hosted_session.h) its test drives with a scripted session; model_library: files, catalog,
-                downloads; planner_adapter: /api/plan when the planner is built in;
+                downloads; planner_adapter: /api/plan;
+                hf_repo (a Hugging Face repository as a source of models, pure rules),
+                model_inspect (a model's gguf header read before download, against this machine),
+                request_sampling (the sampling fields every protocol may carry, read once),
+                decide_protocol (the decide request and answer at the server's edge, docs/decide.md),
+                log_file (--log-file and its rotation), service_spec and service_manager (the
+                server as a login service of the person's init system), cpu_thermal (the CPU temperature from the kernel's thermal zones);
                 agent: the agent's runs (one thread each, approvals, stop, MCP tools) and its task
                 scheduler, over EngineHost::chat or a provider; agent_external: a conversation
                 another coding agent works, over ACP; agent_routes: its HTTP routes;
@@ -146,6 +152,8 @@ core/
                 kv_cache_type - the KV cache type to the ggml type llama.cpp's context takes
                 prefill_device - moves layer weights and model state onto a device per graph
                 prefill_path - the prefill device for one session: setup, placement, device decode
+                compute_reservation - the one request that makes a context reserve its compute
+                  buffers again, at its next decode
                 device_answer - a model open on devices compared with the cores, once per model
                 logit_agreement - the rule two sets of next-token rows are compared by
                 runtime — the one-shot run() wrapper over a Session
@@ -179,8 +187,9 @@ core/
                   layer_probe (one real layer of the model, its experts and its dense matrices, on
                   every backend: measured-planning.md, Step 3), gate_probe,
                   device_probe, placement_probe, isolated_probe (a device asked in a second
-                  process, so a driver that ends it ends only that), metal_memory_probe and
-                  memory_topology (whether a device shares the host's memory) - the adapters that
+                  process, so a driver that ends it ends only that), native_memory_probe,
+                  metal_memory_probe, opencl_memory_probe and memory_topology (whether a device
+                  shares the host's memory, from its own API) - the adapters that
                   measure a machine and read a gguf; the only place in the planner where a platform
                   or llama.cpp may appear
                 auto_plan - the composition of the two: the probes in the order a plan is

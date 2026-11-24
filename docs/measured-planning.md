@@ -99,8 +99,9 @@ cache size moves, and the cache is lossless.
 
 **Status: built, judgement owed.** What landed, and how it was checked off the device:
 
-- The replay is `replay_lru` in `core/src/plan/routing.cpp` (`bmoe/routing.h`). On the three archived
-  phone traces it matches `scripts/route-replay.py`'s LRU row to the third decimal at five budgets each,
+- The replay is `replay_cache` in `core/src/plan/routing.cpp` (`bmoe/routing.h`), under the eviction
+  policy the run's cache uses (`cache_freq_half_life`; `replay_lru` is the same replay at half-life 0).
+  On the three archived phone traces the LRU replay matches `scripts/route-replay.py`'s LRU row to the third decimal at five budgets each,
   and at each run's own budget reproduces the hit rate the run recorded (74.9, 76.8, 32.4%); a test
   (`routing`) holds both. In the gates (`G2r`), the record a real streamed session kept replays to the
   hit rate that session's cache measured, prompt included and decode alone.
@@ -116,7 +117,10 @@ cache size moves, and the cache is lossless.
   `""` turn off, one file per model named by a content fingerprint of the file (`model_fingerprint`). The
   next plan of the file hands it back (`AutoPlanOptions::routing`) and `attach_routing` turns it into
   `ModelProfile::hit_curve`: `hit_share(bytes)`, monotone, over the whole expert set, absent unless
-  the record is this model at this top-k with enough decoded tokens.
+  the record is this model at this top-k with enough decoded tokens. The curve is 64 replays of the
+  record, paid on every plan of the file: 15-139 ms on a desktop core for the archived records of
+  64-128 decoded tokens, growing with the record. It stops replaying at the first size nothing was
+  evicted at, since every larger budget replays the same.
 - The cache then enters the ranking as pieces of the curve's concave hull, and is credited the curve
   at the size it gets, tagged `[measured on this model]`. The predicted-against-measured line sets
   that credit against the decode's own measured hit rate, the figure it prices.
@@ -135,8 +139,6 @@ cache size moves, and the cache is lossless.
   The prior is a curve like a record's and takes the same path through the ranking and the price; the
   plan says its hit rate is a prior (`cache-hits`) until a record replaces it. `cache_hit_optimism`
   and the linear credit remain only for a model whose token cycle is unknown.
-- The same record ranks the hottest (block, expert) pairs by use (`hottest_experts`), for Step 4's
-  device tier to warm from at start. Nothing reads it yet.
 
 Owed: the on-device runs this step is judged by (the reference machines and #321's desktop), each a
 first load to record and a second to plan from the record, with the predicted-against-measured line
@@ -442,6 +444,13 @@ without a device of their own, an unchanged plan.
   measurement (`MeasuredKnobs::device_cache_tps`, `no_device_cache_tps`), and the other takes over
   only where its price, or its own measurement, is past that by `min_backend_win`; the cache holds
   inside it.
+- **The one side decided inside its first load**: where a model held in memory can run on a device
+  that reads the host's memory, the load that opens it there already decodes it on the device and on
+  the cores to compare their answers, so it times both and keeps the faster
+  ([hardware-planning.md](hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it)).
+  Measured on a 16 GB unified-memory laptop, a 4.3 GiB model: 3.4 s for the comparison and the
+  timing, 37.6 tok/s on the GPU against 23.9 on the cores at the plan's thread count, and the rate
+  the check read for the side that served was the rate the answer then decoded at (37.6).
 - **No load is opened to try a side.** A side tried on a served load cost that session its rate: on
   a 12 GB card with Qwen3.6-35B the cache decoded at 73.5 tok/s, and the second load then decoded a
   whole session at 37.8 to time a placement whose ceiling was 55. Timing both sides as short loads

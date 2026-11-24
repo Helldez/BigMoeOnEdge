@@ -43,8 +43,24 @@ export interface NewConversation {
   route?: string;
   agent?: string;
   title?: string;
+  /** The person's own system prompt; '' or absent for none. */
+  system?: string;
   items?: { kind: 'user' | 'assistant'; text: string; reasoning?: string }[];
 }
+
+/**
+ * A conversation's system prompt exactly as the model reads it: the agent's lines where it has a
+ * folder, then `own`, the person's (the conversation's `system`). `tokens` is what it takes of the
+ * context (null with no model ready, or on a provider); `external` when another agent program writes its own.
+ */
+export interface SystemPrompt {
+  text: string;
+  own: string;
+  tokens: number | null;
+  external: boolean;
+}
+const isSystemPrompt = (v: unknown): v is SystemPrompt =>
+  isObject(v) && typeof v.text === 'string' && typeof v.own === 'string' && (v.tokens === null || typeof v.tokens === 'number') && typeof v.external === 'boolean';
 
 /** A preview file's bytes, as the server typed them. */
 export interface PreviewFile {
@@ -63,7 +79,10 @@ export const agentApi = {
   createConversation: (body: NewConversation) =>
     request<ConversationSummary>('POST', 'api/conversations', body, isConversationSummary),
   conversation: (id: string) => request<Conversation>('GET', `api/conversations/${seg(id)}`, undefined, isConversation),
-  patchConversation: (id: string, body: { title?: string; mode?: Mode; route?: string; workspace?: string | null; agent?: string }) =>
+  patchConversation: (
+    id: string,
+    body: { title?: string; mode?: Mode; route?: string; workspace?: string | null; agent?: string; system?: string },
+  ) =>
     request<unknown>('PATCH', `api/conversations/${seg(id)}`, body),
   deleteConversation: (id: string) => request<unknown>('DELETE', `api/conversations/${seg(id)}`),
   send: (id: string, text: string, think?: boolean, images?: string[]) =>
@@ -90,6 +109,9 @@ export const agentApi = {
     const type = res.headers.get('Content-Type') ?? '';
     return { blob: await res.blob(), type };
   },
+
+  /** What the model reads before a conversation, exactly as sent (#625); `own` is set with patchConversation. */
+  systemPrompt: (id: string) => request<SystemPrompt>('GET', `api/conversations/${seg(id)}/system`, undefined, isSystemPrompt),
 
   skills: () => request<Skill[]>('GET', 'api/skills', undefined, isListOf<Skill>(isSkill)),
   createSkill: (s: { name: string; description: string; body: string }) => request<unknown>('POST', 'api/skills', s),

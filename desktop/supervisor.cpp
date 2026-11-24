@@ -38,12 +38,12 @@ std::string log_tail(const std::string & path) {
     return out;
 }
 
-bool answers_info(int port) {
+bool serving(int port) {
     httplib::Client c("127.0.0.1", port);
     c.set_connection_timeout(kProbeTimeoutS, 0);
     c.set_read_timeout(kProbeTimeoutS, 0);
-    const auto res = c.Get("/api/info");
-    return res && res->status == 200;
+    const auto res = c.Get(kServerReadyPath);
+    return server_is_serving(res ? res->status : 0);
 }
 
 } // namespace
@@ -125,7 +125,7 @@ bool ServerSupervisor::start(const ServerLaunch & launch,
             return false;
         }
         if (port == 0) port = server::read_port_file(port_file);
-        if (port > 0 && answers_info(port)) return true;
+        if (port > 0 && serving(port)) return true;
         std::this_thread::sleep_for(kPollInterval);
     }
     err = (port > 0 ? "bmoe-server did not answer on port " + std::to_string(port)

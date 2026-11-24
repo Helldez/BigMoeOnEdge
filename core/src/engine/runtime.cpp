@@ -60,6 +60,7 @@ SessionConfig session_config_from(const RunConfig & cfg) {
     sc.decide = cfg.decide;
     sc.trial = cfg.trial;
     sc.llama_debug_log = cfg.llama_debug_log;
+    if (cfg.fallback) sc.fallback = std::make_shared<const SessionConfig>(session_config_from(*cfg.fallback));
     return sc;
 }
 

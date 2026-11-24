@@ -137,6 +137,10 @@ std::string server_origin(int port) {
     return "http://127.0.0.1:" + std::to_string(port);
 }
 
+bool server_is_serving(int http_status) {
+    return http_status > 0;
+}
+
 bool same_origin(const std::string & url, const std::string & origin) {
     if (url.size() < origin.size() || url.compare(0, origin.size(), origin) != 0) return false;
     if (url.size() == origin.size()) return true;

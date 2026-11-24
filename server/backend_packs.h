@@ -42,6 +42,22 @@ bool write_pack_marker(const std::string & pack_dir, const InstalledPack & pack,
 // Every installed pack under `backends_root`, by its marker (a folder without one is not counted).
 std::vector<InstalledPack> installed_packs(const std::string & backends_root);
 
+// Whether a pack whose marker says `pack_version` may be loaded by an engine of `engine_version`:
+// only the release it was built for. A backend module is compiled against one ggml, and ggml's own
+// check of a module does not see everything that changes between two of them (an operation renumbered
+// under an unchanged module version, as one llama.cpp bump did): a module of another release can
+// load, and then compute the wrong thing or end the process at its first graph.
+bool pack_matches_engine(const std::string & pack_version, const std::string & engine_version);
+
+// backend_pack_dirs, less the packs this engine may not load: a folder whose marker names another
+// release is left out, and said in `skipped` as "<id> (<its release>)". A folder with no marker is
+// not an install of this server (a pack extracted there by hand) and is loaded as it was: nothing
+// says what it was built for. A pack skipped here stays on disk and stays listed, so the next
+// install replaces it.
+std::vector<std::string> loadable_pack_dirs(const std::string & backends_root,
+                                            const std::string & engine_version,
+                                            std::vector<std::string> * skipped = nullptr);
+
 // Why an archive entry named `name` may not be unpacked, or "" when it may: it must stay inside
 // the folder it is unpacked into. Refused: an empty name, an absolute one (a leading separator, a
 // drive or any ':'), a backslash (a separator on Windows, where tar would follow it), a NUL, and a
@@ -70,6 +86,7 @@ json backends_answer(const std::vector<std::string> & registered,
                      const Feed * feed,
                      const std::vector<InstalledPack> & installed,
                      const LibraryProbe & loads,
-                     bool restart_required);
+                     bool restart_required,
+                     const std::string & engine_version);
 
 } // namespace bmoe::server

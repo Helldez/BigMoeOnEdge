@@ -156,11 +156,6 @@ bool DenseWeights::reopen_readers() {
     return rows_ ? rows_->reopen_readers() : true;
 }
 
-bool DenseWeights::file_mapping_in_use() const {
-    if (!mapped_.empty()) return true;
-    return (mode_ == DenseWeightsMode::Mmap || mode_ == DenseWeightsMode::Warmed) && !tensors_.empty();
-}
-
 IRowSource * DenseWeights::row_source() const {
     return rows_ && !rows_->empty() ? rows_.get() : nullptr;
 }
@@ -246,14 +241,14 @@ void DenseWeights::advise_random_mapped() {
 // Pinned allocates PER TENSOR, so the 2047 MiB ceiling on a single dma-buf is not a constraint in
 // practice: the largest dense tensor here is an embedding or lm_head, far below it. A tensor that
 // exceeds it, or that arrives after the store has run out, takes an ordinary buffer - and the run
-// says how many MiB did, on stderr and in pin_refused_bytes(), because a SILENT mix would make an
+// says how many MiB did, on stderr, because a SILENT mix would make an
 // A/B against anon meaningless in exactly the direction that flatters the feature.
 bool DenseWeights::read_anonymous() {
     // Not const: the store can run out part way. A plan sizes the pinned set against a total that
     // is read once and then moves, so a refusal here is something that happens rather than a bug,
     // and a run that stopped loading for it would be worse than one a little slower. From the
     // first refusal on, the remaining tensors are ordinary buffers - the mode every other
-    // platform already runs in - and the amount is kept for the telemetry.
+    // platform already runs in - and the amount is logged.
     bool pinned = mode_ == DenseWeightsMode::Pinned;
     const uint64_t chunk = 8ull << 20;
     uint64_t total = 0;

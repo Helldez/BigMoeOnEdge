@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  advancedCards,
   differsFromPlan,
   helpParts,
   inForm,
@@ -58,6 +59,31 @@ describe('inForm', () => {
     expect(inForm(spec('x', 'g', 'basic', { form: false }))).toBe(false);
     expect(inForm(spec('x', 'g', 'basic'))).toBe(true);
     expect(inForm(spec('x', 'g', 'advanced'))).toBe(false);
+  });
+});
+
+describe('advancedCards', () => {
+  it('holds every row the form leaves out, cut into the same groups in the same order', () => {
+    const ordered = rows.map((p) => ({ ...p, group_order: Number(p.group.slice(1)) }));
+    const c = advancedCards(ordered);
+    expect(c.map((x) => x.group)).toEqual(['g1', 'g2', 'g3']);
+    expect(keys(c[0].params)).toEqual(['c']);
+    expect(keys(c[1].params)).toEqual(['f']);
+    expect(keys(c[2].params)).toEqual(['d']);
+    // With the form's cards, every row appears exactly once.
+    const all = [...settingsCards(rows), ...c].flatMap((x) => keys(x.params)).sort();
+    expect(all).toEqual(keys(rows).sort());
+  });
+
+  it('leaves out what Set by you lists, a launch-only path and a read-only group', () => {
+    const t = [
+      ...rows,
+      spec('p', 'g3', 'experimental', { type: 'path' }),
+      spec('m', 'model', 'advanced', { type: 'path', group_read_only: true }),
+    ];
+    const c = advancedCards(t, new Set(['f']));
+    expect(c.map((x) => x.group)).toEqual(['g1', 'g3']);
+    expect(keys(c[1].params)).toEqual(['d']);
   });
 });
 

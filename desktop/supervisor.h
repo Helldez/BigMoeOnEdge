@@ -15,7 +15,7 @@
 
 namespace bmoe::desktop {
 
-// How long a server is given to answer /api/info after it starts. It probes nothing and loads no
+// How long a server is given to answer (kServerReadyPath) after it starts. It probes nothing and loads no
 // model at start, so seconds are the norm; the margin is for a first start, when the system
 // checks a freshly installed binary and a GPU backend compiles its kernels.
 inline constexpr std::chrono::seconds kServerStartTimeout{90};

@@ -4,6 +4,7 @@ import io.bigmoeonedge.app.engine.ConfigState
 import io.bigmoeonedge.app.engine.ParamSpec
 import io.bigmoeonedge.app.engine.PlanDecision
 import io.bigmoeonedge.app.engine.ValueSource
+import io.bigmoeonedge.app.engine.advancedCards
 import io.bigmoeonedge.app.engine.differsFromPlan
 import io.bigmoeonedge.app.engine.loadTargetChosen
 import io.bigmoeonedge.app.engine.setByYou
@@ -54,6 +55,18 @@ class SettingsFormTest {
     fun aRowALinkPointsAtIsShownEvenOffTheForm() {
         val pinned = settingsCards(table, pinned = setOf("dbg", "warm"))
         assertEquals(listOf("cache", "warm", "dbg"), pinned[1].params.map { it.key })
+    }
+
+    @Test
+    fun advancedSettingsHoldEveryOtherRowInTheSameGroups() {
+        val adv = advancedCards(table)
+        assertEquals(listOf("cache"), adv.map { it.group })
+        assertEquals(listOf("warm", "dbg", "exp"), adv[0].params.map { it.key })
+        // With the form's cards, every settable row appears exactly once.
+        val all = (settingsCards(table) + adv).flatMap { c -> c.params.map { it.key } }.sorted()
+        assertEquals(table.map { it.key }.sorted(), all)
+        // A row the person set lives in "Set by you" instead.
+        assertEquals(listOf("warm", "exp"), advancedCards(table, mine = setOf("dbg"))[0].params.map { it.key })
     }
 
     @Test
