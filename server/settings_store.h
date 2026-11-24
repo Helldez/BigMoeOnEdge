@@ -39,8 +39,13 @@ public:
     // {key: reason} for values that did not parse; those are left out. Persists.
     json apply(const json & values, const std::vector<std::string> & reset);
 
-    // Replace the plan layer and remember the decisions behind it.
-    void apply_plan(std::map<std::string, std::string> values, json decisions);
+    // Replace the plan layer and remember the decisions behind it. `model` is the file the plan was
+    // made for: its values (layer counts, tensor overrides, a device split, a cache budget) are
+    // placement for that file on this machine, so the layer is in force only while the other layers
+    // name that same model, and a load of another model, Auto on or off, never opens with them (#718).
+    void apply_plan(std::map<std::string, std::string> values, json decisions, std::string model);
+    // Drop the plan layer: a plan that could not be made leaves no earlier plan in force.
+    void clear_plan();
 
     // What config() would build with `values` as the plan layer: the settings a load of another plan
     // runs, before that plan is applied.
@@ -70,7 +75,7 @@ public:
     // The keys the server was launched with. A client's "reset everything I set" leaves them: they
     // are the operator's choice for this run, not a value saved from a form.
     std::vector<std::string> launch_keys() const;
-    json plan_decisions() const;
+    json plan_decisions() const; // null where no plan layer is in force
 
     // Whether every load plans first. A server setting, not an engine parameter, so it lives beside
     // the values rather than in the table. `fallback` is the answer until someone sets it. Layered as
@@ -92,6 +97,9 @@ public:
 
 private:
     RunConfig build_locked() const;
+    // defaults < user < launch: the configuration with no plan layer.
+    RunConfig operator_config_locked() const;
+    bool plan_in_force_locked(const RunConfig & operator_config) const;
     void save_locked() const;
 
     mutable std::mutex m_;
@@ -99,6 +107,7 @@ private:
     const std::string path_;
     std::map<std::string, std::string> plan_, launch_, user_;
     json decisions_ = nullptr;
+    std::string plan_model_; // the model the plan layer was made for
     bool auto_plan_set_ = false;
     bool auto_plan_ = false;
     bool launch_auto_plan_set_ = false;

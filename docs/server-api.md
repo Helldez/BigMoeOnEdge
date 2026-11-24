@@ -1396,6 +1396,12 @@ the decisions so `GET /api/config` returns them under `plan`. Returns the config
 made from the configuration without the plan layer (defaults, launch flags, the person's values),
 so its `values` are complete on their own and replace the previous plan whole.
 
+The plan layer belongs to the model it was made for. Its values are placement for that one file on
+this machine: layer counts, tensor overrides, a device split, a cache budget. While the settings
+name another model, the layer is left out of the config and `plan` is `null`, with Auto on or off.
+Returning to the plan's model brings the layer back. A load whose plan fails drops the layer, so no
+earlier plan opens in its place.
+
 ## Backend packs and updates
 
 The desktop app's side of the release ([desktop-app.md](desktop-app.md)): the signed feed, read
