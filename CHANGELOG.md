@@ -17,6 +17,17 @@ Semantic Versioning.
   button, or says to update the app first while the feed is a newer release's. The first run offers
   such a pack as if it were missing ([server-api.md](docs/server-api.md#get-apibackends),
   [desktop-app.md](docs/desktop-app.md#backend-packs)).
+- **`--auto` keeps the model file's mapping whenever a graphics card holds part of the model.** A
+  field report (Windows, a 6 GB NVIDIA laptop card, driver 572.42) crashed inside the graphics driver
+  at every answer, on two engine versions, with `moe-stream` and `release-mmap` both on, and ran clean
+  with `release-mmap` off. The cause is not confirmed in the code: the engine releases the mapping
+  only once no weight it saw on the host points inside it, and a read by a device's driver is not
+  something that check sees. The plan no longer arms `release-mmap` where a card with memory of its
+  own holds layers or the expert cache; a device that only computes the prompt, such as a laptop's
+  integrated GPU, does not count, since the cores still decode there and that is where the measured
+  gain is (+24-46% decode on Windows). A `release-mmap` set by hand is kept
+  ([field-reports.md](docs/field-reports.md), [hardware-planning.md](docs/hardware-planning.md),
+  [moe-streaming.md](docs/moe-streaming.md)).
 
 ## [0.49.0] - 2026-11-24
 

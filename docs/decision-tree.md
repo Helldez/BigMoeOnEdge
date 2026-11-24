@@ -1041,9 +1041,12 @@ flowchart TD
 - parent: —
 - code: `core/src/plan/planner.cpp` · `choose_release_mmap`
 - condition: `if (!safe_shape) {`
+- condition: `} else if (card_holds_model(s)) {`
 - condition: `} else if (storage.mapping_serialises_reads == Tri::Yes) {`
 - Unsafe shape (a tied output head, MTP in use, dense under Mmap or some tables mapped) → a note.
   The field is not written.
+- A card with memory of its own holds part of the model (layers placed on it, or a device expert
+  cache; a prefill device alone does not count) → a note: the mapping stays. The field is not written.
 - The mapping serialises reads → `release_mmap = true`.
 
 #### `plan.lossy` — Lossy knobs stay off

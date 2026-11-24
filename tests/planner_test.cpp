@@ -285,6 +285,27 @@ int main() {
 
         const Decision * d = find(p, "release-mmap");
         check(d && d->source == Source::Measured, "desktop: release-mmap is a measured decision");
+
+        // The same machine with layers on its card: a device computes, so the mapping stays, whatever
+        // the storage measured (a field report crashed in the driver with it released).
+        Placement pl;
+        pl.fitted = true;
+        pl.outcome = "synthetic";
+        pl.n_gpu_layers = 4;
+        pl.n_ctx = 4096;
+        for (uint32_t il = 0; il + 4 < model.n_layer; ++il)
+            pl.host_expert_layers.push_back(il);
+        pl.device_bytes = 2 * GiB;
+        const Plan on_card = plan_run(base_cfg(), desktop(), model, pl, PlanRequest{});
+        const Decision * kept = find(on_card, "release-mmap");
+        check(!on_card.config.moe.release_mmap && kept && kept->value == "off" && kept->source == Source::Derived,
+              "desktop, layers on the card: release-mmap stays off, a derived decision");
+        RunConfig asked = base_cfg();
+        asked.moe.release_mmap = true;
+        PlanRequest pinned;
+        pinned.pinned = {"release-mmap"};
+        check(plan_run(asked, desktop(), model, pl, pinned).config.moe.release_mmap,
+              "desktop, layers on the card: a release-mmap set by hand stands");
     }
 
     // ── the embedding tables the allocation prices as left mapped reach the run ─────
@@ -2303,6 +2324,17 @@ int main() {
         const uint64_t in_turn = 2 * 384 * MiB; // the expert slots, held only during a prefill
         check(on.config.prefill.device == "accel",
               "prefill: a device that wins wide and agrees is armed by its own name");
+        // A device that only computes the prompt holds none of the model between turns: on storage
+        // a live mapping slows, the release stays armed, since the cores decode (the field report's
+        // crash had layers on a card of its own).
+        {
+            HardwareProfile slow_map = machine(1500.0, Tri::Yes);
+            slow_map.storage = desktop_storage();
+            const Plan pre = plan_run(base_cfg(), slow_map, mm, PlanRequest{});
+            const Decision * rm = find(pre, "release-mmap");
+            check(pre.config.prefill.enabled() && pre.config.moe.release_mmap && rm && rm->source == Source::Measured,
+                  "prefill: a device that only computes the prompt leaves release-mmap to the storage probe");
+        }
         // The prefill device computes every pass as wide as the graph: a long context that the memory
         // takes whole is held to the device's bound (#533) once the device is armed, and not otherwise.
         {
