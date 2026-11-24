@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [0.48.1] - 2026-11-24
+## [0.49.0] - 2026-11-24
 
 ### Fixed
 - **Thinking on the phones follows the setting again** (#721). A conversation's message
@@ -12,8 +12,88 @@ Semantic Versioning.
   with thinking off, whatever the Thinking setting said. The web UI and the desktop app send `think`
   with every message, so they reasoned; the Android and iOS apps take it from Settings and send none,
   so no model reasoned there since 0.39. A message that leaves `think` out now follows the setting,
-  which stays off until the person turns it on, and one that names it still wins. A scheduled task follows the setting too, where it was always sent with thinking off
+  which stays off until the person turns it on, and one that names it still wins. A scheduled task
+  follows the setting too, where it was always sent with thinking off
   ([server-api.md](docs/server-api.md)).
+- **On a GPU that shares the host's memory, the first load times a prompt as wide as one runs, and
+  every later plan decides by the same measurement** (#714). The load that compares a model's answers
+  on the device with the cores' also times the two sides, and it timed the prompt on the 64-token graph
+  the answers are compared on. A GPU's cost per token keeps falling as a graph widens and the cores'
+  does not, so that width ranks them the other way round from a real prompt: one integrated GPU ran a
+  prompt at 0.56x its cores' rate 64 tokens wide and 1.42x 512 wide. Its first load sent the model to
+  the cores in two loads of three (the third kept the device only because the cores' reference was
+  still cold), and the next plan, which priced the prompt on the probes' matmul instead, sent it back.
+  The prompt is now timed on each side by climbing the widths from the comparison's, doubling, towards
+  the session's own graph width (`answer_prompt_widths`), and the climb stops once the side ahead is not
+  losing ground by more than the margin (`prompt_ranking_settled`); the reference on the cores is
+  widened only as the climb reaches a width. Both sides' prompt rates are recorded beside their decode
+  rates (`shared_device_prompt_tps`, `no_shared_device_prompt_tps`); a plan made on them weighs a
+  request by the rule the load decided by, now one function for both (`bmoe/serving_side.h`). A record
+  from an earlier engine has no prompt rates and is planned as before. On that laptop (on battery):
+  an 8B MoE model climbed to 256 tokens and kept the GPU, serving a 468-token prompt at 155 tok/s where
+  0.47.2 sent it to the cores at 62; a 4B dense model the GPU leads from the start stopped at 128 and
+  kept the GPU as before. The check costs 14-16 s more on a model's first load on that machine (a
+  timing at the session's whole width cost the dense model 28 s), once per model and machine
+  ([hardware-planning.md](docs/hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it),
+  [measured-planning.md](docs/measured-planning.md)).
+- **A model the plan moves onto a GPU that shares the host's memory opens on the cores where the GPU
+  cannot allocate it, instead of ending the load.** Sharing the host's memory does not mean a device
+  may allocate all of it: on a 16 GB laptop the integrated GPU's driver allowed 7.8 GiB, and a 9.3 GiB
+  Qwen3.6-35B the plan held whole there failed with `ErrorOutOfDeviceMemory`; the CLI exited, nothing
+  was recorded, and every load failed the same way. Only a model the plan streams, tried whole on the
+  device, had the cores (its stream) behind it. Now every move of a whole model onto such a device
+  carries the same configuration on the cores as its other part (`RunConfig::fallback`, set by
+  `back_with_cores`; `held_on_cores` is the one definition the plan and the session share), so every
+  front-end opens the cores in the same load. The failure is kept with what the device reported free
+  (`shared_device_unviable_free_mib`), and the device is named again only once it reports more than
+  that by `PlannerPolicy::shared_device_regrowth` (10%). On that laptop the first load served from the
+  cores at 8.5 tok/s after a 12 s failed attempt, and the next load planned the cores at once (6.6 s
+  to load).
+  `validate()` now accepts a fallback behind any device placement, not only one whose answers are
+  compared ([hardware-planning.md](docs/hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it),
+  [measured-planning.md](docs/measured-planning.md), [telemetry.md](docs/telemetry.md)).
+- **The cache ceiling holds under `--auto` too** (#697). `--cache-ceil-mb` bounded only a cache the
+  engine sized at load (`--cache-mb auto`); a plan turns the cache into a fixed size, which that
+  ceiling never sees, so `--auto --cache-ceil-mb 512` still ran with a 3280 MiB cache. The plan now
+  sizes its cache under the person's ceiling: the ledger charges it as held, the memory past it stays
+  free, and the plan says the ceiling held it (`cache-ceil-mb`). A ceiling above the cache the plan
+  would pick changes nothing; one under the token cycle leaves the cache off, as the floor does,
+  saying the ceiling is why and without offering a shorter context. A `--cache-mb` the person pinned
+  is not a cache the plan sizes, so the ceiling leaves it whole and the plan claims no bound
+  ([settings.md](docs/settings.md), [hardware-planning.md](docs/hardware-planning.md)).
+- **A cache the ranking turned off stays off, instead of being sized from the whole budget.** The
+  allocation ranks the expert cache against the dense groups a token reads whole. Where those
+  groups took the budget and less than one token cycle was left at the cache's turn, the ranking
+  left the cache off, and the bound that follows then read "no size from the ranking" as "this
+  lane was never priced" and gave the cache everything left after the dense reservation. Where the
+  run's dense mode reserves nothing ahead of the ranking (a mapped or warmed dense set) that is the
+  whole budget: the plan held the dense groups and a cache of the same memory, 5480 MiB against a
+  2752 MiB budget in the test that now pins it, with a `cache-off` and a `cache-unpriced` note on
+  the same plan. The cache now has what the ranking left, and under one token cycle it is off;
+  the experts still stream, as on any plan whose cache does not reach the floor. A locked or offered
+  cache also keeps what being locked or offered raises the ceiling by; where that carries it past one
+  token cycle the cache is on, and the plan says so (`cache-raised`) instead of calling it off.
+- **A context refused for another reason no longer costs the device expert cache.** Where llama.cpp
+  refuses a context the session asks again: with a smaller device cache, then with the V cache at
+  f16 (a quantized one needs flash attention), then with a narrower graph. The three were tried in
+  that order with everything kept from the one before, so on a backend that refuses a quantized V
+  cache the device cache was first cut a quarter at a time down to one token cycle, the context
+  then opened with V at f16 and that cache, and the session kept reporting the planned size: the
+  log, the run's metadata and the figures the next plan is priced from all named a cache the run
+  never held. A refused width did the same. Each remedy is now asked for with the cache as planned
+  first; where the cache was in the way as well, it ends at the largest size that opens beside the
+  remedy rather than at its floor; a narrower graph no longer leaves V at f16 where the quantized
+  one opens; and what opened is what the session records. The capture context's settled width and
+  V type are also where the second creation, which arms the cache, starts from, instead of asking
+  again for what was just refused. The order is one module (`core/src/engine/context_fallback`)
+  with its own test (`context_fallback`).
+- **A load never opens with another model's plan** (#718). The server builds its configuration in
+  layers (defaults, the plan, the person's settings, the launch flags), and the plan layer was
+  replaced only when a plan succeeded. A plan that failed, or a load with Auto off after switching
+  model, opened the new model with the old one's layer counts, tensor overrides, device split, cache
+  budget and prefill device. The plan layer now belongs to the model it was made for: it is in the
+  configuration only while the settings name that model, with Auto on or off, and a load whose plan
+  fails drops it ([server-api.md](docs/server-api.md#post-apiplanapply)).
 
 ## [0.48.0] - 2026-11-23
 
@@ -78,20 +158,6 @@ Semantic Versioning.
   after a longer conversation == the same chat in a fresh session, resident, streamed and with a
   prefill device, and perplexity after it == in a fresh session, bit for bit
   ([session.md](docs/session.md#independent-prompts-vs-multi-turn-chat)). By @pt7777 (#711).
-- **A context refused for another reason no longer costs the device expert cache.** Where llama.cpp
-  refuses a context the session asks again: with a smaller device cache, then with the V cache at
-  f16 (a quantized one needs flash attention), then with a narrower graph. The three were tried in
-  that order with everything kept from the one before, so on a backend that refuses a quantized V
-  cache the device cache was first cut a quarter at a time down to one token cycle, the context
-  then opened with V at f16 and that cache, and the session kept reporting the planned size: the
-  log, the run's metadata and the figures the next plan is priced from all named a cache the run
-  never held. A refused width did the same. Each remedy is now asked for with the cache as planned
-  first; where the cache was in the way as well, it ends at the largest size that opens beside the
-  remedy rather than at its floor; a narrower graph no longer leaves V at f16 where the quantized
-  one opens; and what opened is what the session records. The capture context's settled width and
-  V type are also where the second creation, which arms the cache, starts from, instead of asking
-  again for what was just refused. The order is one module (`core/src/engine/context_fallback`)
-  with its own test (`context_fallback`).
 
 ### Removed
 - **Levers nothing read any more.** `--dense-on-device` (the session never read it, and the plan
