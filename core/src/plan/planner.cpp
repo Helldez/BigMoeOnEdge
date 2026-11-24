@@ -2982,7 +2982,7 @@ price_prefill_trade(const Planning & s, double wide_ratio, const Allocation & wi
     std::snprintf(b, sizeof(b),
                   "priced on this machine's requests (%d recorded): %.0f prompt tokens and %.0f decoded per request; "
                   "with the device %.1f s (prefill at %.1f tok/s, %.1fx the host's measured %.1f, decode %.3f s/token "
-                  "with the cache it leaves), without it %.1f s (decode %.3f s/token with the whole cache)",
+                  "with no cache), without it %.1f s (decode %.3f s/token with the cache)",
                   mk.mix_requests, prompt, gen, cost_with, dev_tps, wide_ratio, host_tps, with.seconds_per_token,
                   cost_without, without.seconds_per_token);
     t.account = b;
@@ -3079,28 +3079,6 @@ Allocation fit_prefill_device(Planning & s,
         }
         if (slots_by_caller) break;
     }
-    // A device that fits beside a cache of a token cycle still takes memory from it, and that is paid
-    // on every decoded token where the prompt is paid once: one Metal device that ran a long prompt 4.5x
-    // faster than the cores left a cache that decoded 4-8% slower. Where this machine's requests are
-    // recorded the device is weighed as the trade below is, its prompts at its measured ratio against
-    // its answers at the decode each allocation predicts, and kept only where a request is cheaper with
-    // it by the margin. Unrecorded, it is armed as it always was, and the load records the requests.
-    std::string decode_account;
-    // dt:plan.prefill.decode-priced
-    if (slots > 0 && streamed && armed.cache_bytes < alloc.cache_bytes) {
-        const PrefillTrade kept = price_prefill_trade(s, wide_ratio, alloc, armed);
-        if (kept.priced && !kept.device_wins) {
-            s.note("prefill-device", "off", Source::Measured,
-                   "Prompts run on the CPU: on this machine's requests the expert cache " + best.name +
-                       " would take is worth more than its faster prompts (" + ratio + ").",
-                   best.name + " computes a wide prefill at " + ratio + " the host's rate and fits, but the expert " +
-                       "cache gives up " + u64s(mib(alloc.cache_bytes - armed.cache_bytes)) + " MiB for it; " +
-                       kept.account + ", so the cache is kept: the device is not cheaper by the " +
-                       u64s((uint64_t) (s.pol.min_backend_win * 100.0f + 0.5f)) + "% margin" + unweighed);
-            return refused();
-        }
-        if (kept.priced) decode_account = "; " + kept.account + ", cheaper with the device";
-    }
     const uint64_t least =
         prefill_need(s.model, slots_by_caller ? p.config.prefill.slots : PrefillDeviceConfig::slots_min);
     if (slots == 0 && own_short) {
@@ -3192,7 +3170,7 @@ Allocation fit_prefill_device(Planning & s,
                ". Decode stays on the host, and so does the prefill if the device cannot be set up at "
                "load. A device's arithmetic is not the host's to the last bit, so the text can differ from a host "
                "prefill's: pass an empty " +
-               flag_spelling("prefill-device") + " to keep the prefill on the host" + decode_account + unweighed);
+               flag_spelling("prefill-device") + " to keep the prefill on the host" + unweighed);
     return armed;
 }
 

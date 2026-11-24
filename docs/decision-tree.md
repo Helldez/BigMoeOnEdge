@@ -562,7 +562,6 @@ flowchart TD
     plan_prefill["<b>plan.prefill</b><br/>A prefill device (prompts on a device, answers on the cores)"]
     plan_prefill_survey["<b>plan.prefill.survey</b><br/>Which device, if any, prefills faster"]
     plan_prefill_fit["<b>plan.prefill.fit</b><br/>Fit the prefill device's slots"]
-    plan_prefill_decode_priced["<b>plan.prefill.decode-priced</b><br/>Weigh the cache the device takes"]
     plan_layers_home_funded["<b>plan.layers-home.funded</b><br/>The ledger funds the layers' move: re-plan on it"]
     plan_ledger["<b>plan.ledger</b><br/>Spend the memory: the allocator"]
     plan_dense_settle["<b>plan.dense.settle</b><br/>Keep the dense pin only if the ledger could pin it"]
@@ -590,7 +589,6 @@ flowchart TD
     plan_shared -->|"a candidate"| plan_shared_sides
     plan_prefill -->|"not pinned"| plan_prefill_survey
     plan_prefill_survey -->|"a faster device"| plan_prefill_fit
-    plan_prefill_fit -->|"a count that fits"| plan_prefill_decode_priced
     plan_layers_home -->|"priced"| plan_layers_home_funded
     plan_dense -->|"Pinned candidate"| plan_dense_settle
     plan_overlap -->|"not pinned"| plan_overlap_prompts
@@ -970,21 +968,9 @@ flowchart TD
   - fits the memory it can hold.
 - A count that only fits by giving up cache is a trade. It is priced on the model's request mix,
   and taken only if it wins by 10%.
-- A count that fits but still shrinks the cache is priced the same way →
-  `plan.prefill.decode-priced`.
 - None → off.
 - Armed → `prefill.device`, best-effort, the slot count, and slots taken per prefill. The width is
   bounded to the device's pass.
-
-#### `plan.prefill.decode-priced` — Weigh the cache the device takes
-- parent: `plan.prefill.fit`
-- when: a count that fits
-- code: `core/src/plan/planner.cpp` · `fit_prefill_device`
-- condition: `if (slots > 0 && streamed && armed.cache_bytes < alloc.cache_bytes) {`
-- The device keeps a cache of a token cycle but makes it smaller: every decoded token pays for it.
-- The model's request mix and the host's prefill rate recorded → priced as the trade is: kept only
-  if a request is 10% cheaper with it; otherwise → off, the whole cache kept.
-- Nothing recorded → armed, as before; the load records the mix.
 
 #### `plan.layers-home.funded` — The ledger funds the layers' move: re-plan on it
 - parent: `plan.layers-home`

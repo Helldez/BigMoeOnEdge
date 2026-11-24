@@ -18,25 +18,15 @@ Semantic Versioning.
   the planner's own constant (`PlannerPolicy::ubatch_min`, 512) rather than a number of its own, so
   every rule that weighs a long prompt reads a rate taken in the regime prompts run in, on a phone's
   NPU as on a large card. Inkling 2 Mini on that Mac: prefill 101-103 tok/s, 37 s to the first token,
-  with the load 12-13 s longer (the device's arena is set up) and decode 4-8% slower on short
-  prompts (the device's slots take part of the expert cache). Qwen3.6-35B-A3B Q4_K_M, which Metal
+  with the load 12-20 s longer (the device's arena is set up) and decode 4-30% slower on short
+  prompts, by how much memory the Mac has free (the device's slots take part of the expert cache). Qwen3.6-35B-A3B Q4_K_M, which Metal
   already prefilled: the same decisions. The probes take the same time.
-- **A prefill device is weighed against the cache it takes, not only when it takes all of it.** A
-  device that fits beside a cache of a token cycle still makes that cache smaller, and every decoded
-  token pays for it: Inkling 2 Mini decoded at 4.8-5.3 tok/s with Metal prefilling against 6.1-6.5
-  without. Where this machine's requests and the host's prefill rate are recorded, the device is now
-  priced as the cache-for-device trade already was (its prompts at its measured ratio, its answers at
-  the decode each allocation predicts) and kept only where a request is cheaper with it by the margin;
-  with nothing recorded it is armed as before.
 
 ### Known limits
 - The device's prompt rate is the probe's layer ratio applied to the host's measured prefill rate,
   which overstates a streamed model's device prefill (7.9x probed, 4.5x end to end on Inkling 2 Mini:
-  the probe does not count the experts' transfer to the device).
-- The weighing above needs the host's prefill rate, which a load records only where the host ran the
-  prompt: once a device is armed for a model, later loads have no new host rate and keep it armed.
-  Recording each side's real prefill rate, as #714 does for a model held on a shared device, is the
-  follow-up (#729).
+  the probe does not count the experts' transfer to the device). Weighing a device against the expert
+  cache it takes on the prefill rates loads measure is the follow-up (#729).
 - The probe's prompt graph is four times wider than before: same time on the Mac (+0.1 s); its
   time and memory on a phone are not measured yet.
 
