@@ -35,6 +35,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <thread>
@@ -132,11 +133,13 @@ public:
     // A message: add it and start the run. `remote`: the request came from beyond loopback; the
     // run then offers no file, command or MCP tool. `item_out` is the user item.
     // `images`: data URLs (image_part.h), kept on the item and handed to the model with the text,
-    // at most k_max_images_per_message; an empty array for none.
+    // at most k_max_images_per_message; an empty array for none. `think`: whether the model reasons
+    // this turn; absent, the Thinking setting decides, as for every other route a client may leave
+    // it out of (a request-scoped parameter applies to the next message).
     Refusal send(const std::string & conversation,
                  const std::string & text,
                  const json & images,
-                 bool think,
+                 std::optional<bool> think,
                  bool remote,
                  json & item_out);
     // Drop `item` (a user item) and everything after it, then send `text`.
@@ -144,7 +147,7 @@ public:
                  const std::string & item,
                  const std::string & text,
                  const json & images,
-                 bool think,
+                 std::optional<bool> think,
                  bool remote,
                  json & item_out);
     Refusal approve(const std::string & conversation, const std::string & item, bool approved);
@@ -190,7 +193,7 @@ private:
     Refusal start(const std::string & conversation,
                   const std::string & text,
                   const json & images,
-                  bool think,
+                  std::optional<bool> think,
                   bool remote,
                   bool auto_deny,
                   const std::string & task_id,
@@ -209,6 +212,8 @@ private:
                              const ChatRequest & req,
                              const std::function<bool(const TokenMetrics &)> & on_token);
     ChatRequest build_request(const json & conv, const std::string & system, bool remote, bool think) const;
+    // The server's settings as they stand now (AgentDeps::config), or the engine defaults without it.
+    RunConfig settings() const;
     // The tools a round offers; `mcp` gets the MCP tools among them, by the name the model calls.
     std::vector<ChatTool>
     tools_for(const json & conv, bool remote, std::map<std::string, McpTool> * mcp = nullptr) const;
