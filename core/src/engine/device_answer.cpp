@@ -328,17 +328,7 @@ DeviceAnswer check_device_answer(llama_context * placed, const AnswerReference &
 }
 
 SessionConfig on_cores(SessionConfig cfg) {
-    cfg.n_gpu_layers = 0;
-    cfg.device_split.clear();
-    cfg.device_list.clear();
-    // Not "auto": a caller who asked for every device in the room would keep them there with no layer
-    // on them, and the scheduler hands such a device whatever nodes it can run.
-    cfg.device_use = DeviceUse::CpuOnly;
-    cfg.spec.mtp_head_on_devices = false;
-    cfg.trial.answer_device.clear();
-    // The load now serves the cores, and what it times is theirs.
-    if (cfg.trial.shared_device_side == 1) cfg.trial.shared_device_side = 0;
-    return cfg;
+    return held_on_cores(std::move(cfg));
 }
 
 } // namespace bmoe::detail

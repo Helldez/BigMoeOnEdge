@@ -172,11 +172,16 @@ int main() {
         RunConfig unnamed = ok_base();
         unnamed.trial.answer_prompt_per_token = 1.0f;
         expect_fail("trial answer mix with no device to compare", unnamed);
-        // The plan's other part (RunConfig::fallback): what the load reopens with where the device
-        // does not keep the model. A configuration of its own, of the same model, with none behind it.
+        // The plan's other part (RunConfig::fallback): what the load opens where the model cannot serve
+        // from the device it was placed on. A configuration of its own, of the same model, with none
+        // behind it.
         RunConfig two = t;
         two.fallback = std::make_shared<const RunConfig>(ok_moe());
         expect_ok("a fallback configuration behind a device whose answers are compared", two);
+        RunConfig confirmed = t;
+        confirmed.trial.answer_device.clear();
+        confirmed.fallback = std::make_shared<const RunConfig>(held_on_cores(confirmed));
+        expect_ok("the cores behind a device whose answers were confirmed before", confirmed);
         RunConfig no_device = ok_base();
         no_device.fallback = std::make_shared<const RunConfig>(ok_moe());
         expect_fail("a fallback configuration with no device to fall back from", no_device);

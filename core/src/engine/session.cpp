@@ -2785,6 +2785,17 @@ void keep_answer_rates(const detail::DeviceAnswer & a, MeasuredKnobs & rec) {
     if (on.prompt_tps > 0.0) rec.shared_device_prompt_tps = on.prompt_tps;
     if (off.prompt_tps > 0.0) rec.no_shared_device_prompt_tps = off.prompt_tps;
 }
+
+// The memory the device named `name` reports free, in MiB, as the hardware probe reads it
+// (ggml_backend_dev_props::memory_free), so a plan compares the two figures in the same terms. 0 where
+// no device has that name.
+uint64_t device_free_mib(const std::string & name) {
+    ggml_backend_dev_t dev = ggml_backend_dev_by_name(name.c_str());
+    if (!dev) return 0;
+    ggml_backend_dev_props props{};
+    ggml_backend_dev_get_props(dev, &props);
+    return (uint64_t) props.memory_free >> 20;
+}
 } // namespace
 
 std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
@@ -2798,22 +2809,31 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
     AnswerCheck check;
     std::unique_ptr<Session> self = open_placed(cfg, error, route_trace, compute_trace, io_trace, &check);
     if (!check.ran) {
-        if (self || !cfg.fallback || device.empty()) return self;
+        // A plan that moved the model onto a device gives the configuration its other part
+        // (RunConfig::fallback), whether or not the load compares answers there: a device the plan
+        // already confirmed can still refuse the allocation (a driver's own ceiling, memory another
+        // program holds).
+        if (self || !cfg.fallback || cfg.device_split.empty()) return self;
+        const std::string placed_on = device.empty() ? cfg.device_split.front().first : device;
         // The model could not be opened on the device at all, most likely for memory: the plan's other
         // part serves, and the device has lost this model here (a second try at a load that does not
-        // fit is a second failure on a machine already short of room).
+        // fit is a second failure on a machine already short of room) until it reports more room than
+        // it has now (MeasuredKnobs::shared_device_unviable_free_mib).
+        const uint64_t free_mib = device_free_mib(placed_on);
         log_printf(LogLevel::Warn,
-                   "the model could not be opened on %s (%s); the plan's other configuration is opened instead",
-                   device.c_str(), error.c_str());
+                   "the model could not be opened on %s (%s, %llu MiB free there); the plan's other configuration "
+                   "is opened instead",
+                   placed_on.c_str(), error.c_str(), (unsigned long long) free_mib);
         const double first_s = secs(t0, clock_t_::now());
         const std::string first_error = error;
         self = open_placed(*cfg.fallback, error, route_trace, compute_trace, io_trace, nullptr);
         if (!self) {
-            error = "the model could not be opened on " + device + " (" + first_error + "), nor as the plan's other " +
-                    "configuration: " + error;
+            error = "the model could not be opened on " + placed_on + " (" + first_error +
+                    "), nor as the plan's other configuration: " + error;
             return nullptr;
         }
         self->impl_->trials.result.shared_device_unviable = MeasuredKnobs::unviable_max;
+        self->impl_->trials.result.shared_device_unviable_free_mib = free_mib;
         self->impl_->load_seconds += first_s;
         return self;
     }

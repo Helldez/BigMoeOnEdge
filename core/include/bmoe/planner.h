@@ -149,6 +149,15 @@ struct PlannerPolicy {
     // noise. Measured 19 against 19 on a phone, which is not a finding.
     float min_backend_win = 0.10f;
 
+    // How much more memory a shared-memory device must report free than it did when it failed to open
+    // this model whole (MeasuredKnobs::shared_device_unviable_free_mib) before the plan names it again,
+    // as a fraction. Not the speed margin above: this compares two readings of one driver's free
+    // figure, which drifts as other programs come and go, and naming the device again on a reading
+    // inside that drift reopens a load that fails the same way, once per load. A tenth, the same
+    // allowance the speed margin gives a probe's repeatability; the cores stay behind the device
+    // either way (RunConfig::fallback), so a reading past it that still fails costs one open.
+    float shared_device_regrowth = 0.10f;
+
     // How much of its ceiling the capacity fitter's placement is priced at. The ceiling adds what a
     // token reads at each processor's probed rate and leaves out the crossings between the device and
     // the host's experts and every per-op cost, so the placement decodes under it, by a part no probe

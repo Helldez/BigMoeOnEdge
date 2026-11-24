@@ -142,6 +142,12 @@ struct MeasuredKnobs {
     int device_cache_unviable = 0, no_device_cache_unviable = 0;
     int wide_unviable = 0, narrow_unviable = 0;
     int shared_device_unviable = 0, no_shared_device_unviable = 0;
+    // What the device the model failed to open on said it had free when it failed, in MiB, as its
+    // backend reports it (0: not known). A device's room is its driver's to give and can grow (another
+    // program lets go of it, a setting raises it), so a plan names the device again where it now
+    // reports more than that (PlannerPolicy::shared_device_regrowth), the cores still behind it; until then the
+    // failure stands and no load pays for a second one.
+    uint64_t shared_device_unviable_free_mib = 0;
 
     // What came of each prefill device a load armed for this model, on this machine and engine, one
     // word per device: `verdict` 1 where the session kept it, -1 where its check on this model refused
