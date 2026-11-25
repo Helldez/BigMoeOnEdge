@@ -190,6 +190,12 @@ struct GenerateRequest {
     // Report the top n_probs candidates and the chosen token's log-probability on every token
     // (TokenMetrics::top_logprobs). 0: none.
     int n_probs = 0;
+    // Feed `prompt` as written, with no chat template, on a session opened with chat turns: a plain
+    // text completion (llama-server's /completion, OpenAI's /v1/completions). The turn neither reads
+    // nor keeps the engine-held conversation, and the context's record of a conversation does not
+    // describe it, so it needs clear_kv: the next chat turn then prefills from an empty context.
+    // Exclusive of `messages`, `tools`, `json_schema` and `grammar`, which all speak through the template.
+    bool raw = false;
 };
 
 // Teacher-forced quality measurement. The text is fixed, so every cell scores the SAME token

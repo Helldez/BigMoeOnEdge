@@ -193,6 +193,10 @@ pack replaced while its libraries are loaded (Windows) is put in place at the ne
 comes once the pack is in place and says the server must restart; the app restarts it. The engine
 loads backends from the executable's folder and from each folder under `<data>/backends/`
 (`docs/backends.md`), so a read-only install (an AppImage, an app bundle) takes packs too.
+Settings names the release of each installed pack. A pack another release left (the app was updated
+and the pack was not) is not loaded, so Settings says so and offers to install it again, and the first
+run offers it as if it were missing; while the feed is a newer release's than the app, it says to
+update the app first, since the server refuses that install.
 
 A pack is its release's. The data folder outlives an update and an uninstall, and a backend module
 is compiled against one llama.cpp: a pack an earlier version installed is not loaded (the server's

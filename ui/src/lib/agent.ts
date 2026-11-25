@@ -178,6 +178,10 @@ export interface BackendPack {
   size?: number;
   applies: boolean;
   installed: boolean;
+  /** The release the installed copy was made for, or null when none is installed. */
+  installed_version?: string | null;
+  /** The installed copy is of this engine's release, so the engine uses it; absent from an older server. */
+  loads?: boolean;
 }
 /** A local graphics card a registered backend offers, as the device describes itself. */
 export interface GraphicsDevice {
@@ -185,6 +189,10 @@ export interface GraphicsDevice {
   description: string;
 }
 export interface Backends {
+  /** This engine's release; absent from an older server. */
+  version?: string;
+  /** The verified feed last read, or null when none was. */
+  feed?: { version: string; published?: string } | null;
   /** The backends that registered in this server, by name. */
   registered: string[];
   /** Of their devices, the local graphics cards (discrete or integrated); absent from an older server. */

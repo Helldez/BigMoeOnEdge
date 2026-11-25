@@ -195,12 +195,15 @@ json backends_answer(const std::vector<std::string> & registered,
             json row{{"id", p.id},           {"title", p.title},
                      {"size", p.asset.size}, {"applies", pack_applies(p, loads)},
                      {"installed", false},   {"installed_version", nullptr},
-                     {"current", false}};
+                     {"current", false},     {"loads", false}};
             for (const InstalledPack & i : installed)
                 if (i.id == p.id) {
                     row["installed"] = true;
                     row["installed_version"] = i.version;
                     row["current"] = i.sha256 == p.asset.sha256;
+                    // What the person needs to see: a copy another release left is installed and
+                    // still not used, which "installed" alone hides.
+                    row["loads"] = pack_matches_engine(i.version, engine_version);
                 }
             packs.push_back(row);
         }
@@ -213,7 +216,8 @@ json backends_answer(const std::vector<std::string> & registered,
     json cards = json::array();
     for (const GraphicsDevice & g : graphics)
         cards.push_back(json{{"backend", g.backend}, {"description", g.description}});
-    return json{{"registered", registered},
+    return json{{"version", engine_version},
+                {"registered", registered},
                 {"graphics", cards},
                 {"target", target},
                 {"feed", feed ? json{{"version", feed->version}, {"published", feed->published}} : json()},

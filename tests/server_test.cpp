@@ -36,6 +36,7 @@
 #include "image_part.h"
 #include "json_util.h"
 #include "llama_compat.h"
+#include "text_completion.h"
 #include "model_delete.h"
 #include "model_files.h"
 #include "openai_chat.h"
@@ -1259,6 +1260,80 @@ static void llama_compat_tests() {
           "/props reports the session's penalties beside its sampling");
 }
 
+static void text_completion_tests() {
+    RunConfig cfg;
+    cfg.n_predict = 64;
+    TextCompletionRequest r;
+    std::string err;
+    const auto parse = [&](const json & body, CompletionDialect d) {
+        r = TextCompletionRequest{};
+        err.clear();
+        return parse_text_completion(body, d, cfg, r, err);
+    };
+    check(parse(json{{"prompt", "Once upon"}, {"n_predict", 8}, {"temperature", 0.5}, {"stop", {"\n"}}},
+                CompletionDialect::Llama) &&
+              r.turn.raw && r.turn.prompt == "Once upon" && r.turn.n_predict == 8 && r.turn.sampling &&
+              r.turn.sampling->temp == 0.5f && r.turn.stop_text == std::vector<std::string>{"\n"} &&
+              r.turn.messages.empty() && !r.turn.think && !r.stream,
+          "completion: a raw prompt with its budget, sampling and stop text");
+    check(parse(json{{"prompt", "x"}, {"n_predict", -1}}, CompletionDialect::Llama) && r.turn.n_predict == 64,
+          "completion: n_predict -1 is the session's budget");
+    check(parse(json{{"prompt", json::array({"x"})},
+                     {"max_tokens", 5},
+                     {"stream", true},
+                     {"stream_options", {{"include_usage", true}}}},
+                CompletionDialect::OpenAi) &&
+              r.turn.prompt == "x" && r.turn.n_predict == 5 && r.stream && r.include_usage,
+          "v1/completions: one prompt in an array, max_tokens, a stream with usage");
+    check(parse(json{{"prompt", "x"}, {"max_tokens", 5}, {"logprobs", nullptr}, {"echo", false}},
+                CompletionDialect::OpenAi),
+          "v1/completions: a null logprobs and echo false are no request");
+    check(!parse(json{{"prompt", json::array({"a", "b"})}}, CompletionDialect::OpenAi) &&
+              err.find("one string") != std::string::npos,
+          "v1/completions: several prompts are several choices, refused");
+    check(!parse(json{{"prompt", json::array({1, 2, 3})}}, CompletionDialect::Llama) &&
+              err.find("token ids") != std::string::npos,
+          "completion: a prompt of token ids is refused");
+    check(!parse(json{{"prompt", ""}}, CompletionDialect::Llama) && !parse(json::object(), CompletionDialect::Llama),
+          "completion: no prompt, or an empty one, is refused");
+    check(!parse(json{{"prompt", "x"}, {"grammar", "root ::= \"a\""}}, CompletionDialect::Llama) &&
+              err.find("grammar") != std::string::npos,
+          "completion: a grammar is refused, not ignored");
+    check(!parse(json{{"prompt", "x"}, {"n_probs", 3}}, CompletionDialect::Llama) &&
+              !parse(json{{"prompt", "x"}, {"logprobs", 2}}, CompletionDialect::OpenAi),
+          "completion: logprobs are refused, not computed and dropped");
+    check(!parse(json{{"prompt", "x"}, {"echo", true}}, CompletionDialect::OpenAi) &&
+              !parse(json{{"prompt", "x"}, {"suffix", "y"}}, CompletionDialect::OpenAi) &&
+              !parse(json{{"prompt", "x"}, {"n", 2}}, CompletionDialect::OpenAi),
+          "v1/completions: echo, suffix and n > 1 are refused");
+
+    RunResult res;
+    res.ok = true;
+    res.generated_text = "a tale\n";
+    res.summary.n_prompt = 3;
+    res.summary.n_generated = 4;
+    res.summary.n_past = 7;
+    res.summary.n_predict = 8;
+    ChatResponseMeta meta{"cmpl-1", 1, "m"};
+    const json l = text_completion_json(CompletionDialect::Llama, meta, res, "stop", "Once");
+    check(l["content"] == "a tale\n" && l["stop"] == true && l["stop_type"] == "eos" && l["tokens_predicted"] == 4 &&
+              l["tokens_evaluated"] == 3 && l["prompt"] == "Once" && l["has_new_line"] == true && l.contains("timings"),
+          "completion: llama-server's answer");
+    const json o = text_completion_json(CompletionDialect::OpenAi, meta, res, "length", "Once");
+    check(o["object"] == "text_completion" && o["choices"][0]["text"] == "a tale\n" &&
+              o["choices"][0]["finish_reason"] == "length" && o["usage"]["completion_tokens"] == 4,
+          "v1/completions: OpenAI's answer");
+    check(text_completion_chunk(CompletionDialect::Llama, meta, "a")["stop"] == false &&
+              text_completion_chunk(CompletionDialect::OpenAi, meta, "a")["choices"][0]["text"] == "a",
+          "completion: a streamed piece in each shape");
+    const json last = text_completion_last_chunk(CompletionDialect::Llama, meta, res, "length", "Once", false);
+    check(last["stop"] == true && last["content"] == "" && last["stop_type"] == "limit",
+          "completion: the stream ends at stop:true with no text of its own");
+    const json olast = text_completion_last_chunk(CompletionDialect::OpenAi, meta, res, "stop", "Once", true);
+    check(olast["choices"][0]["finish_reason"] == "stop" && olast["usage"]["total_tokens"] == 7,
+          "v1/completions: the last chunk names the finish and, asked, the usage");
+}
+
 static void request_sampling_tests() {
     const auto parse = [](const json & body, SamplingDialect d, ChatRequest & t, std::string & e) {
         t = ChatRequest{};
@@ -1337,6 +1412,9 @@ static void access_tests() {
               is_api_path("/chat/completions/input_tokens") && is_api_path("/models") && is_api_path("/metrics") &&
               !is_api_path("/healthz") && !is_api_path("/modelsx") && !is_api_path("/index.html"),
           "llama-server's unprefixed paths are the engine, under the same key and origin rules");
+    check(is_api_path("/completion") && is_api_path("/completions") && is_api_path("/v1/completions") &&
+              !is_api_path("/completionx"),
+          "the text completion paths are the engine too");
     check(is_loopback_host("127.0.0.1") && is_loopback_host("localhost:8765") && is_loopback_host("[::1]:8765") &&
               is_loopback_host("::1") && !is_loopback_host("0.0.0.0") && !is_loopback_host("example.com:8765") &&
               !is_loopback_host("192.168.1.10"),
@@ -3011,6 +3089,7 @@ int main() {
     access_tests();
     llama_compat_tests();
     request_sampling_tests();
+    text_completion_tests();
     file_tests();
     decide_tests();
     model_files_tests();

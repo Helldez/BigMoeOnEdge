@@ -238,10 +238,15 @@ static void pack_tests() {
     check(answer["packs"].size() == 1 && answer["packs"][0]["applies"].get<bool>() &&
               answer["packs"][0]["installed"].get<bool>() && answer["packs"][0]["current"].get<bool>(),
           "backends: this target's pack only, applying, installed and current");
+    check(answer["version"] == "0.39.0" && answer["packs"][0]["installed_version"] == "0.39.0" &&
+              answer["packs"][0]["loads"].get<bool>(),
+          "backends: the engine's release, and an installed pack of that release loads");
     check(answer["installed"].size() == 1 && answer["installed"][0]["loaded"].get<bool>(),
           "backends: a pack of this release is loaded");
     answer = backends_answer({"CPU"}, {}, "test-target", &feed, inst, loads_driver, false, "0.40.0");
     check(!answer["installed"][0]["loaded"].get<bool>(), "backends: a pack of another release is said not loaded");
+    check(answer["packs"][0]["installed"].get<bool>() && !answer["packs"][0]["loads"].get<bool>(),
+          "backends: the feed's pack is installed from another release and does not load");
 
     // What the engine loads: its own release's packs, and a folder with no marker as before. `other`
     // holds a marker that names no release, so it is not loaded by any.

@@ -129,6 +129,16 @@ struct LiveCard: View {
             ("Found in memory", d.cacheHitPct < 0 ? "no cache" : "\(Int(d.cacheHitPct.rounded())) of every 100 parts"),
             ("Read from disk", t.readMiB >= 0 ? ByteText.mib(t.readMiB) : "–"),
         ]
+        // The cache's own account, which a field report could only read from the command line.
+        if t.cacheBudgetMiB > 0 && t.cacheResidentMiB >= 0 {
+            rows.append(("Cache in memory", "\(ByteText.mib(t.cacheResidentMiB)) of \(ByteText.mib(t.cacheBudgetMiB))"))
+        }
+        if t.cacheBudgetMiB > 0 && t.cacheRereadsPerToken >= 0 {
+            rows.append(("Read again", "\(TurnFigures.fixed(t.cacheRereadsPerToken, 1)) parts per token"))
+        }
+        if t.readMiB > 0 && t.avgFlashWaitMs >= 0 {
+            rows.append(("Waiting for disk", "\(TurnFigures.fixed(t.avgFlashWaitMs, 0)) ms per token"))
+        }
         if d.mtpDrafted > 0 { rows.append(("Guesses kept", "\(d.mtpAccepted) of \(d.mtpDrafted) guesses")) }
         return VStack(alignment: .leading, spacing: Grid.s) {
             Text("Last answer").font(.ui(16, weight: .semibold)).foregroundStyle(Palette.text)

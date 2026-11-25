@@ -499,7 +499,7 @@ ranking's `cache-off`, so a plan never holds a cache it says is off.
 | model: the largest layer's experts, and its other weights | what a prefill device costs in memory |
 | compute buffers at the widest graph, and what a token of width adds | `--ubatch`: how wide a prompt is computed |
 | whether uncached reads work on this path | `--no-odirect` |
-| whether a live mapping serialises concurrent reads | `--release-mmap` |
+| whether a live mapping serialises concurrent reads | `--release-mmap`, where no card with memory of its own holds part of the model |
 | read rate by request size and lane count | `--io-threads` |
 | model: expert slice size | which point of that rate curve applies |
 | model: token cycle | the cache floor, below which the cache is off and the experts stream uncached |

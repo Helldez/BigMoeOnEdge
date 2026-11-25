@@ -3157,7 +3157,7 @@ struct Session::Impl::Turn {
 
     Turn(Impl & im_, const GenerateRequest & req_, RunResult & res_)
         : im(im_), req(req_), res(res_), moe(im_.cfg.moe), ctx(im_.ctx.get()), prompt(req_.prompt),
-          chat_on(im_.chat_on) {}
+          chat_on(im_.chat_on && !req_.raw) {}
 
     bool fail(RunError kind, std::string msg) {
         res.ok = false;
@@ -3279,6 +3279,12 @@ struct Session::Impl::Turn {
     bool render_prompt() {
         // A message list replaces the engine-held conversation instead of adding one user turn to it.
         const bool replace = !req.messages.empty();
+        // A raw turn is fed as text from an empty context; anything that speaks through the template,
+        // or a context holding a conversation the raw tokens would not be appended to, is refused.
+        if (req.raw && (replace || !req.tools.empty() || structured() || !req.grammar.empty() || !req.clear_kv))
+            return fail(RunError::InvalidRequest,
+                        !req.clear_kv ? "a raw prompt starts from an empty context: it needs clear_kv"
+                                      : "a raw prompt takes no messages, tools, response format or grammar");
         if (replace && !chat_on)
             return fail(RunError::NeedsChatMode, "a message list needs chat turns: open the session with {chatml} on");
         // The images, in the order the rendered prompt places their markers: a message list renders

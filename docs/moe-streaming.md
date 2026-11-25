@@ -77,7 +77,11 @@ full rate. A lane opened while the section existed stays serialised after it is 
 the recovery needs both halves.
 
 `--release-mmap` does exactly that inside the engine: after load, once nothing reads through the
-mapping any more, the file is unmapped, its section closed and the reader lanes reopened.
+mapping any more, the file is unmapped, its section closed and the reader lanes reopened. `--auto`
+leaves it off where a card with memory of its own holds layers or the expert cache (a device that
+only computes the prompt does not count): a field report on a Windows laptop with an NVIDIA
+card crashed inside the driver at every answer with the mapping released, and ran clean with it kept
+([field-reports.md](field-reports.md)).
 
 Whether releasing is safe is decided by looking, not by reasoning about which tensors ought to have
 been rebound: the engine asks the OS whether any weight the capture pass observed still points inside

@@ -471,6 +471,8 @@ export interface DoneSummary {
   mgmt_s_tok: number;
   cache_resident_mib: number;
   cache_budget_mib: number;
+  /** Reads that went to an expert the cache had held before and let go: the cache was too small for them. */
+  cache_rereads?: number;
   ttft_s: number;
 }
 

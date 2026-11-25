@@ -629,7 +629,30 @@ llama-server's `timings`: `cache_n` (prompt tokens the context held), `prompt_n`
 
 The route answers at `/chat/completions` too, as llama-server's does.
 
-Not implemented: `/v1/completions`, `/v1/embeddings`, and `n` above 1.
+Not implemented: `/v1/embeddings`, and `n` above 1. A plain text completion is
+[`/v1/completions`](#text-completion-completion-and-v1completions).
+
+### Text completion: `/completion` and `/v1/completions`
+
+The prompt continued as written, with no chat template: llama-server's `/completion` (also at
+`/completions`) and OpenAI's legacy `/v1/completions`, in each one's own shape
+(`server/text_completion.h`).
+
+- **Request.** `prompt` is a string, or an array holding one string; several prompts (several
+  choices) and a prompt of token ids are a `400`. The budget is `n_predict` (`/completion`, `-1` is
+  the session's) or `max_tokens`; `stream`, `stop` and the sampling fields read as on
+  [`/v1/chat/completions`](#post-v1chatcompletions). A grammar or response format, logprobs
+  (`logprobs`, `n_probs`, `top_logprobs`), `echo`, `suffix` and `n`/`best_of` above 1 are refused
+  rather than ignored.
+- **`/completion` answers** `{content, stop: true, stop_type ("eos" | "limit" | "none"),
+  tokens_predicted, tokens_evaluated, tokens_cached, prompt, model, timings, ...}`. Streamed, each
+  piece is `data: {content, stop: false}` and the stream ends with the whole object (`content`
+  empty, `stop: true`), with no `[DONE]`, as llama-server's does.
+- **`/v1/completions` answers** a `text_completion` object (`choices[0].text`, `finish_reason`,
+  `usage`, and llama-server's `timings`). Streamed, `text_completion` chunks, the last with the
+  `finish_reason` (and `usage` with `stream_options.include_usage`), then `data: [DONE]`.
+- **The context.** A completion starts from an empty context (`GenerateRequest::raw`): it neither
+  reads nor keeps the conversation, so the chat turn after it prefills its conversation again.
 
 ### Sizing the context for a client
 
@@ -802,8 +825,9 @@ under the same key and origin rules as `/api/*` and `/v1/*`, except that `/healt
 | `POST /chat/completions/input_tokens` (and `/v1/...`) | a chat completions body to `{"input_tokens": N}`, counted as `count_tokens` counts. |
 | `POST /responses/input_tokens` (and `/v1/...`) | a Responses body to `{"object": "response.input_tokens", "input_tokens": N}`. |
 
-`/chat/completions`, `/responses` and `/models` answer as their `/v1` routes. Not implemented, from
-llama-server: `/completion` and `/v1/completions` (raw text completion), `/infill`, embeddings and
+`/chat/completions`, `/responses` and `/models` answer as their `/v1` routes; `/completion` is
+[the text completion](#text-completion-completion-and-v1completions). Not implemented, from
+llama-server: `/infill`, embeddings and
 reranking, LoRA adapters, slot save and restore, serving several models (`/models/load`), and
 parallel slots: this server answers one turn at a time.
 
@@ -1414,15 +1438,17 @@ elsewhere, for testing.
 
 ### `GET /api/backends`
 
-`{registered, graphics, target, feed, packs, installed, restart_required, feed_error?}`. `registered`
+`{version, registered, graphics, target, feed, packs, installed, restart_required, feed_error?}`.
+`version` is this engine's release. `registered`
 is every backend that registered at start (`CPU`, `MTL`, `Vulkan`, ...); `graphics` the local
 graphics cards they offer, discrete or integrated, `{backend, description}` with the device's own
 description, read from each device's type and never from a backend's name (a remote backend's
 devices are not local, and the processor's are not graphics); `target` the build's
 (`macos-arm64`, ...); `feed` `{version, published}` of the verified feed known, or `null`. `packs`
 is that feed's packs for this target: `{id, title, size, applies, installed, installed_version,
-current}`, `applies` when one of the pack's driver libraries loads here, `current` when the
-installed copy is this feed's file. `installed` lists every pack on disk (`{id, version, offered,
+current, loads}`, `applies` when one of the pack's driver libraries loads here, `current` when the
+installed copy is this feed's file, `loads` when the installed copy is of this engine's release, so
+the engine uses it (`installed` alone is true for a copy another release left, which it does not). `installed` lists every pack on disk (`{id, version, offered,
 loaded}`): `loaded` is false for a pack another release left, which the engine does not load, since a
 backend module is built against one llama.cpp; installing it again replaces it. An install is
 refused (`409`, `code: "version_mismatch"`) while the feed's packs are a newer release's than the

@@ -14,6 +14,12 @@ describe('graphicsState', () => {
   it('says an applying pack is installed', () => {
     expect(graphicsState({ registered: [], graphics: [], packs: [pack('b', true, true)] }).kind).toBe('installed');
   });
+  it('offers again a pack another release left, which the engine does not load', () => {
+    const stale = { ...pack('b', true, true), installed_version: '0.42.0', loads: false };
+    expect(graphicsState({ registered: ['CPU'], graphics: [], packs: [stale] })).toEqual({ kind: 'offer', pack: stale });
+    const fresh = { ...pack('b', true, true), installed_version: '0.49.0', loads: true };
+    expect(graphicsState({ registered: ['CPU'], graphics: [], packs: [fresh] }).kind).toBe('installed');
+  });
   it('names the cards in use by their own description, once each', () => {
     const b = { registered: ['X', 'Y'], graphics: [card('X', 'Card One'), card('Y', 'Card One'), card('Z', '')], packs: [] };
     expect(graphicsState(b)).toEqual({ kind: 'ready', cards: ['Card One', 'Z'] });

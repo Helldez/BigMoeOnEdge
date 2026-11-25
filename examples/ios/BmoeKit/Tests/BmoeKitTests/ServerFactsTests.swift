@@ -191,6 +191,16 @@ final class ServerFactsTests: XCTestCase {
         XCTAssertEqual(older.ttftSeconds, 6.8, accuracy: 1e-9)
     }
 
+    func testTheCachesAccountPerToken() throws {
+        var t = Telemetry()
+        t.apply(done: try JSON(parsing: #"{"tok_s":2.3,"tokens":40,"cache_rereads":488,"cache_resident_mib":5225,"cache_budget_mib":5225,"flash_wait_s_tok":0.234}"#))
+        XCTAssertEqual(t.cacheRereadsPerToken, 12.2, accuracy: 1e-9)
+        XCTAssertEqual(t.avgFlashWaitMs, 234, accuracy: 1e-9)
+        var older = Telemetry() // a server that sends no re-reads says nothing about them
+        older.apply(done: try JSON(parsing: #"{"tok_s":2.3,"tokens":40}"#))
+        XCTAssertEqual(older.cacheRereadsPerToken, -1)
+    }
+
     func testFilesThatAreNotModelsAreListedApart() throws {
         let list = ModelsList(try JSON(parsing: #"""
             {"local":[{"name":"mmproj-a.gguf","path":"/d/mmproj-a.gguf","role":"projector"},

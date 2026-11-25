@@ -7,6 +7,23 @@ Semantic Versioning.
 ## [0.49.1] - 2026-11-24
 
 ### Added
+- **Plain text completion: `/completion` and `/v1/completions`.** A client written for llama.cpp's
+  server, or for OpenAI's legacy completions, got a `404`: only the chat routes were served. Both
+  now continue a prompt as written, with no chat template, each in its own shape: llama-server's
+  `{content, stop, stop_type, timings, ...}` (streamed as `stop: false` pieces ending in the whole
+  object) and OpenAI's `text_completion` (streamed chunks ending in `[DONE]`). The budget, `stream`,
+  `stop` and the sampling fields read as on the chat route; a grammar, logprobs, `echo`, `suffix`, a
+  prompt of token ids and several prompts are refused rather than ignored. In the engine a turn can be
+  raw (`GenerateRequest::raw`): fed as text from an empty context on a session that has chat turns,
+  so the chat turn after a completion prefills its conversation again
+  ([server-api.md](docs/server-api.md#text-completion-completion-and-v1completions)).
+- **Metrics shows the expert cache's own account on every UI.** A field report found its slow decode
+  only with `bmoe-cli`: the automatic cache held 5.2 GiB where 10.5 were free, re-read 43 experts per
+  token and waited 234 ms per token on the disk. The app's Metrics showed the hit rate and the disk's
+  share of a token, not those three. The last answer's account now adds, when the model streams: the
+  cache in memory against its budget, the parts read again per token, and the disk wait in ms per
+  token, from the `done` event's existing fields, with what each means in the folded list
+  ([screens.md](docs/screens.md#metrics)).
 - **The sampling penalties as parameters, for a client that sends none** (#715).
   `--presence-penalty`, `--frequency-penalty`, `--repeat-penalty` and `--repeat-last-n`, and the same
   four rows in the Sampling card of Settings, set the penalties a request gets when it names none
@@ -21,6 +38,27 @@ Semantic Versioning.
   changes ([server-api.md](docs/server-api.md)). By @pt7777 (#720).
 
 ### Fixed
+- **Settings no longer calls a graphics pack "Installed" when the engine does not use it.** After the
+  app is updated, the pack installed for the earlier release stays on disk, and the engine does not
+  load it (a backend module is built against one llama.cpp), so the card goes unused. Settings checked
+  only that the pack's files were there and showed it as installed, so a field report spent hours on a
+  graphics card that was not in use: only `GET /api/backends` showed the old version. Each pack now says
+  whether the engine loads it (`loads`) and the answer names the engine's release (`version`). Settings
+  shows the installed pack's version, and a pack from another release says so with an "Install again"
+  button, or says to update the app first while the feed is a newer release's. The first run offers
+  such a pack as if it were missing ([server-api.md](docs/server-api.md#get-apibackends),
+  [desktop-app.md](docs/desktop-app.md#backend-packs)).
+- **`--auto` keeps the model file's mapping whenever a graphics card holds part of the model.** A
+  field report (Windows, a 6 GB NVIDIA laptop card, driver 572.42) crashed inside the graphics driver
+  at every answer, on two engine versions, with `moe-stream` and `release-mmap` both on, and ran clean
+  with `release-mmap` off. The cause is not confirmed in the code: the engine releases the mapping
+  only once no weight it saw on the host points inside it, and a read by a device's driver is not
+  something that check sees. The plan no longer arms `release-mmap` where a card with memory of its
+  own holds layers or the expert cache; a device that only computes the prompt, such as a laptop's
+  integrated GPU, does not count, since the cores still decode there and that is where the measured
+  gain is (+24-46% decode on Windows). A `release-mmap` set by hand is kept
+  ([field-reports.md](docs/field-reports.md), [hardware-planning.md](docs/hardware-planning.md),
+  [moe-streaming.md](docs/moe-streaming.md)).
 - **A device that runs a long prompt faster is no longer refused for a short graph's rate** (#728).
   The compute probe timed the prompt on one real layer 128 tokens wide, while a plan never computes a
   long prompt in graphs narrower than 512, and a mixture-of-experts layer divides a graph's tokens

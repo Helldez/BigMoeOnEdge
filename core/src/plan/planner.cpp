@@ -1620,6 +1620,15 @@ bool device_computes_graph(const Planning & s) {
     return layers || cache || s.p.config.prefill.enabled();
 }
 
+// A card with memory of its own holds part of the model for the whole run: layers the fitter
+// placed on it, or the expert cache. A prefill device alone is not this: it holds the model only
+// during a prompt, and on shared memory not at all.
+bool card_holds_model(const Planning & s) {
+    if (devices_share_host_memory(s.hw) || s.hw.device_local_memory() == 0) return false;
+    const bool layers = s.placement.fitted && s.placement.n_gpu_layers != 0;
+    return layers || s.p.config.moe.device_cache_mb > 0 || s.p.config.trial.device_tier == 1;
+}
+
 // The widest pass a device is planned at (PlannerPolicy::ubatch_max_device), never under ubatch_min.
 // The image floor does not lift it: a cap on an image's tokens would otherwise widen every prompt's
 // pass on the device past what its expert matmul is known to run (#533).
@@ -3729,6 +3738,18 @@ void choose_release_mmap(Planning & s) {
                "this run keeps a live pointer into the mapping (a tied head, a draft block, a dense "
                "policy that stays mapped, or a table left mapped), so the mapping cannot be released whatever "
                "the storage does");
+    } else if (card_holds_model(s)) {
+        // The session's check sees the pointers the capture pass observed on the host, not what a
+        // device's own upload path still reads: a field report crashed inside a graphics driver on
+        // every answer with the mapping released and ran clean with it kept, layers on a card of
+        // its own. A device that only computes the prompt holds none of the model between turns,
+        // and the run it serves is the one the release speeds up (the cores decode), so it stays.
+        s.note("release-mmap", "off", Source::Derived,
+               "The model's file mapping stays: a graphics card holds part of the model.",
+               "a card with memory of its own holds layers or experts of this run, and its driver may "
+               "still read the model's mapping after the host has stopped (a field report crashed in the "
+               "driver with it released), so the plan keeps it; " +
+                   flag_spelling("release-mmap", "true") + " turns it on by hand");
     } else if (storage.mapping_serialises_reads == Tri::Yes) {
         moe.release_mmap = true;
         s.note("release-mmap", "on", Source::Measured,

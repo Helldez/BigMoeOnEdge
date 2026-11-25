@@ -85,6 +85,8 @@
     <dt>{t('figure.speed')}</dt><dd>{t('figure.speed.hint')}</dd>
     <dt>{t('figure.cache')}</dt><dd>{t('figure.cache.hint')}</dd>
     <dt>{t('figure.disk')}</dt><dd>{t('figure.disk.hint')}</dd>
+    <dt>{t('done.cacheSize')}</dt><dd>{t('done.cacheSize.hint')}</dd>
+    <dt>{t('done.rereads')}</dt><dd>{t('done.rereads.hint')}</dd>
     {#each ['compute', 'mgmt', 'other'] as k (k)}<dt>{t(`metrics.split.${k}`)}</dt><dd>{t(`metrics.split.${k}.hint`)}</dd>{/each}
   </dl>
 </details>

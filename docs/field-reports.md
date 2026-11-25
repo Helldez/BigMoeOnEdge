@@ -53,7 +53,34 @@ desktop app is not affected: it installs the pack itself.
 - **Workaround.** Raise the limit for the shell that starts the engine
   (`sudo prlimit --pid $$ --memlock=unlimited:unlimited`): 8.72 tok/s, 91.1 % cache hits.
 
+### Windows with an NVIDIA card: every answer ends the server inside the graphics driver
+
+- **Seen on** 0.47.2 (and the version before it), Windows, a 6 GB laptop card with the CUDA pack,
+  driver 572.42, 16 GB of RAM, several MoE models streamed from flash.
+- **How to recognise it.** The server ends at every answer. The crash dump names `nvcuda64.dll`, the
+  same function on two engine versions. The settings have `moe-stream` and `release-mmap` both on.
+- **Cause.** Not confirmed in the code. The reporter turned `release-mmap` off and the crashes
+  stopped with streaming still on. The engine releases the model file's mapping only once no weight
+  it saw on the host still points inside it; a read by the device's driver is not something that
+  check sees.
+- **Changed in** the release after 0.49.0: `--auto` keeps the mapping whenever a card with memory
+  of its own holds layers or the expert cache; a device that only computes the prompt does not count.
+- **Workaround.** Set `release-mmap` off. A newer NVIDIA driver is also worth trying.
+
 ## Fixed
+
+### Windows: no model loads after an update, and Settings says the graphics pack is installed
+
+- **Seen on** 0.47.2, Windows, a 6 GB laptop card, the app updated from 0.42.0: the plan asked for
+  the card, no model loaded, and Settings showed the CUDA pack as "Installed".
+- **How to recognise it.** `GET /api/backends` lists the pack with `installed_version` older than
+  the app, `current: false`, and the engine registered only Vulkan and the CPU.
+- **Cause.** Confirmed in the code: the engine loads only its own release's packs (since 0.47.0),
+  and Settings showed "Installed" from the pack's files alone, never from its version.
+- **Fixed in** the release after 0.49.0: Settings names the installed pack's version, says when the
+  engine does not use it, and offers to install it again; the first run offers it as missing.
+- **Workaround.** Install the pack again from Settings (or `POST /api/backends/cuda/install`) and
+  restart the engine.
 
 ### Plain chat answers like an agent: thinking about tools, a work report at the end
 

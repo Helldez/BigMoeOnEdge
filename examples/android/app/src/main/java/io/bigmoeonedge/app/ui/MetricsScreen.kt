@@ -854,6 +854,10 @@ private fun LiveCard() {
                 val read = if (streamed && t.readMib >= 0) String.format(loc, "streamed %.0f MB", t.readMib) else ""
                 val cache = if (streamed && t.cacheResidentMib >= 0) String.format(loc, "cache %.0f/%.0f MiB", t.cacheResidentMib, t.cacheBudgetMib) else ""
                 if (read.isNotEmpty() || cache.isNotEmpty()) Text(listOf(read, cache).filter { it.isNotEmpty() }.joinToString("   ·   "), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                // The cache's own account, which a field report could only read from the command line.
+                val again = if (streamed && t.cacheBudgetMib > 0 && t.cacheRereadsPerTok >= 0) String.format(loc, "read again %.1f parts per token", t.cacheRereadsPerTok) else ""
+                val wait = if (streamed && t.readMib > 0 && t.avgFlashWaitMs >= 0) String.format(loc, "waiting for disk %.0f ms per token", t.avgFlashWaitMs) else ""
+                if (again.isNotEmpty() || wait.isNotEmpty()) Text(listOf(again, wait).filter { it.isNotEmpty() }.joinToString("   ·   "), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (t.mtpDecodes > 0 && t.mtpDrafted > 0) {
                     Text(
                         String.format(loc, "guessing: %d/%d kept (%.0f%%), %.2f tok per pass, %.2f tok/s real",

@@ -57,6 +57,8 @@ data class Telemetry(
     var readMib: Double = -1.0,         // total flash streamed this generation (MiB)
     var cacheResidentMib: Double = -1.0, // expert cache resident size (MiB)
     var cacheBudgetMib: Double = -1.0,  // expert cache budget (MiB); fixed for the run
+    // Reads of an expert the cache had held and let go, per token written; -1 when not reported.
+    var cacheRereadsPerTok: Double = -1.0,
     // Run averages of the compute decomposition, from the done event; -1 until done.
     var avgMajfltPerTok: Double = -1.0, // major page faults per token over the run
     var avgCpuSPerTok: Double = -1.0,   // CPU-seconds per token (summed across threads) over the run
@@ -215,4 +217,7 @@ fun Telemetry.applyDone(o: JSONObject): Telemetry = apply {
     mtpDraftSPerTok = o.optDouble("mtp_draft_s_tok", 0.0)
     loopOverheadSPerTok = o.optDouble("loop_overhead_s_tok", 0.0)
     if (o.optInt("tokens", 0) > 0) step = o.optInt("tokens")
+    val rereads = o.optDouble("cache_rereads", -1.0)
+    val tokens = o.optInt("tokens", 0)
+    cacheRereadsPerTok = if (rereads >= 0 && tokens > 0) rereads / tokens else -1.0
 }

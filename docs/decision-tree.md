@@ -1042,9 +1042,12 @@ flowchart TD
 - parent: —
 - code: `core/src/plan/planner.cpp` · `choose_release_mmap`
 - condition: `if (!safe_shape) {`
+- condition: `} else if (card_holds_model(s)) {`
 - condition: `} else if (storage.mapping_serialises_reads == Tri::Yes) {`
 - Unsafe shape (a tied output head, MTP in use, dense under Mmap or some tables mapped) → a note.
   The field is not written.
+- A card with memory of its own holds part of the model (layers placed on it, or a device expert
+  cache; a prefill device alone does not count) → a note: the mapping stays. The field is not written.
 - The mapping serialises reads → `release_mmap = true`.
 
 #### `plan.lossy` — Lossy knobs stay off
@@ -1813,7 +1816,8 @@ flowchart TD
 - parent: —
 - code: `core/src/engine/session.cpp` · `Turn::render_prompt`
 - condition: `if (!chat_on) {`
-- No chat template → the prompt as given.
+- No chat template, or a raw request (`req.raw`, a text completion, which needs `clear_kv` and takes
+  no messages, tools, schema or grammar) → the prompt as given.
 - Otherwise → messages replace the history, or a user message is pushed. The template is then
   applied.
 - A template that throws:

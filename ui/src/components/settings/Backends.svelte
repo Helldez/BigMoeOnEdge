@@ -10,6 +10,7 @@
   import { agentApi } from '../../lib/agentApi';
   import { desktop, isDesktop } from '../../lib/desktop';
   import { formatBytes } from '../../lib/format';
+  import { packStale } from '../../lib/graphics';
   import { readProgress, type Progress } from '../../lib/progressEvent';
   import { server } from '../../stores/server.svelte';
   import { t, tp } from '../../lib/text';
@@ -64,6 +65,9 @@
   }
 
   let applicable = $derived((data?.packs ?? []).filter((p) => p.applies));
+  // The feed's packs are a newer release's than this engine: the server refuses to install them
+  // until the app is updated, so a stale copy is mended by the update, not by a button here.
+  let feedAhead = $derived(!!(data?.feed?.version && data?.version && data.feed.version !== data.version));
   let others = $derived((data?.packs ?? []).filter((p) => !p.applies));
 </script>
 
@@ -95,7 +99,11 @@
       <div class="setting">
         <div class="what">
           <span class="label">{p.title}</span>
-          <span class="muted small">{p.installed ? t('backends.installed') : t('backends.applies')}{p.size ? ` · ${formatBytes(p.size)}` : ''}</span>
+          {#if packStale(p)}
+            <span class="small warn-text" role="status">{t('backends.stale', { old: p.installed_version || '?', current: data.version || '?' })} {feedAhead ? t('backends.stale.updateFirst') : t('backends.stale.reinstall')}</span>
+          {:else}
+            <span class="muted small">{p.installed ? (p.installed_version ? t('backends.installed.version', { version: p.installed_version }) : t('backends.installed')) : t('backends.applies')}{p.size ? ` · ${formatBytes(p.size)}` : ''}</span>
+          {/if}
           {#if installing === p.id}
             {#if progress && progress.total > 0}
               <ProgressBar received={progress.received} total={progress.total} label={t('backends.installing', { name: p.title })} />
@@ -104,7 +112,9 @@
             {/if}
           {/if}
         </div>
-        {#if p.installed}
+        {#if packStale(p)}
+          {#if !feedAhead}<button type="button" class:primary={!compact} disabled={!!installing} onclick={() => install(p.id)}><Icon name="download" size={16} />{t('backends.reinstall')}</button>{/if}
+        {:else if p.installed}
           <span class="badge ok"><Icon name="check" size={13} />{t('backends.installed.short')}</span>
         {:else}
           <button type="button" class:primary={!compact} disabled={!!installing} onclick={() => install(p.id)}><Icon name="download" size={16} />{t('backends.install')}</button>
@@ -130,6 +140,9 @@
 </section>
 
 <style>
+  .warn-text {
+    color: var(--warn);
+  }
   .badges {
     display: flex;
     gap: var(--s1);
