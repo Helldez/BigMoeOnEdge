@@ -304,3 +304,21 @@ the release archives carry the modules, and the machine answers.
 
 `scripts/rented-box.sh` is there for that: one session on a machine nobody here owns, which
 builds, plans, measures, and writes down what the plan predicted next to what the engine did.
+
+## Which NVIDIA drivers the CUDA pack runs on
+
+The pack is built with CUDA 12.9 and carries its runtime and cuBLAS, so the machine needs only the
+NVIDIA driver: **R525 or later**, CUDA 12's floor under its minor-version compatibility (not yet run
+on an older driver: the reporter of #694 ran a CUDA 12.4 build on R550), on every card of ggml's
+default architecture list, Maxwell (GTX 900) to Blackwell and GB10. That holds because the module
+carries machine code for each architecture of the list. ggml's own list ships Maxwell, Pascal,
+Volta, Turing, A100 and H100 as PTX only, which the driver compiles when the module loads, and a
+driver can compile only PTX from a toolkit no newer than itself: R575 for 12.9. Built that way, a
+Turing card on Debian 13's R550 ended its probe in "PTX compiled with an unsupported toolchain" and
+ran on Vulkan, a third slower (#694). So each PTX-only architecture also ships as machine code
+(`scripts/check-gpu-targets.py --cuda-archs`, which reads the list from the pinned ggml), and the
+PTX stays for a card newer than the list. One architecture is added to ggml's list: the P100's
+(sm_60), which no entry of it runs as machine code (machine code runs only on its own major
+architecture at the same or a later minor, and ggml ships Pascal as sm_61), so a P100 ran Maxwell's
+PTX, needed R575 and missed sm_60's FP16 instructions. A source build for sm_60 ran Qwen3.6-35B-A3B
+Q4_K_M at 42-47 tok/s on a rented P100, where the 0.43.1 pack's probe aborted.
