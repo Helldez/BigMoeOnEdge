@@ -32,7 +32,8 @@ struct SamplingConfig {
     float repeat_penalty = 1.0f;    // 1: off. In [repeat_penalty_min, repeat_penalty_max]
     float frequency_penalty = 0.0f; // 0: off. In [-penalty_max, penalty_max]
     float presence_penalty = 0.0f;  // 0: off. In [-penalty_max, penalty_max]
-    int penalty_last_n = 64;        // the recent tokens the penalties look back over; 0 off, penalty_last_n_ctx all
+    // The recent tokens the penalties look back over; 0 off, penalty_last_n_ctx all.
+    int penalty_last_n = penalty_last_n_default;
 
     static constexpr uint32_t seed_random = 0xFFFFFFFFu; // the seed that draws a fresh one per run
     static constexpr int top_k_max = 1000;   // the widest cutoff a form offers; validate() does not enforce it
@@ -45,7 +46,8 @@ struct SamplingConfig {
     static constexpr float penalty_max = 2.0f;
     static constexpr double repeat_penalty_min = 1e-3;
     static constexpr float repeat_penalty_max = 100.0f;
-    static constexpr int penalty_last_n_ctx = -1; // the whole context
+    static constexpr int penalty_last_n_ctx = -1;     // the whole context
+    static constexpr int penalty_last_n_default = 64; // llama.cpp's own default window
 
     bool penalized() const { return repeat_penalty != 1.0f || frequency_penalty != 0.0f || presence_penalty != 0.0f; }
 };

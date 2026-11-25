@@ -495,7 +495,8 @@ std::vector<ParamDesc> build() {
         special(d, std::to_string(SamplingConfig::penalty_last_n_ctx), "whole context");
         special(d, "0", "penalties off");
         bind_int(d, [](RunConfig & c) -> int & { return c.sampling.penalty_last_n; });
-        d.details = "64 is llama.cpp's default. A loop that repeats whole paragraphs is longer than that; the whole "
+        d.details = std::to_string(SamplingConfig::penalty_last_n_default) +
+                    " is llama.cpp's default. A loop that repeats whole paragraphs is longer than that; the whole "
                     "context catches it. A request that sends no window of its own uses this one.";
         t.push_back(d);
     }

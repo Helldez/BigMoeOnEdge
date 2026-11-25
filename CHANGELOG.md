@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
-## [0.49.1] - 2026-11-24
+## [0.50.0] - 2026-11-25
 
 ### Added
 - **Plain text completion: `/completion` and `/v1/completions`.** A client written for llama.cpp's
