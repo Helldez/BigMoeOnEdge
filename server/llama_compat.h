@@ -54,7 +54,7 @@ struct PropsFacts {
     float top_p = 0.0f;
     uint32_t seed = 0;
     float presence_penalty = 0.0f, frequency_penalty = 0.0f, repeat_penalty = 1.0f;
-    int repeat_last_n = 64;
+    int repeat_last_n = SamplingConfig::penalty_last_n_default;
     std::string model_name, model_path;
     bool vision = false;
     std::string build;

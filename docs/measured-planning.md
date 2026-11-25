@@ -263,7 +263,7 @@ unchanged plan.
   the last-level cache (64 MiB of each, at most 256 MiB of experts held, 16 copies); at 512 tokens, the
   narrowest graph a plan computes a long prompt in (`PlannerPolicy::ubatch_min`, `k_wide_batch`), a
   subset of the experts gets the per-expert batch a 512-token prompt gives the whole set
-  (`512 * k / n_expert`), so the kernels run at the prompt's own intensity. Until 0.49.1 it was taken 128 tokens wide, a regime no planned
+  (`512 * k / n_expert`), so the kernels run at the prompt's own intensity. Until 0.50.0 it was taken 128 tokens wide, a regime no planned
   prompt runs in: a 128-expert top-8 layer gives each expert 8 tokens there, and Metal on an Apple M5
   ran Inkling 2 Mini's layer at 0.8x the cores 128 wide and 7.9x 512 wide (8 and 32 tokens an expert),
   so the plan kept on the cores a prompt Metal ran 4.5x faster. Samples are 0.15 s each,

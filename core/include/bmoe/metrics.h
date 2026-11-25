@@ -7,6 +7,7 @@
 #pragma once
 
 #include "bmoe/chat.h"
+#include "bmoe/config.h"
 #include "bmoe/predict_stats.h"
 
 #include <cstdint>
@@ -406,7 +407,7 @@ struct RunInfo {
     float repeat_penalty = 1.0f;
     float frequency_penalty = 0.0f;
     float presence_penalty = 0.0f;
-    int repeat_last_n = 64;
+    int repeat_last_n = SamplingConfig::penalty_last_n_default;
 
     // Self-speculation, and which source drafted ("off", "mtp", "ngram"). It changes how many tokens
     // a decode confirms, so every per-token row in the file was produced under a different
