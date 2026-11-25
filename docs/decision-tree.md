@@ -951,7 +951,8 @@ flowchart TD
   2. refused for this model (it failed its check, or was armed unconfirmed twice) → off;
   3. wide matmuls unmeasured → off;
   4. wrong results → off;
-  5. not 10% faster than the host → off;
+  5. not 10% faster than the host on a long prompt (the layer timed 512 tokens wide, the
+     narrowest graph a plan computes one in) → off;
   6. a conflict: device layers, row streaming, a draft as wide as the prefill floor, decide's
      prefix cache, a width or context under the floor → off;
   7. otherwise → `plan.prefill.fit`.

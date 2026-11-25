@@ -494,7 +494,7 @@ ranking's `cache-off`, so a plan never holds a cache it says is off.
 | whether memory can be offered for the kernel to drop (`discardable_memory`) | whether the cache is offered instead of locked: not sized to the lock at all, and outside the margin, which is room for a reclaim that writes (all but its last pass, which stays ordinary) |
 | whether a device's buffers are held reclaim-exempt | whether arming it is charged to that total too |
 | one real layer of the model, its expert block and its dense matrices, at one token, on the host and on every device, with the result compared | the device tier's and the cost model's compute prices; a device that disagrees is refused |
-| the same layer 128 tokens wide, with the result compared | `--prefill-device`: which device, if any, runs the prefill |
+| the same layer 512 tokens wide, the narrowest graph a plan computes a long prompt in (`PlannerPolicy::ubatch_min`), with the result compared | `--prefill-device`: which device, if any, runs the prefill |
 | a crossing: one token's hidden state to a device and back | whether the layers the fitter split stay split (`device-layers`) |
 | model: the largest layer's experts, and its other weights | what a prefill device costs in memory |
 | compute buffers at the widest graph, and what a token of width adds | `--ubatch`: how wide a prompt is computed |
