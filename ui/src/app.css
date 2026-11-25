@@ -521,8 +521,10 @@ kbd {
   border-color: var(--ok);
   color: var(--ok);
 }
-.banner button,
-.banner a.button {
+/* A plain button keeps the page's ink on a tinted banner; a primary or danger one keeps its own colour,
+   which this rule would otherwise override (it comes later at the same specificity). */
+.banner button:not(.primary):not(.danger),
+.banner a.button:not(.primary):not(.danger) {
   color: var(--text);
 }
 
