@@ -195,7 +195,11 @@ on the generation request. `session.cpp` passes it to
 and parser rule together, including the template's reasoning structure. The returned
 `common_chat_params::grammar` is applied by the existing `detail::ToolGrammar` in
 `chat_parse.cpp`; non-lazy grammars receive the generation prompt before the first generated
-token. Speculative acceptance also checks that grammar before accepting a drafted token.
+token. The grammar a template ships with its tools is, since the llama.cpp base of 2026-11-25, one
+of those: on from the first token, over free text up to the call's opening (the opening token
+itself where the vocabulary has one), rather than a lazy grammar waiting on a trigger. Prose in the
+reasoning span stays free under it; a call the model opens inside the span is held to it, as the
+template's parser ends the reasoning there and reads a call. Speculative acceptance also checks that grammar before accepting a drafted token.
 
 This shares the template and sampling path used for tools. No code calls the JSON-to-grammar
 converter directly, no second grammar sampler competes with the template's grammar, and the
@@ -380,7 +384,9 @@ the model this base adds, 24 blocks run as 48 layers.
 Nothing in the engine names such a model. At capture the hook reads, for every layer of the graph,
 which block's weights its nodes take as sources (`RouterHook::block_of`: the first block weight a
 layer reads, with the matrix of its indexed matmul, the expert tensor itself, having the last word)
-and the order the graph reaches its layers in (`layer_order`). The streamer then loads a routing
+and the order the graph finishes its layers in (`layer_order`, by each layer's last node: a graph
+may compute a few of a later layer's nodes ahead of everything, as Hy4 Flash does with its n-gram
+lookups, and the order its layers start in would then put that layer first). The streamer then loads a routing
 node's experts for the block, the device arena walks its slots in the graph's order instead of
 counting up (`DeviceExpertArena::set_graph_order`), and the planner counts a token's demand over
 the layers the engine numbers (`ModelProfile::n_layer` against `n_block`,
@@ -390,23 +396,24 @@ text, different at every start, and no error. The tiny model `scripts/make-tiny-
 inkling2_loop` is its gate.
 
 Pinned submodule at the time of writing: `Helldez/llama.cpp` branch
-`bmoe/expert-ready-hook-2011`, commit `09e3dc4`: the Hexagon weight-writes commit (section 3b) on
-`49d1367`, the expert-ready-hook commit (section 3), in the variant that also answers the CPU registry's `get_proc_address` so a build that
+`bmoe/expert-ready-hook-2511`, commit `d66b31e`: the Hexagon weight-writes commit (section 3b) on
+`bbb9df2`, the expert-ready-hook commit (section 3), in the variant that also answers the CPU registry's `get_proc_address` so a build that
 loads the CPU backend as a module reaches it, on top of upstream `ggml-org/llama.cpp` commit
-`29b52d3` of 2026-11-20 (386 commits past the previous base, tag `b12214`, `6590d25` of
-2026-11-09; the last tag before it is `b12591`). Both fork commits moved over unchanged. This base
-brings the Inkling 2 architectures, the second of which runs a core of its blocks more than once per
-token (above). Two things moved under the engine: `common_fit_params` and
-`common_get_device_memory_data` take the model as a list of paths, which the placement probe passes
-as a list of one, and the lazy grammar that failed to build for a Qwen3.5 `json_object` request with
-`tools: auto` now builds, so the request the server used to refuse may go through
-([server-api.md](server-api.md)). It also deprecates `llama_batch` and `llama_decode` for
-`llama_batch_ext` and `llama_process`: the engine's decode path is still written on the first two,
-which work as before, and the build keeps a deprecation a warning where it treats warnings as
-errors. Moving to the new batch is owed before upstream removes the old one. The op numbering
-changed (`GGML_OP_ADD1` and the two `DIAG_MASK` ops are gone) while the backend module version did
-not, so a backend module built against the previous base passes ggml's own check and must not be
-loaded by this one.
+`2d5b3dd` of 2026-11-25 (157 commits past the previous base, `29b52d3` of 2026-11-20). Both fork
+commits moved over unchanged. The Hexagon one is still needed: upstream's buffer still flushes the
+session on every write and still tiles a weight only at graph time. This base brings Tencent's Hy4
+Flash (`hy_v4_flash`, [which-models-stream.md](which-models-stream.md)), and three things moved
+under the engine. The grammar a template ships with its tools is no longer lazy (above). The gated
+delta net replays a rolled-back ubatch's pending tokens inside its kernel instead of restoring a
+snapshot, on every backend this engine ships (CPU, Metal, CUDA, Vulkan, OpenCL, Hexagon), so a
+hybrid model's recurrent layers stay where they were placed. The RPC server validates a graph in one
+step and closes the connection on what it refuses. `ggml_op` gained `GGML_OP_SIGMOID_BACK` before
+`GGML_OP_COUNT` while the backend module version did not move, so, as at the bump before it, a
+backend module built against the previous base passes ggml's own check and must not be loaded by
+this one. `llama_batch` and `llama_decode` are still deprecated for `llama_batch_ext` and
+`llama_process`: the engine's decode path is still written on the first two, which work as before,
+and the build keeps a deprecation a warning where it treats warnings as errors. Moving to the new
+batch is owed before upstream removes the old one.
 The hook still fires ahead of upstream's tiled `mul_mat_id` path, which G4 proves. Each bump gets
 its own fork branch and the
 previous ones stay, so every commit an old pin names remains reachable (see `.gitmodules` /

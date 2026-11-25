@@ -714,11 +714,13 @@ static void print_predict_report(const RunSummary & s) {
     std::printf("moe-predict: scored — stale-gate %lld routings/%lld slots, prev-token %lld/%lld, control %lld/%lld;"
                 " %lld routings the stale-gate could not rank\n",
                 st.rows, st.slots, pv.rows, pv.slots, sf.rows, sf.slots, s.predict_unscored);
-    // Say it rather than let the reader assume staleness cost what the ranking did.
-    if (sf.rows > 0 && sf.hit_frac() < 0.999)
-        std::printf("moe-predict: the control is below 100%%, so this model's expert selection is not raw-logit\n"
-                    "             ranking (an added selection bias, or group-limited routing). The stale-gate\n"
-                    "             figure understates the method by about the control's own gap.\n");
+    // Say it rather than let the reader assume staleness cost what the ranking did. The bound is the
+    // byte-identity gate's (G9b): the probe sums in scalar float where ggml does not, so a top-k that
+    // straddles a near-tie may order two experts differently, and that is not a ranking it lacks.
+    if (sf.rows > 0 && sf.hit_frac() < 0.99)
+        std::printf("moe-predict: the control is below 99%%, so this model's expert selection is not the one\n"
+                    "             the probe reproduces (group-limited routing, or a gating function it does not\n"
+                    "             read). The stale-gate figure understates the method by about the control's gap.\n");
 
     const size_t n = s.predict_stale_by_layer.size();
     if (n == 0) return;

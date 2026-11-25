@@ -245,7 +245,14 @@ int main() {
     completed_json_checks();
     const std::string tmpl = read_file(BMOE_QWEN3_TEMPLATE_PATH);
     check(!tmpl.empty(), "the vendored template is readable");
-    auto tmpls = common_chat_templates_init(/*model=*/nullptr, tmpl);
+    // The templates take the vocabulary the way a session gives them its model: the grammar a template
+    // ships is written over the vocabulary's special tokens (a call opens on the <tool_call> token, not
+    // on the characters that spell it), so without it the test would read a grammar no run uses.
+    llama_model_params mp = llama_model_default_params();
+    mp.vocab_only = true;
+    llama_model * vocab_model = llama_model_load_from_file(BMOE_QWEN35_VOCAB_PATH, mp);
+    check(vocab_model != nullptr, "the vendored vocab file loads");
+    auto tmpls = common_chat_templates_init(vocab_model, tmpl);
 
     const std::vector<ChatTool> tools = {
         {"read_file", "Read a file from disk",
@@ -302,13 +309,12 @@ int main() {
     check(content.empty(), "a turn that only calls has no answer text");
 
     // ── the grammar the template ships with its tools (#334) ──
-    llama_model_params mp = llama_model_default_params();
-    mp.vocab_only = true;
-    llama_model * vocab_model = llama_model_load_from_file(BMOE_QWEN35_VOCAB_PATH, mp);
-    check(vocab_model != nullptr, "the vendored vocab file loads");
     if (vocab_model) {
         const llama_vocab * vocab = llama_model_get_vocab(vocab_model);
-        check(!cp.grammar.empty() && cp.grammar_lazy, "a turn with tools carries a lazy grammar");
+        // Lazy (on from a trigger) or on from the first token over free text up to the call's opening:
+        // which of the two is the template's business, and ToolGrammar follows either as llama.cpp's
+        // sampler does. What a turn with tools must carry is the grammar itself.
+        check(!cp.grammar.empty(), "a turn with tools carries the template's grammar");
         auto fresh = [&](detail::ToolGrammar & g) {
             std::string err;
             const bool ok = g.init(cp, vocab, err);
@@ -337,8 +343,10 @@ int main() {
                   "a call to a tool that was not offered is refused once the call has opened");
         }
         {
-            // With thinking on, a call's opening written while the model reasons is not a call: the
-            // span stays free, and the grammar takes over once it closes.
+            // With thinking on, the reasoning is the model's own: prose written while it reasons is
+            // never constrained, and the grammar holds a call once the span has closed. A call opened
+            // INSIDE the span is a call - the template's parser ends the reasoning at it and reads it
+            // as one - so it is held to the grammar there too, as llama.cpp's sampler holds it.
             common_chat_templates_inputs think_in;
             detail::build_turn_inputs(think_in, detail::to_common_messages(convo), /*think*/ true,
                                       ThinkControl::Template);
@@ -347,14 +355,24 @@ int main() {
             std::string bad = call_text;
             const size_t at = bad.find("read_file");
             if (at != std::string::npos) bad.replace(at, 9, "drop_table");
-            const std::string reasoning = "I could write " + bad + " but I should not.\n";
             const std::string close = tcp.thinking_end_tags.empty() ? "" : tcp.thinking_end_tags[0];
-            std::string err;
-            detail::ToolGrammar g;
-            const bool ok = g.init(tcp, vocab, err) && g.active() && !close.empty();
-            check(ok && first_refused(g, vocab, reasoning + close + "\n\n") == -1,
-                  "a call's syntax inside the reasoning span is not constrained");
-            check(ok && first_refused(g, vocab, bad) > 0, "after the span closes, a bad call is refused");
+            const std::string prose = "I could read the file with a tool, or answer from memory.\n";
+            auto armed = [&](detail::ToolGrammar & g) {
+                std::string err;
+                return g.init(tcp, vocab, err) && g.active() && !close.empty();
+            };
+            {
+                detail::ToolGrammar g;
+                const bool ok = armed(g);
+                check(ok && first_refused(g, vocab, prose + close + "\n\n") == -1,
+                      "prose inside the reasoning span is not constrained");
+                check(ok && first_refused(g, vocab, bad) > 0, "after the span closes, a bad call is refused");
+            }
+            {
+                detail::ToolGrammar g;
+                check(armed(g) && first_refused(g, vocab, prose + bad) > 0,
+                      "a bad call opened inside the reasoning span is refused, as the parser reads it as a call");
+            }
         }
         {
             common_chat_params none = cp;

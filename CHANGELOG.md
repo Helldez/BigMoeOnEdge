@@ -4,6 +4,54 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.51.0] - 2026-11-25
+
+### Added
+- **Tencent Hy4 Flash (`hy_v4_flash`) streams its experts.** llama.cpp moves to upstream `2d5b3dd`
+  (2026-11-25, 157 commits past `29b52d3`), which brings the architecture. Its routed experts run at
+  a latent width narrower than the model's, between a down and an up projection of the layer's own,
+  and are still 3-D tensors indexed by the expert count, so they are found and streamed as any split
+  layout is, with no rule naming the model. A fifth tiny model (`make-tiny-moe.py --arch
+  hy_v4_flash`: latent experts, hyper-connections, MLA with a pooled sparse-attention indexer,
+  sliding-window layers, a selection bias and an n-gram table) runs every byte-identity gate,
+  streaming, overlap, the expert cache, row-streamed tables and the prefill device included
+  ([which-models-stream.md](docs/which-models-stream.md)). No real Hy4 Flash file has been run.
+
+### Changed
+- **A tool call opened inside the reasoning is held to the tool grammar.** Upstream's grammar for a
+  template's tools is no longer lazy: it is on from the first token, over free text up to the call's
+  opening. Prose in the reasoning stays free; a call the model opens inside it, which the template's
+  parser already read as a call, must now name an offered tool with valid arguments, as on
+  llama.cpp's own server ([server-api.md](docs/server-api.md)).
+
+### Fixed
+- **`--predict-prefetch` and `--route-ahead` no longer switch themselves off on models whose router
+  adds a selection bias.** The predictors ranked experts on the router's raw scores, which is not the
+  order a router that adds a per-expert bias after its gating function sorts (DeepSeek V3's
+  `exp_probs_b`, used by 44 architectures in llama.cpp: DeepSeek, GLM, Kimi, MiniMax, LFM2 MoE,
+  Inkling 2, Hy4 and more). Their own check then read below its 98% bound and disarmed them after a
+  few tokens: the answer was never wrong, the feature simply stopped. They now read the bias and the
+  gating function off the graph's node that adds them and rank as the router does: on Inkling 2 Mini
+  the fresh-gate control went from 84.4% to 99.8%. Routing that masks whole expert groups is still
+  ranked without the mask ([expert-prediction.md](docs/expert-prediction.md)). `--predict-log`'s
+  warning now uses the gate's 99% bound.
+- **A prefill device walks its dense slots in the order the graph finishes its layers.** The order
+  was read off the first node carrying each layer's index, while the slots are paced at each layer's
+  last node. A graph that computes a later layer's lookups ahead of everything (Hy4 Flash gathers its
+  n-gram rows before the token embeddings) put that layer first, and the first device prefill failed
+  its reservation. The order now follows each layer's last node ([seam.md](docs/seam.md)).
+
+### Notes
+- Measured on a 16 GB laptop, `--auto`, greedy, two loads per build against 0.50.1: Qwen3.6-35B-A3B
+  Q4_K_M, Gemma 4 26B-A4B Q4_0 and OLMoE answer word for word the same, decode 20.7-21.1 tok/s
+  against 19.7-20.3, 20.0-20.4 against 19.1-19.7, and 107 against 104. Inkling 2 Mini answers
+  differently, as upstream changed its graph (the device prefill's check now agrees on 100% of the
+  top tokens, 97% before), at the same speed with the knobs held equal (8.1-8.3 tok/s against
+  7.1-8.4).
+- The Hexagon fork commit is still carried: upstream's buffer still flushes the session on every
+  write and tiles a weight only at graph time. Not yet run on a phone, on an NPU, or on a CUDA or
+  Vulkan card.
+
 ## [0.50.1] - 2026-11-25
 
 ### Fixed

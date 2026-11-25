@@ -288,6 +288,7 @@ void RouterHook::set_route_ahead(int n) {
     // both probe and prefetch off, so make sure they exist rather than assume who ran first.
     if (gate_w_.size() != (size_t) nl) gate_w_.assign((size_t) nl, nullptr);
     if (h_t_.size() != (size_t) nl) h_t_.assign((size_t) nl, nullptr);
+    if (sel_.size() != (size_t) nl) sel_.assign((size_t) nl, RouterSelection{});
     // The GEMV runs on the shared prediction worker (predict_prefetch is mutually exclusive, so
     // the job slot is never contended); own the thread's lifecycle the same way it does.
     if (route_ahead_ > 0 && !pred_worker_.joinable()) pred_worker_ = std::thread([this] { predict_worker_main(); });
@@ -313,6 +314,7 @@ void RouterHook::predict_reset() {
     const int n = n_layer_ > 0 ? n_layer_ : 0;
     gate_w_.assign(n, nullptr);
     h_t_.assign(n, nullptr);
+    sel_.assign(n, RouterSelection{});
     pred_stale_.assign(n, std::vector<int32_t>{});
     pred_stale2_.assign(n, std::vector<int32_t>{});
     pred_self_.assign(n, std::vector<int32_t>{});
@@ -361,6 +363,7 @@ void RouterHook::predict_worker_main() {
         if (gate_mirror_ && job.commit && job.nl >= 0 && quantize_gate(job.nl, job.gate))
             scored = gate_scores_q(job.nl, job.gate, job.row, scores);
         if (!scored) scored = job.gate && gate_scores(job.gate, job.row, scores);
+        if (scored) job.sel.apply(scores);
         if (job.commit) {
             ra_gemv_ns_.fetch_add(
                 (long long) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - tg0)
@@ -498,6 +501,64 @@ void RouterHook::rank_top_k(const std::vector<float> & scores, int k, std::vecto
         if (best < 0) break;
         out.push_back((int32_t) best);
     }
+}
+
+// The node that adds the bias reads two sources: the probabilities, made from the logits by the
+// gating function, and the bias leaf. Both are read off the graph, so a gating function or a bias
+// this does not recognise leaves the layer as it was (raw ranking, approximate) rather than guessed.
+void RouterHook::learn_selection(const ggml_tensor * t, int il) {
+    if (il < 0 || il >= (int) sel_.size() || t->op != GGML_OP_ADD) return;
+    const ggml_tensor * probs = t->src[0];
+    const ggml_tensor * bias = t->src[1];
+    if (!probs || !bias || bias->op != GGML_OP_NONE || bias->type != GGML_TYPE_F32 || !host_readable(bias) ||
+        !ggml_is_contiguous(bias) || bias->ne[0] != probs->ne[0])
+        return;
+    RouterSelection r;
+    r.bias = bias;
+    if (probs->op == GGML_OP_SOFT_MAX) {
+        r.gate = RouterSelection::Gate::Softmax;
+    } else if (probs->op == GGML_OP_UNARY && ggml_get_unary_op(probs) == GGML_UNARY_OP_SIGMOID) {
+        r.gate = RouterSelection::Gate::Sigmoid;
+    } else if (probs->op == GGML_OP_SQRT && probs->src[0] && probs->src[0]->op == GGML_OP_UNARY &&
+               ggml_get_unary_op(probs->src[0]) == GGML_UNARY_OP_SOFTPLUS) {
+        r.gate = RouterSelection::Gate::SqrtSoftplus;
+    } else if (tn::node_layer(probs->name, tn::k_logits_node) >= 0) {
+        r.gate = RouterSelection::Gate::Identity; // the logits are the probabilities (softmax_weight)
+    } else {
+        return;
+    }
+    sel_[(size_t) il] = r;
+}
+
+void RouterHook::RouterSelection::apply(std::vector<float> & s) const {
+    if (!bias || s.empty() || (size_t) bias->ne[0] != s.size()) return;
+    switch (gate) {
+    case Gate::Identity:
+        break;
+    case Gate::Softmax: {
+        const float mx = *std::max_element(s.begin(), s.end());
+        float sum = 0.0f;
+        for (float & v : s) {
+            v = std::exp(v - mx);
+            sum += v;
+        }
+        for (float & v : s)
+            v /= sum;
+        break;
+    }
+    case Gate::Sigmoid:
+        for (float & v : s)
+            v = 1.0f / (1.0f + std::exp(-v));
+        break;
+    case Gate::SqrtSoftplus:
+        // ggml's softplus is the identity past 20, where log1p(exp(x)) equals x in float anyway
+        for (float & v : s)
+            v = std::sqrt(v > 20.0f ? v : std::log1p(std::exp(v)));
+        break;
+    }
+    const float * b = (const float *) bias->data;
+    for (size_t e = 0; e < s.size(); ++e)
+        s[e] += b[e];
 }
 
 // Build the int8 mirror of layer il's gate matrix (see the header for why). One symmetric scale
@@ -682,6 +743,7 @@ void RouterHook::route_ahead_submit(ggml_tensor * ids, int il, int nu, int nt) {
         // sampled, but it lives in the compute residual, so it carries its own meter.
         const auto tw0 = std::chrono::steady_clock::now();
         if (gate_w_[il] && row_to_float(h, j, pred_row_) && gate_scores(gate_w_[il], pred_row_, pred_scores_)) {
+            select_scores(il, pred_scores_);
             std::vector<int32_t> ctrl;
             rank_top_k(pred_scores_, nu, ctrl);
             int hits = 0;
@@ -724,6 +786,7 @@ void RouterHook::route_ahead_submit(ggml_tensor * ids, int il, int nu, int nt) {
         pred_job_.commit = true;
         pred_job_.drop_frac = drop_frac_; // the issue list is drop-aware; the commit is not
         pred_job_.gate = wn;
+        pred_job_.sel = sel_[(size_t) nl];
         pred_job_.row = pred_row_;
         pred_job_pending_ = true;
     }
@@ -878,13 +941,17 @@ void RouterHook::predict_at_logits(ggml_tensor * t, int il) {
     // to reproduce the routing the graph is about to compute from those very two tensors, so it is
     // also the check that this GEMV agrees with llama.cpp's. Probe-only — the prefetch has no use
     // for a prediction of the layer it is already standing in, and skipping it halves the tax.
-    if (predict_log_ && gate_w_[il] && gate_scores(gate_w_[il], pred_row_, pred_scores_))
+    if (predict_log_ && gate_w_[il] && gate_scores(gate_w_[il], pred_row_, pred_scores_)) {
+        select_scores(il, pred_scores_);
         rank_top_k(pred_scores_, predict_max_k, pred_self_[il]);
+    }
 
     // Stale-gate: the NEXT layer's matrix on this layer's input — the prediction under test. Silent
     // on the first token of a run, whose next layer has not been seen yet; score_layer counts those.
-    if (nl < n_layer_ && gate_w_[nl] && gate_scores(gate_w_[nl], pred_row_, pred_scores_))
+    if (nl < n_layer_ && gate_w_[nl] && gate_scores(gate_w_[nl], pred_row_, pred_scores_)) {
+        select_scores(nl, pred_scores_);
         rank_top_k(pred_scores_, predict_max_k, pred_stale_[nl]);
+    }
 
     // Stale-2: the matrix two layers ahead on the same input — the accuracy the ASYNC prefetch
     // actually runs at (see predict_at_topk for why its horizon is two). Probe-only bookkeeping;
@@ -892,8 +959,10 @@ void RouterHook::predict_at_logits(ggml_tensor * t, int il) {
     const int n2 = il + 2;
     if (predict_log_ && n2 < n_layer_) {
         pred_stale2_[n2].clear();
-        if (gate_w_[n2] && gate_scores(gate_w_[n2], pred_row_, pred_scores_))
+        if (gate_w_[n2] && gate_scores(gate_w_[n2], pred_row_, pred_scores_)) {
+            select_scores(n2, pred_scores_);
             rank_top_k(pred_scores_, predict_max_k, pred_stale2_[n2]);
+        }
     }
 }
 
@@ -959,6 +1028,7 @@ void RouterHook::predict_at_topk(ggml_tensor * /*t*/, int il, int nu, int nt) {
     // ranking, the control collapses and the prefetch disarms instead of speculating on noise.
     if (++wd_rout_ % wd_interval == 0 && gate_w_[il] && row_to_float(h, j, pred_row_) &&
         gate_scores(gate_w_[il], pred_row_, pred_scores_)) {
+        select_scores(il, pred_scores_);
         std::vector<int32_t> ctrl;
         rank_top_k(pred_scores_, nu, ctrl);
         const int32_t * actual = gathered_.data() + (size_t) (nt - 1) * nu;
@@ -1004,6 +1074,7 @@ void RouterHook::predict_at_topk(ggml_tensor * /*t*/, int il, int nu, int nt) {
         pred_job_.drop_frac = drop_frac_;
         pred_job_.spec_max = pred_spec_max_;
         pred_job_.gate = wn;
+        pred_job_.sel = sel_[(size_t) nl];
         pred_job_.row = pred_row_;
         pred_job_.resident = pred_res_;
         pred_job_pending_ = true;
@@ -1255,8 +1326,15 @@ void RouterHook::capture_sources(ggml_tensor * t) {
     // index is that layer's end.
     const int nl = tn::any_node_layer(t->name);
     if (nl >= 0 && nl < (int) last_node_.size()) last_node_[(size_t) nl] = t->name;
-    if (nl >= 0 && nl < n_layer_ && std::find(layer_order_.begin(), layer_order_.end(), nl) == layer_order_.end())
-        layer_order_.push_back(nl);
+    // A layer moves to the back each time one of its nodes comes, so the order is that of the layers'
+    // last nodes. Capture walks the graph once, so the linear search is paid once per node.
+    if (nl >= 0 && nl < n_layer_) {
+        const auto at = std::find(layer_order_.begin(), layer_order_.end(), nl);
+        if (at == layer_order_.end() || at + 1 != layer_order_.end()) {
+            if (at != layer_order_.end()) layer_order_.erase(at);
+            layer_order_.push_back(nl);
+        }
+    }
     for (int s = 0; s < GGML_MAX_SRC; ++s) {
         ggml_tensor * src = t->src[s];
         if (!src || src->name[0] == '\0') continue;
@@ -1568,6 +1646,10 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     // for free, so it asks for nothing and validates its barrier-less read with the watchdog
     // instead. Decode-only either way. The "-" in the pattern is what keeps
     // "ffn_moe_logits_biased-<il>" — a different node — from matching.
+    // A layer's selection bias is learned in any phase: the prompt's graph carries the same node, so
+    // the first decoded token is already ranked the way the router ranks it.
+    if (ask && moe_node && (predict_on() || route_ahead_ > 0))
+        learn_selection(t, block_of(tn::node_layer(t->name, tn::k_probs_biased_node)));
     const int gl = (moe_node && (predict_on() || route_ahead_ > 0) && source_ && batch_phase_ == 1)
                        ? block_of(tn::node_layer(t->name, tn::k_logits_node))
                        : -1;

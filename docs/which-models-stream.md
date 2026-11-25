@@ -27,7 +27,7 @@ which projection it is. The layouts llama.cpp builds today:
 
 | layout | expert tensors per layer | a model that has it |
 |---|---|---|
-| split | `ffn_gate_exps`, `ffn_up_exps`, `ffn_down_exps` | Qwen3 MoE, gpt-oss, DeepSeek V4, Ling 3.0, LFM2 MoE |
+| split | `ffn_gate_exps`, `ffn_up_exps`, `ffn_down_exps` | Qwen3 MoE, gpt-oss, DeepSeek V4, Ling 3.0, LFM2 MoE, Hy4 Flash |
 | fused | `ffn_gate_up_exps`, `ffn_down_exps` | Gemma 4 MoE |
 | gate-less | `ffn_up_exps`, `ffn_down_exps` | Nemotron 3 / 3.5 MoE |
 
@@ -42,6 +42,15 @@ whose experts it computes from are two numbers, which the engine reads off the g
 ([seam.md](seam.md)). Only a conversion llama.cpp itself loads streams: at the time of writing that
 is the `ggml-org` one (`general.architecture = inkling2_loop`), and a file from another converter
 that llama.cpp refuses is refused here with llama.cpp's own error.
+
+A fifth, `hy_v4_flash`, is the split layout at a width of its own: Hy4 Flash runs its routed
+experts at a latent width narrower than the model's, between a down and an up projection that are
+dense weights of the layer (`ffn_routed_down`, `ffn_routed_up`). The expert tensors are still 3-D
+and indexed by the expert count, so they are found and streamed as any split layout is, at whatever
+width the file gives them. Around them the model carries what no other gate had together:
+hyper-connection streams, MLA with a pooled sparse-attention indexer, sliding-window layers, a
+leading dense layer, a per-expert selection bias, and an n-gram (Engram) table whose lookups the
+graph computes before the token embeddings, ahead of every layer.
 
 ## What is refused, and how it says so
 

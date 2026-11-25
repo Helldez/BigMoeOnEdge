@@ -507,7 +507,9 @@ llama.cpp layer parses the model's calls back out of the generated text; the cli
 sends the results back as `tool` messages. A call's text never appears in `content`. Once the model
 opens a call, sampling is held to the grammar the template ships with its tools, as llama.cpp's own
 server does: the call names a tool the request offered and its arguments are JSON. Without an
-output schema, free text and the reasoning span are not constrained. On an
+output schema, free text is not constrained, nor is the reasoning, up to a call the model opens
+inside it: the template's parser ends the reasoning there and reads a call, so the grammar holds it
+as it holds any other. On an
 ordinary request, if the parser still finds no answer, reasoning or call in what was generated,
 the raw text comes back as `content` and the server logs a warning, instead of an empty message
 that ends with `stop`.
