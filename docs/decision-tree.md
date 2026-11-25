@@ -1941,12 +1941,16 @@ flowchart TD
 #### `req.sampler` — The request's sampling, or the session's
 - parent: —
 - code: `core/src/engine/session.cpp` · `Turn::arm_sampler`
-- condition: `if (!req.sampling) return true;`
+- condition: `if (!req.sampling && !d.penalized()) return true;`
 - condition: `if (im.cfg.spec.enabled()) {`
-- No override → the session's chain (`open.sampler`).
+- No override and no session penalty → the session's chain (`open.sampler`).
 - Speculation configured → the override is ignored, and decoding stays greedy. This tests the
-  configuration, not the turn: an image that turned speculation off does not lift it.
-- Otherwise → a chain of its own. Zero temperature with no penalties or bias is argmax.
+  configuration, not the turn: an image that turned speculation off does not lift it. A session
+  penalty never reaches it: `cfg.validate` refuses one with speculation.
+- Otherwise → a chain of its own, the request's values over the session's. A session penalty
+  (`--presence-penalty` and the rest) is only ever in this chain: the session's chain is never
+  reset between the turns of a chat, so a penalty there would count every earlier conversation.
+  Zero temperature with no penalties or bias is argmax.
 
 #### `req.grammar` — A token the grammar refuses
 - parent: —

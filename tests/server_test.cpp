@@ -1250,6 +1250,13 @@ static void llama_compat_tests() {
           "a piece that splits a code point goes out as its bytes");
     check(slots_json(4096, true)[0]["is_processing"] == true && props_json(PropsFacts{})["total_slots"] == 1,
           "one slot: the server answers one turn at a time");
+    PropsFacts penalized;
+    penalized.presence_penalty = 1.5f;
+    penalized.repeat_last_n = -1;
+    const json pp = props_json(penalized)["default_generation_settings"]["params"];
+    check(pp["presence_penalty"] == 1.5 && pp["frequency_penalty"] == 0.0 && pp["repeat_penalty"] == 1.0 &&
+              pp["repeat_last_n"] == -1,
+          "/props reports the session's penalties beside its sampling");
 }
 
 static void request_sampling_tests() {
@@ -1269,6 +1276,16 @@ static void request_sampling_tests() {
           "sampling: OpenAI's and llama-server's fields, each read");
     check(parse(json{{"seed", -1}}, SamplingDialect::Chat, t, err) && *t.sampling->seed == SamplingConfig::seed_random,
           "sampling: seed -1 is a fresh seed, as in llama-server");
+    // A penalty left out stays unset, so the session's penalty parameters fill it (#715).
+    check(parse(json{{"presence_penalty", 1.5}, {"repeat_last_n", -1}}, SamplingDialect::Chat, t, err) &&
+              *t.sampling->presence_penalty == 1.5f && *t.sampling->penalty_last_n == -1 &&
+              !t.sampling->frequency_penalty && !t.sampling->repeat_penalty &&
+              parse(json{{"repeat_penalty", 1.05}, {"frequency_penalty", -0.5}}, SamplingDialect::Chat, t, err) &&
+              *t.sampling->repeat_penalty == 1.05f && *t.sampling->frequency_penalty == -0.5f &&
+              !t.sampling->presence_penalty && !t.sampling->penalty_last_n &&
+              parse(json{{"repeat_penalty", 0.001}}, SamplingDialect::Chat, t, err) &&
+              !parse(json{{"repeat_penalty", 0.0005}}, SamplingDialect::Chat, t, err),
+          "sampling: each penalty is read, and one left out keeps the session's");
     check(!parse(json{{"temperature", -0.1}}, SamplingDialect::Chat, t, err) &&
               !parse(json{{"top_p", 1.5}}, SamplingDialect::Chat, t, err) &&
               !parse(json{{"top_k", 2.5}}, SamplingDialect::Chat, t, err) &&

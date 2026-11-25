@@ -89,7 +89,11 @@ json props_json(const PropsFacts & f) {
                          {"temperature", f.temperature},
                          {"top_k", f.top_k},
                          {"top_p", f.top_p},
-                         {"seed", f.seed}};
+                         {"seed", f.seed},
+                         {"presence_penalty", f.presence_penalty},
+                         {"frequency_penalty", f.frequency_penalty},
+                         {"repeat_penalty", f.repeat_penalty},
+                         {"repeat_last_n", f.repeat_last_n}};
     return {{"default_generation_settings", {{"params", params}, {"n_ctx", f.n_ctx}}},
             {"total_slots", 1},
             {"model_alias", f.model_name},

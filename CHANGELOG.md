@@ -6,6 +6,20 @@ Semantic Versioning.
 
 ## [0.49.1] - 2026-11-24
 
+### Added
+- **The sampling penalties as parameters, for a client that sends none** (#715).
+  `--presence-penalty`, `--frequency-penalty`, `--repeat-penalty` and `--repeat-last-n`, and the same
+  four rows in the Sampling card of Settings, set the penalties a request gets when it names none
+  of its own: a client that sends no sampling at all, or only a temperature, now gets the penalty a
+  model card recommends (`presence_penalty` 1.5 on Qwen3.6-35B-A3B, a repeat penalty of 1.05 on
+  LFM2.5-24B-A2B). A request's own value still wins. The window stays llama.cpp's 64 tokens, the
+  prompt's counted; `-1` widens it to the whole context, as `repeat_last_n: -1` already does for a
+  request. They act at any temperature and are built into each turn's own chain, so a chat never
+  counts the turns of an earlier conversation. Not with speculative drafts, which are checked
+  against the model's own most likely token: `validate()` refuses the pair, as it does for `--temp`.
+  `/props` and the telemetry header report them beside the other sampling defaults. Unset, nothing
+  changes ([server-api.md](docs/server-api.md)). By @pt7777 (#720).
+
 ### Fixed
 - **A device that runs a long prompt faster is no longer refused for a short graph's rate** (#728).
   The compute probe timed the prompt on one real layer 128 tokens wide, while a plan never computes a
