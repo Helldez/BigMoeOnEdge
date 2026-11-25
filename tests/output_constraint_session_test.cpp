@@ -328,6 +328,32 @@ void speculation(const std::string & model, const GrammarOracle & oracle) {
     const auto ordinary = generate(*session, request("", 8));
     check(ordinary.result.ok && !ordinary.result.cancelled,
           "ordinary generation remains usable after constrained speculative turns", ordinary.result.error);
+
+    // A request that samples is decoded without a draft and with its own sampling, as a session that
+    // never drafts would decode it; the conversation goes on without one until it is cleared.
+    auto plain_session = bmoe::Session::open(config(model, false), error);
+    check(plain_session != nullptr, "the session without a draft opens", error);
+    if (!plain_session) return;
+    auto sampled = request("", 16);
+    sampled.sampling = bmoe::RequestSampling{};
+    sampled.sampling->temp = 1.0f;
+    sampled.sampling->seed = 1234u;
+    const auto drawn = generate(*session, sampled);
+    const auto drawn_plain = generate(*plain_session, sampled);
+    check(drawn.result.ok && drawn.result.summary.drafted_steps == 0 && drawn_plain.result.ok &&
+              drawn.result.generated_text == drawn_plain.result.generated_text,
+          "a sampling request on a drafting session decodes without a draft, its sampling applied",
+          drawn.result.error + " drafted_steps=" + std::to_string(drawn.result.summary.drafted_steps));
+    auto followed = req;
+    followed.clear_kv = false;
+    const auto follow = generate(*session, followed);
+    check(follow.result.ok && follow.result.summary.drafted_steps == 0,
+          "the conversation that sampled goes on without a draft", follow.result.error);
+    auto renewed = req;
+    renewed.clear_kv = true;
+    const auto fresh = generate(*session, renewed);
+    check(fresh.result.ok && fresh.result.summary.drafted_steps > 0 && fresh.pieces == drafted.pieces,
+          "a new conversation drafts again, as before", fresh.result.error);
 }
 
 void streamed_identity(const std::string & model, bool sampled, const GrammarOracle & oracle) {

@@ -544,7 +544,10 @@ experts would use (`width_narrow` and its rates,
 on a machine whose device reads that same memory, on the cores or every layer on the device
 (`shared_device_tps`, `no_shared_device_tps`, and the prompt rates `shared_device_prompt_tps`,
 `no_shared_device_prompt_tps` the load that compared the answers timed,
-[hardware-planning.md](hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it)).
+[hardware-planning.md](hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it)), and
+whether a model held whole drafts with its own MTP head (`spec_tps`, `no_spec_tps`, the draft context
+being created with the target's,
+[hardware-planning.md](hardware-planning.md#a-model-held-in-memory-drafting-with-its-own-head)).
 
 That last move also carries a word that is not a rate: whether the model's answers on the device
 matched the cores' (`MeasuredKnobs::device_answers`, `device_answer=<device>:<confirmed|differs>`, one

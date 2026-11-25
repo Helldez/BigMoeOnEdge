@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.50.0] - 2026-11-25
+
+### Added
+- **`--auto` drafts with a model's own MTP head where the model is held whole, and keeps it only where
+  it decodes faster** (#733). Before, the plan never armed speculation by itself, even where the head
+  was a measured win: about +18% with the model resident on a rented 24 GB card, and about +40% split
+  between a card and the host. Where the model streams the head is not offered: a verify widens the
+  experts a step reads, and on a 16 GB laptop that took a token's reads from 32 to 51 MiB and the draft
+  lost. On the cores alone nobody has measured it yet. So the head is a decision across loads, like the
+  shared-memory device:
+  - the first load drafts and times its decode (`--trial-spec 1`);
+  - the next one times the decode without the head (`--trial-spec 0`);
+  - from then on the head is kept only where it decodes faster by `PlannerPolicy::min_draft_win` (10%).
+
+  It is asked only where the front-end keeps records (the server), the session decodes greedily
+  (`temp` 0), and `spec` is not pinned. A load whose head fails to open counts against that side and
+  reopens without it. The two rates are recorded as `spec_tps` and `no_spec_tps`
+  ([hardware-planning.md](docs/hardware-planning.md#a-model-held-in-memory-drafting-with-its-own-head)).
+
+### Changed
+- **A request that samples is decoded with its sampling, without a draft.** Before, a session that
+  drafted decoded every request greedily and ignored the request's temperature, penalties and bias.
+  Now such a request turns speculation off for its conversation, as an image already did, until the
+  next new chat; a request that asks nothing of the kind still drafts ([mtp.md](docs/mtp.md)).
+
 ## [0.49.0] - 2026-11-24
 
 ### Fixed

@@ -151,7 +151,7 @@ PlanOutcome plan_other_side(const PlanOutcome & plan) {
     const KnobTrialConfig & now = basis->facts.plan.config.trial;
     // dt:srv.plan.other-same
     if (now.device_tier == named.device_tier && now.width_side == named.width_side &&
-        now.shared_device_side == named.shared_device_side)
+        now.shared_device_side == named.shared_device_side && now.spec_side == named.spec_side)
         return {};
     PlanOutcome o = outcome_of(*basis);
     o.hardware = plan.hardware;
