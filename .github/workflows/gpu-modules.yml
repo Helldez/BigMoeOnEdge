@@ -14,9 +14,12 @@
 # different.
 #
 # Which GPUs each module covers is llama.cpp's decision, not this file's: CUDA builds ggml's own
-# default architecture list (CMAKE_CUDA_ARCHITECTURES unset, as llama.cpp's release does), and HIP
-# the target list of llama.cpp's Linux ROCm release. scripts/check-gpu-targets.py fails CI when
-# either drifts from the pinned submodule.
+# default architecture list for the toolkit, and HIP the target list of llama.cpp's Linux ROCm
+# release. scripts/check-gpu-targets.py fails CI when either drifts from the pinned submodule. How a
+# CUDA architecture ships is ours: ggml ships some as PTX only, which the driver compiles at load
+# and only a driver as new as the toolkit can (R575 for 12.9), so a Turing card on Debian's R550
+# lost CUDA (#694). Each is shipped as machine code too, which any CUDA 12 driver (R525) runs;
+# `check-gpu-targets.py --cuda-archs` derives that list from ggml's.
 name: gpu-modules
 
 on:
@@ -33,6 +36,7 @@ on:
       - CMakeLists.txt
       - .github/workflows/gpu-modules.yml
       - scripts/fetch-cuda-redist.py
+      - scripts/check-gpu-targets.py
   # A pull request that moves an input builds the modules too, writing no cache: the PR CI builds
   # none, and v0.47.0 went out without CUDA packs after a bump that passed it (nvml.h).
   pull_request:
@@ -40,6 +44,7 @@ on:
       - third_party/llama.cpp
       - .github/workflows/gpu-modules.yml
       - scripts/fetch-cuda-redist.py
+      - scripts/check-gpu-targets.py
   schedule:
     - cron: '17 3 * * 1,4'
   workflow_dispatch:
@@ -90,7 +95,7 @@ jobs:
         shell: bash
         run: |
           LLAMA="$(git rev-parse HEAD:third_party/llama.cpp)"
-          INPUTS="$( { sed '/^project(/d' CMakeLists.txt; cat .github/workflows/gpu-modules.yml scripts/fetch-cuda-redist.py; } | tr -d '\r' | sha256sum | cut -c1-16)"
+          INPUTS="$( { sed '/^project(/d' CMakeLists.txt; cat .github/workflows/gpu-modules.yml scripts/fetch-cuda-redist.py scripts/check-gpu-targets.py; } | tr -d '\r' | sha256sum | cut -c1-16)"
           echo "key=gpu-cuda-${{ matrix.target }}-$CUDA_VERSION-$LLAMA-$INPUTS" >> "$GITHUB_OUTPUT"
 
       - name: Restore the module
@@ -137,14 +142,21 @@ jobs:
           echo "$CUDA/bin" >> "$GITHUB_PATH"
 
       # The top-level build, so the module is configured exactly as the engine it loads beside;
-      # only its target is built. No CMAKE_CUDA_ARCHITECTURES: ggml's default list.
+      # only its target is built. The architectures: ggml's default list for this toolkit, each
+      # PTX-only one also as machine code (the header). ggml echoes the list it builds; a list that
+      # is not the one asked for fails here rather than ship.
       - name: Build the CUDA module
         if: steps.cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
+          case "${{ runner.os }}" in Windows) PY=python ;; *) PY=python3 ;; esac
+          CUDA_ARCHS="$($PY scripts/check-gpu-targets.py --cuda-archs "$CUDA_VERSION")"
+          echo "CUDA architectures: $CUDA_ARCHS"
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DBMOE_BUILD_TESTS=OFF -DBMOE_BUILD_CLI=OFF -DBMOE_BUILD_SERVER=OFF -DBMOE_BUILD_DESKTOP=OFF \
-            -DGGML_OPENMP=OFF -DLLAMA_CURL=OFF -DGGML_CUDA=ON
+            -DGGML_OPENMP=OFF -DLLAMA_CURL=OFF -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCHS" | tee configure.log
+          grep -qF "Using CMAKE_CUDA_ARCHITECTURES=$CUDA_ARCHS " configure.log \
+            || { echo "ggml did not take the architectures asked for:"; grep 'CMAKE_CUDA_ARCHITECTURES' configure.log; exit 1; }
           cmake --build build -j --target ggml-cuda
           mkdir -p module
           if [ "${{ runner.os }}" = "Windows" ]; then

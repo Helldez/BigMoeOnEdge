@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.50.2] - 2026-11-25
+
+### Fixed
+- **The CUDA pack runs on NVIDIA drivers older than its toolkit, from a GTX 900 to an H100**
+  (#694). ggml's default list ships Maxwell, Pascal, Volta, Turing, A100 and H100 as PTX only,
+  which the driver compiles when the module loads, and only a driver at least as new as the
+  toolkit can: R575 for the pack's CUDA 12.9. On Debian 13's R550 a Turing card's probe ended in
+  "PTX compiled with an unsupported toolchain" and the plan fell back on Vulkan without saying why;
+  the reporter's own build with CUDA 12.4 ran the card at 44.5 tok/s against 29.7 on Vulkan
+  (Qwen3.6-35B-A3B Q4_K_M). Each of those architectures now also ships as machine code, which any
+  CUDA 12 driver runs (R525 and later); the PTX stays
+  for cards newer than the list. The architectures are still ggml's: `scripts/check-gpu-targets.py --cuda-archs` derives the list
+  from the pinned ggml for the toolkit, the module build fails if ggml does not take it, and CI
+  fails on a list written by hand. The pack grows by that machine code. Not yet run
+  on a driver older than R575 ([backends.md](docs/backends.md#which-nvidia-drivers-the-cuda-pack-runs-on)).
+
 ## [0.50.1] - 2026-11-25
 
 ### Fixed

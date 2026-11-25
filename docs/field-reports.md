@@ -69,6 +69,21 @@ desktop app is not affected: it installs the pack itself.
 
 ## Fixed
 
+### Linux, an NVIDIA card on an older driver: the plan runs on Vulkan, not CUDA (#694)
+
+- **Seen on** 0.46.1 and 0.47.2, Linux (Debian 13, driver R550), a Turing desktop card with the
+  CUDA pack installed: the plan used the card through Vulkan.
+- **How to recognise it.** The plan marks the CUDA device unusable, its probe ended; running it by
+  hand (`bmoe-cli --probe-device CUDA0`) ends in `PTX compiled with an unsupported toolchain`. The
+  driver (`nvidia-smi`) is older than R575 and the card is not an RTX 30, 40 or 50.
+- **Cause.** Confirmed by the reporter: the pack shipped the card's architecture as PTX from CUDA
+  12.9, which only a driver from R575 compiles. The same backend built with CUDA 12.4 ran on R550:
+  44.5 tok/s on CUDA against 29.7 on Vulkan (a 35B-A3B Q4_K_M).
+- **Fixed in** 0.50.2: the pack carries machine code for every architecture of its list, which any
+  driver from R525 runs ([backends.md](backends.md#which-nvidia-drivers-the-cuda-pack-runs-on)).
+- **Workaround** on 0.50.1 and earlier: a driver from R575, or the CUDA backend built from source
+  with the machine's own toolkit.
+
 ### Windows: no model loads after an update, and Settings says the graphics pack is installed
 
 - **Seen on** 0.47.2, Windows, a 6 GB laptop card, the app updated from 0.42.0: the plan asked for
