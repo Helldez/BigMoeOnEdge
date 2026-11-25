@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [0.50.1] - 2026-11-25
+
+### Fixed
+- **A primary button inside a notice is readable again on the web UI and the desktop app.** The rule
+  that gives a plain button the page's ink on a tinted notice also caught the primary and danger
+  buttons beside it, since it came later at the same weight: their text took the page's ink on their
+  own dark fill and could not be read. It showed on Models as an empty dark button where "Go to Chat"
+  sits beside a model opened from outside the listed folders, and the same held for Reload in the
+  engine settings, Restart under graphics and the download and retry buttons of the first run. The
+  rule now leaves primary and danger buttons their own colours, in both themes. Present since 0.39.
+
 ## [0.50.0] - 2026-11-25
 
 ### Added
