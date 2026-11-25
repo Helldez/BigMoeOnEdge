@@ -759,6 +759,11 @@ struct KnobTrialConfig {
     // across loads (MeasuredKnobs::host_call_tps): 1 times the decode with it, 0 without it; -1
     // neither. It is fixed when the context is created, so a side is timed by a load that serves it.
     int host_call_side = -1;
+    // Whether a model held whole drafts with its own MTP block, decided across loads
+    // (MeasuredKnobs::spec_tps): 1 times the decode with the head drafting (SpecConfig armed), 0
+    // without; -1 neither. The draft context is created with the target's, so a side is timed by a
+    // load that serves it.
+    int spec_side = -1;
     // The device whose answers for this model the load compares with the cores' before it serves
     // (ggml's name for it, the key the verdict is kept under: MeasuredKnobs::device_answers); empty,
     // nothing is compared. A plan that moves a whole model onto a device by its own choice asks for
@@ -787,7 +792,7 @@ struct KnobTrialConfig {
 
     bool enabled() const {
         return !threads.empty() || overlap || device_tier >= 0 || width_side >= 0 || shared_device_side >= 0 ||
-               host_call_side >= 0;
+               host_call_side >= 0 || spec_side >= 0;
     }
 
     static constexpr int threads_max_candidates = 2;

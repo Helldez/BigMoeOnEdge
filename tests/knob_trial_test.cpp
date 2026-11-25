@@ -445,6 +445,40 @@ int main() {
                   "record: a rate handed on clears the failure and its room together");
         }
 
+        // The draft head's two sides: read back as written, recorded by the side a load ran, counted as
+        // a failed open on that side, and cleared by a rate measured since.
+        {
+            MeasuredKnobs dh;
+            dh.hardware = a.hardware;
+            dh.engine = a.engine;
+            KnobTrialConfig drafting;
+            drafting.spec_side = 1;
+            check(names_side(drafting), "record: the draft head's side is a side of a decision across loads");
+            record_side_unviable(drafting, dh);
+            check(dh.spec_unviable == 1 && dh.no_spec_unviable == 0, "record: a failed open counts on its side");
+            std::vector<MeasuredKnobs> dback;
+            check(parse_measured_knobs(format_measured_knobs({dh}), dback, err) && dback.size() == 1 &&
+                      dback[0].spec_unviable == 1,
+                  "record: the draft head's failed open reads back");
+            record_side_rate(drafting, 36.0, dh);
+            KnobTrialConfig plain;
+            plain.spec_side = 0;
+            record_side_rate(plain, 30.0, dh);
+            check(dh.spec_unviable == 0 && dh.spec_tps == 36.0 && dh.no_spec_tps == 30.0 && dh.verdicts() == 2,
+                  "record: both sides' rates, the failure cleared");
+            dback.clear();
+            check(parse_measured_knobs(format_measured_knobs({dh}), dback, err) && dback.size() == 1 &&
+                      std::fabs(dback[0].spec_tps - 36.0) < 1e-9 && std::fabs(dback[0].no_spec_tps - 30.0) < 1e-9,
+                  "record: the draft head's rates read back as written");
+            std::vector<MeasuredKnobs> kept = {dback[0]};
+            MeasuredKnobs later;
+            later.hardware = a.hardware;
+            later.engine = a.engine;
+            later.no_spec_tps = 31.0;
+            keep_measured_knobs(kept, later);
+            check(kept.size() == 1 && kept[0].spec_tps == 36.0 && kept[0].no_spec_tps == 31.0,
+                  "record: a later side's rate merges beside the other");
+        }
         // The shared-memory device's prompt rates, as the load that compared the answers timed them: read
         // back as written, counted, merged beside the decode rates, and absent from an earlier record.
         MeasuredKnobs sp;

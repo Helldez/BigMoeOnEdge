@@ -77,6 +77,15 @@ struct MeasuredKnobs {
     // probe predicts it: on a 12 GB CUDA card it decoded 5% faster and on a unified-memory laptop slower.
     double host_call_tps = 0.0;
     double no_host_call_tps = 0.0;
+    // Whether a model held whole drafts with its own MTP block, decided across loads (planner.cpp,
+    // choose_spec): the decode rate with the head drafting and without, in tokens per second as a
+    // person reads them (accepted tokens over the time spent), 0 when that side was not measured. The
+    // draft context is created with the target's, so the two cannot alternate within an answer. Its
+    // sign is the machine's: the head paid 18% on a 24 GB card with the model resident and 40% split
+    // between a card and the host, and lost on a 16 GB laptop where the model streamed, because a
+    // verify widens the experts a step reads.
+    double spec_tps = 0.0;
+    double no_spec_tps = 0.0;
 
     // The graph width, decided across loads where a wide graph's compute buffers take device memory
     // the experts would use (planner.cpp, choose_graph_width). A wide graph prefills a long prompt in
@@ -151,6 +160,7 @@ struct MeasuredKnobs {
     int wide_unviable = 0, narrow_unviable = 0;
     int shared_device_unviable = 0, no_shared_device_unviable = 0;
     int host_call_unviable = 0;
+    int spec_unviable = 0, no_spec_unviable = 0;
     // What the device the model failed to open on said it had free when it failed, in MiB, as its
     // backend reports it (0: not known). A device's room is its driver's to give and can grow (another
     // program lets go of it, a setting raises it), so a plan names the device again where it now
@@ -251,7 +261,8 @@ struct MeasuredKnobs {
                (no_device_cache_unviable > 0) + (wide_unviable > 0) + (narrow_unviable > 0) +
                (shared_device_tps > 0.0) + (no_shared_device_tps > 0.0) + (shared_device_prompt_tps > 0.0) +
                (no_shared_device_prompt_tps > 0.0) + (shared_device_unviable > 0) + (no_shared_device_unviable > 0) +
-               (host_call_tps > 0.0) + (no_host_call_tps > 0.0) + (host_call_unviable > 0) + (int) prefill.size() +
+               (host_call_tps > 0.0) + (no_host_call_tps > 0.0) + (host_call_unviable > 0) + (spec_tps > 0.0) +
+               (no_spec_tps > 0.0) + (spec_unviable > 0) + (no_spec_unviable > 0) + (int) prefill.size() +
                (int) device_answers.size();
     }
 };
@@ -272,8 +283,8 @@ bool parse_measured_knobs(const std::string & text, std::vector<MeasuredKnobs> &
 // unmeasured, so the record of the load before holds the rest.
 void keep_measured_knobs(std::vector<MeasuredKnobs> & records, const MeasuredKnobs & rec);
 
-// The decode rate of a load that ran the side `trial` names (KnobTrialConfig::device_tier, width_side
-// or shared_device_side), put where a plan reads it. One decision per load, in that
+// The decode rate of a load that ran the side `trial` names (KnobTrialConfig::device_tier, width_side,
+// shared_device_side or spec_side), put where a plan reads it. One decision per load, in that
 // order, so a rate never answers two questions measured under one placement. Nothing when `trial`
 // names no side.
 void record_side_rate(const KnobTrialConfig & trial, double tokens_per_second, MeasuredKnobs & rec);

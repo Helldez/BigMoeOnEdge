@@ -121,8 +121,9 @@ struct PrefillProgress {
 // One request's own sampling, over the session's (SamplingConfig): a field left unset keeps the
 // session's value. A request that sets nothing here samples as the session does. temp <= 0 is greedy.
 // The penalties and the bias are applied before the cutoffs, as llama.cpp's sampler chain applies
-// them; a bias of -INFINITY forbids a token. With speculation armed (SpecConfig) the session decodes
-// greedily, since a draft is accepted by the target's argmax, and a request's sampling is not applied.
+// them; a bias of -INFINITY forbids a token. A draft is accepted by the target's argmax, so with
+// speculation armed (SpecConfig) a request that sets a temperature above 0, a penalty or a bias is
+// decoded without a draft, and its conversation goes on without one until the next new chat.
 struct RequestSampling {
     std::optional<float> temp, top_p, min_p;
     std::optional<int> top_k;

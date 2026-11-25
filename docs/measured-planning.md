@@ -552,7 +552,10 @@ on a machine whose device reads that same memory, on the cores or every layer on
 [hardware-planning.md](hardware-planning.md#a-model-held-in-memory-on-a-device-that-shares-it)), and
 whether a device expert cache looks its experts up inside the device's graph (`host_call_tps`,
 `no_host_call_tps`; the cache's own `device_cache_tps` stands for the side without it until that side is
-timed again), tried once the cache's decode has a rate.
+timed again), tried once the cache's decode has a rate, and
+whether a model held whole drafts with its own MTP head (`spec_tps`, `no_spec_tps`, the draft context
+being created with the target's,
+[hardware-planning.md](hardware-planning.md#a-model-held-in-memory-drafting-with-its-own-head)).
 
 That last move also carries a word that is not a rate: whether the model's answers on the device
 matched the cores' (`MeasuredKnobs::device_answers`, `device_answer=<device>:<confirmed|differs>`, one
