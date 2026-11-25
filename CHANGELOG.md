@@ -4,6 +4,70 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **A machine as a file, for whoever works on the planner (`bmoe-planlab`, a developer tool; not in
+  any release).** The rules are pure functions over what the probes report, so a machine nobody has
+  at hand is, to them, those facts. `bmoe-planlab record` writes everything `--auto` measured for
+  one model on one machine as text (no weights, no prompt, no local path), with what the plan's run
+  then measured; `bmoe-planlab replay` makes that machine's plan again anywhere, with no model and
+  no device, with a knob pinned (`--sweep cache-mb=...` prints the cache, the memory held and the
+  predicted speed per value) or a fact changed (`--set hw.residency_budget=...`). A record also
+  carries where it ran (system, kernel, swap and its kind, a container's limit), the prediction in
+  parts, and the run as distributions per token with the process's and the system's memory through
+  it; `errors DIR` sets the prediction beside the measurement for every record and `table DIR`
+  writes them all as one CSV, the table a better predictor is to be built on. The project's own
+  test runs keep their records in `docs/bench-data/plan-records`; for anyone else it is off, and
+  `scripts/bench-report.sh` makes one only with `BENCH_PLAN_RECORD=1`. Records kept in
+  `tests/plan-records` are replayed by the new `plan_records` test on every build: a rule change
+  that moves the plan on a recorded machine fails with both plans printed, and each record made
+  with a run prints the prediction beside the measurement. It says what the planner decides and
+  predicts; whether a plan is fast is still the machine's to answer. `docs/plan-records.md`.
+- **A machine nobody has, planned for (`bmoe-planlab simulate`, a developer tool for the project; not
+  in any release, nothing in `--auto` or any front-end uses it).** A machine spec composes a host
+  from one record and cards from others, sized to the ones asked about; llama.cpp's own capacity
+  fitter places the real model, from a header-only shell of its file (`tools/planlab/gguf_shell.py`,
+  a few MB for a 125 GB model), on simulated ggml devices of those sizes, and the rules plan on the
+  result, which is a plan record like any other. A card can be given memory something else holds on
+  it (`in_use=`), to plan for a card that also drives a display. Rebuilt from their own records, the rented 24 GB
+  and 32 GB cards get the plan they recorded, within 130 MiB of the real placement; DeepSeek V4 is
+  placed with fewer layers than a real card takes, which the tool detects and says. `bmoe-planlab
+  speed` adds a decode estimate for plans the cost model does not price (a card holding the dense
+  part, a device cache): within 3-12% of the rented runs where the card holds the whole model, and,
+  crediting a device cache the planner's own hit prior, 0.79-2.32 of the runs with one (median
+  1.25; it was 0.54 with the share of the experts the cache holds).
+  Any machine is described by its parts (`ram=`, `cpu=`, `storage=`, `gpu=` lines, public figures
+  in `docs/bench-data/hardware-sim/parts.txt`): every rate comes from a model of parts fitted, each
+  time, on the measured machines, so every record added moves every simulation. Against a machine
+  left out of the fit, a card of an architecture class measured (`class=` in the catalog) lands
+  within 0.73-1.24, one of a class never measured is off by its class (a Pascal card: 0.32-0.61),
+  and a host on 4 bits a weight or more within 0.91-1.11 (one thread priced by its core class and
+  quantization, which bounds a host the engine gets few cores of); a host under 4 bits a weight is
+  still a wide range, said with the plan
+  (`bmoe-planlab parts` prints the fit and the check). The rented records join
+  `docs/bench-data/plan-records`; the two machines of the 0.43 validation that were not rented are
+  in `docs/bench-data/hardware-sim`, with blind predictions for the two rented boxes made before
+  their runs and the results beside them: on both the plans came out as predicted (same regime, the
+  same layer counts, the split within one layer), the speeds 1.3-1.9x lower than estimated, mostly
+  from the hit rate the device cache was credited. Their records moved the model (an upload from the
+  file's mapping was bounded by the host's copy, 7-9 GiB/s on those boxes, not by the link; a card
+  reports about 3% less memory than its published size; a box recorded on several models counts
+  once); a shell now carries the bytes the model fingerprint samples, so it finds the model's routing
+  records; and `routing=` takes a `.routing` trace as bmoe-cli keeps it. `docs/hardware-simulation.md`. The rented rounds that validated 0.44.0 and 0.44.1 and a laptop's
+  dense models join the corpus (51 records): with them a card of a measured class lands within
+  0.72-1.42 of a card left out of the fit, and a host of a core class never measured is still off by
+  its class (a Raptor Lake desktop 1.7-2.9x faster than priced).
+  The tool is built on the engine as it is now (a record carries a model's layers apart from its
+  blocks, the sliding window, a device's hop to the host and the placement's window cells). The
+  corpus holds 81 records on 78 rigs: the rented rounds through 0.50.0 on 8, 12, 16, 24 and 32 GB
+  cards and the laptop's runs through 0.50.0. Over the 32 records the cost model prices, the
+  predicted time per token is 35% off on average; a plan the capacity fitter places is not priced
+  there, and the decode estimate covers it. An upload from the file's mapping is priced as half the
+  link's pinned upload (every one of 22 hosts measured 0.36-0.67 of it); the cap in GiB/s the older
+  boxes had set held the newer ones to 6 GiB/s where they copied 8-13. A record made before 0.50 was
+  not asked at the wider graph the plan now asks for, and its replay says so.
+
 ## [0.50.1] - 2026-11-25
 
 ### Fixed

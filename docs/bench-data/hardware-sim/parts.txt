@@ -1,0 +1,139 @@
+# Parts for bmoe-planlab simulate (docs/hardware-simulation.md): published specifications, and which
+# parts each measured machine had. Data, not rules: the simulator fits its model of parts on the `rig`
+# lines every time it runs, so a record added there (with its rig line) moves every simulation.
+#
+# gpu ID desc="..." vram=GB bw=GB/s fp32=TFLOPS link=pcieGENxLANES class=ARCH (the card's own link;
+#                                                 class: the architecture its rates are keyed by)
+# cpu ID desc="..." cores=N ghz=all-core clock membw=GB/s core=CLASS simd=avx2|avx512|neon
+# rig RECORD gpu=ID cpu=ID link=pcieGENxLANES                          (the link the card had in that slot)
+# records DIR                                                          (where the rigs' records are)
+
+records ../plan-records
+
+# ── cards ──
+gpu rtx3050      desc="NVIDIA GeForce RTX 3050"        vram=8G  bw=224  fp32=9.1   link=pcie4x8 class=ampere
+gpu rtx3060      desc="NVIDIA GeForce RTX 3060"        vram=12G bw=360  fp32=12.7  link=pcie4x16 class=ampere
+gpu rtx3070      desc="NVIDIA GeForce RTX 3070"        vram=8G  bw=448  fp32=20.3  link=pcie4x16 class=ampere
+gpu rtx3090      desc="NVIDIA GeForce RTX 3090"        vram=24G bw=936  fp32=35.6  link=pcie4x16 class=ampere
+gpu rtx4060      desc="NVIDIA GeForce RTX 4060"        vram=8G  bw=272  fp32=15.1  link=pcie4x8 class=ada
+gpu rtx4060ti-16 desc="NVIDIA GeForce RTX 4060 Ti 16GB" vram=16G bw=288 fp32=22.1  link=pcie4x8 class=ada
+gpu rtx4070-laptop desc="NVIDIA GeForce RTX 4070 Laptop GPU" vram=8G bw=256 fp32=15.6 link=pcie4x8 class=ada
+gpu rtx4090      desc="NVIDIA GeForce RTX 4090"        vram=24G bw=1008 fp32=82.6  link=pcie4x16 class=ada
+gpu rtx5060ti-16 desc="NVIDIA GeForce RTX 5060 Ti 16GB" vram=16G bw=448 fp32=23.7  link=pcie5x8 class=blackwell
+gpu rtx5070      desc="NVIDIA GeForce RTX 5070"        vram=12G bw=672  fp32=30.9  link=pcie5x16 class=blackwell
+gpu rtx5080      desc="NVIDIA GeForce RTX 5080"        vram=16G bw=960  fp32=56.3  link=pcie5x16 class=blackwell
+gpu rtx5090      desc="NVIDIA GeForce RTX 5090"        vram=32G bw=1792 fp32=104.8 link=pcie5x16 class=blackwell
+gpu tesla-p100-sxm2 desc="Tesla P100-SXM2-16GB"         vram=16G bw=732  fp32=10.6  link=pcie3x16 class=pascal
+gpu rtx-a4000    desc="NVIDIA RTX A4000"               vram=16G bw=448  fp32=19.2  link=pcie4x16 class=ampere
+gpu rtx3060ti    desc="NVIDIA GeForce RTX 3060 Ti"     vram=8G  bw=448  fp32=16.2  link=pcie4x16 class=ampere
+
+# ── processors (cores: what the engine may use; a rented box's quota goes in the machine spec) ──
+cpu xeon-e5-2680v4 desc="Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz" cores=14 ghz=2.9 membw=76.8  core=broadwell simd=avx2
+cpu xeon-e5-2658v4 desc="Intel(R) Xeon(R) CPU E5-2658 v4 @ 2.30GHz" cores=28 ghz=2.5 membw=153.6 core=broadwell simd=avx2
+cpu i9-9900k       desc="Intel(R) Core(TM) i9-9900K CPU @ 3.60GHz"   cores=16 ghz=4.7 membw=42.7  core=coffeelake simd=avx2
+cpu epyc-7k62      desc="AMD EPYC 7K62 48-Core Processor"            cores=48 ghz=3.0 membw=204.8 core=zen2 simd=avx2
+cpu epyc-9655      desc="AMD EPYC 9655 96-Core Processor"            cores=96 ghz=3.3 membw=576   core=zen5 simd=avx512
+cpu apple-m5       desc="Apple M5"                                   cores=10 ghz=4.0 membw=153   core=apple-m5 simd=neon
+cpu ryzen7-7700    desc="AMD Ryzen 7 7700"                           cores=16 ghz=4.8 membw=83.2  core=zen4 simd=avx512
+cpu ryzen9-9950x3d desc="AMD Ryzen 9 9950X3D"                        cores=32 ghz=5.0 membw=96    core=zen5 simd=avx512
+# i5-12400f membw: DDR5-4800 dual channel; the rented box's 55 GiB/s plateau on Q4 is past DDR4-3200's 51.2 GB/s
+cpu i5-12400f      desc="12th Gen Intel(R) Core(TM) i5-12400F"       cores=12 ghz=4.0 membw=76.8  core=alderlake simd=avx2
+cpu ryzen7-9700x   desc="AMD Ryzen 7 9700X 8-Core Processor"         cores=16 ghz=5.0 membw=89.6  core=zen5 simd=avx512
+cpu xeon-e5-2660v3 desc="Intel(R) Xeon(R) CPU E5-2660 v3 @ 2.60GHz" cores=20 ghz=2.9 membw=68.3 core=haswell simd=avx2
+cpu xeon-gold-6134 desc="Intel(R) Xeon(R) Gold 6134 CPU @ 3.20GHz"  cores=16 ghz=3.7 membw=128  core=skylake-sp simd=avx512
+cpu tr-pro-3945wx  desc="AMD Ryzen Threadripper PRO 3945WX 12-Cores" cores=24 ghz=4.0 membw=204.8 core=zen2 simd=avx2
+cpu i7-12700       desc="12th Gen Intel(R) Core(TM) i7-12700"        cores=20 ghz=4.5 membw=76.8  core=alderlake simd=avx2
+cpu xeon-e5-2673v4 desc="Intel(R) Xeon(R) CPU E5-2673 v4 @ 2.30GHz" cores=40 ghz=3.5 membw=76.8 core=broadwell simd=avx2
+cpu tr-1920x       desc="AMD Ryzen Threadripper 1920X 12-Core Processor" cores=24 ghz=4.0 membw=85.3 core=zen1 simd=avx2
+cpu i7-13700       desc="13th Gen Intel(R) Core(TM) i7-13700"        cores=24 ghz=5.2 membw=76.8  core=raptorlake simd=avx2
+cpu xeon-w-2133    desc="Intel(R) Xeon(R) W-2133 CPU @ 3.60GHz"      cores=12 ghz=3.8 membw=85.3  core=skylake-sp simd=avx512
+cpu i5-11400f      desc="11th Gen Intel(R) Core(TM) i5-11400F @ 2.60GHz" cores=12 ghz=4.2 membw=51.2 core=rocketlake simd=avx512
+cpu ryzen9-5900x   desc="AMD Ryzen 9 5900X 12-Core Processor"        cores=24 ghz=4.4 membw=51.2  core=zen3 simd=avx2
+cpu xeon-gold-6138 desc="Intel(R) Xeon(R) Gold 6138 CPU @ 2.00GHz"  cores=40 ghz=2.7 membw=256   core=skylake-sp simd=avx512
+
+cpu tr-pro-3955wx  desc="AMD Ryzen Threadripper PRO 3955WX 16-Cores" cores=32 ghz=4.0 membw=204.8 core=zen2 simd=avx2
+cpu epyc-7452      desc="AMD EPYC 7452 32-Core Processor"            cores=64 ghz=3.0 membw=204.8 core=zen2 simd=avx2
+cpu epyc-7502      desc="AMD EPYC 7502 32-Core Processor"            cores=64 ghz=3.0 membw=204.8 core=zen2 simd=avx2
+cpu epyc-7453      desc="AMD EPYC 7453 28-Core Processor"            cores=56 ghz=3.2 membw=204.8 core=zen3 simd=avx2
+cpu i9-11900k      desc="11th Gen Intel(R) Core(TM) i9-11900K @ 3.50GHz" cores=16 ghz=4.8 membw=51.2 core=rocketlake simd=avx512
+
+# ── the measured machines ──
+rig rtx-8gb-flashnext-125b-q2_0          gpu=rtx4060 cpu=xeon-e5-2680v4 link=pcie3x8
+rig rtx-24gb-qwen3.6-35b-ud-q4km         gpu=rtx3090 cpu=i9-9900k       link=pcie3x16
+rig rtx-12gb-deepseek-v4.1-ud-iq2xxs     gpu=rtx5070 cpu=xeon-e5-2658v4 link=pcie3x16
+rig rtx-32gb-flashnext-125b-q2_0         gpu=rtx5090 cpu=epyc-7k62      link=pcie4x16
+rig rtx-32gb-pcie4-flashnext-125b-q2_0   gpu=rtx5090 cpu=epyc-9655      link=pcie4x16
+rig apple-silicon-16gb-gemma-4-26b-a4b-q4_0          cpu=apple-m5
+rig apple-silicon-16gb-gemma-4-26b-a4b-q4_0-learned  cpu=apple-m5
+rig apple-silicon-16gb-olmoe-1b-7b-q8_0              cpu=apple-m5
+rig apple-silicon-16gb-olmoe-1b-7b-q8_0-learned      cpu=apple-m5
+rig apple-silicon-16gb-qwen3.6-35b-a3b-q2_k          cpu=apple-m5
+rig apple-silicon-16gb-qwen3.6-35b-a3b-q2_k-learned  cpu=apple-m5
+rig apple-silicon-16gb-qwen3.6-35b-a3b-q4_k_m        cpu=apple-m5
+rig apple-silicon-16gb-qwen3.6-35b-a3b-q4_k_m-learned cpu=apple-m5
+rig rtx-2x16gb-5060ti-deepseek-v4-ud-iq2m          gpu=rtx5060ti-16 cpu=ryzen7-9700x link=pcie5x8
+rig rtx-2x16gb-5060ti-deepseek-v4-ud-iq2m-ctx16k   gpu=rtx5060ti-16 cpu=ryzen7-9700x link=pcie5x8
+rig rtx-2x16gb-5060ti-deepseek-v4-ud-iq2m-learned  gpu=rtx5060ti-16 cpu=ryzen7-9700x link=pcie5x8
+rig rtx-2x16gb-5060ti-flashnext-125b-q2_0          gpu=rtx5060ti-16 cpu=ryzen7-9700x link=pcie5x8
+rig rtx-2x16gb-5060ti-flashnext-125b-q2_0-ctx16k   gpu=rtx5060ti-16 cpu=ryzen7-9700x link=pcie5x8
+rig rtx-2x16gb-5060ti-flashnext-125b-q2_0-learned  gpu=rtx5060ti-16 cpu=ryzen7-9700x link=pcie5x8
+rig rtx-8gb-3070-flashnext-125b-q2_0 gpu=rtx3070 cpu=i5-12400f link=pcie4x16
+rig rtx-8gb-3070-flashnext-125b-q2_0-ctx16k gpu=rtx3070 cpu=i5-12400f link=pcie4x16
+rig rtx-8gb-3070-flashnext-125b-q2_0-learned gpu=rtx3070 cpu=i5-12400f link=pcie4x16
+rig rtx-8gb-3070-qwen3.6-35b-ud-q4km gpu=rtx3070 cpu=i5-12400f link=pcie4x16
+rig rtx-8gb-3070-qwen3.6-35b-ud-q4km-ctx16k gpu=rtx3070 cpu=i5-12400f link=pcie4x16
+rig rtx-8gb-3070-qwen3.6-35b-ud-q4km-learned gpu=rtx3070 cpu=i5-12400f link=pcie4x16
+rig rtx-8gb-3050-flashnext-125b-q2_0     gpu=rtx3050 cpu=xeon-e5-2660v3 link=pcie3x8
+rig rtx-8gb-3050-qwen3.6-35b-ud-q4km     gpu=rtx3050 cpu=xeon-e5-2660v3 link=pcie3x8
+rig rtx-12gb-3060-flashnext-125b-q2_0    gpu=rtx3060 cpu=tr-pro-3945wx  link=pcie4x16
+rig rtx-12gb-3060-qwen3.6-35b-ud-q4km    gpu=rtx3060 cpu=tr-pro-3945wx  link=pcie4x16
+rig gpu-16gb-p100-flashnext-125b-q2_0    gpu=tesla-p100-sxm2 cpu=xeon-gold-6134 link=pcie3x16
+rig gpu-16gb-p100-qwen3.6-35b-ud-q4km    gpu=tesla-p100-sxm2 cpu=xeon-gold-6134 link=pcie3x16
+rig apple-silicon-16gb-qwen3.6-35b-a3b-q4_k_m-0.43.1             cpu=apple-m5
+rig apple-silicon-16gb-qwen3.6-35b-a3b-q4_k_m-drafter-baseline   cpu=apple-m5
+rig apple-silicon-16gb-smolvlm-256m-q8_0                         cpu=apple-m5
+rig apple-silicon-16gb-ornith-1.0-35b-q4_k_m                     cpu=apple-m5
+rig apple-silicon-16gb-swift-qwen3.8-flash-next-gsq-rco-q2_0     cpu=apple-m5
+rig rtx-12gb-3060-qwen3.6-35b-ud-q4km-0.44.0       gpu=rtx3060  cpu=tr-pro-3945wx  link=pcie4x16
+rig rtx-8gb-3070-qwen3.6-35b-ud-q4km-0.44.0        gpu=rtx3070  cpu=xeon-e5-2673v4 link=pcie3x16
+rig rtx-8gb-3070-flashnext-125b-q2_0-0.44.0        gpu=rtx3070  cpu=xeon-e5-2673v4 link=pcie3x16
+rig rtx-2x16gb-a4000-flashnext-125b-q2_0-0.44.0    gpu=rtx-a4000 cpu=i7-13700      link=pcie3x4
+rig rtx-2x16gb-a4000-deepseek-v4-ud-iq2m-0.44.0    gpu=rtx-a4000 cpu=i7-13700      link=pcie3x4
+rig rtx-12gb-3060-qwen3.6-35b-ud-q4km-0.44.1       gpu=rtx3060  cpu=tr-1920x       link=pcie3x16
+rig rtx-12gb-3060-flashnext-125b-q2_0-0.44.1       gpu=rtx3060  cpu=tr-1920x       link=pcie3x16
+rig rtx-8gb-3070-qwen3.6-35b-ud-q4km-0.44.1        gpu=rtx3070  cpu=xeon-e5-2680v4 link=pcie3x16
+rig rtx-8gb-3070-flashnext-125b-q2_0-0.44.1        gpu=rtx3070  cpu=xeon-e5-2680v4 link=pcie3x16
+rig rtx-2x16gb-a4000-flashnext-125b-q2_0-0.44.1    gpu=rtx-a4000 cpu=i7-13700      link=pcie3x4
+rig rtx-2x16gb-a4000-deepseek-v4-ud-iq2m-0.44.1    gpu=rtx-a4000 cpu=i7-13700      link=pcie3x4
+rig apple-silicon-16gb-olmoe-1b-7b-q8_0-battery     cpu=apple-m5
+rig rtx-12gb-3060-flashnext-125b-q2_0-2026-11-18     gpu=rtx3060   cpu=xeon-w-2133    link=pcie3x16
+rig rtx-12gb-3060-qwen3.6-35b-ud-q4km-2026-11-18     gpu=rtx3060   cpu=xeon-w-2133    link=pcie3x16
+rig rtx-24gb-3090-flashnext-125b-q2_0-2026-11-18     gpu=rtx3090   cpu=i5-11400f      link=pcie4x16
+rig rtx-24gb-3090-qwen3.6-35b-ud-q4km-2026-11-18     gpu=rtx3090   cpu=i5-11400f      link=pcie4x16
+rig rtx-8gb-3060ti-flashnext-125b-q2_0-2026-11-18    gpu=rtx3060ti cpu=xeon-e5-2680v4 link=pcie3x16
+rig rtx-8gb-3060ti-qwen3.6-35b-ud-q4km-2026-11-18    gpu=rtx3060ti cpu=xeon-e5-2680v4 link=pcie3x16
+rig rtx-12gb-5070-flashnext-125b-q2_0-2026-11-18     gpu=rtx5070   cpu=ryzen9-5900x   link=pcie4x16
+rig rtx-16gb-5060ti-flashnext-125b-q2_0-2026-11-18   gpu=rtx5060ti-16 cpu=xeon-w-2133 link=pcie3x8
+rig rtx-12gb-3060-qwen3.6-35b-ud-q4km-2026-11-20     gpu=rtx3060   cpu=xeon-e5-2680v4 link=pcie3x16
+rig rtx-12gb-5070-flashnext-125b-q2_0-2026-11-20     gpu=rtx5070   cpu=xeon-e5-2673v4 link=pcie3x16
+rig rtx-24gb-3090-flashnext-125b-q2_0-2026-11-20     gpu=rtx3090   cpu=xeon-gold-6138 link=pcie3x16
+rig rtx-8gb-3070-flashnext-125b-q2_0-2026-11-20      gpu=rtx3070   cpu=xeon-e5-2680v4 link=pcie3x16
+rig rtx-8gb-3070-qwen3.6-35b-ud-q4km-2026-11-20      gpu=rtx3070   cpu=xeon-e5-2680v4 link=pcie3x16
+rig apple-silicon-16gb-swift-qwen3.8-flash-next-gsq-rco-q2_0-2026-11-19 cpu=apple-m5
+rig apple-silicon-16gb-inkling-2-mini-26b-iq4_nl                  cpu=apple-m5
+# 0.47.1 to 0.50.0 rounds; links read from each card's measured pinned upload (21-24 GiB/s: PCIe 4 x16; 12.6: x8)
+rig rtx-8gb-3070-qwen3.6-35b-ud-q4km-0.47.1        gpu=rtx3070   cpu=epyc-7453      link=pcie4x16
+rig rtx-12gb-5070-qwen3.6-35b-ud-q4km-0.49.0       gpu=rtx5070   cpu=tr-pro-3955wx  link=pcie4x16
+rig rtx-24gb-3090-qwen3.6-35b-ud-q4km-0.49.0       gpu=rtx3090   cpu=epyc-7452      link=pcie4x16
+rig rtx-2x16gb-5060ti-qwen3.6-35b-ud-q4km-0.49.0   gpu=rtx5060ti-16 cpu=epyc-7502   link=pcie4x8
+rig rtx-12gb-5070-qwen3.6-35b-ud-q4km-0.50.0       gpu=rtx5070   cpu=tr-pro-3955wx  link=pcie4x16
+rig rtx-24gb-3090-qwen3.6-35b-ud-q4km-0.50.0       gpu=rtx3090   cpu=i9-11900k      link=pcie4x16
+rig apple-silicon-16gb-gemma-4-e4b-q4_0-0.44.1                    cpu=apple-m5
+rig apple-silicon-16gb-inkling-2-mini-26b-iq4_nl-0.47.1           cpu=apple-m5
+rig apple-silicon-16gb-inkling-2-mini-26b-iq4_nl-0.49.0           cpu=apple-m5
+rig apple-silicon-16gb-lfm2.5-8b-a1b-q4_k_m                       cpu=apple-m5
+rig apple-silicon-16gb-olmoe-1b-7b-q4_k_m                         cpu=apple-m5
+rig apple-silicon-16gb-qwen3-30b-a3b-q4_k_m                       cpu=apple-m5
+rig apple-silicon-16gb-qwen3.6-35b-a3b-q4_k_m-2026-11-22          cpu=apple-m5
+rig apple-silicon-16gb-qwen3.6-35b-a3b-q4_k_m-0.48.0              cpu=apple-m5
+rig apple-silicon-16gb-qwen3.6-35b-a3b-q4_k_m-0.50.0              cpu=apple-m5

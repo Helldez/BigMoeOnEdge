@@ -1,0 +1,5 @@
+# The recorded machine rebuilt from its own record: the simulator's check against a real fit.
+note=rtx-12gb-deepseek-v4.1-ud-iq2xxs, rebuilt from its record
+host=../plan-records/rtx-12gb-deepseek-v4.1-ud-iq2xxs.planrec
+device=../plan-records/rtx-12gb-deepseek-v4.1-ud-iq2xxs.planrec
+routing=../plan-records/rtx-12gb-deepseek-v4.1-ud-iq2xxs.planrec

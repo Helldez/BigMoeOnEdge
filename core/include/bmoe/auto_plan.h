@@ -113,6 +113,10 @@ struct AutoPlan {
     // of them (a server's plan basis) carries what was fitted; keyed by everything else a fit depends on, so a plan for
     // another context or cache type asks the fitter again.
     mutable std::map<FitKey, Placement> placement_at_width;
+    // Where a re-fit the table above lacks is answered from, when set: by a caller planning on facts it
+    // did not probe here (a plan record, tools/planlab), which has no model file or device to ask.
+    // Unset, the capacity fitter is asked.
+    std::function<Placement(const FitKey &)> refit;
 };
 
 // Probe this machine and `cfg.model_path`, then plan `cfg` on them. `req` carries what the caller
