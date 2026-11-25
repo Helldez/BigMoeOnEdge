@@ -79,11 +79,19 @@ therefore has to reproduce the selection llama.cpp is about to compute from thos
 
 - a GEMV that disagrees with ggml's (a transposed matrix, a mis-strided row, the wrong token of the
   batch) collapses it toward chance;
-- an architecture that does not select by raw-logit ranking — one that adds a per-expert selection
-  bias, or masks whole expert groups before the argsort — puts it somewhere below 100%, and by
-  roughly that much the stale-gate number understates the method.
+- an architecture that masks whole expert groups before the argsort puts it somewhere below 100%,
+  and by roughly that much the stale-gate number understates the method. A per-expert selection
+  bias added after the gating function (DeepSeek V3's `exp_probs_b` and its kin) does not, nor
+  does one added to the logits before it (a router's own bias, as gpt-oss has, or a model's
+  selection bias where it routes by itself, as Kolibri-1 does): the probe reads each bias and the
+  gating function off the graph's own nodes that add them (`ffn_moe_logits_biased-<il>`,
+  `ffn_moe_probs_biased-<il>`) and ranks every prediction, the control included, as the router
+  does.
 
-Read the other two against `ctrl`, never against 100%. The CLI says so out loud when it drops.
+Read the other two against `ctrl`, never against 100%. The CLI says so out loud when it drops
+below 99%, the byte-identity gate's bound (a near-tie may order two experts differently in the
+probe's scalar float). On Inkling 2 Mini, whose router adds a selection bias, it read 84.4% before
+the probe learned the bias and 99.8% after.
 
 ## Reading the report
 

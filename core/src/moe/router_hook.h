@@ -378,7 +378,11 @@ private:
     // Graph layer -> the block whose weights it computes from, learnt at capture (-1: not seen, the
     // layer is its own block). They differ where a model runs a block at several depths.
     std::vector<int> block_of_;
-    std::vector<int> layer_order_; // graph layers in the order the capture graph first reached them
+    // Graph layers in the order the capture graph FINISHED them: by each layer's last node, the one a
+    // dense arena paces the next layer at. Not by the first node carrying the layer's index: a graph
+    // may compute a few of a later layer's nodes ahead of everything (a lookup hoisted before the
+    // token embeddings so it can run on a device), and that layer would then come first.
+    std::vector<int> layer_order_;
     int block_of(int layer) const {
         if (layer < 0 || layer >= (int) block_of_.size()) return layer;
         return block_of_[(size_t) layer] >= 0 ? block_of_[(size_t) layer] : layer;
@@ -416,6 +420,29 @@ private:
     bool predict_log_ = false;
     bool predict_prefetch_ = false;
     std::vector<ggml_tensor *> gate_w_;
+    // What the router does to a layer's logits before its argsort, where that changes their order:
+    // a per-expert bias added to the logits before the gating function (a router's own bias, the
+    // "ffn_moe_logits_biased-<il>" node), and one added after it (DeepSeek V3's exp_probs_b and its
+    // kin, the "ffn_moe_probs_biased-<il>" node, or the same name's add to the logits where a model
+    // routes on its own). Learned from those nodes of the graph - their bias leaves and the op that
+    // made what the bias is added to - so no architecture is named. A layer with neither keeps both
+    // null and is ranked on the raw scores, which is exact for a monotonic gating function.
+    // Expert-group masks are not modelled: there the ranking stays approximate, and the fresh-gate
+    // control says so.
+    struct RouterSelection {
+        enum class Gate : uint8_t { Identity, Softmax, Sigmoid, SqrtSoftplus };
+        const ggml_tensor * pre = nullptr; // host F32 leaf added to the logits, one value per expert
+        Gate gate = Gate::Identity;
+        const ggml_tensor * bias = nullptr; // host F32 leaf added after the gating function
+        // The router's selection scores from raw gate scores, in place. A no-op without a bias.
+        void apply(std::vector<float> & scores) const;
+    };
+    std::vector<RouterSelection> sel_;
+    // Learn layer il's selection from a node that adds one of its biases (ask pass, any phase).
+    void learn_selection(const ggml_tensor * t, int il, bool before_gate);
+    void select_scores(int il, std::vector<float> & scores) const {
+        if (il >= 0 && il < (int) sel_.size()) sel_[(size_t) il].apply(scores);
+    }
     std::vector<std::vector<int32_t>> pred_stale_;  // per layer, ranked one layer early
     std::vector<std::vector<int32_t>> pred_stale2_; // per layer, ranked TWO layers early (probe only)
     std::vector<std::vector<int32_t>> pred_self_;   // per layer, ranked from its own logits
@@ -455,6 +482,7 @@ private:
         float drop_frac = 0.0f;
         int spec_max = 2;
         const ggml_tensor * gate = nullptr; // layer nl's gate matrix, snapshotted with the job
+        RouterSelection sel;                // layer nl's selection, snapshotted with the job
         std::vector<float> row;             // the gate-input row, copied on the eval thread
         std::vector<uint8_t> resident;      // residency bitmap of layer nl, snapshotted on the eval thread
     };

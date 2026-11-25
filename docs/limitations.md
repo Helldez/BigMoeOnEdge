@@ -53,9 +53,13 @@ serial path, and only a single ~25-line hook (with an explicit sunset) for the o
   measured there. `nemotron_h_moe`
   never puts two MoE blocks next to each other (every one sits between Mamba2 or attention
   blocks), so on it they have nothing to target: they stay byte-identical and harmless, and do
-  nothing. The probe also ranks the router's raw logits, so on architectures that add a
-  per-expert selection bias before the top-k (`lfm2moe`, `deepseek4`, `bailingmoe3`,
-  `nemotron_h_moe`) its numbers approximate the routing rather than reproduce it.
+  nothing. Where the router adds a per-expert selection bias after its gating function (the
+  `exp_probs_b` of DeepSeek V3 and its kin: `lfm2moe`, `deepseek4`, `bailingmoe3`, `nemotron_h_moe`,
+  `hy_v4_flash`), or one on the logits before it (`gpt-oss`'s router bias, `kolibri1`'s selection
+  bias), the predictors rank as the router does: they read each bias and the gating function off the
+  graph's own nodes that add them. An architecture that masks whole groups of experts before
+  the top-k is still ranked without the mask, so there the numbers approximate the routing rather
+  than reproduce it, and the probe's fresh-gate control shows by how much.
 - **A resident tensor can be larger than RAM, and then it is only ever mmap'd.** `qwen4exp`
   (Qwen3.8-Flash-Next) carries a 51B n-gram embedding table (`per_layer_token_embd`, ~28.8 GB at
   IQ4_NL) that the graph reads sixteen rows at a time through `get_rows`. It is not indexed by

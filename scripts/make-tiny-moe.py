@@ -7,7 +7,7 @@ top-k distribution (argsort of random logits) and that llama.cpp loads the model
 MoE. The model is deliberately multi-layer with a few experts so the LRU cache path
 sees real evictions on a small budget.
 
-Four architectures are emitted, selected with --arch:
+Five architectures are emitted, selected with --arch:
 
   qwen3moe  split expert layout — three tensors per layer
             (ffn_gate_exps / ffn_up_exps / ffn_down_exps).
@@ -22,6 +22,10 @@ Four architectures are emitted, selected with --arch:
             the graph of its own over the first pass's tensors (fused layout, a recurrent
             convolution state beside a sliding-window attention), so the gates cover a graph
             whose layers and blocks are two counts.
+  hy_v4_flash  split layout at a latent width: the experts run between a down and an up
+            projection of their own, beside hyper-connection streams, MLA with a pooled
+            sparse-attention indexer, sliding-window layers, a leading dense layer and an
+            n-gram (Engram) table, so the gates cover experts narrower than the model.
 
 Requires: pip install gguf numpy
 
@@ -29,6 +33,7 @@ Requires: pip install gguf numpy
     python scripts/make-tiny-moe.py --arch gemma4   --out tiny-moe-gemma4.gguf
     python scripts/make-tiny-moe.py --arch nemotron_h_moe --out tiny-moe-nemotron_h_moe.gguf
     python scripts/make-tiny-moe.py --arch inkling2_loop --out tiny-moe-inkling2_loop.gguf
+    python scripts/make-tiny-moe.py --arch hy_v4_flash --out tiny-moe-hy_v4_flash.gguf
 """
 import argparse
 import numpy as np
@@ -508,9 +513,182 @@ def build_inkling2_loop(out):
           f"(core [{LOOP_START}, {LOOP_END}) x{LOOP_COUNT}), {N_EXPERT} experts (top-{N_EXPERT_USED})")
 
 
+# --- hy_v4_flash: latent experts beside hyper-connections and an n-gram table ----------
+HY_LAYERS      = 4             # layer 0 dense, then sparse / sliding-window MoE layers
+HY_DENSE_LEAD  = 1
+HY_HC          = 4             # hyper-connection streams
+HY_N_HEAD      = 2             # sparse layers; the sliding-window ones carry twice as many
+HY_Q_LORA      = 64
+HY_KV_LORA     = 64
+HY_ROPE        = 32
+HY_K_MLA       = 48            # nope 16 + rope 32
+HY_V_MLA       = 32
+HY_LATENT      = 64            # the experts' width, distinct from n_embd and from n_ff_exp
+HY_FF_EXP      = 256           # wider than N_FF_EXP: at the latent width the experts must still
+                               # outgrow the gates' 2 MiB cache, or nothing is ever evicted or prefetched
+HY_N_SHARED    = 1
+HY_SWA         = 16
+HY_IDX_HEADS   = 2
+HY_IDX_DIM     = 64            # must exceed the rope width
+HY_KPOOL       = 4
+HY_IDX_TOP_K   = 16            # four pools: shorter than the gates' prompts, so the selection is live
+HY_PLE_DIM     = 32
+HY_PLE_PRIMES  = [7, 11, 13, 17]
+
+
+def u32_array(w, key, values):
+    w.add_key_value(key, list(values), gguf.GGUFValueType.ARRAY, sub_type=gguf.GGUFValueType.UINT32)
+
+
+def build_hy_v4_flash(out):
+    tokens, scores, toktypes = build_vocab()
+    n_vocab = len(tokens)
+    arch = "hy_v4_flash"
+    swa = [i % 2 == 1 for i in range(HY_LAYERS)]
+    heads = [2 * HY_N_HEAD if s else HY_N_HEAD for s in swa]
+    nope = HY_K_MLA - HY_ROPE
+    offsets = [sum(HY_PLE_PRIMES[:c]) for c in range(len(HY_PLE_PRIMES))]
+    ple_heads = len(HY_PLE_PRIMES)
+    ple_rows = sum(HY_PLE_PRIMES)
+    engram_layer = 1
+
+    w = gguf.GGUFWriter(out, arch)
+    w.add_name("tiny-moe-hy-v4-flash")
+    w.add_context_length(N_CTX)
+    w.add_embedding_length(N_EMBD)
+    w.add_block_count(HY_LAYERS)
+    w.add_feed_forward_length(N_FF)
+    u32_array(w, f"{arch}.attention.head_count", heads)
+    w.add_head_count_kv(1)
+    w.add_key_length(HY_KV_LORA + HY_ROPE)
+    w.add_value_length(HY_KV_LORA)
+    w.add_uint32(f"{arch}.attention.key_length_mla", HY_K_MLA)
+    w.add_uint32(f"{arch}.attention.value_length_mla", HY_V_MLA)
+    w.add_uint32(f"{arch}.attention.q_lora_rank", HY_Q_LORA)
+    w.add_uint32(f"{arch}.attention.kv_lora_rank", HY_KV_LORA)
+    w.add_uint32(f"{arch}.rope.dimension_count", HY_ROPE)
+    # the published files carry M-RoPE sections (summing to n_rot / 2), so the text path runs them
+    w.add_key_value(f"{arch}.rope.dimension_sections", [6, 5, 5, 0], gguf.GGUFValueType.ARRAY,
+                    sub_type=gguf.GGUFValueType.INT32)
+    w.add_rope_freq_base(ROPE_BASE)
+    w.add_float32(f"{arch}.rope.freq_base_swa", 10000.0)
+    w.add_layer_norm_rms_eps(RMS_EPS)
+    w.add_sliding_window(HY_SWA)
+    w.add_array(f"{arch}.attention.sliding_window_pattern", swa)
+    w.add_uint32(f"{arch}.leading_dense_block_count", HY_DENSE_LEAD)
+    w.add_expert_count(N_EXPERT)
+    w.add_expert_used_count(N_EXPERT_USED)
+    w.add_expert_feed_forward_length(HY_FF_EXP)
+    w.add_uint32(f"{arch}.expert_shared_count", HY_N_SHARED)
+    w.add_uint32(f"{arch}.expert_latent_length", HY_LATENT)
+    w.add_float32(f"{arch}.expert_weights_scale", 1.0)
+    w.add_bool(f"{arch}.expert_weights_norm", True)
+    # sigmoid scores with a selection bias (exp_probs_b): the file must name one, there is no default
+    w.add_uint32(f"{arch}.expert_gating_func", int(gguf.ExpertGatingFuncType.SIGMOID))
+    w.add_float32(f"{arch}.swiglu_clamp_exp", 10.0)
+    w.add_uint32(f"{arch}.hyper_connection.count", HY_HC)
+    w.add_float32(f"{arch}.hyper_connection.epsilon", 1e-6)
+    w.add_float32(f"{arch}.hyper_connection.magnitude", 2.0)
+    w.add_uint32(f"{arch}.attention.indexer.top_k", HY_IDX_TOP_K)
+    w.add_uint32(f"{arch}.attention.indexer.head_count", HY_IDX_HEADS)
+    w.add_uint32(f"{arch}.attention.indexer.key_length", HY_IDX_DIM)
+    w.add_uint32(f"{arch}.attention.indexer.kpool", HY_KPOOL)
+    w.add_bool(f"{arch}.attention.indexer.kpool_select_tail", True)
+    u32_array(w, f"{arch}.attention.indexer.types", [0 if s else 1 for s in swa])
+    # one Engram module: the n-gram hash table every module shares, its buckets back to back
+    u32_array(w, f"{arch}.ple.layers", [engram_layer])
+    w.add_uint32(f"{arch}.ple.ngram_size", 3)
+    w.add_uint32(f"{arch}.ple.heads_per_ngram", 2)
+    w.add_uint32(f"{arch}.embedding_length_per_layer_input", HY_PLE_DIM)
+    for key, vals in (("layer_multipliers", [3, 5, 7]), ("head_offsets", offsets),
+                      ("head_vocab_sizes", HY_PLE_PRIMES)):
+        w.add_key_value(f"{arch}.ple.{key}", vals, gguf.GGUFValueType.ARRAY, sub_type=gguf.GGUFValueType.UINT64)
+    w.add_uint32(f"{arch}.engram.pad_token_id", 1)
+    w.add_key_value(f"{arch}.engram.token_map", list(range(n_vocab)), gguf.GGUFValueType.ARRAY,
+                    sub_type=gguf.GGUFValueType.INT32)
+    w.add_file_type(gguf.LlamaFileType.ALL_F32)
+    add_tokenizer(w, tokens, scores, toktypes)
+
+    w.add_tensor("token_embd.weight",           rnd(n_vocab, N_EMBD, seed=1))
+    w.add_tensor("output_norm.weight",          1.0 + rnd(N_EMBD, seed=2))
+    w.add_tensor("output.weight",               rnd(n_vocab, N_EMBD, seed=3))
+    w.add_tensor("output_hc_fn.weight",         rnd(HY_HC, HY_HC * N_EMBD, seed=4))
+    w.add_tensor("output_hc_base.weight",       rnd(HY_HC, seed=5))
+    w.add_tensor("output_hc_scale.weight",      1.0 + rnd(1, seed=6))
+    w.add_tensor("per_layer_token_embd.weight", rnd(ple_rows, HY_PLE_DIM, seed=7))
+
+    s = 100
+    for i in range(HY_LAYERS):
+        p = f"blk.{i}."
+        h = heads[i]
+        w.add_tensor(p + "attn_norm.weight",           1.0 + rnd(N_EMBD, seed=s + 1))
+        w.add_tensor(p + "attn_sinks.weight",          rnd(h, seed=s + 2))
+        w.add_tensor(p + "attn_q_a.weight",            rnd(HY_Q_LORA, N_EMBD, seed=s + 3))
+        w.add_tensor(p + "attn_q_a_norm.weight",       1.0 + rnd(HY_Q_LORA, seed=s + 4))
+        w.add_tensor(p + "attn_q_b.weight",            rnd(h * HY_K_MLA, HY_Q_LORA, seed=s + 5))
+        w.add_tensor(p + "attn_kv_a_mqa.weight",       rnd(HY_KV_LORA + HY_ROPE, N_EMBD, seed=s + 6))
+        w.add_tensor(p + "attn_kv_a_norm.weight",      1.0 + rnd(HY_KV_LORA, seed=s + 7))
+        w.add_tensor(p + "attn_k_b.weight",            rnd(h, HY_KV_LORA, nope, seed=s + 8))
+        w.add_tensor(p + "attn_v_b.weight",            rnd(h, HY_V_MLA, HY_KV_LORA, seed=s + 9))
+        w.add_tensor(p + "attn_output.weight",         rnd(N_EMBD, h * HY_V_MLA, seed=s + 10))
+        w.add_tensor(p + "attn_gate.weight",           rnd(h * HY_V_MLA, N_EMBD, seed=s + 11))
+        w.add_tensor(p + "post_attention_norm.weight", 1.0 + rnd(N_EMBD, seed=s + 12))
+        w.add_tensor(p + "hc_attn_fn.weight",          rnd(2 * HY_HC, HY_HC * N_EMBD, seed=s + 13))
+        w.add_tensor(p + "hc_attn_base.weight",        rnd(2 * HY_HC, seed=s + 14))
+        w.add_tensor(p + "hc_attn_scale.weight",       1.0 + rnd(2, seed=s + 15))
+        w.add_tensor(p + "hc_ffn_fn.weight",           rnd(2 * HY_HC, HY_HC * N_EMBD, seed=s + 16))
+        w.add_tensor(p + "hc_ffn_base.weight",         rnd(2 * HY_HC, seed=s + 17))
+        w.add_tensor(p + "hc_ffn_scale.weight",        1.0 + rnd(2, seed=s + 18))
+        w.add_tensor(p + "ffn_norm.weight",            1.0 + rnd(N_EMBD, seed=s + 19))
+        w.add_tensor(p + "post_ffw_norm.weight",       1.0 + rnd(N_EMBD, seed=s + 20))
+        if not swa[i]:
+            w.add_tensor(p + "indexer.attn_k.weight",              rnd(HY_IDX_DIM, N_EMBD, seed=s + 21))
+            w.add_tensor(p + "indexer.k_norm.weight",              1.0 + rnd(HY_IDX_DIM, seed=s + 22))
+            w.add_tensor(p + "indexer_compressor_value.weight",    rnd(HY_IDX_DIM, HY_IDX_DIM, seed=s + 23))
+            w.add_tensor(p + "indexer_compressor_gate.weight",     rnd(HY_IDX_DIM, HY_IDX_DIM, seed=s + 24))
+            w.add_tensor(p + "indexer_compressor_ape.weight",      rnd(HY_KPOOL, HY_IDX_DIM, seed=s + 25))
+            w.add_tensor(p + "indexer_compressor_norm.weight",     1.0 + rnd(HY_IDX_DIM, seed=s + 26))
+            w.add_tensor(p + "indexer.attn_q_b.weight",            rnd(HY_IDX_DIM * HY_IDX_HEADS, HY_Q_LORA, seed=s + 27))
+            w.add_tensor(p + "indexer.proj.weight",                rnd(HY_IDX_HEADS, N_EMBD, seed=s + 28))
+        if i == engram_layer:
+            w.add_tensor(p + "engram_kv.weight",          rnd(N_EMBD * (HY_HC + 1), ple_heads * HY_PLE_DIM, seed=s + 29))
+            w.add_tensor(p + "engram_kv_b.weight",        rnd(HY_HC + 1, N_EMBD, seed=s + 30))
+            w.add_tensor(p + "engram_gate.weight",        rnd(HY_HC, N_EMBD, seed=s + 31))
+            w.add_tensor(p + "engram_lookup_norm.weight", 1.0 + rnd(ple_heads, HY_PLE_DIM, seed=s + 32))
+            w.add_tensor(p + "engram_pre_gamma.weight",   1.0 + rnd(N_EMBD, seed=s + 33))
+            w.add_tensor(p + "engram_hc_scale.weight",    rnd(HY_HC, N_EMBD, seed=s + 34))
+        if i < HY_DENSE_LEAD:
+            w.add_tensor(p + "ffn_gate.weight", rnd(N_FF, N_EMBD, seed=s + 40))
+            w.add_tensor(p + "ffn_up.weight",   rnd(N_FF, N_EMBD, seed=s + 41))
+            w.add_tensor(p + "ffn_down.weight", rnd(N_EMBD, N_FF, seed=s + 42))
+        else:
+            w.add_tensor(p + "ffn_gate_inp.weight",    rnd(N_EXPERT, N_EMBD, seed=s + 43))
+            w.add_tensor(p + "exp_probs_b.bias",       rnd(N_EXPERT, seed=s + 44))
+            # the experts run at the latent width, between a down and an up projection of their own
+            w.add_tensor(p + "ffn_routed_down.weight", rnd(HY_LATENT, N_EMBD, seed=s + 45))
+            w.add_tensor(p + "ffn_routed_up.weight",   rnd(N_EMBD, HY_LATENT, seed=s + 46))
+            # experts: dim-2 (numpy axis 0) indexes the expert
+            w.add_tensor(p + "ffn_gate_exps.weight",   rnd(N_EXPERT, HY_FF_EXP, HY_LATENT, seed=s + 47))
+            w.add_tensor(p + "ffn_up_exps.weight",     rnd(N_EXPERT, HY_FF_EXP, HY_LATENT, seed=s + 48))
+            w.add_tensor(p + "ffn_down_exps.weight",   rnd(N_EXPERT, HY_LATENT, HY_FF_EXP, seed=s + 49))
+            w.add_tensor(p + "ffn_gate_shexp.weight",  rnd(HY_FF_EXP * HY_N_SHARED, N_EMBD, seed=s + 50))
+            w.add_tensor(p + "ffn_up_shexp.weight",    rnd(HY_FF_EXP * HY_N_SHARED, N_EMBD, seed=s + 51))
+            w.add_tensor(p + "ffn_down_shexp.weight",  rnd(N_EMBD, HY_FF_EXP * HY_N_SHARED, seed=s + 52))
+        s += 100
+
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file()
+    w.close()
+    print(f"wrote {out}: hy_v4_flash, {HY_LAYERS} layers ({HY_DENSE_LEAD} dense), {N_EXPERT} experts "
+          f"(top-{N_EXPERT_USED}) at latent width {HY_LATENT}, {HY_HC} hyper-connection streams, "
+          f"one n-gram module of {ple_rows} rows")
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--arch", choices=["qwen3moe", "gemma4", "nemotron_h_moe", "inkling2_loop"], default="qwen3moe")
+    ap.add_argument("--arch", choices=["qwen3moe", "gemma4", "nemotron_h_moe", "inkling2_loop", "hy_v4_flash"],
+                    default="qwen3moe")
     ap.add_argument("--out", default="tiny-moe.gguf")
     ap.add_argument("--split-max-tensors", type=int, default=0,
                     help="emit a sharded gguf (N tensors per shard, metadata-only first shard)")
@@ -524,6 +702,8 @@ def main():
         build_nemotron_h_moe(args.out)
     elif args.arch == "inkling2_loop":
         build_inkling2_loop(args.out)
+    elif args.arch == "hy_v4_flash":
+        build_hy_v4_flash(args.out)
     else:
         build_qwen3moe(args.out, args.split_max_tensors)
 
