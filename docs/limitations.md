@@ -55,8 +55,9 @@ serial path, and only a single ~25-line hook (with an explicit sunset) for the o
   blocks), so on it they have nothing to target: they stay byte-identical and harmless, and do
   nothing. Where the router adds a per-expert selection bias after its gating function (the
   `exp_probs_b` of DeepSeek V3 and its kin: `lfm2moe`, `deepseek4`, `bailingmoe3`, `nemotron_h_moe`,
-  `hy_v4_flash`), the predictors rank as the router does: they read the bias and the gating function
-  off the graph's own node that adds them. An architecture that masks whole groups of experts before
+  `hy_v4_flash`), or one on the logits before it (`gpt-oss`'s router bias, `kolibri1`'s selection
+  bias), the predictors rank as the router does: they read each bias and the gating function off the
+  graph's own nodes that add them. An architecture that masks whole groups of experts before
   the top-k is still ranked without the mask, so there the numbers approximate the routing rather
   than reproduce it, and the probe's fresh-gate control shows by how much.
 - **A resident tensor can be larger than RAM, and then it is only ever mmap'd.** `qwen4exp`

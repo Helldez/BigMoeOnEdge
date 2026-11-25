@@ -81,9 +81,11 @@ therefore has to reproduce the selection llama.cpp is about to compute from thos
   batch) collapses it toward chance;
 - an architecture that masks whole expert groups before the argsort puts it somewhere below 100%,
   and by roughly that much the stale-gate number understates the method. A per-expert selection
-  bias added after the gating function (DeepSeek V3's `exp_probs_b` and its kin) does not: the
-  probe reads the bias and the gating function off the graph's own node that adds them
-  (`ffn_moe_probs_biased-<il>`) and ranks every prediction, the control included, as the router
+  bias added after the gating function (DeepSeek V3's `exp_probs_b` and its kin) does not, nor
+  does one added to the logits before it (a router's own bias, as gpt-oss has, or a model's
+  selection bias where it routes by itself, as Kolibri-1 does): the probe reads each bias and the
+  gating function off the graph's own nodes that add them (`ffn_moe_logits_biased-<il>`,
+  `ffn_moe_probs_biased-<il>`) and ranks every prediction, the control included, as the router
   does.
 
 Read the other two against `ctrl`, never against 100%. The CLI says so out loud when it drops

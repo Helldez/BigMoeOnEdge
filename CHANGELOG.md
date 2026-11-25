@@ -29,10 +29,12 @@ Semantic Versioning.
   adds a selection bias.** The predictors ranked experts on the router's raw scores, which is not the
   order a router that adds a per-expert bias after its gating function sorts (DeepSeek V3's
   `exp_probs_b`, used by 44 architectures in llama.cpp: DeepSeek, GLM, Kimi, MiniMax, LFM2 MoE,
-  Inkling 2, Hy4 and more). Their own check then read below its 98% bound and disarmed them after a
-  few tokens: the answer was never wrong, the feature simply stopped. They now read the bias and the
-  gating function off the graph's node that adds them and rank as the router does: on Inkling 2 Mini
-  the fresh-gate control went from 84.4% to 99.8%. Routing that masks whole expert groups is still
+  Inkling 2, Hy4 and more), nor that of a router with a bias of its own on the logits (gpt-oss) or
+  of a model that adds its selection bias to the logits itself (Kolibri-1). Their own check then
+  read below its 98% bound and disarmed them after a few tokens: the answer was never wrong, the
+  feature simply stopped. They now read each bias, and the gating function between them, off the
+  graph's nodes that add them and rank as the router does: on Inkling 2 Mini the fresh-gate control
+  went from 84.4% to 99.8%. Routing that masks whole expert groups is still
   ranked without the mask ([expert-prediction.md](docs/expert-prediction.md)). `--predict-log`'s
   warning now uses the gate's 99% bound.
 - **A prefill device walks its dense slots in the order the graph finishes its layers.** The order

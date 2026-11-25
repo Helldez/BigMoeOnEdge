@@ -503,18 +503,28 @@ void RouterHook::rank_top_k(const std::vector<float> & scores, int k, std::vecto
     }
 }
 
-// The node that adds the bias reads two sources: the probabilities, made from the logits by the
-// gating function, and the bias leaf. Both are read off the graph, so a gating function or a bias
-// this does not recognise leaves the layer as it was (raw ranking, approximate) rather than guessed.
-void RouterHook::learn_selection(const ggml_tensor * t, int il) {
+// The node that adds a bias reads two sources: what it is added to and the bias leaf. Added to the
+// logits matmul, it comes before the gating function. Added to anything else, it comes after the
+// function that made it from the logits. All of it is read off the graph, so a gating function or a
+// bias this does not recognise leaves the layer as it was (raw ranking, approximate) rather than
+// guessed.
+void RouterHook::learn_selection(const ggml_tensor * t, int il, bool before_gate) {
     if (il < 0 || il >= (int) sel_.size() || t->op != GGML_OP_ADD) return;
     const ggml_tensor * probs = t->src[0];
     const ggml_tensor * bias = t->src[1];
     if (!probs || !bias || bias->op != GGML_OP_NONE || bias->type != GGML_TYPE_F32 || !host_readable(bias) ||
         !ggml_is_contiguous(bias) || bias->ne[0] != probs->ne[0])
         return;
-    RouterSelection r;
-    r.bias = bias;
+    const bool on_logits = tn::node_layer(probs->name, tn::k_logits_node) >= 0;
+    RouterSelection & r = sel_[(size_t) il];
+    // The router's own bias, on the logits before any function of them. A model that routes on its
+    // own may name its selection add the same way: the bias is then the last thing before the
+    // argsort, which is what an identity gate followed by the bias says.
+    if (before_gate) {
+        if (on_logits) r.pre = bias;
+        return;
+    }
+    const bool on_biased_logits = tn::node_layer(probs->name, tn::k_logits_biased_node) >= 0;
     if (probs->op == GGML_OP_SOFT_MAX) {
         r.gate = RouterSelection::Gate::Softmax;
     } else if (probs->op == GGML_OP_UNARY && ggml_get_unary_op(probs) == GGML_UNARY_OP_SIGMOID) {
@@ -522,16 +532,23 @@ void RouterHook::learn_selection(const ggml_tensor * t, int il) {
     } else if (probs->op == GGML_OP_SQRT && probs->src[0] && probs->src[0]->op == GGML_OP_UNARY &&
                ggml_get_unary_op(probs->src[0]) == GGML_UNARY_OP_SOFTPLUS) {
         r.gate = RouterSelection::Gate::SqrtSoftplus;
-    } else if (tn::node_layer(probs->name, tn::k_logits_node) >= 0) {
+    } else if (on_logits || on_biased_logits) {
         r.gate = RouterSelection::Gate::Identity; // the logits are the probabilities (softmax_weight)
     } else {
         return;
     }
-    sel_[(size_t) il] = r;
+    r.bias = bias;
 }
 
 void RouterHook::RouterSelection::apply(std::vector<float> & s) const {
-    if (!bias || s.empty() || (size_t) bias->ne[0] != s.size()) return;
+    if (s.empty()) return;
+    if (pre && (size_t) pre->ne[0] == s.size()) {
+        const float * b = (const float *) pre->data;
+        for (size_t e = 0; e < s.size(); ++e)
+            s[e] += b[e];
+    }
+    // Without a bias after it, the gating function cannot change the order: rank what is there.
+    if (!bias || (size_t) bias->ne[0] != s.size()) return;
     switch (gate) {
     case Gate::Identity:
         break;
@@ -1648,8 +1665,12 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     // "ffn_moe_logits_biased-<il>" — a different node — from matching.
     // A layer's selection bias is learned in any phase: the prompt's graph carries the same node, so
     // the first decoded token is already ranked the way the router ranks it.
-    if (ask && moe_node && (predict_on() || route_ahead_ > 0))
-        learn_selection(t, block_of(tn::node_layer(t->name, tn::k_probs_biased_node)));
+    if (ask && moe_node && (predict_on() || route_ahead_ > 0)) {
+        if (const int bl = tn::node_layer(t->name, tn::k_logits_biased_node); bl >= 0)
+            learn_selection(t, block_of(bl), /*before_gate=*/true);
+        else
+            learn_selection(t, block_of(tn::node_layer(t->name, tn::k_probs_biased_node)), /*before_gate=*/false);
+    }
     const int gl = (moe_node && (predict_on() || route_ahead_ > 0) && source_ && batch_phase_ == 1)
                        ? block_of(tn::node_layer(t->name, tn::k_logits_node))
                        : -1;

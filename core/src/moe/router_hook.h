@@ -421,22 +421,25 @@ private:
     bool predict_prefetch_ = false;
     std::vector<ggml_tensor *> gate_w_;
     // What the router does to a layer's logits before its argsort, where that changes their order:
-    // a per-expert selection bias added after the gating function (DeepSeek V3's exp_probs_b and
-    // its kin). Learned from the graph's own "ffn_moe_probs_biased-<il>" node - its bias leaf and
-    // the op that made the probabilities it adds to - so no architecture is named. A layer with no
-    // such node keeps `bias` null and is ranked on the raw scores, which is exact for a monotonic
-    // gating function. Expert-group masks are not modelled: there the ranking stays approximate,
-    // and the fresh-gate control says so.
+    // a per-expert bias added to the logits before the gating function (a router's own bias, the
+    // "ffn_moe_logits_biased-<il>" node), and one added after it (DeepSeek V3's exp_probs_b and its
+    // kin, the "ffn_moe_probs_biased-<il>" node, or the same name's add to the logits where a model
+    // routes on its own). Learned from those nodes of the graph - their bias leaves and the op that
+    // made what the bias is added to - so no architecture is named. A layer with neither keeps both
+    // null and is ranked on the raw scores, which is exact for a monotonic gating function.
+    // Expert-group masks are not modelled: there the ranking stays approximate, and the fresh-gate
+    // control says so.
     struct RouterSelection {
         enum class Gate : uint8_t { Identity, Softmax, Sigmoid, SqrtSoftplus };
+        const ggml_tensor * pre = nullptr; // host F32 leaf added to the logits, one value per expert
         Gate gate = Gate::Identity;
-        const ggml_tensor * bias = nullptr; // host F32 leaf, one value per expert
+        const ggml_tensor * bias = nullptr; // host F32 leaf added after the gating function
         // The router's selection scores from raw gate scores, in place. A no-op without a bias.
         void apply(std::vector<float> & scores) const;
     };
     std::vector<RouterSelection> sel_;
-    // Learn layer il's selection from the node that adds its bias (ask pass, any phase).
-    void learn_selection(const ggml_tensor * t, int il);
+    // Learn layer il's selection from a node that adds one of its biases (ask pass, any phase).
+    void learn_selection(const ggml_tensor * t, int il, bool before_gate);
     void select_scores(int il, std::vector<float> & scores) const {
         if (il >= 0 && il < (int) sel_.size()) sel_[(size_t) il].apply(scores);
     }

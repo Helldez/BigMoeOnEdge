@@ -85,6 +85,9 @@ inline constexpr std::string_view k_layer_out_node = "l_out-";
 // The router's probabilities plus its per-expert selection bias, where the architecture has one: the
 // node whose order the argsort follows. Its "-" keeps "ffn_moe_probs-<il>" from matching.
 inline constexpr std::string_view k_probs_biased_node = "ffn_moe_probs_biased-";
+// The router's logits plus a bias of its own, before any gating function, where the architecture has
+// one (or a model that routes by itself adds its selection bias there).
+inline constexpr std::string_view k_logits_biased_node = "ffn_moe_logits_biased-";
 
 // Every routing node - the topk, the weight chain, the gate matmul - starts with this. A graph has
 // thousands of nodes and the router hook's ask pass sees all of them, so this one comparison is
