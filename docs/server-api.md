@@ -465,7 +465,7 @@ Request fields that are read:
 | `response_format` | `{"type":"json_object"}` requests JSON object output; `{"type":"json_schema","json_schema":{"schema":{...}}}` supplies a schema. Omitted, `null` or `{"type":"text"}` leaves the top-level `json_schema` unchanged; without one, output is ordinary text. See the support boundary below. |
 | `json_schema` | llama.cpp-compatible top-level schema for this request. A JSON object supplies schema keywords; `null` or omission adds no constraint. An empty object defaults to `{"type":"object"}`. |
 | `temperature`, `top_p`, `top_k`, `min_p`, `seed` | this request's sampling. A field left out keeps the session's (the `temp`, `top-k`, `top-p` and `seed` parameters); `temperature: 0` is greedy, `seed: -1` a fresh seed. A request that sets none samples exactly as the session does. Bounds: `temperature` 0 to 100, `top_p` and `min_p` 0 to 1, `top_k` a non-negative integer. |
-| `presence_penalty`, `frequency_penalty`, `repeat_penalty`, `repeat_last_n` | the penalties of llama.cpp's sampler (-2 to 2, -2 to 2, above 0, and the tokens looked back over: default 64, `-1` the whole context), counted over the prompt too. Off by default. |
+| `presence_penalty`, `frequency_penalty`, `repeat_penalty`, `repeat_last_n` | the penalties of llama.cpp's sampler (-2 to 2, -2 to 2, 0.001 to 100, and the tokens looked back over, `-1` the whole context), counted over the prompt too, at any temperature. A field left out keeps the session's: the `presence-penalty`, `frequency-penalty`, `repeat-penalty` and `repeat-last-n` parameters, which are off with a window of 64 unless the person sets them, so a client that sends no penalty still gets the one a model card recommends. |
 | `logit_bias` | `{"<token id>": bias}` (OpenAI's) or `[[id, bias], ...]` (llama-server's); a bias of `false` forbids the token. Ids only: a token named by its text is refused. An id outside the vocabulary is a `400`. |
 | `stop` | a string or a list of them: the answer stops before the first that appears (`finish_reason: "stop"`). While the text ends partway into one, that part is held back from the stream, so a client never sees a stop the server then takes back. Matched in the answer only, as the model wrote it (a tool call's syntax included): the reasoning before the answer is not searched, so a stop that appears there does not end the turn with an empty answer. |
 | `grammar` | a GBNF grammar (llama.cpp's grammar language, rule `root`) the whole answer must follow. Not with `tools` or `response_format`, which build their own (`400`). The model is asked not to reason first; a grammar that does not parse is a `400`. |
@@ -475,7 +475,8 @@ Request fields that are read:
 `model` is not read: the loaded model answers. With speculation armed (`mtp`, or the n-gram
 drafter) the session decodes greedily, since a draft is accepted by the model's own argmax: there,
 a request's sampling fields are read and not applied (said once in the log), while `stop`,
-`grammar` and `logprobs` still are. An audio or file content part is refused with `400` rather than
+`grammar` and `logprobs` still are; the penalty parameters, like `temp`, are refused together with
+it. An audio or file content part is refused with `400` rather than
 dropped.
 
 **Images.** A model loaded with its projector reads them (`GET /api/info` says so: `model.vision`,
@@ -815,7 +816,7 @@ under the same key and origin rules as `/api/*` and `/v1/*`, except that `/healt
 | route | answer |
 |---|---|
 | `GET /health` (and `/v1/health`) | answered without the API key (`GET` and `HEAD`), as llama-server does. `{"status": "ok"}` with a model ready; `503` with `code: "loading"` while one loads or the plan measures, `no_model` with none (after a load that failed, its message says why). |
-| `GET /props` | `default_generation_settings` (`n_ctx`, and `params` with `n_predict`, `temperature`, `top_k`, `top_p`, `seed`: the session's sampling), `total_slots: 1`, `model_alias`, `model_path`, `modalities` (`vision`), `build_info`. |
+| `GET /props` | `default_generation_settings` (`n_ctx`, and `params` with `n_predict`, `temperature`, `top_k`, `top_p`, `seed`, `presence_penalty`, `frequency_penalty`, `repeat_penalty`, `repeat_last_n`: the session's sampling), `total_slots: 1`, `model_alias`, `model_path`, `modalities` (`vision`), `build_info`. |
 | `GET /metrics` | Prometheus text under llama-server's names: the counters `llamacpp:prompt_tokens_total` (decoded, the cached part excluded), `prompt_tokens_cached_total`, `prompt_seconds_total`, `tokens_predicted_total`, `tokens_predicted_seconds_total`, `n_tokens_max`, and the gauges `prompt_tokens_seconds` and `predicted_tokens_seconds` (rates over the turns since the previous scrape) and `requests_processing`, `requests_deferred`. Always on: there is no `--metrics` flag. |
 | `GET /slots` | the one slot: `[{"id": 0, "n_ctx": ..., "is_processing": ...}]`. Saving and restoring a slot is not implemented. |
 | `POST /tokenize` | `{"content": "...", "add_special": false, "parse_special": true, "with_pieces": false}` (llama-server's defaults) to `{"tokens": [ids]}`, or `[{"id", "piece"}]` with `with_pieces`; a piece that is not whole UTF-8 is its bytes. `content` must be a string. |

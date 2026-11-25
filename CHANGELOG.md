@@ -24,6 +24,18 @@ Semantic Versioning.
   cache in memory against its budget, the parts read again per token, and the disk wait in ms per
   token, from the `done` event's existing fields, with what each means in the folded list
   ([screens.md](docs/screens.md#metrics)).
+- **The sampling penalties as parameters, for a client that sends none** (#715).
+  `--presence-penalty`, `--frequency-penalty`, `--repeat-penalty` and `--repeat-last-n`, and the same
+  four rows in the Sampling card of Settings, set the penalties a request gets when it names none
+  of its own: a client that sends no sampling at all, or only a temperature, now gets the penalty a
+  model card recommends (`presence_penalty` 1.5 on Qwen3.6-35B-A3B, a repeat penalty of 1.05 on
+  LFM2.5-24B-A2B). A request's own value still wins. The window stays llama.cpp's 64 tokens, the
+  prompt's counted; `-1` widens it to the whole context, as `repeat_last_n: -1` already does for a
+  request. They act at any temperature and are built into each turn's own chain, so a chat never
+  counts the turns of an earlier conversation. Not with speculative drafts, which are checked
+  against the model's own most likely token: `validate()` refuses the pair, as it does for `--temp`.
+  `/props` and the telemetry header report them beside the other sampling defaults. Unset, nothing
+  changes ([server-api.md](docs/server-api.md)). By @pt7777 (#720).
 
 ### Fixed
 - **Settings no longer calls a graphics pack "Installed" when the engine does not use it.** After the
@@ -47,6 +59,28 @@ Semantic Versioning.
   gain is (+24-46% decode on Windows). A `release-mmap` set by hand is kept
   ([field-reports.md](docs/field-reports.md), [hardware-planning.md](docs/hardware-planning.md),
   [moe-streaming.md](docs/moe-streaming.md)).
+- **A device that runs a long prompt faster is no longer refused for a short graph's rate** (#728).
+  The compute probe timed the prompt on one real layer 128 tokens wide, while a plan never computes a
+  long prompt in graphs narrower than 512, and a mixture-of-experts layer divides a graph's tokens
+  over its experts: on a 128-expert top-8 model each expert got 8 tokens there, the batch where a GPU
+  still runs its few-token kernel. On an Apple M5 (16 GB) Inkling 2 Mini IQ4_NL measured 0.8x the
+  cores 128 wide and 7.9x 512 wide, so `--auto` kept the prompt on the cores: a 1855-token prompt
+  prefilled at 19-23 tok/s (85-101 s to the first token), where Metal prefilled it at 100-103 (36-37
+  s). The probe now times the layer as wide as the narrowest graph a plan computes a long prompt in,
+  the planner's own constant (`PlannerPolicy::ubatch_min`, 512) rather than a number of its own, so
+  every rule that weighs a long prompt reads a rate taken in the regime prompts run in, on a phone's
+  NPU as on a large card. Inkling 2 Mini on that Mac: prefill 101-103 tok/s, 37 s to the first token,
+  with the load 12-20 s longer (the device's arena is set up) and decode 4-30% slower on short
+  prompts, by how much memory the Mac has free (the device's slots take part of the expert cache). Qwen3.6-35B-A3B Q4_K_M, which Metal
+  already prefilled: the same decisions. The probes take the same time.
+
+### Known limits
+- The device's prompt rate is the probe's layer ratio applied to the host's measured prefill rate,
+  which overstates a streamed model's device prefill (7.9x probed, 4.5x end to end on Inkling 2 Mini:
+  the probe does not count the experts' transfer to the device). Weighing a device against the expert
+  cache it takes on the prefill rates loads measure is the follow-up (#729).
+- The probe's prompt graph is four times wider than before: same time on the Mac (+0.1 s); its
+  time and memory on a phone are not measured yet.
 
 ## [0.49.0] - 2026-11-24
 

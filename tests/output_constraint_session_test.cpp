@@ -464,6 +464,66 @@ void request_controls(const std::string & model) {
           "request controls: the template renders a conversation outside a turn", err);
 }
 
+// The penalty parameters (#715) are the defaults of a request's own penalties, on real decodes: a
+// request that sets none samples as if it had sent the session's, one that sets its own wins, and in a
+// chat (the server's way, the KV kept) every turn gets the same as a request that names it each time.
+void session_penalties(const std::string & model) {
+    std::string error;
+    auto greedy = bmoe::Session::open(config(model, false), error);
+    auto sampled = bmoe::Session::open(config(model, true), error);
+    auto cfg = config(model, false);
+    cfg.sampling.presence_penalty = 1.5f;
+    auto penalized = bmoe::Session::open(cfg, error);
+    cfg = config(model, true);
+    cfg.sampling.presence_penalty = 1.5f;
+    auto sampled_penalized = bmoe::Session::open(cfg, error);
+    check(greedy && sampled && penalized && sampled_penalized, "penalties: the sessions open", error);
+    if (!greedy || !sampled || !penalized || !sampled_penalized) return;
+
+    const auto plain = request("", 24);
+    const std::string ref = generate(*greedy, plain).result.generated_text;
+    auto asked = plain;
+    asked.sampling = bmoe::RequestSampling{};
+    asked.sampling->presence_penalty = 1.5f;
+    const std::string want = generate(*greedy, asked).result.generated_text;
+    // The fixture repeats itself greedily; without that the checks below could not tell anything apart.
+    check(!ref.empty() && !want.empty() && want != ref, "penalties: a presence penalty changes the greedy answer",
+          ref + " | " + want);
+
+    const auto got = generate(*penalized, plain);
+    check(got.result.ok && got.result.generated_text == want,
+          "penalties: a request that sets no sampling gets the session's penalty", got.result.generated_text);
+    auto temp_only = plain;
+    temp_only.sampling = bmoe::RequestSampling{};
+    temp_only.sampling->temp = 0.0f;
+    check(generate(*penalized, temp_only).result.generated_text == want,
+          "penalties: a request that sets only a temperature keeps the session's penalty");
+    auto off = plain;
+    off.sampling = bmoe::RequestSampling{};
+    off.sampling->presence_penalty = 0.0f;
+    check(generate(*penalized, off).result.generated_text == ref, "penalties: a request's own penalty wins");
+    check(generate(*greedy, plain).result.generated_text == ref, "penalties: a session without them decodes as before");
+
+    // Sampling too: the session's temperature and seed, with its penalty, draw as the request would.
+    const auto drawn = generate(*sampled_penalized, plain), drawn_again = generate(*sampled_penalized, plain);
+    const auto drawn_asked = generate(*sampled, asked);
+    check(drawn.result.ok && drawn.result.generated_text == drawn_asked.result.generated_text &&
+              drawn_again.result.generated_text == drawn.result.generated_text,
+          "penalties: with a temperature, the session's penalty draws what the request's does, turn after turn");
+
+    // A chat: the second turn continues the KV, as the server's turns do.
+    auto first = plain, first_asked = asked;
+    auto second = plain, second_asked = asked;
+    second.prompt = second_asked.prompt = "y";
+    second.clear_kv = second_asked.clear_kv = false;
+    const auto p1 = generate(*penalized, first), p2 = generate(*penalized, second);
+    const auto a1 = generate(*greedy, first_asked), a2 = generate(*greedy, second_asked);
+    check(p1.result.ok && p2.result.ok && p1.result.generated_text == a1.result.generated_text &&
+              p2.result.generated_text == a2.result.generated_text,
+          "penalties: in a chat, every turn gets the session's penalty as if the request named it",
+          p2.result.generated_text + " | " + a2.result.generated_text);
+}
+
 int main(int argc, char ** argv) {
     if (argc != 2) {
         std::fprintf(stderr, "usage: bmoe_output_constraint_session_test <tiny-model.gguf>\n");
@@ -482,5 +542,6 @@ int main(int argc, char ** argv) {
     streamed_identity(argv[1], false, oracle);
     streamed_identity(argv[1], true, oracle);
     request_controls(argv[1]);
+    session_penalties(argv[1]);
     return failures ? 1 : 0;
 }

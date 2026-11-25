@@ -1029,6 +1029,10 @@ void register_llama_routes(httplib::Server & svr, App & app) {
         f.top_k = cfg.sampling.top_k;
         f.top_p = cfg.sampling.top_p;
         f.seed = cfg.sampling.seed;
+        f.presence_penalty = cfg.sampling.presence_penalty;
+        f.frequency_penalty = cfg.sampling.frequency_penalty;
+        f.repeat_penalty = cfg.sampling.repeat_penalty;
+        f.repeat_last_n = cfg.sampling.penalty_last_n;
         f.model_name = app.host.model_name();
         f.model_path = app.host.model_path();
         f.vision = app.host.vision();

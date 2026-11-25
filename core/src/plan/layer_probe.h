@@ -4,16 +4,25 @@
 
 #include "bmoe/hardware_profile.h"
 #include "bmoe/model_profile.h"
+#include "bmoe/planner.h"
 
 #include <cstdint>
 #include <vector>
 
 namespace bmoe::detail {
 
-// How many tokens the wide instrument is: several times the narrowest graph a prefill device is
-// ever handed, so the sample sits inside the regime it speaks for. Shared by the real layer and the
-// synthetic fallback, which report it as HardwareProfile::wide_batch.
-constexpr int64_t k_wide_batch = 128;
+// How many tokens the wide instrument is: the narrowest graph a plan computes a long prompt in
+// (PlannerPolicy::ubatch_min), so the sample is a prompt as a plan runs it, whatever the machine.
+// Shared by the real layer and the synthetic fallback, which report it as HardwareProfile::wide_batch.
+//
+// A processor's rate on a prompt depends on the graph's width - one with wide parallel units pays a
+// graph's fixed cost once and gets faster per token as it widens, the cores reach their rate a few
+// dozen tokens wide - and a mixture-of-experts layer divides the width over its experts, so each
+// gets width * top-k / n_expert tokens. A width narrower than any planned graph measures a regime no
+// prompt runs in: at 128, a 128-expert top-8 layer gives each expert 8 tokens, where one Metal device
+// ran Inkling 2 Mini's layer at 0.8x the cores, and at 512 (32 an expert) 7.9x; the prompt ran 4.5x
+// faster there end to end, and the plan had kept it on the cores.
+constexpr int64_t k_wide_batch = PlannerPolicy::ubatch_min_default;
 
 // How long one sample must last, and the cap that keeps a slow device from turning a probe into a
 // benchmark. Sized by DURATION rather than by a repetition count: a fixed count makes the sample

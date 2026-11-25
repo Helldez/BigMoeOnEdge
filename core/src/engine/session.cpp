@@ -2400,6 +2400,10 @@ void Session::Impl::describe_run(Opening & o) {
         ri.top_k = cfg.sampling.top_k;
         ri.top_p = cfg.sampling.top_p;
         ri.seed = cfg.sampling.seed;
+        ri.repeat_penalty = cfg.sampling.repeat_penalty;
+        ri.frequency_penalty = cfg.sampling.frequency_penalty;
+        ri.presence_penalty = cfg.sampling.presence_penalty;
+        ri.repeat_last_n = cfg.sampling.penalty_last_n;
         ri.moe_stream = cfg.moe.enabled;
         ri.cache_auto = cfg.moe.cache_auto;
         ri.cache_floor_mb = cfg.moe.cache_floor_mb;
@@ -3178,17 +3182,22 @@ struct Session::Impl::Turn {
     llama_sampler * sampler() const { return own_sampling ? turn_chain.get() : im.smpl; }
 
     // Build the request's chain over the session's settings, before the first token is sampled. The
-    // penalties look back over the prompt too, as llama.cpp's server feeds them. False for a request
-    // the vocabulary cannot honour.
+    // penalties look back over the prompt too, as llama.cpp's server feeds them. A session penalty
+    // builds it for a request that sets no sampling as well: the session's own chain is never reset
+    // between the turns of a chat, so a penalty there would count every earlier conversation. False
+    // for a request the vocabulary cannot honour.
     bool arm_sampler() {
+        const SamplingConfig & d = im.cfg.sampling;
         // dt:req.sampler
-        if (!req.sampling) return true;
-        const RequestSampling & r = *req.sampling;
+        if (!req.sampling && !d.penalized()) return true;
+        static const RequestSampling unset{};
+        const RequestSampling & r = req.sampling ? *req.sampling : unset;
         if (im.cfg.spec.enabled()) {
             if (!im.request_sampling_logged) {
                 im.request_sampling_logged = true;
-                log_printf(LogLevel::Info, "a request's sampling is not applied while speculation is on: a draft "
-                                           "is accepted by the model's own argmax, so the session decodes greedily");
+                log_printf(LogLevel::Info, "a request's sampling and the session's penalties are not applied while "
+                                           "speculation is on: a draft is accepted by the model's own argmax, so "
+                                           "the session decodes greedily");
             }
             return true;
         }
@@ -3198,9 +3207,11 @@ struct Session::Impl::Turn {
                 return fail(RunError::InvalidRequest,
                             "logit_bias names token " + std::to_string(b.first) + ", outside the model's vocabulary");
             }
-        const SamplingConfig & d = im.cfg.sampling;
         const float temp = r.temp.value_or(d.temp);
-        const bool penalties = r.repeat_penalty != 1.0f || r.frequency_penalty != 0.0f || r.presence_penalty != 0.0f;
+        const float repeat = r.repeat_penalty.value_or(d.repeat_penalty);
+        const float frequency = r.frequency_penalty.value_or(d.frequency_penalty);
+        const float presence = r.presence_penalty.value_or(d.presence_penalty);
+        const bool penalties = repeat != 1.0f || frequency != 0.0f || presence != 0.0f;
         own_sampling = true;
         if (temp <= 0.0f && !penalties && r.logit_bias.empty()) return true; // argmax
         llama_sampler * c = llama_sampler_chain_init(llama_sampler_chain_default_params());
@@ -3211,10 +3222,10 @@ struct Session::Impl::Turn {
                 bias.push_back({b.first, b.second});
             llama_sampler_chain_add(c, llama_sampler_init_logit_bias(im.n_vocab, (int32_t) bias.size(), bias.data()));
         }
-        const int last_n = r.penalty_last_n < 0 ? im.cfg.n_ctx : r.penalty_last_n;
+        const int window = r.penalty_last_n.value_or(d.penalty_last_n);
+        const int last_n = window < 0 ? im.cfg.n_ctx : window;
         if (penalties)
-            llama_sampler_chain_add(c, llama_sampler_init_penalties(im.n_vocab, last_n, r.repeat_penalty,
-                                                                    r.frequency_penalty, r.presence_penalty));
+            llama_sampler_chain_add(c, llama_sampler_init_penalties(im.n_vocab, last_n, repeat, frequency, presence));
         if (temp <= 0.0f) {
             llama_sampler_chain_add(c, llama_sampler_init_greedy());
         } else {

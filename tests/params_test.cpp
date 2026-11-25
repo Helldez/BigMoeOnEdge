@@ -199,6 +199,11 @@ int main() {
     expect_flag({"--top-p", "0.9"}, [](const RunConfig & c) { return c.sampling.top_p == 0.9f; });
     expect_flag({"--seed", "42"}, [](const RunConfig & c) { return c.sampling.seed == 42u; });
     expect_flag({"--seed", "4294967295"}, [](const RunConfig & c) { return c.sampling.seed == 0xFFFFFFFFu; });
+    expect_flag({"--presence-penalty", "1.5"}, [](const RunConfig & c) { return c.sampling.presence_penalty == 1.5f; });
+    expect_flag({"--frequency-penalty", "-0.5"},
+                [](const RunConfig & c) { return c.sampling.frequency_penalty == -0.5f; });
+    expect_flag({"--repeat-penalty", "1.05"}, [](const RunConfig & c) { return c.sampling.repeat_penalty == 1.05f; });
+    expect_flag({"--repeat-last-n", "-1"}, [](const RunConfig & c) { return c.sampling.penalty_last_n == -1; });
     expect_flag({"--mtp"}, [](const RunConfig & c) { return c.spec.source == DraftSource::mtp; });
     expect_flag({"--mtp-head-on-devices"}, [](const RunConfig & c) { return c.spec.mtp_head_on_devices; });
     expect_flag({"--ngram"}, [](const RunConfig & c) { return c.spec.source == DraftSource::ngram; });

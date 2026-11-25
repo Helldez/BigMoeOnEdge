@@ -127,10 +127,10 @@ struct RequestSampling {
     std::optional<float> temp, top_p, min_p;
     std::optional<int> top_k;
     std::optional<uint32_t> seed;
-    float repeat_penalty = 1.0f;    // 1: off
-    float frequency_penalty = 0.0f; // 0: off
-    float presence_penalty = 0.0f;  // 0: off
-    int penalty_last_n = 64;        // how many recent tokens the penalties look back over (-1: the context)
+    std::optional<float> repeat_penalty;    // 1: off
+    std::optional<float> frequency_penalty; // 0: off
+    std::optional<float> presence_penalty;  // 0: off
+    std::optional<int> penalty_last_n;      // how many recent tokens the penalties look back over (-1: the context)
     std::vector<std::pair<int32_t, float>> logit_bias;
 };
 
