@@ -1377,6 +1377,33 @@ the prompt on the probes' wide matmul as before. A served load then keeps its ow
 (`KnobTrialConfig::shared_device_side`). No other load is opened to try a side
 ([measured-planning.md](measured-planning.md#decisions-fixed-at-load-priced-served-then-measured)).
 
+### A model held in memory, drafting with its own head
+
+A model that carries its own MTP block can draft the next tokens and verify them in one decode
+([mtp.md](mtp.md)). Whether that pays depends on the machine, and no probe can tell. A verify computes
+several positions at once, and on a mixture of experts each position routes on its own, so a verify
+reads the union of their experts:
+- **Streamed:** a token's reads went from 32 to 51 MiB on a 16 GB laptop, and the draft lost. The
+  plan does not offer the head to a model it streams.
+- **Held whole on a GPU:** a step costs little more for a few extra positions, and the head paid about
+  18% on a rented 24 GB card with the model resident (75.5 → 89.4 tok/s), and about 40% split between
+  a card and the host.
+- **Held whole on the cores alone:** the step reads that union at the memory's own rate, and nobody
+  has measured it.
+
+So the head is a decision across loads (`choose_spec`), asked only where the plan holds the model
+whole, the model has its own block, the front-end keeps records, the session decodes greedily
+(`temp` 0) and `spec` is not pinned:
+- **No side timed:** the load drafts (`spec = mtp`) and times its decode (`--trial-spec 1`).
+- **Only the head timed:** the next load times the decode without it (`--trial-spec 0`).
+- **Both timed:** the head stays only where it decodes faster by `PlannerPolicy::min_draft_win` (10%).
+  It is not free when it does not win: its draft context holds memory beside the model.
+
+A load whose head fails to open counts against that side (`spec_unviable`), and the server reopens
+the other side; twice, and the head is off for that model on that machine. The rates are kept as
+`MeasuredKnobs::spec_tps` and `no_spec_tps`. Only one decision is timed per load: a load that times the
+shared-memory device, or checks its answers, leaves the head for the next load.
+
 **A model the plan streams is offered to the device too, where the device can hold it whole.**
 llama.cpp would hold such a model on the device, and where that fits it can be the faster run by
 far, so the stream has to earn its place against it. After the plan that streams is made

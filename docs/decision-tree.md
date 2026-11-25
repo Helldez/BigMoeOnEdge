@@ -413,6 +413,7 @@ flowchart TD
 - when: names a side
 - code: `server/planner_adapter.cpp` · `plan_other_side`
 - condition: `if (now.device_tier == named.device_tier && now.width_side == named.width_side &&`
+- The four sides compared: the device tier, the width, the shared-memory device, the draft head.
 
 #### `srv.load.streamable` — A dense model loads mapped unless streaming is pinned
 - parent: —
@@ -459,7 +460,7 @@ flowchart TD
 - condition: `if (named.names_side() && !model.empty() && !named.hardware.empty()) {`
 - The failure goes on the model's knob record for this machine (`*_unviable`). From
   `MeasuredKnobs::unviable_max` (2) failures on, the side loses in every plan
-  (`plan.tier.measured`, `plan.width.loads`, `plan.shared.sides`). The other plan becomes the
+  (`plan.tier.measured`, `plan.width.loads`, `plan.shared.sides`, `plan.spec.sides`). The other plan becomes the
   plan layer.
 
 #### `srv.request.model` — A request with no model loaded
@@ -578,6 +579,8 @@ flowchart TD
     plan_overlap_prompts["<b>plan.overlap.prompts</b><br/>Overlap would keep prompts off the device"]
     plan_threads["<b>plan.threads</b><br/>Threads"]
     plan_threads_trial["<b>plan.threads.trial</b><br/>Time other thread counts on this load"]
+    plan_spec["<b>plan.spec</b><br/>A model held whole drafts with its own MTP head"]
+    plan_spec_sides["<b>plan.spec.sides</b><br/>Draft or not: lost, measured, unmeasured"]
     plan_give_way -->|"cache under one cycle"| plan_give_way_checkpoints
     plan_give_way -->|"still under one cycle"| plan_give_way_ctx
     plan_tier -->|"a device qualifies"| plan_tier_rates
@@ -593,6 +596,7 @@ flowchart TD
     plan_dense -->|"Pinned candidate"| plan_dense_settle
     plan_overlap -->|"not pinned"| plan_overlap_prompts
     plan_threads -->|"unmeasured"| plan_threads_trial
+    plan_spec -->|"asked"| plan_spec_sides
     plan_facts_isolated -.-> plan_facts_routing
     plan_facts_routing -.-> plan_facts_knobs
     plan_facts_knobs -.-> plan_facts_gate
@@ -627,6 +631,7 @@ flowchart TD
     plan_gate_mirror -.-> plan_devices
     plan_devices -.-> plan_overlap
     plan_overlap -.-> plan_threads
+    plan_threads -.-> plan_spec
 ```
 <!-- /dt:graph -->
 
@@ -887,8 +892,8 @@ flowchart TD
 - code: `core/src/plan/planner.cpp` · `declines_residency`
 - condition: `if (s.placement.fitted && s.host_layers == 0) {`
 - condition: `if (s.p.regime == Regime::Fits) {`
-- Every expert layer is on devices, or the model fits → streaming is declined. Three stages then run
-  and end the plan: `plan.shared`, `plan.devices` and `plan.threads`.
+- Every expert layer is on devices, or the model fits → streaming is declined. Four stages then run
+  and end the plan: `plan.shared`, `plan.devices`, `plan.threads` and `plan.spec`.
 
 #### `plan.shared` — A shared-memory device computes the whole resident model
 - parent: `plan.resident`
@@ -1103,6 +1108,30 @@ flowchart TD
 - condition: `if (!s.req.measure_knobs || s.req.is_pinned("trial-threads") || !c.trial.threads.empty()) return;`
 - Up to 2 candidates nearest the incumbent, from the core classes' running sums. Candidates the
   sweep already answered are left out.
+
+#### `plan.spec` — A model held whole drafts with its own MTP head
+- parent: —
+- code: `core/src/plan/planner.cpp` · `choose_spec`
+- condition: `if (!s.model.has_mtp || !s.req.measure_knobs) return;`
+- Reached only from `plan.resident`. Asked where the model carries an MTP block, the front-end keeps
+  records, `spec`, `mtp-head` and `trial-spec` are not pinned, nothing streams, no draft is armed,
+  and this load times no other side and checks no device's answers. Otherwise → nothing.
+- An armed head that `validate()` refuses (a sampling session, `temp` above 0) → off, and the plan
+  says why.
+
+#### `plan.spec.sides` — Draft or not: lost, measured, unmeasured
+- parent: `plan.spec`
+- when: asked
+- code: `core/src/plan/planner.cpp` · `choose_spec`
+- condition: `if (lost(mk.spec_unviable)) {`
+- condition: `if (on > 0.0 && off > 0.0) {`
+- condition: `if (on <= 0.0) {`
+- condition: `if (lost(mk.no_spec_unviable)) {`
+- The head failed to open twice → off.
+- Both sides timed → the head only where it decodes faster by `PlannerPolicy::min_draft_win` (10%).
+- The head not timed → `spec = mtp`, `trial.spec_side = 1`: this load drafts and times it.
+- The head timed, not the decode without it → `trial.spec_side = 0`, unless loads without it failed
+  twice (→ the head).
 
 ## open — loading a model
 
@@ -1704,7 +1733,7 @@ flowchart TD
 - The stages run in order, each when armed:
   1. threads (the incumbent and the candidates);
   2. overlap (both sides, when the hook exists);
-  3. rate, timing one side (`device_tier`, `width_side` or `shared_device_side`).
+  3. rate, timing one side (`device_tier`, `width_side`, `shared_device_side` or `spec_side`).
 - A cost probe always measures the plain decode cost (`req.trial`).
 
 ## req — one request
@@ -1736,6 +1765,7 @@ flowchart TD
     req_reuse_cut["<b>req.reuse.cut</b><br/>Cut the KV, or restore a checkpoint"]
     req_checkpoint_restore["<b>req.checkpoint.restore</b><br/>Which checkpoint can be restored"]
     req_media_spec_off["<b>req.media-spec-off</b><br/>An image in the conversation turns speculation off"]
+    req_sampled_spec_off["<b>req.sampled-spec-off</b><br/>A request that samples turns speculation off"]
     req_prefill_chunk["<b>req.prefill.chunk</b><br/>The prefill's pieces"]
     req_checkpoint_create["<b>req.checkpoint.create</b><br/>Where a checkpoint is taken"]
     req_prefill_place["<b>req.prefill.place</b><br/>This piece on the prefill device?"]
@@ -1781,7 +1811,8 @@ flowchart TD
     req_render -.-> req_tokenize
     req_tokenize -.-> req_reuse
     req_reuse -.-> req_media_spec_off
-    req_media_spec_off -.-> req_prefill_chunk
+    req_media_spec_off -.-> req_sampled_spec_off
+    req_sampled_spec_off -.-> req_prefill_chunk
     req_prefill_chunk -.-> req_trial_resume
     req_trial_resume -.-> req_sampler
     req_sampler -.-> req_grammar
@@ -1883,6 +1914,14 @@ flowchart TD
 - condition: `if (im.media_in_conversation && (spec_on || mtp_on)) {`
 - Speculation stays off until the next new chat.
 
+#### `req.sampled-spec-off` — A request that samples turns speculation off
+- parent: —
+- code: `core/src/engine/session.cpp` · `Turn::prefill`
+- condition: `if (im.sampled_in_conversation && (spec_on || mtp_on)) {`
+- A request whose sampling can move the choice (temperature above 0, a penalty, a bias) marks the
+  conversation. Speculation is then off until the next new chat, as for an image: the draft context
+  misses the turn.
+
 #### `req.prefill.chunk` — The prefill's pieces
 - parent: —
 - code: `core/src/engine/session.cpp` · `Turn::prefill`
@@ -1941,10 +1980,10 @@ flowchart TD
 - parent: —
 - code: `core/src/engine/session.cpp` · `Turn::arm_sampler`
 - condition: `if (!req.sampling) return true;`
-- condition: `if (im.cfg.spec.enabled()) {`
+- condition: `if (spec_on) return true;`
 - No override → the session's chain (`open.sampler`).
-- Speculation configured → the override is ignored, and decoding stays greedy. This tests the
-  configuration, not the turn: an image that turned speculation off does not lift it.
+- The turn drafts → greedy. It drafts only when the request asked nothing that moves the choice
+  (`req.sampled-spec-off`), so nothing is ignored.
 - Otherwise → a chain of its own. Zero temperature with no penalties or bias is argmax.
 
 #### `req.grammar` — A token the grammar refuses

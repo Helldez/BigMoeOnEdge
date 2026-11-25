@@ -213,7 +213,17 @@ between drafting cost and acceptance, and 0 is what the host numbers were measur
 
 Speculation requires greedy decoding: `validate()` rejects `--mtp` together with `--temp > 0`,
 because acceptance under a sampling chain would depend on which draws happened to agree and the run
-would no longer be the single-token run it claims to be.
+would no longer be the single-token run it claims to be. A request that asks for sampling of its own
+(a temperature above 0, a penalty, a bias) is therefore decoded without a draft, its sampling applied.
+The draft context then misses that turn, so the conversation goes on without a draft until the next
+new chat, as it does once it holds an image.
+
+## Under `--auto`
+
+The plan arms the model's own head where it holds the model whole and the front-end keeps records,
+and keeps it only where it decodes faster: one load times it with the head and one without, and the
+head stays where it wins by 10%. Where the model streams it is never offered, for the reason above
+([hardware-planning.md](hardware-planning.md#a-model-held-in-memory-drafting-with-its-own-head)).
 
 ## How it is wired
 

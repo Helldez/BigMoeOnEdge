@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <tuple>
 
 using namespace bmoe;
 
@@ -546,6 +547,85 @@ int main() {
         check(q.regime == Regime::Fits && !q.config.moe.overlap && !q.config.moe.row_stream && o && o->value == "off",
               "roomy machine, overlap asked: off with a note, not a refusal", o ? o->reason : "no decision");
         check(validate(q.config).ok, "roomy machine, overlap asked: a valid config", validate(q.config).error);
+    }
+
+    // ── the model's own draft head, decided across loads where the model is held whole ──────────
+    {
+        HardwareProfile big = desktop();
+        big.residency_budget = 64 * GiB;
+        big.memory_total = 64 * GiB;
+        ModelProfile headed = model;
+        headed.has_mtp = true;
+        PlanRequest keep;
+        keep.measure_knobs = true;
+        const auto spec_of = [](const Plan & p) { return find(p, "spec"); };
+
+        // No record kept, no head, or a streamed model: nothing is armed and nothing is said.
+        {
+            const Plan a = plan_run(base_cfg(), big, headed, PlanRequest{});
+            const Plan b = plan_run(base_cfg(), big, model, keep);
+            HardwareProfile small = desktop();
+            const Plan c = plan_run(base_cfg(), small, headed, keep);
+            check(!a.config.spec.enabled() && !spec_of(a), "draft head: a front-end that keeps no record arms none");
+            check(!b.config.spec.enabled() && !spec_of(b), "draft head: a model without one arms none");
+            check(c.config.moe.enabled && !c.config.spec.enabled() && !spec_of(c),
+                  "draft head: a streamed model arms none (a verify widens its reads)");
+        }
+        // Nothing timed: this load drafts and times it.
+        {
+            const Plan p = plan_run(base_cfg(), big, headed, keep);
+            const Decision * d = spec_of(p);
+            check(p.config.spec.is_mtp() && p.config.trial.spec_side == 1 && d && d->value == "mtp" &&
+                      d->source == Source::Derived,
+                  "draft head, unmeasured: the load drafts and times it", d ? d->reason : "no decision");
+            check(validate(p.config).ok, "draft head, unmeasured: a valid config", validate(p.config).error);
+        }
+        // The head timed: the next load times the decode without it.
+        {
+            ModelProfile m = headed;
+            m.knobs.spec_tps = 30.0;
+            const Plan p = plan_run(base_cfg(), big, m, keep);
+            check(!p.config.spec.enabled() && p.config.trial.spec_side == 0 && validate(p.config).ok,
+                  "draft head, one side timed: the other side is timed next");
+        }
+        // Both timed: kept only past the margin.
+        for (const auto & c : {std::make_tuple(36.0, 30.0, true), std::make_tuple(32.0, 30.0, false),
+                               std::make_tuple(25.0, 30.0, false)}) {
+            ModelProfile m = headed;
+            m.knobs.spec_tps = std::get<0>(c);
+            m.knobs.no_spec_tps = std::get<1>(c);
+            const Plan p = plan_run(base_cfg(), big, m, keep);
+            const Decision * d = spec_of(p);
+            const bool kept = std::get<2>(c);
+            check(p.config.spec.is_mtp() == kept && p.config.trial.spec_side < 0 && d &&
+                      d->source == Source::Measured && validate(p.config).ok,
+                  "draft head, " + std::to_string((int) std::get<0>(c)) + " against " +
+                      std::to_string((int) std::get<1>(c)) + ": " + (kept ? "kept" : "off"),
+                  d ? d->reason : "no decision");
+        }
+        // A side that failed to open as often as a plan allows loses.
+        {
+            ModelProfile m = headed;
+            m.knobs.spec_unviable = MeasuredKnobs::unviable_max;
+            const Plan p = plan_run(base_cfg(), big, m, keep);
+            check(!p.config.spec.enabled() && p.config.trial.spec_side < 0,
+                  "draft head, failed to open: no draft, and nothing timed");
+        }
+        // A pinned draft, or a session that samples, is the person's: the rule does not arm one.
+        {
+            RunConfig hot = base_cfg();
+            hot.sampling.temp = 0.7f;
+            PlanRequest pinned = keep;
+            pinned.pinned = {"temp"};
+            const Plan p = plan_run(hot, big, headed, pinned);
+            const Decision * d = spec_of(p);
+            check(!p.config.spec.enabled() && validate(p.config).ok && d && d->value == "off",
+                  "draft head, a sampling session: no draft, and the plan says why", d ? d->reason : "no decision");
+            PlanRequest off = keep;
+            off.pinned = {"spec"};
+            const Plan q = plan_run(base_cfg(), big, headed, off);
+            check(!q.config.spec.enabled() && q.config.trial.spec_side < 0, "draft head, spec pinned off: left off");
+        }
     }
 
     // ── the budget is what we can KEEP, not what is reported available ──────────────

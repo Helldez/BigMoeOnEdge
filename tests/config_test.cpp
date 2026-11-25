@@ -152,6 +152,25 @@ int main() {
         expect_fail("trial shared device out of range", t);
     }
     {
+        // The draft head's side: one decision a load, side 1 drafting from the model's head, side 0 not.
+        RunConfig t = ok_base();
+        t.trial.spec_side = 0;
+        expect_ok("trial spec, without a draft", t);
+        t.trial.spec_side = 1;
+        expect_fail("trial spec 1 with no draft armed", t);
+        t.spec.source = DraftSource::mtp;
+        expect_ok("trial spec 1, the head drafting", t);
+        RunConfig zero = t;
+        zero.trial.spec_side = 0;
+        expect_fail("trial spec 0 with a draft armed", zero);
+        RunConfig two = t;
+        two.trial.width_side = 1;
+        two.trial.width_narrow = 512;
+        expect_fail("trial spec beside the width's", two);
+        t.trial.spec_side = 2;
+        expect_fail("trial spec out of range", t);
+    }
+    {
         // The answer check: a model held whole in memory, with layers on a device to compare.
         RunConfig t = ok_base();
         t.trial.answer_device = "accel";
