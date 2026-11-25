@@ -188,6 +188,21 @@ ValidationResult validate(const RunConfig & cfg) {
             return fail("{top-p} must be above 0 and at most 1");
         }
     }
+    // The penalties act on greedy decoding too, so their ranges hold whatever the temperature. Written
+    // so that NaN fails: it compares false against every bound.
+    {
+        const SamplingConfig & s = cfg.sampling;
+        if (!(s.repeat_penalty >= SamplingConfig::repeat_penalty_min &&
+              s.repeat_penalty <= SamplingConfig::repeat_penalty_max))
+            return fail("{repeat-penalty} must be from 0.001 to 100 (1 is off)");
+        if (!(s.presence_penalty >= -SamplingConfig::penalty_max && s.presence_penalty <= SamplingConfig::penalty_max))
+            return fail("{presence-penalty} must be from -2 to 2 (0 is off)");
+        if (!(s.frequency_penalty >= -SamplingConfig::penalty_max &&
+              s.frequency_penalty <= SamplingConfig::penalty_max))
+            return fail("{frequency-penalty} must be from -2 to 2 (0 is off)");
+        if (s.penalty_last_n < SamplingConfig::penalty_last_n_ctx)
+            return fail("{repeat-last-n} cannot be below -1, the whole context (0 turns the penalties off)");
+    }
 
     // Verification is exact only because greedy acceptance compares argmax against argmax. Under a
     // sampling chain the accepted prefix would depend on which draws happened to agree, which is a
@@ -198,6 +213,11 @@ ValidationResult validate(const RunConfig & cfg) {
     if (cfg.spec.enabled() && cfg.sampling.temp > 0.0f) {
         return fail("{spec} needs greedy decoding ({temp} at 0): a draft is checked against the single most likely "
                     "token, which is only the answer when nothing is sampled.");
+    }
+    // A penalty moves the answer off that token too, even at temperature 0: the same contract.
+    if (cfg.spec.enabled() && cfg.sampling.penalized()) {
+        return fail("{spec} needs the model's own most likely token: {repeat-penalty}, {frequency-penalty} and "
+                    "{presence-penalty} must stay off, since a draft is checked against that token.");
     }
     // The floor is 1 (draft one token, verify two positions); at 0 there is nothing to verify and
     // the loop degenerates into plain decode with the speculative scaffolding attached. The ceiling

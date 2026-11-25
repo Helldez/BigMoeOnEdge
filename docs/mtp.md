@@ -213,7 +213,9 @@ between drafting cost and acceptance, and 0 is what the host numbers were measur
 
 Speculation requires greedy decoding: `validate()` rejects `--mtp` together with `--temp > 0`,
 because acceptance under a sampling chain would depend on which draws happened to agree and the run
-would no longer be the single-token run it claims to be.
+would no longer be the single-token run it claims to be. A penalty (`--presence-penalty`,
+`--frequency-penalty`, `--repeat-penalty`) is rejected with it too, at any temperature: it moves the
+answer off the model's own most likely token, which is what a draft is checked against.
 
 ## How it is wired
 

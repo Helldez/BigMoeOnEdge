@@ -401,6 +401,12 @@ struct RunInfo {
     int top_k = 40;
     float top_p = 0.95f;
     uint32_t seed = 0xFFFFFFFFu;
+    // The penalties' defaults (SamplingConfig): they change a greedy answer too, so a penalized greedy
+    // run is not the unpenalized one either.
+    float repeat_penalty = 1.0f;
+    float frequency_penalty = 0.0f;
+    float presence_penalty = 0.0f;
+    int repeat_last_n = 64;
 
     // Self-speculation, and which source drafted ("off", "mtp", "ngram"). It changes how many tokens
     // a decode confirms, so every per-token row in the file was produced under a different

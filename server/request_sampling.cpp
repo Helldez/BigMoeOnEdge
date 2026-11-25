@@ -150,16 +150,22 @@ bool parse_request_sampling(const json & body, SamplingDialect dialect, ChatRequ
         if (!read_integer(body, "seed", -1, std::numeric_limits<uint32_t>::max(), i, err)) return false;
         if (i) r.seed = *i < 0 ? SamplingConfig::seed_random : (uint32_t) *i, any = true;
         i.reset();
-        if (!read_number(body, "presence_penalty", -2.0, 2.0, d, err)) return false;
+        if (!read_number(body, "presence_penalty", -SamplingConfig::penalty_max, SamplingConfig::penalty_max, d, err))
+            return false;
         if (d) r.presence_penalty = (float) *d, any = true;
         d.reset();
-        if (!read_number(body, "frequency_penalty", -2.0, 2.0, d, err)) return false;
+        if (!read_number(body, "frequency_penalty", -SamplingConfig::penalty_max, SamplingConfig::penalty_max, d, err))
+            return false;
         if (d) r.frequency_penalty = (float) *d, any = true;
         d.reset();
-        if (!read_number(body, "repeat_penalty", 1e-3, 100.0, d, err)) return false;
+        if (!read_number(body, "repeat_penalty", SamplingConfig::repeat_penalty_min, SamplingConfig::repeat_penalty_max,
+                         d, err))
+            return false;
         if (d) r.repeat_penalty = (float) *d, any = true;
         d.reset();
-        if (!read_integer(body, "repeat_last_n", -1, std::numeric_limits<int32_t>::max(), i, err)) return false;
+        if (!read_integer(body, "repeat_last_n", SamplingConfig::penalty_last_n_ctx,
+                          std::numeric_limits<int32_t>::max(), i, err))
+            return false;
         if (i) r.penalty_last_n = (int) *i, any = true;
         i.reset();
         if (!read_logit_bias(body, r.logit_bias, err)) return false;

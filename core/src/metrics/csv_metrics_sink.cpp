@@ -49,9 +49,11 @@ public:
                      (double) r.substitute_lambda);
         std::fprintf(f_,
                      "# temp=%.4g top_k=%d top_p=%.4g seed=%u compute_trace_layers=%d spec=%s "
-                     "spec_draft_max=%d mtp_p_min=%.4g ngram_min_match=%d\n",
+                     "spec_draft_max=%d mtp_p_min=%.4g ngram_min_match=%d repeat_penalty=%.4g "
+                     "frequency_penalty=%.4g presence_penalty=%.4g repeat_last_n=%d\n",
                      (double) r.temp, r.top_k, (double) r.top_p, r.seed, r.compute_trace_layers, r.spec.c_str(),
-                     r.spec_draft_max, (double) r.mtp_p_min, r.ngram_min_match);
+                     r.spec_draft_max, (double) r.mtp_p_min, r.ngram_min_match, (double) r.repeat_penalty,
+                     (double) r.frequency_penalty, (double) r.presence_penalty, r.repeat_last_n);
         write_header();
     }
 
