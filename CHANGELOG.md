@@ -19,6 +19,12 @@ Semantic Versioning.
   from the pinned ggml for the toolkit, the module build fails if ggml does not take it, and CI
   fails on a list written by hand. The pack grows by that machine code. Not yet run
   on a driver older than R575 ([backends.md](docs/backends.md#which-nvidia-drivers-the-cuda-pack-runs-on)).
+- **The CUDA pack runs a Tesla P100.** ggml's list has Pascal as sm_61, whose machine code does not
+  run on the P100's sm_60, so the card ran Maxwell's PTX: it needed R575, missed sm_60's FP16
+  instructions, and on a rented P100 the 0.43.1 pack's probe aborted and the plan ran on the host
+  only. sm_60 is now the one architecture shipped beyond ggml's list, as machine code, until CUDA 13
+  (which builds no Pascal); a source build for it ran Qwen3.6-35B-A3B Q4_K_M at 42-47 tok/s there.
+  Not yet run from the pack.
 
 ## [0.50.1] - 2026-11-25
 

@@ -12,11 +12,12 @@ pinned llama.cpp built them. So:
     as a set. A submodule bump that changes upstream's list fails here until ours follows.
   - CUDA: the architectures are ggml's default list for our toolkit, read from the pinned
     ggml-cuda CMakeLists, with one change: an architecture ggml ships as PTX only (`XX-virtual`) is
-    shipped as PTX and machine code (`XX`). PTX is compiled by the driver at load, which needs a
+    shipped as PTX and machine code (`XX`), and one architecture is added, P100's (`60`, below).
+    PTX is compiled by the driver at load, which needs a
     driver at least as new as the toolkit (R575 for CUDA 12.9); machine code runs on any driver
     CUDA 12 runs on (R525), so a Turing, Volta, Pascal, Maxwell, A100 or H100 card on an older
-    driver gets CUDA instead of a crashed probe (#694). The architectures stay upstream's: only how
-    each is shipped changes. gpu-modules.yml builds with `--cuda-archs` below, and no workflow may
+    driver gets CUDA instead of a crashed probe (#694). Otherwise the architectures stay upstream's.
+    gpu-modules.yml builds with `--cuda-archs` below, and no workflow may
     write a list by hand.
 
     python3 scripts/check-gpu-targets.py --cuda-archs 12.9.1   # the list the CUDA module builds
@@ -106,14 +107,33 @@ def ggml_cuda_default(toolkit):
     return out
 
 
+# Architectures shipped beyond ggml's list, each as (architecture, toolkit it stops building from, why).
+# Machine code runs only on its own major architecture at the same or a later minor, so no entry of
+# ggml's list runs on sm_60 as machine code: a P100 runs Maxwell's PTX, which needs a driver as new
+# as the toolkit (R575), and misses sm_60's FP16 intrinsics. Rented P100s are common and ran the
+# pack's probe into an abort, while a source build for 60 ran Qwen3.6-35B-A3B at 42-47 tok/s.
+# CUDA 13 builds no Pascal at all, as ggml's own guard on 50/61/70 says.
+ADDED_CUDA = [("60-real", "13", "P100: FP16 intrinsics; no entry of ggml's list runs on it as machine code")]
+
+
+def arch_number(a):
+    return int(re.match(r"^([0-9]+)", a).group(1))
+
+
 def shipped_cuda(toolkit):
-    """ggml's list with every PTX-only architecture also shipped as machine code."""
+    """ggml's list with every PTX-only architecture also shipped as machine code, plus ADDED_CUDA."""
     out = []
     for a in ggml_cuda_default(toolkit):
         if not re.match(r"^[0-9]+[af]?(-real|-virtual)?$", a):
             sys.exit("check-gpu-targets: unknown CUDA architecture form in ggml's list: " + a)
         out.append(a[: -len("-virtual")] if a.endswith("-virtual") else a)
-    return out
+    for a, until, _ in ADDED_CUDA:
+        if version(toolkit) >= version(until):
+            continue
+        if any(arch_number(b) == arch_number(a) for b in out):
+            sys.exit("check-gpu-targets: ggml's list now has %s itself; drop it from ADDED_CUDA" % a)
+        out.append(a)
+    return sorted(out, key=arch_number)
 
 
 def our_cuda_toolkit():
@@ -153,8 +173,8 @@ def main():
     if not ok:
         sys.exit(1)
     print(
-        "GPU targets: HIP %d targets as llama.cpp's release; CUDA %s: %s (ggml's list, PTX-only ones also as machine code)"
-        % (len(ours), toolkit, ";".join(cuda))
+        "GPU targets: HIP %d targets as llama.cpp's release; CUDA %s: %s (ggml's list, PTX-only ones also as machine code, plus %s)"
+        % (len(ours), toolkit, ";".join(cuda), ";".join(a for a, _, _ in ADDED_CUDA))
     )
 
 

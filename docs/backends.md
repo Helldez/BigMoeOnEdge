@@ -317,5 +317,8 @@ driver can compile only PTX from a toolkit no newer than itself: R575 for 12.9. 
 Turing card on Debian 13's R550 ended its probe in "PTX compiled with an unsupported toolchain" and
 ran on Vulkan, a third slower (#694). So each PTX-only architecture also ships as machine code
 (`scripts/check-gpu-targets.py --cuda-archs`, which reads the list from the pinned ggml), and the
-PTX stays for a card newer than the list. A card whose architecture is not in the list but runs
-another's PTX, such as a P100 (sm_60, from Maxwell's), still needs R575.
+PTX stays for a card newer than the list. One architecture is added to ggml's list: the P100's
+(sm_60), which no entry of it runs as machine code (machine code runs only on its own major
+architecture at the same or a later minor, and ggml ships Pascal as sm_61), so a P100 ran Maxwell's
+PTX, needed R575 and missed sm_60's FP16 instructions. A source build for sm_60 ran Qwen3.6-35B-A3B
+Q4_K_M at 42-47 tok/s on a rented P100, where the 0.43.1 pack's probe aborted.

@@ -143,7 +143,7 @@ jobs:
 
       # The top-level build, so the module is configured exactly as the engine it loads beside;
       # only its target is built. The architectures: ggml's default list for this toolkit, each
-      # PTX-only one also as machine code (the header). ggml echoes the list it builds; a list that
+      # PTX-only one also as machine code, plus P100's (the header). ggml echoes the list it builds; a list that
       # is not the one asked for fails here rather than ship.
       - name: Build the CUDA module
         if: steps.cache.outputs.cache-hit != 'true'
