@@ -764,8 +764,8 @@ flowchart TD
 - condition: `if (p.regime != Regime::ExpertsStream || !p.config.moe.enabled || p.streaming_declined || !m.is_moe) return p;`
 - It runs on a plan that streams experts, on a machine whose devices read the host's memory, when no
   whole-model placement was taken (`plan.held-whole`).
-- The device must execute the model's expert matmul with the cores' result and have measured dense
-  and expert rates; nothing is pinned among `moe-stream`, `gpu-layers`, `tensor-overrides`,
+- The device must execute the model's expert matmul with the cores' result, not have differed from
+  the cores on this model before (`device_answer`), and have measured dense and expert rates; nothing is pinned among `moe-stream`, `gpu-layers`, `tensor-overrides`,
   `device-cache-mb`, `device-split`, `cache-mb`; no other cross-load decision is pending.
 - Both sides are priced: the stream at its own allocation, the device from its rates, the model's hit
   curve at the stream's cache size and the storage rate at the expert slice. A side a load measured

@@ -4441,6 +4441,8 @@ Plan shared_device_cache(Plan p,
     for (const ComputeDevice & d : hw.devices) {
         if (d.is_cpu || d.usable == Tri::No || !d.reads_host_memory()) continue;
         if (d.runs_expert_op != Tri::Yes || d.identity_ok == Tri::No) continue;
+        // a device whose answers for this model differed from the cores' here is no candidate
+        if (m.knobs.device_answer(d.name) < 0) continue;
         if (expert_rates(hw, d).device <= 0.0 || dense_rates(hw, d).device <= 0.0) continue;
         if (!dev || expert_rates(hw, d).device > expert_rates(hw, *dev).device) dev = &d;
     }
