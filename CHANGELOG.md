@@ -26,6 +26,15 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   `--device-cache-host-call`, `--device-cache-cpu-threads`, `--device-cache-read-ahead`
   ([settings.md](docs/settings.md)). All lossless; the gates compare each with the plain upload.
 
+- **Layers that share expert tensors share the device cache.** A looped model runs the same blocks more than
+  once per token; the cache counted their experts once per run and two runs fought over one mapping, so the
+  device could not decode such a model. Layers that run the very same expert tensors (detected by the
+  tensors, not by the model) now share one set of slots, each with a slot map of its own: Inkling-2-Mini
+  IQ4_NL decodes on the device at 12.0 tok/s against 9.4 streamed, its experts counted once (15 GB, not 28).
+  A graph wider than the cache serves still holds the shared experts' copies across the runs (7 GB on that
+  model), so `--auto`, whose graph is wider, keeps the stream there: the answer check records the device
+  side as lost.
+
 ### Changed
 - **The device answer check covers a device expert cache.** It was refused beside one; it now runs
   once the cache is armed, so the device is checked computing the experts from it, and clears the
