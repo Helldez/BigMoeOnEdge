@@ -227,6 +227,9 @@ bool parse_tool_choice(const json & body, ChatRequest & turn, std::string & err)
         err = "tool_choice must be {type: \"auto\" | \"any\" | \"tool\" | \"none\"}";
         return false;
     }
+    // The protocol can only take parallel calls away; otherwise the template's, as on the chat endpoint.
+    if (body["tool_choice"].value("disable_parallel_tool_use", json(false)) == json(true))
+        turn.parallel_tool_calls = false;
     return true;
 }
 

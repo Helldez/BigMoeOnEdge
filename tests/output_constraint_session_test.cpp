@@ -79,6 +79,7 @@ struct GrammarOracle {
     const llama_vocab * vocab = nullptr;
     std::unordered_map<std::string, llama_token> piece_tokens;
     bmoe::ThinkControl control = bmoe::ThinkControl::None;
+    bool parallel = false;
 
     explicit GrammarOracle(const std::string & path) {
         auto params = llama_model_default_params();
@@ -93,6 +94,7 @@ struct GrammarOracle {
         }
         templates = common_chat_templates_init(model.get(), "");
         control = bmoe::detail::probe_think_control(templates.get());
+        parallel = bmoe::detail::template_parallel_tool_calls(templates.get());
     }
 
     common_chat_params render(const bmoe::GenerateRequest & req) const {
@@ -100,7 +102,8 @@ struct GrammarOracle {
             req.messages.empty() ? std::vector<bmoe::ChatMessage>{{"user", req.prompt}} : req.messages;
         common_chat_templates_inputs inputs;
         bmoe::detail::build_turn_inputs(inputs, bmoe::detail::to_common_messages(messages), req.think, control);
-        if (!req.messages.empty()) bmoe::detail::add_tools(inputs, req.tools, req.tool_choice);
+        if (!req.messages.empty())
+            bmoe::detail::add_tools(inputs, req.tools, req.tool_choice, req.parallel_tool_calls, parallel);
         inputs.json_schema = req.json_schema;
         return common_chat_templates_apply(templates.get(), inputs);
     }

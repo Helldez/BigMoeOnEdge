@@ -25,7 +25,16 @@ std::vector<common_chat_msg> to_common_messages(const std::vector<ChatMessage> &
     return out;
 }
 
-void add_tools(common_chat_templates_inputs & inputs, const std::vector<ChatTool> & tools, ToolChoice choice) {
+bool template_parallel_tool_calls(const common_chat_templates * tmpls) {
+    if (tmpls == nullptr) return false;
+    return common_chat_templates_get_caps(tmpls).value("supports_parallel_tool_calls", false);
+}
+
+void add_tools(common_chat_templates_inputs & inputs,
+               const std::vector<ChatTool> & tools,
+               ToolChoice choice,
+               std::optional<bool> parallel,
+               bool template_parallel) {
     if (tools.empty()) return;
     inputs.tools.reserve(tools.size());
     for (const ChatTool & t : tools)
@@ -41,6 +50,12 @@ void add_tools(common_chat_templates_inputs & inputs, const std::vector<ChatTool
         inputs.tool_choice = COMMON_CHAT_TOOL_CHOICE_REQUIRED;
         break;
     }
+    // llama.cpp's own default, false, holds a parser such as Qwen3.5's to one call: its grammar refuses a
+    // second, and the parser keeps the first. Unless the request says, the template's capability
+    // decides, as in llama-server. Only the grammar and the parser read it, not the rendered prompt, so
+    // the KV prefix holds either way.
+    // dt:req.render.parallel
+    inputs.parallel_tool_calls = parallel.value_or(template_parallel);
 }
 
 std::vector<ChatToolCall> from_common_tool_calls(const std::vector<common_chat_tool_call> & calls) {

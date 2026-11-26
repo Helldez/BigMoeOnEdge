@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+- **A request without `parallel_tool_calls` gets the tool calls its template supports** (#740).
+  Agent clients such as Pi never send the field, and the engine never set it, so llama.cpp's default
+  `false` held on every turn with tools. On a template whose parser holds to it (Qwen3.5's and
+  Qwen3.6's among them) the grammar refused a second call and the parser kept the first: a model that
+  wanted to batch its calls was steered to stop after one, and the agent paid another round trip and
+  prefill for each. A request that does not say now gets what the chat template supports
+  (`supports_parallel_tool_calls`; 61 of the 67 templates with tools that llama.cpp vendors, Qwen3.5
+  among them, Llama 3.x, gpt-oss and GigaChat3 not), as llama-server decides it, and an explicit
+  field wins: `parallel_tool_calls` on `/v1/chat/completions` and `/v1/responses` (where it was read
+  by nothing), `tool_choice.disable_parallel_tool_use` on `/v1/messages`, and
+  `GenerateRequest::parallel_tool_calls` in the engine. The rendered prompt does not depend on it, so
+  the KV prefix and the checkpoints stay valid ([server-api.md](docs/server-api.md)). By @pt7777 (#740).
+
 ## [0.50.1] - 2026-11-25
 
 ### Fixed

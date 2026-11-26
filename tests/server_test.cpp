@@ -138,7 +138,15 @@ static void protocol_tests() {
               "a tool's schema travels as JSON text");
         check(r.turn.tool_choice == ToolChoice::Required && r.stream && r.include_usage && r.turn.n_predict == 7,
               "tool_choice, stream, include_usage and max_tokens are read");
+        check(!r.turn.parallel_tool_calls.has_value(), "no parallel_tool_calls leaves it to the template");
     }
+    for (const char * v : {"true", "false"})
+        check(parsed(std::string(R"j({"messages":[{"role":"user","content":"hi"}],"parallel_tool_calls":)j") + v + "}")
+                      .turn.parallel_tool_calls == (std::string(v) == "true"),
+              std::string("parallel_tool_calls ") + v + " is the request's");
+    check(!parsed(R"j({"messages":[{"role":"user","content":"hi"}],"parallel_tool_calls":"no"})j")
+               .turn.parallel_tool_calls.has_value(),
+          "a parallel_tool_calls that is not a boolean leaves it to the template");
     {
         const OpenAiChatRequest r = parsed(R"j({"messages":[{"role":"user","content":"x"},
             {"role":"assistant","tool_calls":[{"function":{"name":"f","arguments":{"k":1}}}]},
@@ -653,6 +661,13 @@ static void anthropic_tests() {
               "a tool result is a tool message, named after its call, before the user's text");
         check(r.turn.tool_choice == ToolChoice::Required && !r.turn.think && r.turn.n_predict == 50 && !r.stream,
               "any is required, thinking can be turned off, max_tokens is the budget");
+        check(!r.turn.parallel_tool_calls.has_value(), "parallel calls are left to the template");
+        check(anthropic(R"j({"max_tokens":5,"messages":[{"role":"user","content":"hi"}],
+                  "tool_choice":{"type":"auto","disable_parallel_tool_use":true}})j",
+                        &ok)
+                          .turn.parallel_tool_calls == false &&
+                  ok,
+              "disable_parallel_tool_use takes them away");
     }
     {
         const AnthropicRequest r = anthropic(R"j({"messages":[{"role":"user","content":[
@@ -804,6 +819,7 @@ static void responses_tests() {
         check(r.turn.tools.size() == 1 && r.turn.tools[0].name == "exec_command" &&
                   r.turn.tool_choice == ToolChoice::Auto,
               "function tools are described, built-in ones dropped");
+        check(r.turn.parallel_tool_calls == true, "parallel_tool_calls is read, as on the chat endpoint");
     }
     {
         const ResponsesRequest r = responses(R"j({"input":[

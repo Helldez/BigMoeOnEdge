@@ -480,6 +480,9 @@ struct Session::Impl {
     // How a think=false request can be honoured on this model; probed once at open(). Template
     // (the fail-open default) means the flag alone does the job and generate() adds nothing.
     ThinkControl think_ctl = ThinkControl::Template;
+    // Whether the template takes several tool calls in one turn: what a request that does not say
+    // gets (GenerateRequest::parallel_tool_calls). Read once at open(), like think_ctl.
+    bool parallel_tool_calls = false;
     bool backend_inited = false;
     // What release_file_mappings left behind on purpose; released only after `model` is gone
     // (its teardown still unmaps/closes what it believes is its mapping; see mapping_release.h).
@@ -727,7 +730,7 @@ bool Session::render_chat(const GenerateRequest & req, std::string & prompt, std
         // The same inputs a turn builds (Turn::render_prompt), from the request's messages alone.
         common_chat_templates_inputs inputs;
         detail::build_turn_inputs(inputs, detail::to_common_messages(req.messages), req.think, im.think_ctl);
-        detail::add_tools(inputs, req.tools, req.tool_choice);
+        detail::add_tools(inputs, req.tools, req.tool_choice, req.parallel_tool_calls, im.parallel_tool_calls);
         inputs.json_schema = req.json_schema;
         prompt = common_chat_templates_apply(im.chat_tmpls.get(), inputs).prompt.str();
     } catch (const std::exception & e) {
@@ -1327,6 +1330,7 @@ bool Session::Impl::read_model(Opening & o) {
             // Which "thinking off" mechanism this template supports is a property of the model, so
             // it is settled once here rather than re-derived on every turn.
             think_ctl = detail::probe_think_control(chat_tmpls.get());
+            parallel_tool_calls = detail::template_parallel_tool_calls(chat_tmpls.get());
         } catch (const std::exception & e) {
             log_printf(LogLevel::Warn, "chat template unavailable (%s); using raw prompts", e.what());
             chat_on = false;
@@ -3331,7 +3335,8 @@ struct Session::Impl::Turn {
                 detail::build_turn_inputs(inputs, im.chat_history, req.think && req.grammar.empty(), im.think_ctl);
             // The tools go to the template, which writes them in the syntax this model was trained
             // on, and the parser built from the same call reads the model's calls back out.
-            if (replace) detail::add_tools(inputs, req.tools, req.tool_choice);
+            if (replace)
+                detail::add_tools(inputs, req.tools, req.tool_choice, req.parallel_tool_calls, im.parallel_tool_calls);
 
             inputs.json_schema = req.json_schema;
             common_chat_params cp = common_chat_templates_apply(im.chat_tmpls.get(), inputs);

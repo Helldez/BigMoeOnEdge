@@ -177,6 +177,9 @@ bool parse_tools(const json & body, ChatRequest & turn, std::string & err) {
 }
 
 bool parse_tool_choice(const json & body, ChatRequest & turn, std::string & err) {
+    // As on the chat endpoint: left out, the template's.
+    if (body.contains("parallel_tool_calls") && body["parallel_tool_calls"].is_boolean())
+        turn.parallel_tool_calls = body["parallel_tool_calls"].get<bool>();
     if (!body.contains("tool_choice") || body["tool_choice"].is_null()) return true;
     const json & c = body["tool_choice"];
     const std::string s = c.is_string() ? c.get<std::string>() : "";
@@ -321,8 +324,8 @@ bool parse_responses_request(const json & body, const RunConfig & cfg, Responses
     const json reasoning = body.value("reasoning", json());
     if (reasoning.is_object() && string_at(reasoning, "effort")) turn.think = *string_at(reasoning, "effort") != "none";
     if (!parse_request_sampling(body, SamplingDialect::Responses, turn, err)) return false;
-    // store, include, parallel_tool_calls and prompt_cache_key are read by nothing: nothing is
-    // stored, and there is no encrypted reasoning to include.
+    // store, include and prompt_cache_key are read by nothing: nothing is stored, and there is no
+    // encrypted reasoning to include.
     out.stream = body.contains("stream") && body["stream"] == json(true);
     return true;
 }

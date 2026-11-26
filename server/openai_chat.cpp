@@ -137,6 +137,9 @@ bool parse_tools(const json & body, ChatRequest & turn, std::string & err) {
 }
 
 bool parse_tool_choice(const json & body, ChatRequest & turn, std::string & err) {
+    // Left out, the engine takes what the template supports: agent clients do not send it.
+    if (body.contains("parallel_tool_calls") && body["parallel_tool_calls"].is_boolean())
+        turn.parallel_tool_calls = body["parallel_tool_calls"].get<bool>();
     if (!body.contains("tool_choice") || body["tool_choice"].is_null()) return true;
     const json & c = body["tool_choice"];
     if (c.is_object()) {

@@ -14,6 +14,8 @@ struct ChatRequest {
     std::vector<ChatMessage> messages;
     std::vector<ChatTool> tools;
     ToolChoice tool_choice = ToolChoice::Auto;
+    // More than one call in the turn (GenerateRequest::parallel_tool_calls); unset, the template's.
+    std::optional<bool> parallel_tool_calls;
     int n_predict = 0;
     bool think = false;      // RunConfig::think's default
     std::string json_schema; // serialized schema for this request; empty means unconstrained

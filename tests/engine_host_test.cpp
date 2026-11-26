@@ -404,12 +404,16 @@ static void request_tests() {
     array.think = true;
     array.tools = {{"lookup", "Look up a value", R"({"type":"object"})"}};
     array.tool_choice = ToolChoice::Required;
+    array.parallel_tool_calls = false;
     check(host.chat(array, nullptr).status == 200 && script.last_request.json_schema == array.json_schema &&
               script.last_request.think && script.last_request.tools.size() == 1 &&
-              script.last_request.tools[0].name == "lookup" && script.last_request.tool_choice == ToolChoice::Required,
+              script.last_request.tools[0].name == "lookup" &&
+              script.last_request.tool_choice == ToolChoice::Required &&
+              script.last_request.parallel_tool_calls == false,
           "a non-object output schema reaches the session with thinking and tools unchanged");
     check(host.chat(turn(), nullptr).status == 200 && script.last_request.json_schema.empty() &&
-              script.last_request.tools.empty() && script.last_request.tool_choice == ToolChoice::Auto,
+              script.last_request.tools.empty() && script.last_request.tool_choice == ToolChoice::Auto &&
+              !script.last_request.parallel_tool_calls.has_value(),
           "schema, tools and tool choice do not leak into the next ordinary request");
 }
 
