@@ -31,9 +31,10 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   device could not decode such a model. Layers that run the very same expert tensors (detected by the
   tensors, not by the model) now share one set of slots, each with a slot map of its own: Inkling-2-Mini
   IQ4_NL decodes on the device at 12.0 tok/s against 9.4 streamed, its experts counted once (15 GB, not 28).
-  A graph wider than the cache serves still holds the shared experts' copies across the runs (7 GB on that
-  model), so `--auto`, whose graph is wider, keeps the stream there: the answer check records the device
-  side as lost.
+  In a graph wider than the cache serves, the scheduler kept one copy of a shared tensor from its first
+  layer to its last (7.2 GB of buffers on that model); such layers now read a twin of the tensor (its own
+  header over the same bytes), so each copy lives for one layer (0.9 GB at 512 tokens). With `--auto` the
+  device is chosen on the second load, its answers 100% the cores' top token, 12.6 tok/s against 11.0.
 
 ### Changed
 - **The device answer check covers a device expert cache.** It was refused beside one; it now runs
