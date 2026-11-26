@@ -2961,6 +2961,12 @@ std::unique_ptr<Session> Session::open(const SessionConfig & cfg,
         return nullptr;
     }
     if (check.result.verdict == Verdict::Differs) self->impl_->trials.result.set_device_answer(device, -1);
+    // A device expert cache whose sequence could not be decoded at all is not a comparison that failed
+    // for a moment (memory another program held): the cache cannot serve this model here, every load
+    // would ask again and reopen. That side is kept as lost (MeasuredKnobs::unviable_max), and only a
+    // rate measured since clears it.
+    if (check.result.verdict == Verdict::Unchecked && cfg.moe.device_cache_mb > 0 && cfg.trial.device_tier == 1)
+        self->impl_->trials.result.device_cache_unviable = MeasuredKnobs::unviable_max;
     // The device computes the model and the cores are faster: its answers are confirmed all the same,
     // and both rates are kept, so the next plan opens the cores without opening the device first.
     if (check.cores_faster) {
