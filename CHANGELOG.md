@@ -34,7 +34,8 @@ it touches llama.cpp beyond the single small commit the project allows, and is n
   In a graph wider than the cache serves, the scheduler kept one copy of a shared tensor from its first
   layer to its last (7.2 GB of buffers on that model); such layers now read a twin of the tensor (its own
   header over the same bytes), so each copy lives for one layer (0.9 GB at 512 tokens). With `--auto` the
-  device is chosen on the second load, its answers 100% the cores' top token, 12.6 tok/s against 11.0.
+  device is chosen on the second load, its answers 100% the cores' top token, 12.6 tok/s against 11.0; with
+  the read-ahead kept per layer of the graph (it was off where layers share experts) 14.0-14.1 tok/s.
 
 ### Changed
 - **The device answer check covers a device expert cache.** It was refused beside one; it now runs
